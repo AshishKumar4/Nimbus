@@ -1,5 +1,5 @@
 diff --git a/index.js b/index.js
-index 80a5167..2421ee0 100644
+index 80a5167..56424b8 100644
 --- a/index.js
 +++ b/index.js
 @@ -906,0 +907,3 @@ class GitIndex {
@@ -356,17 +356,24 @@ index 80a5167..2421ee0 100644
 +  cache[PackfileCache].set(filename, Promise.resolve(index));
 +}
 +
-@@ -3440 +3596 @@ async function readObjectPacked({
+@@ -3434,0 +3591,6 @@ async function readObjectPacked({
++  if (fs.packs) {
++    const found = await fs.packs.read(gitdir, oid);
++    if (!found) return null
++    // A copy: the reader's cache keeps its own.
++    return { type: found.type, format: 'content', object: Buffer.from(found.data), source: found.source }
++  }
+@@ -3440 +3602 @@ async function readObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -3588,0 +3745,3 @@ class CheckoutConflictError extends BaseError {
+@@ -3588,0 +3751,3 @@ class CheckoutConflictError extends BaseError {
 +   * @param {{ local: string[], directories: string[], untracked: string[], operation: string }} [refusal]
 +   *   What a checkout refused, by git's kinds; the message is then git's (unpack-trees.c
 +   *   unpack_plumbing_errors), for `operation` 'checkout' or 'merge'.
-@@ -3590 +3749 @@ class CheckoutConflictError extends BaseError {
+@@ -3590 +3755 @@ class CheckoutConflictError extends BaseError {
 -  constructor(filepaths) {
 +  constructor(filepaths, refusal) {
-@@ -3592,3 +3751,5 @@ class CheckoutConflictError extends BaseError {
+@@ -3592,3 +3757,5 @@ class CheckoutConflictError extends BaseError {
 -      `Your local changes to the following files would be overwritten by checkout: ${filepaths.join(
 -        ', '
 -      )}`
@@ -375,7 +382,7 @@ index 80a5167..2421ee0 100644
 +        : `Your local changes to the following files would be overwritten by checkout: ${filepaths.join(
 +            ', '
 +          )}`
-@@ -3597 +3758,18 @@ class CheckoutConflictError extends BaseError {
+@@ -3597 +3764,14 @@ class CheckoutConflictError extends BaseError {
 -    this.data = { filepaths };
 +    this.data = { filepaths, ...refusal };
 +  }
@@ -391,13 +398,13 @@ index 80a5167..2421ee0 100644
 +  }
 +  if (directories.length > 0) {
 +    text += `error: Updating the following directories would lose untracked files in them:\n${list(directories)}\n`;
-+  }
+@@ -3598,0 +3779,5 @@ class CheckoutConflictError extends BaseError {
 +  if (untracked.length > 0) {
 +    text += `error: The following untracked working tree files would be overwritten by ${operation}:\n${list(untracked)}` +
 +      `Please move or remove them before you ${action}.\n`;
-@@ -3598,0 +3777 @@ class CheckoutConflictError extends BaseError {
++  }
 +  return `${text}Aborting`
-@@ -4478,0 +4658,9 @@ function TREE({ ref = 'HEAD' } = {}) {
+@@ -4478,0 +4664,9 @@ function TREE({ ref = 'HEAD' } = {}) {
 +/** Renew the stat data of the entries a walk refreshed, where the index still holds that blob. */
 +function applyRefresh(index, refreshed) {
 +  for (const { filepath, stats, oid } of refreshed) {
@@ -407,42 +414,42 @@ index 80a5167..2421ee0 100644
 +  }
 +}
 +
-@@ -4486,0 +4675,2 @@ class GitWalkerFs {
+@@ -4486,0 +4681,2 @@ class GitWalkerFs {
 +    // Stat refreshes found during a walk, written in one index write when it ends.
 +    this._refreshed = [];
-@@ -4520,0 +4711,2 @@ class GitWalkerFs {
+@@ -4520,0 +4717,2 @@ class GitWalkerFs {
 +    // Only directories are entered: a symlink to one is a link, as git's lstat walk sees it.
 +    if ((await entry.type()) !== 'tree') return null
-@@ -4525 +4717,3 @@ class GitWalkerFs {
+@@ -4525 +4723,3 @@ class GitWalkerFs {
 -    return names.map(name => join(filepath, name))
 +    return names
 +      .filter(name => name !== '.git')
 +      .map(name => join(filepath, name))
-@@ -4571,0 +4766,3 @@ class GitWalkerFs {
+@@ -4571,0 +4772,3 @@ class GitWalkerFs {
 +      } else if ((await entry.mode()) === 0o120000) {
 +        // A symlink's blob is its target, not the file it points at.
 +        entry._content = new Uint8Array(await fs.readlink(`${dir}/${entry._fullpath}`));
-@@ -4604 +4801,4 @@ class GitWalkerFs {
+@@ -4604 +4807,4 @@ class GitWalkerFs {
 -        if (!stage || compareStats(stats, stage, filemode, trustino)) {
 +        // Matching stat data is trusted only for an entry older than the index (read-cache.c ie_match_stat).
 +        const statDirty = !!stage && compareStats(stats, stage, filemode, trustino);
 +        const racy = !!stage && !statDirty && isRacilyClean(cache, gitdir, stage);
 +        if (!stage || statDirty || racy) {
-@@ -4614 +4814,2 @@ class GitWalkerFs {
+@@ -4614 +4820,2 @@ class GitWalkerFs {
 -            // 2) and only if we need to (because other stats differ)
 +            // 2) and only if we need to: other stats differ, or the entry is racily clean and an
 +            //    index written now leaves it older than the index, as git's refresh rewrites one.
-@@ -4619 +4820 @@ class GitWalkerFs {
+@@ -4619 +4826 @@ class GitWalkerFs {
 -              compareStats(stats, stage, filemode, trustino)
 +              (statDirty || racy)
-@@ -4621,5 +4822 @@ class GitWalkerFs {
+@@ -4621,5 +4828 @@ class GitWalkerFs {
 -              index.insert({
 -                filepath: entry._fullpath,
 -                stats,
 -                oid: oid,
 -              });
 +              self._refreshed.push({ filepath: entry._fullpath, stats, oid });
-@@ -4637,0 +4835,12 @@ class GitWalkerFs {
+@@ -4637,0 +4841,12 @@ class GitWalkerFs {
 +  async flush() {
 +    const refreshed = this._refreshed;
 +    if (refreshed.length === 0) return
@@ -455,26 +462,30 @@ index 80a5167..2421ee0 100644
 +    });
 +  }
 +
-@@ -4831 +5040,5 @@ async function _walk({
+@@ -4831 +5046,5 @@ async function _walk({
 -  return walk(root)
 +  const result = await walk(root);
 +  for (const walker of walkers) {
 +    if (walker.flush) await walker.flush();
 +  }
 +  return result
-@@ -5394 +5607,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
+@@ -4943,0 +5163,3 @@ class FileSystem {
++    // A filesystem may read its packed objects itself (by range, never a
++    // whole pack): read(gitdir, oid), has(gitdir, oid), expand(gitdir, prefix).
++    this.packs = typeof fs.packs === 'object' && fs.packs !== null ? fs.packs : null;
+@@ -5394 +5616,2 @@ async function writeObjectLoose({ fs, gitdir, object, format, oid }) {
 -let supportsCompressionStream = null;
 +// As for inflate: workerd's CompressionStream costs ~9 ms a call, pako a small object microseconds.
 +let supportsCompressionStream = false;
-@@ -5522 +5736 @@ async function addToIndex({
+@@ -5522 +5745 @@ async function addToIndex({
 -  const promises = filepath.map(async currentFilepath => {
 +  const addPath = async currentFilepath => {
-@@ -5565,0 +5780 @@ async function addToIndex({
+@@ -5565,0 +5789 @@ async function addToIndex({
 +      // Link text verbatim, as git stores it and as the workdir walker hashes it.
-@@ -5567 +5782 @@ async function addToIndex({
+@@ -5567 +5791 @@ async function addToIndex({
 -        ? await fs.readlink(join(dir, currentFilepath)).then(posixifyPathBuffer)
 +        ? await fs.readlink(join(dir, currentFilepath))
-@@ -5573 +5788,7 @@ async function addToIndex({
+@@ -5573 +5797,7 @@ async function addToIndex({
 -  });
 +  };
 +  // Without `parallel`, one path at a time: each holds its bytes and a deflate stream until written.
@@ -483,18 +494,18 @@ index 80a5167..2421ee0 100644
 +    promises.push(addPath(currentFilepath));
 +    if (!parallel) await promises[promises.length - 1].catch(() => {});
 +  }
-@@ -5808,0 +6030,3 @@ async function _commit({
+@@ -5808,0 +6039,3 @@ async function _commit({
 +  // Nimbus: the message is the object's message byte for byte (git's cleanup
 +  // already applied by the caller), an empty one included; not normalized.
 +  rawMessage = false,
-@@ -5818,0 +6043,3 @@ async function _commit({
+@@ -5818,0 +6052,3 @@ async function _commit({
 +    // Nimbus: a detached HEAD resolves to the commit it holds. The ref to move
 +    // is HEAD itself, as git moves it, not a file named after that commit.
 +    if (/^[0-9a-f]{40}$/.test(ref)) ref = 'HEAD';
-@@ -5891 +6118 @@ async function _commit({
+@@ -5891 +6127 @@ async function _commit({
 -      if (!message) {
 +      if (!message && !(rawMessage && message === '')) {
-@@ -5900,7 +6127,9 @@ async function _commit({
+@@ -5900,7 +6136,9 @@ async function _commit({
 -      let comm = GitCommit.from({
 -        tree,
 -        parent,
@@ -511,7 +522,7 @@ index 80a5167..2421ee0 100644
 +            committer,
 +            message,
 +          });
-@@ -6656,5 +6885,7 @@ const worthWalking = (filepath, root) => {
+@@ -6656,5 +6894,7 @@ const worthWalking = (filepath, root) => {
 -  if (root.length >= filepath.length) {
 -    return root.startsWith(filepath)
 -  } else {
@@ -524,9 +535,9 @@ index 80a5167..2421ee0 100644
 +    filepath.startsWith(rootPrefix) ||
 +    root.startsWith(filepathPrefix)
 +  )
-@@ -6703,0 +6935 @@ async function _checkout({
+@@ -6703,0 +6944 @@ async function _checkout({
 +  conflictOperation = 'checkout',
-@@ -6771,6 +7003,14 @@ async function _checkout({
+@@ -6771,6 +7012,14 @@ async function _checkout({
 -    // Report conflicts
 -    const conflicts = ops
 -      .filter(([method]) => method === 'conflict')
@@ -547,30 +558,30 @@ index 80a5167..2421ee0 100644
 +        untracked,
 +        operation: conflictOperation,
 +      })
-@@ -6811 +7051,4 @@ async function _checkout({
+@@ -6811 +7060,4 @@ async function _checkout({
 -            ([method]) => method === 'delete' || method === 'delete-index'
 +            ([method]) =>
 +              method === 'delete' ||
 +              method === 'delete-index' ||
 +              method === 'update-blob-to-tree'
-@@ -6813 +7056 @@ async function _checkout({
+@@ -6813 +7065 @@ async function _checkout({
 -          .map(async function([method, fullpath]) {
 +          .map(async function([method, fullpath, present]) {
-@@ -6815 +7058 @@ async function _checkout({
+@@ -6815 +7067 @@ async function _checkout({
 -            if (method === 'delete') {
 +            if (method === 'delete' || (method === 'update-blob-to-tree' && present)) {
-@@ -6833 +7076 @@ async function _checkout({
+@@ -6833 +7085 @@ async function _checkout({
 -        if (method === 'rmdir' || method === 'rmdir-index') {
 +        if (method === 'rmdir' || method === 'rmdir-index' || method === 'update-dir-to-blob') {
-@@ -6836 +7079 @@ async function _checkout({
+@@ -6836 +7088 @@ async function _checkout({
 -            if (method === 'rmdir') {
 +            if (method !== 'rmdir-index') {
-@@ -6848 +7091,3 @@ async function _checkout({
+@@ -6848 +7100,3 @@ async function _checkout({
 -            if (e.code === 'ENOTEMPTY') {
 +            // A directory that still holds untracked files stays, as rmdir(2) leaves it.
 +            // One a file replaces was checked empty of them above.
 +            if (e.code === 'ENOTEMPTY' && method !== 'update-dir-to-blob') {
-@@ -6862 +7107,6 @@ async function _checkout({
+@@ -6862 +7116,6 @@ async function _checkout({
 -        .filter(([method]) => method === 'mkdir' || method === 'mkdir-index')
 +        .filter(
 +          ([method]) =>
@@ -578,25 +589,25 @@ index 80a5167..2421ee0 100644
 +            method === 'mkdir-index' ||
 +            method === 'update-blob-to-tree'
 +        )
-@@ -6882,0 +7133 @@ async function _checkout({
+@@ -6882,0 +7142 @@ async function _checkout({
 +          method === 'update-dir-to-blob' ||
-@@ -6914,0 +7166,2 @@ async function _checkout({
+@@ -6914,0 +7175,2 @@ async function _checkout({
 +      // A write that fails fails the checkout, once the index has what did land.
 +      const writeErrors = [];
-@@ -6924,0 +7178 @@ async function _checkout({
+@@ -6924,0 +7187 @@ async function _checkout({
 +                  method === 'update-dir-to-blob' ||
-@@ -6985 +7239 @@ async function _checkout({
+@@ -6985 +7248 @@ async function _checkout({
 -                  console.log(e);
 +                  writeErrors.push(e);
-@@ -6990,0 +7245 @@ async function _checkout({
+@@ -6990,0 +7254 @@ async function _checkout({
 +      if (writeErrors.length > 0) throw writeErrors[0]
-@@ -7013,2 +7268,3 @@ async function _checkout({
+@@ -7013,2 +7277,3 @@ async function _checkout({
 -      // detached head
 -      await GitRefManager.writeRef({ fs, gitdir, ref: 'HEAD', value: oid });
 +      // detached head, at the commit: an annotated tag's own object is not one
 +      const { oid: commitOid } = await resolveCommit({ fs, cache, gitdir, oid });
 +      await GitRefManager.writeRef({ fs, gitdir, ref: 'HEAD', value: commitOid });
-@@ -7018,0 +7275,20 @@ async function _checkout({
+@@ -7018,0 +7284,20 @@ async function _checkout({
 +/**
 + * Plan a checkout the way git's unpack_trees does, one path at a time, as ops
 + * _checkout carries out once nothing refuses.
@@ -617,7 +628,7 @@ index 80a5167..2421ee0 100644
 + * untracked file in the way) and 'conflict-dir' (a directory that would lose
 + * untracked files), which _checkout reports together, as git does.
 + */
-@@ -7029,0 +7306,40 @@ async function analyze({
+@@ -7029,0 +7315,40 @@ async function analyze({
 +  const config = await GitConfigManager.get({ fs, gitdir });
 +  const filemode = (await config.get('core.filemode')) !== false;
 +  let headOid = null;
@@ -658,12 +669,12 @@ index 80a5167..2421ee0 100644
 +    const chmod = !!workdir && (await workdir.type()) === 'blob' && (await workdir.mode()) !== mode;
 +    return [method, fullpath, await commit.oid(), mode, chmod]
 +  };
-@@ -7035,2 +7351,2 @@ async function analyze({
+@@ -7035,2 +7360,2 @@ async function analyze({
 -    trees: [TREE({ ref }), WORKDIR(), STAGE()],
 -    map: async function(fullpath, [commit, workdir, stage]) {
 +    trees,
 +    map: async function(fullpath, [commit, workdir, stage, head]) {
-@@ -7045,0 +7362,25 @@ async function analyze({
+@@ -7045,0 +7371,25 @@ async function analyze({
 +      const commitType = commit ? await commit.type() : null;
 +      const stageType = stage ? await stage.type() : null;
 +      const workType = workdir ? await workdir.type() : null;
@@ -689,7 +700,7 @@ index 80a5167..2421ee0 100644
 +        replaced.add(fullpath);
 +        return write('update-dir-to-blob', fullpath, commit, null)
 +      }
-@@ -7047,44 +7388,7 @@ async function analyze({
+@@ -7047,44 +7397,7 @@ async function analyze({
 -      // This is a kind of silly pattern but it worked so well for me in the past
 -      // and it makes intuitively demonstrating exhaustiveness so *easy*.
 -      // This checks for the presence and/or absence of each of the 3 entries,
@@ -741,16 +752,16 @@ index 80a5167..2421ee0 100644
 +            if (workType === 'tree') {
 +              replaced.add(fullpath);
 +              return write('update-dir-to-blob', fullpath, commit, null)
-@@ -7091,0 +7396,6 @@ async function analyze({
+@@ -7091,0 +7405,6 @@ async function analyze({
 +            if (workdir && (await same(stage, commit)) && (await upToDate(workdir, stage))) return
 +            return write('update', fullpath, commit, workdir)
 +          }
 +          if ((await same(stage, commit)) || (oldBlob && (await same(oldBlob, commit)))) return
 +          if (oldBlob && (await same(stage, oldBlob)) && (await upToDate(workdir, stage))) {
 +            return write('update', fullpath, commit, workdir)
-@@ -7092,0 +7403 @@ async function analyze({
+@@ -7092,0 +7412 @@ async function analyze({
 +          return ['conflict', fullpath]
-@@ -7094,64 +7405,4 @@ async function analyze({
+@@ -7094,64 +7414,4 @@ async function analyze({
 -        // New entries but there is already something in the workdir there.
 -        case '011': {
 -          switch (`${await commit.type()}-${await workdir.type()}`) {
@@ -819,9 +830,9 @@ index 80a5167..2421ee0 100644
 +          if (force) return ['update-blob-to-tree', fullpath, !!workType && workType !== 'tree']
 +          if (oldBlob && (await same(stage, oldBlob)) && (await upToDate(workdir, stage))) {
 +            return ['update-blob-to-tree', fullpath, !!workdir]
-@@ -7158,0 +7410 @@ async function analyze({
+@@ -7158,0 +7419 @@ async function analyze({
 +          return ['conflict', fullpath]
-@@ -7160,4 +7412,5 @@ async function analyze({
+@@ -7160,4 +7421,5 @@ async function analyze({
 -        // Something in stage but not in the commit OR the workdir.
 -        // Note: I verified this behavior against canonical git.
 -        case '100': {
@@ -831,7 +842,7 @@ index 80a5167..2421ee0 100644
 +        if (!oldBlob) {
 +          // Added to the index since HEAD: it stays, and so a directory it is in cannot be replaced.
 +          return replacedAncestor(fullpath) ? ['conflict', fullpath] : undefined
-@@ -7165,29 +7418,2 @@ async function analyze({
+@@ -7165,29 +7427,2 @@ async function analyze({
 -        // Deleted entries
 -        // TODO: How to handle if stage type and workdir type mismatch?
 -        case '101': {
@@ -863,7 +874,7 @@ index 80a5167..2421ee0 100644
 -          }
 +        if ((await same(stage, oldBlob)) && (await upToDate(workdir, stage))) {
 +          return [workdir ? 'delete' : 'delete-index', fullpath]
-@@ -7195,20 +7421,2 @@ async function analyze({
+@@ -7195,20 +7430,2 @@ async function analyze({
 -        /* eslint-disable no-fallthrough */
 -        // File missing from workdir
 -        case '110':
@@ -886,7 +897,7 @@ index 80a5167..2421ee0 100644
 -              }
 +        return ['conflict', fullpath]
 +      }
-@@ -7216,74 +7424,5 @@ async function analyze({
+@@ -7216,74 +7433,5 @@ async function analyze({
 -              // Check for local changes that would be lost
 -              if (workdir) {
 -                // Note: canonical git only compares with the stage. But we're smart enough
@@ -966,7 +977,7 @@ index 80a5167..2421ee0 100644
 +        // OK, make an exception for explicitly named files.
 +        if (force && filepaths && filepaths.includes(fullpath)) {
 +          return ['delete', fullpath]
-@@ -7290,0 +7430,11 @@ async function analyze({
+@@ -7290,0 +7439,11 @@ async function analyze({
 +        const owner = workType && replacedAncestor(fullpath);
 +        if (!owner) return
 +        if (workType === 'tree') return ['rmdir', fullpath]
@@ -978,7 +989,7 @@ index 80a5167..2421ee0 100644
 +        if (workType === 'tree') return
 +        if (force || (await ignored(fullpath))) return ['update-blob-to-tree', fullpath, true]
 +        return ['conflict-untracked', fullpath]
-@@ -7291,0 +7442,12 @@ async function analyze({
+@@ -7291,0 +7451,12 @@ async function analyze({
 +      // The target has a file or link here and the index does not.
 +      if (oldBlob) {
 +        // Its deletion is staged: it stays deleted unless the target changes it.
@@ -991,11 +1002,11 @@ index 80a5167..2421ee0 100644
 +      }
 +      if (force || (await ignored(fullpath))) return write('update', fullpath, commit, workdir)
 +      return ['conflict-untracked', fullpath]
-@@ -7298 +7460,2 @@ async function analyze({
+@@ -7298 +7469,2 @@ async function analyze({
 -      } else if (parent && parent[0] === 'rmdir') {
 +      } else if (parent && (parent[0] === 'rmdir' || parent[0] === 'update-dir-to-blob')) {
 +        // A directory is removed after everything in it.
-@@ -7310,9 +7473,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
+@@ -7310,9 +7482,5 @@ async function updateIndex({ index, fullpath, stats, oid }) {
 -  try {
 -    index.insert({
 -      filepath: fullpath,
@@ -1010,7 +1021,7 @@ index 80a5167..2421ee0 100644
 +    stats,
 +    oid,
 +  });
-@@ -7357,6 +7516,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7357,6 +7525,13 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -  try {
 -    for (let i = 0; i < tasks.length; i += batchSize) {
 -      const batch = tasks.slice(i, i + batchSize).map(task => task());
@@ -1030,7 +1041,7 @@ index 80a5167..2421ee0 100644
 +        phase: 'Updating workdir',
 +        loaded: i + batch.length,
 +        total: tasks.length,
-@@ -7364,7 +7529,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7364,7 +7538,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -      if (onProgress) {
 -        await onProgress({
 -          phase: 'Updating workdir',
@@ -1038,12 +1049,12 @@ index 80a5167..2421ee0 100644
 -          total: tasks.length,
 -        });
 -      }
-@@ -7372,4 +7530,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7372,4 +7539,0 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 -    return results
 -  } catch (error) {
 -    console.error(`Error during ${operationName}: ${error}`);
-@@ -7377 +7532,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
+@@ -7377 +7541,10 @@ async function batchAllSettled(operationName, tasks, onProgress, batchSize) {
 -
 +  if (errors.length > 0) {
 +    const detail = errors
@@ -1055,11 +1066,11 @@ index 80a5167..2421ee0 100644
 +      `${operationName} failed for ${errors.length} of ${tasks.length} task(s): ${detail}${more}`
 +    )
 +  }
-@@ -7455,0 +7620 @@ async function checkout({
+@@ -7455,0 +7629 @@ async function checkout({
 +  conflictOperation = 'checkout',
-@@ -7479,0 +7645 @@ async function checkout({
+@@ -7479,0 +7654 @@ async function checkout({
 +      conflictOperation,
-@@ -7486,0 +7653,381 @@ async function checkout({
+@@ -7486,0 +7662,381 @@ async function checkout({
 +const freshCheckoutOidPattern = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 +const freshCheckoutMaxDirectories = 20_000;
 +const freshCheckoutMaxDirectoryBytes = 4 * 1024 * 1024;
@@ -1441,25 +1452,27 @@ index 80a5167..2421ee0 100644
 +  }
 +}
 +
-@@ -8155 +8702 @@ async function hasObjectPacked({
+@@ -8149,0 +8706 @@ async function hasObjectPacked({
++  if (fs.packs) return fs.packs.has(gitdir, oid)
+@@ -8155 +8712 @@ async function hasObjectPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -8893 +9440,3 @@ async function _fetch({
+@@ -8893 +9450,3 @@ async function _fetch({
 -    await fs.write(fullpath.replace(/\.pack$/, '.idx'), await idx.toBuffer());
 +    const idxPath = fullpath.replace(/\.pack$/, '.idx');
 +    await fs.write(idxPath, await idx.toBuffer());
 +    seedPackfileCache({ cache, gitdir, packfileSha, index: idx });
-@@ -8933,0 +9483 @@ async function _init({
+@@ -8933,0 +9493 @@ async function _init({
 +  // What git init writes where files keep an exec bit, symlinks work and names are case-sensitive.
-@@ -8938 +9488 @@ async function _init({
+@@ -8938 +9498 @@ async function _init({
 -      '\tfilemode = false\n' +
 +      '\tfilemode = true\n' +
-@@ -8940,3 +9490 @@ async function _init({
+@@ -8940,3 +9500 @@ async function _init({
 -      (bare ? '' : '\tlogallrefupdates = true\n') +
 -      '\tsymlinks = false\n' +
 -      '\tignorecase = true\n'
 +      (bare ? '' : '\tlogallrefupdates = true\n')
-@@ -9036 +9584,11 @@ async function _clone({
+@@ -9036 +9594,11 @@ async function _clone({
 -    if (fetchHead === null) return
 +    if (fetchHead === null) {
 +      // An empty remote: git still tracks the branch HEAD will be born on, and a
@@ -1472,7 +1485,7 @@ index 80a5167..2421ee0 100644
 +      await GitConfigManager.save({ fs, gitdir, config });
 +      return
 +    }
-@@ -9052,0 +9611,14 @@ async function _clone({
+@@ -9052,0 +9621,14 @@ async function _clone({
 +    if (singleBranch) {
 +      // As git clone --single-branch: later fetches bring only the ref checked out.
 +      const fullref = await GitRefManager.expand({ fs, gitdir, ref });
@@ -1487,14 +1500,16 @@ index 80a5167..2421ee0 100644
 +        await GitConfigManager.save({ fs, gitdir, config });
 +      }
 +    }
-@@ -9239,0 +9812 @@ async function commit({
+@@ -9239,0 +9822 @@ async function commit({
 +  rawMessage = false,
-@@ -9265,0 +9839 @@ async function commit({
+@@ -9265,0 +9849 @@ async function commit({
 +      rawMessage,
-@@ -9552 +10126 @@ async function expandOidPacked({
+@@ -9546,0 +10131 @@ async function expandOidPacked({
++  if (fs.packs) return fs.packs.expand(gitdir, short)
+@@ -9552 +10137 @@ async function expandOidPacked({
 -    const indexFile = `${gitdir}/objects/pack/${filename}`;
 +    const indexFile = packIndexCacheKey(gitdir, filename);
-@@ -10441,2 +11015,5 @@ async function _pull({
+@@ -10441,2 +11026,5 @@ async function _pull({
 -    // Merge the remote tracking branch into the local one.
 -    await _merge({
 +    // Merge the remote tracking branch into the current one (HEAD, when detached), as git pull
@@ -1502,10 +1517,10 @@ index 80a5167..2421ee0 100644
 +    // overwritten by merge") leaves HEAD, index and worktree as they were.
 +    const ours = (await _currentBranch({ fs, gitdir, fullname: true })) || 'HEAD';
 +    const merged = await _merge({
-@@ -10446 +11023 @@ async function _pull({
+@@ -10446 +11034 @@ async function _pull({
 -      ours: ref,
 +      ours,
-@@ -10455,11 +11032 @@ async function _pull({
+@@ -10455,11 +11043 @@ async function _pull({
 -      noUpdateBranch: false,
 -    });
 -    await _checkout({
@@ -1518,7 +1533,7 @@ index 80a5167..2421ee0 100644
 -      remote,
 -      noCheckout: false,
 +      noUpdateBranch: true,
-@@ -10466,0 +11034,15 @@ async function _pull({
+@@ -10466,0 +11045,15 @@ async function _pull({
 +    if (!merged.alreadyMerged) {
 +      await _checkout({
 +        fs,
@@ -1534,15 +1549,15 @@ index 80a5167..2421ee0 100644
 +      });
 +      await GitRefManager.writeRef({ fs, gitdir, ref: ours, value: merged.oid });
 +    }
-@@ -14732 +15314 @@ async function readTree({
+@@ -14732 +15325 @@ async function readTree({
 - * @param {string} args.filepath - The path to the file to remove from the index
 + * @param {string|string[]} args.filepath - The path to the file to remove from the index, or paths removed under one index write
-@@ -14757 +15339,3 @@ async function remove({
+@@ -14757 +15350,3 @@ async function remove({
 -        index.delete({ filepath });
 +        for (const path of Array.isArray(filepath) ? filepath : [filepath]) {
 +          index.delete({ filepath: path });
 +        }
-@@ -14791,0 +15376,39 @@ async function remove({
+@@ -14791,0 +15387,39 @@ async function remove({
 +/**
 + * Stage in one index write, as git add does: the stat refreshes a
 + * statusMatrix({ deferRefresh }) under the same cache left pending, the
@@ -1582,16 +1597,16 @@ index 80a5167..2421ee0 100644
 +  }
 +}
 +
-@@ -16505,0 +17129 @@ async function statusMatrix({
+@@ -16505,0 +17140 @@ async function statusMatrix({
 +  deferRefresh = false,
-@@ -16511,0 +17136,3 @@ async function statusMatrix({
+@@ -16511,0 +17147,3 @@ async function statusMatrix({
 +    // The caller writes the index next (stage), so the walk's stat refreshes
 +    // ride in that write instead of one of their own.
 +    if (deferRefresh && !PendingRefresh.has(cache)) PendingRefresh.set(cache, []);
-@@ -16512,0 +17140,2 @@ async function statusMatrix({
+@@ -16512,0 +17151,2 @@ async function statusMatrix({
 +    const config = await GitConfigManager.get({ fs, gitdir });
 +    const filemode = (await config.get('core.filemode')) !== false;
-@@ -16575 +17204,15 @@ async function statusMatrix({
+@@ -16575 +17215,15 @@ async function statusMatrix({
 -        const entry = [undefined, headOid, workdirOid, stageOid];
 +        // A mode change is a change, as in git; the exec bit only where core.filemode
 +        // trusts it, else a file keeps its index mode (ce_mode_from_stat).
@@ -1608,6 +1623,6 @@ index 80a5167..2421ee0 100644
 +          workdirOid === '42' ? workdirOid : key(workdirOid, workdirMode),
 +          key(stageOid, stageMode),
 +        ];
-@@ -17576 +18219 @@ export default index;
+@@ -17576 +18230 @@ export default index;
 -export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };
 +export { Errors, STAGE, TREE, WORKDIR, abortMerge, add, addNote, addRemote, annotatedTag, branch, checkout, checkoutFreshChunk, clone, commit, currentBranch, deleteBranch, deleteRef, deleteRemote, deleteTag, expandOid, expandRef, fastForward, fetch, findMergeBase, findRoot, getConfig, getConfigAll, getRemoteInfo, getRemoteInfo2, hashBlob, indexPack, init, isDescendent, isIgnored, listBranches, listFiles, listNotes, listRefs, listRemotes, listServerRefs, listTags, log, merge, packObjects, pull, push, readBlob, readCommit, readNote, readObject, readTag, readTree, remove, removeNote, renameBranch, resetIndex, resolveRef, setConfig, stage, stash, status, statusMatrix, tag, updateIndex$1 as updateIndex, version, walk, writeBlob, writeCommit, writeObject, writeRef, writeTag, writeTree };

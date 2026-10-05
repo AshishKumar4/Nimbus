@@ -12,7 +12,6 @@
 
 import { inflateSync } from 'node:zlib';
 
-import { ByteLru } from './byte-lru.js';
 import {
   MAX_OBJECT_HEADER_BYTES,
   OBJ_OFS_DELTA,
@@ -56,6 +55,12 @@ export interface PackEntry {
   packed: Uint8Array;
 }
 
+/** Resolved objects of one pack, by offset (a ByteLru, or a view of one shared by several packs). */
+export interface BaseCache {
+  get(offset: number): CachedObject | undefined;
+  set(offset: number, object: CachedObject): void;
+}
+
 /** A ref-delta's base is not in this pack and nothing else supplied it. */
 export class MissingBaseError extends Error {
   constructor(readonly baseOid: Uint8Array) {
@@ -80,7 +85,7 @@ export interface PackObjectResolverOptions {
   /** Offset of the pack's trailer: where object data ends. */
   dataEnd: number;
   /** Resolved objects by pack offset, shared by every read of this pack. */
-  cache: ByteLru<number, CachedObject>;
+  cache: BaseCache;
   /** A ref-delta's base, by id; MissingBaseError when there is none. */
   refBase(oid: Uint8Array): PackRead<RefBase>;
 }

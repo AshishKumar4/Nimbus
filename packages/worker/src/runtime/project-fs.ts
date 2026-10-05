@@ -16,7 +16,7 @@ import { direntTypeOf, type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-t
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 
 type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString'
-  | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
+  | 'readRangeUncached' | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
 
 /**
  * A tool's calls on its tree in the engine's call shape (keys with or
@@ -66,6 +66,9 @@ export function projectFs(view: ProcessView): ProjectFs {
     lstat: (key) => statOf(key, false),
     readFile: (key) => view.readFile(at(key)),
     readFileString: (key) => view.readFileString(at(key)),
+    // A pack is read a range at a time, past the content cache: a clone's
+    // packs would evict the session's working set.
+    readRangeUncached: (key, offset, length) => view.readRangeUncached(at(key), offset, length),
     readdir: (key) => view.readdir(at(key)),
     writeFile: (key, content, options) => view.writeFile(at(key), content, options),
     mkdir: (key, options) => view.mkdir(at(key), options),

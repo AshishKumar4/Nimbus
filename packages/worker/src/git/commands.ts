@@ -14,6 +14,7 @@ import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork } from './network-facet.js';
+import { packsSeam } from './pack/store.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
@@ -150,6 +151,15 @@ function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
   }
 
   return {
+    // Packed objects are read by range, never a whole pack (git/pack/store.ts).
+    packs: packsSeam({
+      readRange: async (path, offset, length) => await vfs.readRangeUncached(normalizePath(path), offset, length),
+      size: async (path) => (await lstatOrNull(normalizePath(path)))?.size ?? null,
+      readdir: async (dir) => {
+        try { return (await vfs.readdir(normalizePath(dir))).map((entry) => entry.name); }
+        catch { return []; }
+      },
+    }),
     promises: {
       async readFile(filepath: string, opts?: any): Promise<Uint8Array | string> {
         const p = normalizePath(filepath);
