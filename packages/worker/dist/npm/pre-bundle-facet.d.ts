@@ -19,7 +19,6 @@
  */
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
-import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 export declare function buildSliceForSpecifierWithCap(vfs: CredentialedVfs, specifier: string, nmDir: string, capBytes: number): {
@@ -32,6 +31,5 @@ export declare function buildSliceForSpecifierWithCap(vfs: CredentialedVfs, spec
  * the helper from esbuild-service.ts on the call site.
  */
 export declare function externalsForSpecifier(specifier: string): string[];
-export { BUNDLER_VERSION };
 export type _ResolvedPackage = ResolvedPackage;
 //# sourceMappingURL=pre-bundle-facet.d.ts.map

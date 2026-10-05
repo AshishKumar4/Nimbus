@@ -17,7 +17,7 @@
  * (fast — direct VFS access) and ships the entire `{path → bytes}` slice as
  * part of the spec; the bundler reads from that in-memory map.
  */
-import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
 // ── Supervisor-side: build the slice for one specifier ──────────────────
 export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
     const externals = new Set();
@@ -150,5 +150,3 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
 export function externalsForSpecifier(specifier) {
     return getSharedRuntimeExternals(specifier);
 }
-// Re-export so the supervisor can stamp results without re-importing.
-export { BUNDLER_VERSION };

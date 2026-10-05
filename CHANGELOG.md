@@ -5,6 +5,38 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-05: worker 0.13.3
+
+- Fixed: a warm session served transforms and pre-bundles an older engine
+  made. The session's two persistent build caches, the Vite dev server's
+  user_module_transforms and pkg_esm_bundles (the install's pre-bundles and
+  the dev server's `/@modules/`), were keyed on core's BUNDLER_VERSION
+  alone, a constant bumped by hand, and core 0.15.1 changed the dev
+  server's transform output without a bump: a `.ts`/`.tsx` module with an
+  unused `import React` (default or `* as`) under the automatic runtime
+  kept it in 0.15.0 and drops it in 0.15.1, as esbuild does, and
+  `import {} from "x"` is dropped. A session that had served a file before
+  the deploy kept serving 0.15.0's output for it until the file changed. That
+  output still ran (an extra import of react, a kept side-effect import).
+  Each key is now BUNDLER_VERSION and a digest of the code that built the
+  output (worker `npm/cache-keys.ts`): for a transform, core's transform
+  pipeline (TRANSFORM_PIPELINE_ID) and the service's transform host (the
+  transform facet's runtime and wasm, and the esbuild facet's); for a
+  pre-bundle, the build facet (rolldown, its binding and loader, the facet
+  runtime with core's adapter). A new build of any of them misses every row
+  the old one wrote, with nothing bumped by hand; BUNDLER_VERSION is still
+  bumped for what the supervisor does around an engine (the slice walk,
+  import rewriting). Rows written by 0.13.2 and before miss once and are
+  rebuilt. The session's other persistent compiled store, the launch's
+  transform store, already keyed on the pipeline and the host; the R2 cache
+  holds only tarballs (by integrity), packuments and read profiles.
+
+Checks: `build-cache-keys` checks each key changes with each identity it
+stands for, that those identities carry the engines' builds, and that the
+dev server serves neither a transform nor a pre-bundle another engine made,
+nor a row keyed on BUNDLER_VERSION alone, while it does serve its own from
+the cache; red on 0.13.2's dev server.
+
 ## 2026-10-05: core 0.15.1, worker 0.13.2
 
 - Fixed: `build()` and `transform()` refused any `tsconfigRaw` (Kinu ask),

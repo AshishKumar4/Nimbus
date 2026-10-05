@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // behavioral/preview/new/vite-transform-cache-content-hash —
 // the persistent user-module transform cache (user_module_transforms,
-// keyed vfs_path + content_hash + BUNDLER_VERSION) must:
+// keyed vfs_path + content_hash + the transforming code's key) must:
 //   1. serve a transformed user .tsx module, and
 //   2. NEVER serve a stale transform after the source content changes —
 //      even if the in-memory moduleCache invalidation were to miss the
