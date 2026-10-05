@@ -36,8 +36,13 @@ published independently in the `@nimbus-sh` npm scope.
   than left to wait for good. Who waits on whom is the session's own
   account, never pids a guest names: a guest holding a worker waits on its
   running children in the process table; a shell line running in the
-  session (`sh -c 'node x'`) waits on the programs it started, when awaiting
-  them is all its commands are doing. A guest says when its only remaining
+  session (`sh -c 'node x'`, an npm script under `npm run`, a command run
+  as another user) waits on the programs it started, when awaiting them is
+  all its commands are doing. Every command counts as work for the pid it
+  runs as, whichever shell runs it, and an npm script runs on a shell of
+  its own under its wrapper's pid, which its `npm run` awaits (before, nine
+  `sh -c 'npm run build'` children, each awaiting a queued grandchild,
+  hung with the limit full). A guest says when its only remaining
   work is waiting on its children (its event loop, top-level `await`
   included, has no timer, socket, server, stdin read or fetch of its own
   pending). The session numbers each piece of news of a guest's children as
@@ -60,7 +65,10 @@ published independently in the `@nimbus-sh` npm scope.
   does not say (a resident, a non-Node runtime) is taken to end on its own.
   The protocol is checked over every interleaving of reports, news (sent and
   delivered out of order), exits, admissions and refusals for small
-  families (`dynamic-worker-protocol-model`).
+  families, wired to production: the real ledger, the session's process
+  table and its work and await accounting, and the guest's news tracker
+  from the very source the shims embed (`dynamic-worker-protocol-model*`);
+  mutants of each are caught.
 - A child's pid is published, and 'spawn' emitted, once the session has
   admitted it or its first output arrives, as Node publishes them only for
   a spawn that succeeded and always before the child's output; a refused
@@ -92,8 +100,10 @@ published independently in the `@nimbus-sh` npm scope.
   closed: its unread stderr (an error message) held 'close' back for good,
   and a parent waiting for 'close' waited with it. Unread output is now
   drained after 'exit', as Node's `flushStdio` does, and 'close' follows; a
-  stream a consumer reads in readable mode (an async iterator, a
-  'readable' listener) is left to it, as Node leaves one. A failing child's
+  stream a consumer reads in readable mode (an async iterator until it
+  completes, a 'readable' listener while one is attached) is left to it,
+  as Node leaves one; once the last 'readable' listener is removed, it is
+  drained again. A failing child's
   exit no longer prints a dump of its output to the terminal either: its
   output and its end are its parent's to report.
 - Fixed: `process.exit()` in a `child_process` child whose stdin was still

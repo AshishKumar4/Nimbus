@@ -538,7 +538,7 @@ export class NimbusWorkspace {
         get cred() { return processes.cred(pid); },
         setUmask: (mask: number) => processes.setUmask(pid, mask),
         runAs: this.shell.getRunAsHost(),
-        beginWork: () => processes.beginWork(pid),
+        accountWork: (worker: number) => processes.beginWork(worker),
       },
     );
     const hostSignals = this.shell.getHostProcessSignals();
@@ -679,6 +679,11 @@ function workspaceShellIdentity(
       parentPid: parent.pid,
       cred,
     });
+    // The command that started it (sudo, su, find -exec) awaits it, and its
+    // program is its own work, until it ends: the session tells a chain of
+    // them doing nothing but await a program (SessionProcessSupervisor).
+    const endAwait = processes.beginAwait(parent.pid, child.pid);
+    const endWork = processes.beginWork(child.pid);
     let exitCode = 1;
     try {
       // The child inherits its parent's descriptors, environment and directory.
@@ -698,6 +703,8 @@ function workspaceShellIdentity(
       exitCode = ended.status;
       return ended;
     } finally {
+      endWork();
+      endAwait();
       processes.exit(child.pid, exitCode);
     }
   };
@@ -711,6 +718,7 @@ function workspaceShellIdentity(
       processes.setUmask(pid, mask);
     },
     runAs: runAsProcess,
+    accountWork: (worker: number) => processes.beginWork(worker),
   });
 
   return commandIdentityFor(shellProcess.pid);

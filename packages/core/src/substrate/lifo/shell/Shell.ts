@@ -100,8 +100,13 @@ export interface ShellCommandIdentity {
   cred: VfsCred;
   setUmask(mask: number): void;
   runAs?: CommandRunAsHost;
-  /** A unit of the process's own work, while a command runs (interpreter CommandIdentity.beginWork). */
-  beginWork?(): () => void;
+  /**
+   * A unit of process `pid`'s own work, while a command runs as it
+   * (interpreter CommandIdentity.beginWork; SessionProcessSupervisor.beginWork).
+   * Session-wide: every command counts for the pid it runs as, whichever
+   * shell runs it, so no command of a process goes uncounted.
+   */
+  accountWork?(pid: number): () => void;
 }
 
 export class Shell {
@@ -503,11 +508,12 @@ export class Shell {
     }
   }
 
-  private resolveCommandIdentity(overrides: Record<string, unknown> | undefined): ShellCommandIdentity {
+  private resolveCommandIdentity(overrides: Record<string, unknown> | undefined): ShellCommandIdentity & { beginWork?(): () => void } {
     const pid = overrides?.['pid'];
     const cred = overrides?.['cred'];
     const setUmask = overrides?.['setUmask'];
     const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
+    const accountWork = this.commandIdentity.accountWork;
     return {
       pid: resolvedPid,
       cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
@@ -515,11 +521,9 @@ export class Shell {
         ? (mask) => setUmask(mask)
         : this.commandIdentity.setUmask,
       runAs: this.commandIdentity.runAs,
-      // The work counted is the shell's own process's: a command run as
-      // another pid is not.
-      ...(resolvedPid === this.commandIdentity.pid && this.commandIdentity.beginWork
-        ? { beginWork: this.commandIdentity.beginWork }
-        : {}),
+      accountWork,
+      // Counted for the pid the command runs as, whichever it is.
+      ...(accountWork ? { beginWork: () => accountWork(resolvedPid) } : {}),
     };
   }
 
@@ -1122,7 +1126,7 @@ export class Shell {
     try {
       await this.interpreter.executeLine(actualLine, this.terminalStdin, {
         interactive: true,
-        commandIdentity: this.commandIdentity,
+        commandIdentity: this.resolveCommandIdentity(undefined),
         runAs: this.commandIdentity.runAs,
         signal: this.abortController.signal,
       });

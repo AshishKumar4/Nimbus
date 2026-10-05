@@ -3,10 +3,9 @@ import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHo
 import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import {
-  bindProcessWaitGraph,
+  bindProcessTable,
   isDynamicWorkerDeadlock,
   issueProcessNews,
-  processWaitGraphChanged,
   withLaunchAdmission,
 } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
@@ -352,12 +351,18 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       const cmd = registry ? await registry.resolve(normalizeCpCommandName(name), resolveContext(parent.cwd, parent.env, view)) : undefined;
       if (!cmd) throw syscallError('ENOENT', 'execvp', name);
       const child = self.processes.spawn(argv.join(' '), argv, parent.cwd, { parentPid: parent.pid, cred });
+      // Its starter awaits it, and its program is its own work (as the
+      // workspace's runAs counts them).
+      const endAwait = self.processes.beginAwait(parent.pid, child.pid);
+      const endWork = self.processes.beginWork(child.pid);
       let exitCode = 1;
       try {
         const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
         exitCode = ended.status;
         return ended;
       } finally {
+        endWork();
+        endAwait();
         self.processes.exit(child.pid, exitCode);
       }
     };
@@ -366,11 +371,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     // awaits (fabric ProcessWaitGraph); a change to either may let it tell a
     // wait nothing can satisfy.
     const ledgerCtx = runtimeContext.ctx;
-    bindProcessWaitGraph(ledgerCtx, {
-      children: (pid) => self.processes.childrenOf(pid),
-      awaits: (pid) => self.processes.awaitsOnly(pid),
-    });
-    self.processes.setOnWaitChange(() => processWaitGraphChanged(ledgerCtx));
+    bindProcessTable(ledgerCtx, self.processes);
     self.facetProcessManager = new FacetProcessManager({
       facetMgr: facetMgrAdapter,
       processes: self.processes,

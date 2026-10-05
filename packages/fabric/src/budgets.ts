@@ -370,6 +370,20 @@ export function bindProcessWaitGraph(ctx: object, graph: ProcessWaitGraph): void
 }
 
 /**
+ * A session's process table, bound to `ctx`'s ledger: its wait graph read
+ * from the table, and every change to what a process waits on told to the
+ * ledger (processWaitGraphChanged). The one binding the session and the
+ * ledger's protocol model (tests/unit/lib/ledger-protocol-model.mjs) use.
+ */
+export function bindProcessTable(
+  ctx: object,
+  processes: { waitGraph(): ProcessWaitGraph; setOnWaitChange(cb: (() => void) | null): void },
+): void {
+  bindProcessWaitGraph(ctx, processes.waitGraph());
+  processes.setOnWaitChange(() => processWaitGraphChanged(ctx));
+}
+
+/**
  * What the graph answers has changed (a process's work began or ended, a
  * child ended): a wait nothing could satisfy before may be told now.
  */

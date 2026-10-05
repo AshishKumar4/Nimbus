@@ -66,6 +66,7 @@ export async function registerHostedCommands(self: RuntimeCommandHost, workspace
     get cred() { return self.processes.cred(pid); },
     setUmask: (mask) => self.processes.setUmask(pid, mask),
     runAs: runAsProcess,
+    accountWork: (worker: number) => self.processes.beginWork(worker),
   });
   // `kill` is the shell's builtin; the session's own processes (resident
   // servers, the vite shim), numbered in this table's pid space, are reached
@@ -888,6 +889,8 @@ const shellEntrypointExecutor = {
       options?.cwd || '/home/user',
       { parentPid },
     );
+    // The command that runs the script (`sh x.sh`) awaits its shell.
+    const endAwait = self.processes.beginAwait(parentPid, childProcess.pid);
     let exitCode = 1;
     try {
       const identity = commandIdentityFor(childProcess.pid);
@@ -916,6 +919,7 @@ const shellEntrypointExecutor = {
       exitCode = result.exitCode;
       return result;
     } finally {
+      endAwait();
       self.processes.exit(childProcess.pid, exitCode);
     }
   },
@@ -963,9 +967,17 @@ const shellExecuteTracked = async (
     };
   };
 
+  // The script runs as the wrapper, on a shell of its own (as npm runs a
+  // script under `sh -c`): the session shell is the terminal's, and scripts
+  // run at once, so two on it would each save and restore its state over the
+  // other's. The command that runs it (`npm run x`) awaits it, and its
+  // commands are its work (SessionProcessSupervisor): a chain of them doing
+  // nothing but await a program is told as such.
+  const scriptShell = workspace.shellFor(pid, { cwd: cmdCtx.cwd || '/home/user', env: cmdCtx.env });
+  const endAwait = self.processes.beginAwait(cmdCtx.pid, pid);
   let exitCode = 1;
   try {
-    const result = await shell.execute(cmd, {
+    const result = await scriptShell.execute(cmd, {
       cwd: cmdCtx.cwd,
       env: cmdCtx.env,
       onStdout: tee('stdout', cmdCtx.stdout),
@@ -1008,6 +1020,8 @@ const shellExecuteTracked = async (
     try { cmdCtx.stderr.write(line); } catch {}
     exitCode = 1;
   } finally {
+    endAwait();
+    try { await scriptShell.closeDescriptors(); } catch {}
     // When a long-running script handed off to a live server (the registry
     // command adopted this pid and returned 0), the process stays running;
     // emitting an immediate exit would print a false `[shell exited]` and
