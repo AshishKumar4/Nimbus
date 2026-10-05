@@ -9,7 +9,7 @@
  * bytes. A stat refresh patches the entry where it lies; any other change is
  * written by one ordered merge of the old entries' bytes with the new ones.
  */
-import { type CacheTree } from './cachetree.js';
+import { CacheTree } from './cachetree.js';
 export declare const S_IFMT = 61440;
 export declare const S_IFREG = 32768;
 export declare const S_IFLNK = 40960;
@@ -78,7 +78,9 @@ export declare class DirCache {
     private readonly uptodate;
     /** A stat refresh happened: the index is worth writing. */
     refreshed: boolean;
-    /** The TREE extension as read (undefined until asked for), or as set. */
+    /** The TREE extension's bytes as read, or as set; null for none. */
+    private treeBytes;
+    /** Those bytes read (undefined until asked for); null when there are none git would read. */
     private tree;
     /** The cache tree changed: written, it saves the next command reading trees. */
     cacheTreeChanged: boolean;
@@ -119,8 +121,8 @@ export declare class DirCache {
     rangeUnder(dir: string, lo?: number, hi?: number): [number, number];
     /** The index's cache tree (its TREE extension), or null when it has none git would read. */
     cacheTree(): CacheTree | null;
-    /** Record `tree` as the index's cache tree, when it says something the one held does not. */
-    setCacheTree(tree: CacheTree): void;
+    /** Record `bytes` as the index's TREE extension, when they say something the one held does not. */
+    setCacheTree(bytes: Uint8Array): void;
     /** Mark entry `i` checked against the worktree by this command. */
     markUptodate(i: number): void;
     isUptodate(i: number): boolean;

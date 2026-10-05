@@ -8,7 +8,7 @@
  * only the trees no store already holds.
  */
 import { oidFromHex, oidToHex } from '../pack/format.js';
-import { addSubtree } from './cachetree.js';
+import { encodeNode } from './cachetree.js';
 import { S_IFMT, comparePaths, decodePath } from './dircache.js';
 export const S_IFDIR = 0o040000;
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -140,25 +140,21 @@ function concat(parts) {
 }
 /**
  * write-tree: the index's stage-0 entries as trees, and the cache tree that
- * records them (every node valid). Entries come in index order, which
- * within one directory is tree order, so each tree is complete the moment
- * the walk leaves it.
+ * records them (every node valid), as the TREE extension's bytes. Entries
+ * come in index order, which within one directory is tree order, so each
+ * tree is complete the moment the walk leaves it.
  */
 export async function writeTreeFromIndex(store, dc) {
-    const open = (dir) => ({ dir, parts: [], node: { count: 0, oid: null, subtrees: [] } });
+    const open = (dir) => ({ dir, parts: [], count: 0, subtrees: [] });
     const frames = [open('')];
-    const finish = async (frame) => {
-        frame.node.oid = await store.write('tree', concat(frame.parts));
-        return frame.node.oid;
-    };
     const close = async () => {
         const frame = frames.pop();
-        const oid = await finish(frame);
+        const oid = await store.write('tree', concat(frame.parts));
         const parent = frames[frames.length - 1];
         const name = frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0);
         parent.parts.push(treeLine(S_IFDIR, name, oidFromHex(oid)));
-        parent.node.count += frame.node.count;
-        addSubtree(parent.node, name, frame.node);
+        parent.count += frame.count;
+        parent.subtrees.push(encodeNode(name, frame.count, oid, frame.subtrees));
     };
     for (let i = 0; i < dc.count; i++) {
         if (dc.stage(i) !== 0 || dc.intentToAdd(i))
@@ -176,10 +172,11 @@ export async function writeTreeFromIndex(store, dc) {
         }
         const frame = frames[frames.length - 1];
         frame.parts.push(treeLine(dc.mode(i), path.slice(cut + 1), dc.oidBytes(i).slice()));
-        frame.node.count++;
+        frame.count++;
     }
     while (frames.length > 1)
         await close();
     const root = frames[0];
-    return { oid: await finish(root), cacheTree: root.node };
+    const oid = await store.write('tree', concat(root.parts));
+    return { oid, cacheTree: encodeNode('', root.count, oid, root.subtrees).bytes };
 }

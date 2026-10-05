@@ -9,7 +9,7 @@
  */
 
 import { detectRenames, quotePath, type QueuedPair } from '../unified-diff.js';
-import { addSubtree, cacheSubtree, type CacheTree } from './cachetree.js';
+import { encodeNode, type BuiltSubtree, type CacheTree } from './cachetree.js';
 import { comparePaths, compareBytes, decodePath, S_IFMT, type DirCache } from './dircache.js';
 import { S_IFDIR, readTree, type Leaf, type ObjectStore } from './tree.js';
 import { scanWorktree, type ScanOptions, type Worktree } from './walk.js';
@@ -46,16 +46,21 @@ export async function walkTreeAndIndex(
   specs: readonly string[],
   visit: (path: string, leaf: Leaf | null, lo: number, hi: number) => Promise<void> | void,
   { cacheTree = null, build = false }: { cacheTree?: CacheTree | null; build?: boolean } = {},
-): Promise<CacheTree | null> {
+): Promise<Uint8Array | null> {
   const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
   const entered = (dir: string) => inSpecs(specs, dir) || holdsSpec(specs, dir);
-  /** One directory: `treeOid` (null for none) against the index's [lo, hi) below it. */
-  const walk = async (dir: string, treeOid: string | null, lo: number, hi: number, node: CacheTree | null): Promise<{ same: boolean; built: CacheTree | null }> => {
-    if (treeOid !== null && node !== null && node.count >= 0 && node.oid === treeOid && node.count === hi - lo) {
-      return { same: true, built: node };
+  /**
+   * One directory: `treeOid` (null for none) against the index's [lo, hi)
+   * below it, `node` its cache-tree node (-1 for none). With `build`, the
+   * directory's cache-tree node as written, when it has one.
+   */
+  const walk = async (dir: string, treeOid: string | null, lo: number, hi: number, node: number): Promise<{ same: boolean; built: BuiltSubtree | null }> => {
+    if (cacheTree !== null && node >= 0 && treeOid !== null && cacheTree.count(node) === hi - lo && cacheTree.oid(node) === treeOid) {
+      return { same: true, built: build ? cacheTree.nodeBytes(node) : null };
     }
     const entries = treeOid === null ? [] : await readTree(store, treeOid);
-    const built: CacheTree | null = build ? { count: -1, oid: null, subtrees: [] } : null;
+    const subtrees = cacheTree !== null && node >= 0 ? cacheTree.subtrees(node) : null;
+    const built: BuiltSubtree[] | null = build ? [] : null;
     let same = treeOid !== null;
     const skip = dir ? encoder.encode(dir).length + 1 : 0;
     let t = 0;
@@ -93,9 +98,10 @@ export async function walkTreeAndIndex(
           same = false;
           continue;
         }
-        const sub = await walk(path, subtree ? entry!.oid : null, indexLo, indexHi, subtree && order === 0 ? cacheSubtree(node, name) : null);
+        const child = subtree && order === 0 ? subtrees?.get(name) ?? -1 : -1;
+        const sub = await walk(path, subtree ? entry!.oid : null, indexLo, indexHi, child);
         same &&= sub.same && order === 0;
-        if (built && sub.built) addSubtree(built, name, sub.built);
+        if (built && sub.built) built.push(sub.built);
         continue;
       }
       const leaf = order <= 0 ? { path, mode: entry!.mode, oid: entry!.oid } : null;
@@ -103,13 +109,11 @@ export async function walkTreeAndIndex(
         && dc.mode(indexLo) === leaf!.mode && dc.oid(indexLo) === leaf!.oid;
       if (inSpecs(specs, path)) await visit(path, leaf, indexLo, indexHi);
     }
-    if (built && same && treeOid !== null) {
-      built.count = hi - lo;
-      built.oid = treeOid;
-    }
-    return { same, built: built && (built.count >= 0 || built.subtrees.length) ? built : null };
+    if (!built || (!(same && treeOid !== null) && built.length === 0)) return { same, built: null };
+    const valid = same && treeOid !== null;
+    return { same, built: encodeNode(dir.slice(dir.lastIndexOf('/') + 1), valid ? hi - lo : -1, valid ? treeOid : null, built) };
   };
-  return (await walk('', tree, 0, dc.count, cacheTree)).built;
+  return (await walk('', tree, 0, dc.count, cacheTree === null ? -1 : cacheTree.root)).built?.bytes ?? null;
 }
 
 /** One path's line: its two columns (or its unmerged code) and, for a rename, where it came from. */

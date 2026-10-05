@@ -21,7 +21,7 @@ import { encodeIdxV2, ENTRY_BYTES, entryOffset } from './idx.js';
 import { ByteLru } from './byte-lru.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndex, encodeIndexEntry, splitIndexEntries, type IndexStat } from './index-file.js';
-import { addSubtree, encodeCacheTree, type CacheTree } from '../worktree/cachetree.js';
+import { encodeNode, type BuiltSubtree } from '../worktree/cachetree.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor, type PackProcessResult, type PackStore, type WorkTally } from './processor.js';
 import { discover, requestPack, type Advertisement, type GitTransportAuth } from './upload-pack.js';
@@ -358,21 +358,22 @@ export function commitTree(commit: Uint8Array, oid: string): string {
   return line[1];
 }
 
-/** The cache tree of `root`: each tree's id and how many index entries it covers. */
-function cacheTreeOf(root: string, trees: Map<string, Uint8Array>): CacheTree {
+/** The cache tree of `root`, as written: each tree's id and how many index entries it covers. */
+function cacheTreeOf(name: string, root: string, trees: Map<string, Uint8Array>): { built: BuiltSubtree; count: number } {
   const data = trees.get(root);
   if (data === undefined) throw new PackFormatError('the pack lacks tree ' + root);
-  const node: CacheTree = { count: 0, oid: root, subtrees: [] };
+  let count = 0;
+  const subtrees: BuiltSubtree[] = [];
   for (const entry of parseTree(data)) {
     if (entry.mode !== MODE_TREE) {
-      node.count++;
+      count++;
       continue;
     }
-    const child = cacheTreeOf(oidToHex(data, entry.oidAt), trees);
-    node.count += child.count;
-    addSubtree(node, entry.name, child);
+    const child = cacheTreeOf(entry.name, oidToHex(data, entry.oidAt), trees);
+    count += child.count;
+    subtrees.push(child.built);
   }
-  return node;
+  return { built: encodeNode(name, count, root, subtrees), count };
 }
 
 /** Every tree below `root` is in `trees`. */
@@ -519,7 +520,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest): P
   // The index's TREE extension, as git clone writes it: a fresh checkout's
   // entries are exactly the commit's tree, so every node is valid and the
   // first status compares no tree.
-  const cacheTree = encodeCacheTree(cacheTreeOf(tree, trees));
+  const cacheTree = cacheTreeOf('', tree, trees).built.bytes;
   trees.clear();
   for (const [hex, data] of held) await emit(hex, oidFromHex(hex), data);
   held.clear();

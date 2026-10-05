@@ -13,7 +13,7 @@
 import { createHash } from 'node:crypto';
 
 import { oidFromHex, oidToHex } from '../pack/format.js';
-import { encodeCacheTree, invalidatePath, parseCacheTree, type CacheTree } from './cachetree.js';
+import { CacheTree } from './cachetree.js';
 
 export const S_IFMT = 0o170000;
 export const S_IFREG = 0o100000;
@@ -153,7 +153,9 @@ export class DirCache {
   private readonly uptodate: Uint8Array;
   /** A stat refresh happened: the index is worth writing. */
   refreshed = false;
-  /** The TREE extension as read (undefined until asked for), or as set. */
+  /** The TREE extension's bytes as read, or as set; null for none. */
+  private treeBytes: Uint8Array | null;
+  /** Those bytes read (undefined until asked for); null when there are none git would read. */
   private tree: CacheTree | null | undefined;
   /** The cache tree changed: written, it saves the next command reading trees. */
   cacheTreeChanged = false;
@@ -167,6 +169,7 @@ export class DirCache {
     private readonly extensions: Extension[],
   ) {
     this.uptodate = new Uint8Array(offsets.length);
+    this.treeBytes = extensions.find(({ signature }) => signature === 'TREE')?.bytes ?? null;
   }
 
   get count(): number {
@@ -364,19 +367,15 @@ export class DirCache {
 
   /** The index's cache tree (its TREE extension), or null when it has none git would read. */
   cacheTree(): CacheTree | null {
-    if (this.tree === undefined) {
-      const ext = this.extensions.find(({ signature }) => signature === 'TREE');
-      this.tree = ext ? parseCacheTree(ext.bytes) : null;
-    }
+    if (this.tree === undefined) this.tree = this.treeBytes === null ? null : CacheTree.parse(this.treeBytes);
     return this.tree;
   }
 
-  /** Record `tree` as the index's cache tree, when it says something the one held does not. */
-  setCacheTree(tree: CacheTree): void {
-    const held = this.cacheTree();
-    const bytes = encodeCacheTree(tree);
-    if (held !== null && compareBytes(encodeCacheTree(held), bytes) === 0) return;
-    this.tree = tree;
+  /** Record `bytes` as the index's TREE extension, when they say something the one held does not. */
+  setCacheTree(bytes: Uint8Array): void {
+    if (this.treeBytes !== null && compareBytes(this.treeBytes, bytes) === 0) return;
+    this.treeBytes = bytes;
+    this.tree = undefined;
     this.cacheTreeChanged = true;
   }
 
@@ -456,12 +455,9 @@ export class DirCache {
     }
     // The cache tree loses the directories a changed entry is in (cache_tree_invalidate_path); the rest holds.
     const tree = this.cacheTree();
-    if (tree !== null) {
-      for (const i of removed) invalidatePath(tree, this.path(i));
-      for (const { entry } of added) invalidatePath(tree, entry.path);
-    }
+    const changedPaths = [...[...removed].map((i) => this.path(i)), ...added.map(({ entry }) => entry.path)];
     const extensions = [
-      ...(tree === null ? [] : [{ signature: 'TREE', bytes: encodeCacheTree(tree) }]),
+      ...(tree === null ? [] : [{ signature: 'TREE', bytes: tree.invalidate(changedPaths) }]),
       ...this.extensions.filter(({ signature }) => signature === 'REUC'),
     ];
     // Version 3 demotes to 2 when no entry needs the second flags word (do_write_index).
