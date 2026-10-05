@@ -123,6 +123,7 @@ try {
     assert.equal(session.kernel.readlink('home/user/repo/link'), 'src/a/f0.txt');
 
     const packDir = join(out, '.git/objects/pack');
+    assert.deepEqual(readdirSync(packDir).filter((name) => name.startsWith('tmp_')), [], 'retried pieces left no temporary pack');
     for (const pack of readdirSync(packDir).filter((name) => name.endsWith('.pack'))) {
       const check = mkdtempSync(join(work, 'check-'));
       hostGit(check, ['init', '-q']);
