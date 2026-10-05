@@ -11,7 +11,7 @@ import { type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/pro
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { Awaitable, VfsDirent } from '@nimbus-sh/core/vfs/vfs.js';
 import { type KnownDirentType } from '@nimbus-sh/core/vfs/dirent-type.js';
-type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString' | 'readRangeUncached' | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
+type ProjectFsOp = 'exists' | 'isFile' | 'isDirectory' | 'stat' | 'lstat' | 'readFile' | 'readFileString' | 'readFileUncached' | 'readRangeUncached' | 'writeFile' | 'mkdir' | 'unlink' | 'rmdir' | 'removeRecursive' | 'symlink' | 'readlink' | 'chmod';
 /**
  * A tool's calls on its tree in the engine's call shape (keys with or
  * without the leading slash, a stat that throws when absent, failures

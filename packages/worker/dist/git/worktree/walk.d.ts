@@ -31,6 +31,8 @@ export interface WorktreeFs {
     }>>;
     lstat(path: string): Promise<WorktreeStat | null>;
     readFile(path: string): Promise<Uint8Array>;
+    /** Bytes [offset, offset + length), clipped to the file's end. */
+    readRange(path: string, offset: number, length: number): Promise<Uint8Array>;
     readlink(path: string): Promise<string>;
 }
 /** What reading the worktree cost, for the measurements. */
@@ -54,6 +56,8 @@ export interface Worktree {
 }
 /** The bytes git would store for the worktree file or link at `path` (convert_to_git's share of it). */
 export declare function worktreeBlob(tree: Worktree, path: string, type: WorktreeType): Promise<Uint8Array>;
+/** The id of the blob git would store for the file or link at `path`, `st` its lstat. */
+export declare function worktreeBlobId(tree: Worktree, path: string, st: WorktreeStat): Promise<string>;
 /** The index mode of a worktree file (ce_mode_from_stat): without a trusted exec bit a file keeps `indexMode`. */
 export declare function modeFromStat(stat: WorktreeStat, indexMode: number | undefined, filemode: boolean): number;
 /** ce_match_stat_basic, in whole seconds (git without USE_NSEC), dev ignored (without USE_STDEV): 0 when the stat matches. */
@@ -74,7 +78,7 @@ export interface Dirty {
  * (its stat refreshed in `dc` when the content had to decide), else how it
  * differs.
  */
-export declare function compareEntry(tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat): Promise<Dirty | null>;
+export declare function compareEntry(tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat, uncleanIsDirty?: boolean): Promise<Dirty | null>;
 export interface ScanOptions {
     /** Repo-relative literal pathspecs; none, or '', is the whole tree. */
     specs?: readonly string[];
@@ -84,6 +88,12 @@ export interface ScanOptions {
     excludes: Excludes | null;
     /** Ignored files are untracked too, each one (add -f). */
     ignoredToo?: boolean;
+    /**
+     * An entry whose stat does not prove it clean (stat moved, or racily clean)
+     * is 'M' unhashed, for the caller to add again, as git add and commit -a
+     * do: the entry takes fresh stat and its directories' cache trees go.
+     */
+    uncleanIsDirty?: boolean;
 }
 export interface ScanResult {
     /** Tracked entries that differ from the worktree, by entry number. */

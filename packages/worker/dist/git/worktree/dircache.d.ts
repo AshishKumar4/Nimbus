@@ -9,6 +9,7 @@
  * bytes. A stat refresh patches the entry where it lies; any other change is
  * written by one ordered merge of the old entries' bytes with the new ones.
  */
+import { type CacheTree } from './cachetree.js';
 export declare const S_IFMT = 61440;
 export declare const S_IFREG = 32768;
 export declare const S_IFLNK = 40960;
@@ -43,7 +44,8 @@ export interface IndexEdit {
 }
 /** The filesystem calls reading and writing the index make (ProjectFs's). */
 export interface IndexFs {
-    readFile(path: string): Promise<Uint8Array> | Uint8Array;
+    /** The file's bytes, a buffer of the caller's own, past the content cache. */
+    readFileUncached(path: string): Promise<Uint8Array> | Uint8Array;
     writeFile(path: string, content: Uint8Array): Promise<void> | void;
     lstat(path: string): Promise<{
         mtime: number;
@@ -67,17 +69,20 @@ export declare class IndexFormatError extends Error {
  * whose mtime is not older is racily clean.
  */
 export declare class DirCache {
-    private bytes;
+    private readonly bytes;
     private readonly offsets;
     readonly version: number;
     readonly timestamp: number;
     private readonly extensions;
     /** Entries verified against the worktree by this command: never smudged (CE_UPTODATE). */
     private readonly uptodate;
-    /** The bytes are this object's own (a refresh patches them). */
-    private owned;
     /** A stat refresh happened: the index is worth writing. */
     refreshed: boolean;
+    /** The TREE extension as read (undefined until asked for), or as set. */
+    private tree;
+    /** The cache tree changed: written, it saves the next command reading trees. */
+    cacheTreeChanged: boolean;
+    /** `bytes` are this index's own: a refresh patches them. */
     private constructor();
     get count(): number;
     /** A repository's index before anything is added: no file yet. */
@@ -112,6 +117,10 @@ export declare class DirCache {
     find(path: string): number;
     /** [lo, hi): the entries below directory `dir` ('' is the whole index). */
     rangeUnder(dir: string, lo?: number, hi?: number): [number, number];
+    /** The index's cache tree (its TREE extension), or null when it has none git would read. */
+    cacheTree(): CacheTree | null;
+    /** Record `tree` as the index's cache tree, when it says something the one held does not. */
+    setCacheTree(tree: CacheTree): void;
     /** Mark entry `i` checked against the worktree by this command. */
     markUptodate(i: number): void;
     isUptodate(i: number): boolean;

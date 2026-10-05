@@ -7,6 +7,7 @@
  * trees from the index keeps one tree open per directory level, and writes
  * only the trees no store already holds.
  */
+import { type CacheTree } from './cachetree.js';
 import { DirCache } from './dircache.js';
 export declare const S_IFDIR = 16384;
 export declare const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
@@ -45,14 +46,6 @@ export declare function readTree(store: ObjectStore, oid: string): Promise<TreeE
  * it answers true for it.
  */
 export declare function treeLeaves(store: ObjectStore, tree: string, prefix?: string, within?: (dir: string) => boolean): AsyncGenerator<Leaf>;
-/** A cursor over an async sequence: the next item is looked at before it is taken. */
-export declare class Peekable<T> {
-    private readonly source;
-    private head;
-    constructor(source: AsyncIterator<T>);
-    peek(): Promise<T | null>;
-    take(): Promise<T | null>;
-}
 /**
  * diff-tree -r of two trees (null for none): `visit` gets every leaf path
  * whose entry differs, with each side's leaf or null. A subtree both sides
@@ -60,9 +53,13 @@ export declare class Peekable<T> {
  */
 export declare function diffTrees(store: ObjectStore, from: string | null, to: string | null, visit: (path: string, before: Leaf | null, after: Leaf | null) => Promise<void>, prefix?: string): Promise<void>;
 /**
- * write-tree: the index's stage-0 entries as trees, root first in the
- * returned id. Entries come in index order, which within one directory is
- * tree order, so each tree is complete the moment the walk leaves it.
+ * write-tree: the index's stage-0 entries as trees, and the cache tree that
+ * records them (every node valid). Entries come in index order, which
+ * within one directory is tree order, so each tree is complete the moment
+ * the walk leaves it.
  */
-export declare function writeTreeFromIndex(store: ObjectStore, dc: DirCache): Promise<string>;
+export declare function writeTreeFromIndex(store: ObjectStore, dc: DirCache): Promise<{
+    oid: string;
+    cacheTree: CacheTree;
+}>;
 //# sourceMappingURL=tree.d.ts.map

@@ -7,6 +7,7 @@
  * (diff-files) and the untracked list. Only changed paths are held, sorted
  * once at the end as git's string lists sort them.
  */
+import { type CacheTree } from './cachetree.js';
 import { DirCache } from './dircache.js';
 import { type Leaf, type ObjectStore } from './tree.js';
 import { type ScanOptions, type Worktree } from './walk.js';
@@ -16,12 +17,21 @@ export declare function inSpecs(specs: readonly string[], path: string): boolean
 export declare function holdsSpec(specs: readonly string[], dir: string): boolean;
 /**
  * diff-index --cached: the leaves of `tree` against the index's entries, in
- * path order. `visit` gets each path where either has something: the leaf
- * (or null) and the index entries [lo, hi) at that path (lo === hi for none;
- * more than one, or a stage, for an unmerged path). Unchanged paths are
- * visited too; the caller compares.
+ * path order, one directory at a time. `visit` gets each path where either
+ * has something: the leaf (or null) and the index entries [lo, hi) at that
+ * path (lo === hi for none; more than one, or a stage, for an unmerged
+ * path). Unchanged paths are visited too; the caller compares.
+ *
+ * A directory the index's cache tree records as valid, with the id of the
+ * tree's subtree there and as many entries as the index holds below it, is
+ * the same on both sides: it is skipped, its tree never read. With `build`,
+ * the walk answers the cache tree the index has against `tree` (a node for
+ * every directory where the two agree, valid), for the caller to record.
  */
-export declare function walkTreeAndIndex(store: ObjectStore, tree: string, dc: DirCache, specs: readonly string[], visit: (path: string, leaf: Leaf | null, lo: number, hi: number) => Promise<void> | void): Promise<void>;
+export declare function walkTreeAndIndex(store: ObjectStore, tree: string, dc: DirCache, specs: readonly string[], visit: (path: string, leaf: Leaf | null, lo: number, hi: number) => Promise<void> | void, { cacheTree, build }?: {
+    cacheTree?: CacheTree | null;
+    build?: boolean;
+}): Promise<CacheTree | null>;
 /** One path's line: its two columns (or its unmerged code) and, for a rename, where it came from. */
 export interface StatusChange {
     path: string;

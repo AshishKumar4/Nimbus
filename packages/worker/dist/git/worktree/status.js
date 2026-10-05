@@ -8,8 +8,9 @@
  * once at the end as git's string lists sort them.
  */
 import { detectRenames, quotePath } from '../unified-diff.js';
-import { comparePaths, compareBytes, S_IFMT } from './dircache.js';
-import { Peekable, treeLeaves } from './tree.js';
+import { addSubtree, cacheSubtree } from './cachetree.js';
+import { comparePaths, compareBytes, decodePath, S_IFMT } from './dircache.js';
+import { S_IFDIR, readTree } from './tree.js';
 import { scanWorktree } from './walk.js';
 const encoder = new TextEncoder();
 /** Whether `path` is one of `specs` or below one; no specs is everything. */
@@ -22,48 +23,89 @@ export function holdsSpec(specs, dir) {
 }
 /**
  * diff-index --cached: the leaves of `tree` against the index's entries, in
- * path order. `visit` gets each path where either has something: the leaf
- * (or null) and the index entries [lo, hi) at that path (lo === hi for none;
- * more than one, or a stage, for an unmerged path). Unchanged paths are
- * visited too; the caller compares.
+ * path order, one directory at a time. `visit` gets each path where either
+ * has something: the leaf (or null) and the index entries [lo, hi) at that
+ * path (lo === hi for none; more than one, or a stage, for an unmerged
+ * path). Unchanged paths are visited too; the caller compares.
+ *
+ * A directory the index's cache tree records as valid, with the id of the
+ * tree's subtree there and as many entries as the index holds below it, is
+ * the same on both sides: it is skipped, its tree never read. With `build`,
+ * the walk answers the cache tree the index has against `tree` (a node for
+ * every directory where the two agree, valid), for the caller to record.
  */
-export async function walkTreeAndIndex(store, tree, dc, specs, visit) {
-    const leaves = new Peekable(treeLeaves(store, tree, '', (dir) => inSpecs(specs, dir) || holdsSpec(specs, dir)));
-    let i = 0;
-    let leafKey = null;
-    for (;;) {
-        while (i < dc.count && specs.length && !inSpecs(specs, dc.path(i)))
-            i++;
-        const leaf = await leaves.peek();
-        if (leaf !== null && !inSpecs(specs, leaf.path)) {
-            await leaves.take();
-            continue;
+export async function walkTreeAndIndex(store, tree, dc, specs, visit, { cacheTree = null, build = false } = {}) {
+    const join = (dir, name) => (dir ? `${dir}/${name}` : name);
+    const entered = (dir) => inSpecs(specs, dir) || holdsSpec(specs, dir);
+    /** One directory: `treeOid` (null for none) against the index's [lo, hi) below it. */
+    const walk = async (dir, treeOid, lo, hi, node) => {
+        if (treeOid !== null && node !== null && node.count >= 0 && node.oid === treeOid && node.count === hi - lo) {
+            return { same: true, built: node };
         }
-        if (leaf === null && i >= dc.count)
-            return;
-        if (leaf !== null)
-            leafKey ??= encoder.encode(leaf.path);
-        const order = leaf === null ? 1 : i >= dc.count ? -1 : compareBytes(leafKey, dc.pathBytes(i));
-        let lo = i;
-        let hi = i;
-        if (order >= 0) {
-            const key = dc.pathBytes(i);
-            while (hi < dc.count && compareBytes(dc.pathBytes(hi), key) === 0)
-                hi++;
-            i = hi;
+        const entries = treeOid === null ? [] : await readTree(store, treeOid);
+        const built = build ? { count: -1, oid: null, subtrees: [] } : null;
+        let same = treeOid !== null;
+        const skip = dir ? encoder.encode(dir).length + 1 : 0;
+        let t = 0;
+        let i = lo;
+        while (t < entries.length || i < hi) {
+            // The index's next child here: a file (its stages) or a directory (the run below it).
+            let indexKey = null;
+            let childEnd = i;
+            let childDir = false;
+            if (i < hi) {
+                const rest = dc.pathBytes(i).subarray(skip);
+                const slash = rest.indexOf(0x2f);
+                const name = decodePath(slash < 0 ? rest : rest.subarray(0, slash));
+                childDir = slash >= 0;
+                if (childDir) {
+                    childEnd = dc.rangeUnder(join(dir, name), i, hi)[1];
+                }
+                else {
+                    childEnd = i + 1;
+                    while (childEnd < hi && dc.stage(childEnd) !== 0 && compareBytes(dc.pathBytes(childEnd), dc.pathBytes(i)) === 0)
+                        childEnd++;
+                }
+                indexKey = childDir ? `${name}/` : name;
+            }
+            const entry = t < entries.length ? entries[t] : null;
+            const treeKey = entry === null ? null : (entry.mode & S_IFMT) === S_IFDIR ? `${entry.name}/` : entry.name;
+            const order = treeKey === null ? 1 : indexKey === null ? -1 : comparePaths(treeKey, indexKey);
+            const name = order <= 0 ? entry.name : indexKey.replace(/\/$/, '');
+            const path = join(dir, name);
+            const subtree = order <= 0 && (entry.mode & S_IFMT) === S_IFDIR;
+            const indexLo = i;
+            const indexHi = order >= 0 ? childEnd : i;
+            if (order <= 0)
+                t++;
+            if (order >= 0)
+                i = childEnd;
+            if (subtree || (order > 0 && childDir)) {
+                if (!entered(path)) {
+                    same = false;
+                    continue;
+                }
+                const sub = await walk(path, subtree ? entry.oid : null, indexLo, indexHi, subtree && order === 0 ? cacheSubtree(node, name) : null);
+                same &&= sub.same && order === 0;
+                if (built && sub.built)
+                    addSubtree(built, name, sub.built);
+                continue;
+            }
+            const leaf = order <= 0 ? { path, mode: entry.mode, oid: entry.oid } : null;
+            same &&= order === 0 && indexHi - indexLo === 1 && dc.stage(indexLo) === 0
+                && dc.mode(indexLo) === leaf.mode && dc.oid(indexLo) === leaf.oid;
+            if (inSpecs(specs, path))
+                await visit(path, leaf, indexLo, indexHi);
         }
-        else {
-            lo = hi = i;
+        if (built && same && treeOid !== null) {
+            built.count = hi - lo;
+            built.oid = treeOid;
         }
-        if (order <= 0) {
-            await leaves.take();
-            leafKey = null;
-        }
-        await visit(order > 0 ? dc.path(lo) : leaf.path, order > 0 ? null : leaf, lo, hi);
-    }
+        return { same, built: built && (built.count >= 0 || built.subtrees.length) ? built : null };
+    };
+    return (await walk('', tree, 0, dc.count, cacheTree)).built;
 }
 const UNMERGED = ['', 'DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'];
-const S_IFTYPE_CHANGE = (a, b) => (a & S_IFMT) !== (b & S_IFMT);
 /** wt_status_collect: every changed path, then the untracked ones, each list in git's order. */
 export async function collectStatus(store, tree, dc, head, options) {
     const changes = new Map();
@@ -75,7 +117,10 @@ export async function collectStatus(store, tree, dc, head, options) {
     };
     // diff-index --cached HEAD, adds and deletes queued for rename detection.
     const queue = [];
-    await walkTreeAndIndex(store, head, dc, options.specs, (path, leaf, lo, hi) => {
+    // An index with no cache tree (one a clone or cf-git wrote) gets the one the whole tree's walk
+    // answers against HEAD: kept, the next status skips what agrees. One it has is git's to keep.
+    const whole = options.specs.length === 0 && dc.cacheTree() === null;
+    const built = await walkTreeAndIndex(store, head, dc, options.specs, (path, leaf, lo, hi) => {
         if (hi - lo > 1 || (hi > lo && dc.stage(lo) !== 0)) {
             let mask = 0;
             for (let i = lo; i < hi; i++)
@@ -88,12 +133,14 @@ export async function collectStatus(store, tree, dc, head, options) {
         if (leaf && entry && leaf.oid === entry.oid && leaf.mode === entry.mode)
             return;
         if (leaf && entry) {
-            change(path).index = S_IFTYPE_CHANGE(leaf.mode, entry.mode) ? 'T' : 'M';
+            change(path).index = (leaf.mode & S_IFMT) !== (entry.mode & S_IFMT) ? 'T' : 'M';
             return;
         }
         if (leaf || entry)
             queue.push({ one: leaf, two: entry });
-    });
+    }, { cacheTree: dc.cacheTree(), build: whole });
+    if (built)
+        dc.setCacheTree(built);
     let paired = queue;
     if (options.renames && queue.some((pair) => pair.one) && queue.some((pair) => pair.two)) {
         // Rename detection reads the blobs on both sides: a partial clone fetches them in one request.

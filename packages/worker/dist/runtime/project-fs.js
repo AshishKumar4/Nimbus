@@ -44,6 +44,8 @@ export function projectFs(view) {
         lstat: (key) => statOf(key, false),
         readFile: (key) => view.readFile(at(key)),
         readFileString: (key) => view.readFileString(at(key)),
+        // A file read once (git hashing a worktree file, reading its index) need not take the content cache's room.
+        readFileUncached: (key) => view.readFileUncached(at(key)),
         // A pack is read a range at a time, past the content cache: a clone's
         // packs would evict the session's working set.
         readRangeUncached: (key, offset, length) => view.readRangeUncached(at(key), offset, length),

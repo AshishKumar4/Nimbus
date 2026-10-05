@@ -8,6 +8,7 @@
  * only the trees no store already holds.
  */
 import { oidFromHex, oidToHex } from '../pack/format.js';
+import { addSubtree } from './cachetree.js';
 import { S_IFMT, comparePaths, decodePath } from './dircache.js';
 export const S_IFDIR = 0o040000;
 export const EMPTY_TREE = '4b825dc642cb6eb9a060e54bf8d69288fbee4904';
@@ -66,23 +67,6 @@ export async function* treeLeaves(store, tree, prefix = '', within = () => true)
         else {
             yield { path, mode: entry.mode, oid: entry.oid };
         }
-    }
-}
-/** A cursor over an async sequence: the next item is looked at before it is taken. */
-export class Peekable {
-    source;
-    head = null;
-    constructor(source) {
-        this.source = source;
-    }
-    async peek() {
-        this.head ??= await this.source.next();
-        return this.head.done ? null : this.head.value;
-    }
-    async take() {
-        const value = await this.peek();
-        this.head = null;
-        return value;
     }
 }
 /** git's tree order: a directory sorts as its name with a '/' after it. */
@@ -155,17 +139,26 @@ function concat(parts) {
     return out;
 }
 /**
- * write-tree: the index's stage-0 entries as trees, root first in the
- * returned id. Entries come in index order, which within one directory is
- * tree order, so each tree is complete the moment the walk leaves it.
+ * write-tree: the index's stage-0 entries as trees, and the cache tree that
+ * records them (every node valid). Entries come in index order, which
+ * within one directory is tree order, so each tree is complete the moment
+ * the walk leaves it.
  */
 export async function writeTreeFromIndex(store, dc) {
-    const frames = [{ dir: '', parts: [] }];
+    const open = (dir) => ({ dir, parts: [], node: { count: 0, oid: null, subtrees: [] } });
+    const frames = [open('')];
+    const finish = async (frame) => {
+        frame.node.oid = await store.write('tree', concat(frame.parts));
+        return frame.node.oid;
+    };
     const close = async () => {
         const frame = frames.pop();
-        const oid = await store.write('tree', concat(frame.parts));
+        const oid = await finish(frame);
         const parent = frames[frames.length - 1];
-        parent.parts.push(treeLine(S_IFDIR, frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0), oidFromHex(oid)));
+        const name = frame.dir.slice(parent.dir ? parent.dir.length + 1 : 0);
+        parent.parts.push(treeLine(S_IFDIR, name, oidFromHex(oid)));
+        parent.node.count += frame.node.count;
+        addSubtree(parent.node, name, frame.node);
     };
     for (let i = 0; i < dc.count; i++) {
         if (dc.stage(i) !== 0 || dc.intentToAdd(i))
@@ -179,11 +172,14 @@ export async function writeTreeFromIndex(store, dc) {
         for (let top = frames[frames.length - 1].dir; top !== dir;) {
             const next = dir.indexOf('/', top ? top.length + 1 : 0);
             top = next < 0 ? dir : dir.slice(0, next);
-            frames.push({ dir: top, parts: [] });
+            frames.push(open(top));
         }
-        frames[frames.length - 1].parts.push(treeLine(dc.mode(i), path.slice(cut + 1), dc.oidBytes(i).slice()));
+        const frame = frames[frames.length - 1];
+        frame.parts.push(treeLine(dc.mode(i), path.slice(cut + 1), dc.oidBytes(i).slice()));
+        frame.node.count++;
     }
     while (frames.length > 1)
         await close();
-    return await store.write('tree', concat(frames[0].parts));
+    const root = frames[0];
+    return { oid: await finish(root), cacheTree: root.node };
 }

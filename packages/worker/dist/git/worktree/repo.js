@@ -11,7 +11,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { DirCache, objectId } from './dircache.js';
 import { Excludes, parsePatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf } from './tree.js';
-import { matchStat, newCounters, worktreeBlob } from './walk.js';
+import { matchStat, newCounters, worktreeBlobId } from './walk.js';
 /** git_config_bool's spellings. */
 export function configBool(value) {
     if (typeof value === 'boolean')
@@ -81,7 +81,9 @@ export class WorktreeRepo {
                     dev: st.dev, ino: st.ino, uid: st.uid, gid: st.gid,
                 };
             },
-            readFile: async (path) => await vfs.readFile(at(path)),
+            // Read once to be hashed or stored: past the content cache, which keeps the session's working set.
+            readFile: async (path) => await vfs.readFileUncached(at(path)),
+            readRange: async (path, offset, length) => await vfs.readRangeUncached(at(path), offset, length),
             readlink: async (path) => await vfs.readlink(at(path)),
         };
         const loose = (oid) => `${gitdir}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`;
@@ -219,7 +221,7 @@ export class WorktreeRepo {
             // Gone, or already stat-dirty: the next look reads it anyway.
             if (st === null || matchStat(dc, i, st, tree.filemode) !== 0)
                 continue;
-            if (objectId('blob', await worktreeBlob(tree, path, st.type)) !== dc.oid(i))
+            if (await worktreeBlobId(tree, path, st) !== dc.oid(i))
                 smudged.add(i);
         }
         return smudged;
@@ -234,7 +236,7 @@ export class WorktreeRepo {
         let racy = false;
         for (let i = 0; i < dc.count && !racy; i++)
             racy = dc.isRacy(i);
-        if (dc.refreshed || racy)
+        if (dc.refreshed || dc.cacheTreeChanged || racy)
             await this.writeIndex(dc);
     }
 }
