@@ -1,0 +1,127 @@
+/**
+ * The walk beneath a root (RESOLVE_BENEATH, a WASI preopen) and the two
+ * rules it reads — POSIX permission bits and Node's error for a failed call —
+ * in a module that imports no filesystem, so a facet that answers lookups
+ * from its own copy of the namespace (wasi/resident-filesystem.ts) walks with
+ * exactly the code the authority walks with (sqlite-runtime-fs-bridge.ts).
+ */
+
+import type { RuntimeFsPath } from './os-contracts.js';
+import { errnoDescription } from '../vfs/vfs-error.js';
+
+/** Links followed before ELOOP (Linux MAXSYMLINKS). */
+export const MAX_LINK_HOPS = 40;
+
+/** An error carrying the fields Node's `fs` puts on a failed syscall. */
+export interface FsError extends Error {
+  code: string;
+  syscall: string;
+  path: string;
+  /** The second path of a call that names two (rename, symlink's link). */
+  dest?: string;
+}
+
+/**
+ * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
+ * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
+ */
+export function fsError(
+  code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath, options: { detail?: string; cause?: unknown } = {},
+): FsError {
+  const name = typeof path === 'string' ? path : path.path;
+  const second = dest === undefined ? undefined : typeof dest === 'string' ? dest : dest.path;
+  const words = options.detail ?? errnoDescription(code);
+  const message = `${code}: ${words === undefined ? '' : `${words}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
+  const error = new Error(message, options.cause === undefined ? undefined : { cause: options.cause });
+  return Object.assign(error, {
+    code, syscall, path: name, ...(second === undefined ? {} : { dest: second }), ...(options.detail === undefined ? {} : { detail: options.detail }),
+  });
+}
+
+/** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
+export function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
+  const requested = want & 7;
+  if (requested === 0 || stat.mode === undefined) return true;
+  const perms = stat.mode & 0o777;
+  if (cred.uid === 0) return (requested & 1) === 0 || (perms & 0o111) !== 0;
+  const shift = cred.uid === stat.uid ? 6 : cred.gid === stat.gid || cred.groups.includes(stat.gid ?? -1) ? 3 : 0;
+  return ((perms >> shift) & requested) === requested;
+}
+
+/** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
+export type BeneathLookup = { readonly stat: string } | { readonly readlink: string };
+type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
+
+/**
+ * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
+ * namespace walk does it (VFS-COMP-006): the root must be reachable (every
+ * directory above it searchable); an absolute path and `..` at the root are
+ * ENOTCAPABLE; each component needs the directory it leaves to be a
+ * searchable directory; a missing component is ENOENT unless it is the last.
+ * Links resolve (the last only when `follow`), 40 hops, then null (ELOOP):
+ * a relative one from its directory, an absolute one from the namespace's
+ * `/`, as the unrestricted walk resolves them, and what the walk reaches
+ * must lie at or under the root, else ENOTCAPABLE. A path the namespace
+ * hands to its backend whole beneath this root (`handedOver`, asked with
+ * where the lookup goes on to lexically: CompositeVFS.resolvedByBackend
+ * within the root, a resolvesPaths mount whose point lies at or under it, so
+ * the backend's own links stay beneath it) is neither looked up nor searched
+ * here, nor are its links read: its components are taken lexically, `..`
+ * included, and that backend answers for them. The one walk for every face: it yields
+ * its lookups, which the synchronous bridge answers at once and a face over
+ * asynchronous mounts awaits. `root` is normalized; the answer is the
+ * resolved path, normalized.
+ */
+export function* walkBeneath(
+  root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
+  handedOver: (path: string, to: string) => boolean,
+): Generator<BeneathLookup, string | null, BeneathAnswer> {
+  const name = typeof path === 'string' ? path : path.path;
+  if (root !== '') yield { stat: '/' + root };
+  if (name.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
+  const pending = name.split('/').filter(Boolean);
+  const resolved = root === '' ? [] : root.split('/');
+  let hops = 0;
+  while (pending.length > 0) {
+    const segment = pending.shift()!;
+    const dir = resolved.join('/');
+    const candidate = dir === '' ? segment : `${dir}/${segment}`;
+    const to = '/' + [dir, segment, ...pending].filter(Boolean).join('/');
+    const handed = handedOver('/' + dir, to) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate, to));
+    if (!handed) {
+      const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
+      if (searched === null) throw fsError('ENOENT', 'path', path);
+      if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
+      if (!modeAllows(searched, 1, cred)) throw fsError('EACCES', 'path', path);
+    }
+    if (segment === '.') continue;
+    if (segment === '..') {
+      if (dir === root) throw fsError('ENOTCAPABLE', 'path', path);
+      resolved.pop();
+      continue;
+    }
+    if (handed) {
+      resolved.push(segment);
+      continue;
+    }
+    // Every component already walked is a directory, not a link, so a
+    // lookup by its literal name is the walk's own.
+    const isFinal = pending.length === 0;
+    const stat = (yield { stat: '/' + candidate }) as Exclude<BeneathAnswer, string>;
+    if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
+    if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
+      resolved.push(segment);
+      continue;
+    }
+    if (++hops > MAX_LINK_HOPS) return null;
+    const target = (yield { readlink: '/' + candidate }) as string | null;
+    // A link whose target the namespace has no name for (a mount nested in
+    // its backend covers it) cannot be followed beneath the root.
+    if (target === null) throw fsError('ENOTCAPABLE', 'path', path);
+    if (target.startsWith('/')) resolved.length = 0;
+    pending.unshift(...target.split('/').filter(Boolean));
+  }
+  const reached = resolved.join('/');
+  if (root !== '' && reached !== root && !reached.startsWith(root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
+  return reached;
+}
