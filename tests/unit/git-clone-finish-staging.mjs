@@ -3,7 +3,8 @@
 // checkpoints, index shares: vscode ~200) one record each. As one recursive
 // delete they passed a write group's row limit live ("transaction exceeds
 // logicalRows limit: 326 > 256") and the clone failed after its history had
-// landed. Red before: the same error here.
+// landed. Red before: the same error here. And it writes the index in a
+// later second than the newest file, or git would re-read those files.
 
 import assert from 'node:assert/strict';
 
@@ -21,7 +22,9 @@ const dir = 'home/user/repo';
 files.mkdir(dir + '/.git/nimbus-clone', { recursive: true });
 for (let i = 0; i < 200; i++) files.writeFile(`${dir}/.git/nimbus-clone/list-trees-${i}-0`, new Uint8Array(64));
 files.writeFile(dir + '/.git/shallow', '1'.repeat(40) + '\n');
-const share = encodeIndexEntry('a.txt', 0o100644, new Uint8Array(20).fill(7), { ctimeMs: 1, mtimeMs: 1, dev: 1, ino: 1, uid: 1, gid: 1, size: 1 });
+// A file written this very second: the index must land in a later one (git's racy rule).
+const writtenAt = Date.now();
+const share = encodeIndexEntry('a.txt', 0o100644, new Uint8Array(20).fill(7), { ctimeMs: writtenAt, mtimeMs: writtenAt, dev: 1, ino: 1, uid: 1, gid: 1, size: 1 });
 files.writeFile(dir + '/.git/nimbus-clone/index-0', share);
 
 const context = {
@@ -42,4 +45,5 @@ assert.equal(finished.indexEntries, 1);
 assert.equal(files.exists(dir + '/.git/nimbus-clone'), false, 'staging removed');
 assert.equal(files.exists(dir + '/.git/shallow'), false, 'no longer shallow');
 assert.ok(files.exists(dir + '/.git/index'));
+assert.ok(Date.now() >= (Math.floor(writtenAt / 1000) + 1) * 1000, 'the index was written after the newest file\'s second');
 console.log('git-clone-finish-staging: ok');

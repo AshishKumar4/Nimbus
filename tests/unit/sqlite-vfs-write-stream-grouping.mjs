@@ -125,8 +125,7 @@ function assertBounded(stats) {
 
 // A tree of small files costs far fewer transactions than it has files, and
 // every byte of every file survives a reopen. 120 files plus two directories
-// is one full W7 batch (the frame caps a stream at 128 owned paths, which is
-// also the install facet's wave size).
+// is the install facet's old wave size (128 owned paths).
 {
   const { harness, rawVfs, vfs } = openVfs();
   const entries = Array.from({ length: 120 }, (_, index) => ({
