@@ -20,13 +20,12 @@
  * a primitive constant (`0`, `"frag"`, `null`), its own factory not.
  *
  * Every other field is honoured where the engines can produce esbuild's
- * output, refused by name where they cannot, and ignored where esbuild
- * ignores it (resolveTsSettings says which, and why; REFUSED, the reasons).
- * A refusal names its field, and comes only where the field would change
- * the output: `experimentalDecorators` for a TypeScript file with a
- * decorator, `useDefineForClassFields: false` (or a `target` that implies
- * it) for a TypeScript class with a public field. Those two the engines
- * refuse as they meet such a file (TsSettings.refuse). `alwaysStrict` (else
+ * output, refused by name where they cannot (a build's `extends` naming a
+ * file), and ignored where esbuild ignores it (resolveTsSettings says which,
+ * and why). `experimentalDecorators` and `useDefineForClassFields: false`
+ * (or a `target` that implies it) change TypeScript files only, as in
+ * esbuild: legacy decorators, applied in tsc's order, and class fields
+ * assigned rather than defined (TsSettings). `alwaysStrict` (else
  * `strict`) makes every file strict code, as esbuild parses it: what only a
  * sloppy script may contain is an error, and CommonJS and IIFE output begins
  * with `"use strict"`.
@@ -34,15 +33,6 @@
 /** A tsconfig field the engine cannot honour; its message names the field. */
 export class TsconfigRefusal extends Error {
 }
-/**
- * Each compilerOptions field esbuild reads, and what Nimbus does with it.
- * Refused fields refuse only for the values whose effect the engines cannot
- * produce; the reason is part of the message.
- */
-const REFUSED = {
-    experimentalDecorators: 'TypeScript\'s experimental decorators compile to calls of runtime helpers that Nimbus does not serve',
-    useDefineForClassFields: 'Nimbus\'s engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments',
-};
 /** esbuild's js_lexer.Keywords: none may begin a JSX expression but `null`, `this` and `import.meta`. */
 const KEYWORDS = new Set([
     'break', 'case', 'catch', 'class', 'const', 'continue', 'debugger', 'default', 'delete', 'do', 'else', 'enum',
@@ -180,7 +170,7 @@ export function resolveTsSettings(inputs, call) {
         development: inputs.jsxDev === true,
     };
     const settings = {
-        jsx, keepValues: false, keepStatements: false, alwaysStrict: false, refuse: { decorators: null, classFields: null }, warnings,
+        jsx, keepValues: false, keepStatements: false, alwaysStrict: false, experimentalDecorators: false, assignClassFields: false, warnings,
     };
     const raw = inputs.tsconfigRaw;
     if (raw === undefined || raw === '')
@@ -246,11 +236,7 @@ export function resolveTsSettings(inputs, call) {
     const importSource = string('jsxImportSource');
     if (importSource !== undefined)
         jsx.importSource = importSource;
-    // Decorators: off is what the engines do; on lowers to helper calls they cannot serve.
-    if (boolean('experimentalDecorators') === true) {
-        settings.refuse.decorators =
-            `tsconfigRaw compilerOptions.experimentalDecorators true is not supported for a TypeScript file with decorators: ${REFUSED.experimentalDecorators}`;
-    }
+    settings.experimentalDecorators = boolean('experimentalDecorators') === true;
     // Class fields: `useDefineForClassFields`, else what `target` implies for it
     // (below es2022, false); unrecognized targets are ignored with esbuild's warning.
     const target = string('target');
@@ -264,16 +250,7 @@ export function resolveTsSettings(inputs, call) {
         else
             warnings.push(`Unrecognized target environment ${JSON.stringify(target)}`);
     }
-    const useDefine = boolean('useDefineForClassFields');
-    if (useDefine === false) {
-        settings.refuse.classFields =
-            `tsconfigRaw compilerOptions.useDefineForClassFields false is not supported for a TypeScript class with fields: ${REFUSED.useDefineForClassFields}`;
-    }
-    if (useDefine === undefined && targetBelowEs2022 === true) {
-        settings.refuse.classFields =
-            `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes ` +
-                `useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
-    }
+    settings.assignClassFields = (boolean('useDefineForClassFields') ?? !targetBelowEs2022) === false;
     // Imports: esbuild's UnusedImportFlags, KeepStmt and KeepValues apart.
     const notUsed = string('importsNotUsedAsValues');
     if (notUsed !== undefined && notUsed !== 'remove' && notUsed !== 'preserve' && notUsed !== 'error') {

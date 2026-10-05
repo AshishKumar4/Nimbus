@@ -22,7 +22,7 @@ const harness = createSqliteVfsTestHarness();
 const kernel = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
 const APP = 'export const App = () => <div>hi</div>;\n';
 kernel.writeFile('a.tsx', APP);
-kernel.writeFile('b.ts', 'function dec(t: any) { return t; }\n@dec class A {}\nexport { A };\n');
+kernel.writeFile('b.ts', "const seen: string[] = [];\nfunction dec(t: any, k?: string) { seen.push(k ?? t.name); }\n@dec class A { @dec static s = 1; @dec m() {} }\nexport { A, seen };\n");
 
 // One Durable Object with both facets, as Kinu's has.
 const { BuildFacet, cleanup } = await buildHarness.freshFacetClass();
@@ -75,17 +75,19 @@ try {
     assert.match(code, /^import \{ jsxDEV as (\w+) \} from "preact\/jsx-dev-runtime";$/m, code);
     console.log('  ok  transform: jsx automatic, jsxImportSource and jsxDev');
   }
-  // A field neither engine can honour is refused by name, where it would change the output.
+  // experimentalDecorators: TypeScript's legacy decorators in both, in tsc's
+  // order (the instance member, the static one, the class), the helpers they
+  // call bundled (build) or inlined (transform).
   {
     const tsconfigRaw = JSON.stringify({ compilerOptions: { experimentalDecorators: true, jsx: 'react-jsx' } });
-    const error = await service.build(['/b.ts'], { tsconfigRaw }).then(() => assert.fail('a decorated class must be refused'), (e) => e);
-    assert.match(error.message, /compilerOptions\.experimentalDecorators true is not supported for a TypeScript file with decorators/);
-    assert.equal(error.errors[0].location.file, 'nimbus-vfs:/b.ts', 'placed as esbuild names a module: its namespace and path');
-    assert.equal(error.errors[0].location.line, 2);
-    await assert.rejects(service.transform(kernel.readFileString('b.ts'), { loader: 'ts', tsconfigRaw }), /compilerOptions\.experimentalDecorators true/);
-    const plain = text(await service.build(['/a.tsx'], { tsconfigRaw }));
-    assert.match(plain, /from "react\/jsx-runtime"/, 'the same tsconfig builds a file without decorators');
-    console.log('  ok  experimentalDecorators: refused by name for a decorated class, honoured elsewhere');
+    const run = async (code) => (await import('data:text/javascript;base64,' + Buffer.from(code).toString('base64'))).seen;
+    const built = text(await service.build(['/b.ts'], { tsconfigRaw }));
+    assert.doesNotMatch(built, /@dec|@oxc-project\/runtime/, built);
+    assert.deepEqual(await run(built), ['m', 's', 'A']);
+    const { code } = await service.transform(kernel.readFileString('b.ts'), { loader: 'ts', tsconfigRaw });
+    assert.doesNotMatch(code, /@dec|@oxc-project\/runtime/, code);
+    assert.deepEqual(await run(code), ['m', 's', 'A']);
+    console.log('  ok  experimentalDecorators: legacy decorators in tsc\'s order, through both facets');
   }
 } finally {
   buildHarness.releaseBuildFacetHarness();

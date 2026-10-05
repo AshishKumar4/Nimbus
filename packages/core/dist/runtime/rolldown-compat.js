@@ -4,8 +4,7 @@
  * transform cannot: its options are the whole build's, and a few of
  * esbuild's settings are per file or need what rolldown's transform does not
  * do. The load hook asks compileForBuild once per module and gets back null
- * (rolldown compiles the module itself), a refusal that fails the build, or
- * the module compiled here.
+ * (rolldown compiles the module itself) or the module compiled here.
  *
  * Nothing here rewrites language source as text. Modules are read through
  * rolldown's binding parser (parseSync: ESTree, UTF-16 offsets, comments
@@ -14,7 +13,8 @@
  * for what each function names. The only edits are to that transform's
  * output, at nodes the parser placed, each as long as what it replaces, so
  * the transform's source map (which maps to the module as written) stays
- * the map.
+ * the map; and one that moves whole lines of it (decorators into tsc's
+ * order), moving the map's lines with them.
  *
  * Self-contained but for types: the build facet's runtime bundles it.
  */
@@ -123,39 +123,11 @@ export function jsxAndTypescriptOf(settings, fragment = settings.jsx.fragment) {
 }
 /**
  * The module as a build must compile it: null for rolldown's own transform
- * (which then makes it as esbuild did), a refusal, or the compiled module.
- * Throws where it needs rolldown's transform or parser and the build has none.
+ * (which then makes it as esbuild did), or the compiled module. Throws where
+ * it needs rolldown's transform or parser and the build has none.
  */
 export function compileForBuild(api, settings, module) {
-    if (module.loader === 'ts' || module.loader === 'tsx') {
-        const refusal = refusedTypeScript(api, settings, module);
-        if (refusal)
-            return refusal;
-    }
     return ownCompile(api, settings, module);
-}
-/**
- * esbuild's decorators and class fields under a tsconfig that the engines
- * do not compile as esbuild did (tsconfig-raw.ts, TsSettings.refuse): the
- * first decorator, or the first class with a public or static field, in a
- * TypeScript module, with the refusal. A class's private fields alone stay
- * fields, as in esbuild. A module whose text has no `@`, or no `class`,
- * is not parsed for it.
- */
-function refusedTypeScript(api, settings, module) {
-    const decorators = settings.refuse.decorators && module.text.includes('@') ? settings.refuse.decorators : null;
-    const classFields = settings.refuse.classFields && /\bclass\b/.test(module.text) ? settings.refuse.classFields : null;
-    if (!decorators && !classFields)
-        return null;
-    const program = parse(api, module);
-    for (const node of nodes(program)) {
-        if (decorators && node.type === 'Decorator')
-            return { refused: decorators, start: node.start, end: node.end };
-        if (classFields && node.type === 'PropertyDefinition' && node.declare !== true && child(node, 'key')?.type !== 'PrivateIdentifier') {
-            return { refused: classFields, start: node.start, end: node.end };
-        }
-    }
-    return null;
 }
 /** `code` with each edit; overlapping edits after the first are dropped. */
 function applyEdits(code, edits) {
@@ -196,6 +168,20 @@ const blanked = (code, start, end) => ({
  *     compilation's import, matched the same way), or `import "x"` where that
  *     drops it, as esbuild keeps it. Either is shorter than the import it
  *     replaces, and is padded to its length on its first line.
+ * - A TypeScript class with parameter properties (`constructor(public q)`),
+ *   where fields are defined: Oxc declares a field for each (`q;`, first in
+ *   the class), as tsc does, where esbuild only assigns it in the
+ *   constructor; those declarations are blanked
+ *   (parameterPropertyDeclarations), so its objects' own keys are in
+ *   esbuild's order.
+ * - A TypeScript module under `experimentalDecorators`: legacy decorators,
+ *   whose calls are then put in tsc's order (decorateInTscOrder); or under
+ *   `useDefineForClassFields` false: class fields lowered at es2021, the
+ *   public ones assigned, one without an initializer removed. rolldown's
+ *   transform options are its whole build's, and esbuild changes only
+ *   TypeScript files for either. The helpers the output imports
+ *   (`@oxc-project/runtime/helpers/…`) rolldown bundles from its own copy
+ *   (builtin:oxc-runtime, ahead of every plugin).
  * - The automatic runtime's development variant: jsxDEV's `fileName` is the
  *   path the transform is given, and rolldown gives its own the module's id
  *   relative to its cwd (`home/user/…`), where this one is given the module's
@@ -215,11 +201,14 @@ function ownCompile(api, settings, module) {
     const classic = !jsx.preserve && !jsx.automatic;
     const constant = jsxModule && classic && jsx.fragmentConstant ? jsx.fragmentConstant.value : undefined;
     const development = jsxModule && jsx.automatic && jsx.development;
+    const decorators = typescript && settings.experimentalDecorators;
+    const assign = typescript && settings.assignClassFields;
+    const parameterProperties = typescript && !assign && PARAMETER_PROPERTY.test(module.text);
     const oneFlag = settings.keepValues !== settings.keepStatements;
     // Without a flag only an empty clause needs it, looked for in the text before parsing.
     const imports = typescript && /\bimport\b/.test(module.text)
         && (oneFlag || (!settings.keepStatements && EMPTY_CLAUSE.test(module.text)));
-    if (!development && constant === undefined && !imports)
+    if (!development && constant === undefined && !imports && !decorators && !assign && !parameterProperties)
         return null;
     const parsed = parseWithComments(api, module);
     if (!parsed)
@@ -237,7 +226,8 @@ function ownCompile(api, settings, module) {
         };
     });
     const fixImports = imports && (oneFlag || (!settings.keepStatements && sourceImports.some((i) => i.empty)));
-    if (!development && constant === undefined && !fixImports)
+    const classes = parameterProperties ? parameterPropertiesOf(parsed.program) : null;
+    if (!development && constant === undefined && !fixImports && !decorators && !assign && !classes)
         return null;
     let placeholder;
     let constantText = '';
@@ -257,9 +247,7 @@ function ownCompile(api, settings, module) {
         while (taken.has(placeholder))
             placeholder += '_';
     }
-    const out = transformOf(api)(module.path, module.text, {
-        lang: module.loader, sourceType: 'unambiguous', sourcemap: module.sourcemap, ...jsxAndTypescriptOf(settings, placeholder),
-    });
+    const out = transformOf(api)(module.path, module.text, { ...transformOptions(settings, module, placeholder), sourcemap: module.sourcemap });
     if (out.errors.length)
         return null;
     const output = parse(api, module, out.code, outputLang(settings, module));
@@ -283,11 +271,43 @@ function ownCompile(api, settings, module) {
             return null;
         edits.push(...importEdits);
     }
-    return { code: applyEdits(out.code, edits), map: module.sourcemap ? out.map : undefined, moduleType: outputLang(settings, module) };
+    if (classes) {
+        for (const [start, end] of parameterPropertyDeclarations(output, classes))
+            edits.push(blanked(out.code, start, end));
+    }
+    const code = applyEdits(out.code, edits);
+    const map = module.sourcemap ? out.map : undefined;
+    const moduleType = outputLang(settings, module);
+    if (!decorators)
+        return { code, map, moduleType };
+    const edited = parse(api, module, code, moduleType);
+    if (!edited)
+        throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
+    return { ...decorateInTscOrder(edited, code, map), moduleType };
 }
 /** What a compiled module is: JSX where the build preserves it, else JavaScript. */
 function outputLang(settings, module) {
     return settings.jsx.preserve && (module.loader === 'jsx' || module.loader === 'tsx') ? 'jsx' : 'js';
+}
+/**
+ * The options a module is compiled with here: the build's JSX and
+ * TypeScript (`fragment` naming a constant fragment), and, for a TypeScript
+ * module, legacy decorators (experimentalDecorators) and class fields
+ * assigned (useDefineForClassFields false), which the build cannot set for
+ * TypeScript files alone.
+ */
+function transformOptions(settings, module, fragment) {
+    const typescriptModule = module.loader === 'ts' || module.loader === 'tsx';
+    const assign = typescriptModule && settings.assignClassFields;
+    const { jsx, typescript } = jsxAndTypescriptOf(settings, fragment);
+    return {
+        lang: module.loader,
+        sourceType: 'unambiguous',
+        jsx,
+        typescript: assign ? { ...typescript, removeClassFieldsWithoutInitializer: true } : typescript,
+        ...(typescriptModule && settings.experimentalDecorators ? { decorator: { legacy: true } } : {}),
+        ...(assign ? { target: 'es2021', assumptions: { setPublicClassFields: true } } : {}),
+    };
 }
 /**
  * `import {}`, whitespace or comments anywhere between: an empty import
@@ -318,7 +338,7 @@ function esbuildImports(api, settings, module, sourceImports, code, output) {
         return edits;
     // KeepStmt alone: what the build's elision without the flags keeps of each import.
     const plain = { ...settings, keepValues: false, keepStatements: false };
-    const out = transformOf(api)(module.path, module.text, { lang: module.loader, sourceType: 'unambiguous', ...jsxAndTypescriptOf(plain) });
+    const out = transformOf(api)(module.path, module.text, transformOptions(plain, module));
     if (out.errors.length)
         return null;
     const plainOutput = parse(api, module, out.code, outputLang(settings, module));
@@ -448,4 +468,213 @@ function devFallbackProps(program, importSource) {
             merged.push([start, end]);
     }
     return merged;
+}
+/** A constructor parameter with a modifier, roughly: a module whose text has none has no parameter property. */
+const PARAMETER_PROPERTY = /\bconstructor\s*\([^]*?\b(public|private|protected|readonly|override)\s+[A-Za-z_$]/;
+/** Every class (declaration or expression) under `program`, in the order a visit meets them. */
+const classesOf = (program) => [...nodes(program)].filter((node) => node.type === 'ClassDeclaration' || node.type === 'ClassExpression');
+/** Each class's name and parameter properties, in the order classesOf meets them; null without any. */
+function parameterPropertiesOf(program) {
+    const classes = classesOf(program).map((node) => {
+        const constructor = list(child(node, 'body'), 'body').find((member) => member.type === 'MethodDefinition' && member.kind === 'constructor');
+        const properties = list(child(constructor ?? null, 'value'), 'params')
+            .filter((param) => param.type === 'TSParameterProperty')
+            .map((param) => {
+            const parameter = child(param, 'parameter');
+            return stringOf(parameter?.type === 'AssignmentPattern' ? child(parameter, 'left') : parameter, 'name');
+        })
+            .filter((name) => name !== null);
+        return { name: stringOf(child(node, 'id'), 'name'), properties };
+    });
+    return classes.some((c) => c.properties.length) ? classes : null;
+}
+/**
+ * The field declarations Oxc adds for parameter properties, in a compiled
+ * module (the Oxc crate's drop_parameter_property_fields). A class cannot
+ * declare a field its parameter property also declares (TypeScript's
+ * duplicate identifier), so a value-less instance field of that name is
+ * Oxc's. Classes are matched to the source's by order and name; were they
+ * not to match, none is taken.
+ */
+function parameterPropertyDeclarations(output, classes) {
+    const compiled = classesOf(output);
+    if (compiled.length !== classes.length)
+        return [];
+    const ranges = [];
+    for (let i = 0; i < compiled.length; i++) {
+        const name = stringOf(child(compiled[i], 'id'), 'name');
+        if (name !== null && classes[i].name !== null && name !== classes[i].name)
+            return [];
+        for (const member of list(child(compiled[i], 'body'), 'body')) {
+            const key = stringOf(child(member, 'key'), 'name');
+            if (member.type === 'PropertyDefinition' && member.value === null && member.static !== true && member.computed !== true
+                && key !== null && classes[i].properties.includes(key)) {
+                ranges.push([member.start, member.end]);
+            }
+        }
+    }
+    return ranges;
+}
+const BASE64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
+/** A source map's `mappings`: each generated line's segments, every field absolute. */
+function decodeMappings(mappings) {
+    const state = [0, 0, 0, 0];
+    return mappings.split(';').map((line) => {
+        let column = 0;
+        return line.split(',').filter(Boolean).map((segment) => {
+            const fields = [];
+            let value = 0;
+            let shift = 0;
+            for (const char of segment) {
+                const digit = BASE64.indexOf(char);
+                value += (digit & 31) << shift;
+                if (digit & 32) {
+                    shift += 5;
+                }
+                else {
+                    fields.push(value & 1 ? -(value >>> 1) : value >>> 1);
+                    value = 0;
+                    shift = 0;
+                }
+            }
+            column += fields[0];
+            const out = [column];
+            for (let i = 1; i < fields.length; i++)
+                out.push((state[i - 1] += fields[i]));
+            return out;
+        });
+    });
+}
+/** decodeMappings undone. */
+function encodeMappings(lines) {
+    const state = [0, 0, 0, 0];
+    const vlq = (n) => {
+        let value = n < 0 ? (-n << 1) | 1 : n << 1;
+        let out = '';
+        do {
+            let digit = value & 31;
+            value >>>= 5;
+            if (value)
+                digit |= 32;
+            out += BASE64[digit];
+        } while (value);
+        return out;
+    };
+    return lines.map((segments) => {
+        let column = 0;
+        return segments.map((segment) => {
+            let out = vlq(segment[0] - column);
+            column = segment[0];
+            for (let i = 1; i < segment.length; i++) {
+                out += vlq(segment[i] - state[i - 1]);
+                state[i - 1] = segment[i];
+            }
+            return out;
+        }).join(',');
+    }).join(';');
+}
+/** A decorator call's place in tsc's order (0 an instance member, 1 a static member, 2 the class) and its class's name. */
+function decorateKind(statement, decorate) {
+    const isDecorate = (node) => node?.type === 'CallExpression' && stringOf(child(node, 'callee'), 'name') === decorate;
+    if (statement.type !== 'ExpressionStatement')
+        return null;
+    const expression = child(statement, 'expression');
+    if (expression && isDecorate(expression)) {
+        const target = list(expression, 'arguments')[1];
+        if (target?.type === 'Identifier') {
+            const name = stringOf(target, 'name');
+            return name === null ? null : [1, name];
+        }
+        const object = child(target ?? null, 'object');
+        if (target?.type === 'MemberExpression' && target.computed !== true && stringOf(child(target, 'property'), 'name') === 'prototype' && object?.type === 'Identifier') {
+            const name = stringOf(object, 'name');
+            return name === null ? null : [0, name];
+        }
+        return null;
+    }
+    const left = child(expression, 'left');
+    if (expression?.type === 'AssignmentExpression' && left?.type === 'Identifier' && isDecorate(child(expression, 'right'))) {
+        const name = stringOf(left, 'name');
+        return name === null ? null : [2, name];
+    }
+    return null;
+}
+/**
+ * tsc applies a class's decorators to its instance members first, then to
+ * its static members, then to the class (its constructor's parameters with
+ * it), each group in source order; esbuild too. Oxc's legacy transform calls
+ * them in source order, one statement each after the class:
+ * \`_decorate([..], A.prototype, "m", null)\`, \`_decorate([..], A, "s", ..)\`,
+ * \`A = _decorate([..], A)\`. In a compiled module, each class's run of them is
+ * put in tsc's order (the Oxc crate's decorate_in_tsc_order). Each sits on
+ * lines of its own there: whole lines move, and the source map's lines with
+ * them; a run that does not is left.
+ */
+function decorateInTscOrder(program, code, map) {
+    const helper = list(program, 'body').find((node) => node.type === 'ImportDeclaration'
+        && stringOf(child(node, 'source'), 'value') === '@oxc-project/runtime/helpers/decorate');
+    const specifier = list(helper ?? null, 'specifiers')[0];
+    const decorate = specifier?.type === 'ImportDefaultSpecifier' ? stringOf(child(specifier, 'local'), 'name') : null;
+    if (decorate === null)
+        return { code, map };
+    const lineStarts = [0];
+    for (let i = 0; i < code.length; i++)
+        if (code[i] === '\n')
+            lineStarts.push(i + 1);
+    const lineOf = (offset) => {
+        let low = 0;
+        let high = lineStarts.length - 1;
+        while (low < high) {
+            const mid = (low + high + 1) >> 1;
+            if (lineStarts[mid] <= offset)
+                low = mid;
+            else
+                high = mid - 1;
+        }
+        return low;
+    };
+    const lineEnd = (line) => (line + 1 < lineStarts.length ? lineStarts[line + 1] - 1 : code.length);
+    // Each run to reorder: its first and last lines, and its statements' line blocks in tsc's order.
+    const moves = [];
+    const runs = (statements) => {
+        for (let i = 0; i < statements.length;) {
+            const head = decorateKind(statements[i], decorate);
+            if (!head) {
+                i++;
+                continue;
+            }
+            const run = [];
+            let kind = head;
+            while (kind && kind[1] === head[1]) {
+                run.push({ statement: statements[i], rank: kind[0], first: lineOf(statements[i].start), last: lineOf(statements[i].end - 1) });
+                i++;
+                kind = i < statements.length ? decorateKind(statements[i], decorate) : null;
+            }
+            const alone = run.every(({ statement, first, last }, k) => code.slice(lineStarts[first], statement.start).trim() === ''
+                && code.slice(statement.end, lineEnd(last)).trim() === '' && (k === 0 || run[k - 1].last + 1 === first));
+            const sorted = [...run].sort((a, b) => a.rank - b.rank);
+            if (!alone || sorted.every((entry, k) => entry === run[k]))
+                continue;
+            moves.push({ first: run[0].first, last: run[run.length - 1].last, order: sorted.map(({ first, last }) => [first, last]) });
+        }
+    };
+    for (const node of nodes(program)) {
+        if (node.type === 'Program' || node.type === 'BlockStatement' || node.type === 'StaticBlock')
+            runs(list(node, 'body'));
+        if (node.type === 'SwitchCase')
+            runs(list(node, 'consequent'));
+    }
+    if (!moves.length)
+        return { code, map };
+    const lines = code.split('\n');
+    const mappingsText = typeof map === 'object' && map !== null && 'mappings' in map && typeof map.mappings === 'string' ? map.mappings : null;
+    const mappings = mappingsText === null ? null : decodeMappings(mappingsText);
+    while (mappings && mappings.length < lines.length)
+        mappings.push([]);
+    for (const { first, last, order } of moves) {
+        lines.splice(first, last - first + 1, ...order.flatMap(([from, to]) => lines.slice(from, to + 1)));
+        if (mappings)
+            mappings.splice(first, last - first + 1, ...order.flatMap(([from, to]) => mappings.slice(from, to + 1)));
+    }
+    return { code: lines.join('\n'), map: mappings ? Object.assign({}, map, { mappings: encodeMappings(mappings) }) : map };
 }

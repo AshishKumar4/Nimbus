@@ -14277,10 +14277,6 @@ ${legal.map((comment) => comment + "\n").join("")}`;
 // ../core/src/runtime/tsconfig-raw.ts
 var TsconfigRefusal = class extends Error {
 };
-var REFUSED = {
-  experimentalDecorators: "TypeScript's experimental decorators compile to calls of runtime helpers that Nimbus does not serve",
-  useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments"
-};
 var KEYWORDS = /* @__PURE__ */ new Set([
   "break",
   "case",
@@ -14423,7 +14419,8 @@ function resolveTsSettings(inputs, call) {
     keepValues: false,
     keepStatements: false,
     alwaysStrict: false,
-    refuse: { decorators: null, classFields: null },
+    experimentalDecorators: false,
+    assignClassFields: false,
     warnings
   };
   const raw = inputs.tsconfigRaw;
@@ -14478,9 +14475,7 @@ function resolveTsSettings(inputs, call) {
   }
   const importSource = string2("jsxImportSource");
   if (importSource !== void 0) jsx.importSource = importSource;
-  if (boolean2("experimentalDecorators") === true) {
-    settings.refuse.decorators = `tsconfigRaw compilerOptions.experimentalDecorators true is not supported for a TypeScript file with decorators: ${REFUSED.experimentalDecorators}`;
-  }
+  settings.experimentalDecorators = boolean2("experimentalDecorators") === true;
   const target = string2("target");
   let targetBelowEs2022;
   if (target !== void 0) {
@@ -14489,13 +14484,7 @@ function resolveTsSettings(inputs, call) {
     else if (/^(es2022|es2023|es2024|esnext)$/.test(lower)) targetBelowEs2022 = false;
     else warnings.push(`Unrecognized target environment ${JSON.stringify(target)}`);
   }
-  const useDefine = boolean2("useDefineForClassFields");
-  if (useDefine === false) {
-    settings.refuse.classFields = `tsconfigRaw compilerOptions.useDefineForClassFields false is not supported for a TypeScript class with fields: ${REFUSED.useDefineForClassFields}`;
-  }
-  if (useDefine === void 0 && targetBelowEs2022 === true) {
-    settings.refuse.classFields = `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
-  }
+  settings.assignClassFields = (boolean2("useDefineForClassFields") ?? !targetBelowEs2022) === false;
   const notUsed = string2("importsNotUsedAsValues");
   if (notUsed !== void 0 && notUsed !== "remove" && notUsed !== "preserve" && notUsed !== "error") {
     warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
@@ -14589,24 +14578,7 @@ function jsxAndTypescriptOf(settings, fragment = settings.jsx.fragment) {
   };
 }
 function compileForBuild(api, settings, module) {
-  if (module.loader === "ts" || module.loader === "tsx") {
-    const refusal = refusedTypeScript(api, settings, module);
-    if (refusal) return refusal;
-  }
   return ownCompile(api, settings, module);
-}
-function refusedTypeScript(api, settings, module) {
-  const decorators = settings.refuse.decorators && module.text.includes("@") ? settings.refuse.decorators : null;
-  const classFields = settings.refuse.classFields && /\bclass\b/.test(module.text) ? settings.refuse.classFields : null;
-  if (!decorators && !classFields) return null;
-  const program = parse51(api, module);
-  for (const node of nodes(program)) {
-    if (decorators && node.type === "Decorator") return { refused: decorators, start: node.start, end: node.end };
-    if (classFields && node.type === "PropertyDefinition" && node.declare !== true && child(node, "key")?.type !== "PrivateIdentifier") {
-      return { refused: classFields, start: node.start, end: node.end };
-    }
-  }
-  return null;
 }
 function applyEdits(code3, edits) {
   let out = "";
@@ -14631,9 +14603,12 @@ function ownCompile(api, settings, module) {
   const classic = !jsx.preserve && !jsx.automatic;
   const constant = jsxModule && classic && jsx.fragmentConstant ? jsx.fragmentConstant.value : void 0;
   const development = jsxModule && jsx.automatic && jsx.development;
+  const decorators = typescript && settings.experimentalDecorators;
+  const assign = typescript && settings.assignClassFields;
+  const parameterProperties = typescript && !assign && PARAMETER_PROPERTY.test(module.text);
   const oneFlag = settings.keepValues !== settings.keepStatements;
   const imports = typescript && /\bimport\b/.test(module.text) && (oneFlag || !settings.keepStatements && EMPTY_CLAUSE.test(module.text));
-  if (!development && constant === void 0 && !imports) return null;
+  if (!development && constant === void 0 && !imports && !decorators && !assign && !parameterProperties) return null;
   const parsed = parseWithComments(api, module);
   if (!parsed) return null;
   const sourceImports = list(parsed.program, "body").filter((node) => node.type === "ImportDeclaration" && node.importKind !== "type").map((node) => {
@@ -14646,7 +14621,8 @@ function ownCompile(api, settings, module) {
     };
   });
   const fixImports = imports && (oneFlag || !settings.keepStatements && sourceImports.some((i2) => i2.empty));
-  if (!development && constant === void 0 && !fixImports) return null;
+  const classes = parameterProperties ? parameterPropertiesOf(parsed.program) : null;
+  if (!development && constant === void 0 && !fixImports && !decorators && !assign && !classes) return null;
   let placeholder;
   let constantText = "";
   if (constant !== void 0) {
@@ -14660,12 +14636,7 @@ function ownCompile(api, settings, module) {
     placeholder = "__nimbusJsxFragment".padEnd(constantText.length, "_");
     while (taken.has(placeholder)) placeholder += "_";
   }
-  const out = transformOf(api)(module.path, module.text, {
-    lang: module.loader,
-    sourceType: "unambiguous",
-    sourcemap: module.sourcemap,
-    ...jsxAndTypescriptOf(settings, placeholder)
-  });
+  const out = transformOf(api)(module.path, module.text, { ...transformOptions(settings, module, placeholder), sourcemap: module.sourcemap });
   if (out.errors.length) return null;
   const output = parse51(api, module, out.code, outputLang(settings, module));
   if (!output) throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
@@ -14685,10 +14656,32 @@ function ownCompile(api, settings, module) {
     if (!importEdits) return null;
     edits.push(...importEdits);
   }
-  return { code: applyEdits(out.code, edits), map: module.sourcemap ? out.map : void 0, moduleType: outputLang(settings, module) };
+  if (classes) {
+    for (const [start, end] of parameterPropertyDeclarations(output, classes)) edits.push(blanked(out.code, start, end));
+  }
+  const code3 = applyEdits(out.code, edits);
+  const map = module.sourcemap ? out.map : void 0;
+  const moduleType2 = outputLang(settings, module);
+  if (!decorators) return { code: code3, map, moduleType: moduleType2 };
+  const edited = parse51(api, module, code3, moduleType2);
+  if (!edited) throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
+  return { ...decorateInTscOrder(edited, code3, map), moduleType: moduleType2 };
 }
 function outputLang(settings, module) {
   return settings.jsx.preserve && (module.loader === "jsx" || module.loader === "tsx") ? "jsx" : "js";
+}
+function transformOptions(settings, module, fragment) {
+  const typescriptModule = module.loader === "ts" || module.loader === "tsx";
+  const assign = typescriptModule && settings.assignClassFields;
+  const { jsx, typescript } = jsxAndTypescriptOf(settings, fragment);
+  return {
+    lang: module.loader,
+    sourceType: "unambiguous",
+    jsx,
+    typescript: assign ? { ...typescript, removeClassFieldsWithoutInitializer: true } : typescript,
+    ...typescriptModule && settings.experimentalDecorators ? { decorator: { legacy: true } } : {},
+    ...assign ? { target: "es2021", assumptions: { setPublicClassFields: true } } : {}
+  };
 }
 var EMPTY_CLAUSE = /\bimport(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*\{(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*\}/;
 var importsOf = (program) => list(program, "body").filter((node) => node.type === "ImportDeclaration");
@@ -14705,7 +14698,7 @@ function esbuildImports(api, settings, module, sourceImports, code3, output) {
   }
   if (settings.keepValues) return edits;
   const plain = { ...settings, keepValues: false, keepStatements: false };
-  const out = transformOf(api)(module.path, module.text, { lang: module.loader, sourceType: "unambiguous", ...jsxAndTypescriptOf(plain) });
+  const out = transformOf(api)(module.path, module.text, transformOptions(plain, module));
   if (out.errors.length) return null;
   const plainOutput = parse51(api, module, out.code, outputLang(settings, module));
   if (!plainOutput) throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
@@ -14792,6 +14785,166 @@ function devFallbackProps(program, importSource) {
     else merged.push([start, end]);
   }
   return merged;
+}
+var PARAMETER_PROPERTY = /\bconstructor\s*\([^]*?\b(public|private|protected|readonly|override)\s+[A-Za-z_$]/;
+var classesOf = (program) => [...nodes(program)].filter((node) => node.type === "ClassDeclaration" || node.type === "ClassExpression");
+function parameterPropertiesOf(program) {
+  const classes = classesOf(program).map((node) => {
+    const constructor = list(child(node, "body"), "body").find((member) => member.type === "MethodDefinition" && member.kind === "constructor");
+    const properties = list(child(constructor ?? null, "value"), "params").filter((param) => param.type === "TSParameterProperty").map((param) => {
+      const parameter = child(param, "parameter");
+      return stringOf(parameter?.type === "AssignmentPattern" ? child(parameter, "left") : parameter, "name");
+    }).filter((name50) => name50 !== null);
+    return { name: stringOf(child(node, "id"), "name"), properties };
+  });
+  return classes.some((c3) => c3.properties.length) ? classes : null;
+}
+function parameterPropertyDeclarations(output, classes) {
+  const compiled = classesOf(output);
+  if (compiled.length !== classes.length) return [];
+  const ranges = [];
+  for (let i2 = 0; i2 < compiled.length; i2++) {
+    const name50 = stringOf(child(compiled[i2], "id"), "name");
+    if (name50 !== null && classes[i2].name !== null && name50 !== classes[i2].name) return [];
+    for (const member of list(child(compiled[i2], "body"), "body")) {
+      const key = stringOf(child(member, "key"), "name");
+      if (member.type === "PropertyDefinition" && member.value === null && member.static !== true && member.computed !== true && key !== null && classes[i2].properties.includes(key)) {
+        ranges.push([member.start, member.end]);
+      }
+    }
+  }
+  return ranges;
+}
+var BASE64 = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
+function decodeMappings(mappings) {
+  const state = [0, 0, 0, 0];
+  return mappings.split(";").map((line) => {
+    let column = 0;
+    return line.split(",").filter(Boolean).map((segment) => {
+      const fields = [];
+      let value = 0;
+      let shift = 0;
+      for (const char of segment) {
+        const digit = BASE64.indexOf(char);
+        value += (digit & 31) << shift;
+        if (digit & 32) {
+          shift += 5;
+        } else {
+          fields.push(value & 1 ? -(value >>> 1) : value >>> 1);
+          value = 0;
+          shift = 0;
+        }
+      }
+      column += fields[0];
+      const out = [column];
+      for (let i2 = 1; i2 < fields.length; i2++) out.push(state[i2 - 1] += fields[i2]);
+      return out;
+    });
+  });
+}
+function encodeMappings(lines) {
+  const state = [0, 0, 0, 0];
+  const vlq = (n5) => {
+    let value = n5 < 0 ? -n5 << 1 | 1 : n5 << 1;
+    let out = "";
+    do {
+      let digit = value & 31;
+      value >>>= 5;
+      if (value) digit |= 32;
+      out += BASE64[digit];
+    } while (value);
+    return out;
+  };
+  return lines.map((segments) => {
+    let column = 0;
+    return segments.map((segment) => {
+      let out = vlq(segment[0] - column);
+      column = segment[0];
+      for (let i2 = 1; i2 < segment.length; i2++) {
+        out += vlq(segment[i2] - state[i2 - 1]);
+        state[i2 - 1] = segment[i2];
+      }
+      return out;
+    }).join(",");
+  }).join(";");
+}
+function decorateKind(statement, decorate) {
+  const isDecorate = (node) => node?.type === "CallExpression" && stringOf(child(node, "callee"), "name") === decorate;
+  if (statement.type !== "ExpressionStatement") return null;
+  const expression = child(statement, "expression");
+  if (expression && isDecorate(expression)) {
+    const target = list(expression, "arguments")[1];
+    if (target?.type === "Identifier") {
+      const name50 = stringOf(target, "name");
+      return name50 === null ? null : [1, name50];
+    }
+    const object2 = child(target ?? null, "object");
+    if (target?.type === "MemberExpression" && target.computed !== true && stringOf(child(target, "property"), "name") === "prototype" && object2?.type === "Identifier") {
+      const name50 = stringOf(object2, "name");
+      return name50 === null ? null : [0, name50];
+    }
+    return null;
+  }
+  const left = child(expression, "left");
+  if (expression?.type === "AssignmentExpression" && left?.type === "Identifier" && isDecorate(child(expression, "right"))) {
+    const name50 = stringOf(left, "name");
+    return name50 === null ? null : [2, name50];
+  }
+  return null;
+}
+function decorateInTscOrder(program, code3, map) {
+  const helper = list(program, "body").find((node) => node.type === "ImportDeclaration" && stringOf(child(node, "source"), "value") === "@oxc-project/runtime/helpers/decorate");
+  const specifier = list(helper ?? null, "specifiers")[0];
+  const decorate = specifier?.type === "ImportDefaultSpecifier" ? stringOf(child(specifier, "local"), "name") : null;
+  if (decorate === null) return { code: code3, map };
+  const lineStarts = [0];
+  for (let i2 = 0; i2 < code3.length; i2++) if (code3[i2] === "\n") lineStarts.push(i2 + 1);
+  const lineOf = (offset) => {
+    let low = 0;
+    let high = lineStarts.length - 1;
+    while (low < high) {
+      const mid = low + high + 1 >> 1;
+      if (lineStarts[mid] <= offset) low = mid;
+      else high = mid - 1;
+    }
+    return low;
+  };
+  const lineEnd = (line) => line + 1 < lineStarts.length ? lineStarts[line + 1] - 1 : code3.length;
+  const moves = [];
+  const runs = (statements) => {
+    for (let i2 = 0; i2 < statements.length; ) {
+      const head = decorateKind(statements[i2], decorate);
+      if (!head) {
+        i2++;
+        continue;
+      }
+      const run = [];
+      let kind = head;
+      while (kind && kind[1] === head[1]) {
+        run.push({ statement: statements[i2], rank: kind[0], first: lineOf(statements[i2].start), last: lineOf(statements[i2].end - 1) });
+        i2++;
+        kind = i2 < statements.length ? decorateKind(statements[i2], decorate) : null;
+      }
+      const alone = run.every(({ statement, first, last }, k2) => code3.slice(lineStarts[first], statement.start).trim() === "" && code3.slice(statement.end, lineEnd(last)).trim() === "" && (k2 === 0 || run[k2 - 1].last + 1 === first));
+      const sorted = [...run].sort((a2, b2) => a2.rank - b2.rank);
+      if (!alone || sorted.every((entry, k2) => entry === run[k2])) continue;
+      moves.push({ first: run[0].first, last: run[run.length - 1].last, order: sorted.map(({ first, last }) => [first, last]) });
+    }
+  };
+  for (const node of nodes(program)) {
+    if (node.type === "Program" || node.type === "BlockStatement" || node.type === "StaticBlock") runs(list(node, "body"));
+    if (node.type === "SwitchCase") runs(list(node, "consequent"));
+  }
+  if (!moves.length) return { code: code3, map };
+  const lines = code3.split("\n");
+  const mappingsText = typeof map === "object" && map !== null && "mappings" in map && typeof map.mappings === "string" ? map.mappings : null;
+  const mappings = mappingsText === null ? null : decodeMappings(mappingsText);
+  while (mappings && mappings.length < lines.length) mappings.push([]);
+  for (const { first, last, order } of moves) {
+    lines.splice(first, last - first + 1, ...order.flatMap(([from, to]) => lines.slice(from, to + 1)));
+    if (mappings) mappings.splice(first, last - first + 1, ...order.flatMap(([from, to]) => mappings.slice(from, to + 1)));
+  }
+  return { code: lines.join("\n"), map: mappings ? Object.assign({}, map, { mappings: encodeMappings(mappings) }) : map };
 }
 
 // ../core/src/runtime/rolldown-build.ts
@@ -15146,13 +15299,6 @@ ${lines.join("\n")}`;
 function refuse(text) {
   throw new BuildError([message(text)]);
 }
-function spanLocation(file, source, start, end) {
-  const lineStart = Math.max(source.lastIndexOf("\n", start - 1), source.lastIndexOf("\r", start - 1)) + 1;
-  const line = (source.slice(0, lineStart).match(/\r\n|\r|\n/g)?.length ?? 0) + 1;
-  const lineEnd = source.slice(start).search(/\r|\n/);
-  const stop = lineEnd < 0 ? end : Math.min(end, start + lineEnd);
-  return locate2(file, source, line, utf8Length2(source.slice(lineStart, start)), utf8Length2(source.slice(start, stop)));
-}
 var UnresolvedImports = class extends Error {
 };
 function inputOptionsOf(options, settings = resolveTsSettings(options, "build")) {
@@ -15412,10 +15558,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       } catch (error2) {
         raise(error2 instanceof Error ? error2.message : String(error2));
       }
-      if (compiled && "refused" in compiled) {
-        raise(compiled.refused, "", spanLocation(fileOf2({ namespace, path: path3 }), text, compiled.start, compiled.end));
-      }
-      if (compiled && "code" in compiled) return { code: compiled.code, map: compiled.map, moduleType: compiled.moduleType };
+      if (compiled) return { code: compiled.code, map: compiled.map, moduleType: compiled.moduleType };
       const moduleType2 = LOADER_MODULE_TYPES[loader];
       if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf2({ namespace, path: path3 })})`);
       return { code: text, moduleType: moduleType2 };

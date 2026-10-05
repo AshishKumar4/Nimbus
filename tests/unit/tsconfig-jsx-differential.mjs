@@ -7,9 +7,9 @@
 // made it: which function of which module, with what), plus esbuild's
 // warnings about the tsconfig. Every case that compiles must also run and
 // record what its source makes (EXPECT), on both engines: two outputs that
-// fail alike are no pass. Apart from them: the fields the engines cannot
-// honour, refused by name only where esbuild's output would differ from
-// theirs (runtime/tsconfig-raw.ts), and the calls esbuild fails too.
+// fail alike are no pass. Apart from them: the calls esbuild fails too, and
+// the one thing the bundler refuses by name (a build's `extends` naming a
+// file, which esbuild-wasm could not read).
 
 import assert from 'node:assert/strict';
 import { mkdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -65,15 +65,75 @@ export const x: T | U = used;
 `,
   // Strict mode, as the module's code sees it.
   strict: 'export const strict = (function () { return this === undefined; })();\n',
-  // Define or assign: a field defined over an inherited setter does not call it.
+  // Define or assign: a field defined over an inherited setter does not call
+  // it; and the order fields, parameter properties and static members take.
   fields: `const log: string[] = [];
-class Base { set x(v: number) { log.push('set x'); } }
-export class C extends Base { x = 1; static s = 2; }
-new C();
+class Base { set x(v: number) { log.push('set x ' + v); } }
+const key = 'computed';
+// Not exported: esbuild's bundle names a class whose static initializer reads
+// it \`_C\`; what it does is the same, and what is compared.
+class C extends Base {
+  x = 1; y; declare z: number; #p = 2; [key] = 'k'; self = this; arrow = () => this.x;
+  static s = 3; static t = C.s + 1;
+  static { log.push('static block ' + (this as any).t); }
+  constructor(public q: number) { super(); log.push('ctor ' + this.x + ' ' + this.#p + ' ' + ('y' in this)); }
+  get p() { return this.#p; }
+}
+const c = new C(4);
+export const result = { keys: Object.keys(c), p: c.p, q: c.q, s: (C as any).s, t: (C as any).t, hasY: 'y' in c, self: c.self === c, arrow: c.arrow(), computed: (c as any).computed };
+export { log };
+`,
+  // The same in JavaScript, which keeps its fields defined whatever the tsconfig.
+  fieldsJs: `const log = [];
+class Base { set x(v) { log.push('set x ' + v); } }
+class C extends Base { x = 1; y; #p = 2; static s = 3; constructor() { super(); log.push('ctor ' + this.x); } get p() { return this.#p; } }
+const c = new C();
+export const result = { keys: Object.keys(c), p: c.p, s: C.s };
 export { log };
 `,
   noFields: 'export class C { #p = 1; declare z: number; m() { return this.#p; } static { (this as any).t = 2; } }\nexport const made = new C().m();\n',
-  decorators: 'function dec(t: any) { return t; }\n@dec export class A { m() { return 1; } }\nexport const made = typeof A;\n',
+  // Every kind of legacy decorator: what each is called with, what it returns,
+  // and the order tsc applies them in.
+  decorators: `const log: unknown[] = [];
+function cls(tag: string) { return (c: any) => { log.push(['class', tag, c.name]); return class extends c { extra = tag; }; }; }
+function meth(tag: string) {
+  return (t: any, k: string, d: PropertyDescriptor) => {
+    log.push(['method', tag, typeof t, k, typeof d?.value, d?.enumerable]);
+    return { ...d, value: function (this: any, ...a: any[]) { return 'wrapped:' + d.value.apply(this, a); } };
+  };
+}
+function prop(tag: string) { return (t: any, k: string, d?: unknown) => { log.push(['prop', tag, typeof t, k, d === undefined ? 'no desc' : typeof d]); }; }
+function param(tag: string) { return (t: any, k: string | undefined, i: number) => { log.push(['param', tag, typeof t, k ?? null, i]); }; }
+function acc(t: any, k: string, d: PropertyDescriptor) { log.push(['accessor', k, typeof d.get, typeof d.set]); }
+@cls('A') @cls('B')
+export class Thing {
+  @prop('p') x: number = 1;
+  @prop('s') static s = 2;
+  @meth('m1') @meth('m2') m(@param('a') a: number, @param('b') b: string) { return a + b; }
+  @meth('sm') static sm() { return 'static'; }
+  @acc get g() { return 1; } set g(v) {}
+  @prop('late') y = 'y';
+  constructor(@param('ctor') public q: number) {}
+}
+const t = new (Thing as any)(5);
+export const made = typeof Thing;
+export const result = { log, m: t.m(1, '2'), sm: (Thing as any).sm(), keys: Object.keys(t), x: t.x, y: t.y, q: t.q, extra: t.extra, s: (Thing as any).s };
+`,
+  // tsc's order alone: instance members, then static members, then the
+  // constructor's parameters and the class, each group in source order.
+  decoratorOrder: `const order: string[] = [];
+const d = (tag: string) => () => { order.push(tag); };
+@d('class') class Ordered {
+  @d('static field') static a = 1;
+  @d('field') b = 2;
+  @d('static method') static c() {}
+  @d('method') e(@d('method parameter') p: number) {}
+  @d('accessor') get f() { return 1; }
+  constructor(@d('constructor parameter') q: number) {}
+}
+export const made = typeof Ordered;
+export { order };
+`,
   noDecorators: '/** @param x a value */\nexport class A { m(x: number) { return x; } }\nexport const made = new A().m(1);\n',
   paths: "import { helper } from '@lib/helper';\nexport const got = typeof helper;\n",
   // What each elision keeps: an import whose specifiers are all types, an
@@ -153,9 +213,11 @@ const EXPECT = {
   emptyClauses: (o) => ran(o) && typeof o.runs.exports.x?.call === 'string',
   fragmentCollision: (o) => ran(o) && typeof o.runs.exports.e?.call === 'string' && o.runs.exports.mine?.[0] === 'mine' && o.runs.exports.mine?.[1] === 'also mine',
   strict: (o) => ran(o) && typeof o.runs.exports.strict === 'boolean',
-  fields: (o) => ran(o) && Array.isArray(o.runs.exports.log),
+  fields: (o) => ran(o) && Array.isArray(o.runs.exports.log) && Array.isArray(o.runs.exports.result?.keys),
+  fieldsJs: (o) => ran(o) && Array.isArray(o.runs.exports.log) && Array.isArray(o.runs.exports.result?.keys),
   noFields: (o) => ran(o) && o.runs.exports.made === 1,
-  decorators: (o) => ran(o) && o.runs.exports.made === 'function',
+  decorators: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.result?.log?.length > 0,
+  decoratorOrder: (o) => ran(o) && o.runs.exports.made === 'function' && Array.isArray(o.runs.exports.order),
   noDecorators: (o) => ran(o) && o.runs.exports.made === 1,
   paths: (o) => ran(o) && o.runs.exports.got === 'function',
 };
@@ -231,8 +293,7 @@ const JSX_CASES = {
 };
 
 // The other compilerOptions esbuild reads, each on a source that shows its
-// effect. `refused` names the field a refusal must carry; everything else
-// must do what esbuild does.
+// effect: each must do what esbuild does.
 const FIELD_CASES = {
   'verbatimModuleSyntax true': { source: 'imports', options: { tsconfigRaw: tc({ verbatimModuleSyntax: true }) } },
   'verbatimModuleSyntax false': { source: 'imports', options: { tsconfigRaw: tc({ verbatimModuleSyntax: false }) } },
@@ -299,8 +360,23 @@ const FIELD_CASES = {
   'strict true': { source: 'strict', options: { tsconfigRaw: tc({ strict: true }) } },
   'strict true, alwaysStrict false': { source: 'strict', options: { tsconfigRaw: tc({ strict: true, alwaysStrict: false }) } },
   'useDefineForClassFields true': { source: 'fields', options: { tsconfigRaw: tc({ useDefineForClassFields: true }) } },
+  'no tsconfig, class fields': { source: 'fields', options: {} },
   'useDefineForClassFields false, no public fields': { source: 'noFields', options: { tsconfigRaw: tc({ useDefineForClassFields: false }) } },
-  'useDefineForClassFields false, JavaScript': { source: 'fields', loader: 'js', options: { tsconfigRaw: tc({ useDefineForClassFields: false }) } },
+  'useDefineForClassFields false, JavaScript': { source: 'fieldsJs', loader: 'js', options: { tsconfigRaw: tc({ useDefineForClassFields: false }) } },
+  // useDefineForClassFields false and what implies it: TypeScript's fields assigned, not defined.
+  'useDefineForClassFields false': { source: 'fields', options: { tsconfigRaw: tc({ useDefineForClassFields: false }) } },
+  'target es2020': { source: 'fields', options: { tsconfigRaw: tc({ target: 'es2020' }) } },
+  'target ES2017, useDefineForClassFields false': { source: 'fields', options: { tsconfigRaw: tc({ target: 'ES2017', useDefineForClassFields: false }) } },
+  // experimentalDecorators: TypeScript's legacy decorators, in tsc's order.
+  'experimentalDecorators true': { source: 'decorators', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
+  'experimentalDecorators: the order (instance members, static members, then parameters and the class)': {
+    source: 'decoratorOrder', options: { tsconfigRaw: tc({ experimentalDecorators: true }) },
+  },
+  'experimentalDecorators and useDefineForClassFields false': { source: 'decorators', options: { tsconfigRaw: tc({ experimentalDecorators: true, useDefineForClassFields: false }) } },
+  'experimentalDecorators, target es2020': { source: 'decoratorOrder', options: { tsconfigRaw: tc({ experimentalDecorators: true, target: 'es2020' }) } },
+  'experimentalDecorators, jsx react-jsx and strict (a Vite tsconfig with decorators)': {
+    source: 'decorators', options: { tsconfigRaw: tc({ experimentalDecorators: true, jsx: 'react-jsx', strict: true, target: 'ES2020', useDefineForClassFields: true }) },
+  },
   'target es2022': { source: 'fields', options: { tsconfigRaw: tc({ target: 'es2022' }) } },
   'target ESNext': { source: 'fields', options: { tsconfigRaw: tc({ target: 'ESNext' }) } },
   'target unknown (warned, ignored)': { source: 'fields', options: { tsconfigRaw: tc({ target: 'es1' }) } },
@@ -312,17 +388,6 @@ const FIELD_CASES = {
   'fields esbuild does not read (ignored)': { source: 'strict', options: { tsconfigRaw: tc({ module: 'NodeNext', lib: ['DOM'], noEmit: true, types: ['node'], skipLibCheck: true }) } },
   'compilerOptions not an object (ignored)': { source: 'strict', options: { tsconfigRaw: JSON.stringify({ compilerOptions: 1 }) } },
   'empty tsconfigRaw': { source: 'strict', options: { tsconfigRaw: '' } },
-};
-
-// What the engines refuse by name where esbuild compiled it: `refused` is
-// the field the refusal must name; esbuild's output must run.
-const REFUSED_CASES = {
-  'useDefineForClassFields false': { source: 'fields', options: { tsconfigRaw: tc({ useDefineForClassFields: false }) }, refused: 'useDefineForClassFields' },
-  'target es2020': { source: 'fields', options: { tsconfigRaw: tc({ target: 'es2020' }) }, refused: 'target' },
-  'experimentalDecorators true': { source: 'decorators', options: { tsconfigRaw: tc({ experimentalDecorators: true }) }, refused: 'experimentalDecorators' },
-  'one refused field among honoured ones': {
-    source: 'fields', options: { tsconfigRaw: tc({ jsx: 'react-jsx', strict: true, useDefineForClassFields: false }) }, refused: 'useDefineForClassFields',
-  },
 };
 
 // What esbuild fails on, and so must the engines: `text`, when given, is
@@ -520,7 +585,7 @@ async function buildOutcome(engine, code, loader, format, options) {
 // ── Comparison ──────────────────────────────────────────────────────────
 
 const differences = [];
-const counts = { same: 0, refused: 0, failing: 0 };
+const counts = { same: 0, failing: 0 };
 const show = (theirs, ours) => `\n    esbuild: ${JSON.stringify(theirs)}\n    nimbus:  ${JSON.stringify(ours)}`;
 const outcomeOf = (call) => (call === 'build' ? buildOutcome : transformOutcome);
 
@@ -538,15 +603,6 @@ async function same(name, run, expect) {
   } catch {
     differences.push(`${name}${show(theirs, ours)}`);
   }
-}
-
-/** A field the engines refuse by name where esbuild's output runs. */
-async function refused(name, run, field, expect) {
-  const theirs = await run('esbuild');
-  const ours = await run('nimbus');
-  counts.refused++;
-  const named = ours.failure?.includes(`compilerOptions.${field} `);
-  if (!named || !expect(theirs)) differences.push(`${name}: expected esbuild's output to run and a refusal naming ${field}${show(theirs, ours)}`);
 }
 
 /** What esbuild fails on: the engines fail too (with esbuild's words, or `ours`, where given). */
@@ -600,12 +656,6 @@ try {
     await same(`transform ts esm: extends ${JSON.stringify(ext)} (ignored)`,
       (engine) => transformOutcome(engine, SOURCES.strict, 'ts', 'esm', { tsconfigRaw: JSON.stringify({ extends: ext }) }), EXPECT.strict);
   }
-  for (const [name, { source, options, refused: field }] of Object.entries(REFUSED_CASES)) {
-    for (const format of ['esm', 'cjs']) {
-      await refused(`transform ts ${format}: ${name}`, (engine) => transformOutcome(engine, SOURCES[source], 'ts', format, options), field, EXPECT[source]);
-      await refused(`build ts ${format}: ${name}`, (engine) => buildOutcome(engine, SOURCES[source], 'ts', format, options), field, EXPECT[source]);
-    }
-  }
   for (const { call, name, source, code, loader, format = 'esm', options, text, ours } of FAILING_CASES) {
     await failing(`${call} ${loader} ${format}: ${name}`, (engine) => outcomeOf(call)(engine, code ?? SOURCES[source], loader, format, options), { text, ours });
   }
@@ -614,7 +664,7 @@ try {
   await stopEsbuildEngine();
 }
 
-const total = counts.same + counts.refused + counts.failing;
+const total = counts.same + counts.failing;
 assert.equal(differences.length, 0, `${differences.length} of ${total} cases differ from esbuild 0.24.2:\n  ${differences.join('\n  ')}`);
 console.log(`tsconfig-jsx-differential OK: ${counts.same} cases compile, run and record the same as esbuild 0.24.2; `
-  + `${counts.refused} refused by field name where esbuild's output runs; ${counts.failing} fail where esbuild fails`);
+  + `${counts.failing} fail where esbuild fails`);

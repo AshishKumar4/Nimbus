@@ -410,14 +410,6 @@ export function esbuildFailureText(errors) {
 function refuse(text) {
     throw new BuildError([message(text)]);
 }
-/** esbuild's location of a span (UTF-16 offsets) in `source`: its line, and column and length in UTF-8 bytes on that line. */
-function spanLocation(file, source, start, end) {
-    const lineStart = Math.max(source.lastIndexOf('\n', start - 1), source.lastIndexOf('\r', start - 1)) + 1;
-    const line = (source.slice(0, lineStart).match(/\r\n|\r|\n/g)?.length ?? 0) + 1;
-    const lineEnd = source.slice(start).search(/\r|\n/);
-    const stop = lineEnd < 0 ? end : Math.min(end, start + lineEnd);
-    return locate(file, source, line, utf8Length(source.slice(lineStart, start)), utf8Length(source.slice(start, stop)));
-}
 /** The build failed with imports that did not resolve: they are placed once its bundle is closed. */
 class UnresolvedImports extends Error {
 }
@@ -769,10 +761,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
             catch (error) {
                 raise(error instanceof Error ? error.message : String(error));
             }
-            if (compiled && 'refused' in compiled) {
-                raise(compiled.refused, '', spanLocation(fileOf({ namespace, path }), text, compiled.start, compiled.end));
-            }
-            if (compiled && 'code' in compiled)
+            if (compiled)
                 return { code: compiled.code, map: compiled.map, moduleType: compiled.moduleType };
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)

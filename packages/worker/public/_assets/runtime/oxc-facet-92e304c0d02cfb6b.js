@@ -2,10 +2,6 @@
 (() => {
   var TsconfigRefusal = class extends Error {
   };
-  var REFUSED = {
-    experimentalDecorators: "TypeScript's experimental decorators compile to calls of runtime helpers that Nimbus does not serve",
-    useDefineForClassFields: "Nimbus's engines keep class fields as fields, where useDefineForClassFields false makes them constructor assignments"
-  };
   var KEYWORDS =   new Set([
     "break",
     "case",
@@ -148,7 +144,8 @@
       keepValues: false,
       keepStatements: false,
       alwaysStrict: false,
-      refuse: { decorators: null, classFields: null },
+      experimentalDecorators: false,
+      assignClassFields: false,
       warnings
     };
     const raw = inputs.tsconfigRaw;
@@ -203,9 +200,7 @@
     }
     const importSource = string("jsxImportSource");
     if (importSource !== void 0) jsx.importSource = importSource;
-    if (boolean("experimentalDecorators") === true) {
-      settings.refuse.decorators = `tsconfigRaw compilerOptions.experimentalDecorators true is not supported for a TypeScript file with decorators: ${REFUSED.experimentalDecorators}`;
-    }
+    settings.experimentalDecorators = boolean("experimentalDecorators") === true;
     const target = string("target");
     let targetBelowEs2022;
     if (target !== void 0) {
@@ -214,13 +209,7 @@
       else if (/^(es2022|es2023|es2024|esnext)$/.test(lower)) targetBelowEs2022 = false;
       else warnings.push(`Unrecognized target environment ${JSON.stringify(target)}`);
     }
-    const useDefine = boolean("useDefineForClassFields");
-    if (useDefine === false) {
-      settings.refuse.classFields = `tsconfigRaw compilerOptions.useDefineForClassFields false is not supported for a TypeScript class with fields: ${REFUSED.useDefineForClassFields}`;
-    }
-    if (useDefine === void 0 && targetBelowEs2022 === true) {
-      settings.refuse.classFields = `tsconfigRaw compilerOptions.target ${JSON.stringify(target)} is not supported for a TypeScript class with fields: below es2022 it makes useDefineForClassFields false, and ${REFUSED.useDefineForClassFields}; set "useDefineForClassFields": true, or a target of es2022 or later`;
-    }
+    settings.assignClassFields = (boolean("useDefineForClassFields") ?? !targetBelowEs2022) === false;
     const notUsed = string("importsNotUsedAsValues");
     if (notUsed !== void 0 && notUsed !== "remove" && notUsed !== "preserve" && notUsed !== "error") {
       warnings.push(`Invalid value ${JSON.stringify(notUsed)} for "importsNotUsedAsValues"`);
@@ -323,8 +312,8 @@
       if (settings.keepValues) fields.push("keepValues", "1");
       if (settings.keepStatements) fields.push("keepStatements", "1");
       if (settings.alwaysStrict) fields.push("alwaysStrict", "1");
-      if (settings.refuse.decorators) fields.push("refuseDecorators", settings.refuse.decorators);
-      if (settings.refuse.classFields) fields.push("refuseClassFields", settings.refuse.classFields);
+      if (settings.experimentalDecorators) fields.push("experimentalDecorators", "1");
+      if (settings.assignClassFields) fields.push("assignClassFields", "1");
       if (options.sourcefile) fields.push("sourcefile", options.sourcefile);
       for (const [name, value] of Object.entries(options.define ?? {})) fields.push("define", name, value);
       for (const [feature, supported] of Object.entries(options.supported ?? {})) {

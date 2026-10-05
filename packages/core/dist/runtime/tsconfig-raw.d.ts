@@ -20,13 +20,12 @@
  * a primitive constant (`0`, `"frag"`, `null`), its own factory not.
  *
  * Every other field is honoured where the engines can produce esbuild's
- * output, refused by name where they cannot, and ignored where esbuild
- * ignores it (resolveTsSettings says which, and why; REFUSED, the reasons).
- * A refusal names its field, and comes only where the field would change
- * the output: `experimentalDecorators` for a TypeScript file with a
- * decorator, `useDefineForClassFields: false` (or a `target` that implies
- * it) for a TypeScript class with a public field. Those two the engines
- * refuse as they meet such a file (TsSettings.refuse). `alwaysStrict` (else
+ * output, refused by name where they cannot (a build's `extends` naming a
+ * file), and ignored where esbuild ignores it (resolveTsSettings says which,
+ * and why). `experimentalDecorators` and `useDefineForClassFields: false`
+ * (or a `target` that implies it) change TypeScript files only, as in
+ * esbuild: legacy decorators, applied in tsc's order, and class fields
+ * assigned rather than defined (TsSettings). `alwaysStrict` (else
  * `strict`) makes every file strict code, as esbuild parses it: what only a
  * sloppy script may contain is an error, and CommonJS and IIFE output begins
  * with `"use strict"`.
@@ -72,16 +71,18 @@ export interface TsSettings {
     /** `alwaysStrict` (else `strict`): `"use strict"` begins CommonJS and IIFE output. */
     alwaysStrict: boolean;
     /**
-     * What a TypeScript (`ts`, `tsx`) file may not contain under this tsconfig,
-     * as the refusal naming its field: esbuild compiles it differently, and the
-     * engines cannot. JavaScript files are compiled the same either way.
+     * `experimentalDecorators`, for TypeScript (`ts`, `tsx`) files: their
+     * decorators are TypeScript's legacy ones, which esbuild lowers to
+     * __decorateClass calls in tsc's order. JavaScript files keep theirs.
      */
-    refuse: {
-        /** `experimentalDecorators`: any decorator (esbuild lowers it to __decorateClass calls). */
-        decorators: string | null;
-        /** `useDefineForClassFields` false: a class with a public or static field (esbuild assigns it in the constructor). */
-        classFields: string | null;
-    };
+    experimentalDecorators: boolean;
+    /**
+     * `useDefineForClassFields` false (or a `target` below es2022 that implies
+     * it), for TypeScript files: a class's fields are assigned in its
+     * constructor (static ones after it), not defined, and one without an
+     * initializer goes. JavaScript files keep theirs defined.
+     */
+    assignClassFields: boolean;
     /** What esbuild warns about the tsconfig, word for word. */
     warnings: string[];
 }

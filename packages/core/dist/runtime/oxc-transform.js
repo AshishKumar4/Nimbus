@@ -121,10 +121,10 @@ export function createOxcTransform(module, { retireAboveBytes = 64 * 1024 * 1024
             fields.push('keepStatements', '1');
         if (settings.alwaysStrict)
             fields.push('alwaysStrict', '1');
-        if (settings.refuse.decorators)
-            fields.push('refuseDecorators', settings.refuse.decorators);
-        if (settings.refuse.classFields)
-            fields.push('refuseClassFields', settings.refuse.classFields);
+        if (settings.experimentalDecorators)
+            fields.push('experimentalDecorators', '1');
+        if (settings.assignClassFields)
+            fields.push('assignClassFields', '1');
         if (options.sourcefile)
             fields.push('sourcefile', options.sourcefile);
         for (const [name, value] of Object.entries(options.define ?? {}))

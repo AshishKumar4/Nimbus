@@ -87,12 +87,14 @@ pub struct Options {
     pub jsx_fragment_constant: Option<Constant>,
     /// TypeScript's `alwaysStrict`: CommonJS output begins with `"use strict"`.
     pub always_strict: bool,
-    /// The error for a decorator in a TypeScript file (`experimentalDecorators`,
-    /// whose output this transform does not produce), naming that field.
-    pub refuse_decorators: Option<String>,
-    /// The error for a TypeScript class with a public or static field
-    /// (`useDefineForClassFields` false), naming the field that asks for it.
-    pub refuse_class_fields: Option<String>,
+    /// TypeScript's `experimentalDecorators`, for a TypeScript file: its
+    /// decorators are the legacy ones, lowered to calls of TypeScript's
+    /// `__decorate` (Oxc's `decorate` helper), applied in tsc's order.
+    pub experimental_decorators: bool,
+    /// TypeScript's `useDefineForClassFields: false`, for a TypeScript file:
+    /// a class's fields are assigned in its constructor (or after it, if
+    /// static) rather than defined, and one without an initializer goes.
+    pub assign_class_fields: bool,
     /// `(expression, replacement)`, applied to unbound globals.
     pub define: Vec<(String, String)>,
     pub sourcemap: SourceMapMode,
@@ -118,8 +120,8 @@ impl Default for Options {
             keep_statements: false,
             jsx_fragment_constant: None,
             always_strict: false,
-            refuse_decorators: None,
-            refuse_class_fields: None,
+            experimental_decorators: false,
+            assign_class_fields: false,
             define: Vec::new(),
             sourcemap: SourceMapMode::None,
             sourcefile: None,
@@ -173,8 +175,8 @@ impl Options {
                 "keepStatements" => options.keep_statements = flag(value()?)?,
                 "jsxFragmentConstant" => options.jsx_fragment_constant = Some(Constant::decode(value()?)?),
                 "alwaysStrict" => options.always_strict = flag(value()?)?,
-                "refuseDecorators" => options.refuse_decorators = Some(value()?.to_string()),
-                "refuseClassFields" => options.refuse_class_fields = Some(value()?.to_string()),
+                "experimentalDecorators" => options.experimental_decorators = flag(value()?)?,
+                "assignClassFields" => options.assign_class_fields = flag(value()?)?,
                 "define" => {
                     let name = value()?.to_string();
                     let replacement = value()?.to_string();

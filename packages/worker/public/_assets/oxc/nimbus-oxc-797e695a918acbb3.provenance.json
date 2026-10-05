@@ -15,10 +15,11 @@
       "src/abi.rs": "45ce28d133daf01f8664e3c8d2eff54fc078df205d6487e21647115c381687dd",
       "src/diagnostics.rs": "d4b7330faedd3c439b62912c2a6f256d389773170dd3c553806167a5d472fdd3",
       "src/helpers.rs": "cf0da308d383ea902c44f55a9d1e04fcc991ce80d6c4f1c89a69901621be5d8f",
-      "src/lib.rs": "dc4fe4b27a1b3047c4005b9640c3e90c96f0dc421ccb77901549cfc7af3ce3bb",
-      "src/module.rs": "3173e956253e6b1cacedbe009a9aa0cc335347e1bd42fda8f13062bfec2df45b",
+      "src/lib.rs": "a6075b30846072df19f05f00d95abbd30e148f4f9bb45f826bd56f271e22abcd",
+      "src/module.rs": "ecee4de76b1be17e07e93b1cc6bbad47ef07ec03a66e142a1d9f9b93477e79cf",
       "src/names.rs": "4b475452c58d047f4536a255d5ee6871e3fd905fe21fc715b0e55b08e9f117d0",
-      "src/options.rs": "40588be338499fb54ddfc87588994ee849304d532c71da8ef7e4e78a3c46d779"
+      "src/options.rs": "8c76e6aea3f2c85e0613856eb69bc24c8397b80de4696fd49f1f95f202939278",
+      "src/runtime_helpers.rs": "095df814d958394b226418ac51ffaae379d835e346a98118ecaa19201024e178"
     }
   },
   "toolchain": "rustc 1.98.1 (48a229cea 2026-09-01)\nbinary: rustc\ncommit-hash: 48a229ceaefd4985c50990b14116b6d856af0985\ncommit-date: 2026-09-01\nhost: x86_64-unknown-linux-gnu\nrelease: 1.98.1\nLLVM version: 22.1.8",
@@ -65,8 +66,8 @@
   },
   "outputs": {
     "nimbus-oxc.wasm": {
-      "bytes": 2333997,
-      "sha256": "cffda8a97e42eba6a95138485db5056ce363e8a1ce93d01fce99af693a422e79"
+      "bytes": 2399444,
+      "sha256": "797e695a918acbb364abe364bb6959d2116153423e2efdb573b6732b56bc4155"
     }
   }
 }

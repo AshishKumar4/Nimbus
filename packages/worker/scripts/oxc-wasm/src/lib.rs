@@ -14,6 +14,7 @@ mod helpers;
 mod module;
 mod names;
 pub mod options;
+mod runtime_helpers;
 
 #[cfg(target_arch = "wasm32")]
 mod abi;
@@ -26,6 +27,7 @@ use oxc::semantic::SemanticBuilder;
 use oxc::diagnostics::OxcDiagnostic;
 use oxc::span::{SourceType, Span};
 use oxc::transformer::{
+    ClassPropertiesOptions, CompilerAssumptions, DecoratorOptions, ES2022Options,
     EnvOptions, JsxOptions, JsxRuntime, TransformOptions, Transformer, TypeScriptOptions,
 };
 use oxc::transformer_plugins::{ReplaceGlobalDefines, ReplaceGlobalDefinesConfig};
@@ -94,12 +96,6 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
             parsed = with_return;
         }
     }
-    if source_type.is_typescript()
-        && (options.refuse_decorators.is_some() || options.refuse_class_fields.is_some())
-        && let Some(error) = refused(&parsed.program, options)
-    {
-        return Output::failed(diagnostics::convert(source, sourcefile, vec![error]));
-    }
     if options.always_strict
         && !parsed.program.source_type.is_strict()
         && !parsed.program.directives.iter().any(|d| d.directive.as_str() == "use strict")
@@ -151,13 +147,24 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
                 _ => None,
             })
             .collect();
-        let transform_options = transform_options(options, fragment.as_ref().map(|(name, _)| name.as_str()));
+        let parameter_properties = (source_type.is_typescript() && !options.assign_class_fields).then(|| parameter_properties(&program));
+        let transform_options = transform_options(options, fragment.as_ref().map(|(name, _)| name.as_str()), source_type.is_typescript());
         let transformed = Transformer::new(allocator, std::path::Path::new(sourcefile), &transform_options)
             .build_with_scoping(scoping, &mut program);
         if transformed.diagnostics.has_errors() {
             return Output::failed(diagnostics::convert(source, sourcefile, transformed.diagnostics.into_vec()));
         }
         scoping = transformed.scoping;
+        if let Some(names) = &parameter_properties {
+            drop_parameter_property_fields(&mut program, names);
+        }
+        if source_type.is_typescript() && options.experimental_decorators {
+            decorate_in_tsc_order(&mut program);
+        }
+        if inline_runtime_helpers(allocator, &mut program) {
+            // The helpers' declarations are new: their scoping is made again.
+            scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+        }
         if options.jsx == JsxMode::Automatic && options.jsx_dev {
             strip_dev_fallback_props(&mut program, options.jsx_import_source.as_deref().unwrap_or("react"));
         }
@@ -271,43 +278,203 @@ fn generate(
     }
 }
 
-/// The first decorator or class field a TypeScript file's tsconfig makes this
-/// transform refuse (options.rs: `refuse_decorators`, `refuse_class_fields`),
-/// as an error at it carrying the refusal. A class's private fields alone
-/// stay fields under esbuild too; one public or static field moves them all.
-fn refused(program: &Program<'_>, options: &Options) -> Option<OxcDiagnostic> {
-    use oxc::ast::ast::{Decorator, PropertyDefinition, PropertyDefinitionType};
+/// Each class's parameter properties (`constructor(public q)`), by name, in
+/// the order a visit meets the classes.
+fn parameter_properties(program: &Program<'_>) -> Vec<Vec<String>> {
+    use oxc::ast::ast::{Class, ClassElement, MethodDefinitionKind};
     use oxc::ast_visit::{Visit, walk};
+    struct Collect(Vec<Vec<String>>);
+    impl<'a> Visit<'a> for Collect {
+        fn visit_class(&mut self, class: &Class<'a>) {
+            let names = class
+                .body
+                .body
+                .iter()
+                .find_map(|element| match element {
+                    ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor => Some(&m.value.params.items),
+                    _ => None,
+                })
+                .map(|params| {
+                    params
+                        .iter()
+                        .filter(|p| p.accessibility.is_some() || p.readonly || p.r#override)
+                        .filter_map(|p| p.pattern.get_identifier_name().map(|name| name.to_string()))
+                        .collect()
+                })
+                .unwrap_or_default();
+            self.0.push(names);
+            walk::walk_class(self, class);
+        }
+    }
+    let mut collect = Collect(Vec::new());
+    collect.visit_program(program);
+    collect.0
+}
 
-    struct Find<'o> {
-        decorators: Option<&'o str>,
-        class_fields: Option<&'o str>,
-        found: Option<(Span, &'o str)>,
-    }
-    impl<'a> Visit<'a> for Find<'_> {
-        fn visit_decorator(&mut self, it: &Decorator<'a>) {
-            if let (None, Some(text)) = (self.found, self.decorators) {
-                self.found = Some((it.span, text));
-            }
-        }
-        fn visit_property_definition(&mut self, it: &PropertyDefinition<'a>) {
-            if let (None, Some(text)) = (self.found, self.class_fields)
-                && it.r#type == PropertyDefinitionType::PropertyDefinition
-                && !it.declare
-                && !it.key.is_private_identifier()
-            {
-                self.found = Some((it.span, text));
-            }
-            walk::walk_property_definition(self, it);
+/// Oxc's TypeScript transform declares a field for each parameter property
+/// (`q;`, first in the class), as tsc does under useDefineForClassFields;
+/// esbuild assigns it in the constructor alone. Those declarations go, so the
+/// object's own keys are in esbuild's order (the fields', then the parameter
+/// properties'). A class cannot declare a field its parameter property also
+/// declares (TypeScript's duplicate identifier), so a value-less field of
+/// that name is Oxc's. The transform keeps the classes and their order; were
+/// it not to, nothing is taken.
+fn drop_parameter_property_fields(program: &mut Program<'_>, names: &[Vec<String>]) {
+    use oxc::ast::ast::{Class, ClassElement};
+    use oxc::ast_visit::{Visit, VisitMut, walk, walk_mut};
+    struct Count(usize);
+    impl<'a> Visit<'a> for Count {
+        fn visit_class(&mut self, class: &Class<'a>) {
+            self.0 += 1;
+            walk::walk_class(self, class);
         }
     }
-    let mut find = Find {
-        decorators: options.refuse_decorators.as_deref(),
-        class_fields: options.refuse_class_fields.as_deref(),
-        found: None,
-    };
-    find.visit_program(program);
-    find.found.map(|(span, text)| OxcDiagnostic::error(text.to_string()).with_label(span))
+    if names.iter().all(Vec::is_empty) {
+        return;
+    }
+    let mut count = Count(0);
+    count.visit_program(program);
+    if count.0 != names.len() {
+        return;
+    }
+    struct Drop<'n>(&'n [Vec<String>], usize);
+    impl<'a> VisitMut<'a> for Drop<'_> {
+        fn visit_class(&mut self, class: &mut Class<'a>) {
+            let names = &self.0[self.1];
+            self.1 += 1;
+            if !names.is_empty() {
+                class.body.body.retain(|element| {
+                    !matches!(element, ClassElement::PropertyDefinition(p)
+                        if p.value.is_none() && !p.r#static && !p.declare
+                            && p.key.static_name().is_some_and(|key| names.iter().any(|name| *name == key)))
+                });
+            }
+            walk_mut::walk_class(self, class);
+        }
+    }
+    Drop(names, 0).visit_program(program);
+}
+
+/// Where Oxc's transformer imports its helpers from (its Runtime mode).
+const RUNTIME_HELPERS: &str = "@oxc-project/runtime/helpers/";
+
+/// The local name of the helper `name` the transformer imported, if it did.
+fn runtime_helper_local<'p>(program: &'p Program<'_>, name: &str) -> Option<&'p str> {
+    use oxc::ast::ast::ImportDeclarationSpecifier;
+    program.body.iter().find_map(|statement| match statement {
+        Statement::ImportDeclaration(d) if d.source.value.as_str().strip_prefix(RUNTIME_HELPERS) == Some(name) => {
+            match d.specifiers.as_ref()?.first()? {
+                ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => Some(s.local.name.as_str()),
+                _ => None,
+            }
+        }
+        _ => None,
+    })
+}
+
+/// Each import of an @oxc-project/runtime helper the transformer added
+/// (`import _decorate from "@oxc-project/runtime/helpers/decorate"`), made
+/// the helper itself, as esbuild's output carries its own:
+/// `var _decorate = (() => { ...; return __decorate; })();`, what the helper
+/// imports defined inside the same function, so no name of theirs reaches
+/// the module's scope. Returns whether there was any.
+fn inline_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> bool {
+    use oxc::ast::ast::ImportDeclarationSpecifier;
+    let mut inlined = false;
+    for statement in program.body.iter_mut() {
+        let Statement::ImportDeclaration(d) = statement else { continue };
+        let Some(name) = d.source.value.as_str().strip_prefix(RUNTIME_HELPERS) else { continue };
+        let Some(ImportDeclarationSpecifier::ImportDefaultSpecifier(local)) = d.specifiers.as_ref().and_then(|s| s.first()) else {
+            continue;
+        };
+        let mut body = String::new();
+        let mut seen = Vec::new();
+        let Some(function) = emit_runtime_helper(name, &mut body, &mut seen) else { continue };
+        let text = format!("var {} = /* @__PURE__ */ (() => {{\n{body}return {function};\n}})();", local.local.name);
+        if let Some(helper) = module::parse_statements(allocator, text).pop() {
+            *statement = helper;
+            inlined = true;
+        }
+    }
+    inlined
+}
+
+/// The helper `name`'s source, after the helpers it imports (each once, and
+/// bound to the name it imports it by), into `out`; its function's name.
+fn emit_runtime_helper(name: &str, out: &mut String, seen: &mut Vec<String>) -> Option<String> {
+    let source = runtime_helpers::HELPERS.iter().find(|(helper, _)| *helper == name)?.1;
+    let function = source.lines().find_map(|line| line.strip_prefix("export { ")?.strip_suffix(" as default };"))?.to_string();
+    if seen.iter().any(|helper| helper == name) {
+        return Some(function);
+    }
+    seen.push(name.to_string());
+    for line in source.lines() {
+        if let Some(rest) = line.strip_prefix("import ")
+            && let Some((alias, dependency)) = rest.split_once(" from \"./")
+        {
+            let dependency = emit_runtime_helper(dependency.strip_suffix(".js\";")?, out, seen)?;
+            if alias != dependency {
+                out.push_str(&format!("var {alias} = {dependency};\n"));
+            }
+        }
+    }
+    for line in source.lines().filter(|line| !line.starts_with("import ") && !line.starts_with("export { ")) {
+        out.push_str(line);
+        out.push('\n');
+    }
+    Some(function)
+}
+
+/// tsc applies a class's decorators to its instance members first, then to
+/// its static members, then to the class (its constructor's parameters
+/// with it), each group in source order; esbuild too. Oxc's legacy
+/// transform calls them in source order, one statement each after the class:
+/// `_decorate([..], A.prototype, "m", null)`, `_decorate([..], A, "s", ..)`,
+/// `A = _decorate([..], A)`. Each class's run of them is put in tsc's order.
+fn decorate_in_tsc_order(program: &mut Program<'_>) {
+    use oxc::ast::ast::{Argument, AssignmentTarget, Expression};
+    use oxc::ast_visit::{VisitMut, walk_mut};
+    let Some(decorate) = runtime_helper_local(program, "decorate").map(str::to_string) else { return };
+    // (0 instance member, 1 static member, 2 the class; the class's name)
+    fn kind(statement: &Statement<'_>, decorate: &str) -> Option<(u8, String)> {
+        let Statement::ExpressionStatement(statement) = statement else { return None };
+        let is_decorate = |e: &Expression<'_>| matches!(e, Expression::CallExpression(c) if matches!(&c.callee, Expression::Identifier(i) if i.name.as_str() == decorate));
+        match &statement.expression {
+            Expression::CallExpression(call) if is_decorate(&statement.expression) => match call.arguments.get(1)? {
+                Argument::StaticMemberExpression(m) if m.property.name.as_str() == "prototype" => match &m.object {
+                    Expression::Identifier(class) => Some((0, class.name.to_string())),
+                    _ => None,
+                },
+                Argument::Identifier(class) => Some((1, class.name.to_string())),
+                _ => None,
+            },
+            Expression::AssignmentExpression(assign) if is_decorate(&assign.right) => match &assign.left {
+                AssignmentTarget::AssignmentTargetIdentifier(class) => Some((2, class.name.to_string())),
+                _ => None,
+            },
+            _ => None,
+        }
+    }
+    struct Order(String);
+    impl<'a> VisitMut<'a> for Order {
+        fn visit_statements(&mut self, statements: &mut oxc::allocator::Vec<'a, Statement<'a>>) {
+            walk_mut::walk_statements(self, statements);
+            let mut i = 0;
+            while i < statements.len() {
+                let Some((_, class)) = kind(&statements[i], &self.0) else {
+                    i += 1;
+                    continue;
+                };
+                let mut end = i + 1;
+                while end < statements.len() && kind(&statements[end], &self.0).is_some_and(|(_, c)| c == class) {
+                    end += 1;
+                }
+                statements[i..end].sort_by_key(|s| kind(s, &self.0).map(|(rank, _)| rank));
+                i = end;
+            }
+        }
+    }
+    Order(decorate).visit_program(program);
 }
 
 /// esbuild's KeepStmt without KeepValues (`importsNotUsedAsValues`
@@ -462,7 +629,7 @@ fn use_strict<'a>(allocator: &'a Allocator, program: &mut Program<'a>) {
     program.directives.insert(0, directive);
 }
 
-fn transform_options(options: &Options, fragment_placeholder: Option<&str>) -> TransformOptions {
+fn transform_options(options: &Options, fragment_placeholder: Option<&str>, typescript: bool) -> TransformOptions {
     let jsx = match options.jsx {
         JsxMode::Preserve => JsxOptions { jsx_plugin: false, display_name_plugin: false, ..JsxOptions::disable() },
         JsxMode::Automatic => JsxOptions {
@@ -496,10 +663,25 @@ fn transform_options(options: &Options, fragment_placeholder: Option<&str>) -> T
             jsx_pragma: pragma.into(),
             jsx_pragma_frag: pragma_frag.into(),
             only_remove_type_imports: options.keep_values,
+            // useDefineForClassFields false: a field without an initializer goes.
+            remove_class_fields_without_initializer: typescript && options.assign_class_fields,
             ..TypeScriptOptions::default()
         },
+        // experimentalDecorators, as tsc lowers them (esbuild's __decorateClass).
+        decorator: DecoratorOptions { legacy: typescript && options.experimental_decorators, emit_decorator_metadata: false, ..DecoratorOptions::default() },
+        // useDefineForClassFields false: class fields lowered, the public ones
+        // assigned (setPublicClassFields), nothing else of ES2022.
+        assumptions: CompilerAssumptions { set_public_class_fields: typescript && options.assign_class_fields, ..CompilerAssumptions::default() },
+        env: EnvOptions {
+            es2022: ES2022Options {
+                class_properties: (typescript && options.assign_class_fields).then(|| ClassPropertiesOptions { loose: false }),
+                // With them, so a static block still runs between the static fields around it.
+                class_static_block: typescript && options.assign_class_fields,
+                ..ES2022Options::default()
+            },
+            ..EnvOptions::default()
+        },
         jsx,
-        env: EnvOptions::default(),
         ..TransformOptions::default()
     }
 }

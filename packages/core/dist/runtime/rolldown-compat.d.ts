@@ -4,8 +4,7 @@
  * transform cannot: its options are the whole build's, and a few of
  * esbuild's settings are per file or need what rolldown's transform does not
  * do. The load hook asks compileForBuild once per module and gets back null
- * (rolldown compiles the module itself), a refusal that fails the build, or
- * the module compiled here.
+ * (rolldown compiles the module itself) or the module compiled here.
  *
  * Nothing here rewrites language source as text. Modules are read through
  * rolldown's binding parser (parseSync: ESTree, UTF-16 offsets, comments
@@ -14,7 +13,8 @@
  * for what each function names. The only edits are to that transform's
  * output, at nodes the parser placed, each as long as what it replaces, so
  * the transform's source map (which maps to the module as written) stays
- * the map.
+ * the map; and one that moves whole lines of it (decorators into tsc's
+ * order), moving the map's lines with them.
  *
  * Self-contained but for types: the build facet's runtime bundles it.
  */
@@ -47,12 +47,6 @@ export interface CompatCompiled {
     map?: unknown;
     moduleType: 'js' | 'jsx';
 }
-/** A refusal, placed at the module's [start, end) (UTF-16 offsets). */
-export interface CompatRefusal {
-    refused: string;
-    start: number;
-    end: number;
-}
 /** rolldown's (Oxc's) JSX and TypeScript options for the settings; `fragment` names the classic fragment in place of theirs. */
 export declare function jsxAndTypescriptOf(settings: TsSettings, fragment?: string | null): {
     jsx: unknown;
@@ -60,8 +54,8 @@ export declare function jsxAndTypescriptOf(settings: TsSettings, fragment?: stri
 };
 /**
  * The module as a build must compile it: null for rolldown's own transform
- * (which then makes it as esbuild did), a refusal, or the compiled module.
- * Throws where it needs rolldown's transform or parser and the build has none.
+ * (which then makes it as esbuild did), or the compiled module. Throws where
+ * it needs rolldown's transform or parser and the build has none.
  */
-export declare function compileForBuild(api: Partial<CompatApi>, settings: TsSettings, module: CompatModule): CompatRefusal | CompatCompiled | null;
+export declare function compileForBuild(api: Partial<CompatApi>, settings: TsSettings, module: CompatModule): CompatCompiled | null;
 //# sourceMappingURL=rolldown-compat.d.ts.map

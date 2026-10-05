@@ -173,8 +173,8 @@ export function createOxcTransform(
     if (settings.keepValues) fields.push('keepValues', '1');
     if (settings.keepStatements) fields.push('keepStatements', '1');
     if (settings.alwaysStrict) fields.push('alwaysStrict', '1');
-    if (settings.refuse.decorators) fields.push('refuseDecorators', settings.refuse.decorators);
-    if (settings.refuse.classFields) fields.push('refuseClassFields', settings.refuse.classFields);
+    if (settings.experimentalDecorators) fields.push('experimentalDecorators', '1');
+    if (settings.assignClassFields) fields.push('assignClassFields', '1');
     if (options.sourcefile) fields.push('sourcefile', options.sourcefile);
     for (const [name, value] of Object.entries(options.define ?? {})) fields.push('define', name, value);
     for (const [feature, supported] of Object.entries(options.supported ?? {})) {

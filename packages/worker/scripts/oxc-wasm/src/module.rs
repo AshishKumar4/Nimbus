@@ -953,7 +953,7 @@ fn js_string(value: &str) -> String {
 /// Parse generated statements into the module's arena, without positions:
 /// they have no place in the source, so neither comments nor source maps may
 /// attach to them.
-fn parse_statements<'a>(allocator: &'a Allocator, text: String) -> ArenaVec<'a, Statement<'a>> {
+pub(crate) fn parse_statements<'a>(allocator: &'a Allocator, text: String) -> ArenaVec<'a, Statement<'a>> {
     let text = allocator.alloc_str(&text);
     let mut parsed = Parser::new(allocator, text, SourceType::mjs()).parse();
     debug_assert!(parsed.diagnostics.is_empty(), "generated code parses: {text}");
