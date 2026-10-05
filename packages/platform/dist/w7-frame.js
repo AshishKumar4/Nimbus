@@ -6,6 +6,7 @@ import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 const ENCODER_QUEUE_HWM = 0;
+const ENCODER_PULL_BYTES = 256 * 1024;
 /** What one stream read asks for when a record's small fields are wanted. */
 const READ_AHEAD_BYTES = 64 * 1024;
 const MAX_METADATA_BYTES = 64 * 1024;
@@ -31,7 +32,13 @@ var RecordTag;
     RecordTag[RecordTag["BatchEnd"] = 7] = "BatchEnd";
 })(RecordTag || (RecordTag = {}));
 const MODE = 'path-atomic-committed-prefix';
-/** Encode one bounded record per pull; no batch-sized metadata header exists. */
+/**
+ * Encode the records a pull reaches into one enqueued chunk of about
+ * ENCODER_PULL_BYTES (a record never splits; a file's chunk is at most
+ * CHUNK_SIZE), so a wave crosses the RPC boundary in a few writes rather than
+ * one per record. The bytes are the same records either way; no batch-sized
+ * metadata header exists.
+ */
 export function encodeWriteBatchStream(payload) {
     const batchId = crypto.randomUUID();
     const { deletes, directories, files } = preparePayload(payload, batchId);
@@ -44,19 +51,28 @@ export function encodeWriteBatchStream(payload) {
             if (closed)
                 return;
             try {
+                const parts = [];
+                let bytes = 0;
                 if (!magicEmitted) {
                     magicEmitted = true;
-                    controller.enqueue(W7_MAGIC.slice());
-                    return;
+                    parts.push(W7_MAGIC.slice());
+                    bytes += W7_MAGIC.byteLength;
                 }
-                const next = await iterator.next();
-                if (next.done) {
-                    closed = true;
+                while (bytes < ENCODER_PULL_BYTES) {
+                    const next = await iterator.next();
+                    if (next.done) {
+                        closed = true;
+                        break;
+                    }
+                    for (const part of next.value) {
+                        parts.push(part);
+                        bytes += part.byteLength;
+                    }
+                }
+                if (bytes > 0)
+                    controller.enqueue(parts.length === 1 ? parts[0] : concatBytes(...parts));
+                if (closed)
                     controller.close();
-                    return;
-                }
-                for (const part of next.value)
-                    controller.enqueue(part);
             }
             catch (error) {
                 closed = true;

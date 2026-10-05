@@ -111,7 +111,13 @@ export interface W7DecodedStream {
     readonly mode: typeof MODE;
     readonly records: AsyncIterable<W7DecodedRecord>;
 }
-/** Encode one bounded record per pull; no batch-sized metadata header exists. */
+/**
+ * Encode the records a pull reaches into one enqueued chunk of about
+ * ENCODER_PULL_BYTES (a record never splits; a file's chunk is at most
+ * CHUNK_SIZE), so a wave crosses the RPC boundary in a few writes rather than
+ * one per record. The bytes are the same records either way; no batch-sized
+ * metadata header exists.
+ */
 export declare function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array>;
 /**
  * Parse the v3 preamble eagerly, then expose validated operation records

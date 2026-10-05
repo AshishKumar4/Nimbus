@@ -1025,6 +1025,31 @@ async function routeFetch(self, request) {
                     while (!(await reader.read()).done) { /* drain */ }
                 }
             });
+            // As the network delivers a wave: its bytes in large chunks.
+            const wire = async (prefix, from) => {
+                const bytes = new Uint8Array(await new Response(encodeWriteBatchStream(payload(prefix, from))).arrayBuffer());
+                return new ReadableStream({
+                    type: 'bytes',
+                    start(controller) {
+                        for (let offset = 0; offset < bytes.byteLength; offset += 64 * 1024) {
+                            controller.enqueue(bytes.slice(offset, offset + 64 * 1024));
+                        }
+                        controller.close();
+                    },
+                });
+            };
+            await phase('w7EncodeBytes', async () => {
+                for (let i = 0; i < body.files; i += body.perWave)
+                    await wire('bytes', i);
+            });
+            vfs.mkdir(`${root}/wire`, { recursive: true });
+            await phase('vfsWriteStreamWire', async () => {
+                for (let i = 0; i < body.files; i += body.perWave) {
+                    const result = await vfs.writeStream(await wire('wire', i));
+                    if (!result.ok)
+                        throw new Error(result.error.message);
+                }
+            });
             vfs.mkdir(`${root}/stream`, { recursive: true });
             await phase('vfsWriteStream', async () => {
                 for (let i = 0; i < body.files; i += body.perWave) {
