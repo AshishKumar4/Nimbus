@@ -6785,8 +6785,8 @@ export class SqliteVFS {
         staged?.set(path, { mode: normalized.mode, gid: normalized.gid, defaultAcl: made?.defaultAcl ?? prior?.defaultAcl ?? null });
         return normalized;
     }
-    authorizeBatch(payload, cred, priors = new Map()) {
-        const placed = new Map();
+    authorizeBatch(payload, cred, priors = new Map(), memo) {
+        const placed = memo?.placed ?? new Map();
         const staged = new Map();
         const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged, priors));
         const pending = new Map(inodes.map((entry) => [entry.path, entry]));
@@ -6798,7 +6798,7 @@ export class SqliteVFS {
         // keep the rule they had: they remove rows, wherever they were left.
         const unplaceable = (key) => vfsError('ENOTDIR', key, 'not a directory the entry can be placed in');
         const checkedParents = new Set();
-        const placedParents = new Set();
+        const placedParents = memo?.placedParents ?? new Set();
         const checkParent = (path, placing) => {
             const parent = this.parentPath(path);
             if (parent === '') {
@@ -7101,6 +7101,7 @@ export class SqliteVFS {
         // committed inode tree for its parent, so directories flush before the
         // first file record rather than sharing the file group.
         let pendingDirectories = [];
+        let authorization = { gen: -1, placed: new Map(), placedParents: new Set() };
         const flushGroup = () => {
             if (group.empty)
                 return;
@@ -7306,8 +7307,12 @@ export class SqliteVFS {
                         // The file lands where its name resolves (links followed, as a
                         // batch places it), and that is the path its lease is checked on.
                         const priors = new Map();
+                        if (authorization.gen !== this._gen) {
+                            authorization = { gen: this._gen, placed: new Map(), placedParents: new Set() };
+                        }
+                        const memo = authorization;
                         const placedInode = this.withMutationOwner(options.mutationOwner, () => {
-                            const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
+                            const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors, memo).inodes;
                             this.assertMutationsAllowed([placed.path]);
                             return placed;
                         });
