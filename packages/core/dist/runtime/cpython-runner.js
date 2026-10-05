@@ -320,6 +320,8 @@ export function makeCPythonRunnerFactory(deps) {
                 cwd,
                 pythonHome: `/${installRoot.replace(/^\/+/, '')}`,
                 supervisorPid: ctx.pid,
+                // What the interpreter's own copy of the namespace is read as (wasi/resident-filesystem.ts).
+                cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] },
             };
             // A script or `-m` can bind a port and keep serving, and such a program
             // is not finished when it stops producing output — it is finished when it

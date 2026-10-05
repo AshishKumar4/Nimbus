@@ -1,0 +1,110 @@
+/**
+ * A WASI process's filesystem, answered from the process's own copy of the
+ * namespace where that copy can answer, and by the authority everywhere else.
+ *
+ * Every filesystem syscall a guest makes is a call to the session: measured
+ * on a throwaway (2026-10-05), 5.9-12.7 ms for one `os.stat` from Python, so
+ * a program that stats a tree pays for each name with a round trip. The
+ * process already carries a store for names and bytes
+ * (worker vfs/facet-resident-store.ts, the one a node process reads its
+ * synchronous calls from). This adapter puts the codec's calls in front of
+ * it: a lookup, a stat, a directory listing, a read-only open and its reads
+ * are answered from the store; anything that changes the filesystem, and
+ * anything the store cannot vouch for, goes to the authority exactly as
+ * before.
+ *
+ * What makes an answer from the store the authority's answer:
+ *   - The walk is the authority's own (beneath-walk.ts walkBeneath), its
+ *     lookups answered from the store's entries, so `..`, links, search
+ *     permission and every refusal come out as the authority's would.
+ *   - Only the session's SQLite filesystem is answered here, recognised by
+ *     its device: an entry on another device (a mount: /proc, /dev, an
+ *     embedder's) changes without the change log, so it is the authority's.
+ *   - The store is coherent with the authority at its cursor, and the cursor
+ *     moves by the ACQUIRE barrier. The barrier is owed after any call this
+ *     adapter sent to the authority that may have changed something, and
+ *     after input entered the process from outside (`inbound`): before its
+ *     next answer the adapter takes it, so what the guest learned elsewhere,
+ *     or did itself, is in what it reads next. That is the causal rule a node
+ *     process keeps (core README, process model).
+ *   - A name the store does not know (its directory not listed yet) is not
+ *     absent: the adapter lists the directory and walks again.
+ */
+import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '../os-contracts.js';
+/** A name as the store holds it: its lstat, and a symlink's text. */
+export interface ResidentEntry {
+    type: 'file' | 'directory' | 'symlink';
+    dev: number;
+    ino: number;
+    nlink: number;
+    size: number;
+    atime: number;
+    mtime: number;
+    ctime: number;
+    mode: number;
+    uid: number;
+    gid: number;
+    revision: number;
+    target: string | null;
+}
+/** What the adapter asks of the process's store. Keys have no leading `/`. */
+export interface ResidentNamespace {
+    /** The device the session's SQLite filesystem reports: the only one answered here. */
+    readonly device: number;
+    /** The credential the process walks and reads as. */
+    readonly cred: {
+        uid: number;
+        gid: number;
+        groups: readonly number[];
+    };
+    /** False while the store cannot answer (it lost its cursor): every call then goes to the authority. */
+    ready(): boolean;
+    /** The entry at `key`, no link followed: null when the store knows nothing is there, undefined when it does not know. */
+    entry(key: string): ResidentEntry | null | undefined;
+    /** The names in directory `key`, or undefined when it is not listed. */
+    children(key: string): RuntimeVfsDirEntry[] | undefined;
+    /** List directory `key`'s entries. False when it cannot be. */
+    list(key: string): Promise<boolean>;
+    /**
+     * Learn the entries at `keys`, shallowest first, in one round trip; a
+     * missing one is not recorded. With `content`, a small file at the last key
+     * comes with its bytes.
+     */
+    lookup(keys: string[], content: boolean): Promise<boolean>;
+    /** List everything under `key` in a few pages. False when that did not finish. */
+    listTree(key: string): Promise<boolean>;
+    /** The bytes of file `key` the store holds, or undefined. */
+    content(key: string): Uint8Array | undefined;
+    /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
+    fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
+    /** The ACQUIRE barrier. */
+    barrier(): Promise<boolean>;
+}
+export interface ResidentFilesystem extends RuntimeFsBridge {
+    /** Input from outside the process arrived: the barrier is owed before the next answer. */
+    inbound(): void;
+    /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */
+    stats(): ResidentFilesystemStats;
+}
+/** Counts since the process started. Every `delegated` call is a round trip to the session. */
+export interface ResidentFilesystemStats {
+    /** Calls answered from the store. */
+    local: number;
+    /** Calls the session answered, by name. */
+    delegated: Record<string, number>;
+    /** Path lookups (one round trip each), directory listings (two each) and tree listings. */
+    lookups: number;
+    listings: number;
+    treeListings: number;
+    /** Files fetched into the store, and their bytes. */
+    fills: number;
+    filledBytes: number;
+    /** ACQUIRE barriers taken. */
+    barriers: number;
+    /** Wall time the process spent waiting on the session for any of the above, in ms. */
+    waitMs: number;
+}
+/** Larger files are read through the authority's descriptors, never held whole here. */
+export declare const RESIDENT_OPEN_MAX_BYTES: number;
+export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem;
+//# sourceMappingURL=resident-filesystem.d.ts.map

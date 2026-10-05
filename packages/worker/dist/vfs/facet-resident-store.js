@@ -277,7 +277,7 @@ const __RESIDENT_MAX_LIST_PAGES = 4096;
  * and the kind is stored rather than inferred so a text file whose bytes happen
  * to be valid UTF-8 does not change shape between a write and a read.
  */
-const __RESIDENT_SCHEMA = "2";
+const __RESIDENT_SCHEMA = "3";
 
 // N18: the session's storage ledger admits this facet's database growth
 // before it happens. The supervisor grants an allowance (the ledger records
@@ -535,6 +535,7 @@ function __residentTablesOnSql(sql) {
       "parent TEXT NOT NULL, name TEXT NOT NULL, kind INTEGER NOT NULL, size INTEGER NOT NULL, " +
       "mode INTEGER NOT NULL, uid INTEGER NOT NULL, gid INTEGER NOT NULL, atime REAL NOT NULL, " +
       "mtime REAL NOT NULL, ctime REAL NOT NULL, ino INTEGER NOT NULL, rev INTEGER NOT NULL, target TEXT, " +
+      "dev INTEGER NOT NULL DEFAULT 0, nlink INTEGER NOT NULL DEFAULT 1, " +
       "PRIMARY KEY (parent, name)" +
     ") WITHOUT ROWID"
   );
@@ -605,16 +606,16 @@ function __residentTablesOnSql(sql) {
       sql.exec("DELETE FROM ns");
       sql.exec("DELETE FROM meta");
     },
-    nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) {
+    nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       sql.exec(
-        "INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) " +
-          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-        parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target,
+        "INSERT OR REPLACE INTO ns (parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) " +
+          "VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+        parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, Number(dev) || 0, Number(nlink) || 1,
       );
     },
     nsGet(parent, name) {
       return first(sql.exec(
-        "SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target FROM ns WHERE parent = ? AND name = ?",
+        "SELECT kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink FROM ns WHERE parent = ? AND name = ?",
         parent, name,
       ));
     },
@@ -820,7 +821,7 @@ function __residentTablesInMemory() {
       files.clear(); chunks.clear(); meta.clear(); ns.clear(); byKey.clear();
       sorted = null; used = 0; names = 0; namespaceBytes = 0;
     },
-    nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target) {
+    nsPut(parent, name, kind, size, mode, uid, gid, atime, mtime, ctime, ino, rev, target, dev, nlink) {
       let dir = ns.get(parent);
       const previous = dir?.get(name);
       const bytes = __namespaceRowBytes(parent, name, target);
@@ -836,7 +837,7 @@ function __residentTablesInMemory() {
       dir.set(name, {
         kind: Number(kind), size: Number(size), mode: Number(mode), uid: Number(uid), gid: Number(gid),
         atime: Number(atime), mtime: Number(mtime), ctime: Number(ctime), ino: Number(ino), rev: Number(rev),
-        target: target == null ? null : String(target),
+        target: target == null ? null : String(target), dev: Number(dev) || 0, nlink: Number(nlink) || 1,
       });
     },
     nsGet(parent, name) { const row = nsRow(parent, name); return row === undefined ? undefined : { ...row }; },
@@ -1523,6 +1524,7 @@ function __nsPut(t, k, stat, rev, target, unlisted) {
     parent, name, kind, Number(stat.size) || 0, Number(stat.mode) || 0, Number(stat.uid) || 0,
     Number(stat.gid) || 0, Number(stat.atime) || 0, Number(stat.mtime) || 0, Number(stat.ctime) || 0,
     Number(stat.ino) || 0, Number(rev) || 0, kind === __NS_LINK ? String(target ?? "") : mount,
+    Number(stat.dev) || 0, Number(stat.nlink) || 1,
   );
   if (kind === __NS_LINK) __nsLinks.add(k); else __nsLinks.delete(k);
   if (mount !== null) __nsUnlisted.set(k, mount); else __nsUnlisted.delete(k);
@@ -1540,6 +1542,8 @@ function __nsTryPut(t, k, stat, rev, target) {
 
 /** Delete everything beneath \`k\`, and \`k\` itself when \`self\`. */
 function __nsDeleteTree(t, k, self) {
+  // What a lazily listed namespace held there is no longer all of it.
+  if (__nsLazy) __nsForgetListed(k);
   if (k === "") {
     t.nsClear();
     __nsLinks = new Set();
@@ -1563,7 +1567,7 @@ function __nsDeleteTree(t, k, self) {
 /** The row at exactly \`k\` (no symlink resolution), or undefined. */
 function __nsRowAt(t, k) {
   if (k === "") {
-    return { kind: __NS_DIR, size: 0, mode: 0o40755, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null };
+    return { kind: __NS_DIR, size: 0, mode: 0o40755, uid: 0, gid: 0, atime: 0, mtime: 0, ctime: 0, ino: 1, rev: 0, target: null, dev: 0, nlink: 1 };
   }
   const [parent, name] = __nsSplit(k);
   return t.nsGet(parent, name);
@@ -1920,6 +1924,24 @@ function __residentAcquireOptions() {
 }
 
 /**
+ * Apply one ACQUIRE answer to the store: room for what it pushes (N18), the
+ * delta itself, then the directories it says no delta will itemise — relisted
+ * now where the namespace is enumerated, forgotten where it is listed on
+ * demand, so the next lookup there lists it again. The store's catch-up and a
+ * WASI process's barrier run it; node-shims.ts's barriers run the same three
+ * steps inline.
+ */
+async function __residentApplyAcquire(supervisor, result) {
+  await __residentRoomForPushed(result);
+  const applied = __residentAdmit(result);
+  for (const dir of applied.relist) {
+    if (__nsLazy) __nsForgetListed(dir);
+    else await __nsRelist(supervisor, dir);
+  }
+  return applied;
+}
+
+/**
  * One delta from a listing's cursor, applied before the program runs. A
  * listing's pages are walked at successive revisions, so the namespace it
  * builds can mix states no single revision had (a rename seen on both sides
@@ -1937,9 +1959,7 @@ async function __residentCatchUp(supervisor, cursor) {
     // program's first barrier brings forward like any other.
     return cursor;
   }
-  await __residentRoomForPushed(result);
-  const applied = __residentAdmit(result);
-  for (const dir of applied.relist) await __nsRelist(supervisor, dir);
+  const applied = await __residentApplyAcquire(supervisor, result);
   // A dropped row was held, so it is wanted again at its new revision.
   const refetch = [];
   for (const path of applied.dropped) {
@@ -2003,6 +2023,331 @@ async function __nsRelist(supervisor, dir) {
   // shows (hidden now, or gone) leaves, one it shows is written.
   __nsDeleteTree(t, dir, false);
   for (const entry of seen) __nsPut(t, String(entry.path).replace(/^\\/+/, ""), entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null);
+}
+
+// ── The namespace listed on demand ───────────────────────────────────────
+//
+// A node process lists every name before its program runs, because a
+// synchronous stat cannot wait for a listing. A process whose calls CAN wait
+// (a WASI guest, parked under JSPI) does not have to pay for names it never
+// looks at, and the bill is real: with a vscode clone in the session (24,683
+// names) the whole enumeration took \`node -e 'console.log(1)'\` from 0.40 s to
+// 2.0 s (throwaway, 2026-10-05). So such a process starts with no names and a
+// cursor, and lists a directory the first time a lookup needs one of its
+// entries. A directory whose entries are all rows is LISTED (\`__nsListed\`);
+// below one that is not, a missing row means "not known", never "absent".
+//
+// Rows are what a listing or a delta put there, dated by their own revision,
+// exactly as for an enumerated namespace: deltas from the store's cursor
+// (taken before any listing) name everything that moved since, so a row is
+// never older than the cursor it is judged against.
+
+/** Whether this store lists on demand (beginLazyNamespace) rather than enumerating. */
+let __nsLazy = false;
+/** Directories (keys) every entry of which is a row: below them a missing row is an absent name. */
+const __nsListed = new Set();
+
+/**
+ * Start a namespace with no names at \`cursor\`, to be listed on demand. Every
+ * row and held file goes: nothing here is dated against the new cursor.
+ */
+function __nsBeginLazy(t, cursor) {
+  __nsLazy = true;
+  __nsListed.clear();
+  t.clear();
+  __nsLinks = new Set();
+  __nsUnlisted = new Map();
+  for (const path of [...__residentHeld.keys()]) __residentForgetHeld(path);
+  __residentWriteCursor(t, cursor);
+  __residentSealed = false;
+  __residentSealReason = "";
+  __residentUndated = false;
+  __nsMarkReady(t, true);
+}
+
+/** Whether a missing row at \`k\` means nothing is there (its directory is listed). */
+function __nsListedAt(k) {
+  return __nsListed.has(__nsSplit(k)[0]);
+}
+
+/** Forget that \`dir\` and every directory beneath it are listed: a change no delta itemises may have moved their names. */
+function __nsForgetListed(dir) {
+  const prefix = dir === "" ? "" : dir + "/";
+  for (const listed of [...__nsListed]) if (listed === dir || listed.startsWith(prefix)) __nsListed.delete(listed);
+}
+
+/**
+ * Boot a lazily listed namespace: the authority's current cursor (an ACQUIRE
+ * from no cursor is a poison by construction, which carries it) and no
+ * names. False when no cursor came back: the process then asks the
+ * authority for everything, as it did before this store.
+ */
+async function __residentBootLazy(supervisor) {
+  if (!supervisor || typeof supervisor.fsAcquire !== "function") return false;
+  let answer = null;
+  try { answer = await supervisor.fsAcquire(null, 0, { namespace: true }); }
+  catch { return false; }
+  if (!answer || typeof answer.epoch !== "string" || typeof answer.rev !== "number") return false;
+  if (!__residentReady) throw new Error("Nimbus: __residentBootLazy before __residentBind");
+  // Sealed until now, and this is what unseals it: nothing is held to date.
+  __nsBeginLazy(__residentT, { epoch: answer.epoch, rev: answer.rev });
+  return true;
+}
+
+/**
+ * The ACQUIRE barrier of a lazily listed namespace, taken where input from
+ * outside the process enters it (the runtime decides where; see the core
+ * README's process model). An answer is applied as every barrier applies one
+ * (__residentApplyAcquire). One that cannot be — a poison, a delta without
+ * stats, no answer — dates nothing the store holds, and the namespace starts
+ * again from nothing at the authority's cursor: names are listed again on
+ * demand, never served from a state the cursor has left.
+ */
+async function __residentLazyBarrier(supervisor) {
+  if (!__residentReady) throw new Error("Nimbus: __residentLazyBarrier before __residentBind");
+  const t = __residentT;
+  const cursor = __residentCursor();
+  let answer = null;
+  if (cursor !== null) {
+    try { answer = await supervisor.fsAcquire(cursor.epoch, cursor.rev, { namespace: true }); }
+    catch { answer = null; }
+  }
+  if (answer && !answer.poison && typeof answer.epoch === "string" && typeof answer.rev === "number") {
+    await __residentApplyAcquire(supervisor, answer);
+    if (__nsReady()) return true;
+    answer = { epoch: __residentCursor().epoch, rev: __residentCursor().rev };
+  }
+  if (answer && typeof answer.epoch === "string" && typeof answer.rev === "number") {
+    __nsBeginLazy(t, { epoch: answer.epoch, rev: answer.rev });
+    return true;
+  }
+  return __residentBootLazy(supervisor);
+}
+
+/** Listing pages a tree walk is given before it lists one directory at a time instead. */
+const __RESIDENT_TREE_PAGES = 2;
+
+/**
+ * The store as a WASI process's filesystem adapter reads it (core
+ * runtime/wasi/resident-filesystem.ts, ResidentNamespace): names as lstats,
+ * listed on demand, file bytes held or fetched, and the barrier. \`device\` is
+ * the session's SQLite device, the only one the adapter answers for.
+ */
+function __residentNamespaceView(supervisor, device, cred) {
+  __nsSetCred(cred);
+  const encoder = new TextEncoder();
+  const typeOf = (kind) => (Number(kind) === __NS_DIR ? "directory" : Number(kind) === __NS_LINK ? "symlink" : "file");
+  const view = {
+    device: Number(device),
+    cred: { uid: Number(cred.uid), gid: Number(cred.gid), groups: (cred.groups || []).map(Number) },
+    ready: () => __nsLazy && __nsReady(),
+    entry(k) {
+      const row = __nsRowAt(__residentRequire(), k);
+      if (row === undefined) return __nsListedAt(k) ? null : undefined;
+      return {
+        type: typeOf(row.kind), dev: Number(row.dev) || 0, ino: Number(row.ino), nlink: Number(row.nlink) || 1,
+        size: Number(row.size), atime: Number(row.atime), mtime: Number(row.mtime), ctime: Number(row.ctime),
+        mode: Number(row.mode), uid: Number(row.uid), gid: Number(row.gid), revision: Number(row.rev),
+        target: row.target == null ? null : String(row.target),
+      };
+    },
+    children(k) {
+      if (!__nsListed.has(k)) return undefined;
+      return __nsChildren(k).map((child) => ({ name: child.name, type: typeOf(child.kind) }));
+    },
+    list: (k) => __nsListDirectory(supervisor, k),
+    lookup: (keys, content) => __nsLookupKeys(supervisor, keys, content ? __RESIDENT_LOOKUP_CONTENT_BYTES : 0),
+    listTree: (k) => __nsListSubtree(supervisor, k, __RESIDENT_TREE_PAGES),
+    content(k) {
+      const cell = __residentGet(k);
+      if (cell === undefined || (cell && typeof cell === "object" && cell.error)) return undefined;
+      return typeof cell === "string" ? encoder.encode(cell) : cell;
+    },
+    async fill(k, entry) {
+      const cursor = __residentCursor();
+      if (cursor === null) return null;
+      await __residentFetchFiles(supervisor, [{ path: k, size: entry.size, rev: entry.revision, epoch: cursor.epoch, ckey: null }]);
+      const bytes = view.content(k);
+      return bytes === undefined ? null : bytes;
+    },
+    barrier: () => __residentLazyBarrier(supervisor),
+  };
+  return view;
+}
+
+/** The most a lookup reads of the file it ends at, so the open that follows a stat costs no trip of its own. */
+const __RESIDENT_LOOKUP_CONTENT_BYTES = 256 * 1024;
+
+/**
+ * Learn the names along one path in one round trip: an lstat of each key, in
+ * order from the shallowest. A path ten directories deep costs one batch
+ * rather than a listing of each directory on the way. A key below a symlink
+ * names what the session reached THROUGH the link, which is not that key's
+ * row, so nothing past the first link (or the first missing name) is written:
+ * the walk follows the link and asks again. A missing name is not recorded as
+ * absent; only a listed directory says what is not in it.
+ *
+ * With \`contentBytes\`, the same trip reads the last key's bytes and lstats it
+ * again: a program that stats a file opens it next (a compiler's header
+ * search, an interpreter's import), and a small file then costs nothing more.
+ * The bytes are kept only when both lstats show the same file at the same
+ * revision, so no write came between them and the read, and only when they
+ * are all of it.
+ */
+async function __nsLookupKeys(supervisor, keys, contentBytes) {
+  if (!supervisor || typeof supervisor.fsReadBatch !== "function" || keys.length === 0) return false;
+  const t = __residentRequire();
+  const batch = keys.slice(0, __RESIDENT_BATCH_PATHS - 2);
+  const last = batch[batch.length - 1];
+  const withContent = contentBytes > 0 && batch.length === keys.length;
+  const requests = batch.map((k) => ({ path: "/" + k, lstat: true }));
+  if (withContent) requests.push({ path: "/" + last, offset: 0, length: contentBytes }, { path: "/" + last, lstat: true });
+  let answers;
+  try { answers = await supervisor.fsReadBatch(requests); }
+  catch { return false; }
+  if (!Array.isArray(answers) || answers.length !== requests.length) return false;
+  let reachedLast = false;
+  for (let i = 0; i < batch.length; i++) {
+    const answer = answers[i];
+    if (!answer || answer.error || answer.stat === null || answer.stat === undefined || !__nsDescribes(answer.stat)) break;
+    let target;
+    if (answer.stat.type === "symlink") {
+      try { target = await supervisor.readlink("/" + batch[i]); }
+      catch { break; }
+      if (typeof target !== "string") break;
+    }
+    if (!__nsTryPut(t, batch[i], answer.stat, Number(answer.stat.revision) || 0, target)) return false;
+    if (i === batch.length - 1) reachedLast = true;
+    if (answer.stat.type !== "directory") break;
+  }
+  if (withContent && reachedLast) {
+    const before = answers[batch.length - 1].stat;
+    const read = answers[batch.length];
+    const after = answers[batch.length + 1];
+    const bytes = read && !read.error && read.bytes ? __residentBytes(read.bytes) : null;
+    if (
+      before.type === "file" && bytes !== null && bytes.byteLength === Number(before.size)
+      && after && !after.error && after.stat && after.stat.type === "file"
+      && Number(after.stat.ino) === Number(before.ino) && Number(after.stat.revision) === Number(before.revision)
+      && await __residentEnsureRoom(bytes.byteLength + __RESIDENT_ROW_BYTES)
+    ) {
+      // Whatever was held there is replaced whole, never left headless or with stray parts.
+      t.fileDelete(last);
+      t.chunkDelete(last);
+      if (__residentPutChunk(t, last, 0, bytes)) __residentPutHead(t, last, __RK_BINARY, bytes.byteLength, 1, Number(before.revision) || 0, null);
+    }
+  }
+  return true;
+}
+
+/**
+ * List the entries directly under \`dir\`: its names (readdir) and each one's
+ * stat (an lstat batch), then each symlink's target. Two round trips for a
+ * directory of any size up to the batch bound, where a stat per name would be
+ * one each. A name that went between the two is not written; one that came is
+ * reported by the next delta, since the store's cursor predates both.
+ * Returns false when the directory cannot be listed (gone, not a directory,
+ * not readable): the caller asks the authority instead.
+ */
+async function __nsListDirectory(supervisor, dir) {
+  if (!supervisor || typeof supervisor.readdir !== "function" || typeof supervisor.fsReadBatch !== "function") return false;
+  const t = __residentRequire();
+  let names;
+  try { names = await supervisor.readdir("/" + dir); }
+  catch { return false; }
+  if (!Array.isArray(names)) return false;
+  const keys = names.map((entry) => (dir === "" ? "" : dir + "/") + String(entry.name));
+  const stats = new Map();
+  for (let i = 0; i < keys.length; i += __RESIDENT_BATCH_PATHS) {
+    const batch = keys.slice(i, i + __RESIDENT_BATCH_PATHS);
+    let answers;
+    try { answers = await supervisor.fsReadBatch(batch.map((k) => ({ path: "/" + k, lstat: true }))); }
+    catch { return false; }
+    if (!Array.isArray(answers) || answers.length !== batch.length) return false;
+    for (let j = 0; j < batch.length; j++) {
+      const answer = answers[j];
+      if (!answer || answer.error) return false;
+      if (answer.stat === null || answer.stat === undefined) continue;
+      if (!__nsDescribes(answer.stat)) return false;
+      stats.set(batch[j], answer.stat);
+    }
+  }
+  const targets = new Map();
+  for (const [k, stat] of stats) {
+    if (stat.type !== "symlink") continue;
+    let target;
+    try { target = await supervisor.readlink("/" + k); }
+    catch { return false; }
+    if (typeof target !== "string") return false;
+    targets.set(k, target);
+  }
+  // Only what the directory holds now: a row for a name it no longer shows goes.
+  for (const child of __nsChildren(dir)) {
+    const k = (dir === "" ? "" : dir + "/") + child.name;
+    if (!stats.has(k)) __nsDeleteTree(t, k, true);
+  }
+  for (const [k, stat] of stats) {
+    if (!__nsTryPut(t, k, stat, Number(stat.revision) || 0, targets.get(k))) return false;
+  }
+  __nsListed.add(dir);
+  return true;
+}
+
+/**
+ * List everything beneath \`dir\` in at most \`maxPages\` listing pages: what a
+ * walker of the tree (git status, a build) is about to look at, in a few
+ * round trips instead of two per directory. The listing is in path order, so
+ * a directory whose last descendant the pages passed is complete, and is
+ * marked listed; a directory the pages stopped inside is not (its rows stay,
+ * as rows). True when \`dir\` itself was listed whole.
+ */
+async function __nsListSubtree(supervisor, dir, maxPages) {
+  if (!supervisor || typeof supervisor.fsList !== "function") return false;
+  const t = __residentRequire();
+  const prefix = dir === "" ? "" : dir + "/";
+  // Directories entered and not yet passed, innermost last.
+  const open = [dir];
+  const seen = [];
+  let after = dir === "" ? null : prefix;
+  let complete = false;
+  const close = (path) => {
+    // Every open directory that \`path\` is not under has been passed.
+    while (open.length > 1) {
+      const top = open[open.length - 1];
+      if (path.startsWith(top + "/")) break;
+      __nsListed.add(open.pop());
+    }
+  };
+  const written = new Set();
+  pages: for (let page = 0; page < maxPages; page++) {
+    let listed;
+    try { listed = await supervisor.fsList(after, __RESIDENT_LIST_PAGE); }
+    catch { break; }
+    if (!listed || !Array.isArray(listed.entries)) break;
+    for (const entry of listed.entries) {
+      const k = String(entry.path).replace(/^\\/+/, "");
+      if (k === dir) continue;
+      if (prefix !== "" && !k.startsWith(prefix)) { complete = true; break pages; }
+      if (!entry.stat || !__nsDescribes(entry.stat)) break pages;
+      close(k);
+      if (!__nsTryPut(t, k, entry.stat, entry.rev, entry.linkTarget, entry.unlisted ?? null)) break pages;
+      written.add(k);
+      seen.push(k);
+      if (entry.kind === "directory" && !entry.unlisted) open.push(k);
+    }
+    if (listed.next === null || listed.next === undefined) { complete = true; break; }
+    after = listed.next;
+  }
+  if (!complete) return false;
+  // A name the listing no longer shows under a directory it passed whole goes.
+  for (const listed of [...open.slice(1), dir]) {
+    for (const child of __nsChildren(listed)) {
+      const k = (listed === "" ? "" : listed + "/") + child.name;
+      if (!written.has(k)) __nsDeleteTree(t, k, true);
+    }
+  }
+  while (open.length > 0) __nsListed.add(open.pop());
+  return true;
 }
 
 /**

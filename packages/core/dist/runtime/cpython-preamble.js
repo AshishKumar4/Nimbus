@@ -47,7 +47,7 @@ function __nimbusPyModule() {
 async function __nimbusPyBoot(args) {
   // The interpreter sees the whole session tree at '/': its stdlib, site
   // packages and the user's cwd are absolute paths under it.
-  __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
+  __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: args.cred });
   // AFTER initFS, never before. See constraint (2). The stub is read back off
   // globalThis rather than passed in, because the facet entry point published
   // it there before initFS wiped the adoption.

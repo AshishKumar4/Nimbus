@@ -27,7 +27,7 @@
  * catch-and-continue around loader failures.
  */
 import { withHostView } from './process-files.js';
-import { CRED_KERNEL, gateSyncLaunch, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
+import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI } from './os-contracts.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
@@ -62,6 +62,8 @@ export function makeClangRunnerFactory(deps) {
                 ctx.stderr.write(`${binName}: ${notHydrated}\n`);
                 return 1;
             }
+            const { uid, gid, groups } = requireVfsCred(ctx.cred, binName);
+            const processCred = { uid, gid, groups: [...groups] };
             // Fast paths — no wasm boot.
             if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
                 ctx.stdout.write(`Nimbus wasm-clang (binji-2020, LLVM 8.0.1)\n`);
@@ -217,7 +219,11 @@ export function makeClangRunnerFactory(deps) {
                         '-x', isCpp ? 'c++' : 'c',
                         src,
                     ];
-                    const compileResult = await dispatchClangFacet(compile, { argv: compileArgv }, ctx.signal);
+                    const compileStarted = Date.now();
+                    const compileResult = await dispatchClangFacet(compile, { argv: compileArgv, cred: processCred }, ctx.signal);
+                    const compileMs = Date.now() - compileStarted;
+                    if (ctx.env?.NIMBUS_WASI_FS_STATS === '1')
+                        ctx.stderr.write(`[wasi-fs] clang wallMs=${compileMs} ${JSON.stringify(compileResult.fsStats ?? null)}\n`);
                     if (compileResult.stdout)
                         ctx.stdout.write(compileResult.stdout);
                     if (compileResult.stderr)
@@ -266,7 +272,11 @@ export function makeClangRunnerFactory(deps) {
                     '-lclang_rt.builtins-wasm32',
                     '-o', outputGuest,
                 ];
-                const linkResult = await dispatchClangFacet(link, { argv: linkArgv }, ctx.signal);
+                const linkStarted = Date.now();
+                const linkResult = await dispatchClangFacet(link, { argv: linkArgv, cred: processCred }, ctx.signal);
+                const linkMs = Date.now() - linkStarted;
+                if (ctx.env?.NIMBUS_WASI_FS_STATS === '1')
+                    ctx.stderr.write(`[wasi-fs] wasm-ld wallMs=${linkMs} ${JSON.stringify(linkResult.fsStats ?? null)}\n`);
                 if (linkResult.stdout)
                     ctx.stdout.write(linkResult.stdout);
                 if (linkResult.stderr)
@@ -615,6 +625,7 @@ async function dispatchClangFacet(target, args, signal) {
         return await fn({
             primaryName: inArgs.primaryName,
             argv: inArgs.argv,
+            cred: inArgs.cred,
             primaryMod,
             supervisor: facetEnv?.SUPERVISOR,
         });
@@ -623,6 +634,7 @@ async function dispatchClangFacet(target, args, signal) {
         const result = await target.facet.submit(facetFn, {
             primaryName: target.primaryName,
             argv: args.argv,
+            cred: args.cred,
         }, {
             timeoutMs: 300_000,
             // A kill or Ctrl-C ends the facet too, where the host can.
@@ -633,6 +645,7 @@ async function dispatchClangFacet(target, args, signal) {
             stdout: result.stdout || '',
             stderr: result.stderr || '',
             error: result.error,
+            fsStats: result.fsStats ?? null,
         };
     }
     catch (e) {
@@ -670,6 +683,7 @@ globalThis.__clangRun = async function __clangRun(args) {
   __wasiInitFS({
     root: '',
     preopens: [{ wasiPath: '/', vfsPath: '' }],
+    cred: args.cred,
   });
   // AFTER initFS, never before: initFS drops the adopted supervisor so a
   // pooled isolate cannot serve the previous tenant's filesystem.
@@ -708,6 +722,7 @@ globalThis.__clangRun = async function __clangRun(args) {
     exitCode: run.exitCode,
     stdout: stdout.join(''),
     stderr: stderr.join(''),
+    fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
   };
 };
 
