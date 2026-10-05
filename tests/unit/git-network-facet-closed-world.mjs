@@ -65,9 +65,10 @@ function assert(condition, message) {
 
 export const gitHttp = {};
 export const git = {
-  async clone({ fs, dir, cache, noCheckout }) {
+  async clone({ fs, dir, cache, noCheckout, depth }) {
     assert(noCheckout === true, 'clone prepare did not disable checkout');
     globalThis.__cloneCalls = (globalThis.__cloneCalls || 0) + 1;
+    globalThis.__cloneDepths = [...(globalThis.__cloneDepths || []), depth];
     const root = dir.replace(/^\\/+/, '').split('/').filter(segment => segment && segment !== '.').join('/');
     if (root === 'workspace/new/nested/repo') {
       assert(globalThis.__nestedParentsDurable === true,
@@ -515,6 +516,8 @@ export const git = {
   );
   const result = await response.json();
   assert.equal(result.success, true, result.error);
+  // No depth is `git clone --no-shallow`: the whole history, not depth 1.
+  assert.deepEqual(globalThis.__cloneDepths, [undefined], 'a clone without a depth was made shallow');
   assert.equal(vfs.exists('repo/.git/nimbus-clone-job'), false,
     'successful checkout shipped the internal clone ownership marker');
   assert.ok(wavePaths[0].includes('repo/.git/nimbus-clone-job'),

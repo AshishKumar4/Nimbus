@@ -5,6 +5,7 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `git clone --no-shallow` made a depth-1 clone. The git facet replaced a missing depth with 1, so the flag never reached isomorphic-git. A clone without a depth now fetches the whole history.
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 loom moves only its fabric range.

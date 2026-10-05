@@ -18,9 +18,9 @@ await sleep(2_000);
 
 await t.run('cd /home/user', 10_000);
 
-// Clone the Cloudflare-public Hello-World mirror — small (~10 files)
-// so the test stays fast. The Nimbus's git command doesn't accept
-// `--depth` flags (cf-git argv parsing), so this is a full clone.
+// Clone the public Hello-World repo: small, so the test stays fast.
+// `git clone` defaults to depth 1 here; `--no-shallow` below asks for the
+// whole history.
 const REPO = 'https://github.com/octocat/Hello-World.git';
 const t0 = Date.now();
 let cloneOk = false;
@@ -43,6 +43,19 @@ a.check(`git clone produced "Cloning into" marker AND no "clone failed" (within 
   cloneOk, `elapsed=${elapsed}ms output=${cloneOutput.slice(-200)}`);
 a.check(`cloned tree has ≥1 file (got ${fileCount})`, fileCount >= 1, `fileCount=${fileCount}`);
 a.check(`clone completed under 180s wall (${(elapsed/1000).toFixed(1)}s)`, elapsed < 180_000);
+
+// Hello-World's default branch has three commits. The default clone is
+// depth 1; `--no-shallow` must fetch all three.
+const commitCount = async (dir) => {
+  const r = await t.run(`git -C ${dir} log --oneline | wc -l`, 30_000);
+  const m = r.output.match(/^\s*(\d+)\s*$/m);
+  return m ? parseInt(m[1], 10) : -1;
+};
+const shallowCommits = await commitCount('cloned-repo');
+const full = await t.run(`git clone --no-shallow ${REPO} full-repo`, 180_000);
+const fullCommits = await commitCount('full-repo');
+a.check(`default clone is depth 1 (got ${shallowCommits} commits)`, shallowCommits === 1, full.output.slice(-200));
+a.check(`--no-shallow clone has the whole history (got ${fullCommits} commits)`, fullCommits === 3, full.output.slice(-200));
 
 // Now also test the bigger 1600-file clone (Nimbus repo) to validate
 // the W7 writeBatchStream pipeline doesn't freeze. This is the

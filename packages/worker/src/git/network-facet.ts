@@ -55,7 +55,7 @@ export interface GitNetworkOpts {
   remote?: string;
   /** For clone: branch to clone (default remote HEAD); for pull: branch name (default current) */
   ref?: string;
-  /** Shallow depth; default 1 for clone */
+  /** Shallow depth; omitted means the whole history (`git clone --no-shallow`). */
   depth?: number;
   /** Username + password/token */
   auth?: { username: string; password: string };
@@ -479,7 +479,7 @@ async function hashCloneOptions(opts: GitNetworkOpts): Promise<string> {
     url: opts.url,
     remote: opts.remote ?? 'origin',
     ref: opts.ref ?? null,
-    depth: opts.depth ?? 1,
+    depth: opts.depth ?? null,
     exclusiveDestination: opts.exclusiveDestination === true,
     exclusiveMutationRoot: opts.exclusiveMutationRoot ?? null,
   });
@@ -2793,7 +2793,7 @@ export default {
           url: opts.url,
           ref: opts.ref || undefined,
           singleBranch: true,
-          depth: opts.depth || 1,
+          depth: opts.depth,
           noCheckout: true,
           nonBlocking: true,
           batchSize: 50,
