@@ -257,6 +257,25 @@ await compareAll('own-writes');
   assert.deepEqual(await authority.readFile(beneath('wo.txt')), new Uint8Array([119, 0, 0, 0, 0]), 'a truncate past the end leaves zeros');
   PATHS.push('out.o', 'wo.txt');
 }
+
+// Renaming a file while writing it (a compiler's temporary output) moves
+// what was written; a reader opened before more is written sees it too.
+{
+  const tmp = await adapter.open(beneath('obj.tmp'), { read: true, write: true, create: true, truncate: true });
+  await adapter.write(tmp.id, null, enc.encode('part one;'));
+  const reader = await adapter.open(beneath('obj.tmp'), { read: true });
+  assert.deepEqual(await adapter.read(reader.id, 0, 100), enc.encode('part one;'));
+  await adapter.write(tmp.id, null, enc.encode('part two'));
+  assert.deepEqual(await adapter.read(reader.id, 0, 100), enc.encode('part one;part two'), 'a reader sees later writes');
+  await adapter.close(reader.id);
+  await adapter.rename(beneath('obj.tmp'), beneath('obj.o'));
+  assert.deepEqual(await adapter.readFile(beneath('obj.o')), enc.encode('part one;part two'), 'the renamed file has what was written');
+  assert.deepEqual(await authority.readFile(beneath('obj.o')), enc.encode('part one;part two'), 'and so does the session, from the rename on');
+  await adapter.write(tmp.id, null, enc.encode(';three'));
+  await adapter.close(tmp.id);
+  assert.deepEqual(await authority.readFile(beneath('obj.o')), enc.encode('part one;part two;three'), 'writes after the rename land in the renamed file');
+  PATHS.push('obj.tmp', 'obj.o');
+}
 await compareAll('held-writes');
 
 // A run that ends without closing what it wrote still leaves it in the session
