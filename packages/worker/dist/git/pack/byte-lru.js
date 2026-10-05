@@ -3,6 +3,13 @@
  * values rather than their number: a delta-base cache holds a few large
  * objects or many small ones in the same budget.
  */
+/**
+ * What one entry costs beyond its bytes: the key, the Map entry, the value
+ * object and its ArrayBuffer. Charged so many small entries are bounded too:
+ * a status after a clone read 16,850 small trees, and an 8 MiB cache counting
+ * payload alone held ~17 MiB (SatisfiedTapir's heap profile of next.js).
+ */
+export const BYTE_LRU_ENTRY_OVERHEAD = 160;
 export class ByteLru {
     maxBytes;
     maxValueBytes;
@@ -18,6 +25,7 @@ export class ByteLru {
     get size() {
         return this.map.size;
     }
+    /** Bytes charged: the values' and each entry's overhead. */
     get byteLength() {
         return this.bytes;
     }
@@ -33,17 +41,17 @@ export class ByteLru {
         const previous = this.map.get(key);
         if (previous !== undefined) {
             this.map.delete(key);
-            this.bytes -= previous.byteLength;
+            this.bytes -= previous.byteLength + BYTE_LRU_ENTRY_OVERHEAD;
         }
         if (value.byteLength > this.maxValueBytes)
             return;
         this.map.set(key, value);
-        this.bytes += value.byteLength;
+        this.bytes += value.byteLength + BYTE_LRU_ENTRY_OVERHEAD;
         for (const [oldest, evicted] of this.map) {
             if (this.bytes <= this.maxBytes)
                 break;
             this.map.delete(oldest);
-            this.bytes -= evicted.byteLength;
+            this.bytes -= evicted.byteLength + BYTE_LRU_ENTRY_OVERHEAD;
         }
     }
     clear() {
