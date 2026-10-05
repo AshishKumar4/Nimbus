@@ -415,6 +415,21 @@ export interface WriteBatchStreamProgress {
   committedPathCount: number;
   inodes: number;
   chunks: number;
+  /** Each published file and link, by the path the stream named, as stat will report it. */
+  receipts: WriteStreamReceipt[];
+}
+
+/** A streamed file's stat as published: what a producer's git index entry records. */
+export interface WriteStreamReceipt {
+  path: string;
+  ino: number;
+  mode: number;
+  size: number;
+  mtimeMs: number;
+  ctimeMs: number;
+  uid: number;
+  gid: number;
+  dev: number;
 }
 
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
@@ -630,6 +645,18 @@ interface StoredInodeEntry {
    * it while a description pins it.
    */
   detached?: INode;
+  /**
+   * What stood at the path when the entry was planned, read at generation
+   * `gen`: still true while no transaction has committed since, so the
+   * committing transaction need not read it again.
+   */
+  knownPrior?: KnownPrior;
+}
+
+/** A path's committed inode (undefined: none) as read at generation `gen`. */
+interface KnownPrior {
+  inode: INode | undefined;
+  gen: number;
 }
 
 interface PlannedDelete {
@@ -7797,6 +7824,7 @@ export class SqliteVFS {
     cred: VfsCred,
     memo?: Map<string, string>,
     staged?: Map<string, { mode: number; gid: number; defaultAcl: number | null }>,
+    priors?: Map<string, INode | undefined>,
   ): NormalizedBatchInodeEntry {
     const literal = this.storageKey(entry.path, cred);
     // The entry must name its own parent, as the caller wrote it; placement
@@ -7807,6 +7835,7 @@ export class SqliteVFS {
     }
     const path = this.createdPath(literal, cred, memo);
     const prior = this.inodes.get(path);
+    priors?.set(path, prior);
     const directory = inodeKind(entry) === 'directory';
     const made = prior ? undefined : this.creationAttrs(path, entry.mode, cred, directory, staged);
     const newUid = cred.uid === 0 ? (entry.uid ?? 1000) : cred.uid;
@@ -7832,10 +7861,14 @@ export class SqliteVFS {
     return normalized;
   }
 
-  private authorizeBatch(payload: BatchWritePayload, cred: VfsCred): BatchWritePayload {
+  private authorizeBatch(
+    payload: BatchWritePayload,
+    cred: VfsCred,
+    priors: Map<string, INode | undefined> = new Map(),
+  ): BatchWritePayload {
     const placed = new Map<string, string>();
     const staged = new Map<string, { mode: number; gid: number; defaultAcl: number | null }>();
-    const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged));
+    const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged, priors));
     const pending = new Map(inodes.map((entry) => [entry.path, entry]));
     // A batch writes each row at its literal key, so the permission it checks
     // for a row it places has to be the permission of that place: resolving
@@ -7886,7 +7919,7 @@ export class SqliteVFS {
       if (existing) checkParent(normalized, false);
     }
     for (const entry of inodes) {
-      if (this.inodes.get(entry.path)) replaced(entry.path);
+      if (priors.has(entry.path) ? priors.get(entry.path) : this.inodes.get(entry.path)) replaced(entry.path);
       else checkParent(entry.path, true);
     }
     // Chunks name their inode by path, so they take the inodes' storage keys.
@@ -7990,9 +8023,9 @@ export class SqliteVFS {
    * from what the path already holds; the reference it replaces is queued by
    * the transaction that commits it.
    */
-  private fileEntry(inode: BatchInodeEntry, content: InodeContent): StoredInodeEntry {
+  private fileEntry(inode: BatchInodeEntry, content: InodeContent, knownPrior?: KnownPrior): StoredInodeEntry {
     this.assertMutationsAllowed([inode.path]);
-    const prior = this.inodes.get(inode.path);
+    const prior = knownPrior && knownPrior.gen === this._gen ? knownPrior.inode : this.inodes.get(inode.path);
     const kind = inodeKind(inode);
     return {
       path: inode.path,
@@ -8006,6 +8039,7 @@ export class SqliteVFS {
       uid: inode.uid ?? prior?.uid ?? 1000,
       gid: inode.gid ?? prior?.gid ?? 1000,
       content,
+      ...(knownPrior && knownPrior.gen === this._gen ? { knownPrior } : {}),
     };
   }
 
@@ -8161,12 +8195,16 @@ export class SqliteVFS {
       /** Staged mode: chunks go to this content as groups flush. */
       staging: StagingContent | null;
       stagedBytes: number;
+      /** The placed inode as normalized at file-begin, against the prior read then. */
+      normalized: BatchInodeEntry;
+      prior: KnownPrior;
     } | null = null;
     const progress: WriteBatchStreamProgress = {
       committedGroupSequence: 0,
       committedPathCount: 0,
       inodes: 0,
       chunks: 0,
+      receipts: [],
     };
     let phase: WriteBatchStreamFailurePhase = 'decode';
 
@@ -8174,6 +8212,8 @@ export class SqliteVFS {
     let group = this.newPlan();
     let groupLeases: CreditLease[] = [];
     let groupInodes: string[] = [];
+    /** The path the stream named each of the group's files by, keyed by where it lands. */
+    let groupNames = new Map<string, string>();
     let groupPublishedChunks = 0;
     let groupPaths = 0;
     let groupStagedBytes = 0;
@@ -8187,12 +8227,14 @@ export class SqliteVFS {
       const plan = group.build();
       const leases = groupLeases;
       const inodes = groupInodes;
+      const names = groupNames;
       const publishedChunks = groupPublishedChunks;
       const paths = groupPaths;
       const stagedBytes = groupStagedBytes;
       group = this.newPlan();
       groupLeases = [];
       groupInodes = [];
+      groupNames = new Map();
       groupPublishedChunks = 0;
       groupPaths = 0;
       groupStagedBytes = 0;
@@ -8232,6 +8274,21 @@ export class SqliteVFS {
         progress.committedPathCount += paths;
         progress.inodes += result.inodes;
         progress.chunks += publishedChunks;
+        for (const entry of plan.inodes) {
+          const named = names.get(entry.path);
+          if (named === undefined || entry.isDir) continue;
+          progress.receipts.push({
+            path: named,
+            ino: entry.ino!,
+            mode: entry.mode,
+            size: entry.size,
+            mtimeMs: entry.mtime,
+            ctimeMs: entry.ctime!,
+            uid: entry.uid,
+            gid: entry.gid,
+            dev: this.deviceId,
+          });
+        }
       } finally {
         for (const lease of leases) lease.release();
       }
@@ -8362,11 +8419,13 @@ export class SqliteVFS {
             phase = 'validation';
             // The file lands where its name resolves (links followed, as a
             // batch places it), and that is the path its lease is checked on.
+            const priors = new Map<string, INode | undefined>();
             const placedInode = this.withMutationOwner(options.mutationOwner, () => {
-              const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred).inodes;
+              const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
               this.assertMutationsAllowed([placed!.path]);
               return placed!;
             });
+            const placedPrior: KnownPrior = { inode: priors.get(placedInode.path), gen: this._gen };
             phase = 'stage';
             // Close the group before the file that would overflow it, so a
             // file either fits whole or begins a group of its own; one too
@@ -8384,6 +8443,8 @@ export class SqliteVFS {
               heldLeases: [],
               staging: null,
               stagedBytes: 0,
+              normalized: placedInode,
+              prior: placedPrior,
             };
             break;
           }
@@ -8423,7 +8484,15 @@ export class SqliteVFS {
               throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
             }
             phase = 'publish';
-            const inode = this.normalizeBatchInode(file.inode, cred);
+            // Normalized against what stood at the path; read again only if a
+            // transaction has committed since file-begin read it.
+            let inode = file.normalized;
+            let prior = file.prior;
+            if (prior.gen !== this._gen) {
+              const priors = new Map<string, INode | undefined>();
+              inode = this.normalizeBatchInode(file.inode, cred, undefined, undefined, priors);
+              prior = { inode: priors.get(inode.path), gen: this._gen };
+            }
             let content: InodeContent;
             if (file.inode.size === 0) content = { type: 'none' };
             else if (file.inode.size <= CHUNK_SIZE) {
@@ -8445,10 +8514,11 @@ export class SqliteVFS {
               : group.wouldExceedInode();
             if (overflows !== null) flushGroup();
             this.withMutationOwner(options.mutationOwner, () => {
-              group.addInode(this.fileEntry(inode, content));
+              group.addInode(this.fileEntry(inode, content, prior));
             });
             groupLeases.push(...file.heldLeases);
             groupInodes.push(inode.path);
+            groupNames.set(inode.path, file.named);
             groupPublishedChunks += record.chunkCount;
             groupStagedBytes += file.stagedBytes;
             groupPaths++;
@@ -9827,7 +9897,11 @@ export class SqliteVFS {
     // What stood at each published path before this transaction. Read now,
     // while it is still true: after the commit, a lookup finds the row the
     // commit wrote. Not admitted: replacing a file is not a use of it.
-    const priors = plan.inodes.map((entry) => this.inodes.peek(entry.path) ?? this.loadInode(entry.path));
+    const priors = plan.inodes.map((entry) => (
+      entry.knownPrior !== undefined && entry.knownPrior.gen === this._gen
+        ? entry.knownPrior.inode
+        : this.inodes.peek(entry.path) ?? this.loadInode(entry.path)
+    ));
     try {
       this.executeTransactionPlan(plan, execution, onCommit, priors);
     } catch (error) {
