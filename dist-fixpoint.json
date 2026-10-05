@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9731285d9bf964fed1420adf709739e2f81d968f7229af20ea0377614ffb22ae",
+  "fingerprint": "56cf14fac3bb31562ad1e98a99570d0bf42d8e48ff63d9aeefcdfac62aa347ce",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -919,8 +919,8 @@
     "packages/core/dist/substrate/lifo/shell/ProcessRegistry.d.ts.map": "b02a5690ce6e158a81c9a2a179e138928f829765f66deb8754aabce9cecaf689",
     "packages/core/dist/substrate/lifo/shell/ProcessRegistry.js": "b71418a8d01e66601ccb08500c367740f89b4b3f57b46b91f44507966f0fd97a",
     "packages/core/dist/substrate/lifo/shell/Shell.d.ts": "e6d6129442eea181a19efe2fac301cda631ca133c75fba958b515b28e73d53ff",
-    "packages/core/dist/substrate/lifo/shell/Shell.d.ts.map": "f5ed99b1f644c9308e1f83f5dbe9ab659d6f8bb2b5a6e5f210ee04aaf71eab51",
-    "packages/core/dist/substrate/lifo/shell/Shell.js": "afe0f99e341ce2c815ec28842fb18ae3996f67da50a4143ca9bd37b02d3e5c70",
+    "packages/core/dist/substrate/lifo/shell/Shell.d.ts.map": "ecbcaab183b26e4fb57dc8d47f98b88710fc0b6f3239c6cde1a3944fe373dbbb",
+    "packages/core/dist/substrate/lifo/shell/Shell.js": "5f009dd332dfb5d4c4a5f43a8b6f04938e2c97aeca03b68d49a2f3545c416989",
     "packages/core/dist/substrate/lifo/shell/bash-builtins.d.ts": "866b5af3ce08844e3ef56deefe3acea8ccd4619e7f48efc03b9a0bdec66a3842",
     "packages/core/dist/substrate/lifo/shell/bash-builtins.d.ts.map": "b13e53cca0f93b7b379c74398e98993f882eb3ac5fc89b5e558e947ef642c790",
     "packages/core/dist/substrate/lifo/shell/bash-builtins.js": "e0539677af432c19a88ea7be394848465e363f55a1f4de05f7550fe1deb84144",
@@ -1353,7 +1353,7 @@
     "packages/core/src/substrate/lifo/sandbox/index.ts": "30ed7add788ac8143e712c5f6ad981938e744b4fba6eea02a9aabb44fdc0c294",
     "packages/core/src/substrate/lifo/sandbox/types.ts": "58a0e46ca1aab1d94a429339fbb98d836d3fcb0aa463d3fd6580baf59e9e1c3b",
     "packages/core/src/substrate/lifo/shell/ProcessRegistry.ts": "1c78f3f9639d462e38fdfab5eb88aed2c5abdbc93d984fe739dcc95d73b1b075",
-    "packages/core/src/substrate/lifo/shell/Shell.ts": "58290bb90fdb4308422b401bc464cbfc5ccbc62323e3953082b8494b3f5c3219",
+    "packages/core/src/substrate/lifo/shell/Shell.ts": "8d624a57f460c5a85d8f75cd6412b8a46adf4a4a41fc099a31203774e1dd51fa",
     "packages/core/src/substrate/lifo/shell/bash-builtins.ts": "78787c8c03af5e2f6a458997f267a40a933b2888c567100f622f5d03d65e86e3",
     "packages/core/src/substrate/lifo/shell/completer.ts": "b13efc0b11daa8843ac04ce2dc06ef37f22d02750b489c2373aa5fe5d84147f7",
     "packages/core/src/substrate/lifo/shell/default-shell.ts": "26c2d77107477e158b09127d7136c050ddb9b9ca548917a66a556e0f0102996c",
