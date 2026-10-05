@@ -13,6 +13,8 @@ published independently in the `@nimbus-sh` npm scope.
   boundary acknowledgement, so they cannot be mistaken for pre-read work.
   If the ledger refuses a replay, a child that already started reports the
   refusal on stderr and exits; only an initial admission can fail its spawn.
+  Native sockets and TLS carriers also wait for the replay boundary; a
+  refused notice destroys the socket with the original error before connecting.
 
 - Fixed: synchronous-stdin replay is fail-closed at the session boundary.
   Every supervisor operation has an explicit observation, effect, or

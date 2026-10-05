@@ -97,6 +97,8 @@ const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopR
 // it. (The session counts every connection too, where the program cannot
 // reach.) The TLS shim's carrier is counted as its tls.connect.
 let __nimbusCarrierOpening = false;
+let __nimbusCarrierGate = null;
+let __nimbusCarrierFailure = null;
 if (__nimbusReplay && typeof __real_net !== "undefined") {
   const __NativeSocket = (__real_net.default ?? __real_net).Socket;
   const __nativeConnect = __NativeSocket && __NativeSocket.prototype ? __NativeSocket.prototype.connect : undefined;
@@ -108,6 +110,26 @@ if (__nimbusReplay && typeof __real_net !== "undefined") {
           ? String(first.host ?? "") + ":" + String(first.port ?? first.path ?? "")
           : String(typeof args[1] === "string" ? args[1] : "") + ":" + String(first ?? "");
         __nimbusReplay.effect("net.connect " + where);
+      }
+      // A synchronous read crossed the replay boundary, but the session
+      // must acknowledge its notice before any new native transport opens.
+      // TLS's carrier joins that same gate AND its target registration.
+      const ready = __nimbusCarrierOpening ? __nimbusCarrierGate : __nimbusReplay.afterBoundary();
+      if (ready) {
+        const socket = this;
+        const fail = __nimbusCarrierFailure || ((error) => socket.destroy(error));
+        // Writes/TLS wrapping must see a connecting socket while it waits,
+        // just as they do after an ordinary native connect was issued.
+        socket.connecting = true;
+        __nimbusTrackOp(Promise.resolve(ready).then(() => {
+          if (socket.destroyed) return;
+          // The native implementation owns its own false -> true transition
+          // and refuses a second connect while already connecting.
+          socket.connecting = false;
+          try { Reflect.apply(__nativeConnect, socket, args); }
+          catch (error) { fail(error); }
+        }, fail));
+        return socket;
       }
       return Reflect.apply(__nativeConnect, this, args);
     } });
@@ -6788,13 +6810,28 @@ const __tlsMod = (() => {
     let token = '';
     for (const b of crypto.getRandomValues(new Uint8Array(16))) token += (b < 16 ? '0' : '') + b.toString(16);
     __nimbusReplay?.effect('tls.connect ' + host + ':' + port);
-    Promise.resolve(__supervisor.netTls('open', token, { host, port })).catch(() => {});
-    let raw;
+    const notice = __nimbusReplay && __nimbusReplay.afterBoundary();
+    const registration = notice
+      ? Promise.resolve(notice).then(() => __supervisor.netTls('open', token, { host, port }))
+      : Promise.resolve(__supervisor.netTls('open', token, { host, port }));
+    let raw, socket;
+    const fail = (error) => {
+      // Emit the precise refusal on the returned TLS socket, once. Its raw
+      // carrier has not opened yet and is only cleaned up, without inventing
+      // a second error or waiting for an unregistered token at the outbound.
+      socket?.destroy(error);
+      raw?.destroy();
+    };
+    registration.catch(fail);
     __nimbusCarrierOpening = true;
+    __nimbusCarrierGate = notice ? registration : null;
+    __nimbusCarrierFailure = fail;
     try {
       raw = realNet.connect({ host: token + '.nimbus-net.invalid', port: 1, allowHalfOpen: options.allowHalfOpen === true });
     } finally {
       __nimbusCarrierOpening = false;
+      __nimbusCarrierGate = null;
+      __nimbusCarrierFailure = null;
     }
     const name = () => {
       const native = raw._handle && raw._handle.socket;
@@ -6802,7 +6839,8 @@ const __tlsMod = (() => {
     };
     name();
     raw.once('connect', name);
-    return real.connect({ ...options, host, port, socket: raw, servername: options.servername ?? host }, cb);
+    socket = real.connect({ ...options, host, port, socket: raw, servername: options.servername ?? host }, cb);
+    return socket;
   };
   const connect = (...args) => {
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);

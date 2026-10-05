@@ -156,6 +156,10 @@ const head = [
 const CASES = {
   // The handshake as the server saw it, and authorized.
   basic: '(async () => done(await talk({ host: HOST, port: PORTS.good }, "INFO")))();',
+  // The first run stops before opening any network connection. On replay,
+  // tls.connect is issued immediately after fd 0, with its boundary notice
+  // still in flight: exercise the real native carrier's deferred setup.
+  afterStdin: 'console.log("STDIN READY"); require("fs").readFileSync(0); (async () => done(await talk({ host: HOST, port: PORTS.good }, "INFO")))();',
   sni: '(async () => done(await talk({ host: HOST, port: PORTS.good, servername: "fixture.nimbus.test" }, "INFO")))();',
   alpn: '(async () => done(await talk({ host: HOST, port: PORTS.good, ALPNProtocols: ["x-test"] }, "INFO")))();',
   // A private CA named by the program.
@@ -251,7 +255,7 @@ const PARENT = [
   "    const c = spawn('node', ['-e', HEAD + '\\n' + CASES[name]], { stdio: [stoppable ? 'pipe' : 'ignore', 'pipe', 'pipe'] });",
   "    let out = '', err = '';",
   "    const stuck = setTimeout(() => { c.kill(); resolve({ stuck: true, out: out.slice(-300), err: err.slice(-300) }); }, 60000);",
-  "    c.stdout.on('data', (d) => { out += d; if (stoppable && /RESULT /.test(out)) c.stdin.end(); });",
+  "    c.stdout.on('data', (d) => { out += d; if (stoppable && /RESULT |STDIN READY/.test(out)) c.stdin.end(); });",
   "    c.stderr.on('data', (d) => { err += d; });",
   "    c.on('close', () => { clearTimeout(stuck); const m = /RESULT (.*)/.exec(out); resolve(m ? JSON.parse(m[1]) : { noResult: true, out: out.slice(-300), err: err.slice(-300) }); });",
   '  });',
@@ -343,6 +347,8 @@ try {
   const ipNamed = { authorized: true, got: JSON.stringify({ servername: lan, alpn: null }) };
   check(JSON.stringify(nimbus.basic?.stoppable) === JSON.stringify(ipNamed) && JSON.stringify(nimbus.basic?.plain) === JSON.stringify(ipNamed),
     `basic: connected and authorized both ways (the address sent as SNI, as workerd does)${show('basic')}`);
+  check(JSON.stringify(nimbus.afterStdin?.stoppable) === JSON.stringify(ipNamed) && JSON.stringify(nimbus.afterStdin?.plain) === JSON.stringify(ipNamed),
+    `afterStdin: the real native TLS carrier opens behind the replay boundary${show('afterStdin')}`);
   // A server name other than the host: the session sends it, as Node does;
   // workerd's own node:tls checks the certificate against it but sends the
   // host.
