@@ -8,7 +8,9 @@
 //   - after git fetch: the same objects and refs as host git's fetch; the
 //     new pack's idx equal to git index-pack's; the pack written in pieces;
 //   - after git pull: the same worktree, HEAD and objects as host git's;
-//   - git fsck --full clean throughout.
+//   - git fsck --full clean throughout;
+//   - in a depth-1 clone, git fetch --deepen 2 then --unshallow leave the
+//     shallow file, objects and history host git's do (a single stream).
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -88,6 +90,25 @@ try {
     }
     hostGit(out, ['fsck', '--full', '--no-dangling']);
     assert.equal(hostGit(out, ['status', '--porcelain']), '');
+
+    // Deepening a shallow clone, then unshallowing it.
+    const shallow = await session.git('/home/user', ['clone', '--depth', '1', url, 'shallow']);
+    assert.equal(shallow.code, 0, shallow.stderr);
+    const hostShallow = join(work, 'host-shallow');
+    hostGit(work, ['clone', '-q', '--depth', '1', '--single-branch', 'file://' + bare, hostShallow]);
+    const step = async (args, label) => {
+      const ran = await session.git('/home/user/shallow', ['fetch', ...args]);
+      assert.equal(ran.code, 0, label + ': ' + ran.stderr);
+      hostGit(hostShallow, ['fetch', '-q', ...args]);
+      const ours = session.materialize('home/user/shallow', mkdtempSync(join(work, 'deepen-')), '.git');
+      assert.deepEqual(hostObjects(ours), hostObjects(hostShallow), label + ': the objects git holds');
+      const shallowFile = (dir) => { try { return readFileSync(join(dir, '.git/shallow'), 'utf8'); } catch { return null; } };
+      assert.equal(shallowFile(ours), shallowFile(hostShallow), label + ': .git/shallow');
+      hostGit(ours, ['fsck', '--no-dangling', '--connectivity-only']);
+    };
+    await step(['--deepen', '2'], 'fetch --deepen 2');
+    await step(['--unshallow'], 'fetch --unshallow');
+    assert.equal((await session.git('/home/user/shallow', ['fetch', '--depth', '1', '--unshallow'])).code, 128);
   } finally {
     server.stop();
   }

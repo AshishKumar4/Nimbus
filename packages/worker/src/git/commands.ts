@@ -320,6 +320,33 @@ export const CLONE_USAGE =
 
 const SIZE_SUFFIX: Record<string, number> = { '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
 
+const FETCH_DEPTH_FLAGS = ['--depth', '--deepen', '--unshallow'];
+/** git's INFINITE_DEPTH (shallow.h): --unshallow asks for this much. */
+const INFINITE_DEPTH = 0x7fffffff;
+
+/**
+ * `git fetch --depth <n> | --deepen <n> | --unshallow`, as cf-git's fetch
+ * takes them: a depth from the remote's tips, or (relative) from the
+ * repository's current shallow boundary.
+ */
+export function parseFetchDepth(args: readonly string[]): { depth: number; relative: boolean } | undefined {
+  let found: { depth: number; relative: boolean } | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const [flag, inline] = args[i].split('=', 2);
+    if (!FETCH_DEPTH_FLAGS.includes(flag)) continue;
+    if (found !== undefined) throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
+    if (flag === '--unshallow') {
+      found = { depth: INFINITE_DEPTH, relative: false };
+      continue;
+    }
+    const value = inline ?? args[++i];
+    const depth = Number(value);
+    if (!Number.isSafeInteger(depth) || depth < 1) throw new Error(`${flag} ${value ?? ''} is not a positive number`.trimEnd());
+    found = { depth, relative: flag === '--deepen' };
+  }
+  return found;
+}
+
 /**
  * A partial clone's filter (list-objects-filter-options.c), normalized as
  * git normalizes it: blob:limit's size in bytes. The filters Nimbus
@@ -2245,7 +2272,16 @@ export async function runGitCommand(
       case 'fetch': {
         const target = await onEngine(dir);
         if (target === null) return 128;
-        const { quiet, rest } = takeQuiet(subArgs);
+        const { quiet, rest: fetchArgs } = takeQuiet(subArgs);
+        let deepen: { depth: number; relative: boolean } | undefined;
+        try {
+          deepen = parseFetchDepth(fetchArgs);
+        } catch (e) {
+          ctx.stderr.write(`fatal: ${(e as Error).message}\n`);
+          return 128;
+        }
+        const rest = fetchArgs.filter((arg, i) => !FETCH_DEPTH_FLAGS.includes(arg.split('=')[0]) &&
+          !(i > 0 && ['--depth', '--deepen'].includes(fetchArgs[i - 1])));
         const remote = rest[0] || 'origin';
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
@@ -2258,6 +2294,8 @@ export async function runGitCommand(
           dir: target,
           remote,
           quiet,
+          depth: deepen?.depth,
+          relative: deepen?.relative,
           auth: {
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
