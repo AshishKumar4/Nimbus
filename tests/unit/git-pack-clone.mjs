@@ -113,6 +113,8 @@ try {
   const served = join(work, 'served');
   mkdirSync(served);
   git(work, ['clone', '-q', '--bare', source, join(served, 'repo.git')]);
+  git(join(served, 'repo.git'), ['config', 'uploadpack.allowFilter', 'true']);
+  git(join(served, 'repo.git'), ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
   const head = git(source, ['rev-parse', 'HEAD']).trim();
 
   const server = startGitHttpServer(served);
@@ -135,10 +137,7 @@ try {
       const bytes = session.files.get('home/user/repo/.git/nimbus-clone/batch-' + batch.index).byteLength;
       return cloneBatch(context, { jobId: 'job', index: batch.index, batchBytes: bytes, capabilities: prepared.capabilities });
     }));
-    const shares = [
-      { name: 'index-gitlinks', bytes: prepared.gitlinkIndexBytes },
-      ...results.map((result) => ({ name: 'index-' + result.index, bytes: result.indexBytes })),
-    ];
+    const shares = [...prepared.shares, ...results.map((result) => ({ name: 'index-' + result.index, bytes: result.indexBytes }))];
     const finished = await cloneFinish(context, { shares });
     assert.equal(finished.indexEntries, 305);
     assert.ok(![...session.files.keys()].some((path) => path.includes('nimbus-clone/')), 'staging removed');
@@ -200,6 +199,42 @@ try {
     }
     assert.equal(checked, 305);
     assert.ok(session.counters.fsReadRange <= prepared.batches.length * 2 + 3, 'packs are not read back: ' + session.counters.fsReadRange);
+    // Partial clones: what git clone --filter --depth 1 leaves, object for object.
+    for (const filter of ['blob:none', 'blob:limit=1024', 'tree:0']) {
+      const partial = fakeSession();
+      const partialDir = '/home/user/partial';
+      const partialContext = { ...context, supervisor: partial.supervisor, writer: (onReceipts) => partial.writer(partialDir, onReceipts), dir: partialDir };
+      const got = await cloneFast(partialContext, { depth: 1, jobId: 'p', filter, blobsPerBatch: 100 });
+      assert.equal(got.partial, true);
+      const done = await Promise.all(got.batches.map((batch) => cloneBatch(partialContext, {
+        jobId: 'p', index: batch.index, capabilities: got.capabilities, partial: true,
+        batchBytes: partial.files.get('home/user/partial/.git/nimbus-clone/batch-' + batch.index).byteLength,
+      })));
+      await cloneFinish(partialContext, { shares: [...got.shares, ...done.map((r) => ({ name: 'index-' + r.index, bytes: r.indexBytes }))] });
+      const partialOut = join(work, 'partial-' + filter.replace(/[:=]/g, '-'));
+      for (const [path, bytes] of partial.files) {
+        const target = join(partialOut, path.slice('home/user/partial/'.length));
+        mkdirSync(dirname(target), { recursive: true });
+        writeFileSync(target, bytes);
+        if (partial.stats.get(path)?.mode & 0o111) chmodSync(target, 0o755);
+      }
+      for (const [path, target] of partial.links) symlinkSync(target, join(partialOut, path.slice('home/user/partial/'.length)));
+      const hostPartial = join(work, 'host-' + filter.replace(/[:=]/g, '-'));
+      // Over file://: a host git talking to this process's own server would
+      // wait on an event loop spawnSync is blocking.
+      git(work, ['clone', '-q', '--depth', '1', '--filter=' + filter, 'file://' + join(served, 'repo.git'), hostPartial]);
+      const objects = (dir) => git(dir, ['cat-file', '--batch-all-objects', '--batch-check=%(objectname) %(objecttype)']).split('\n').sort().join('\n');
+      assert.equal(objects(partialOut), objects(hostPartial), filter + ': the same objects as git clone --filter');
+      const configOf = (dir) => readFileSync(join(dir, '.git/config'), 'utf8').replace(/url = .*/, 'url = X');
+      assert.equal(configOf(partialOut), configOf(hostPartial), filter + ': config');
+      const packNames = readdirSync(join(partialOut, '.git/objects/pack'));
+      for (const pack of packNames.filter((name) => name.endsWith('.pack'))) {
+        assert.ok(packNames.includes(pack.replace(/pack$/, 'promisor')), filter + ': ' + pack + ' is a promisor pack');
+      }
+      git(partialOut, ['fsck', '--no-dangling']);
+      assert.equal(git(partialOut, ['ls-files', '-s']), git(hostPartial, ['ls-files', '-s']), filter + ': index');
+      assert.equal(git(partialOut, ['status', '--porcelain']), '', filter + ': worktree clean');
+    }
   } finally {
     server.stop();
   }

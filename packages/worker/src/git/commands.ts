@@ -311,10 +311,28 @@ export interface ParsedCloneArgs {
   branch: string | undefined;
   /** `-q`/`--quiet`: no progress on stdout; errors still reach stderr. */
   quiet: boolean;
+  /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
+  filter: string | undefined;
 }
 
 export const CLONE_USAGE =
-  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+
+const SIZE_SUFFIX: Record<string, number> = { '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+
+/**
+ * A partial clone's filter (list-objects-filter-options.c), normalized as
+ * git normalizes it: blob:limit's size in bytes. The filters Nimbus
+ * fetches with; any other is refused by name rather than ignored.
+ */
+export function parseCloneFilter(spec: string): string {
+  if (spec === 'blob:none') return spec;
+  const limit = /^blob:limit=(\d+)([kmg]?)$/i.exec(spec);
+  if (limit) return 'blob:limit=' + Number(limit[1]) * SIZE_SUFFIX[limit[2].toLowerCase()];
+  const tree = /^tree:(\d+)$/.exec(spec);
+  if (tree) return 'tree:' + Number(tree[1]);
+  throw new Error(`invalid filter-spec '${spec}': git clone here takes blob:none, blob:limit=<n>[kmg] or tree:<depth>`);
+}
 
 /**
  * Every flag is either handled or refused loudly. Silently skipping unknown
@@ -328,6 +346,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   let noShallow = false;
   let isBg = false;
   let quiet = false;
+  let filter: string | undefined;
   const positionals: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -349,13 +368,8 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     else if (arg === '-q' || arg === '--quiet') quiet = true;
     // Progress is already the default; there is no more of it to ask for.
     else if (arg === '-v' || arg === '--verbose') { /* accepted */ }
-    else if (name === '--filter') {
-      throw new Error(
-        "clone does not support '--filter': the bundled isomorphic-git has no " +
-        'partial-clone support, so a filter would silently download every object. ' +
-        'Use --depth <n> to bound history instead.',
-      );
-    } else if (arg.startsWith('-')) {
+    else if (name === '--filter') filter = parseCloneFilter(takeValue());
+    else if (arg.startsWith('-')) {
       throw new Error(`unknown option '${arg}'\n${CLONE_USAGE}`);
     } else {
       positionals.push(arg);
@@ -370,6 +384,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     isBg,
     branch,
     quiet,
+    filter,
   };
 }
 
@@ -1912,7 +1927,7 @@ export async function runGitCommand(
       }
 
       case 'clone': {
-        const { url, dest: destArg, depth, isBg, branch, quiet } = parseCloneArgs(subArgs);
+        const { url, dest: destArg, depth, isBg, branch, quiet, filter } = parseCloneArgs(subArgs);
         const progress = quiet ? { write() {} } : ctx.stdout;
         if (!url) { ctx.stderr.write(CLONE_USAGE + '\n'); return 1; }
         // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
@@ -1960,6 +1975,7 @@ export async function runGitCommand(
               url,
               ref: branch,
               depth,
+              filter,
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,

@@ -82,6 +82,8 @@ export interface GitNetworkOpts {
   checkoutChunkMaxDecodedBytes?: number;
   /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
   checkoutChunkMaxWallMs?: number;
+  /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
+  filter?: string;
   /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
   blobsPerBatch?: number;
   /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
@@ -745,7 +747,7 @@ async function runCloneBatches(
   fast: ClonePrepared,
   run: CloneBatchRun,
 ): Promise<void> {
-  const shares: { name: string; bytes: number }[] = [{ name: 'index-gitlinks', bytes: fast.gitlinkIndexBytes }];
+  const shares: { name: string; bytes: number }[] = [...fast.shares];
   const queue = [...fast.batches];
   let failure: unknown = null;
   let completed = 0;
@@ -758,7 +760,7 @@ async function runCloneBatches(
           entrypoint,
           'clone-batch',
           crypto.randomUUID(),
-          { ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities },
+          { ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities, partial: fast.partial },
           run.outerDeadline,
           CLONE_PHASE_TIMEOUT_MS,
           run.budgetContext,
@@ -2522,6 +2524,7 @@ export default {
             index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
             batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
             capabilities: opts.capabilities,
+            partial: opts.partial === true,
           });
           return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
         }
@@ -2681,12 +2684,16 @@ export default {
         // W7 stream loses its response, a cold abort can still prove ownership
         // from the marker; a missing or mismatched marker is never authority.
         await flushWave();
+        if (opts.filter !== undefined && opts.depth === undefined) {
+          throw new Error('fatal: --filter with --no-shallow is not supported yet: clone with --depth <n>');
+        }
         if (opts.depth !== undefined && opts.exclusiveDestination === true) {
           const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
           const fast = await __nimbusGitPack.cloneFast(context, {
             ref: opts.ref || undefined,
             depth: opts.depth,
             jobId: opts.jobId,
+            filter: opts.filter,
             blobsPerBatch: opts.blobsPerBatch,
           });
           if (!fast.unsupported) {

@@ -168,20 +168,24 @@ export class CheckoutPlan {
   }
 
   /**
-   * The distinct blobs, in walk order, split into at most `batches` runs of
-   * nearly equal count. Gitlinks name commits of another repository and are
-   * never fetched.
+   * Each distinct blob, in walk order, and the entries it is checked out at.
+   * Gitlinks name commits of another repository and are never fetched.
    */
-  batches(batches: number): BlobBatch[] {
-    const first = new Map<string, number[]>();
+  blobPaths(): Map<string, number[]> {
+    const blobs = new Map<string, number[]>();
     for (let i = 0; i < this.count; i++) {
       if (this.modes[i] === MODE_GITLINK) continue;
       const hex = this.oidHex(i);
-      const paths = first.get(hex);
+      const paths = blobs.get(hex);
       if (paths) paths.push(i);
-      else first.set(hex, [i]);
+      else blobs.set(hex, [i]);
     }
-    const blobs = [...first];
+    return blobs;
+  }
+
+  /** The distinct blobs not in `present`, split into at most `batches` runs (see the class comment). */
+  batches(batches: number, present: ReadonlySet<string> = new Set()): BlobBatch[] {
+    const blobs = [...this.blobPaths()].filter(([oid]) => !present.has(oid));
     const count = Math.max(1, Math.min(batches, blobs.length));
     const out: BlobBatch[] = [];
     for (let k = 0; k < count; k++) {
