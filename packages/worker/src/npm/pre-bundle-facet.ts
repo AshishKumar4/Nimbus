@@ -20,7 +20,7 @@
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
-import { getSharedRuntimeExternals, BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
@@ -155,7 +155,5 @@ export function externalsForSpecifier(specifier: string): string[] {
   return getSharedRuntimeExternals(specifier);
 }
 
-// Re-export so the supervisor can stamp results without re-importing.
-export { BUNDLER_VERSION };
 // Type re-export for npm/installer.ts.
 export type _ResolvedPackage = ResolvedPackage;

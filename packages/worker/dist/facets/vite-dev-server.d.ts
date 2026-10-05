@@ -244,6 +244,12 @@ export declare class ViteDevServer {
      * PrebundlePool.acquire.
      */
     private ensureOnDemandPool;
+    /**
+     * The bundle_hash of a pre-bundle row the code serving this server made
+     * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
+     * path below), or by the service's build with no pool.
+     */
+    private bundleKeys;
     /** Detect TailwindCSS usage in the project */
     private detectTailwind;
     /**

@@ -40,7 +40,7 @@ import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { prebundleCacheKey } from './cache-keys.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
   computeHoistPlan, hoistPlacements,
@@ -2088,6 +2088,8 @@ export class NpmInstaller {
     // headless test) opts out of pre-bundling entirely. The session's
     // bundle pool must also be present because the facets run in it.
     if (!this.esbuild || !this.bundlePool) return;
+    // What a pre-bundle row is keyed by beside its input: the code that built it (npm/cache-keys.ts).
+    const bundleKey = await prebundleCacheKey();
 
     const usedSpecifiers = this.scanBareImports(fs, projDir);
 
@@ -2213,7 +2215,7 @@ export class NpmInstaller {
         }
         if (
           existing &&
-          existing.bundleHash === BUNDLER_VERSION &&
+          existing.bundleHash === bundleKey &&
           existing.inputHash === inputHash
         ) {
           continue;
@@ -2244,7 +2246,7 @@ export class NpmInstaller {
         continue;
       }
 
-      if (existing && existing.bundleHash === BUNDLER_VERSION && existing.inputHash === '') continue;
+      if (existing && existing.bundleHash === bundleKey && existing.inputHash === '') continue;
       pending.push({ specifier, entryPath });
     }
     if (pending.length === 0) return;
@@ -2468,7 +2470,7 @@ export class NpmInstaller {
             entryPath: next.entryPath,
             externals,
             slice: slice.slice,
-            bundlerVersion: BUNDLER_VERSION,
+            bundlerVersion: bundleKey,
           };
           // Drop our supervisor-side reference to the slice array as soon
           // as it's owned by `spec`. `spec` is the only thing that needs
@@ -2519,7 +2521,7 @@ export class NpmInstaller {
           try {
             this.cache.putEsmBundle({
               specifier: next.specifier,
-              bundleHash: BUNDLER_VERSION,
+              bundleHash: bundleKey,
               esmCode: result.esmCode,
               builtAt: Date.now(),
               inputHash: next.inputHash ?? '',

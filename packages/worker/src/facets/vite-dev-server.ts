@@ -26,7 +26,8 @@ import type { CredentialedVfs, SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { VfsEvent } from '@nimbus-sh/core/vfs/events.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { getSharedRuntimeExternals, BUNDLER_VERSION, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { prebundleCacheKey, serviceBuildCacheKey, userModuleTransformCacheKey } from '../npm/cache-keys.js';
 import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import { NpmCache } from '../npm/cache.js';
@@ -1373,6 +1374,15 @@ export class ViteDevServer {
     return this.bundlePool.acquire();
   }
 
+  /**
+   * The bundle_hash of a pre-bundle row the code serving this server made
+   * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
+   * path below), or by the service's build with no pool.
+   */
+  private bundleKeys(): Promise<[pooled: string, service: string]> {
+    return Promise.all([prebundleCacheKey(), serviceBuildCacheKey(this.esbuild.transformHostId)]);
+  }
+
   /** Detect TailwindCSS usage in the project */
   private detectTailwind(): void {
     // Check for tailwind config files
@@ -1847,16 +1857,17 @@ export class ViteDevServer {
     //    exports if the bundle only exports default (CJS-only packages).
     if (this.npmCache) {
       const esmBundle = this.npmCache.getEsmBundle(specifier);
-      // Only use cached bundles built with the current bundler version.
-      // Stale bundles (from older bundler versions) are treated as missing
+      // Only use cached bundles built by the code serving now (bundleKeys).
+      // Stale bundles (from older bundlers or engines) are treated as missing
       // and re-bundled on the cold path.
+      const bundleKeys = await this.bundleKeys();
       // The cache is the workspace's, shared by every server whoever started
       // it: a bundle is served only to a principal who may read everything it
       // was built from, so one that names nothing it was built from is never
       // served. Otherwise this server builds its own, as itself.
       if (
         esmBundle &&
-        esmBundle.bundleHash === BUNDLER_VERSION &&
+        bundleKeys.includes(esmBundle.bundleHash) &&
         this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo) &&
         esmBundle.sources.length > 0 &&
         esmBundle.sources.every((path) => this.mayRead(path))
@@ -2048,10 +2059,7 @@ export class ViteDevServer {
         if (onDemandPool) {
           // Facet path — the supervisor holds no bundler.
           try {
-            const {
-              buildSliceForSpecifierWithCap,
-              BUNDLER_VERSION,
-            } = await import('../npm/pre-bundle-facet.js');
+            const { buildSliceForSpecifierWithCap } = await import('../npm/pre-bundle-facet.js');
             const SLICE_CAP_BYTES = ON_DEMAND_SLICE_CAP_BYTES;
             const projDir = this.root;
             const nmDir = projDir + '/node_modules';
@@ -2113,7 +2121,7 @@ export class ViteDevServer {
                 entryPath: bundleEntryPath,
                 externals,
                 slice: slice.slice,
-                bundlerVersion: BUNDLER_VERSION,
+                bundlerVersion: await prebundleCacheKey(),
                 // Base-neutral: the @modules bundle is persisted raw and shared
                 // across mounts, so BASE_URL is fixed to '/' here (module URLs
                 // get the per-request base applied at serve time, not baked in).
@@ -2175,7 +2183,8 @@ export class ViteDevServer {
             try {
               this.npmCache.putEsmBundle({
                 specifier,
-                bundleHash: BUNDLER_VERSION,
+                // Keyed by what built it: the pool's build facet, or the service.
+                bundleHash: (await this.bundleKeys())[onDemandPool ? 0 : 1],
                 esmCode: bundled,
                 builtAt: Date.now(),
                 inputHash: barrelInfo?.inputHash ?? '',
@@ -2739,13 +2748,15 @@ export class ViteDevServer {
 
     // Persistent transform cache (survives DO hibernation; content-hashed
     // so a write whose VFS event was missed still invalidates). Keyed on
-    // (vfsPath, base, contentHash, BUNDLER_VERSION) — the transform bakes the
+    // (vfsPath, base, contentHash, the code's key) — the transform bakes the
     // mount base (router basename, BASE_URL, module URLs), so each base gets
     // its own row. On hit, repopulate the in-memory cache and serve without
     // re-running esbuild.
     const contentHash = this.npmCache ? await sha256Base64Url(code) : null;
+    // The code that transforms (npm/cache-keys.ts): a row another build of it made is not this one's.
+    const transformKey = await userModuleTransformCacheKey(this.esbuild.transformHostId);
     if (this.npmCache && contentHash) {
-      const persisted = this.npmCache.getUserModuleTransform(vfsPath, base, contentHash, BUNDLER_VERSION);
+      const persisted = this.npmCache.getUserModuleTransform(vfsPath, base, contentHash, transformKey);
       if (persisted) {
         this.moduleCache.set(memKey, { code: persisted.code, timestamp: Date.now() });
         return new Response(persisted.code, {
@@ -2822,7 +2833,7 @@ if (!document.getElementById('nimbus-error-overlay')) {
           vfsPath,
           base,
           contentHash,
-          bundlerVersion: BUNDLER_VERSION,
+          bundlerVersion: transformKey,
           code,
           builtAt: Date.now(),
         });

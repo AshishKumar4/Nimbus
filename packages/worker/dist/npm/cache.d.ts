@@ -76,7 +76,7 @@ export interface UserModuleTransformEntry {
     base: string;
     /** SHA-256 (base64url) of the source bytes the transform was built from. */
     contentHash: string;
-    /** BUNDLER_VERSION the transform output was produced with. */
+    /** The code the transform output was produced with: npm/cache-keys.ts's userModuleTransformCacheKey. */
     bundlerVersion: string;
     /** Final served JS (esbuild transform + import rewrites). */
     code: string;

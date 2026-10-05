@@ -29,7 +29,7 @@ import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
-import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { prebundleCacheKey } from './cache-keys.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, hoistPlacements, } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
@@ -1875,6 +1875,8 @@ export class NpmInstaller {
         // bundle pool must also be present because the facets run in it.
         if (!this.esbuild || !this.bundlePool)
             return;
+        // What a pre-bundle row is keyed by beside its input: the code that built it (npm/cache-keys.ts).
+        const bundleKey = await prebundleCacheKey();
         const usedSpecifiers = this.scanBareImports(fs, projDir);
         // Vite plugins / postcss plugins / build-time tools NEVER ship to the
         // browser — they're invoked server-side by vite's own plugin
@@ -1960,7 +1962,7 @@ export class NpmInstaller {
                     continue;
                 }
                 if (existing &&
-                    existing.bundleHash === BUNDLER_VERSION &&
+                    existing.bundleHash === bundleKey &&
                     existing.inputHash === inputHash) {
                     continue;
                 }
@@ -1987,7 +1989,7 @@ export class NpmInstaller {
                 });
                 continue;
             }
-            if (existing && existing.bundleHash === BUNDLER_VERSION && existing.inputHash === '')
+            if (existing && existing.bundleHash === bundleKey && existing.inputHash === '')
                 continue;
             pending.push({ specifier, entryPath });
         }
@@ -2206,7 +2208,7 @@ export class NpmInstaller {
                         entryPath: next.entryPath,
                         externals,
                         slice: slice.slice,
-                        bundlerVersion: BUNDLER_VERSION,
+                        bundlerVersion: bundleKey,
                     };
                     // Drop our supervisor-side reference to the slice array as soon
                     // as it's owned by `spec`. `spec` is the only thing that needs
@@ -2256,7 +2258,7 @@ export class NpmInstaller {
                     try {
                         this.cache.putEsmBundle({
                             specifier: next.specifier,
-                            bundleHash: BUNDLER_VERSION,
+                            bundleHash: bundleKey,
                             esmCode: result.esmCode,
                             builtAt: Date.now(),
                             inputHash: next.inputHash ?? '',

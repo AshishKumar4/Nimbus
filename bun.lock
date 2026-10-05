@@ -125,7 +125,7 @@
     },
     "packages/fabric": {
       "name": "@nimbus-sh/fabric",
-      "version": "0.10.0",
+      "version": "0.10.1",
       "dependencies": {
         "@nimbus-sh/core": "^0.15.0",
         "@nimbus-sh/platform": "^0.7.0",
@@ -138,7 +138,7 @@
     },
     "packages/loom": {
       "name": "@nimbus-sh/loom",
-      "version": "0.2.2",
+      "version": "0.2.3",
       "dependencies": {
         "@nimbus-sh/fabric": "^0.10.0",
         "cron-schedule": "^6.0.0",
@@ -190,11 +190,11 @@
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.13.2",
+      "version": "0.13.3",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
         "@nimbus-sh/core": "^0.15.1",
-        "@nimbus-sh/fabric": "^0.10.0",
+        "@nimbus-sh/fabric": "^0.10.1",
         "@nimbus-sh/platform": "^0.7.1",
         "@renovatebot/pep440": "^5.0.0",
         "ai": "^6.0.182",

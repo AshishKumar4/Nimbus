@@ -19,7 +19,8 @@ import { pathToFileURL } from 'node:url';
 import { buildWithEsbuild } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
 import { prebundleSlice } from '../../packages/core/src/runtime/prebundle-slice.ts';
-import { buildSliceForSpecifierWithCap, externalsForSpecifier, BUNDLER_VERSION } from '../../packages/worker/src/npm/pre-bundle-facet.ts';
+import { buildSliceForSpecifierWithCap, externalsForSpecifier } from '../../packages/worker/src/npm/pre-bundle-facet.ts';
+import { prebundleCacheKey } from '../../packages/worker/src/npm/cache-keys.ts';
 import { rewriteExternalRequires, synthesizeCjsNamedExports } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { CASES, FILES, NODE_MODULES } from '../fixtures/prebundle-differential/packages.mjs';
 
@@ -113,7 +114,7 @@ try {
     for (const [engine, build] of Object.entries(engines)) {
       const slice = buildSliceForSpecifierWithCap(vfs, specifier, NODE_MODULES.slice(1), 28 * 1024 * 1024);
       assert.ok(slice, `${specifier}: the slice fits`);
-      const spec = { specifier, entryPath: `${NODE_MODULES}/${entry}`, externals: externalsForSpecifier(specifier), slice: slice.slice, bundlerVersion: BUNDLER_VERSION, define };
+      const spec = { specifier, entryPath: `${NODE_MODULES}/${entry}`, externals: externalsForSpecifier(specifier), slice: slice.slice, bundlerVersion: await prebundleCacheKey(), define };
       const result = await prebundleSlice(spec, build);
       if (!result.ok) {
         seen[engine] = { failure: result.errorText, warnings: result.warnings };
