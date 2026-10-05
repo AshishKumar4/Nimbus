@@ -39,7 +39,7 @@ import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import type { CloneBatchResult, ClonePrepared } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 
-export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push' | 'fetch-objects';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
 
 /**
  * The clone's job marker, in its git directory from prepare until the clone
@@ -3184,25 +3184,15 @@ export default {
         const fetched = await __nimbusGitPack.fetchObjects(context, { oids: opts.oids, jobId: invocationId });
         return respond(true, { fetched, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch') {
+        // ref is the branch a pull merges; without it, the current branch's, as git fetch picks.
         await git.fetch({
           fs, http,
           dir: opts.dir,
           remote: opts.remote || 'origin',
+          ref: opts.ref || undefined,
           depth: opts.depth,
           relative: opts.relative === true,
           singleBranch: true,
-          onProgress,
-          onAuth,
-        });
-      } else if (opts.op === 'pull') {
-        await git.pull({
-          fs, http,
-          dir: opts.dir,
-          remote: opts.remote || 'origin',
-          ref: opts.ref,
-          singleBranch: true,
-          author: opts.author || { name: 'user', email: 'user@nimbus.dev' },
-          committer: opts.committer,
           onProgress,
           onAuth,
         });
