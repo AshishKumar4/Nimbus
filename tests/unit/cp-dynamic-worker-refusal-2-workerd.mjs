@@ -4,10 +4,11 @@
 // Durable Object's limit, each doing nothing but wait on a grandchild of its
 // own, get one EAGAIN, as Node's spawn does at a process limit, and the rest
 // run; a family that can still go on is never refused. Host node has no such
-// limit, so these are asserted on their own. Here ES modules, scheduled exits, bun and
-// spawnSync; callbacks, shell lines and npm scripts:
-// cp-dynamic-worker-refusal-workerd. (The rest of
-// child_process concurrency: cp-concurrent-children-workerd.)
+// limit, so these are asserted on their own. Here ES modules, scheduled
+// exits, bun and spawnSync; callbacks and shell lines:
+// cp-dynamic-worker-refusal-workerd; a pipeline's next step: -3; npm
+// scripts: -4. (The rest of child_process concurrency:
+// cp-concurrent-children-workerd.)
 //
 // What has to hold:
 //   - nine children, each an ES module blocked inside its top-level await

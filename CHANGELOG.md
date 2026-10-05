@@ -42,7 +42,14 @@ published independently in the `@nimbus-sh` npm scope.
   runs as, whichever shell runs it, and an npm script runs on a shell of
   its own under its wrapper's pid, which its `npm run` awaits (before, nine
   `sh -c 'npm run build'` children, each awaiting a queued grandchild,
-  hung with the limit full). A guest says when its only remaining
+  hung with the limit full). Between two commands, a line is the shell's
+  own work: each thread of a line (the line, an element of a pipeline, a
+  background job) holds a unit whenever none of its commands runs, handed
+  to the next command before it is let go, so the count never dips while a
+  step is still to run, whichever turn it starts on (before, in
+  `node x | (sleep 10; kill $(cat x.pid))` the line looked wait-only the
+  instant `sleep` ended, and the ledger refused a grandchild the `kill`
+  was about to make room for). A guest says when its only remaining
   work is waiting on its children (its event loop, top-level `await`
   included, has no timer, socket, server, stdin read or fetch of its own
   pending). The session numbers each piece of news of a guest's children as
@@ -54,7 +61,9 @@ published independently in the `@nimbus-sh` npm scope.
   stuck when it is in that state and each process it waits on is queued for
   a worker or stuck too; a builtin running (`sleep`) never is. When every
   worker in flight is held by a stuck process, the newest queued process a
-  stuck one waits on is refused. That child's spawn fails as Node's does at
+  stuck one waits on is refused, never on the synchronous path of the
+  change that showed it: the decision is taken on a later turn, on the
+  ledger as it is then. That child's spawn fails as Node's does at
   a process limit: an 'error' event (`spawn node EAGAIN`, errno -11), no
   'spawn', no 'exit', no pid, and 'close' with -11. Its program never runs;
   whoever waits on it hears it and can go on. Nine children each doing

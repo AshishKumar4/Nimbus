@@ -1,12 +1,13 @@
 #!/usr/bin/env bun
 // The Dynamic Worker ledger's deadlock protocol, checked exhaustively at a
 // small scope, wired to production (lib/ledger-protocol-model.mjs): the real
-// ledger, the real process table and its work and await accounting, and the
-// guests' news tracker from the very text the shims embed (child-news.ts);
-// only who could still make progress is the model's own. Every interleaving
-// of reports, news (delivered out of order, waking its guest or not), child
-// exits, admissions and refusals, up to the order of moves only one guest can
-// see.
+// ledger, the real process table and its work and await accounting (a
+// shell's threads, the interpreter's WorkThread), and the guests' news
+// tracker from the very text the shims embed (child-news.ts); only who could
+// still make progress is the model's own. Every interleaving of reports,
+// news (delivered out of order, waking its guest or not), child exits,
+// admissions, and the refusals the ledger decides on a later turn, up to the
+// order of moves only one guest can see.
 //
 // What must hold, in every run:
 //   - never a refusal while any process holding a worker can still make
@@ -19,7 +20,8 @@
 // running in the session, `sh -c 'node x'`). Two holders one under the
 // other: dynamic-worker-protocol-model-nested and -nested-2; three holders:
 // dynamic-worker-protocol-model-three and -three-fork; other shells (a
-// builtin first, npm's script wrapper, a background job):
+// builtin first, npm's script wrapper, a background job, a pipeline that
+// kills its program):
 // dynamic-worker-protocol-model-shells.
 //
 // The checker's teeth, each a mutant of production, each caught:

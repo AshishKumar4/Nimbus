@@ -4,13 +4,17 @@
 //
 //   - the ledger: packages/fabric/src/budgets.ts (holds, waits, admission,
 //     refusal, news numbering, reports), bound to the process table as the
-//     session binds it (bindProcessTable);
+//     session binds it (bindProcessTable); a refusal it puts off to a later
+//     turn is a move of its own here ('decide'), taken in any order with
+//     the others;
 //   - the process table and its work and await accounting:
 //     packages/core/src/runtime/session-process-supervisor.ts, driven with
-//     the calls the production paths make, in their order (the shell counts
-//     each command as its pid's work, FacetManager.exec an await of the
-//     program it runs for its invoker, npm's tracked script an await of its
-//     wrapper, and an exit forgets what the process waited on);
+//     the calls the production paths make, in their order (a shell line, an
+//     element of a pipeline and a background job are each a WorkThread, the
+//     interpreter's, whose commands are its pid's work; FacetManager.exec
+//     records an await of the program it runs for its invoker, npm's tracked
+//     script an await of its wrapper, and an exit forgets what the process
+//     waited on);
 //   - each guest's half of the news protocol: the text of
 //     packages/worker/src/runtime/child-news.ts, evaluated as the shims embed
 //     it (or a mutant of that text).
@@ -33,6 +37,12 @@
 //      a builtin runs, then `wait`. Awaiting it is never the shell's only
 //      work by the session's account, so a family with g that is truly stuck
 //      waits rather than refuses: a known limit, checked for safety only.
+//   k  `sh -c 'node x | (sleep 1; kill x)'`: the program in one element of a
+//      pipeline, and in the other a builtin, then a `kill` of the program,
+//      begun in the same turn the builtin ends;
+//   K  the same, with the `kill` begun on a later turn (its line had more to
+//      do first: `kill $(cat x.pid)` reads a file). Until the kill has run
+//      the shell is never stuck: it will end the program.
 //
 // The moves, in any order: a guest finishes its own work and blocks on its
 // children (or exits, with none left); a piece of news (a child's start, its
@@ -56,6 +66,7 @@
 import * as budgets from '../../../packages/fabric/src/budgets.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { CHILD_NEWS_SOURCE } from '../../../packages/worker/src/runtime/child-news.ts';
+import { WorkThread } from '../../../packages/core/src/substrate/lifo/shell/work-thread.ts';
 
 const { beginLoaderFetch, beginLoaderFetchWhenFree, bindProcessTable, DO_DYNAMIC_WORKER_LIMIT, issueProcessNews, loaderLedgerStats, setProcessBlocked } = budgets;
 
@@ -68,12 +79,28 @@ export const PRODUCTION = {
   createChildNews: guestNewsFrom(CHILD_NEWS_SOURCE),
   /** A hook to mutate the process table's accounting (a mutant); production leaves it alone. */
   patchProcesses: null,
+  /** A shell's threads of control as its work (the interpreter's). */
+  WorkThread,
+  /** The ledger puts a refusal off to a later turn (bindProcessTable's schedule); false decides on the change's own path. */
+  decideLater: true,
 };
+
+/**
+ * The accounting before WorkThread, for mutants: each command of a shell
+ * counted on its pid, nothing between them.
+ */
+export class CommandsOnly {
+  constructor(begin) { this.begin = begin; }
+  beginWork() { return this.begin(); }
+  fork() { return new CommandsOnly(this.begin); }
+  sibling() { return new CommandsOnly(this.begin); }
+  close() {}
+}
 
 const tick = async () => { for (let i = 0; i < 3; i++) await null; };
 
 /** Shell kinds: a shell child of a guest, with the program it ends up awaiting. */
-const SHELL_KINDS = new Set(['s', 'f', 'n', 'g']);
+const SHELL_KINDS = new Set(['s', 'f', 'n', 'g', 'k', 'K']);
 
 /**
  * The family's processes, as model records: `id` is a readable label (R is
@@ -120,6 +147,8 @@ class Run {
     this.starting = [];
     /** Work and await ends the production paths hold, by label. */
     this.ends = new Map();
+    /** Refusals the ledger has put off to a later turn, in order: each a 'decide' move. */
+    this.decisions = [];
   }
 
   get(id) { return this.byId.get(id); }
@@ -137,7 +166,7 @@ class Run {
   runEnds(id) { for (const end of this.ends.get(id) ?? []) end(); this.ends.delete(id); }
 
   async setup() {
-    bindProcessTable(this.ctx, this.processes);
+    bindProcessTable(this.ctx, this.processes, this.production.decideLater ? (decide) => this.decisions.push(decide) : (decide) => decide());
     const holders = [...this.byId.values()].filter((p) => p.kind === 'guest' && p.id !== 1);
     for (const p of this.byId.values()) if (p.kind === 'guest' || p.kind === 'queued' || p.kind === 'builtin') this.spawn(p);
     for (const p of [...this.byId.values()]) {
@@ -170,43 +199,63 @@ class Run {
 
   /**
    * A shell child starts its line, with the accounting the production paths
-   * keep: the shell counts each command as its pid's work
-   * (Shell.accountWork); exec spawns the program under the invoker and
-   * records the invoker's await of it; npm's tracked script spawns its
-   * wrapper under the command's pid and records that await.
+   * keep: the line is a WorkThread of its pid (Interpreter.executeLine), as
+   * is each element of a pipeline (forked from it) and a background job
+   * (beside it); each command is a unit of work under its thread; exec
+   * spawns the program under the invoker and records the invoker's await of
+   * it; npm's tracked script runs on a shell of its own under its wrapper's
+   * pid, and records the command's await of the wrapper.
    */
   startShell(s) {
     this.spawn(s);
+    const line = this.thread(s.pid);
+    s.line = line;
     if (s.shell === 'f') {
       // `sleep 1` first: the builtin is the shell's work.
-      this.holdEnd(`${s.id}:sleep`, this.processes.beginWork(s.pid));
+      this.holdEnd(`${s.id}:sleep`, line.beginWork());
       s.phase = 'sleeping';
       return;
     }
     if (s.shell === 'n') {
-      this.holdEnd(s.id, this.processes.beginWork(s.pid)); // `npm run build`
+      this.holdEnd(s.id, line.beginWork()); // `npm run build`
       const w = { id: s.id * 10 + 2, parent: s.id, kind: 'shell', shell: 'wrapper', phase: 'starting', program: s.id * 10 + 1 };
       this.byId.set(w.id, w);
       this.spawn(w);
       // shellExecuteTracked: ended as the wrapper exits.
       this.holdEnd(`${w.id}:awaited`, this.processes.beginAwait(s.pid, w.pid));
+      w.line = this.thread(w.pid);
       s.phase = 'awaiting';
       s.awaits = w.id;
-      this.runProgram(w);
+      this.runProgram(w, w.line);
       return;
     }
     if (s.shell === 'g') {
-      this.runProgram(s); // `node x &`
-      this.holdEnd(`${s.id}:sleep`, this.processes.beginWork(s.pid)); // `sleep 1`
+      s.job = line.sibling(); // `node x &`
+      this.runProgram(s, s.job);
+      this.holdEnd(`${s.id}:sleep`, line.beginWork()); // `sleep 1`
       s.phase = 'sleeping';
       return;
     }
-    this.runProgram(s);
+    if (s.shell === 'k' || s.shell === 'K') {
+      // `node x | (sleep 1; kill x)`: two elements the line waits on.
+      s.element = line.fork();
+      s.killer = line.fork();
+      this.runProgram(s, s.element);
+      this.holdEnd(`${s.id}:sleep`, s.killer.beginWork());
+      s.killPhase = 'sleeping';
+      return;
+    }
+    this.runProgram(s, line);
   }
 
-  /** Shell `s` runs `node x`: its command is its work; exec spawns the program and records the await. */
-  runProgram(s) {
-    this.holdEnd(s.id, this.processes.beginWork(s.pid));
+  /** A thread of `pid`'s control, its work counted on the process table. */
+  thread(pid) {
+    return new this.production.WorkThread(() => this.processes.beginWork(pid));
+  }
+
+  /** Shell `s` runs `node x` on `thread`: its command is work; exec spawns the program and records the await. */
+  runProgram(s, thread) {
+    this.holdEnd(s.id, thread.beginWork());
     const program = { id: s.program, parent: s.id, kind: 'queued', state: 'queued' };
     this.byId.set(program.id, program);
     this.spawn(program);
@@ -216,16 +265,17 @@ class Run {
     this.queue(program);
   }
 
-  /** A queued child's wait for a worker: admitted, it holds one; refused, its spawn fails. */
+  /** A queued child's wait for a worker: admitted, it holds one; refused, its spawn fails; killed, it never runs. */
   queue(p) {
-    beginLoaderFetchWhenFree(this.ctx, `run-${p.id}`, { process: { pid: p.pid } }).then(
+    p.kill = new AbortController();
+    beginLoaderFetchWhenFree(this.ctx, `run-${p.id}`, { process: { pid: p.pid }, signal: p.kill.signal }).then(
       (end) => {
         p.state = 'admitted';
         this.holds.set(p.id, [end]);
         // Admitted, it starts (the broker's onStarted, inside the admission).
         this.starting.push(p.id);
       },
-      () => this.refused(p),
+      (error) => (p.kill.signal.aborted && error === p.kill.signal.reason ? undefined : this.refused(p)),
     );
   }
 
@@ -249,8 +299,9 @@ class Run {
         // Blocked, and every piece of news produced for it applied.
         if (p.state === 'blocked' && g.inflight.length === 0) waitsOn.set(p.id, this.children(p.id));
       } else if (p.kind === 'shell' && (p.phase === 'awaiting' || p.phase === 'waiting')) {
-        // Awaiting its program (or its wrapper), or `wait`ing on its background job.
-        waitsOn.set(p.id, [p.awaits]);
+        // Awaiting its program (or its wrapper), or `wait`ing on its background
+        // job; with a `kill` of it still to run, never stuck.
+        if (p.killPhase === undefined || p.killPhase === 'done') waitsOn.set(p.id, [p.awaits]);
       }
     }
     const stuck = new Set([...waitsOn].filter(([, on]) => on.length > 0).map(([id]) => id));
@@ -269,6 +320,8 @@ class Run {
 
   moves() {
     const moves = [];
+    // The ledger's put-off decision, on a later turn than the change that asked for it.
+    if (this.decisions.length > 0) moves.push(['decide']);
     for (const g of this.guests.values()) {
       const p = this.get(g.id);
       if (p.exited) continue;
@@ -297,6 +350,9 @@ class Run {
       else if (p.kind === 'queued' && p.state === 'refused') moves.push(['fail', p.id]);
       else if (p.kind === 'shell' && p.phase === 'sleeping') moves.push(['sleepEnd', p.id]);
       else if (p.kind === 'shell' && p.phase === 'finishing') moves.push(['exit', p.id]);
+      if (p.killPhase === 'sleeping') moves.push(['sleepEnd', p.id]);
+      else if (p.killPhase === 'between') moves.push(['nextStep', p.id]);
+      else if (p.killPhase === 'killing') moves.push(['kill', p.id]);
     }
     return moves;
   }
@@ -324,8 +380,13 @@ class Run {
     if (parent?.kind === 'shell' && parent.awaits === p.id) {
       // Its command ends with what it awaited (`node x` with x, `npm run` with its script).
       this.runEnds(parent.id);
+      // g's background job ends with its one command, k's first element too.
+      parent.job?.close();
+      parent.element?.close();
       // g's background job may end while its `sleep` runs: `wait` will return at once.
       if (parent.phase === 'sleeping') parent.backgroundDone = true;
+      // k's line ends once its other element has too.
+      else if (parent.killPhase !== undefined && parent.killPhase !== 'done') parent.phase = 'running';
       else parent.phase = 'finishing';
     }
     await tick();
@@ -380,22 +441,50 @@ class Run {
       case 'output':
         p.outputDone = true;
         return this.news(id, 'output');
+      case 'decide':
+        this.decisions.shift()();
+        return tick();
       case 'sleepEnd':
         this.runEnds(`${id}:sleep`);
-        if (p.shell === 'f') this.runProgram(p);
+        if (p.shell === 'k') {
+          // `kill` begins in the turn `sleep` ends in.
+          this.holdEnd(`${id}:kill`, p.killer.beginWork());
+          p.killPhase = 'killing';
+        } else if (p.shell === 'K') p.killPhase = 'between';
+        else if (p.shell === 'f') this.runProgram(p, p.line);
         else if (p.backgroundDone) p.phase = 'finishing';
         else {
           // g: `wait`, a builtin: the shell's work, awaiting its background job.
-          this.holdEnd(id, this.processes.beginWork(p.pid));
+          this.holdEnd(id, p.line.beginWork());
           p.phase = 'waiting';
         }
         return tick();
+      case 'nextStep':
+        // K: `kill $(cat x.pid)` begins, a turn later.
+        this.holdEnd(`${id}:kill`, p.killer.beginWork());
+        p.killPhase = 'killing';
+        return tick();
+      case 'kill': {
+        const x = this.get(p.program);
+        if (!x.exited) {
+          // Queued, its wait is abandoned (its launch's signal); running, it ends.
+          if (x.state === 'queued') x.kill.abort();
+          else if (x.state === 'admitted') await this.releaseHolds(x.id);
+          x.state = 'killed';
+          await this.ended(x);
+        }
+        this.runEnds(`${id}:kill`);
+        p.killer.close();
+        p.killPhase = 'done';
+        if (p.phase === 'running') p.phase = 'finishing';
+        return tick();
+      }
       case 'fail':
         await this.news(id, 'exit');
         return this.ended(p);
       case 'exit':
         if (p.kind === 'queued') await this.releaseHolds(id);
-        if (p.kind === 'shell') { this.runEnds(id); this.runEnds(`${id}:awaited`); }
+        if (p.kind === 'shell') { this.runEnds(id); p.line.close(); this.runEnds(`${id}:awaited`); }
         await this.news(id, 'exit');
         return this.ended(p);
       default:
@@ -418,7 +507,7 @@ class Run {
    * futures.
    */
   key() {
-    const procs = [...this.byId.values()].map((p) => [p.id, p.state ?? p.phase, p.exited, p.outputDone ?? null]);
+    const procs = [...this.byId.values()].map((p) => [p.id, p.state ?? p.phase, p.exited, p.outputDone ?? null, p.killPhase ?? null]);
     const stats = loaderLedgerStats(this.ctx);
     // An exited guest's leftovers (undelivered reports and replies) have no future.
     const guests = [...this.guests.values()].filter((g) => !this.get(g.id).exited).map((g) => {
@@ -435,7 +524,7 @@ class Run {
         ledger: news ? [news.issued - base, news.blockedAt === null ? null : news.blockedAt - base] : null,
       }];
     });
-    return JSON.stringify([procs, guests, stats.waiters, stats.holders]);
+    return JSON.stringify([procs, guests, stats.waiters, stats.holders, this.decisions.length]);
   }
 }
 

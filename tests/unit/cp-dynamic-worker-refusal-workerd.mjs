@@ -4,10 +4,10 @@
 // Durable Object's limit, each doing nothing but wait on a grandchild of its
 // own, get one EAGAIN, as Node's spawn does at a process limit, and the rest
 // run; a family that can still go on is never refused. Host node has no such
-// limit, so these are asserted on their own. Here callbacks, shell lines and npm
-// scripts; ES modules, scheduled exits, bun and spawnSync:
-// cp-dynamic-worker-refusal-2-workerd. (The rest of
-// child_process concurrency: cp-concurrent-children-workerd.)
+// limit, so these are asserted on their own. Here callbacks and shell
+// lines; ES modules, scheduled exits, bun and spawnSync: -2; a pipeline's
+// next step: -3; npm scripts: -4. (The rest of child_process concurrency:
+// cp-concurrent-children-workerd.)
 //
 // What has to hold:
 //   - nine children, each waiting on a grandchild of its own, fill the limit
@@ -18,10 +18,6 @@
 //   - the same with each child a shell line running the program
 //     (shdeadlock): the parent's children are shells, which hold no worker;
 //     before, they were never stuck, and all ten hung.
-//   - the same through npm (npmdeadlock: sh -c 'npm run build', build
-//     'node parent.cjs && true'): npm's script runs under a wrapper pid of
-//     its own; before, the wrapper's work and its caller's await of it went
-//     uncounted, and all ten hung.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -65,47 +61,6 @@ for (let i = 0; i < N; i++) {
     if (results.length === N) console.log(results.sort().join('\\n'));
   });
 }
-`,
-  npmdeadlock: `
-const { spawn } = require('child_process');
-const fs = require('fs');
-const N = 9;
-// As shdeadlock, through npm: each child is sh -c 'npm run build', and build
-// is 'node parent.cjs && true', so npm's script runs under a wrapper of its
-// own, and the program under that.
-fs.mkdirSync('/home/user/npmfam', { recursive: true });
-fs.writeFileSync('/home/user/npmfam/package.json', JSON.stringify({ name: 'npmfam', version: '1.0.0', scripts: { build: 'node parent.cjs && true' } }));
-fs.writeFileSync('/home/user/npmfam/parent.cjs', [
-  "const fs = require('fs');",
-  "fs.writeFileSync('/home/user/npmready/' + process.pid, 'ready');",
-  "const go = async () => { for (;;) { try { await fs.promises.access('/home/user/npmdeadlock-go'); return; } catch { await new Promise((r) => setTimeout(r, 100)); } } };",
-  "go().then(() => {",
-  "  const g = require('child_process').spawn('node', ['-e', 'console.log(1+1)']);",
-  "  let o = '';",
-  "  g.stdout.on('data', (d) => { o += d; });",
-  "  g.on('error', (e) => { console.log('error ' + e.code); process.exit(0); });",
-  "  g.on('close', (code) => { console.log('close ' + code + ' ' + o.trim()); process.exit(0); });",
-  "});",
-].join('\\n'));
-try { fs.unlinkSync('/home/user/npmdeadlock-go'); } catch {}
-fs.rmSync('/home/user/npmready', { recursive: true, force: true });
-fs.mkdirSync('/home/user/npmready');
-const results = [];
-for (let i = 0; i < N; i++) {
-  const c = spawn('sh', ['-c', 'npm run build'], { cwd: '/home/user/npmfam' });
-  let out = '';
-  c.stdout.on('data', (d) => { out += d; });
-  c.on('close', (code) => {
-    const said = out.split('\\n').filter((l) => /^(close|error) /.test(l)).join(' | ');
-    results.push(said + ' ; ' + code);
-    if (results.length === N) console.log(results.sort().join('\\n'));
-  });
-}
-const poll = setInterval(() => {
-  if (fs.readdirSync('/home/user/npmready').length < N) return;
-  clearInterval(poll);
-  fs.writeFileSync('/home/user/npmdeadlock-go', 'go');
-}, 100);
 `,
   shdeadlock: `
 const { spawn } = require('child_process');
@@ -194,18 +149,10 @@ try {
     console.log('  shdeadlock:\n    ' + sh.lines.join('\n    '));
     assert.deepEqual(sh.lines, ['close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'error EAGAIN ; 0'],
       "through sh -c, one grandchild's spawn fails EAGAIN, and the other eight run");
-
-    // The same nine through npm's script wrapper: sh -c 'npm run build',
-    // build 'node parent.cjs && true' (before, the wrapper ran on the session
-    // shell with no work counted and no await of it recorded, and all ten hung).
-    const npm = await run('npmdeadlock');
-    console.log('  npmdeadlock:\n    ' + npm.lines.join('\n    '));
-    assert.deepEqual(npm.lines, ['close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'close 0 2 ; 0', 'error EAGAIN ; 0'],
-      "through npm run, one grandchild's spawn fails EAGAIN, and the other eight run");
   } finally {
     await terminal.close();
   }
 } finally {
   await probe.stop();
 }
-console.log('ok - cp-dynamic-worker-refusal-workerd (nine children stuck on grandchildren, through callbacks, shell lines or npm scripts: one EAGAIN, eight runs)');
+console.log('ok - cp-dynamic-worker-refusal-workerd (nine children stuck on grandchildren, through callbacks or shell lines: one EAGAIN, eight runs)');
