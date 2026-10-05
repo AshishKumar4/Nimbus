@@ -42,7 +42,6 @@ export function configBool(value: unknown): boolean | undefined {
 }
 
 export class WorktreeRepo {
-  readonly counters: WalkCounters = newCounters();
   readonly store: ObjectStore;
   readonly fs: WorktreeFs;
   private readonly cache = {};
@@ -56,6 +55,7 @@ export class WorktreeRepo {
     readonly root: string,
     readonly gitdir: string,
     private readonly env: Record<string, string>,
+    readonly counters: WalkCounters = newCounters(),
   ) {
     const at = (path: string) => (path ? `${root}/${path}` : root);
     this.fs = {
@@ -86,6 +86,7 @@ export class WorktreeRepo {
     this.store = {
       // A loose object through cf-git; a packed one straight from the ranged store (a miss there costs no exception).
       read: async (oid) => {
+        this.counters.objectsRead++;
         if (!await vfs.exists(loose(oid))) {
           const packed = await gitFs.packs.read(gitdir, oid);
           if (packed) return { type: packed.type, data: packed.data };
