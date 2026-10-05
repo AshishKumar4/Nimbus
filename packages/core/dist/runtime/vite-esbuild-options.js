@@ -4,21 +4,23 @@
  * in vite/dist/node) passes esbuild for a module in `vite` (serve mode), for
  * the built-in Vite dev server to pass its transform:
  *
- * - `config.esbuild` as resolveConfig makes it: vite.config's `esbuild`,
- *   then what the project's plugins' config hooks merge into it
- *   (@vitejs/plugin-react, @preact/preset-vite), then `jsxDev: true` under
- *   it; `esbuild: false` turns the plugin off.
- * - the plugin's options: `target: 'esnext'`, `charset: 'utf8'`, the
- *   config's options over them, no minification, `keepNames` and
- *   `treeShaking` off, `supported` with `import()` and `import.meta` kept;
- *   `jsxInject`, `include` and `exclude` are its own.
+ * - `config.esbuild` as Vite 7.3's resolveConfig makes it: vite.config's
+ *   `esbuild`, then what the project's plugins' config hooks merge into it
+ *   (@vitejs/plugin-react, @preact/preset-vite), over `jsxDev: true`,
+ *   `charset: 'utf8'` and `legalComments: 'none'`; `esbuild: false` turns
+ *   the plugin off. (Vite 5.4 and 6.4 set charset in the plugin and leave
+ *   legal comments in: neither changes what a module does.)
+ * - the plugin's options: `target: 'esnext'`, the config's options over
+ *   it, no minification, `keepNames` and `treeShaking` off, `supported`
+ *   with `import()` and `import.meta` kept; `jsxInject`, `include` and
+ *   `exclude` are its own.
  * - per module, its tsconfig's eleven meaningful compiler options (a .ts or
  *   .tsx module only; found and read by tsconfck, runtime/tsconfck.ts), the
  *   config's `tsconfigRaw.compilerOptions` over them, `useDefineForClassFields`
  *   false where neither sets it nor `target`, and the tsconfig's JSX options
  *   dropped where the options set their own.
  *
- * Recorded against real Vite 5.4.21 and 6.4.3 in
+ * Recorded against real Vite 7.3.6 (and 6.4.3 and 5.4.21 beside it) in
  * tests/fixtures/vite-esbuild-reference.json.
  */
 /** The compiler options a tsconfig gives esbuild through Vite: what changes a module's output. */
@@ -75,11 +77,11 @@ function merge(base, override) {
 }
 const isObject = (value) => value !== null && typeof value === 'object' && !Array.isArray(value);
 /**
- * `config.esbuild` as Vite's resolveConfig makes it for `vite` from a
+ * `config.esbuild` as Vite 7's resolveConfig makes it for `vite` from a
  * vite.config read statically: its `esbuild`, then each known plugin's
  * contribution merged over it in the order Vite runs their config hooks
- * (all of these are `enforce: 'pre'`, so in the order listed), then
- * `jsxDev: true` under it. `config` null: no vite.config.
+ * (all of these are `enforce: 'pre'`, so in the order listed), over Vite's
+ * defaults (jsxDev, charset, legalComments). `config` null: no vite.config.
  */
 export function viteEsbuildSettings(config) {
     const unread = [...(config?.esbuildComputed ?? []).map((key) => `vite.config's ${key} is computed, and read only statically: left out`)];
@@ -98,7 +100,7 @@ export function viteEsbuildSettings(config) {
             esbuild = merge(esbuild === false ? {} : esbuild, contribution);
     }
     return {
-        esbuild: esbuild === false ? false : { jsxDev: true, ...esbuild },
+        esbuild: esbuild === false ? false : { jsxDev: true, charset: 'utf8', legalComments: 'none', ...esbuild },
         hasConfig: config !== null,
         unread,
     };
@@ -108,7 +110,6 @@ export function viteEsbuildPluginOptions(esbuild) {
     const { jsxInject: _jsxInject, include: _include, exclude: _exclude, ...rest } = esbuild;
     return {
         target: 'esnext',
-        charset: 'utf8',
         ...rest,
         minify: false,
         minifyIdentifiers: false,

@@ -1307,11 +1307,11 @@ function unwrapLayerBlocks(css: string): string {
  * warned about once): the JSX settings, the tsconfig, define, `supported`,
  * jsxInject; target, include and exclude are warned about where set
  * otherwise; what Vite itself forces off (minification, keepNames,
- * treeShaking) and charset change nothing that runs.
+ * treeShaking), charset and legalComments change nothing that runs.
  */
 const HONOURED_ESBUILD_OPTIONS = new Set([
   'jsx', 'jsxFactory', 'jsxFragment', 'jsxImportSource', 'jsxDev', 'tsconfigRaw', 'define', 'supported', 'jsxInject',
-  'target', 'include', 'exclude', 'charset', 'minify', 'minifyIdentifiers', 'minifySyntax', 'minifyWhitespace',
+  'target', 'include', 'exclude', 'charset', 'legalComments', 'minify', 'minifyIdentifiers', 'minifySyntax', 'minifyWhitespace',
   'keepNames', 'treeShaking', 'sourcemap', 'loader',
 ]);
 
@@ -3026,9 +3026,12 @@ if (!document.getElementById('nimbus-error-overlay')) {
     const loader = ext === '.tsx' ? 'tsx' as const : ext === '.jsx' ? 'jsx' as const : 'ts' as const;
     // A ts or tsx module's tsconfig, as tsconfck finds it for Vite: throws a
     // TsconfckParseError where it cannot be read, as Vite fails the module.
-    const tsconfig = loader === 'jsx' ? undefined : this.tsconfigFor(id).tsconfig.compilerOptions;
+    // Not read where esbuild.tsconfigRaw is a string: Vite then reads none (transformWithEsbuild).
+    const tsconfig = loader === 'jsx' || typeof pluginOptions.tsconfigRaw === 'string' ? undefined : this.tsconfigFor(id).tsconfig.compilerOptions;
     const vite = viteTransformOptions(id, { ...pluginOptions, loader }, tsconfig);
-    const tsconfigRaw = vite.tsconfigRaw as { compilerOptions: Record<string, unknown> };
+    // An object, or vite.config's own string, given to esbuild as it is.
+    const tsconfigRaw = vite.tsconfigRaw as string | { compilerOptions: Record<string, unknown> };
+    const compilerOptions = typeof tsconfigRaw === 'string' ? {} : tsconfigRaw.compilerOptions;
     // Of esbuild's `supported`, the transform takes import() and import.meta (what Vite sets).
     const supported: Record<string, boolean> = {};
     for (const [feature, value] of Object.entries(vite.supported as Record<string, unknown>)) {
@@ -3041,7 +3044,7 @@ if (!document.getElementById('nimbus-error-overlay')) {
     // decides (no vite.config, no tsconfig JSX setting): the automatic React
     // runtime, or h and Fragment for a module importing preact. Vite would
     // compile React.createElement there (decided 2026-10-05).
-    if (!settings.hasConfig && !TSCONFIG_JSX_FIELDS.some((field) => field in tsconfigRaw.compilerOptions)) {
+    if (!settings.hasConfig && !TSCONFIG_JSX_FIELDS.some((field) => field in compilerOptions)) {
       const hasPreact = code.includes('from "preact"') || code.includes("from 'preact'") || code.includes('from "preact/');
       jsx = hasPreact
         ? { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment', ...pick('jsxDev') }
@@ -3065,9 +3068,10 @@ if (!document.getElementById('nimbus-error-overlay')) {
       rewrite: this.hasImportmap ? null : {
         aliases: this.aliases,
         base,
-        // Read only by a `#name` specifier, which the text names in quotes:
-        // read now, and what the rewrite resolves `#` against after the transform.
-        scope: /["']#/.test(code) ? packageScopeOf(vfsPath, this.vfs) : null,
+        // Read only by a `#name` specifier, which the text (or the jsxInject
+        // put before it) names in quotes: read now, and what the rewrite
+        // resolves `#` against after the transform.
+        scope: /["']#/.test(withJsxInject(code, id, esbuild.jsxInject)) ? packageScopeOf(vfsPath, this.vfs) : null,
       },
     };
   }

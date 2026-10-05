@@ -4,7 +4,9 @@
 // tests/fixtures/vite-esbuild-reference.json, which
 // tests/unit/vite-esbuild-differential.mjs compares the built-in Vite dev
 // server with. Vite's output is no function of Nimbus's code, so it is
-// recorded once rather than installed for every test run.
+// recorded once rather than installed for every test run. Vite 7.3.6 is the
+// reference the server is held to (it bundles tsconfck 3.1.6); Vite 5.4.21
+// and 6.4.3 are recorded beside it, and each case where one differs says why.
 //
 //   node tests/reference/record-vite.mjs
 //
@@ -32,6 +34,7 @@ const OUT = join(here, '..', 'fixtures', 'vite-esbuild-reference.json');
 const PINNED = {
   vite5: { vite: '5.4.21', '@vitejs/plugin-react': '4.7.0', '@preact/preset-vite': '2.10.6', tsconfck: '3.1.6' },
   vite6: { vite: '6.4.3', '@vitejs/plugin-react': '4.7.0', '@preact/preset-vite': '2.10.6', tsconfck: '3.1.6' },
+  vite7: { vite: '7.3.6', '@vitejs/plugin-react': '4.7.0', '@preact/preset-vite': '2.10.6', tsconfck: '3.1.6' },
 };
 /** Where the differential serves every project from. */
 const ROOT = '/home/user/app';

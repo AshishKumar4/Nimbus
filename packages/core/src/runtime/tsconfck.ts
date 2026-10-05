@@ -19,7 +19,7 @@
  */
 
 import { normalizeVfsPath } from '../vfs/path.js';
-import { DEFAULT_CJS_CONDITIONS, parseResolvablePackageJson, resolveExports } from '../_shared/exports-resolver.js';
+import { parseResolvablePackageJson } from '../_shared/exports-resolver.js';
 
 /** What tsconfck reads through. */
 export interface TsconfckFs {
@@ -211,7 +211,8 @@ function parseExtends(result: Parsed, fs: TsconfckFs, files: string[]): void {
 
 /** What `extends` names, from `from`: Node's require.resolve, then `<name>/tsconfig.json` for a package. */
 function resolveExtends(extended: string, from: string, fs: TsconfckFs): string {
-  const request = extended === '..' ? '../tsconfig.json' : extended;
+  // tsconfck 3.1.6: `.` and `..` name the tsconfig.json there, not the directory.
+  const request = extended === '.' || extended === '..' ? `${extended}/tsconfig.json` : extended;
   const resolved = requireResolve(request, from, fs)
     ?? (request[0] !== '.' && !request.startsWith('/') ? requireResolve(`${request}/tsconfig.json`, from, fs) : null);
   if (resolved) return resolved;
@@ -252,7 +253,7 @@ function requireResolve(request: string, from: string, fs: TsconfckFs): string |
         try { return parseResolvablePackageJson(fs.readFileString(pkgPath)); } catch { return null; }
       })() : null;
       if (pkg?.exports !== undefined && pkg?.exports !== null) {
-        const target = resolveExports(pkg.exports, subpath ? `./${subpath}` : '.', DEFAULT_CJS_CONDITIONS);
+        const target = requireExportsTarget(pkg.exports, subpath ? `./${subpath}` : '.');
         // An exports map answers for its package: what it does not expose is not found.
         if (!target) return null;
         const at = resolve(pkgDir, target);
@@ -264,6 +265,65 @@ function requireResolve(request: string, from: string, fs: TsconfckFs): string |
     }
     if (dir === '/') return null;
   }
+}
+
+/** The conditions Node's require.resolve matches (`default` matches always). */
+const REQUIRE_CONDITIONS = new Set(['require', 'node', 'node-addons', 'default']);
+
+/**
+ * A package's `exports` target for `subpath` ('.' or './x'), as Node's
+ * PACKAGE_EXPORTS_RESOLVE finds it under require.resolve's conditions: an
+ * exact key, else the longest `*` pattern; in a conditions object the first
+ * key, in the object's order, that is `default` or a condition (not the
+ * resolver's own priority: `{ default, require }` is `default`). Null where
+ * nothing is exported there (Node throws ERR_PACKAGE_PATH_NOT_EXPORTED).
+ */
+function requireExportsTarget(exports: unknown, subpath: string): string | null {
+  const keys = exports !== null && typeof exports === 'object' && !Array.isArray(exports) ? Object.keys(exports) : [];
+  const subpaths = keys.length > 0 && keys.every((key) => key.startsWith('.'));
+  if (!subpaths) return subpath === '.' ? exportsTarget(exports, null) ?? null : null;
+  const map = exports as Record<string, unknown>;
+  if (Object.prototype.hasOwnProperty.call(map, subpath) && !subpath.includes('*')) return exportsTarget(map[subpath], null) ?? null;
+  let best: { key: string; match: string } | null = null;
+  for (const key of keys) {
+    const star = key.indexOf('*');
+    if (star < 0 || star !== key.lastIndexOf('*')) continue;
+    const base = key.slice(0, star);
+    const trailer = key.slice(star + 1);
+    if (!subpath.startsWith(base) || subpath === base) continue;
+    if (trailer && !(subpath.endsWith(trailer) && subpath.length >= key.length)) continue;
+    // PATTERN_KEY_COMPARE: the longer base, then the longer key.
+    if (!best || base.length > best.key.indexOf('*') || (base.length === best.key.indexOf('*') && key.length > best.key.length)) {
+      best = { key, match: subpath.slice(base.length, subpath.length - trailer.length) };
+    }
+  }
+  return best ? exportsTarget(map[best.key], best.match) ?? null : null;
+}
+
+/** PACKAGE_TARGET_RESOLVE: a target string (with `*` replaced), null, or undefined where nothing matched. */
+function exportsTarget(target: unknown, patternMatch: string | null): string | null | undefined {
+  if (typeof target === 'string') {
+    if (!target.startsWith('./')) return null;
+    return patternMatch === null ? target : target.replaceAll('*', patternMatch);
+  }
+  if (Array.isArray(target)) {
+    if (target.length === 0) return null;
+    let last: string | null | undefined = null;
+    for (const item of target) {
+      last = exportsTarget(item, patternMatch);
+      if (last) return last;
+    }
+    return last;
+  }
+  if (target !== null && typeof target === 'object') {
+    for (const [condition, value] of Object.entries(target)) {
+      if (!REQUIRE_CONDITIONS.has(condition)) continue;
+      const resolved = exportsTarget(value, patternMatch);
+      if (resolved !== undefined) return resolved;
+    }
+    return undefined;
+  }
+  return null;
 }
 
 /** What `extends` carries over: references, extends and custom keys do not. */

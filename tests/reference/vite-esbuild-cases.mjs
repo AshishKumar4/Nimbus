@@ -224,8 +224,8 @@ const tsconfig = (value) => JSON.stringify(value, null, 2) + '\n';
 /**
  * Each case: the project's files (under its root; `node_modules/` holds
  * packages a tsconfig extends), and the modules transformed. `versions`
- * says why Vite 5 and Vite 6 make different modules of it, where they do;
- * the server makes Vite 6's. `fallback`
+ * says why Vite 5 or 6 makes another module of it than Vite 7, where one
+ * does; the server makes Vite 7's. `fallback`
  * names a case where the built-in server keeps its own JSX defaults (no
  * vite.config and no tsconfig JSX setting, decided 2026-10-05) or reads
  * vite.config statically and cannot; the differential expects it to differ
@@ -309,7 +309,8 @@ export const CASES = {
     },
     modules: ['src/app.tsx'],
     versions: 'Vite 5.4.21 bundles a tsconfck that replaces ${configDir} only in the config it finds, not in a solution\'s references '
-      + '(tsconfck 3.1.5 replaces it in both): its reference includes nothing, and the module compiles with no tsconfig. The server reads as tsconfck 3.1.6, as Vite 6 does.',
+      + '(tsconfck 3.1.5 replaces it in both): its reference includes nothing, and the module compiles with no tsconfig. '
+      + 'The server reads as tsconfck 3.1.6, as Vite 6 and 7 do.',
   },
   'a nested tsconfig for its directory': {
     files: {
@@ -333,6 +334,38 @@ export const CASES = {
       'src/root/app.tsx': JSX_BARE, 'src/listed.tsx': JSX_BARE, 'src/other.tsx': JSX_BARE, 'src/skipped.tsx': JSX_BARE,
     },
     modules: ['src/root/app.tsx', 'src/listed.tsx', 'src/other.tsx', 'src/skipped.tsx'],
+  },
+  'tsconfig extends a package whose exports conditions come in order': {
+    files: {
+      'tsconfig.json': tsconfig({ extends: '@nimbus-test/cond' }),
+      // Node takes the first key that matches, in the object's order: `default` here, before `require`.
+      'node_modules/@nimbus-test/cond/package.json': JSON.stringify({
+        name: '@nimbus-test/cond', version: '1.0.0', exports: { '.': { default: './preact.json', require: './emotion.json' } },
+      }),
+      'node_modules/@nimbus-test/cond/preact.json': tsconfig({ compilerOptions: { jsx: 'react-jsx', jsxImportSource: 'preact' } }),
+      'node_modules/@nimbus-test/cond/emotion.json': tsconfig({ compilerOptions: { jsx: 'react-jsx', jsxImportSource: '@emotion/react' } }),
+      'src/app.tsx': JSX_BARE,
+    },
+    modules: ['src/app.tsx'],
+  },
+  'a solution\'s reference extends \'.\'': {
+    files: {
+      'tsconfig.json': tsconfig({ compilerOptions: { jsx: 'react-jsx', jsxImportSource: 'preact' }, files: [], references: [{ path: './tsconfig.app.json' }] }),
+      'tsconfig.app.json': tsconfig({ extends: '.', include: ['src'] }),
+      'src/app.tsx': JSX_BARE,
+    },
+    modules: ['src/app.tsx'],
+    versions: 'Vite 5.4.21 and 6.4.3 bundle a tsconfig reader older than tsconfck 3.1.6, which resolves an `extends` of \'.\' with '
+      + 'require.resolve: the project directory, which has no index.js, so the module fails. tsconfck 3.1.6, which Vite 7.3.6 bundles, '
+      + 'reads \'./tsconfig.json\'; so does the server.',
+  },
+  'esbuild.tsconfigRaw as a string, beside a tsconfig that cannot be read': {
+    files: {
+      'vite.config.js': `export default {\n  esbuild: { tsconfigRaw: ${JSON.stringify(JSON.stringify({ compilerOptions: { jsx: 'react-jsx', jsxImportSource: 'preact' } }))} },\n};\n`,
+      'tsconfig.json': tsconfig({ extends: '@nimbus-test/missing/tsconfig.json' }),
+      'src/app.tsx': JSX_BARE,
+    },
+    modules: ['src/app.tsx'],
   },
   'a jsconfig.json is not a tsconfig': {
     files: {

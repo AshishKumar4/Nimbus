@@ -250,7 +250,7 @@ function request(path) {
   assert.equal(server.configDir, ROOT, 'the restored server re-reads the vite.config it was started from');
   // The re-read after the restore: the project's vite.config says preact now.
   await server.readConfigAgain();
-  const reread = { esbuild: { jsxDev: true, jsx: 'automatic', jsxImportSource: 'preact' }, hasConfig: true, unread: [] };
+  const reread = { esbuild: { jsxDev: true, charset: 'utf8', legalComments: 'none', jsx: 'automatic', jsxImportSource: 'preact' }, hasConfig: true, unread: [] };
   assert.deepEqual(server.viteEsbuild, reread, 'the restored server reads its vite.config again');
   assert.deepEqual(self.store.get('vite-config').viteEsbuild, reread, 'and what it read is kept');
   server.onConfigChange({ alias: { '@': './src' }, define: { __APP__: '"two"' }, injectBasename: false });

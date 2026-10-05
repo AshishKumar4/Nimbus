@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// The built-in Vite dev server against real Vite 5.4.21 and 6.4.3, on the
+// The built-in Vite dev server against real Vite 7.3.6, 6.4.3 and 5.4.21, on the
 // projects of tests/reference/vite-esbuild-cases.mjs: create-vite's
 // TypeScript templates and projects that each turn one setting Vite's
 // esbuild plugin reads (the tsconfig tsconfck finds, vite.config's
@@ -11,17 +11,18 @@
 // - tsconfck: runtime/tsconfck.ts finds and reads the same config, with
 //   the same content, as tsconfck 3.1.6 did;
 // - config.esbuild: what the server makes of vite.config and its plugins is
-//   what Vite's resolveConfig made;
+//   what Vite 7's resolveConfig made;
 // - the module: what the server serves and what Vite's transform made,
 //   each run (imports stubbed to record what they are called with), import
 //   the same modules and make the same values; where Vite fails it, the
 //   server serves the same error in its overlay.
 //
-// Where Vite 5 (esbuild 0.21) and Vite 6 (esbuild 0.25) differ for a
-// module, the difference is printed with its case and the case says why
-// (`versions`); the server must make Vite 6's. A `fallback` case, where the server keeps its own JSX
-// defaults or cannot read vite.config statically, must differ from Vite,
-// in the way the case names.
+// The server must make what Vite 7.3.6 makes (it bundles tsconfck 3.1.6).
+// Where Vite 5 (esbuild 0.21) or Vite 6 (esbuild 0.25) makes another module
+// than Vite 7 (esbuild 0.28), the difference is printed with its case and
+// the case says why (`versions`). A `fallback` case, where the server keeps
+// its own JSX defaults or cannot read vite.config statically, must differ
+// from every Vite, in the way the case names.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
@@ -41,7 +42,9 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../fixtures/vite-esbuild-reference.json', import.meta.url), 'utf8'));
 const ROOT = fixture.root.replace(/^\//, '');
-const COLUMNS = ['vite5', 'vite6'];
+const COLUMNS = ['vite5', 'vite6', 'vite7'];
+/** The Vite the server is held to; the others are compared with it. */
+const TARGET = 'vite7';
 const failures = [];
 const fail = (message) => failures.push(message);
 
@@ -54,7 +57,8 @@ const fail = (message) => failures.push(message);
     assert.equal(fixture.cases[name].digest, caseDigest(definition), `${name}: changed since it was recorded: run node tests/reference/record-vite.mjs`);
   }
   for (const column of COLUMNS) assert.ok(fixture.versions[column]?.vite && fixture.versions[column]?.esbuild, `${column}: versions recorded`);
-  console.log(`  ok  ${listed.length} cases, recorded on Vite ${fixture.versions.vite5.vite} (esbuild ${fixture.versions.vite5.esbuild}) and ${fixture.versions.vite6.vite} (esbuild ${fixture.versions.vite6.esbuild})`);
+  const named = COLUMNS.map((column) => `${fixture.versions[column].vite} (esbuild ${fixture.versions[column].esbuild})`).join(', ');
+  console.log(`  ok  ${listed.length} cases, recorded on Vite ${named}`);
 }
 
 // ── Running a module ────────────────────────────────────────────────────
@@ -162,8 +166,8 @@ try {
 
     // tsconfck: the same config, read the same.
     for (const path of definition.modules) {
-      const expected = recorded.vite6.modules[path].tsconfck;
-      assert.deepEqual(recorded.vite5.modules[path].tsconfck, expected, `${name} ${path}: tsconfck 3.1.6 read the same under both`);
+      const expected = recorded[TARGET].modules[path].tsconfck;
+      for (const column of COLUMNS) assert.deepEqual(recorded[column].modules[path].tsconfck, expected, `${name} ${path}: tsconfck 3.1.6 read the same each time`);
       let ours;
       try {
         const { tsconfigFile, tsconfig } = parseTsconfig(`/${ROOT}/${path}`, {
@@ -185,10 +189,8 @@ try {
     const configFile = await readViteConfigFile(kernel, ROOT, async (source) => (await engine.transform(source, { loader: 'ts', format: 'esm' })).code);
     assert.equal(configFile.error, null, `${name}: vite.config read`);
     const settings = viteEsbuildSettings(configFile.path ? configFile.config : null);
-    for (const column of COLUMNS) {
-      const same = JSON.stringify(sorted(settings.esbuild)) === JSON.stringify(sorted(recorded[column].esbuild));
-      if (!same && !definition.fallback) fail(`${name} [${column}]: config.esbuild\n      Vite: ${JSON.stringify(recorded[column].esbuild)}\n      ours: ${JSON.stringify(settings.esbuild)}`);
-    }
+    const sameConfig = JSON.stringify(sorted(settings.esbuild)) === JSON.stringify(sorted(recorded[TARGET].esbuild));
+    if (!sameConfig && !definition.fallback) fail(`${name}: config.esbuild\n      Vite 7: ${JSON.stringify(recorded[TARGET].esbuild)}\n      ours:   ${JSON.stringify(settings.esbuild)}`);
 
     // Each module, served.
     const server = new ViteDevServer({
@@ -203,31 +205,64 @@ try {
         const vite = {};
         for (const column of COLUMNS) vite[column] = await viteOutcome(recorded[column].modules[path]);
         // Where Vite fails the module, the server serves the error in its overlay.
-        const ours = vite.vite6.error
-          ? { error: served.includes('[nimbus-vite] Transform error') && served.includes(vite.vite6.error) ? vite.vite6.error : served.slice(0, 300) }
+        const target = vite[TARGET];
+        const ours = target.error
+          ? { error: served.includes('[nimbus-vite] Transform error') && served.includes(target.error) ? target.error : served.slice(0, 300) }
           : await run(served);
         const text = (value) => JSON.stringify(value);
-        const versionsDiffer = text(vite.vite5) !== text(vite.vite6);
-        if (versionsDiffer) {
-          versionDifferences.push(`${name} ${path}: ${definition.versions ?? '(no reason given)'}\n      Vite 5 (esbuild ${fixture.versions.vite5.esbuild}): ${text(vite.vite5)}\n      Vite 6 (esbuild ${fixture.versions.vite6.esbuild}): ${text(vite.vite6)}`);
-          if (!definition.versions) fail(`${name} ${path}: Vite 5 and Vite 6 differ, and the case does not say why (\`versions\`)`);
+        const others = COLUMNS.filter((column) => column !== TARGET && text(vite[column]) !== text(target));
+        if (others.length > 0) {
+          const lines = [TARGET, ...others].map((column) => `\n      Vite ${fixture.versions[column].vite} (esbuild ${fixture.versions[column].esbuild}): ${text(vite[column])}`);
+          versionDifferences.push(`${name} ${path}: ${definition.versions ?? '(no reason given)'}${lines.join('')}`);
+          if (!definition.versions) fail(`${name} ${path}: ${others.join(' and ')} differ from ${TARGET}, and the case does not say why (\`versions\`)`);
         }
         compared++;
         if (definition.fallback) {
           if (COLUMNS.some((column) => text(vite[column]) === text(ours))) {
             fail(`${name} ${path}: expected to differ from Vite (${definition.fallback}), but made the same: ${text(ours)}`);
           }
-        } else if (text(vite.vite6) !== text(ours)) {
-          fail(`${name} ${path}: served\n      Vite 6: ${text(vite.vite6)}\n      ours:   ${text(ours)}`);
+        } else if (text(target) !== text(ours)) {
+          fail(`${name} ${path}: served\n      Vite 7: ${text(target)}\n      ours:   ${text(ours)}`);
         }
       }
     } finally {
       server.stop?.();
       if (definition.versions && !versionDifferences.some((difference) => difference.startsWith(`${name} `))) {
-        fail(`${name}: says Vite 5 and Vite 6 differ (\`versions\`), and they do not`);
+        fail(`${name}: says Vite versions differ (\`versions\`), and they do not`);
       }
     }
     console.log(`  ${failures.length === 0 ? 'ok ' : '...'} ${name}${definition.fallback ? ` (differs, as named: ${definition.fallback})` : ''}`);
+  }
+
+  // jsxInject naming a `#` import, in a module that names none itself: the
+  // module's package scope is read with its request, and the injected
+  // import resolves in it (Vite's import analysis resolves it after its
+  // esbuild plugin, so this is not in the recording).
+  {
+    const harness = createSqliteVfsTestHarness();
+    const vfs = new SqliteVFS(harness.sql, harness.ctx);
+    const kernel = vfs.as(CRED_KERNEL);
+    const files = {
+      'package.json': JSON.stringify({ name: 'app', type: 'module', imports: { '#factory': './src/factory.ts' } }),
+      'vite.config.js': "export default {\n  esbuild: { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment', jsxInject: \"import { h, Fragment } from '#factory'\" },\n};\n",
+      'src/factory.ts': 'export const h = (...args: unknown[]) => args;\nexport const Fragment = Symbol();\n',
+      'src/app.tsx': 'export const tree = <><b>hi</b></>;\n',
+    };
+    for (const [path, content] of Object.entries(files)) {
+      const at = `${ROOT}/${path}`;
+      kernel.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true, mode: 0o755 });
+      kernel.writeFile(at, new TextEncoder().encode(content), { mode: 0o644 });
+    }
+    const configFile = await readViteConfigFile(kernel, ROOT, async (source) => source);
+    const server = new ViteDevServer({
+      vfs, cred: CRED_KERNEL, esbuild: engine, root: ROOT, basePath: '/preview', port: 5173, onHmrMessage() {},
+      injectBasename: false, viteEsbuild: viteEsbuildSettings(configFile.config),
+    });
+    const served = await (await server.handleRequest(new Request('http://localhost/preview/src/app.tsx'), '/src/app.tsx')).text();
+    server.stop?.();
+    const resolved = /from\s*"\/preview\/src\/factory\.ts"/.test(served) && !served.includes('#factory');
+    if (!resolved) fail(`jsxInject naming a \`#\` import: not resolved in the module's package scope\n      ${served.slice(0, 300)}`);
+    console.log(`  ${resolved ? 'ok ' : 'RED'} jsxInject naming a \`#\` import resolves in the module's package scope`);
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });
@@ -239,7 +274,7 @@ function sorted(value) {
   return Object.fromEntries(Object.keys(value).sort().map((k) => [k, sorted(value[k])]));
 }
 
-for (const difference of versionDifferences) console.log(`  Vite 5 and Vite 6 differ: ${difference}`);
+for (const difference of versionDifferences) console.log(`  Vite versions differ: ${difference}`);
 assert.equal(failures.length, 0, `${failures.length} differences from Vite:\n  ${failures.join('\n  ')}`);
-console.log(`vite-esbuild-differential OK: ${compared} modules in ${Object.keys(CASES).length} projects served as Vite 5 and 6 transform them; `
-  + `${versionDifferences.length} where Vite 5 and 6 differ`);
+console.log(`vite-esbuild-differential OK: ${compared} modules in ${Object.keys(CASES).length} projects served as Vite 7 transforms them; `
+  + `${versionDifferences.length} where Vite 5 or 6 differ from it, each with its reason`);
