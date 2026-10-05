@@ -29,7 +29,7 @@ import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
-import { prebundleCacheKey } from './cache-keys.js';
+import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests } from './cache-keys.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, hoistPlacements, } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
@@ -49,8 +49,8 @@ import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { resolveOnePackumentInFacet, parseRegistryRequest, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
-import { buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
-import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { buildSliceForSpecifierWithCap, } from './pre-bundle-facet.js';
+import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
@@ -1875,8 +1875,23 @@ export class NpmInstaller {
         // bundle pool must also be present because the facets run in it.
         if (!this.esbuild || !this.bundlePool)
             return;
-        // What a pre-bundle row is keyed by beside its input: the code that built it (npm/cache-keys.ts).
-        const bundleKey = await prebundleCacheKey();
+        // What a pre-bundle row is keyed by beside its input: the code that
+        // built it and the request (npm/cache-keys.ts), the define the Vite dev
+        // server's own pre-bundles take, so either's row is the other's.
+        const read = (path) => {
+            try {
+                return fs.readFileString(path);
+            }
+            catch {
+                return null;
+            }
+        };
+        /** Whether `existing` is this request's pre-bundle, from the manifests it was built from as they read now. */
+        const current = async (specifier, existing) => {
+            if (!existing)
+                return false;
+            return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
+        };
         const usedSpecifiers = this.scanBareImports(fs, projDir);
         // Vite plugins / postcss plugins / build-time tools NEVER ship to the
         // browser — they're invoked server-side by vite's own plugin
@@ -1961,9 +1976,7 @@ export class NpmInstaller {
                         `with no static named imports detected. Add explicit imports to enable bundling.`);
                     continue;
                 }
-                if (existing &&
-                    existing.bundleHash === bundleKey &&
-                    existing.inputHash === inputHash) {
+                if (existing && existing.inputHash === inputHash && await current(specifier, existing)) {
                     continue;
                 }
                 const synth = buildSyntheticEntry(fs, nmDir, pkgName, names);
@@ -1989,7 +2002,7 @@ export class NpmInstaller {
                 });
                 continue;
             }
-            if (existing && existing.bundleHash === bundleKey && existing.inputHash === '')
+            if (existing && existing.inputHash === '' && await current(specifier, existing))
                 continue;
             pending.push({ specifier, entryPath });
         }
@@ -2186,12 +2199,12 @@ export class NpmInstaller {
                         skippedCount++;
                         continue;
                     }
-                    // externalsForSpecifier is pure JS over a small list — extremely
-                    // unlikely to throw, but cheap to guard since we're hardening
-                    // this path comprehensively.
-                    let externals;
+                    // The request (its externals the shared runtime's, pure JS over a
+                    // small list: extremely unlikely to throw, but cheap to guard since
+                    // we're hardening this path comprehensively), and its key.
+                    let request;
                     try {
-                        externals = externalsForSpecifier(next.specifier);
+                        request = prebundleRequest(next.specifier, sliceManifests(slice.slice, read));
                     }
                     catch (e) {
                         const msg = e?.message || String(e);
@@ -2200,15 +2213,17 @@ export class NpmInstaller {
                         errorsByModule[next.specifier] = msg;
                         continue;
                     }
+                    const key = await prebundleCacheKey(request);
                     // What the bundle can have read, recorded with it: the cache is
                     // shared, and a server serves it only to a principal who may read it all.
                     const sources = sliceSources(slice.slice);
                     let spec = {
                         specifier: next.specifier,
                         entryPath: next.entryPath,
-                        externals,
+                        externals: [...request.externals],
                         slice: slice.slice,
-                        bundlerVersion: bundleKey,
+                        bundlerVersion: key,
+                        define: PREBUNDLE_DEFINE,
                     };
                     // Drop our supervisor-side reference to the slice array as soon
                     // as it's owned by `spec`. `spec` is the only thing that needs
@@ -2258,7 +2273,7 @@ export class NpmInstaller {
                     try {
                         this.cache.putEsmBundle({
                             specifier: next.specifier,
-                            bundleHash: bundleKey,
+                            bundleHash: key,
                             esmCode: result.esmCode,
                             builtAt: Date.now(),
                             inputHash: next.inputHash ?? '',

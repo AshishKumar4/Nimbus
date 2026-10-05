@@ -22,8 +22,8 @@
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
 import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { prebundleCacheKey, serviceBuildCacheKey, userModuleTransformCacheKey } from '../npm/cache-keys.js';
-import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { manifestsOf, prebundleCacheKey, prebundleRequest, serviceBuildCacheKey, sliceManifests, userModuleTransformCacheKey } from '../npm/cache-keys.js';
+import { PREBUNDLE_DEFINE, VITE_DEV_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import { NpmCache } from '../npm/cache.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
@@ -522,6 +522,25 @@ function resolveHashImportFromImporter(specifier, ctx) {
         if (lastSlashDir <= 0)
             break;
         dir = dir.substring(0, lastSlashDir);
+    }
+    return null;
+}
+/**
+ * The `imports` of the package.json that owns `importerVfsPath` (the first
+ * up from it, as resolveHashImportFromImporter finds it): its text, so a
+ * cache key can carry it; null where there is none.
+ */
+function owningPackageImports(importerVfsPath, vfs) {
+    for (let dir = importerVfsPath.slice(0, Math.max(0, importerVfsPath.lastIndexOf('/'))); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
+        const pkgJsonPath = dir + '/package.json';
+        if (!vfs.exists(pkgJsonPath))
+            continue;
+        try {
+            return JSON.stringify(JSON.parse(vfs.readFileString(pkgJsonPath))?.imports ?? null);
+        }
+        catch {
+            return 'malformed';
+        }
     }
     return null;
 }
@@ -1146,6 +1165,17 @@ function unwrapLayerBlocks(css) {
     return result;
 }
 // ── ViteDevServer ───────────────────────────────────────────────────────
+/**
+ * The options a pre-bundle is built with through the service's build(), the
+ * path with no bundle pool: the installer's define, as the pooled build's.
+ */
+const SERVICE_PREBUNDLE_OPTIONS = Object.freeze({
+    bundle: true,
+    format: 'esm',
+    platform: 'browser',
+    target: 'esnext',
+    define: PREBUNDLE_DEFINE,
+});
 export class ViteDevServer {
     vfs;
     vfsEvents;
@@ -1234,15 +1264,7 @@ export class ViteDevServer {
         // (the `/s/<sid>/preview/` path vs the root of a `<port>--<sid>` host).
         // It is folded into the define set per request via `defineFor(base)`; the
         // rest of the defines are base-independent and computed once.
-        this.define = {
-            'import.meta.env.DEV': 'true',
-            'import.meta.env.PROD': 'false',
-            'import.meta.env.MODE': '"development"',
-            'import.meta.env.SSR': 'false',
-            'process.env.NODE_ENV': '"development"',
-            'global': 'globalThis',
-            ...(opts.define || {}),
-        };
+        this.define = { ...VITE_DEV_DEFINE, ...(opts.define || {}) };
         this.detectTailwind();
     }
     /**
@@ -1258,12 +1280,19 @@ export class ViteDevServer {
         return this.bundlePool.acquire();
     }
     /**
-     * The bundle_hash of a pre-bundle row the code serving this server made
+     * The bundle_hash a pre-bundle of `specifier` from `sources` has when the
+     * code serving this server made it for this server's request
      * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
-     * path below), or by the service's build with no pool.
+     * path below), or by the service's build with no pool. The manifests
+     * among `sources` are read now: a row built before a reinstall is not
+     * this one's.
      */
-    bundleKeys() {
-        return Promise.all([prebundleCacheKey(), serviceBuildCacheKey(this.esbuild.transformHostId)]);
+    bundleKeys(specifier, sources) {
+        const pooled = prebundleRequest(specifier, manifestsOf(sources, (path) => this.readText(path)));
+        return Promise.all([
+            prebundleCacheKey(pooled),
+            serviceBuildCacheKey(this.esbuild.transformHostId, { ...pooled, options: SERVICE_PREBUNDLE_OPTIONS }),
+        ]);
     }
     /** Detect TailwindCSS usage in the project */
     detectTailwind() {
@@ -1322,6 +1351,15 @@ export class ViteDevServer {
         return { ...this.define, 'import.meta.env.BASE_URL': this.baseUrlValue(base) };
     }
     /** Whether this server's principal may read `path`. */
+    /** `path`'s text, or null where this server cannot read it. */
+    readText(path) {
+        try {
+            return this.vfs.readFileString(path);
+        }
+        catch {
+            return null;
+        }
+    }
     mayRead(path) {
         try {
             this.vfs.access(path, R_OK);
@@ -1715,19 +1753,18 @@ export class ViteDevServer {
         //    exports if the bundle only exports default (CJS-only packages).
         if (this.npmCache) {
             const esmBundle = this.npmCache.getEsmBundle(specifier);
-            // Only use cached bundles built by the code serving now (bundleKeys).
-            // Stale bundles (from older bundlers or engines) are treated as missing
-            // and re-bundled on the cold path.
-            const bundleKeys = await this.bundleKeys();
             // The cache is the workspace's, shared by every server whoever started
             // it: a bundle is served only to a principal who may read everything it
             // was built from, so one that names nothing it was built from is never
-            // served. Otherwise this server builds its own, as itself.
+            // served. Otherwise this server builds its own, as itself. And only a
+            // bundle the code serving now made for this request (bundleKeys):
+            // another's (an older engine, another define, a package since
+            // reinstalled) is treated as missing and re-bundled on the cold path.
             if (esmBundle &&
-                bundleKeys.includes(esmBundle.bundleHash) &&
                 this.cachedModuleMatchesBarrelInput(esmBundle.inputHash, barrelInfo) &&
                 esmBundle.sources.length > 0 &&
-                esmBundle.sources.every((path) => this.mayRead(path))) {
+                esmBundle.sources.every((path) => this.mayRead(path)) &&
+                (await this.bundleKeys(specifier, esmBundle.sources)).includes(esmBundle.bundleHash)) {
                 let code = esmBundle.esmCode;
                 // The persisted bundle is base-independent raw esbuild output; the
                 // base-dependent rewrites (module URLs) are applied here, per request.
@@ -1816,8 +1853,10 @@ export class ViteDevServer {
             // A module its principal may not read is refused (403), not bundled
             // from whatever of its package the principal can see.
             this.vfs.access(resolved, R_OK);
-            // What the bundle was built from, recorded with it in the shared cache.
+            // What the bundle was built from, recorded with it in the shared cache,
+            // and its key there (bundleKeys): what built it, for which request.
             let bundledSources = [];
+            let bundledHash = '';
             let synthetic = false;
             let syntheticReferencedFiles = null;
             if (isBarrel) {
@@ -1948,16 +1987,18 @@ export class ViteDevServer {
                             // commit 40cfc01); the lease above keeps every other budget
                             // owner from allocating beside it until the Response exists.
                             const sources = sliceSources(slice.slice);
+                            // The installer's define (base-neutral: the @modules bundle is
+                            // persisted raw and shared across mounts, module URLs get the
+                            // per-request base at serve time), so either's row is the other's.
+                            const request = prebundleRequest(specifier, sliceManifests(slice.slice, (path) => this.readText(path)));
+                            const bundleHash = await prebundleCacheKey(request);
                             let spec = {
                                 specifier,
                                 entryPath: bundleEntryPath,
-                                externals,
+                                externals: [...request.externals],
                                 slice: slice.slice,
-                                bundlerVersion: await prebundleCacheKey(),
-                                // Base-neutral: the @modules bundle is persisted raw and shared
-                                // across mounts, so BASE_URL is fixed to '/' here (module URLs
-                                // get the per-request base applied at serve time, not baked in).
-                                define: this.defineFor(''),
+                                bundlerVersion: bundleHash,
+                                define: PREBUNDLE_DEFINE,
                             };
                             slice = null;
                             let result = null;
@@ -1970,6 +2011,7 @@ export class ViteDevServer {
                             if (result && result.ok && result.esmCode) {
                                 bundled = result.esmCode;
                                 bundledSources = sources;
+                                bundledHash = bundleHash;
                             }
                             else if (result && result.errorText) {
                                 this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
@@ -1989,18 +2031,15 @@ export class ViteDevServer {
                     // only when no bundle pool was provided.
                     try {
                         const result = await this.esbuild.build([bundleEntryPath], {
-                            bundle: true,
-                            format: 'esm',
-                            platform: 'browser',
-                            target: 'esnext',
-                            // Base-neutral (see the pooled build above).
-                            define: this.defineFor(''),
+                            ...SERVICE_PREBUNDLE_OPTIONS,
+                            define: { ...SERVICE_PREBUNDLE_OPTIONS.define },
                             external: externals.length > 0 ? externals : undefined,
                             fs: this.vfs,
                         });
                         if (result.outputFiles?.length) {
                             bundled = result.outputFiles[0].contents;
                             bundledSources = vfsBuildInputs(result.metafile);
+                            bundledHash = (await this.bundleKeys(specifier, bundledSources))[1];
                         }
                     }
                     catch (e) {
@@ -2020,8 +2059,9 @@ export class ViteDevServer {
                         try {
                             this.npmCache.putEsmBundle({
                                 specifier,
-                                // Keyed by what built it: the pool's build facet, or the service.
-                                bundleHash: (await this.bundleKeys())[onDemandPool ? 0 : 1],
+                                // Keyed by what built it (the pool's build facet, or the
+                                // service), for which request.
+                                bundleHash: bundledHash,
                                 esmCode: bundled,
                                 builtAt: Date.now(),
                                 inputHash: barrelInfo?.inputHash ?? '',
@@ -2542,6 +2582,32 @@ export class ViteDevServer {
         return new Response(data, { headers: { ...headers, 'Content-Type': contentType } });
     }
     // ── TS/TSX/JSX transform ──────────────────────────────────────────────
+    /**
+     * Everything a served .ts/.tsx/.jsx module is a function of, beside its
+     * text and the engines: the transform's options (with the define, the
+     * mount's BASE_URL folded in), the mount base a router basename is
+     * injected with (null: none), and what the import rewrite reads (null: an
+     * importmap leaves imports alone) — the aliases, the base, and the
+     * `imports` of the package.json a `#name` resolves in. The persisted row
+     * is keyed on it whole (npm/cache-keys.ts).
+     */
+    transformRequest(vfsPath, ext, base, code) {
+        const loader = ext === '.tsx' ? 'tsx' : ext === '.jsx' ? 'jsx' : 'ts';
+        const hasPreact = code.includes('from "preact"') || code.includes("from 'preact'") || code.includes('from "preact/');
+        const jsx = hasPreact
+            ? { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment' }
+            : { jsx: 'automatic' };
+        return {
+            transform: { loader, format: 'esm', target: 'esnext', ...jsx, define: this.defineFor(base), sourcemap: 'inline' },
+            basename: this.injectBasename && shouldProcessForRouter(vfsPath) ? base : null,
+            rewrite: this.hasImportmap ? null : {
+                aliases: this.aliases,
+                base,
+                // Read only by a `#name` specifier, which the text names in quotes.
+                packageImports: /["']#/.test(code) ? owningPackageImports(vfsPath, this.vfs) : null,
+            },
+        };
+    }
     async serveTransformed(vfsPath, ext, headers, base) {
         const memKey = this.ck(base, vfsPath);
         const cached = this.moduleCache.get(memKey);
@@ -2551,15 +2617,17 @@ export class ViteDevServer {
             });
         }
         let code = this.vfs.readFileString(vfsPath);
+        const request = this.transformRequest(vfsPath, ext, base, code);
         // Persistent transform cache (survives DO hibernation; content-hashed
         // so a write whose VFS event was missed still invalidates). Keyed on
-        // (vfsPath, base, contentHash, the code's key) — the transform bakes the
+        // (vfsPath, base, contentHash, the key) — the transform bakes the
         // mount base (router basename, BASE_URL, module URLs), so each base gets
         // its own row. On hit, repopulate the in-memory cache and serve without
         // re-running esbuild.
         const contentHash = this.npmCache ? await sha256Base64Url(code) : null;
-        // The code that transforms (npm/cache-keys.ts): a row another build of it made is not this one's.
-        const transformKey = await userModuleTransformCacheKey(this.esbuild.transformHostId);
+        // The code that transforms and the whole request (npm/cache-keys.ts): a
+        // row another build of it, or another configuration, made is not this one's.
+        const transformKey = await userModuleTransformCacheKey(this.esbuild.transformHostId, request);
         if (this.npmCache && contentHash) {
             const persisted = this.npmCache.getUserModuleTransform(vfsPath, base, contentHash, transformKey);
             if (persisted) {
@@ -2574,29 +2642,17 @@ export class ViteDevServer {
         // no-op if the file doesn't reference createBrowserRouter/<BrowserRouter>
         // or the user has opted out (explicit basename / line-leading comment /
         // vite.config.ts nimbusInjectBasename: false).
-        if (this.injectBasename && shouldProcessForRouter(vfsPath)) {
+        if (request.basename !== null) {
             try {
-                code = injectRouterBasename(code, base);
+                code = injectRouterBasename(code, request.basename);
             }
             catch (e) {
                 // Never let the transform break serving — log and continue with original.
                 console.warn('[vite-dev] basename injection skipped for', vfsPath, ':', e?.message);
             }
         }
-        const loader = ext === '.tsx' ? 'tsx' : ext === '.jsx' ? 'jsx' : 'ts';
         try {
-            const hasPreact = code.includes('from "preact"') || code.includes("from 'preact'") || code.includes('from "preact/');
-            const jsxOpts = hasPreact
-                ? { jsx: 'transform', jsxFactory: 'h', jsxFragment: 'Fragment' }
-                : { jsx: 'automatic' };
-            const result = await this.esbuild.transform(code, {
-                loader,
-                format: 'esm',
-                target: 'esnext',
-                ...jsxOpts,
-                define: this.defineFor(base),
-                sourcemap: 'inline',
-            });
+            const result = await this.esbuild.transform(code, { ...request.transform, define: { ...request.transform.define } });
             code = result.code;
         }
         catch (e) {
@@ -2620,13 +2676,13 @@ if (!document.getElementById('nimbus-error-overlay')) {
         // Pass the importer context so `#X` resolves against the user's
         // owning package.json — the rare-but-real case where a user .ts/
         // .tsx file directly uses a Node subpath import.
-        if (!this.hasImportmap) {
+        if (request.rewrite) {
             const importerCtx = {
                 importerVfsPath: vfsPath,
                 root: this.root,
                 vfs: this.vfs,
             };
-            code = rewriteAllImports(code, this.aliases, base, importerCtx);
+            code = rewriteAllImports(code, request.rewrite.aliases, request.rewrite.base, importerCtx);
         }
         this.moduleCache.set(memKey, { code, timestamp: Date.now() });
         if (this.npmCache && contentHash) {

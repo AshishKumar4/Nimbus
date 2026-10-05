@@ -40,7 +40,7 @@ import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { prebundleCacheKey } from './cache-keys.js';
+import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests } from './cache-keys.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
   computeHoistPlan, hoistPlacements,
@@ -91,11 +91,10 @@ import {
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
 import {
   buildSliceForSpecifierWithCap,
-  externalsForSpecifier,
   type PrebundleSpec,
   type PrebundleResult,
 } from './pre-bundle-facet.js';
-import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import {
   CHUNK_SIZE,
   PRE_BUNDLE_CONCURRENCY,
@@ -2088,8 +2087,21 @@ export class NpmInstaller {
     // headless test) opts out of pre-bundling entirely. The session's
     // bundle pool must also be present because the facets run in it.
     if (!this.esbuild || !this.bundlePool) return;
-    // What a pre-bundle row is keyed by beside its input: the code that built it (npm/cache-keys.ts).
-    const bundleKey = await prebundleCacheKey();
+    // What a pre-bundle row is keyed by beside its input: the code that
+    // built it and the request (npm/cache-keys.ts), the define the Vite dev
+    // server's own pre-bundles take, so either's row is the other's.
+    const read = (path: string) => {
+      try {
+        return fs.readFileString(path);
+      } catch {
+        return null;
+      }
+    };
+    /** Whether `existing` is this request's pre-bundle, from the manifests it was built from as they read now. */
+    const current = async (specifier: string, existing: { bundleHash: string; sources: readonly string[] } | null): Promise<boolean> => {
+      if (!existing) return false;
+      return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
+    };
 
     const usedSpecifiers = this.scanBareImports(fs, projDir);
 
@@ -2213,11 +2225,7 @@ export class NpmInstaller {
           );
           continue;
         }
-        if (
-          existing &&
-          existing.bundleHash === bundleKey &&
-          existing.inputHash === inputHash
-        ) {
+        if (existing && existing.inputHash === inputHash && await current(specifier, existing)) {
           continue;
         }
         const synth = buildSyntheticEntry(fs, nmDir, pkgName, names);
@@ -2246,7 +2254,7 @@ export class NpmInstaller {
         continue;
       }
 
-      if (existing && existing.bundleHash === bundleKey && existing.inputHash === '') continue;
+      if (existing && existing.inputHash === '' && await current(specifier, existing)) continue;
       pending.push({ specifier, entryPath });
     }
     if (pending.length === 0) return;
@@ -2448,12 +2456,12 @@ export class NpmInstaller {
             continue;
           }
 
-          // externalsForSpecifier is pure JS over a small list — extremely
-          // unlikely to throw, but cheap to guard since we're hardening
-          // this path comprehensively.
-          let externals: string[];
+          // The request (its externals the shared runtime's, pure JS over a
+          // small list: extremely unlikely to throw, but cheap to guard since
+          // we're hardening this path comprehensively), and its key.
+          let request: ReturnType<typeof prebundleRequest>;
           try {
-            externals = externalsForSpecifier(next.specifier);
+            request = prebundleRequest(next.specifier, sliceManifests(slice.slice, read));
           } catch (e: any) {
             const msg = e?.message || String(e);
             safeProgress(`  pre-bundle externals threw for ${next.specifier}: ${msg}`);
@@ -2461,6 +2469,7 @@ export class NpmInstaller {
             errorsByModule[next.specifier] = msg;
             continue;
           }
+          const key = await prebundleCacheKey(request);
 
           // What the bundle can have read, recorded with it: the cache is
           // shared, and a server serves it only to a principal who may read it all.
@@ -2468,9 +2477,10 @@ export class NpmInstaller {
           let spec: PrebundleSpec | null = {
             specifier: next.specifier,
             entryPath: next.entryPath,
-            externals,
+            externals: [...request.externals],
             slice: slice.slice,
-            bundlerVersion: bundleKey,
+            bundlerVersion: key,
+            define: PREBUNDLE_DEFINE,
           };
           // Drop our supervisor-side reference to the slice array as soon
           // as it's owned by `spec`. `spec` is the only thing that needs
@@ -2521,7 +2531,7 @@ export class NpmInstaller {
           try {
             this.cache.putEsmBundle({
               specifier: next.specifier,
-              bundleHash: bundleKey,
+              bundleHash: key,
               esmCode: result.esmCode,
               builtAt: Date.now(),
               inputHash: next.inputHash ?? '',

@@ -12,7 +12,7 @@ import assert from 'node:assert/strict';
 import { BUNDLER_VERSION, EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { prebundleCacheKey, serviceBuildCacheKey, userModuleTransformCacheKey } from '../../packages/worker/src/npm/cache-keys.ts';
+import { canonicalJson, prebundleCacheKey, prebundleRequest, serviceBuildCacheKey, userModuleTransformCacheKey } from '../../packages/worker/src/npm/cache-keys.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { BUILD_FACET_WORKER_ID } from '../../packages/worker/src/facets/build-facet.ts';
 import { OXC_FACET_WORKER_ID } from '../../packages/worker/src/facets/oxc-transform.ts';
@@ -30,18 +30,44 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
     assert.equal(new Set(values).size, values.length, `${label}: ${values.join(' ')}`);
     for (const value of values) assert.ok(value.startsWith(`${BUNDLER_VERSION}:`), `${label}: ${value} names BUNDLER_VERSION`);
   };
-  await distinct('pre-bundle, by build facet', prebundleCacheKey('facet-a'), prebundleCacheKey('facet-b'));
+  const request = prebundleRequest('pkg', []);
+  const transform = { transform: { loader: 'tsx' } };
+  await distinct('pre-bundle, by build facet', prebundleCacheKey(request, 'facet-a'), prebundleCacheKey(request, 'facet-b'));
   await distinct('user transform, by transform host',
-    userModuleTransformCacheKey('host-a', 'pipe'), userModuleTransformCacheKey('host-b', 'pipe'), userModuleTransformCacheKey(null, 'pipe'));
-  await distinct('user transform, by pipeline', userModuleTransformCacheKey('host', 'pipe-a'), userModuleTransformCacheKey('host', 'pipe-b'));
+    userModuleTransformCacheKey('host-a', transform, 'pipe'), userModuleTransformCacheKey('host-b', transform, 'pipe'), userModuleTransformCacheKey(null, transform, 'pipe'));
+  await distinct('user transform, by pipeline', userModuleTransformCacheKey('host', transform, 'pipe-a'), userModuleTransformCacheKey('host', transform, 'pipe-b'));
   await distinct('service build, by each',
-    serviceBuildCacheKey('host-a', 'facet', 'pipe'), serviceBuildCacheKey('host-b', 'facet', 'pipe'),
-    serviceBuildCacheKey('host-a', 'facet-b', 'pipe'), serviceBuildCacheKey('host-a', 'facet', 'pipe-b'));
+    serviceBuildCacheKey('host-a', request, 'facet', 'pipe'), serviceBuildCacheKey('host-b', request, 'facet', 'pipe'),
+    serviceBuildCacheKey('host-a', request, 'facet-b', 'pipe'), serviceBuildCacheKey('host-a', request, 'facet', 'pipe-b'));
   // Different caches never share a key for the same identity.
-  await distinct('across caches', prebundleCacheKey('x'), userModuleTransformCacheKey('x', 'x'), serviceBuildCacheKey('x', 'x', 'x'));
-  assert.equal(await prebundleCacheKey('same'), await prebundleCacheKey('same'), 'a key is a function of its identity');
-  assert.equal(await prebundleCacheKey(), await prebundleCacheKey(BUILD_FACET_WORKER_ID), 'pre-bundles are keyed by the build facet\'s identity');
+  await distinct('across caches', prebundleCacheKey(request, 'x'), userModuleTransformCacheKey('x', request, 'x'), serviceBuildCacheKey('x', request, 'x', 'x'));
+  assert.equal(await prebundleCacheKey(request, 'same'), await prebundleCacheKey(request, 'same'), 'a key is a function of its identity');
+  assert.equal(await prebundleCacheKey(request), await prebundleCacheKey(request, BUILD_FACET_WORKER_ID), 'pre-bundles are keyed by the build facet\'s identity');
   console.log('  ok  each key changes with each engine identity it stands for');
+}
+
+// ── And with each part of the request ────────────────────────────────────
+{
+  const distinct = async (label, ...keys) => {
+    const values = await Promise.all(keys);
+    assert.equal(new Set(values).size, values.length, `${label}: ${values.join(' ')}`);
+  };
+  const request = prebundleRequest('pkg', [['/n/pkg/package.json', '{"version":"1"}']]);
+  await distinct('pre-bundle, by each part',
+    prebundleCacheKey(request),
+    prebundleCacheKey({ ...request, options: { ...request.options, define: { ...request.options.define, X: '1' } } }),
+    prebundleCacheKey({ ...request, options: { ...request.options, platform: 'node' } }),
+    prebundleCacheKey({ ...request, externals: ['react'] }),
+    prebundleCacheKey({ ...request, manifests: [['/n/pkg/package.json', '{"version":"2"}']] }),
+    prebundleCacheKey({ ...request, manifests: [['/n/pkg/package.json', null]] }));
+  await distinct('user transform, by each part',
+    userModuleTransformCacheKey('h', { transform: { define: { A: '1' } }, rewrite: null }),
+    userModuleTransformCacheKey('h', { transform: { define: { A: '2' } }, rewrite: null }),
+    userModuleTransformCacheKey('h', { transform: { define: { A: '1' } }, rewrite: { base: '/p' } }));
+  // A request is its content, not the order its keys were written in.
+  assert.equal(canonicalJson({ b: 1, a: { d: [1, { f: 1, e: 2 }], c: 2 } }), '{"a":{"c":2,"d":[1,{"e":2,"f":1}]},"b":1}');
+  assert.equal(await userModuleTransformCacheKey('h', { a: 1, b: 2 }), await userModuleTransformCacheKey('h', { b: 2, a: 1 }));
+  console.log('  ok  each key changes with each part of the request it stands for');
 }
 
 // ── Those identities are the engines' builds ─────────────────────────────
@@ -107,15 +133,18 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
   const cache = new NpmCache(harness.sql);
   const seed = async (bundleHash) => cache.putEsmBundle({
     specifier: 'pkg', bundleHash, esmCode: "export default 'from the cache';", builtAt: Date.now(), inputHash: '',
-    sources: [`/${root}/node_modules/pkg/index.js`],
+    sources,
   });
-  for (const key of [await prebundleCacheKey('another-build-facet'), BUNDLER_VERSION]) {
+  // The request this server makes for pkg, from what it was built from.
+  const sources = [`/${root}/node_modules/pkg/index.js`];
+  const request = prebundleRequest('pkg', [[`/${root}/node_modules/pkg/package.json`, kernel.readFileString(`${root}/node_modules/pkg/package.json`)]]);
+  for (const key of [await prebundleCacheKey(request, 'another-build-facet'), BUNDLER_VERSION]) {
     // Another build facet's, and one as 0.15.1 and before wrote it (BUNDLER_VERSION alone).
     await seed(key);
     const stale = await serve('engine-a', '/@modules/pkg');
     assert.equal(stale.body.includes('from the cache'), false, `a pre-bundle keyed ${key} is not served (status ${stale.status})`);
   }
-  await seed(await prebundleCacheKey());
+  await seed(await prebundleCacheKey(request));
   const own = await serve('engine-a', '/@modules/pkg');
   assert.equal(own.status, 200, own.body);
   assert.ok(own.body.includes('from the cache'), `this build facet's own pre-bundle is served: ${own.body.slice(0, 200)}`);

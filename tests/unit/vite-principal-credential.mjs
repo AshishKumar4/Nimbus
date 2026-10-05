@@ -127,7 +127,7 @@ try {
 }
 
 const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
-const { prebundleCacheKey } = await import('../../packages/worker/src/npm/cache-keys.ts');
+const { prebundleCacheKey, prebundleRequest } = await import('../../packages/worker/src/npm/cache-keys.ts');
 const { buildWithRolldown } = await import('../../packages/core/src/runtime/rolldown-build.ts');
 const { NpmCache } = await import('../../packages/worker/src/npm/cache.ts');
 const rolldown = await import(createRequire(new URL('../../packages/worker/package.json', import.meta.url)).resolve('rolldown'));
@@ -221,7 +221,7 @@ try {
     assert.equal(own.code, 0, own.stderr);
     // As a writer that recorded no provenance left it (sources []), with the current build's key.
     new NpmCache(harness.sql).putEsmBundle({
-      specifier: 'pkg', bundleHash: await prebundleCacheKey(), esmCode: "export default 'from-unknown-provenance';",
+      specifier: 'pkg', bundleHash: await prebundleCacheKey(prebundleRequest('pkg', [])), esmCode: "export default 'from-unknown-provenance';",
       builtAt: Date.now(), inputHash: '', sources: [],
     });
     const module = await served('/@modules/pkg');

@@ -15911,6 +15911,29 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_ESM_CONDIT
 }
 
 // ../core/src/runtime/prebundle-slice.ts
+var VITE_DEV_DEFINE = Object.freeze({
+  "import.meta.env.DEV": "true",
+  "import.meta.env.PROD": "false",
+  "import.meta.env.MODE": '"development"',
+  "import.meta.env.SSR": "false",
+  "process.env.NODE_ENV": '"development"',
+  "global": "globalThis"
+});
+var PREBUNDLE_DEFINE = Object.freeze({
+  ...VITE_DEV_DEFINE,
+  "import.meta.env.BASE_URL": '"/"'
+});
+function prebundleBuildOptions(define) {
+  return {
+    bundle: true,
+    format: "esm",
+    target: "esnext",
+    platform: "browser",
+    conditions: ESM_CONDITIONS,
+    mainFields: ["module", "browser", "main"],
+    define: define && Object.keys(define).length > 0 ? { ...define } : void 0
+  };
+}
 var EXTS = ["", ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cjs", ".json", ".css"];
 var INDEX_FILES = ["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs"];
 var SWAPS = { js: [".ts", ".tsx"], jsx: [".tsx", ".ts"], mjs: [".mts", ".ts"], cjs: [".cts", ".ts"] };
@@ -16043,16 +16066,7 @@ async function prebundleSlice(spec2, build3) {
       return { contents: loader === "binary" ? bytes : new TextDecoder().decode(bytes), loader, resolveDir };
     }
   };
-  const outcome = await build3({
-    entryPoints: [norm(spec2.entryPath)],
-    bundle: true,
-    format: "esm",
-    target: "esnext",
-    platform: "browser",
-    conditions: ESM_CONDITIONS,
-    mainFields: ["module", "browser", "main"],
-    define: spec2.define && Object.keys(spec2.define).length > 0 ? spec2.define : void 0
-  }, plugin);
+  const outcome = await build3({ entryPoints: [norm(spec2.entryPath)], ...prebundleBuildOptions(spec2.define) }, plugin);
   if (outcome.failure) return failed(outcome.errors[0]?.text || outcome.failure);
   const script = outcome.outputFiles.find((file) => !file.path.endsWith(".css")) ?? outcome.outputFiles[0];
   if (!script) return failed("no output produced");

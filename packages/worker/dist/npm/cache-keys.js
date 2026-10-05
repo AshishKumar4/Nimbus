@@ -26,31 +26,109 @@
  * - a bundle the dev server builds through its service, with no pool: all
  *   of these, since the service's build host is the build facet with the
  *   esbuild facet behind it.
+ *
+ * And of the request, since the output is a function of it too: a row
+ * another configuration made is not this one's, though the code is the same.
+ *
+ * - a user-module transform: the dev server's whole request
+ *   (vite-dev-server.ts's transformRequest: the transform's options with its
+ *   define, the router basename it injects, the aliases, base and
+ *   `package.json#imports` the import rewrite reads). Keyed on the engines
+ *   alone, a row made under one vite.config `define` or `resolve.alias` was
+ *   served after the config changed.
+ * - a pre-bundle: its build options (core's prebundleBuildOptions: format,
+ *   platform, target, conditions, define), its externals, and the package
+ *   manifests among the files it was built from. Keyed on the engine alone,
+ *   a dependency reinstalled at another version kept its old bundle (the
+ *   installer saw the row as current and skipped it), and the installer's
+ *   bundles (no define) and the dev server's (its define) shared rows.
  */
-import { BUNDLER_VERSION } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { BUNDLER_VERSION, getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { PREBUNDLE_DEFINE, prebundleBuildOptions, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { TRANSFORM_PIPELINE_ID } from '@nimbus-sh/core/runtime/transform-pipeline.generated.js';
 import { sha256Base64Url } from '@nimbus-sh/core/_shared/crypto.js';
 import { BUILD_FACET_WORKER_ID } from '../facets/build-facet.js';
+/** At most this many keys are remembered; past it, the memo starts over. */
+const KEYS_KEPT = 512;
 const keys = new Map();
 /** `BUNDLER_VERSION:` and a digest of what the cached output is a function of. */
 function keyOf(kind, parts) {
     const identity = [kind, BUNDLER_VERSION, ...parts].join('\n');
     let key = keys.get(identity);
     if (!key) {
+        if (keys.size >= KEYS_KEPT)
+            keys.clear();
         key = sha256Base64Url(identity).then((digest) => `${BUNDLER_VERSION}:${digest.slice(0, 22)}`);
         keys.set(identity, key);
     }
     return key;
 }
-/** pkg_esm_bundles.bundle_hash of a pre-bundle the build facet made. */
-export function prebundleCacheKey(buildFacetId = BUILD_FACET_WORKER_ID) {
-    return keyOf('prebundle', [buildFacetId]);
+/** `value` as JSON with every object's keys in order: two equal requests are one text. */
+export function canonicalJson(value) {
+    return JSON.stringify(value, (_key, item) => {
+        if (item === null || typeof item !== 'object' || Array.isArray(item))
+            return item;
+        const entries = Object.entries(item).sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        return Object.fromEntries(entries);
+    });
 }
-/** pkg_esm_bundles.bundle_hash of a bundle built by a service's build(), as the dev server does without a pool. */
-export function serviceBuildCacheKey(transformHostId, buildFacetId = BUILD_FACET_WORKER_ID, pipelineId = TRANSFORM_PIPELINE_ID) {
-    return keyOf('service-build', [pipelineId, transformHostId ?? 'in-isolate', buildFacetId]);
+/**
+ * The package manifests of a pre-bundle's `sources`, in order, each with its
+ * text as `read` gives it (null where it cannot): the package.json of every
+ * package a source is in (the last `node_modules/<name>` or
+ * `node_modules/@scope/<name>` of its path), and any package.json among
+ * them. A reinstall at another version changes one; a row records its
+ * sources, so the same manifests are read back to check it.
+ */
+export function manifestsOf(sources, read) {
+    const paths = new Set();
+    for (const path of sources) {
+        if (path === 'package.json' || path.endsWith('/package.json'))
+            paths.add(path);
+        const at = path.lastIndexOf('/node_modules/');
+        if (at < 0)
+            continue;
+        const parts = path.slice(at + '/node_modules/'.length).split('/');
+        const name = parts[0]?.startsWith('@') ? parts.slice(0, 2) : parts.slice(0, 1);
+        if (name.length === (parts[0]?.startsWith('@') ? 2 : 1) && parts.length > name.length) {
+            paths.add(`${path.slice(0, at)}/node_modules/${name.join('/')}/package.json`);
+        }
+    }
+    return [...paths].sort().map((path) => [path, read(path)]);
 }
-/** user_module_transforms.bundler_version of a module transformed by a service with this transform host. */
-export function userModuleTransformCacheKey(transformHostId, pipelineId = TRANSFORM_PIPELINE_ID) {
-    return keyOf('user-module-transform', [pipelineId, transformHostId ?? 'in-isolate']);
+/**
+ * manifestsOf a slice: each manifest as the slice read it (what a pre-bundle
+ * built from it was built from), else as `read` gives it now.
+ */
+export function sliceManifests(slice, read) {
+    const decoder = new TextDecoder();
+    const files = new Map();
+    for (const entry of slice)
+        if (!entry.isDir)
+            files.set(entry.path, entry.bytes);
+    return manifestsOf(sliceSources(slice), (path) => {
+        const bytes = files.get(path);
+        return bytes ? decoder.decode(bytes) : read(path);
+    });
+}
+/**
+ * The request the installer and the Vite dev server alike pre-bundle
+ * `specifier` with on the build facet, from files whose manifests are
+ * `manifests`: one define (core's PREBUNDLE_DEFINE), the shared runtime
+ * externals.
+ */
+export function prebundleRequest(specifier, manifests) {
+    return { options: prebundleBuildOptions(PREBUNDLE_DEFINE), externals: getSharedRuntimeExternals(specifier), manifests };
+}
+/** pkg_esm_bundles.bundle_hash of a pre-bundle the build facet made for `request`. */
+export function prebundleCacheKey(request, buildFacetId = BUILD_FACET_WORKER_ID) {
+    return keyOf('prebundle', [buildFacetId, canonicalJson(request)]);
+}
+/** pkg_esm_bundles.bundle_hash of a bundle built by a service's build() for `request`, as the dev server does without a pool. */
+export function serviceBuildCacheKey(transformHostId, request, buildFacetId = BUILD_FACET_WORKER_ID, pipelineId = TRANSFORM_PIPELINE_ID) {
+    return keyOf('service-build', [pipelineId, transformHostId ?? 'in-isolate', buildFacetId, canonicalJson(request)]);
+}
+/** user_module_transforms.bundler_version of a module transformed for `request` by a service with this transform host. */
+export function userModuleTransformCacheKey(transformHostId, request, pipelineId = TRANSFORM_PIPELINE_ID) {
+    return keyOf('user-module-transform', [pipelineId, transformHostId ?? 'in-isolate', canonicalJson(request)]);
 }

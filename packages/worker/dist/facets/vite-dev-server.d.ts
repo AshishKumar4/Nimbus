@@ -245,9 +245,12 @@ export declare class ViteDevServer {
      */
     private ensureOnDemandPool;
     /**
-     * The bundle_hash of a pre-bundle row the code serving this server made
+     * The bundle_hash a pre-bundle of `specifier` from `sources` has when the
+     * code serving this server made it for this server's request
      * (npm/cache-keys.ts): by the build facet (the install's, or the pooled
-     * path below), or by the service's build with no pool.
+     * path below), or by the service's build with no pool. The manifests
+     * among `sources` are read now: a row built before a reinstall is not
+     * this one's.
      */
     private bundleKeys;
     /** Detect TailwindCSS usage in the project */
@@ -264,6 +267,8 @@ export declare class ViteDevServer {
     /** esbuild define set for a request served under `base`. */
     private defineFor;
     /** Whether this server's principal may read `path`. */
+    /** `path`'s text, or null where this server cannot read it. */
+    private readText;
     private mayRead;
     /**
      * Module-cache key for `key` under mount base `base`. The transformed text
@@ -399,6 +404,16 @@ export declare class ViteDevServer {
      */
     private isModuleRequest;
     private serveFile;
+    /**
+     * Everything a served .ts/.tsx/.jsx module is a function of, beside its
+     * text and the engines: the transform's options (with the define, the
+     * mount's BASE_URL folded in), the mount base a router basename is
+     * injected with (null: none), and what the import rewrite reads (null: an
+     * importmap leaves imports alone) — the aliases, the base, and the
+     * `imports` of the package.json a `#name` resolves in. The persisted row
+     * is keyed on it whole (npm/cache-keys.ts).
+     */
+    private transformRequest;
     private serveTransformed;
     get stats(): {
         running: boolean;

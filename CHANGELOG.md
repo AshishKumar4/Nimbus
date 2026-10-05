@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- The Vite dev server's persistent caches answer only the request that
+  made a row. A transformed module (user_module_transforms) is keyed on
+  the whole request: the transform's options with vite.config's `define`,
+  the router basename injected, and what the import rewrite reads (the
+  aliases, the base, `package.json#imports`), beside the engines. Before,
+  a row made under one `define` or `resolve.alias` was served after the
+  config changed. A pre-bundle (pkg_esm_bundles) is keyed on its build
+  options, externals and the manifests of the packages it was built from:
+  a dependency reinstalled at another version was served (and skipped by
+  the installer) as its old bundle. The installer and the dev server
+  pre-bundle with one define, Vite's dev values (`NODE_ENV` development,
+  `global`, `import.meta.env`), so either's row is the other's; the
+  installer's had none, and the dev server's carried vite.config's
+  `define`, which a pre-bundle no longer takes, as Vite's dependency
+  optimizer takes none of it (worker `npm/cache-keys.ts`, core
+  `PREBUNDLE_DEFINE`).
+
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 loom moves only its fabric range.
