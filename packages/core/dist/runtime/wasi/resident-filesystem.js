@@ -8,10 +8,12 @@
  * process already carries a store for names and bytes
  * (worker vfs/facet-resident-store.ts, the one a node process reads its
  * synchronous calls from). This adapter puts the codec's calls in front of
- * it: a lookup, a stat, a directory listing, a read-only open and its reads
- * are answered from the store; anything that changes the filesystem, and
- * anything the store cannot vouch for, goes to the authority exactly as
- * before.
+ * it: a lookup, a stat, a directory listing and its descriptor, and a file's
+ * bytes (which the codec holds for a read-only descriptor, its ResidentFd) are
+ * answered from the store; anything that changes the filesystem, and anything
+ * the store cannot vouch for, goes to the authority exactly as before. The
+ * store is the process's one copy of file bytes: the codec keeps none of its
+ * own beside it (`holdsContent`).
  *
  * What makes an answer from the store the authority's answer:
  *   - The walk is the authority's own (beneath-walk.ts walkBeneath), its
@@ -32,8 +34,7 @@
  */
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
-/** Larger files are read through the authority's descriptors, never held whole here. */
-export const RESIDENT_OPEN_MAX_BYTES = 8 * 1024 * 1024;
+import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 /** A held write goes to the session in pieces of this size: each fits one call. */
 const WRITE_PIECE_BYTES = 1024 * 1024;
 /** Listings one call may take before it gives the question to the authority. */
@@ -124,6 +125,8 @@ export function residentFilesystem(session, resident) {
     let heldBytes = 0;
     /** Held writes the session refused, by descriptor, until reported. */
     const unsettled = new Map();
+    /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
+    const readers = new Set();
     /** The latest held write of `key`, if this process is writing it. */
     const heldAt = (key) => {
         let found;
@@ -314,20 +317,8 @@ export function residentFilesystem(session, resident) {
         }
     };
     const local = (handleId) => handles.get(handleId);
-    const localBytes = (handle) => {
-        // A file this process is writing reads as it stands now, never as first read.
-        const writing = heldAt(handle.key);
-        if (writing !== undefined)
-            return writing.bytes.subarray(0, writing.length);
-        if (handle.bytes !== null)
-            return handle.bytes;
-        return after(contentOf(handle.key, handle.entry), (bytes) => {
-            if (bytes === undefined)
-                throw fsError('EIO', 'read', handle.path);
-            handle.bytes = bytes;
-            return bytes;
-        });
-    };
+    /** The session is to answer for `key`: when this process holds writes to it, they go first. */
+    const toSession = (key) => (heldAt(key) === undefined ? DELEGATE : fs.settle().then(() => DELEGATE));
     const fs = Object.create(null);
     // Every call this adapter does not answer goes to the authority as it came,
     // whether the bridge carries its calls itself or on its class.
@@ -353,6 +344,7 @@ export function residentFilesystem(session, resident) {
             : (...args) => { delegated(name); return call(...args); });
     }
     Reflect.set(fs, 'synchronous', authority.synchronous);
+    Reflect.set(fs, 'holdsContent', true);
     fs.inbound = () => { owed = true; };
     fs.holding = () => writes.size > 0;
     fs.settle = async () => {
@@ -408,8 +400,8 @@ export function residentFilesystem(session, resident) {
             throw fsError('EACCES', 'open', path);
         if (entry.type === 'directory')
             throw fsError('EISDIR', 'open', path);
-        if (entry.type !== 'file' || entry.size > RESIDENT_OPEN_MAX_BYTES)
-            return DELEGATE;
+        if (entry.type !== 'file' || entry.size > WASI_RESIDENT_FILE_CAP_BYTES)
+            return toSession(key);
         return after(contentOf(key, entry), (bytes) => (bytes === undefined ? DELEGATE : bytes));
     }), () => authority.readFile(path, options));
     fs.readdir = (path, options = {}) => answer('readdir', () => after(resolve(path, options.followSymlinks !== false), (key) => {
@@ -489,8 +481,9 @@ export function residentFilesystem(session, resident) {
                 return DELEGATE;
             if (flags.directory && entry.type !== 'directory')
                 throw fsError('ENOTDIR', 'open', path);
-            if (entry.type === 'file' && entry.size > RESIDENT_OPEN_MAX_BYTES)
-                return DELEGATE;
+            // A file's read-only descriptor is the codec's own copy, or the session's descriptor.
+            if (entry.type !== 'directory')
+                return toSession(key);
             if (!modeAllows(entry, 4, store.cred))
                 throw fsError('EACCES', 'open', path);
             const handle = {
@@ -504,11 +497,10 @@ export function residentFilesystem(session, resident) {
                 closed: false,
                 key,
                 entry,
-                bytes: null,
             };
             handles.set(handle.id, handle);
             return handle;
-        }), () => authority.open(path, flags));
+        }), () => after(authority.open(path, flags), (handle) => { readers.add(handle.id); return handle; }));
     };
     fs.fstat = (handleId) => {
         const held = writes.get(handleId);
@@ -542,15 +534,7 @@ export function residentFilesystem(session, resident) {
             delegated('read');
             return authority.read(handleId, offset, length);
         }
-        if (handle.entry.type === 'directory')
-            throw fsError('EISDIR', 'read', handle.path);
-        return after(localBytes(handle), (bytes) => {
-            const start = Math.min(offset ?? handle.position, bytes.byteLength);
-            const chunk = bytes.subarray(start, Math.min(bytes.byteLength, start + length));
-            if (offset === null)
-                handle.position = start + chunk.byteLength;
-            return chunk.slice();
-        });
+        throw fsError('EISDIR', 'read', handle.path);
     };
     fs.seek = (handleId, offset, whence) => {
         const held = writes.get(handleId);
@@ -586,6 +570,10 @@ export function residentFilesystem(session, resident) {
             return release(held, true).then(closing, closing);
         if (unsettled.has(handleId))
             return closing();
+        if (readers.delete(handleId)) {
+            delegated('close');
+            return authority.close(handleId);
+        }
         const handle = local(handleId);
         if (handle === undefined)
             return changing('close', () => authority.close(handleId));

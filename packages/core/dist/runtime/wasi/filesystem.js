@@ -102,8 +102,11 @@ export function installAuthorityFilesystem(imports, options) {
     const resident = options.resident ?? new Map();
     const residentBytes = options.residentBytes ?? 0;
     const residentContent = (fs, target, st) => {
-        if (options.retainResident === false)
+        // A filesystem that holds file bytes itself (wasi/resident-filesystem.ts)
+        // is the copy: a second one here would hold every file twice.
+        if (options.retainResident === false || Reflect.get(fs, 'holdsContent') === true) {
             return after(fs.readFile(target), bytes => bytes ?? fail('ENOENT'));
+        }
         const key = `${st.dev}:${st.ino}`;
         const cached = resident.get(key);
         if (cached && cached.revision === st.revision)

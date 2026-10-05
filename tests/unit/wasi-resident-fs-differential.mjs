@@ -200,10 +200,10 @@ async function compareAll(phase) {
   const st = await adapter.stat(beneath('sub/deep/c.txt'));
   assert.equal(st?.size, 70_000);
   assert.equal(calls.total - before, 1, 'a cold stat four names deep is one lookup batch');
-  // The stat brought the file's bytes: the open and read that follow it cost nothing.
-  const handle = await adapter.open(beneath('sub/deep/c.txt'), { read: true });
-  assert.equal((await adapter.read(handle.id, 0, 100_000)).byteLength, 70_000);
-  await adapter.close(handle.id);
+  // The stat brought the file's bytes: the read-only open that follows it (the
+  // codec's stat, then readFile into its ResidentFd) costs nothing more.
+  assert.equal((await adapter.stat(beneath('sub/deep/c.txt'))).size, 70_000);
+  assert.equal((await adapter.readFile(beneath('sub/deep/c.txt'))).byteLength, 70_000);
   assert.equal(calls.total - before, 1, 'an open and read after the stat take no round trip');
   // A file over the lookup's content bound is read when it is opened.
   await adapter.stat(beneath('big.bin'));
@@ -259,21 +259,22 @@ await compareAll('own-writes');
 }
 
 // Renaming a file while writing it (a compiler's temporary output) moves
-// what was written; a reader opened before more is written sees it too.
+// what was written; the session's own descriptor on it reads what was written.
 {
   const tmp = await adapter.open(beneath('obj.tmp'), { read: true, write: true, create: true, truncate: true });
   await adapter.write(tmp.id, null, enc.encode('part one;'));
-  const reader = await adapter.open(beneath('obj.tmp'), { read: true });
-  assert.deepEqual(await adapter.read(reader.id, 0, 100), enc.encode('part one;'));
+  assert.deepEqual(await adapter.readFile(beneath('obj.tmp')), enc.encode('part one;'), 'the codec\'s copy of a held file');
   await adapter.write(tmp.id, null, enc.encode('part two'));
-  assert.deepEqual(await adapter.read(reader.id, 0, 100), enc.encode('part one;part two'), 'a reader sees later writes');
+  const reader = await adapter.open(beneath('obj.tmp'), { read: true });
+  assert.deepEqual(await adapter.read(reader.id, 0, 100), enc.encode('part one;part two'), 'a session descriptor opened on a held file reads it whole');
   await adapter.close(reader.id);
+  await adapter.write(tmp.id, null, enc.encode('/'));
   await adapter.rename(beneath('obj.tmp'), beneath('obj.o'));
-  assert.deepEqual(await adapter.readFile(beneath('obj.o')), enc.encode('part one;part two'), 'the renamed file has what was written');
-  assert.deepEqual(await authority.readFile(beneath('obj.o')), enc.encode('part one;part two'), 'and so does the session, from the rename on');
+  assert.deepEqual(await adapter.readFile(beneath('obj.o')), enc.encode('part one;part two/'), 'the renamed file has what was written');
+  assert.deepEqual(await authority.readFile(beneath('obj.o')), enc.encode('part one;part two/'), 'and so does the session, from the rename on');
   await adapter.write(tmp.id, null, enc.encode(';three'));
   await adapter.close(tmp.id);
-  assert.deepEqual(await authority.readFile(beneath('obj.o')), enc.encode('part one;part two;three'), 'writes after the rename land in the renamed file');
+  assert.deepEqual(await authority.readFile(beneath('obj.o')), enc.encode('part one;part two/;three'), 'writes after the rename land in the renamed file');
   PATHS.push('obj.tmp', 'obj.o');
 }
 await compareAll('held-writes');

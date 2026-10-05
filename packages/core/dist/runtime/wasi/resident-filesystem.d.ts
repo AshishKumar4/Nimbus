@@ -8,10 +8,12 @@
  * process already carries a store for names and bytes
  * (worker vfs/facet-resident-store.ts, the one a node process reads its
  * synchronous calls from). This adapter puts the codec's calls in front of
- * it: a lookup, a stat, a directory listing, a read-only open and its reads
- * are answered from the store; anything that changes the filesystem, and
- * anything the store cannot vouch for, goes to the authority exactly as
- * before.
+ * it: a lookup, a stat, a directory listing and its descriptor, and a file's
+ * bytes (which the codec holds for a read-only descriptor, its ResidentFd) are
+ * answered from the store; anything that changes the filesystem, and anything
+ * the store cannot vouch for, goes to the authority exactly as before. The
+ * store is the process's one copy of file bytes: the codec keeps none of its
+ * own beside it (`holdsContent`).
  *
  * What makes an answer from the store the authority's answer:
  *   - The walk is the authority's own (beneath-walk.ts walkBeneath), its
@@ -81,6 +83,8 @@ export interface ResidentNamespace {
     barrier(): Promise<boolean>;
 }
 export interface ResidentFilesystem extends RuntimeFsBridge {
+    /** File bytes are held here, by revision: a codec over this filesystem keeps no copies of its own. */
+    readonly holdsContent: true;
     /** Input from outside the process arrived: the barrier is owed before the next answer. */
     inbound(): void;
     /** Whether writes are held that the session does not have yet. */
@@ -118,7 +122,5 @@ export interface ResidentFilesystemStats {
     /** Wall time the process spent waiting on the session for any of the above, in ms. */
     waitMs: number;
 }
-/** Larger files are read through the authority's descriptors, never held whole here. */
-export declare const RESIDENT_OPEN_MAX_BYTES: number;
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map
