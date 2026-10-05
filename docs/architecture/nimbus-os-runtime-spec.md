@@ -178,6 +178,30 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   yet proven as working Nimbus workloads; native-package shards still need
   Nimbus ABI artifacts or precise diagnostics.
 - `git` is Nimbus's own command over isomorphic-git (`packages/worker/src/git`).
+  Network operations run in a Dynamic Worker facet (`git/network-facet.ts`)
+  and never hold a pack in memory: every pack is decoded as it arrives,
+  stored by ranged appends and indexed in the same pass (`git/pack/`), and
+  packed objects are read by range. What clones, measured live:
+
+  | Clone | Supported | Measured |
+  |---|---|---|
+  | depth 1 (the default) | any size the session's 10 GB holds; files of any size and type | Linux (96k files, 1.65 GB) 224-251 s; TypeScript 86-102 s; next.js 74 s; vscode 61 s |
+  | `--no-shallow` | through the fast path; history in pieces of 5,000 commits / 10,000 blobs | react ~130 s; vscode 635 s (1.31 GB of history) |
+  | `--filter=blob:none \| blob:limit=<n>[kmg] \| tree:<depth>` (with `--depth`) | missing objects fetched on demand | as depth 1, less the filtered blobs |
+  | `fetch`, `pull` | streamed; `--depth`, `--deepen`, `--unshallow` | one request per fetch |
+
+  Limits: the fast path needs a server that offers `filter` and wants by
+  object id (GitHub and GitLab do); any other server gets one stream through
+  isomorphic-git, whose checkout runs in chunks. One facet invocation
+  decodes a third of its measured 30 s CPU limit, or 400 store reads, and
+  then continues in another. `fetch --unshallow` is one request decoded in
+  one invocation, so a history react's size wants `clone --no-shallow`.
+  `--filter` with `--no-shallow` is refused, as is any other filter. A
+  clone's batches and history pieces are retried on transport failures
+  (at most three attempts); its finish is not.
+  Not supported: `show`, `log -p`, `blame`, `switch`, `stash`, `rebase`,
+  `cat-file`, history-walking revisions (`HEAD~1`), sparse checkout.
+
   Its worktree commands (`status`, `diff`, `add`, `commit`, `ls-files`,
   `reset`, `checkout`, and the worktree side of `merge`) read the index as
   its own bytes and walk the worktree a directory at a time
