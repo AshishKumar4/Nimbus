@@ -7,6 +7,7 @@ import type { VfsCred } from '../../../runtime/os-contracts.js';
 import { type CapturedCommand } from './expander.js';
 import { JobTable } from './jobs.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
+import { WorkThread } from './work-thread.js';
 export declare class BreakSignal {
     levels: number;
     constructor(levels: number);
@@ -100,6 +101,8 @@ type ExecutionIo = {
     /** Host-supplied fields merged into each command's CommandContext. */
     commandContext?: Record<string, unknown>;
     commandIdentity?: CommandIdentity;
+    /** The thread of control this runs on, as its process's work (WorkThread). */
+    workThread?: WorkThread;
     runAs?: CommandRunAsHost;
     vfs?: ProcessView;
     /** The terminal's own shell (bash -i): job notices are printed. */

@@ -19,8 +19,8 @@
  * than be refused waits on the ledger ({@link beginLoaderFetchWhenFree}) and
  * is let in, in the order it asked, by whichever release makes room. A wait
  * no release can ever satisfy (every worker held by a process stuck on its
- * own children, which wait here or are stuck too) is refused instead:
- * {@link DynamicWorkerDeadlockError}.
+ * own children, which wait here or are stuck too) is refused instead, on a
+ * later turn than the change that showed it: {@link DynamicWorkerDeadlockError}.
  *
  * Keyed weakly off the hosting actor's `ctx`, like the facet slot books: the
  * limit is per Durable Object, and dynamic workers die with the isolate that
@@ -92,8 +92,12 @@ export interface ProcessWaitGraph {
      */
     awaits(pid: number): readonly number[] | null;
 }
-/** The session's process account for `ctx`'s ledger (ProcessWaitGraph). Without one, nothing is refused. */
-export declare function bindProcessWaitGraph(ctx: object, graph: ProcessWaitGraph): void;
+/**
+ * The session's process account for `ctx`'s ledger (ProcessWaitGraph).
+ * Without one, nothing is refused. `schedule` runs a refusal's decision on
+ * a later turn (by default the event loop's next); a test drives it.
+ */
+export declare function bindProcessWaitGraph(ctx: object, graph: ProcessWaitGraph, schedule?: (decide: () => void) => void): void;
 /**
  * A session's process table, bound to `ctx`'s ledger: its wait graph read
  * from the table, and every change to what a process waits on told to the
@@ -103,7 +107,7 @@ export declare function bindProcessWaitGraph(ctx: object, graph: ProcessWaitGrap
 export declare function bindProcessTable(ctx: object, processes: {
     waitGraph(): ProcessWaitGraph;
     setOnWaitChange(cb: (() => void) | null): void;
-}): void;
+}, schedule?: (decide: () => void) => void): void;
 /**
  * What the graph answers has changed (a process's work began or ended, a
  * child ended): a wait nothing could satisfy before may be told now.
