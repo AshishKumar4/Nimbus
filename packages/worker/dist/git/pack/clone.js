@@ -546,6 +546,14 @@ export async function cloneFinish(context, request) {
             continue;
         entries.push(...splitIndexEntries(await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + share.name), 0, share.bytes)));
     }
+    // git's racy rule: an entry whose mtime is not before the index's own is
+    // re-read by status. The index lands after the second its newest file did.
+    let newest = 0;
+    for (const entry of entries)
+        newest = Math.max(newest, new DataView(entry.buffer, entry.byteOffset + 8, 4).getUint32(0));
+    const wait = (newest + 1) * 1000 - Date.now();
+    if (wait > 0)
+        await new Promise((resolve) => setTimeout(resolve, wait));
     const extensions = request.cacheTreeBytes
         ? [{ signature: 'TREE', data: await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/cache-tree'), 0, request.cacheTreeBytes) }]
         : [];
