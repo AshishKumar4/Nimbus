@@ -574,15 +574,16 @@ export class FacetProcessManager {
       const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args, stdin: this._stdinOf(child) }, hooks);
       this._stampExit(child, typeof code === 'number' ? code : 0, null);
     } catch (e: any) {
-      // Refused a Dynamic Worker for good (every one held by a process
-      // waiting on a descendant that waits for one): the program never ran,
-      // and its spawn fails as one at a process limit does.
-      if (isDynamicWorkerDeadlock(e)) {
+      // An initial admission refused before onStarted is a failed spawn.
+      // A child already started (including one stopped on stdin whose
+      // replay was refused) exists: stderr, exit 1 and close, never a second
+      // spawn outcome or a negative errno in place of its exit.
+      if (isDynamicWorkerDeadlock(e) && !child.started) {
         child.spawnError = e.code;
         this._stampExit(child, e.errno, null);
         return;
       }
-      this._appendText(child, 2, `facet error: ${e?.message || String(e)}\n`);
+      this._appendText(child, 2, `facet error: ${isDynamicWorkerDeadlock(e) ? `${e.code}: ` : ''}${e?.message || String(e)}\n`);
       this._stampExit(child, 1, null);
     }
   }

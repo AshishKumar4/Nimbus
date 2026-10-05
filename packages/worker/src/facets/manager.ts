@@ -6153,7 +6153,17 @@ export class FacetManager {
         if ('exit' in resumed) { result = resumed.exit; break; }
         // The replay is a new Worker in flight. Rejoin the admission queue
         // before rebuilding its module map or asking a preparation helper.
-        await resumeAdmission?.(abortController.signal);
+        try {
+          await resumeAdmission?.(abortController.signal);
+        } catch (error) {
+          if (abortController.signal.aborted || !isDynamicWorkerDeadlock(error)) throw error;
+          // This program already ran and printed before its read. A refusal
+          // to run it AGAIN ends that existing process, never its spawn.
+          const message = `node: could not resume after waiting for stdin (${error.code}): ${error.message}\n`;
+          if (!launch.captureOutput) await this._deliverOutput(entry.pid, 'stderr', new TextEncoder().encode(message));
+          result = { exitCode: 1, stdout: acceptedCapture.stdout, stderr: launch.captureOutput ? acceptedCapture.stderr + message : '' };
+          break;
+        }
         this.processes.setUmask(entry.pid, startUmask);
         launch = { ...launch, ...resumed.next, stopNonce: crypto.randomUUID() };
         // The stopped run's module map was released once it loaded, unless

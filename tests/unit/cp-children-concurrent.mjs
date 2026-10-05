@@ -40,6 +40,11 @@ const manager = new FacetProcessManager({
     async execStream(payload, _options, hooks) {
       const { processPid, args } = JSON.parse(payload);
       if (args[0] === 'refused') throw new DynamicWorkerDeadlockError(processPid, [1, 2]);
+      if (args[0] === 'refused-after-start') {
+        hooks.onStarted();
+        hooks.onStdout(encoder.encode('READY\n'));
+        throw new DynamicWorkerDeadlockError(processPid, [1, 2]);
+      }
       const run = { running: true, ended: null };
       runs.set(processPid, run);
       const aborted = new Promise((resolve) => processes.setTerminator(processPid, () => resolve('aborted')));
@@ -118,5 +123,12 @@ assert.deepEqual(await manager.wait(refused, 1000), { done: true, exitCode: -11,
   'its wait reports the spawn error, as Node reports a spawn at a process limit');
 assert.equal(runs.has(refused), false, 'its program never ran');
 assert.equal(await stdout(refused), '', 'and printed nothing');
+
+const replayRefused = await spawn('refused-after-start', 'R');
+assert.deepEqual(await manager.wait(replayRefused, 1000), { done: true, exitCode: 1, signal: null },
+  'EAGAIN after a child started is an exit, not a failed spawn');
+assert.equal(await stdout(replayRefused), 'READY\n');
+const diagnostic = decoder.decode(Buffer.concat((await manager.readOutput(replayRefused, 2, 0, 0)).chunks.map((c) => c.data)));
+assert.match(diagnostic, /Resource temporarily unavailable/);
 
 console.log('ok - cp-children-concurrent (a later child runs beside a live one, a kill aborts the run behind the pid and reports its signal, N run at once, a refused spawn is EAGAIN)');

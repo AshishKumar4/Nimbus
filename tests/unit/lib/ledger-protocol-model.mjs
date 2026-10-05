@@ -839,3 +839,67 @@ export async function exploreStoppedAdmissions({ width = 2, kills = false, suspe
   }
   return { states: seen.size, finals, found: [] };
 }
+
+/**
+ * The broker half of a ledger refusal: start/READY can precede it, and the
+ * parent's status/stdout/stderr replies can arrive in any order. Drive the
+ * actual broker catch and its numbered news through the production guest
+ * tracker. A known-started child must never become a failed spawn again.
+ */
+export async function checkBrokerRefusalMapping() {
+  const { FacetProcessManager } = await import('../../../packages/worker/src/facets/process.ts');
+  // Hosted services calls onStarted before entering the program. READY can
+  // reach the parent before its start REPLY, never before start is produced.
+  const paths = [[], ['start'], ['start', 'ready']];
+  const deliveries = [
+    ['status', 'stdout', 'stderr'], ['status', 'stderr', 'stdout'],
+    ['stdout', 'status', 'stderr'], ['stdout', 'stderr', 'status'],
+    ['stderr', 'status', 'stdout'], ['stderr', 'stdout', 'status'],
+  ];
+  let traces = 0;
+  for (const path of paths) {
+    for (const order of deliveries) {
+      const ctx = {}, processes = new SessionProcessSupervisor();
+      const root = processes.spawn('root', [], '/');
+      const end = beginLoaderFetch(ctx, 'root', undefined, root.pid);
+      let refuse, entered, hooks;
+      const refusal = new Promise((resolve) => { refuse = resolve; });
+      const running = new Promise((resolve) => { entered = resolve; });
+      const broker = new FacetProcessManager({
+        processes, issueNews: (pid) => issueProcessNews(ctx, pid),
+        vfsForProcess() { throw new Error('no file'); },
+        commandRegistry: { async resolve() { return { kind: 'facet-direct' }; } },
+        facetMgr: { async execStream(payload, _opts, output) {
+          hooks = output; entered();
+          await refusal;
+          throw new budgets.DynamicWorkerDeadlockError(JSON.parse(payload).processPid, [root.pid]);
+        } },
+      });
+      try {
+        const { childPid } = await broker.spawn({ parentPid: root.pid, command: 'node', args: ['R'], cwd: '/', env: {}, stdio: ['pipe', 'pipe', 'pipe'] });
+        await running;
+        for (const move of path) {
+          if (move === 'start') hooks.onStarted();
+          else hooks.onStdout(new TextEncoder().encode('READY\n'));
+        }
+        refuse();
+        const first = await broker.wait(childPid, 1000, false);
+        const status = first.done ? first : await broker.wait(childPid, 1000, true);
+        const started = path.length > 0;
+        if (status.exitCode !== (started ? 1 : -11) || status.spawnError !== (started ? undefined : 'EAGAIN')) {
+          throw new Error(`broker changed ${started ? 'a running child' : 'an initial admission'} into the wrong outcome after ${path.join(' → ')}: ${JSON.stringify(status)}`);
+        }
+        const replies = { status,
+          stdout: await broker.readOutput(childPid, 1, 0, 0),
+          stderr: await broker.readOutput(childPid, 2, 0, 0),
+        };
+        if (started && !replies.stderr.chunks.some((c) => new TextDecoder().decode(c.data).includes('EAGAIN'))) throw new Error('a started child lost its refusal diagnostic');
+        const guest = PRODUCTION.createChildNews(() => {});
+        for (const delivery of order) guest.apply(replies[delivery].news ?? []);
+        if (guest.inspect().frontier !== loaderLedgerStats(ctx).news[root.pid].issued) throw new Error('refusal news lost its contiguous frontier');
+        traces++;
+      } finally { end(); }
+    }
+  }
+  return { traces };
+}
