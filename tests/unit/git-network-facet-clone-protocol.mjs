@@ -12,14 +12,20 @@ let entrypointCount = 0;
 let committedFailurePrefix = false;
 let abortObservedPrefix = false;
 const terminalLines = [];
-const continuationCursor = {
-  version: 2,
+/** What a prepare plans: two batches (one for a clone that fails, so it fails once). */
+const plan = (batches) => ({
+  commit: '1'.repeat(40),
   tree: '2'.repeat(40),
-  stack: [{ treeOid: '2'.repeat(40), path: '', nextChildIndex: 3 }],
-  directories: ['src'],
-  indexChunks: 1,
-  indexEntries: 3,
-};
+  headRef: 'refs/heads/main',
+  capabilities: ['filter', 'allow-reachable-sha1-in-want'],
+  batches: Array.from({ length: batches }, (_, index) => ({ index, blobs: 2, paths: 2, bytes: 44 })),
+  planEntries: 2 * batches,
+  planBytes: 64,
+  shares: [{ name: 'index-gitlinks', bytes: 0 }],
+  cacheTreeBytes: 30,
+  partial: false,
+  packs: [],
+});
 
 const supervisor = {
   // Process output crosses this RPC as bytes; the test reads it as text.
@@ -57,26 +63,9 @@ const entrypoint = {
         });
       }
       prepareDurable = true;
-      const root = body.dir.replace(/^\/+/, '');
       return Response.json({
         success: true,
-        prepared: {
-          jobId: body.jobId,
-          optionsHash: body.optionsHash,
-          dir: root,
-          commit: '1'.repeat(40),
-          tree: '2'.repeat(40),
-          headRef: 'refs/heads/main',
-          packs: [{
-            packPath: root + '/.git/objects/pack/pack-' + '3'.repeat(40) + '.pack',
-            packBytes: 10,
-            idxPath: root + '/.git/objects/pack/pack-' + '3'.repeat(40) + '.idx',
-            idxBytes: 8,
-            packSha: '3'.repeat(40),
-          }],
-          packOnlyObjectStore: true,
-          metadata: [],
-        },
+        prepared: { fast: plan(body.dir === '/failure' ? 1 : 2) },
         filesWritten: 4,
         bytesWritten: 18,
         supervisorRpc: { writeBatchStream: 1 },
@@ -95,19 +84,19 @@ const entrypoint = {
       });
     }
 
-    assert.equal(body.phase, 'clone-checkout');
-    assert.equal(prepareDurable, true, 'checkout started before prepare became durable');
-    if (body.dir === '/directory-limit') {
+    assert.equal(prepareDurable, true, body.phase + ' started before prepare became durable');
+    if (body.phase === 'clone-finish') {
+      assert.deepEqual(body.shares.map((share) => share.name).sort(), ['index-0', 'index-1', 'index-gitlinks']);
+      assert.equal(body.cacheTreeBytes, 30);
       return Response.json({
-        success: false,
-        error: 'git clone checkout directories exceeded their bound',
-        errorCode: 'FreshCheckoutDirectoryLimitError',
-        filesWritten: 0,
-        bytesWritten: 0,
-        supervisorRpc: {},
-        metadataOverlay: { entries: 5, accountedBytes: 640 },
+        success: true,
+        filesWritten: 1,
+        bytesWritten: 2,
+        supervisorRpc: { writeBatchStream: 1 },
+        metadataOverlay: { entries: 0, accountedBytes: 0 },
       });
     }
+    assert.equal(body.phase, 'clone-batch');
     if (body.dir === '/failure') {
       committedFailurePrefix = true;
       return Response.json({
@@ -119,32 +108,13 @@ const entrypoint = {
         metadataOverlay: { entries: 5, accountedBytes: 640 },
       });
     }
-    if (body.checkoutCursor === null) {
-      return Response.json({
-        success: true,
-        nextCursor: continuationCursor,
-        treeEntriesVisited: 3,
-        decodedBytes: 12,
-        indexEntries: 2,
-        filesWritten: 2,
-        bytesWritten: 6,
-        supervisorRpc: { writeBatchStream: 1 },
-        cold: true,
-        metadataOverlay: { entries: 6, accountedBytes: 768 },
-      });
-    }
-    assert.deepEqual(body.checkoutCursor, continuationCursor);
     return Response.json({
       success: true,
-      nextCursor: null,
-      treeEntriesVisited: 2,
-      decodedBytes: 6,
-      indexEntries: 4,
+      batch: { index: body.batch.index, blobs: 2, files: 2, indexBytes: 140, pack: null },
       filesWritten: 2,
       bytesWritten: 6,
       supervisorRpc: { writeBatchStream: 1 },
-      cold: false,
-      metadataOverlay: { entries: 6, accountedBytes: 768 },
+      metadataOverlay: { entries: 0, accountedBytes: 0 },
     });
   },
 };
@@ -172,6 +142,7 @@ const result = await execGitNetwork(
   {
     op: 'clone',
     pid: 1,
+    depth: 1,
     dir: '/repo',
     url: 'https://example.invalid/repo.git',
     exclusiveDestination: true,
@@ -183,52 +154,24 @@ const result = await execGitNetwork(
 assert.equal(result.success, true, result.error);
 assert.equal(loadCount, 1, 'clone must load one dynamic worker');
 assert.equal(entrypointCount, 1, 'clone must use one entrypoint');
-assert.equal(calls.length, 3, 'clone must use prepare plus bounded checkout invocations');
-assert.notEqual(calls[0].url, calls[1].url, 'phase invocations need distinct trace markers');
-assert.notEqual(calls[1].url, calls[2].url, 'checkout chunks need distinct trace markers');
+assert.deepEqual(calls.map(({ body }) => body.phase), ['clone-prepare', 'clone-batch', 'clone-batch', 'clone-finish'],
+  'clone must use prepare, its batches and finish');
+assert.equal(new Set(calls.map(({ url }) => url)).size, calls.length, 'phase invocations need distinct trace markers');
 assert.match(calls[0].url, /\/git\/clone-prepare\//);
-assert.match(calls[1].url, /\/git\/clone-checkout\//);
-assert.match(calls[2].url, /\/git\/clone-checkout\//);
-assert.equal(calls[0].body.jobId, calls[1].body.jobId);
-assert.equal(calls[1].body.jobId, calls[2].body.jobId);
-assert.equal(calls[0].body.optionsHash, calls[1].body.optionsHash);
-assert.equal(calls[1].body.optionsHash, calls[2].body.optionsHash);
-assert.ok(Number.isSafeInteger(calls[0].body.phaseDeadline));
-assert.ok(Number.isSafeInteger(calls[1].body.phaseDeadline));
-assert.ok(Number.isSafeInteger(calls[2].body.phaseDeadline));
-assert.equal(calls[1].body.checkoutCursor, null);
-assert.deepEqual(calls[2].body.checkoutCursor, continuationCursor);
-assert.deepEqual(calls[1].body.checkoutBounds, {
-  maxEntries: 10_000,
-  maxDecodedBytes: 32 * 1024 * 1024,
-  maxWallMs: 150_000,
-});
-assert.deepEqual(calls[1].body.prepared, calls[0].body.phase === 'clone-prepare'
-  ? {
-      jobId: calls[0].body.jobId,
-      optionsHash: calls[0].body.optionsHash,
-      dir: 'repo',
-      commit: '1'.repeat(40),
-      tree: '2'.repeat(40),
-      headRef: 'refs/heads/main',
-      packs: [{
-        packPath: 'repo/.git/objects/pack/pack-' + '3'.repeat(40) + '.pack',
-        packBytes: 10,
-        idxPath: 'repo/.git/objects/pack/pack-' + '3'.repeat(40) + '.idx',
-        idxBytes: 8,
-        packSha: '3'.repeat(40),
-      }],
-      packOnlyObjectStore: true,
-      metadata: [],
-    }
-  : null);
-assert.equal(result.filesWritten, 8);
-assert.equal(result.bytesWritten, 30);
-assert.equal(result.supervisorRpc.writeBatchStream, 3);
-const chunkLines = terminalLines.filter(line => line.includes('clone-checkout chunk'));
-assert.equal(chunkLines.length, 2, 'checkout emitted more than one terminal line per chunk');
-assert.match(chunkLines[0], /chunk 1 complete .*w7=1 rpc=1 cold=yes\)/s);
-assert.match(chunkLines[1], /chunk 2 complete .*w7=1 rpc=1 cold=no\)/s);
+assert.match(calls[1].url, /\/git\/clone-batch\//);
+assert.match(calls[3].url, /\/git\/clone-finish\//);
+for (const call of calls) {
+  assert.equal(call.body.jobId, calls[0].body.jobId);
+  assert.equal(call.body.optionsHash, calls[0].body.optionsHash);
+  assert.ok(Number.isSafeInteger(call.body.phaseDeadline));
+}
+assert.deepEqual(calls.slice(1, 3).map(({ body }) => body.batch.index).sort(), [0, 1]);
+assert.equal(result.filesWritten, 4 + 2 + 2 + 1);
+assert.equal(result.bytesWritten, 18 + 6 + 6 + 2);
+assert.equal(result.supervisorRpc.writeBatchStream, 4);
+const batchLines = terminalLines.filter(line => line.includes('clone-batch'));
+assert.equal(batchLines.length, 2, 'one terminal line per batch');
+assert.match(batchLines[1], /clone-batch 2\/2 complete \(blobs=2 files=2 /);
 
 const callsBeforeFailure = calls.length;
 prepareDurable = false;
@@ -238,6 +181,7 @@ const failed = await execGitNetwork(
   {
     op: 'clone',
     pid: 1,
+    depth: 1,
     dir: '/failure',
     url: 'https://example.invalid/repo.git',
     exclusiveDestination: true,
@@ -248,32 +192,15 @@ const failed = await execGitNetwork(
 const failureCalls = calls.slice(callsBeforeFailure);
 assert.equal(failed.success, false, 'failed checkout must not report clone complete');
 assert.equal(failed.error, 'checkout exploded', 'abort must not mask the primary phase error');
-assert.equal(failed.errorPhase, 'clone-checkout');
+assert.equal(failed.errorPhase, 'clone-batch');
 assert.equal(failed.cleanupError, undefined);
 assert.deepEqual(failureCalls.map(({ body }) => body.phase), [
   'clone-prepare',
-  'clone-checkout',
+  'clone-batch',
   'clone-abort',
-]);
+], 'a batch failure that is not a lost transport is not retried');
 assert.equal(abortObservedPrefix, true, 'abort did not leave the committed worktree prefix inspectable');
 assert.equal(failed.filesWritten, 5, 'partial checkout writes were not reported');
-
-prepareDurable = false;
-const directoryLimit = await execGitNetwork(
-  { id: { toString: () => 'test-do' } },
-  env,
-  {
-    op: 'clone',
-    pid: 1,
-    dir: '/directory-limit',
-    url: 'https://example.invalid/repo.git',
-    exclusiveDestination: true,
-    exclusiveMutationRoot: 'directory-limit',
-    mutationOwner: 'owner',
-  },
-);
-assert.equal(directoryLimit.success, false);
-assert.equal(directoryLimit.errorCode, 'FreshCheckoutDirectoryLimitError');
 
 const callsBeforeExisting = calls.length;
 const existing = await execGitNetwork(
@@ -282,6 +209,7 @@ const existing = await execGitNetwork(
   {
     op: 'clone',
     pid: 1,
+    depth: 1,
     dir: '/existing',
     url: 'https://example.invalid/repo.git',
     exclusiveDestination: true,
@@ -314,6 +242,7 @@ const timedOut = await execGitNetwork(
   {
     op: 'clone',
     pid: 1,
+    depth: 1,
     dir: '/timeout',
     url: 'https://example.invalid/repo.git',
     timeout: 5,
@@ -328,13 +257,12 @@ assert.equal(timedOut.errorCode, 'GitCloneBudgetExceeded');
 const { elapsedMs: timedOutElapsed, ...timedOutBudget } = timedOut.budget;
 assert.deepEqual(timedOutBudget, {
   phase: 'clone-prepare',
-  chunksCompleted: 0,
-  processedEntries: 0,
-  decodedBytes: 0,
+  batchesCompleted: 0,
+  filesWritten: 0,
   limitMs: 5,
 });
 assert.ok(timedOutElapsed >= timedOut.budget.limitMs);
-assert.match(timedOut.error, /clone budget exhausted after 0 chunks \/ 0 entries/);
+assert.match(timedOut.error, /clone budget exhausted after 0 batches \/ 0 files/);
 await new Promise(resolve => setTimeout(resolve, 30));
 assert.equal(lateResponseDisposed, 2,
   'timed-out prepare or independently budgeted abort leaked its RPC stub');
@@ -356,28 +284,11 @@ try {
               defaultBudgetCalls.push(body);
               if (body.phase === 'clone-prepare') {
                 artificialNow = 290_000;
-                return Response.json({
-                  success: true,
-                  prepared: {
-                    jobId: body.jobId,
-                    optionsHash: body.optionsHash,
-                    dir: 'default-budget',
-                    commit: '1'.repeat(40),
-                    tree: '2'.repeat(40),
-                    headRef: 'refs/heads/main',
-                    packs: [],
-                    packOnlyObjectStore: true,
-                    metadata: [],
-                  },
-                  supervisorRpc: {},
-                });
+                return Response.json({ success: true, prepared: { fast: plan(1) }, supervisorRpc: {} });
               }
               return Response.json({
                 success: true,
-                nextCursor: null,
-                treeEntriesVisited: 1,
-                decodedBytes: 1,
-                indexEntries: 1,
+                batch: { index: 0, blobs: 1, files: 1, indexBytes: 70, pack: null },
                 supervisorRpc: {},
               });
             },
@@ -388,6 +299,7 @@ try {
     {
       op: 'clone',
       pid: 1,
+      depth: 1,
       dir: '/default-budget',
       url: 'https://example.invalid/repo.git',
       exclusiveDestination: true,
@@ -399,9 +311,9 @@ try {
 } finally {
   Date.now = originalNow;
 }
-assert.equal(defaultBudgetCalls[1].phase, 'clone-checkout');
-assert.equal(defaultBudgetCalls[1].phaseDeadline, 290_000 + 240_000,
-  'default clone budget starved a later checkout phase');
+assert.equal(defaultBudgetCalls[1].phase, 'clone-batch');
+assert.equal(defaultBudgetCalls[1].phaseDeadline, 290_000 + 150_000,
+  'default clone budget starved a later batch');
 
 let throwingWorkerDisposed = 0;
 const supervisorDisposalsBeforeEntrypointFailure = supervisorDisposeCount;

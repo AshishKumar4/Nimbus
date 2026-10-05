@@ -36,7 +36,7 @@ import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
-import type { CloneBatchResult, ClonePrepared } from './pack/clone.js';
+import type { CloneBatchResult, ClonePrepared, CloneStreamed } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push' | 'fetch-objects';
@@ -77,12 +77,6 @@ export interface GitNetworkOpts {
   exclusiveMutationRoot?: string;
   /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
   mutationOwner?: string;
-  /** Clone-only bounded checkout entries per fresh facet invocation. */
-  checkoutChunkMaxEntries?: number;
-  /** Clone-only decoded blob bytes per fresh facet invocation. */
-  checkoutChunkMaxDecodedBytes?: number;
-  /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
-  checkoutChunkMaxWallMs?: number;
   /** fetch: `depth` counts from the current shallow boundary (git fetch --deepen). */
   relative?: boolean;
   /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
@@ -135,7 +129,6 @@ export type GitCloneInvocationPhase =
   | 'clone-batch'
   | 'clone-history'
   | 'clone-finish'
-  | 'clone-checkout'
   | 'clone-abort';
 
 export interface GitNetworkPhaseDiagnostic {
@@ -151,8 +144,6 @@ export interface GitNetworkPhaseDiagnostic {
   lastProgress?: { phase: string; loaded: number; total?: number };
   w7Waves: number;
   supervisorRpc: GitSupervisorRpcCounters;
-  /** Whether clone-checkout started without module-local job state. */
-  cold?: boolean;
   /** The invocation's wave writer: what it published and how long it waited. */
   waves?: GitWaveDiagnostic;
 }
@@ -187,9 +178,7 @@ function parseWaveDiagnostic(value: unknown): GitWaveDiagnostic | undefined {
   return parsed;
 }
 
-export type GitNetworkErrorCode =
-  | 'GitCloneBudgetExceeded'
-  | 'FreshCheckoutDirectoryLimitError';
+export type GitNetworkErrorCode = 'GitCloneBudgetExceeded';
 
 export interface GitNetworkResult {
   success: boolean;
@@ -210,9 +199,9 @@ export interface GitNetworkResult {
 
 export interface GitCloneBudgetDiagnostic {
   phase: GitCloneInvocationPhase;
-  chunksCompleted: number;
-  processedEntries: number;
-  decodedBytes: number;
+  /** Checkout batches finished, and the files they wrote. */
+  batchesCompleted: number;
+  filesWritten: number;
   elapsedMs: number;
   limitMs: number;
 }
@@ -228,12 +217,7 @@ interface FacetInvocationResult {
   prepared?: unknown;
   mutated?: unknown;
   refused?: unknown;
-  nextCursor?: unknown;
-  treeEntriesVisited?: unknown;
-  decodedBytes?: unknown;
-  indexEntries?: unknown;
   errorCode?: unknown;
-  cold?: unknown;
   fetched?: unknown;
 }
 
@@ -273,9 +257,6 @@ const CLONE_PHASE_TIMEOUT_MS = 240_000;
 const CLONE_ABORT_TIMEOUT_MS = 30_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
-const DEFAULT_CHECKOUT_CHUNK_MAX_ENTRIES = 10_000;
-const DEFAULT_CHECKOUT_CHUNK_MAX_DECODED_BYTES = 32 * 1024 * 1024;
-const DEFAULT_CHECKOUT_CHUNK_MAX_WALL_MS = 150_000;
 
 const EMPTY_SUPERVISOR_RPC_COUNTERS: GitSupervisorRpcCounters = {
   stat: 0,
@@ -304,19 +285,6 @@ function nonNegativeCounter(value: unknown): number {
   return Number.isSafeInteger(number) && number >= 0 ? number : 0;
 }
 
-interface GitCheckoutChunkBounds {
-  maxEntries: number;
-  maxDecodedBytes: number;
-  maxWallMs: number;
-}
-
-interface GitCheckoutChunkProgress {
-  nextCursor: Record<string, unknown> | null;
-  treeEntriesVisited: number;
-  decodedBytes: number;
-  indexEntries: number;
-}
-
 function positiveSafeInteger(value: unknown, fallback: number, label: string): number {
   if (value === undefined) return fallback;
   if (!Number.isSafeInteger(value) || Number(value) <= 0) {
@@ -325,53 +293,8 @@ function positiveSafeInteger(value: unknown, fallback: number, label: string): n
   return Number(value);
 }
 
-function checkoutChunkBounds(opts: GitNetworkOpts): GitCheckoutChunkBounds {
-  return {
-    maxEntries: positiveSafeInteger(
-      opts.checkoutChunkMaxEntries,
-      DEFAULT_CHECKOUT_CHUNK_MAX_ENTRIES,
-      'checkoutChunkMaxEntries',
-    ),
-    maxDecodedBytes: positiveSafeInteger(
-      opts.checkoutChunkMaxDecodedBytes,
-      DEFAULT_CHECKOUT_CHUNK_MAX_DECODED_BYTES,
-      'checkoutChunkMaxDecodedBytes',
-    ),
-    maxWallMs: positiveSafeInteger(
-      opts.checkoutChunkMaxWallMs,
-      DEFAULT_CHECKOUT_CHUNK_MAX_WALL_MS,
-      'checkoutChunkMaxWallMs',
-    ),
-  };
-}
-
-function parseCheckoutChunkProgress(result: FacetInvocationResult): GitCheckoutChunkProgress {
-  const nextCursor = result.nextCursor === null
-    ? null
-    : result.nextCursor && typeof result.nextCursor === 'object' &&
-        !Array.isArray(result.nextCursor)
-      ? result.nextCursor as Record<string, unknown>
-      : undefined;
-  if (nextCursor === undefined) {
-    throw new Error('clone-checkout returned an invalid continuation cursor');
-  }
-  const treeEntriesVisited = nonNegativeCounter(result.treeEntriesVisited);
-  if (nextCursor !== null && treeEntriesVisited === 0) {
-    throw new Error('clone-checkout continuation made no progress');
-  }
-  return {
-    nextCursor,
-    treeEntriesVisited,
-    decodedBytes: nonNegativeCounter(result.decodedBytes),
-    indexEntries: nonNegativeCounter(result.indexEntries),
-  };
-}
-
 function parseGitNetworkErrorCode(value: unknown): GitNetworkErrorCode | undefined {
-  return value === 'GitCloneBudgetExceeded' ||
-      value === 'FreshCheckoutDirectoryLimitError'
-    ? value
-    : undefined;
+  return value === 'GitCloneBudgetExceeded' ? value : undefined;
 }
 
 function parseSupervisorRpcCounters(value: unknown): GitSupervisorRpcCounters {
@@ -441,7 +364,6 @@ function parsePhaseDiagnostic(
       diagnostic.phase === 'clone-batch' ||
       diagnostic.phase === 'clone-history' ||
       diagnostic.phase === 'clone-finish' ||
-      diagnostic.phase === 'clone-checkout' ||
       diagnostic.phase === 'clone-abort' ||
       diagnostic.phase === 'operation'
     ? diagnostic.phase
@@ -475,11 +397,6 @@ function parsePhaseDiagnostic(
     w7Waves: nonNegativeCounter(diagnostic.w7Waves) ||
       supervisorRpc.writeBatchStream,
     supervisorRpc,
-    cold: typeof diagnostic.cold === 'boolean'
-      ? diagnostic.cold
-      : typeof result.cold === 'boolean'
-        ? result.cold
-        : undefined,
     waves: parseWaveDiagnostic(diagnostic.waves),
   };
 }
@@ -516,9 +433,8 @@ class GitCloneBudgetExceededError extends GitClonePhaseError {
   ) {
     super(
       phase,
-      `git clone budget exhausted after ${budget.chunksCompleted} chunks / ` +
-        `${budget.processedEntries} entries (elapsed=${budget.elapsedMs}ms ` +
-        `limit=${budget.limitMs}ms decoded=${budget.decodedBytes}B)`,
+      `git clone budget exhausted after ${budget.batchesCompleted} batches / ` +
+        `${budget.filesWritten} files (elapsed=${budget.elapsedMs}ms limit=${budget.limitMs}ms)`,
       diagnostic,
       'GitCloneBudgetExceeded',
     );
@@ -530,9 +446,8 @@ class GitCloneBudgetExceededError extends GitClonePhaseError {
 interface GitCloneBudgetContext {
   startedAt: number;
   limitMs: number;
-  chunksCompleted: number;
-  processedEntries: number;
-  decodedBytes: number;
+  batchesCompleted: number;
+  filesWritten: number;
 }
 
 function cloneBudgetDiagnostic(
@@ -542,9 +457,8 @@ function cloneBudgetDiagnostic(
 ): GitCloneBudgetDiagnostic {
   return {
     phase,
-    chunksCompleted: context.chunksCompleted,
-    processedEntries: context.processedEntries,
-    decodedBytes: context.decodedBytes,
+    batchesCompleted: context.batchesCompleted,
+    filesWritten: context.filesWritten,
     elapsedMs: Math.max(0, now - context.startedAt),
     limitMs: context.limitMs,
   };
@@ -718,28 +632,6 @@ async function writeClonePhaseProgress(
   }
 }
 
-async function writeCloneChunkProgress(
-  supervisor: GitSupervisorStub,
-  diagnostic: GitNetworkPhaseDiagnostic,
-  chunk: number,
-  progress: GitCheckoutChunkProgress,
-): Promise<void> {
-  try {
-    const rpcCount = Object.values(diagnostic.supervisorRpc)
-      .reduce((total, count) => total + count, 0);
-    const result = await supervisor.stdout(GIT_PROGRESS_ENCODER.encode(
-      `\n[git] clone-checkout chunk ${chunk} complete ` +
-      `(entries=${progress.treeEntriesVisited} decoded=${progress.decodedBytes}B ` +
-      `index=${progress.indexEntries} continuation=${progress.nextCursor === null ? 'done' : 'yes'} ` +
-      `wall=${diagnostic.elapsed}ms w7=${diagnostic.w7Waves} rpc=${rpcCount} ` +
-      `cold=${diagnostic.cold === true ? 'yes' : 'no'})\n`,
-    ));
-    disposeRpcResource(result);
-  } catch {
-    // Terminal progress is best-effort; the chunk result remains authoritative.
-  }
-}
-
 /**
  * Batches of a fast clone that run at once. Facets loaded by one session
  * share its thread (measured: four 4.2 s CPU burners took 18.8 s), so more
@@ -869,6 +761,8 @@ async function runCloneBatches(
   identity: { jobId: string; optionsHash: string },
   fast: ClonePrepared,
   run: CloneBatchRun,
+  /** A streamed clone's batches read their blobs from its stored pack. */
+  local = false,
 ): Promise<{ name: string; bytes: number }[]> {
   const shares: { name: string; bytes: number }[] = [...fast.shares];
   let completed = 0;
@@ -876,16 +770,19 @@ async function runCloneBatches(
   await runPool(fast.batches, concurrency, async (batch) => {
     const invocation = await invokeClonePhase(entrypoint, 'clone-batch', {
       ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities, partial: fast.partial,
+      local: local === true,
     }, run);
     const result = (invocation.result as { batch?: CloneBatchResult }).batch;
     if (result === undefined) throw new GitClonePhaseError('clone-batch', 'clone-batch returned no batch', invocation.diagnostic);
     shares.push({ name: 'index-' + result.index, bytes: result.indexBytes });
     completed++;
-    run.budgetContext.processedEntries += result.files;
+    run.budgetContext.batchesCompleted++;
+    run.budgetContext.filesWritten += result.files;
     if (run.progress) {
       await writeCloneProgressLine(run.progress,
         `\n[git] clone-batch ${completed}/${fast.batches.length} complete (blobs=${result.blobs} files=${result.files} ` +
-        `pack=${(result.pack.packBytes / 1048576).toFixed(1)}MB wall=${invocation.diagnostic.elapsed}ms ` +
+        (result.pack === null ? '' : `pack=${(result.pack.packBytes / 1048576).toFixed(1)}MB `) +
+        `wall=${invocation.diagnostic.elapsed}ms ` +
         `w7=${invocation.diagnostic.w7Waves})\n`);
     }
   });
@@ -951,6 +848,36 @@ async function runCloneHistory(
     await writeCloneProgressLine(run.progress,
       `\n[git] clone-history complete (${pieces} requests, ${(packBytes / 1048576).toFixed(1)}MB)\n`);
   }
+}
+
+/**
+ * A streamed clone after prepare: its pack's decoding continued from the
+ * stored bytes while it stops at a budget, then the checkout planned from
+ * the pack (clone.ts clonePlanFromStore).
+ */
+async function runCloneSnapshot(
+  entrypoint: GitFacetEntrypoint,
+  facetOpts: Omit<GitNetworkOpts, 'mutationOwner'>,
+  identity: { jobId: string; optionsHash: string },
+  stream: CloneStreamed['stream'],
+  run: CloneBatchRun,
+): Promise<ClonePrepared> {
+  const base = { ...facetOpts, ...identity, capabilities: [] };
+  let pending = stream.pending;
+  for (let part = 1; pending !== null; part++) {
+    const invocation = await invokeClonePhase(entrypoint, 'clone-history', {
+      ...base, history: { step: 'resume', kind: 'snapshot', piece: 'snapshot', part, pending },
+    }, run);
+    const step = (invocation.result as { history?: HistoryStepResult }).history;
+    if (step === undefined) throw new GitClonePhaseError('clone-history', 'clone-history returned nothing', invocation.diagnostic);
+    pending = step.pending;
+  }
+  const plan = await invokeClonePhase(entrypoint, 'clone-history', {
+    ...base, history: { step: 'checkout-plan', commit: stream.commit },
+  }, run);
+  const planned = (plan.result as { history?: ClonePrepared }).history;
+  if (planned === undefined) throw new GitClonePhaseError('clone-history', 'checkout-plan returned nothing', plan.diagnostic);
+  return planned;
 }
 
 /** The index from the shares; a full clone's shallow file goes; then the marker. */
@@ -1057,7 +984,6 @@ export async function execGitNetwork(
       if (opts.op === 'clone') {
         const jobId = crypto.randomUUID();
         const optionsHash = await hashCloneOptions(opts);
-        const checkoutBounds = checkoutChunkBounds(opts);
         const phases: GitNetworkPhaseDiagnostic[] = [];
         const supervisorRpc = { ...EMPTY_SUPERVISOR_RPC_COUNTERS };
         let metadataOverlay = { ...EMPTY_METADATA_OVERLAY_STATS };
@@ -1066,9 +992,8 @@ export async function execGitNetwork(
         const budgetContext: GitCloneBudgetContext = {
           startedAt: start,
           limitMs: timeoutMs,
-          chunksCompleted: 0,
-          processedEntries: 0,
-          decodedBytes: 0,
+          batchesCompleted: 0,
+          filesWritten: 0,
         };
 
         const accountResult = (result: FacetInvocationResult): void => {
@@ -1107,81 +1032,27 @@ export async function execGitNetwork(
           }
           if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
 
-          const fast = (prepare.result.prepared as { fast?: ClonePrepared }).fast;
-          if (fast !== undefined) {
-            const run: CloneBatchRun = {
-              outerDeadline,
-              budgetContext,
-              phases,
-              accountResult,
-              progress: opts.quiet ? null : supervisorBinding,
-            };
-            const shares = await runCloneBatches(entrypoint, facetOpts, { jobId, optionsHash }, fast, run);
-            const full = facetOpts.depth === undefined;
-            if (full) await runCloneHistory(entrypoint, facetOpts, { jobId, optionsHash }, fast, run);
-            await runCloneFinish(entrypoint, facetOpts, { jobId, optionsHash }, shares, full, fast.cacheTreeBytes, run);
-            return {
-              success: true,
-              elapsed: Date.now() - start,
-              filesWritten,
-              bytesWritten,
-              supervisorRpc,
-              metadataOverlay,
-              phases,
-            };
+          const prepared = prepare.result.prepared as { fast?: ClonePrepared; stream?: CloneStreamed['stream'] };
+          const run: CloneBatchRun = {
+            outerDeadline,
+            budgetContext,
+            phases,
+            accountResult,
+            progress: opts.quiet ? null : supervisorBinding,
+          };
+          const identity = { jobId, optionsHash };
+          let fast = prepared.fast;
+          if (prepared.stream !== undefined) {
+            // A server without wants by id sent one pack: finish decoding it, then plan the checkout from it.
+            fast = await runCloneSnapshot(entrypoint, facetOpts, identity, prepared.stream, run);
           }
-
-          let checkoutCursor: Record<string, unknown> | null = null;
-          let checkoutChunk = 0;
-          do {
-            checkoutChunk++;
-            const checkout = await invokeFacet(
-              entrypoint,
-              'clone-checkout',
-              crypto.randomUUID(),
-              {
-                ...facetOpts,
-                jobId,
-                optionsHash,
-                prepared: prepare.result.prepared,
-                checkoutCursor,
-                checkoutBounds,
-              },
-              outerDeadline,
-              CLONE_PHASE_TIMEOUT_MS,
-              budgetContext,
-            );
-            phases.push(checkout.diagnostic);
-            accountResult(checkout.result);
-            if (checkout.result.success !== true) {
-              throw new GitClonePhaseError(
-                'clone-checkout',
-                typeof checkout.result.error === 'string'
-                  ? checkout.result.error
-                  : 'clone-checkout failed',
-                checkout.diagnostic,
-                parseGitNetworkErrorCode(checkout.result.errorCode),
-              );
-            }
-            let progress: GitCheckoutChunkProgress;
-            try {
-              progress = parseCheckoutChunkProgress(checkout.result);
-            } catch (error) {
-              throw new GitClonePhaseError(
-                'clone-checkout',
-                phaseErrorMessage(error),
-                checkout.diagnostic,
-              );
-            }
-            checkoutCursor = progress.nextCursor;
-            budgetContext.chunksCompleted++;
-            budgetContext.processedEntries += progress.treeEntriesVisited;
-            budgetContext.decodedBytes += progress.decodedBytes;
-            if (!opts.quiet) {
-              await writeCloneChunkProgress(supervisorBinding, checkout.diagnostic, checkoutChunk, progress);
-            }
-          } while (checkoutCursor !== null);
-
+          if (fast === undefined) throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
+          const shares = await runCloneBatches(entrypoint, facetOpts, identity, fast, run, prepared.stream !== undefined);
+          const full = facetOpts.depth === undefined;
+          if (full && prepared.fast !== undefined && fast.commit !== null) {
+            await runCloneHistory(entrypoint, facetOpts, identity, fast, run);
+          }
+          await runCloneFinish(entrypoint, facetOpts, identity, shares, full, fast.cacheTreeBytes, run);
           return {
             success: true,
             elapsed: Date.now() - start,
@@ -1424,13 +1295,8 @@ const READ_RANGE_BYTES = 4 * 1024 * 1024;
 const METADATA_MAX_ENTRIES = 100_000;
 const METADATA_MAX_ACCOUNTED_BYTES = 32 * 1024 * 1024;
 const METADATA_ENTRY_OVERHEAD_BYTES = 256;
-const CHECKOUT_DIRECTORY_MAX_ENTRIES = 20_000;
-const CHECKOUT_DIRECTORY_MAX_ACCOUNTED_BYTES = 4 * 1024 * 1024;
-const CHECKOUT_INDEX_MAX_CHUNKS = 20_000;
 const CLONE_JOB_MARKER = ${JSON.stringify(GIT_CLONE_JOB_MARKER)};
-const cloneJobs = new Map();
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
-const protocolTextEncoder = new TextEncoder();
 
 ${createRetryingGitHttp.toString()}
 
@@ -1465,247 +1331,28 @@ function requirePositiveMetadataNumber(value, label) {
   return number;
 }
 
-function checkoutDirectoryLimitError(entries, accountedBytes) {
-  const error = new Error(
-    'git clone checkout directories exceeded their bound (' + entries + ' entries, ' +
-    accountedBytes + ' accounted bytes)',
-  );
-  error.code = 'FreshCheckoutDirectoryLimitError';
-  return error;
-}
-
-function validateCheckoutDirectories(value) {
-  if (value === undefined) return [];
-  if (!Array.isArray(value)) throw protocolError('checkout directories are invalid');
-  if (value.length > CHECKOUT_DIRECTORY_MAX_ENTRIES) {
-    throw checkoutDirectoryLimitError(value.length, 0);
-  }
-  const directories = [];
-  const seen = new Set();
-  let accountedBytes = 0;
-  for (const path of value) {
-    if (typeof path !== 'string' || path.length === 0 || path.length > 4096 ||
-        path.startsWith('/') || path.split('/').some(part => !part || part === '.' || part === '..') ||
-        seen.has(path)) {
-      throw protocolError('checkout directory is invalid');
-    }
-    accountedBytes += protocolTextEncoder.encode(path).byteLength;
-    if (accountedBytes > CHECKOUT_DIRECTORY_MAX_ACCOUNTED_BYTES) {
-      throw checkoutDirectoryLimitError(value.length, accountedBytes);
-    }
-    seen.add(path);
-    directories.push(path);
-  }
-  return directories;
-}
-
 function cloneJobMarkerPath(dir) {
   return normalizePath(dir) + '/.git/' + CLONE_JOB_MARKER;
 }
 
-function cloneMarkerPreparedIdentity(prepared) {
-  return {
-    commit: prepared.commit,
-    tree: prepared.tree,
-    headRef: prepared.headRef,
-  };
+/** The marker a clone's phases write first: it names the job that owns .git. */
+function cloneJobMarker(opts) {
+  return JSON.stringify({ version: 1, jobId: opts.jobId, optionsHash: opts.optionsHash });
 }
 
-function cloneJobMarker(opts, prepared = null, cursor = null, cursorSeq = 0) {
-  if (prepared === null) {
-    return JSON.stringify({ version: 1, jobId: opts.jobId, optionsHash: opts.optionsHash });
-  }
-  return JSON.stringify({
-    version: 2,
-    jobId: opts.jobId,
-    optionsHash: opts.optionsHash,
-    prepared: cloneMarkerPreparedIdentity(prepared),
-    cursor,
-    cursorSeq,
-  });
-}
-
-function validateCloneMarkerCursor(value, tree) {
-  if (value === null) return null;
-  if (!value || typeof value !== 'object' || value.version !== 2 ||
-      value.tree !== tree || !Array.isArray(value.stack) ||
-      value.stack.length === 0 || value.stack.length > 4096 ||
-      !Number.isSafeInteger(value.indexChunks) || value.indexChunks <= 0 ||
-      value.indexChunks > CHECKOUT_INDEX_MAX_CHUNKS ||
-      !Number.isSafeInteger(value.indexEntries) || value.indexEntries < 0) {
-    throw protocolError('clone job marker cursor is invalid');
-  }
-  const stack = value.stack.map((frame, index) => {
-    if (!frame || typeof frame !== 'object' || !OID_PATTERN.test(frame.treeOid) ||
-        typeof frame.path !== 'string' || frame.path.length > 4096 ||
-        (index === 0 ? frame.path !== '' : frame.path.length === 0) ||
-        !Number.isSafeInteger(frame.nextChildIndex) || frame.nextChildIndex < 0) {
-      throw protocolError('clone job marker cursor frame is invalid');
-    }
-    return {
-      treeOid: frame.treeOid,
-      path: frame.path,
-      nextChildIndex: frame.nextChildIndex,
-    };
-  });
-  if (stack[0].treeOid !== tree) {
-    throw protocolError('clone job marker cursor root is invalid');
-  }
-  return {
-    version: 2,
-    tree,
-    stack,
-    directories: validateCheckoutDirectories(value.directories),
-    indexChunks: value.indexChunks,
-    indexEntries: value.indexEntries,
-  };
-}
-
-function parseCloneJobMarker(raw, opts) {
-  let marker;
-  try { marker = JSON.parse(raw); }
-  catch { return null; }
-  if (!marker || marker.jobId !== opts.jobId || marker.optionsHash !== opts.optionsHash) {
-    return null;
-  }
-  if (marker.version === 1) {
-    return { version: 1, prepared: null, cursor: null, cursorSeq: 0 };
-  }
-  if (marker.version !== 2 || !marker.prepared || typeof marker.prepared !== 'object' ||
-      !Number.isSafeInteger(marker.cursorSeq) || marker.cursorSeq < 0) {
-    return null;
-  }
-  const emptyRepository = marker.prepared.commit === null && marker.prepared.tree === null;
-  if (!emptyRepository &&
-      (!OID_PATTERN.test(marker.prepared.commit) || !OID_PATTERN.test(marker.prepared.tree))) {
-    return null;
-  }
-  if (marker.prepared.headRef !== null &&
-      (typeof marker.prepared.headRef !== 'string' || marker.prepared.headRef.length === 0 ||
-       marker.prepared.headRef.length > 4096)) {
-    return null;
-  }
-  try {
-    return {
-      version: 2,
-      prepared: cloneMarkerPreparedIdentity(marker.prepared),
-      cursor: validateCloneMarkerCursor(marker.cursor, marker.prepared.tree),
-      cursorSeq: marker.cursorSeq,
-    };
-  } catch {
-    return null;
-  }
-}
-
-/** Resolves { marker, raw } for an owned job, or null. raw carries the exact
- * durable bytes so a re-pin of identical content can skip the re-write. */
-async function readCloneJobMarker(fs, opts) {
+/** Whether .git carries this job's marker (an abort deletes only its own clone). */
+async function ownsCloneJob(fs, opts) {
   let raw;
   try {
     raw = await fs.promises.readFile(cloneJobMarkerPath(opts.dir), { encoding: 'utf8' });
   } catch (error) {
-    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return null;
+    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return false;
     throw error;
   }
-  const marker = parseCloneJobMarker(raw, opts);
-  return marker === null ? null : { marker, raw };
-}
-
-async function ownsCloneJob(fs, opts) {
-  return await readCloneJobMarker(fs, opts) !== null;
-}
-
-function validateMetadataManifest(value, root) {
-  if (!Array.isArray(value) || value.length > METADATA_MAX_ENTRIES) {
-    throw protocolError('prepared metadata manifest is invalid');
-  }
-  const manifest = [];
-  const seen = new Set();
-  for (const item of value) {
-    if (!Array.isArray(item) || item.length !== 2 ||
-        typeof item[0] !== 'string' || !item[1] || typeof item[1] !== 'object') {
-      throw protocolError('prepared metadata entry is invalid');
-    }
-    const path = normalizePath(item[0]);
-    if (path !== item[0] ||
-        (path !== root && !path.startsWith(root + '/')) ||
-        seen.has(path)) {
-      throw protocolError('prepared metadata path is invalid');
-    }
-    seen.add(path);
-    const raw = item[1];
-    if (raw.kind !== 'dir' && raw.kind !== 'file' && raw.kind !== 'symlink') {
-      throw protocolError('prepared metadata kind is invalid');
-    }
-    const entry = {
-      kind: raw.kind,
-      size: requireMetadataNumber(raw.size, 'prepared metadata size'),
-      mode: requireMetadataNumber(raw.mode, 'prepared metadata mode'),
-      mtimeMs: requireMetadataNumber(raw.mtimeMs, 'prepared metadata mtime'),
-      ctimeMs: requireMetadataNumber(raw.ctimeMs, 'prepared metadata ctime'),
-      atimeMs: requireMetadataNumber(raw.atimeMs, 'prepared metadata atime'),
-    };
-    if (raw.kind === 'symlink') {
-      entry.target = requireProtocolString(raw.target, 'prepared symlink target', 64 * 1024);
-    }
-    manifest.push([path, entry]);
-  }
-  return manifest;
-}
-
-function validatePreparedClone(value, opts) {
-  if (!value || typeof value !== 'object') throw protocolError('prepared result is missing');
-  const root = normalizePath(opts.dir);
-  const metadataRoot = normalizePath(opts.exclusiveMutationRoot || root);
-  const emptyRepository = value.commit === null && value.tree === null;
-  const prepared = {
-    jobId: requireProtocolString(value.jobId, 'job id', 128),
-    optionsHash: requireProtocolString(value.optionsHash, 'options hash', 128),
-    dir: requireProtocolString(value.dir, 'prepared dir', 4096),
-    commit: emptyRepository ? null : requireOid(value.commit, 'prepared commit'),
-    tree: emptyRepository ? null : requireOid(value.tree, 'prepared tree'),
-    headRef: value.headRef === null
-      ? null
-      : requireProtocolString(value.headRef, 'prepared HEAD ref', 4096),
-    packOnlyObjectStore: value.packOnlyObjectStore === true,
-    packs: value.packs,
-    metadata: validateMetadataManifest(value.metadata, metadataRoot),
-  };
-  if (prepared.jobId !== opts.jobId ||
-      prepared.optionsHash !== opts.optionsHash ||
-      normalizePath(prepared.dir) !== root) {
-    throw protocolError('prepared identity does not match checkout request');
-  }
-  if (!Array.isArray(prepared.packs) || prepared.packs.length > 32) {
-    throw protocolError('prepared pack manifest is invalid');
-  }
-  prepared.packs = prepared.packs.map((pack) => {
-    if (!pack || typeof pack !== 'object') throw protocolError('prepared pack is invalid');
-    const packPath = requireProtocolString(pack.packPath, 'pack path', 4096);
-    const idxPath = requireProtocolString(pack.idxPath, 'idx path', 4096);
-    const packSha = requireOid(pack.packSha, 'pack sha');
-    const packRoot = root + '/.git/objects/pack/';
-    if (!packPath.startsWith(packRoot) || !idxPath.startsWith(packRoot) ||
-        packPath !== packRoot + 'pack-' + packSha + '.pack' ||
-        idxPath !== packRoot + 'pack-' + packSha + '.idx') {
-      throw protocolError('prepared pack paths are invalid');
-    }
-    return {
-      packPath,
-      packBytes: requireMetadataNumber(pack.packBytes, 'pack bytes'),
-      idxPath,
-      idxBytes: requireMetadataNumber(pack.idxBytes, 'idx bytes'),
-      packSha,
-    };
-  });
-  const metadata = new Map(prepared.metadata);
-  for (const pack of prepared.packs) {
-    if (metadata.get(pack.packPath)?.size !== pack.packBytes ||
-        metadata.get(pack.idxPath)?.size !== pack.idxBytes) {
-      throw protocolError('prepared pack sizes do not match metadata');
-    }
-  }
-  return prepared;
+  let marker;
+  try { marker = JSON.parse(raw); }
+  catch { return false; }
+  return !!marker && marker.jobId === opts.jobId && marker.optionsHash === opts.optionsHash;
 }
 
 function disposeRpcResult(value) {
@@ -1976,11 +1623,7 @@ function createBufferedFs(
   stats,
   authoritativeRoot,
   authoritativeRootMetadata,
-  initialMetadata = [],
-  initialDirectories = [],
   phaseDeadline = null,
-  authoritativeFallbackPaths = [],
-  authoritativeFallbackRoots = [],
   worktreeRoot = null,
 ) {
   const metadata = new Map();
@@ -1989,8 +1632,6 @@ function createBufferedFs(
   let metadataAccountedBytes = 0;
   let overlayFailure = null;
   let mutationQueue = Promise.resolve();
-  const fallbackPaths = new Set(authoritativeFallbackPaths.map(normalizePath));
-  const fallbackRoots = authoritativeFallbackRoots.map(normalizePath);
 
   function stampEntry(entry, mtimeMs) {
     entry.atimeMs = mtimeMs;
@@ -2062,11 +1703,6 @@ function createBufferedFs(
   function isAuthoritativePath(path) {
     return authoritativeRoot !== null &&
       (path === authoritativeRoot || path.startsWith(authoritativeRoot + '/'));
-  }
-
-  function canFallThrough(path) {
-    return fallbackPaths.has(path) || fallbackRoots.some(root =>
-      path === root || path.startsWith(root + '/'));
   }
 
   function metadataCost(path, entry) {
@@ -2202,15 +1838,9 @@ function createBufferedFs(
     };
   }
 
-  function metadataSnapshot() {
-    return [...metadata].map(([path, entry]) => [path, { ...entry }]);
-  }
-
   if (authoritativeRoot !== null && authoritativeRootMetadata) {
     setMetadata(authoritativeRoot, authoritativeRootMetadata);
   }
-  for (const [path, entry] of initialMetadata) setMetadata(path, entry);
-  for (const path of initialDirectories) recordDirectory(path);
 
   // alreadyDurable records that these exact bytes are known to be durably
   // published at path (the caller read them back), so waves can assert the
@@ -2276,8 +1906,7 @@ function createBufferedFs(
           if (target !== undefined) return target;
         }
         if (resolved.entry && resolved.entry.kind === 'dir') throw enoent(filepath);
-        if (!resolved.entry && isAuthoritativePath(durablePath) &&
-            !canFallThrough(durablePath)) throw enoent(filepath);
+        if (!resolved.entry && isAuthoritativePath(durablePath)) throw enoent(filepath);
 
         // Fall through to the supervisor. Ordinary RPC values have a 32 MiB
         // structured-clone ceiling, so reconstruct larger files through the
@@ -2458,7 +2087,7 @@ function createBufferedFs(
         const p = normalizePath(filepath);
         const resolved = resolveMetadataPath(p);
         if (resolved.entry) return statObj(resolved.entry, true);
-        if (isAuthoritativePath(resolved.path) && !canFallThrough(resolved.path)) {
+        if (isAuthoritativePath(resolved.path)) {
           throw enoent(filepath);
         }
         const buffered = bufferedStat(p, true);
@@ -2480,7 +2109,7 @@ function createBufferedFs(
         const resolved = resolveMetadataPath(p, false);
         const local = resolved.entry;
         if (local) return statObj(local, false);
-        if (isAuthoritativePath(resolved.path) && !canFallThrough(resolved.path)) {
+        if (isAuthoritativePath(resolved.path)) {
           throw enoent(filepath);
         }
         const buffered = bufferedStat(resolved.path, false);
@@ -2536,48 +2165,10 @@ function createBufferedFs(
     fs,
     flushWave,
     overlayStats,
-    metadataSnapshot,
     pinFile,
     unpinFile,
     waveStats: () => writer.stats(),
   };
-}
-
-function preparedPackManifest(metadata, cloneRoot) {
-  const files = new Map(
-    metadata
-      .filter(([, entry]) => entry.kind === 'file')
-      .map(([path, entry]) => [path, entry]),
-  );
-  const packRoot = cloneRoot + '/.git/objects/pack/';
-  const packs = [];
-  for (const [packPath, packEntry] of files) {
-    if (!packPath.startsWith(packRoot) || !packPath.endsWith('.pack')) continue;
-    const filename = packPath.slice(packRoot.length);
-    const match = /^pack-([0-9a-f]{40}(?:[0-9a-f]{24})?)\\.pack$/.exec(filename);
-    if (!match) throw protocolError('persisted pack path is invalid');
-    const idxPath = packPath.slice(0, -5) + '.idx';
-    const idxEntry = files.get(idxPath);
-    if (!idxEntry) throw protocolError('persisted pack is missing its index');
-    packs.push({
-      packPath,
-      packBytes: packEntry.size,
-      idxPath,
-      idxBytes: idxEntry.size,
-      packSha: match[1],
-    });
-  }
-  packs.sort((left, right) => left.packPath.localeCompare(right.packPath));
-  return packs;
-}
-
-function isPackOnlyObjectStore(metadata, cloneRoot) {
-  const objectRoot = cloneRoot + '/.git/objects/';
-  const packRoot = objectRoot + 'pack/';
-  return metadata.every(([path, entry]) =>
-    entry.kind !== 'file' ||
-    !path.startsWith(objectRoot) ||
-    path.startsWith(packRoot));
 }
 
 export default {
@@ -2608,7 +2199,6 @@ export default {
         opts.phase === 'clone-batch' ||
         opts.phase === 'clone-history' ||
         opts.phase === 'clone-finish' ||
-        opts.phase === 'clone-checkout' ||
         opts.phase === 'clone-abort'
       ? opts.phase
       : 'operation';
@@ -2623,7 +2213,6 @@ export default {
       supervisorRpc: createSupervisorRpcCounters(),
     };
     let mutated = false;
-    let cold = false;
     let lastProgress = null;
     const respond = (success, payload = {}, status = 200) => {
       const endedAt = Date.now();
@@ -2637,7 +2226,6 @@ export default {
         filesWritten: stats.filesWritten,
         bytesWritten: stats.bytesWritten,
         supervisorRpc: stats.supervisorRpc,
-        cold: phase === 'clone-checkout' ? cold : undefined,
         diagnostic: {
           phase,
           invocationId,
@@ -2650,7 +2238,6 @@ export default {
           lastProgress,
           w7Waves: stats.supervisorRpc.writeBatchStream,
           supervisorRpc: stats.supervisorRpc,
-          cold: phase === 'clone-checkout' ? cold : undefined,
           waves: waveStats(),
         },
       }, { status });
@@ -2724,10 +2311,7 @@ export default {
       if (typeof opts.dir !== 'string') throw new Error('git ' + opts.op + ': dir required');
       let authoritativeRoot = null;
       let authoritativeRootMetadata = null;
-      let initialMetadata = [];
-      let initialDirectories = [];
       let prepared = null;
-      let checkoutResult = null;
       const phaseDeadline = phase === 'operation'
         ? null
         : requireMetadataNumber(opts.phaseDeadline, 'phase deadline');
@@ -2747,13 +2331,19 @@ export default {
             batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
             capabilities: opts.capabilities,
             partial: opts.partial === true,
+            local: opts.local === true,
           });
           return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
         }
         if (phase === 'clone-history') {
           const history = opts.history || {};
           let step;
-          if (history.step === 'plan') {
+          if (history.step === 'checkout-plan') {
+            step = await __nimbusGitPack.clonePlanFromStore(context, {
+              commit: requireOid(history.commit, 'streamed commit'),
+              blobsPerBatch: opts.blobsPerBatch,
+            });
+          } else if (history.step === 'plan') {
             step = await __nimbusGitPack.historyPlan(context, {
               lists: history.lists,
               present: history.present,
@@ -2849,53 +2439,11 @@ export default {
           }
         }
         if (opts.exclusiveDestination === true) authoritativeRoot = exclusiveRoot;
-      } else if (phase === 'clone-checkout') {
-        if (opts.op !== 'clone') throw protocolError('checkout requires clone operation');
-        prepared = validatePreparedClone(opts.prepared, opts);
-        const warmJob = cloneJobs.get(opts.jobId);
-        cold = !warmJob;
-        if (warmJob &&
-            (warmJob.optionsHash !== opts.optionsHash ||
-             warmJob.prepared.commit !== prepared.commit ||
-             warmJob.prepared.tree !== prepared.tree)) {
-          throw protocolError('warm clone job does not match prepared identity');
-        }
-        if (opts.exclusiveDestination === true && prepared.packOnlyObjectStore) {
-          authoritativeRoot = normalizePath(opts.exclusiveMutationRoot || opts.dir);
-          initialMetadata = prepared.metadata;
-        }
-        if (opts.checkoutCursor !== null &&
-            (!opts.checkoutCursor || typeof opts.checkoutCursor !== 'object' ||
-             Array.isArray(opts.checkoutCursor))) {
-          throw protocolError('checkout cursor is invalid');
-        }
-        if (opts.checkoutCursor !== null) {
-          const cloneRoot = normalizePath(opts.dir);
-          initialDirectories = validateCheckoutDirectories(opts.checkoutCursor.directories)
-            .map(path => cloneRoot + '/' + path);
-        }
-        if (!opts.checkoutBounds || typeof opts.checkoutBounds !== 'object') {
-          throw protocolError('checkout bounds are invalid');
-        }
-        opts.checkoutBounds = {
-          maxEntries: requirePositiveMetadataNumber(
-            opts.checkoutBounds.maxEntries,
-            'checkout max entries',
-          ),
-          maxDecodedBytes: requirePositiveMetadataNumber(
-            opts.checkoutBounds.maxDecodedBytes,
-            'checkout max decoded bytes',
-          ),
-          maxWallMs: requirePositiveMetadataNumber(
-            opts.checkoutBounds.maxWallMs,
-            'checkout max wall time',
-          ),
-        };
       } else if (phase === 'clone-abort') {
         requireProtocolString(opts.jobId, 'job id', 128);
         requireProtocolString(opts.optionsHash, 'options hash', 128);
       } else if (opts.op === 'clone') {
-        throw protocolError('clone requires the prepare/checkout protocol');
+        throw protocolError('clone requires its phases (prepare, batch, history, finish)');
       }
 
       const bufferedFs = createBufferedFs(
@@ -2903,15 +2451,7 @@ export default {
         stats,
         authoritativeRoot,
         authoritativeRootMetadata,
-        initialMetadata,
-        initialDirectories,
         phaseDeadline,
-        phase === 'clone-checkout'
-          ? [normalizePath(opts.dir) + '/.git/index']
-          : [],
-        phase === 'clone-checkout'
-          ? [normalizePath(opts.dir) + '/.git/nimbus-checkout-index']
-          : [],
         // fetch, pull and push work in a repository that already exists.
         phase === 'operation' ? normalizePath(opts.dir) : null,
       );
@@ -2925,9 +2465,15 @@ export default {
       flushWave = bufferedFs.flushWave;
       overlayStats = bufferedFs.overlayStats;
       waveStats = bufferedFs.waveStats;
-      const metadataSnapshot = bufferedFs.metadataSnapshot;
 
       if (phase === 'clone-prepare') {
+        if (opts.filter !== undefined && opts.depth === undefined) {
+          throw new Error('fatal: --filter with --no-shallow is not supported yet: clone with --depth <n>');
+        }
+        if (opts.exclusiveDestination !== true) throw protocolError('clone requires an exclusive destination');
+        const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
+        // Nothing is written until the server is known to serve the clone.
+        const advertisement = await __nimbusGitPack.cloneDiscover(context, { filter: opts.filter });
         if (authoritativeRoot !== null && authoritativeRoot !== normalizePath(opts.dir)) {
           mutated = true;
           await fs.promises.mkdir(opts.dir);
@@ -2941,223 +2487,28 @@ export default {
         // W7 stream loses its response, a cold abort can still prove ownership
         // from the marker; a missing or mismatched marker is never authority.
         await flushWave();
-        if (opts.filter !== undefined && opts.depth === undefined) {
-          throw new Error('fatal: --filter with --no-shallow is not supported yet: clone with --depth <n>');
-        }
-        if (opts.exclusiveDestination === true) {
-          // A full clone starts as a depth-1 one: its worktree first, its history after (clone-history).
-          const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
-          const fast = await __nimbusGitPack.cloneFast(context, {
-            ref: opts.ref || undefined,
-            depth: opts.depth === undefined ? 1 : opts.depth,
-            jobId: opts.jobId,
-            filter: opts.filter,
-            blobsPerBatch: opts.blobsPerBatch,
-          });
-          if (!fast.unsupported) {
-            const cloneRoot = normalizePath(opts.dir);
-            prepared = {
-              jobId: opts.jobId,
-              optionsHash: opts.optionsHash,
-              dir: cloneRoot,
-              commit: fast.commit,
-              tree: fast.tree,
-              headRef: fast.headRef,
-              packs: [],
-              packOnlyObjectStore: true,
-              metadata: [],
-              fast,
-            };
-            return respond(true, { prepared, metadataOverlay: overlayStats() });
-          }
-          log('\\n[git] ' + fast.unsupported + ': one stream\\n');
-        }
-        const cache = {};
-        await git.clone({
-          fs, http, cache,
-          dir: opts.dir,
-          url: opts.url,
+        // A full clone through the fast path starts as a depth-1 one: its
+        // worktree first, its history after (clone-history). A server
+        // without filter or wants by id sends its one pack (cloneStream).
+        const started = await __nimbusGitPack.cloneFast(context, {
           ref: opts.ref || undefined,
-          singleBranch: true,
-          depth: opts.depth,
-          noCheckout: true,
-          nonBlocking: true,
-          batchSize: 50,
-          onProgress,
-          onAuth,
-        });
-        const headRef = await git.currentBranch({
-          fs,
-          dir: opts.dir,
-          fullname: true,
-          test: false,
-        }) || null;
-        let commit = null;
-        let tree = null;
-        try {
-          commit = await git.resolveRef({ fs, dir: opts.dir, ref: 'HEAD' });
-        } catch (error) {
-          const existingBranch = await git.currentBranch({
-            fs,
-            dir: opts.dir,
-            fullname: true,
-            test: true,
-          });
-          if (existingBranch !== undefined) throw error;
-          commit = null;
-          tree = null;
-        }
-        if (commit !== null) {
-          const commitResult = await git.readCommit({ fs, dir: opts.dir, oid: commit, cache });
-          tree = commitResult && commitResult.commit && commitResult.commit.tree;
-          requireOid(commit, 'prepared commit');
-          requireOid(tree, 'prepared tree');
-        }
-        // A prepare response is an acknowledgement that all .git mutations
-        // are durable. Checkout is not allowed to start before this resolves.
-        const preparedMarker = cloneJobMarker(opts, { commit, tree, headRef }, null, 0);
-        bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), preparedMarker);
-        await fs.promises.writeFile(cloneJobMarkerPath(opts.dir), preparedMarker);
-        await flushWave();
-        const metadata = metadataSnapshot();
-        const cloneRoot = normalizePath(opts.dir);
-        prepared = {
+          depth: opts.depth === undefined ? 1 : opts.depth,
+          history: opts.depth === undefined,
           jobId: opts.jobId,
-          optionsHash: opts.optionsHash,
-          dir: cloneRoot,
-          commit,
-          tree,
-          headRef,
-          packs: preparedPackManifest(metadata, cloneRoot),
-          packOnlyObjectStore: isPackOnlyObjectStore(metadata, cloneRoot),
-          metadata,
-        };
-        cloneJobs.set(opts.jobId, { optionsHash: opts.optionsHash, cache, prepared });
-      } else if (phase === 'clone-checkout') {
-        const warmJob = cloneJobs.get(opts.jobId);
-        const cache = warmJob ? warmJob.cache : {};
-        const durableMarker = await readCloneJobMarker(fs, opts);
-        if (!durableMarker) {
-          throw protocolError('checkout clone job marker does not match');
-        }
-        const durableState = durableMarker.marker;
-        if (durableState.prepared &&
-            (durableState.prepared.commit !== prepared.commit ||
-             durableState.prepared.tree !== prepared.tree ||
-             durableState.prepared.headRef !== prepared.headRef)) {
-          throw protocolError('clone job marker prepared identity does not match');
-        }
-        const currentMarker = cloneJobMarker(
-          opts,
-          prepared,
-          durableState.cursor,
-          durableState.cursorSeq,
-        );
-        bufferedFs.pinFile(
-          cloneJobMarkerPath(opts.dir),
-          currentMarker,
-          currentMarker === durableMarker.raw,
-        );
-        if (!warmJob) {
-          cloneJobs.set(opts.jobId, { optionsHash: opts.optionsHash, cache, prepared });
-        }
-        mutated = true;
-        const durableHeadRef = await git.currentBranch({
-          fs,
-          dir: opts.dir,
-          fullname: true,
-          test: false,
-        }) || null;
-        if (durableHeadRef !== prepared.headRef) {
-          throw protocolError('durable HEAD does not match prepared commit/tree');
-        }
-        if (prepared.commit === null) {
-          let durableCommit = null;
-          try {
-            durableCommit = await git.resolveRef({ fs, dir: opts.dir, ref: 'HEAD' });
-          } catch {}
-          const existingBranch = await git.currentBranch({
-            fs,
-            dir: opts.dir,
-            fullname: true,
-            test: true,
-          });
-          if (durableCommit !== null || existingBranch !== undefined) {
-            throw protocolError('durable unborn HEAD does not match prepared state');
-          }
-        } else {
-          const durableCommit = await git.resolveRef({ fs, dir: opts.dir, ref: 'HEAD' });
-          const durableCommitResult = await git.readCommit({
-            fs,
-            dir: opts.dir,
-            oid: durableCommit,
-            cache,
-          });
-          const durableTree = durableCommitResult &&
-            durableCommitResult.commit &&
-            durableCommitResult.commit.tree;
-          if (durableCommit !== prepared.commit || durableTree !== prepared.tree) {
-            throw protocolError('durable HEAD does not match prepared commit/tree');
-          }
-          checkoutResult = await git.checkoutFreshChunk({
-            fs,
-            cache,
-            dir: opts.dir,
-            ref: 'HEAD',
-            cursor: opts.checkoutCursor,
-            maxEntries: opts.checkoutBounds.maxEntries,
-            maxDecodedBytes: opts.checkoutBounds.maxDecodedBytes,
-            maxWallMs: opts.checkoutBounds.maxWallMs,
-            deferIndexFragmentCleanup: true,
-            onProgress,
-          });
-        }
-        if (checkoutResult === null) {
-          checkoutResult = {
-            nextCursor: null,
-            files: 0,
-            decodedBytes: 0,
-            treeEntriesVisited: 0,
-            indexEntries: 0,
-          };
-        }
-        await flushWave();
-        if (checkoutResult.nextCursor === null) {
-          if (opts.checkoutCursor?.indexChunks > 0) {
-            await fs.promises.rmdir(
-              normalizePath(opts.dir) + '/.git/nimbus-checkout-index',
-              { recursive: true },
-            );
-          }
-          bufferedFs.unpinFile(cloneJobMarkerPath(opts.dir));
-          await fs.promises.unlink(cloneJobMarkerPath(opts.dir));
-          await flushWave();
-          cloneJobs.delete(opts.jobId);
-        } else {
-          const committedMarker = cloneJobMarker(
-            opts,
-            prepared,
-            checkoutResult.nextCursor,
-            durableState.cursorSeq + 1,
-          );
-          bufferedFs.pinFile(cloneJobMarkerPath(opts.dir), committedMarker);
-          await fs.promises.writeFile(cloneJobMarkerPath(opts.dir), committedMarker);
-          await flushWave();
-        }
+          filter: opts.filter,
+          blobsPerBatch: opts.blobsPerBatch,
+          budgetUnits: opts.historyBudgetUnits,
+        }, advertisement);
+        prepared = started.stream ? { stream: started.stream } : { fast: started };
+        return respond(true, { prepared, metadataOverlay: overlayStats() });
       } else if (phase === 'clone-abort') {
-        const warmJob = cloneJobs.get(opts.jobId);
-        if (warmJob && warmJob.optionsHash !== opts.optionsHash) {
-          throw protocolError('abort job identity does not match');
-        }
         if (!await ownsCloneJob(fs, opts)) {
-          cloneJobs.delete(opts.jobId);
           return respond(true, {
             refused: 'not-owner',
             metadataOverlay: overlayStats(),
           });
         }
         mutated = true;
-        cloneJobs.delete(opts.jobId);
         // File by file, then the directories: one recursive delete of a full
         // clone's .git (vscode: ~300 packs, idx and staged files) passes a
         // write group's row limit, and the clone would stay marked.
@@ -3221,26 +2572,10 @@ export default {
 
       if (phase === 'operation') await flushWave();
 
-      return respond(true, {
-        prepared: phase === 'clone-prepare' ? prepared : undefined,
-        nextCursor: phase === 'clone-checkout' ? checkoutResult.nextCursor : undefined,
-        treeEntriesVisited: phase === 'clone-checkout'
-          ? checkoutResult.treeEntriesVisited
-          : undefined,
-        decodedBytes: phase === 'clone-checkout' ? checkoutResult.decodedBytes : undefined,
-        indexEntries: phase === 'clone-checkout' ? checkoutResult.indexEntries : undefined,
-        metadataOverlay: overlayStats(),
-      });
+      return respond(true, { metadataOverlay: overlayStats() });
     } catch (e) {
       // Best-effort flush of partial state so user can inspect what landed
       try { await flushWave(); } catch {}
-      // Only a failed PREPARE drops the warm job: a failed checkout chunk
-      // keeps its entry so a marker-replay retry runs warm (the cache pins
-      // the pack; a cold retry re-reads it from the supervisor). Completion
-      // and clone-abort delete the entry, and the facet isolate itself is
-      // scoped to one execGitNetwork call, so a retained entry can never
-      // outlive its clone.
-      if (phase === 'clone-prepare') cloneJobs.delete(opts.jobId);
       return respond(false, {
         error: (e && e.message) || String(e),
         errorCode: e && typeof e.code === 'string' ? e.code : undefined,

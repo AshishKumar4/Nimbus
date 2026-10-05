@@ -11,19 +11,14 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { answerPlainDiscovery } from './lib/plain-git-server.mjs';
-
-// The clones here take the single-stream path: their server offers no filter.
-answerPlainDiscovery();
-
 // A W7 wave holding a file larger than CHUNK_SIZE must not materialize a
 // second full copy of the file beside the writeBuffer original: chunk-record
 // copies are created lazily, one per encoder pull, while the stream is being
 // drained. An eager per-chunk slice() in buildPayload made the oversize
 // single-file wave (a packfile) peak at 2× its size — the facet OOM shape.
 // This test pins pull-time materialization by counting slices taken from the
-// pack-sized parent while the receiver drains the wave, and pins the
-// clone-job lifecycle (warm within the clone, entry gone after completion).
+// pack-sized parent while the receiver drains the wave. The writes come from
+// a git fetch: its buffered fs is the facet's one wave writer.
 
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-wave-memory-'));
 
@@ -39,8 +34,8 @@ try {
 const enc = new TextEncoder();
 export const gitHttp = {};
 export const git = {
-  async clone({ fs, dir, cache, ref }) {
-    if (ref !== 'main') throw new Error('clone did not receive the requested ref');
+  async fetch({ fs, dir, remote }) {
+    if (remote !== 'origin') throw new Error('fetch did not receive the remote');
     const root = dir.replace(/^\\/+/, '');
     const packDir = root + '/.git/objects/pack';
     const pack = new Uint8Array(${PACK_SIZE});
@@ -48,23 +43,7 @@ export const git = {
     await fs.promises.mkdir(packDir);
     await fs.promises.writeFile(packDir + '/pack-${PACK_SHA}.pack', pack);
     await fs.promises.writeFile(packDir + '/pack-${PACK_SHA}.idx', enc.encode('idx'));
-    await fs.promises.mkdir(root + '/.git/refs/heads');
-    await fs.promises.writeFile(root + '/.git/HEAD', 'ref: refs/heads/main\\n');
-    await fs.promises.writeFile(root + '/.git/refs/heads/main', '1'.repeat(40) + '\\n');
-    cache.prepared = true;
-  },
-  async resolveRef() { return '1'.repeat(40); },
-  async readCommit() { return { commit: { tree: '2'.repeat(40) } }; },
-  async currentBranch({ test }) { return test ? 'refs/heads/main' : 'refs/heads/main'; },
-  async checkoutFreshChunk({ fs, dir }) {
-    await fs.promises.writeFile(dir.replace(/^\\/+/, '') + '/hello.txt', 'hello');
-    return {
-      nextCursor: null,
-      files: 1,
-      decodedBytes: 5,
-      treeEntriesVisited: 1,
-      indexEntries: 1,
-    };
+    await fs.promises.writeFile(root + '/.git/refs/remotes/origin/main', '1'.repeat(40) + '\\n');
   },
 };
 `);
@@ -109,33 +88,16 @@ export const git = {
   };
   const allDrainSlices = [];
 
-  const jobId = 'wave-memory-job';
-  const optionsHash = 'd'.repeat(64);
-  const phase = async (phaseName, invocationId, body) => {
-    const response = await facetWorker.default.fetch(
-      new Request(`http://git/git/${phaseName}/${invocationId}`, {
-        method: 'POST',
-        body: JSON.stringify({
-          op: 'clone',
-          dir: '/wave-repo',
-          url: 'https://example.invalid/repo.git',
-          ref: 'main',
-          exclusiveDestination: true,
-          phase: phaseName,
-          invocationId,
-          jobId,
-          optionsHash,
-          phaseDeadline: Date.now() + 30_000,
-          ...body,
-        }),
-      }),
-      { SUPERVISOR: supervisor },
-    );
-    return response.json();
-  };
-
-  const prepare = await phase('clone-prepare', 'wave-memory-prepare', {});
-  assert.equal(prepare.success, true, prepare.error);
+  vfs.mkdir('wave-repo/.git/refs/remotes/origin', { recursive: true });
+  const response = await facetWorker.default.fetch(
+    new Request('http://git/op', {
+      method: 'POST',
+      body: JSON.stringify({ op: 'fetch', dir: '/wave-repo', remote: 'origin' }),
+    }),
+    { SUPERVISOR: supervisor },
+  );
+  const fetched = await response.json();
+  assert.equal(fetched.success, true, fetched.error);
 
   // Every chunk-sized copy of the pack was materialized while the receiver
   // drained the wave — none eagerly at payload-build time. Exactly one copy
@@ -155,29 +117,7 @@ export const git = {
     }
   }
 
-  const checkoutBody = {
-    prepared: prepare.prepared,
-    checkoutCursor: null,
-    checkoutBounds: {
-      maxEntries: 10_000,
-      maxDecodedBytes: 32 * 1024 * 1024,
-      maxWallMs: 20_000,
-    },
-  };
-  const checkout = await phase('clone-checkout', 'wave-memory-checkout', checkoutBody);
-  assert.equal(checkout.success, true, checkout.error);
-  assert.equal(checkout.nextCursor, null);
-  assert.equal(checkout.cold, false, 'checkout in the same facet did not reuse the warm job');
-  assert.equal(vfs.readFileString('wave-repo/hello.txt'), 'hello');
-  assert.equal(vfs.exists('wave-repo/.git/nimbus-clone-job'), false,
-    'completed checkout left the ownership marker behind');
-
-  // Completion removed the module-local clone job: a replay of the same
-  // jobId starts cold and no longer owns the (deleted) marker.
-  const replay = await phase('clone-checkout', 'wave-memory-replay', checkoutBody);
-  assert.equal(replay.success, false, 'replay after completion unexpectedly succeeded');
-  assert.match(replay.error, /clone job marker does not match/);
-  assert.equal(replay.cold, true, 'completed clone job was still warm in cloneJobs');
+  assert.equal(vfs.readFileString('wave-repo/.git/refs/remotes/origin/main'), '1'.repeat(40) + '\n');
 
   console.log('git network facet wave memory: ok');
 } finally {

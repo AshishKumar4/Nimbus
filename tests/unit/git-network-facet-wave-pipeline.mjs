@@ -7,7 +7,8 @@
 // Red before the wave writer: the buffered fs awaited each wave's RPC inline
 // (no write completed while a wave was in flight), recounted the wave's owned
 // paths on every write (no counter, and O(wave) work per write), and named no
-// wave in a failure.
+// wave in a failure. The writes come from a git fetch: its buffered fs is
+// the facet's one wave writer.
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
@@ -17,35 +18,25 @@ import { pathToFileURL } from 'node:url';
 
 import { decodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH } from '../../packages/platform/src/w7-frame.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
-import { answerPlainDiscovery } from './lib/plain-git-server.mjs';
-
-// The clones here take the single-stream path: their server offers no filter.
-answerPlainDiscovery();
 
 const FILES = 3_000;
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-wave-pipeline-'));
 
 try {
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
-  // A clone that writes FILES files across a few hundred directories, and
+  // A fetch that writes FILES files across a few hundred directories, and
   // counts each write as it completes.
   writeFileSync(join(tempDir, 'git-bundle.js'), `
 export const gitHttp = {};
 export const git = {
-  async clone({ fs, dir }) {
+  async fetch({ fs, dir }) {
     const root = dir.replace(/^\\/+/, '');
-    await fs.promises.mkdir(root + '/.git/refs/heads');
-    await fs.promises.writeFile(root + '/.git/HEAD', 'ref: refs/heads/main\\n');
-    await fs.promises.writeFile(root + '/.git/refs/heads/main', '1'.repeat(40) + '\\n');
     for (let i = 0; i < ${FILES}; i++) {
       const path = root + '/src/d' + (i % 37) + '/e' + (i % 11) + '/file-' + i + '.txt';
       await fs.promises.writeFile(path, 'content of file ' + i + '\\n');
       globalThis.__writesDone = (globalThis.__writesDone || 0) + 1;
     }
   },
-  async resolveRef() { return '1'.repeat(40); },
-  async readCommit() { return { commit: { tree: '2'.repeat(40) } }; },
-  async currentBranch() { return 'refs/heads/main'; },
 };
 `);
   const facetWorker = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
@@ -94,23 +85,12 @@ export const git = {
     return { supervisor, record, files };
   }
 
-  async function prepare(supervisor, name) {
+  async function fetchInto(supervisor, name) {
     globalThis.__writesDone = 0;
-    const invocationId = `${name}-prepare`;
     const response = await facetWorker.default.fetch(
-      new Request(`http://git/git/clone-prepare/${invocationId}`, {
+      new Request('http://git/op', {
         method: 'POST',
-        body: JSON.stringify({
-          op: 'clone',
-          dir: `/${name}`,
-          url: 'https://example.invalid/repo.git',
-          exclusiveDestination: true,
-          phase: 'clone-prepare',
-          invocationId,
-          jobId: `${name}-job`,
-          optionsHash: 'e'.repeat(64),
-          phaseDeadline: Date.now() + 60_000,
-        }),
+        body: JSON.stringify({ op: 'fetch', dir: `/${name}`, remote: 'origin' }),
       }),
       { SUPERVISOR: supervisor },
     );
@@ -120,7 +100,7 @@ export const git = {
   // ── A pipeline: writes keep landing while a wave is in flight ──────────
   {
     const { supervisor, record, files } = supervisorFor();
-    const result = await prepare(supervisor, 'pipelined');
+    const result = await fetchInto(supervisor, 'pipelined');
     assert.equal(result.success, true, result.error);
     assert.equal(files.get('pipelined/src/d5/e5/file-5.txt')?.toString(), 'content of file 5\n');
     assert.equal(files.get(`pipelined/src/d${(FILES - 1) % 37}/e${(FILES - 1) % 11}/file-${FILES - 1}.txt`)?.toString(),
@@ -142,7 +122,7 @@ export const git = {
   // ── A failed wave is the last one sent, and it is named ────────────────
   {
     const { supervisor, record } = supervisorFor({ failWave: 3 });
-    const result = await prepare(supervisor, 'failing');
+    const result = await fetchInto(supervisor, 'failing');
     assert.equal(result.success, false, 'a failed wave reported success');
     assert.match(result.error, /git write wave 3 failed/);
     assert.match(result.error, /injected wave failure/);

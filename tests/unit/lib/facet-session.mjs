@@ -5,7 +5,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, symlinkSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
@@ -59,17 +59,24 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   const lease = () => (owner === undefined ? {} : { mutationOwner: owner });
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
-  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeWrites: [], waves: 0, failWaveAt: 0, hangPhaseAt: null };
+  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0, failWaveAt: 0, hangPhaseAt: null };
   const supervisor = {
     async stat(path) { try { return bridge.stat(path); } catch { return null; } },
     async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
     async hasLegacySymlinkUnder() { return false; },
     async readdir(path) { return bridge.readdir(path); },
     async readFileBytes(path) { try { return bridge.readFile(path); } catch { return null; } },
-    async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
-    async fsReadRangeUncached(path, offset, length) { return bridge.readRange(path, offset, length, { cached: false }); },
+    async fsReadRange(path, offset, length) {
+      requests.rangeReads.push({ path, offset, length });
+      return bridge.readRange(path, offset, length);
+    },
+    async fsReadRangeUncached(path, offset, length) {
+      requests.rangeReads.push({ path, offset, length });
+      return bridge.readRange(path, offset, length, { cached: false });
+    },
     async fsWriteRange(path, offset, bytes) {
       requests.rangeWrites.push({ path, offset, bytes: bytes.byteLength });
+      requests.onRangeWrite?.(path, offset);
       return bridge.writeRange(path, offset, bytes, { createParents: true, ...lease() });
     },
     async fsTruncate(path, size) { return bridge.truncate(path, size, lease()); },
@@ -140,6 +147,7 @@ export async function createFacetSession(work, { realGit = false } = {}) {
         const stat = kernel.lstat(child);
         if (stat.type === 'directory') { mkdirSync(target, { recursive: true }); copy(child); }
         else if (stat.type === 'file') writeFileSync(target, kernel.readFile(child), { mode: stat.mode & 0o777 });
+        else if (stat.type === 'symlink') symlinkSync(kernel.readlink(child), target);
       }
     };
     mkdirSync(join(out, only ?? ''), { recursive: true });

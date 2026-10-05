@@ -14,7 +14,7 @@ import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, s
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 
-import { cloneBatch, cloneFast, cloneFinish } from '../../packages/worker/src/git/pack/clone.ts';
+import { cloneBatch, cloneDiscover, cloneFast, cloneFinish } from '../../packages/worker/src/git/pack/clone.ts';
 import { startGitHttpServer } from './lib/git-http-server.mjs';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-pack-clone-'));
@@ -132,7 +132,7 @@ try {
       url: server.url + '/repo.git',
       marker: { path: '.git/nimbus-clone-job', text: '{}' },
     };
-    const prepared = await cloneFast(context, { depth: 1, jobId: 'job', blobsPerBatch: 50 });
+    const prepared = await cloneFast(context, { depth: 1, jobId: 'job', blobsPerBatch: 50 }, await cloneDiscover(context, {}));
     assert.equal(prepared.unsupported, undefined, prepared.unsupported);
     assert.equal(prepared.commit, head);
     assert.equal(prepared.headRef, 'refs/heads/main');
@@ -223,7 +223,7 @@ try {
       const partial = fakeSession();
       const partialDir = '/home/user/partial';
       const partialContext = { ...context, supervisor: partial.supervisor, writer: (onReceipts) => partial.writer(partialDir, onReceipts), dir: partialDir };
-      const got = await cloneFast(partialContext, { depth: 1, jobId: 'p', filter, blobsPerBatch: 100 });
+      const got = await cloneFast(partialContext, { depth: 1, jobId: 'p', filter, blobsPerBatch: 100 }, await cloneDiscover(partialContext, { filter }));
       assert.equal(got.partial, true);
       const done = await Promise.all(got.batches.map((batch) => cloneBatch(partialContext, {
         jobId: 'p', index: batch.index, capabilities: got.capabilities, partial: true,

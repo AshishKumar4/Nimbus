@@ -1,10 +1,13 @@
 // A real git smart-HTTP server for unit tests: `git http-backend` as a CGI
 // behind Bun.serve, serving the bare repositories under one root, with
-// filter and wants-by-id enabled as GitHub has them. Counts requests by path.
+// filter and wants-by-id enabled as GitHub has them (`plain: true` keeps
+// http-backend's defaults, neither; a repository's own config can still
+// enable one). Counts requests by path.
 
 import { spawn } from 'node:child_process';
 
-export function startGitHttpServer(projectRoot) {
+export function startGitHttpServer(projectRoot, { plain = false } = {}) {
+  const config = plain ? [] : ['-c', 'uploadpack.allowFilter=true', '-c', 'uploadpack.allowAnySHA1InWant=true'];
   const requests = [];
   const server = Bun.serve({
     port: 0,
@@ -13,7 +16,7 @@ export function startGitHttpServer(projectRoot) {
       const url = new URL(request.url);
       requests.push({ method: request.method, path: url.pathname });
       const body = request.method === 'POST' ? new Uint8Array(await request.arrayBuffer()) : new Uint8Array(0);
-      const child = spawn('git', ['-c', 'uploadpack.allowFilter=true', '-c', 'uploadpack.allowAnySHA1InWant=true', 'http-backend'], {
+      const child = spawn('git', [...config, 'http-backend'], {
         env: {
           ...process.env,
           GIT_PROJECT_ROOT: projectRoot,
