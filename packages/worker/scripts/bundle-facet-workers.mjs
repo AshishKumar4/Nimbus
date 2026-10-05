@@ -177,6 +177,35 @@ async function bundleVirtualSocketKernel() {
 }
 
 /**
+ * The git wave writer (src/git/wave-writer.ts) as an IIFE bound to the
+ * module-local `__nimbusGitWaveWriter`: the git network facet's generated
+ * source splices it ahead of its own body and publishes every write through
+ * it. Scoped, so its W7 encoder never meets the W7 preamble's names.
+ */
+async function bundleGitWaveWriter() {
+  const result = await build({
+    entryPoints: [join(root, 'src', 'git', 'wave-writer.ts')],
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusGitWaveWriter',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/git-wave-writer] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/^var __nimbusGitWaveWriter = /m.test(src)) {
+    throw new Error('[bundle-facet-workers/git-wave-writer] the bundle no longer binds __nimbusGitWaveWriter');
+  }
+  return src;
+}
+
+/**
  * The answering supervisor client as a self-contained IIFE that installs
  * globalThis.__nimbusAnsweringSupervisor, so a facet body that is generated
  * text runs the one implementation the bundled facets import.
@@ -719,6 +748,25 @@ async function main() {
     '',
   ].join('\n'));
 
+  const waveWriterSrc = await bundleGitWaveWriter();
+  const waveWriterOutPath = join(root, 'src', 'git', 'wave-writer.generated.ts');
+  writeFileSync(waveWriterOutPath, [
+    '/**',
+    ' * wave-writer.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - src/git/wave-writer.ts',
+    ' *',
+    ' * An IIFE binding `__nimbusGitWaveWriter` (createWaveWriter, WaveFailure, …)',
+    ' * in the module that splices it: the git network facet.',
+    ' *',
+    ` * Size: ${(waveWriterSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const GIT_WAVE_WRITER_SRC: string = ${JSON.stringify(waveWriterSrc)};`,
+    '',
+  ].join('\n'));
+
   const bashSrc = await bundleBashRunner();
   const bashOutPath = join(coreRoot, 'src', 'runtime', 'bash-runner.generated.ts');
   writeFileSync(bashOutPath, [
@@ -776,7 +824,7 @@ async function main() {
 // generated files from source and compare, rather than restating the esbuild
 // settings — a second copy of those settings is exactly the drift such a test
 // exists to catch. main() therefore runs only when this file is the entry point.
-export { bundleWasiInstance, bundleBashRunner, bundleEsbuildCli, bundleOxcFacet, bundleAnsweringSupervisor };
+export { bundleWasiInstance, bundleBashRunner, bundleEsbuildCli, bundleOxcFacet, bundleAnsweringSupervisor, bundleGitWaveWriter };
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((e) => {
