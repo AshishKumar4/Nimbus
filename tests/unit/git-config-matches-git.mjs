@@ -191,6 +191,7 @@ try {
       readdir: async (path) => bridge.readdir(path),
       readFileBytes: async (path) => bridge.readFile(path),
       fsReadRange: async (path, offset, length) => bridge.readRange(path, offset, length),
+      fsReadRangeUncached: async (path, offset, length) => bridge.readRange(path, offset, length, { cached: false }),
       writeBatchStream: async (stream) => kernel.writeStream(stream),
       // The ranged calls git/pack/facet-packs.ts makes to store a fetched pack as it arrives.
       fsWriteRange: async (path, offset, bytes) => bridge.writeRange(path, offset, bytes),

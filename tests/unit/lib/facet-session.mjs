@@ -66,6 +66,7 @@ export async function createFacetSession(work, { realGit = false } = {}) {
     async readdir(path) { return bridge.readdir(path); },
     async readFileBytes(path) { try { return bridge.readFile(path); } catch { return null; } },
     async fsReadRange(path, offset, length) { return bridge.readRange(path, offset, length); },
+    async fsReadRangeUncached(path, offset, length) { return bridge.readRange(path, offset, length, { cached: false }); },
     async fsWriteRange(path, offset, bytes) {
       requests.rangeWrites.push({ path, offset, bytes: bytes.byteLength });
       return bridge.writeRange(path, offset, bytes, { createParents: true, ...lease() });

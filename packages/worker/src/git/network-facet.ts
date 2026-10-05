@@ -1825,7 +1825,9 @@ function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
     return useRpcResult(call(), (result) => result);
   };
   return {
-    fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRange(normalizePath(path), offset, length)),
+    // Pack bytes bypass the session's content cache: a cached range pins its
+    // chunks in the session's heap (512 x 64 KiB), which the clone shares.
+    fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(normalizePath(path), offset, length)),
     fsWriteRange: (path, offset, bytes) => counted('fsWriteRange', () => supervisor.fsWriteRange(normalizePath(path), offset, bytes)),
     fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(normalizePath(path), size)),
     rename: (from, to) => counted('rename', () => supervisor.rename(normalizePath(from), normalizePath(to))),
@@ -1863,7 +1865,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
     supervisor: {
       fsWriteRange: (path, offset, bytes) => counted('fsWriteRange', () => supervisor.fsWriteRange(path, offset, bytes)),
       fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(path, size)),
-      fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRange(path, offset, length)),
+      fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(path, offset, length)),
       rename: (from, to) => counted('rename', () => supervisor.rename(from, to)),
     },
     writer(onReceipts) {

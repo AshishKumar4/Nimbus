@@ -231,6 +231,9 @@ try {
       calls.fsReadRange.push(path);
       return durable.get(path)?.data?.slice(offset, offset + length) || null;
     },
+    async fsReadRangeUncached(path, offset, length) {
+      return this.fsReadRange(path, offset, length);
+    },
     async writeBatchStream(stream) {
       await supervisorRpcDelay();
       calls.writeBatchStream++;
