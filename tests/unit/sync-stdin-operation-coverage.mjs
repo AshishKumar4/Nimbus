@@ -5,16 +5,52 @@ import { REPLAY_OPERATION_POLICY, operationPolicy } from '../../packages/worker/
 import { ReplayJournal, answerDigest } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
 import { mock } from 'bun:test';
 import { REPLAY_PUBLIC_METHOD_POLICY } from '../../packages/worker/src/runtime/stop-replay-policy.ts';
-mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {} }));
+class TrustedWorkerEntrypoint {}
+mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: TrustedWorkerEntrypoint, DurableObject: class {}, RpcTarget: class {}, tracing: { startSpan: () => ({ end() {} }) } }));
 const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
-const publicMethods = Object.getOwnPropertyNames(SupervisorRPC.prototype).filter((name) => name !== 'constructor' && !name.startsWith('_'));
+function effectiveMethods(Binding) {
+  const methods = new Map();
+  let prototype = Binding.prototype;
+  for (; prototype && prototype !== TrustedWorkerEntrypoint.prototype; prototype = Object.getPrototypeOf(prototype)) {
+    for (const name of Object.getOwnPropertyNames(prototype)) {
+      if (name === 'constructor' || name.startsWith('_') || methods.has(name)) continue;
+      methods.set(name, Object.getOwnPropertyDescriptor(prototype, name).value);
+    }
+  }
+  assert.equal(prototype, TrustedWorkerEntrypoint.prototype, 'binding must reach the trusted WorkerEntrypoint boundary');
+  return methods;
+}
+const publicMethods = effectiveMethods(SupervisorRPC);
 function checkPublic(name, method) {
   const explicit = REPLAY_PUBLIC_METHOD_POLICY[name];
   if (explicit) return;
   assert.ok(operationPolicy(name), 'unclassified public SupervisorRPC method: ' + name);
   assert.match(String(method), /this\._(?:op|fsOp|fsRead|fsMutation|resent)\s*\(/, name + ' bypasses the session journal');
 }
-for (const name of publicMethods) checkPublic(name, SupervisorRPC.prototype[name]);
+function checkBinding(Binding) {
+  for (const [name, method] of effectiveMethods(Binding)) checkPublic(name, method);
+}
+// Check the actual binding exports, not just the implementation constructor:
+// an embedder may export a subclass with additional reachable RPC methods.
+for (const entry of [
+  '../../packages/worker/src/index.ts', '../../packages/sdk/src/worker.ts',
+  '../../apps/probe/src/index.ts', '../../apps/hosted-demo/src/index.ts',
+]) {
+  const binding = (await import(new URL(entry, import.meta.url).href)).SupervisorRPC;
+  assert.equal(typeof binding, 'function', entry + ' must export the supervisor binding');
+  checkBinding(binding);
+}
+class Intermediate extends TrustedWorkerEntrypoint { inheritedMethod() {} }
+class InheritedBinding extends Intermediate {}
+const WithMixin = (Base) => class extends Base { mixinMethod() {} };
+class MixedBinding extends WithMixin(SupervisorRPC) {}
+class DeployedBinding extends SupervisorRPC { subclassMethod() {} }
+const negativeBindings = { inherited: InheritedBinding, mixin: MixedBinding, subclass: DeployedBinding };
+for (const [name, Binding] of Object.entries(negativeBindings)) {
+  if (!process.env.NIMBUS_COVERAGE_FIXTURE || process.env.NIMBUS_COVERAGE_FIXTURE === name) {
+    assert.throws(() => checkBinding(Binding), /unclassified public/, name + ' binding must not escape coverage');
+  }
+}
 assert.throws(() => checkPublic('futurePublicMethod', () => {}), /unclassified public/);
 assert.throws(() => checkPublic('getPackument', () => {}), /bypasses the session journal/);
 
@@ -54,4 +90,4 @@ for (const original of [undefined, null, 0, false]) {
   failures.stopped(); failures.start('b');
   await assert.rejects(failures.handle('stat', ['/failure'], 'b', () => Promise.reject(String(original))), /answered differently/);
 }
-console.log(`sync-stdin-operation-coverage: ${SUPERVISOR_OPS.length} ops and ${publicMethods.length} public RPC methods classified; new methods/ops fail closed`);
+console.log(`sync-stdin-operation-coverage: ${SUPERVISOR_OPS.length} ops, ${publicMethods.size} effective public methods, four binding exports; inherited/mixin/subclass additions fail closed`);
