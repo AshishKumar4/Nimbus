@@ -142,7 +142,7 @@ try {
       return cloneBatch(context, { jobId: 'job', index: batch.index, batchBytes: bytes, capabilities: prepared.capabilities });
     }));
     const shares = [...prepared.shares, ...results.map((result) => ({ name: 'index-' + result.index, bytes: result.indexBytes }))];
-    const finished = await cloneFinish(context, { shares });
+    const finished = await cloneFinish(context, { shares, cacheTreeBytes: prepared.cacheTreeBytes });
     assert.equal(finished.indexEntries, 305);
     assert.ok(![...session.files.keys()].some((path) => path.includes('nimbus-clone/')), 'staging removed');
 
@@ -180,6 +180,21 @@ try {
       assert.deepEqual(readFileSync(join(out, path)), readFileSync(join(reference, path)), path);
       assert.equal(statSync(join(out, path)).mode & 0o111, statSync(join(reference, path)).mode & 0o111, path + ' mode');
     }
+    // The index's TREE extension is the one git clone writes.
+    const treeExtension = (bytes) => {
+      let at = 12;
+      for (let i = bytes.readUInt32BE(8); i > 0; i--) at += Math.ceil((62 + (bytes.readUInt16BE(at + 60) & 0xfff) + 1) / 8) * 8;
+      while (at < bytes.length - 20) {
+        const signature = bytes.subarray(at, at + 4).toString('latin1');
+        const size = bytes.readUInt32BE(at + 4);
+        if (signature === 'TREE') return bytes.subarray(at + 8, at + 8 + size);
+        at += 8 + size;
+      }
+      return null;
+    };
+    const ourTree = treeExtension(readFileSync(join(out, '.git/index')));
+    assert.ok(ourTree, 'the index has a TREE extension');
+    assert.deepEqual(ourTree, treeExtension(readFileSync(join(reference, '.git/index'))), 'TREE extension equals git clone\'s');
     // Every index entry carries the stat the session reported for its path.
     const index = readFileSync(join(out, '.git/index'));
     assert.equal(index.readUInt32BE(8), 305);

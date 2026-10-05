@@ -21,6 +21,7 @@ import { encodeIdxV2, ENTRY_BYTES, entryOffset } from './idx.js';
 import { ByteLru } from './byte-lru.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndex, encodeIndexEntry, splitIndexEntries, type IndexStat } from './index-file.js';
+import { addSubtree, encodeCacheTree, type CacheTree } from '../worktree/cachetree.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor, type PackProcessResult, type PackStore, type WorkTally } from './processor.js';
 import { discover, requestPack, type Advertisement, type GitTransportAuth } from './upload-pack.js';
@@ -93,6 +94,8 @@ export interface ClonePrepared {
   planBytes: number;
   /** The index entries prepare wrote (gitlinks, a blob:limit pack's blobs): STAGE_DIR files. */
   shares: { name: string; bytes: number }[];
+  /** The index's TREE extension, staged as STAGE_DIR/cache-tree. */
+  cacheTreeBytes: number;
   /** A partial clone (--filter): every pack it stores is a promisor pack. */
   partial: boolean;
   packs: PackSummary[];
@@ -355,6 +358,23 @@ export function commitTree(commit: Uint8Array, oid: string): string {
   return line[1];
 }
 
+/** The cache tree of `root`: each tree's id and how many index entries it covers. */
+function cacheTreeOf(root: string, trees: Map<string, Uint8Array>): CacheTree {
+  const data = trees.get(root);
+  if (data === undefined) throw new PackFormatError('the pack lacks tree ' + root);
+  const node: CacheTree = { count: 0, oid: root, subtrees: [] };
+  for (const entry of parseTree(data)) {
+    if (entry.mode !== MODE_TREE) {
+      node.count++;
+      continue;
+    }
+    const child = cacheTreeOf(oidToHex(data, entry.oidAt), trees);
+    node.count += child.count;
+    addSubtree(node, entry.name, child);
+  }
+  return node;
+}
+
 /** Every tree below `root` is in `trees`. */
 function treesComplete(trees: Map<string, Uint8Array>, root: string): boolean {
   const pending = [root];
@@ -496,6 +516,10 @@ export async function cloneFast(context: CloneContext, request: CloneRequest): P
     plan = planFrom();
     planBlobs = plan.blobPaths();
   }
+  // The index's TREE extension, as git clone writes it: a fresh checkout's
+  // entries are exactly the commit's tree, so every node is valid and the
+  // first status compares no tree.
+  const cacheTree = encodeCacheTree(cacheTreeOf(tree, trees));
   trees.clear();
   for (const [hex, data] of held) await emit(hex, oidFromHex(hex), data);
   held.clear();
@@ -551,6 +575,8 @@ export async function cloneFast(context: CloneContext, request: CloneRequest): P
   const gitlinkShare = concat(gitlinks);
   shares.push({ name: 'index-gitlinks', bytes: gitlinkShare.byteLength });
   await writer.file(STAGE_DIR + '/index-gitlinks', 0o644, gitlinkShare);
+  const cacheTreeBytes = cacheTree.byteLength;
+  await writer.file(STAGE_DIR + '/cache-tree', 0o644, cacheTree);
 
   const branch = fullRef.startsWith('refs/heads/') ? shortName(fullRef) : null;
   await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(context.url, fullRef, request.filter)));
@@ -575,6 +601,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest): P
     planEntries: plan.count,
     planBytes: plan.byteLength,
     shares,
+    cacheTreeBytes,
     partial,
     packs,
   };
@@ -652,14 +679,17 @@ export async function cloneBatch(
 /** The index, from the batches' shares; then the staging directory goes. */
 export async function cloneFinish(
   context: CloneContext,
-  request: { shares: { name: string; bytes: number }[]; full?: boolean },
+  request: { shares: { name: string; bytes: number }[]; full?: boolean; cacheTreeBytes?: number },
 ): Promise<{ indexEntries: number; indexBytes: number }> {
   const entries: Uint8Array[] = [];
   for (const share of request.shares) {
     if (share.bytes === 0) continue;
     entries.push(...splitIndexEntries(await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/' + share.name), 0, share.bytes)));
   }
-  const index = encodeIndex(entries);
+  const extensions = request.cacheTreeBytes
+    ? [{ signature: 'TREE', data: await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/cache-tree'), 0, request.cacheTreeBytes) }]
+    : [];
+  const index = encodeIndex(entries, extensions);
   const indexBytes = index.byteLength;
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);

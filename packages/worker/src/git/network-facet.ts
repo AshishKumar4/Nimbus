@@ -957,9 +957,10 @@ async function runCloneFinish(
   identity: { jobId: string; optionsHash: string },
   shares: { name: string; bytes: number }[],
   full: boolean,
+  cacheTreeBytes: number,
   run: CloneBatchRun,
 ): Promise<void> {
-  const finish = await invokeClonePhase(entrypoint, 'clone-finish', { ...facetOpts, ...identity, shares, full }, run);
+  const finish = await invokeClonePhase(entrypoint, 'clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes }, run);
   if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
 
@@ -1115,7 +1116,7 @@ export async function execGitNetwork(
             const shares = await runCloneBatches(entrypoint, facetOpts, { jobId, optionsHash }, fast, run);
             const full = facetOpts.depth === undefined;
             if (full) await runCloneHistory(entrypoint, facetOpts, { jobId, optionsHash }, fast, run);
-            await runCloneFinish(entrypoint, facetOpts, { jobId, optionsHash }, shares, full, run);
+            await runCloneFinish(entrypoint, facetOpts, { jobId, optionsHash }, shares, full, fast.cacheTreeBytes, run);
             return {
               success: true,
               elapsed: Date.now() - start,
@@ -2771,7 +2772,11 @@ export default {
           }
           return respond(true, { history: step, metadataOverlay: emptyMetadataOverlayStats() });
         }
-        const finished = await __nimbusGitPack.cloneFinish(context, { shares: opts.shares, full: opts.full === true });
+        const finished = await __nimbusGitPack.cloneFinish(context, {
+          shares: opts.shares,
+          full: opts.full === true,
+          cacheTreeBytes: opts.cacheTreeBytes,
+        });
         // The marker goes last: until it does, a failure leaves the clone abortable.
         const writer = context.writer();
         await writer.remove('.git/' + CLONE_JOB_MARKER);
