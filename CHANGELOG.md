@@ -5,6 +5,51 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-05: core 0.15.1, worker 0.13.2
+
+- Fixed: `build()` and `transform()` refused any `tsconfigRaw` (Kinu ask),
+  and `build()` refused esbuild's own `jsx`, `jsxFactory`, `jsxFragment`,
+  `jsxImportSource` and `jsxDev`, though both still declared them and
+  0.14.0's esbuild honoured them; `transform()` dropped `jsxImportSource`
+  and `jsxDev` without a word. Kinu's
+  `build(['/a.tsx'], { tsconfigRaw: '{"compilerOptions":{"jsx":"react-jsx","jsxImportSource":"react"}}' })`
+  was refused, where 0.14.0 bundled it to
+  `import { jsx } from "react/jsx-runtime"`. Now both read JSX from both
+  sources as esbuild 0.24.2 does (core `runtime/tsconfig-raw.ts`):
+  `compilerOptions.jsx` `react`, `react-jsx` and `react-jsxdev` (in any
+  case), `jsxFactory`, `jsxFragmentFactory` and `jsxImportSource`, applied
+  over the options, as esbuild applies them, except that nothing undoes
+  `jsx: 'preserve'`; `preserve`, `react-native` and unknown values are
+  ignored, as esbuild ignores them; an import source and development only
+  apply to the automatic runtime, a factory only to the classic one. The
+  automatic runtime and preserved JSX no longer keep a TypeScript file's
+  unused `import React`, as esbuild drops it. Of the other fields esbuild
+  reads: `verbatimModuleSyntax` and `preserveValueImports` keep every value
+  import; `alwaysStrict` (else `strict`) puts `"use strict"` first in
+  CommonJS and IIFE output; `target` decides `useDefineForClassFields`;
+  `baseUrl` and `paths` are ignored, as esbuild ignored them here (the
+  build's plugin resolves every import), and `extends` is ignored by a
+  transform. Refused by name, and only where esbuild's output would differ:
+  `experimentalDecorators: true` for a TypeScript file with a decorator,
+  `useDefineForClassFields: false` (or a `target` below es2022 that implies
+  it) for a TypeScript class with a public or static field, each placed at
+  that decorator or field; `importsNotUsedAsValues` `preserve` and `error`;
+  and `extends` in a build (esbuild failed reading the file). esbuild's
+  warnings about a tsconfig (a misplaced option, an invalid factory, an
+  unknown target) are reported, without their place in it.
+- The worker's Oxc transform (`scripts/oxc-wasm`) takes an import source,
+  the development runtime, `preserveValueImports`, `alwaysStrict` and the
+  two refusals; rebuilt through its pinned recipe, 2,296,353 bytes (was
+  2,276,933).
+
+Checks: `tsconfig-jsx-differential` compares 365 cases (every JSX mode and
+source and their precedence, tsx and jsx; each other field on a source that
+shows it; transform ESM and CommonJS, build ESM, CommonJS and IIFE) against
+esbuild-wasm 0.24.2 on the imports emitted and the calls the output makes:
+311 differed on 0.15.0, none now, 24 of them refused by field name.
+`facet-host-tsconfig-jsx` runs Kinu's repro through `supervisorEsbuildService`
+from the `facet-host` entry with both facets as production loads them.
+
 ## 2026-10-04: platform 0.7.1, worker 0.13.1
 
 - Fixed: worker 0.13.0 imports `recordSupervisorAnswer` from

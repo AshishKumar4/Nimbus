@@ -94,7 +94,7 @@
     },
     "packages/core": {
       "name": "@nimbus-sh/core",
-      "version": "0.15.0",
+      "version": "0.15.1",
       "dependencies": {
         "@nimbus-sh/platform": "^0.7.0",
         "@renovatebot/pep440": "^5.0.0",
@@ -190,10 +190,10 @@
     },
     "packages/worker": {
       "name": "@nimbus-sh/worker",
-      "version": "0.13.1",
+      "version": "0.13.2",
       "dependencies": {
         "@ai-sdk/openai-compatible": "^2.0.41",
-        "@nimbus-sh/core": "^0.15.0",
+        "@nimbus-sh/core": "^0.15.1",
         "@nimbus-sh/fabric": "^0.10.0",
         "@nimbus-sh/platform": "^0.7.1",
         "@renovatebot/pep440": "^5.0.0",
