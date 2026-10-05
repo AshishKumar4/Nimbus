@@ -426,7 +426,7 @@ const CLONE_BATCH_CONCURRENCY = 2;
  * awaited before the failure is thrown, so an abort never races a writer.
  */
 async function runCloneBatches(entrypoint, facetOpts, identity, fast, run) {
-    const shares = [{ name: 'index-gitlinks', bytes: fast.gitlinkIndexBytes }];
+    const shares = [...fast.shares];
     const queue = [...fast.batches];
     let failure = null;
     let completed = 0;
@@ -436,7 +436,7 @@ async function runCloneBatches(entrypoint, facetOpts, identity, fast, run) {
             if (batch === undefined)
                 return;
             try {
-                const invocation = await invokeFacet(entrypoint, 'clone-batch', crypto.randomUUID(), { ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities }, run.outerDeadline, CLONE_PHASE_TIMEOUT_MS, run.budgetContext);
+                const invocation = await invokeFacet(entrypoint, 'clone-batch', crypto.randomUUID(), { ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities, partial: fast.partial }, run.outerDeadline, CLONE_PHASE_TIMEOUT_MS, run.budgetContext);
                 run.phases.push(invocation.diagnostic);
                 run.accountResult(invocation.result);
                 const result = invocation.result.batch;
@@ -761,6 +761,9 @@ export async function execGitNetwork(ctx, env, opts) {
                 supervisorRpc: parseSupervisorRpcCounters(result.supervisorRpc),
                 metadataOverlay: parseMetadataOverlayStats(result.metadataOverlay),
                 phases: [diagnostic],
+                fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
+                    ? nonNegativeCounter(result.fetched.fetched)
+                    : undefined,
             };
         }
         finally {
@@ -1296,7 +1299,7 @@ function emptyMetadataOverlayStats() {
  * (under the clone's lease, which the binding presents), and wave writers
  * rooted at the clone that report each published wave's receipts.
  */
-function gitPackContext(supervisor, stats, opts, root, deadline, log) {
+function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRoot = null) {
   const dir = normalizePath(opts.dir);
   const counted = (name, call) => {
     stats.supervisorRpc[name]++;
@@ -1318,6 +1321,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log) {
           },
         },
         root,
+        worktreeRoot,
         base: dir,
         deadline,
         onWave(report) {
@@ -2125,6 +2129,7 @@ export default {
             index: requireMetadataNumber(opts.batch && opts.batch.index, 'batch index'),
             batchBytes: requirePositiveMetadataNumber(opts.batch && opts.batch.bytes, 'batch bytes'),
             capabilities: opts.capabilities,
+            partial: opts.partial === true,
           });
           return respond(true, { batch, metadataOverlay: emptyMetadataOverlayStats() });
         }
@@ -2284,12 +2289,16 @@ export default {
         // W7 stream loses its response, a cold abort can still prove ownership
         // from the marker; a missing or mismatched marker is never authority.
         await flushWave();
+        if (opts.filter !== undefined && opts.depth === undefined) {
+          throw new Error('fatal: --filter with --no-shallow is not supported yet: clone with --depth <n>');
+        }
         if (opts.depth !== undefined && opts.exclusiveDestination === true) {
           const context = gitPackContext(supervisor, stats, opts, authoritativeRoot, phaseDeadline, log);
           const fast = await __nimbusGitPack.cloneFast(context, {
             ref: opts.ref || undefined,
             depth: opts.depth,
             jobId: opts.jobId,
+            filter: opts.filter,
             blobsPerBatch: opts.blobsPerBatch,
           });
           if (!fast.unsupported) {
@@ -2506,6 +2515,13 @@ export default {
         await flushWave();
         await fs.promises.rmdir(cloneRoot + '/.git', { recursive: true });
         await flushWave();
+      } else if (opts.op === 'fetch-objects') {
+        // A partial clone's missing objects (git/promisor.ts): one request,
+        // stored as a promisor pack. Writes land below the repository only.
+        const root = normalizePath(opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
+        const fetched = await __nimbusGitPack.fetchObjects(context, { oids: opts.oids, jobId: invocationId });
+        return respond(true, { fetched, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch') {
         await git.fetch({
           fs, http,

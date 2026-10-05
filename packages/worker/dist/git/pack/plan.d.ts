@@ -43,11 +43,12 @@ export declare class CheckoutPlan {
     oidHex(index: number): string;
     oid(index: number): Uint8Array;
     /**
-     * The distinct blobs, in walk order, split into at most `batches` runs of
-     * nearly equal count. Gitlinks name commits of another repository and are
-     * never fetched.
+     * Each distinct blob, in walk order, and the entries it is checked out at.
+     * Gitlinks name commits of another repository and are never fetched.
      */
-    batches(batches: number): BlobBatch[];
+    blobPaths(): Map<string, number[]>;
+    /** The distinct blobs not in `present`, split into at most `batches` runs (see the class comment). */
+    batches(batches: number, present?: ReadonlySet<string>): BlobBatch[];
 }
 export interface BlobBatch {
     index: number;

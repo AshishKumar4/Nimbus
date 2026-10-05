@@ -58,6 +58,8 @@ export interface CloneRequest {
     ref?: string;
     depth: number;
     jobId: string;
+    /** `git clone --filter=<spec>`, normalized (blob:limit in bytes). */
+    filter?: string;
     /** Blobs per batch; the default suits a 30 s invocation (BLOBS_PER_BATCH). */
     blobsPerBatch?: number;
 }
@@ -78,9 +80,14 @@ export interface ClonePrepared {
     /** Plan entries, gitlinks included, and the plan's bytes in memory. */
     planEntries: number;
     planBytes: number;
-    /** The gitlinks' share of the index (STAGE_DIR/index-gitlinks), bytes. */
-    gitlinkIndexBytes: number;
-    pack: PackSummary;
+    /** The index entries prepare wrote (gitlinks, a blob:limit pack's blobs): STAGE_DIR files. */
+    shares: {
+        name: string;
+        bytes: number;
+    }[];
+    /** A partial clone (--filter): every pack it stores is a promisor pack. */
+    partial: boolean;
+    packs: PackSummary[];
 }
 export interface PackSummary {
     packSha: string;
@@ -102,6 +109,13 @@ export interface CloneUnsupported {
 /**
  * The clone's metadata, its commit and trees, and its plan; or why the
  * server cannot serve the fast path.
+ *
+ * Without --filter prepare asks for blob:none and every blob comes in the
+ * batches. With one, prepare asks for the user's filter: a blob:limit pack
+ * also carries the small blobs, written at their paths as they arrive (a
+ * pack's trees precede its blobs), and a tree:<depth> pack lacks deep trees,
+ * which one more blob:none request for the root tree brings, as git's lazy
+ * fetch would. Every pack of a partial clone is a promisor pack.
  */
 export declare function cloneFast(context: CloneContext, request: CloneRequest): Promise<ClonePrepared | CloneUnsupported>;
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */
@@ -110,6 +124,7 @@ export declare function cloneBatch(context: CloneContext, request: {
     index: number;
     batchBytes: number;
     capabilities: readonly string[];
+    partial?: boolean;
 }): Promise<CloneBatchResult>;
 /** The index, from the batches' shares; then the staging directory goes. */
 export declare function cloneFinish(context: CloneContext, request: {
@@ -122,4 +137,19 @@ export declare function cloneFinish(context: CloneContext, request: {
     indexBytes: number;
 }>;
 export { oidFromHex };
+export interface FetchObjectsResult {
+    /** Ids the new pack holds. */
+    fetched: number;
+    pack: PackSummary | null;
+}
+/**
+ * A promisor remote's missing objects, fetched by id in one request, as
+ * git's lazy fetch does (promisor-remote.c fetch_objects: --filter=blob:none,
+ * so a tree brings its subtrees but no blobs, while a wanted blob is always
+ * sent). The pack is stored with its idx and a .promisor naming the ids.
+ */
+export declare function fetchObjects(context: CloneContext, request: {
+    oids: readonly string[];
+    jobId: string;
+}): Promise<FetchObjectsResult>;
 //# sourceMappingURL=clone.d.ts.map

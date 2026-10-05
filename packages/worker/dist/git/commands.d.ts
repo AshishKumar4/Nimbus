@@ -50,8 +50,16 @@ export interface ParsedCloneArgs {
     branch: string | undefined;
     /** `-q`/`--quiet`: no progress on stdout; errors still reach stderr. */
     quiet: boolean;
+    /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
+    filter: string | undefined;
 }
-export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+/**
+ * A partial clone's filter (list-objects-filter-options.c), normalized as
+ * git normalizes it: blob:limit's size in bytes. The filters Nimbus
+ * fetches with; any other is refused by name rather than ignored.
+ */
+export declare function parseCloneFilter(spec: string): string;
 /**
  * Every flag is either handled or refused loudly. Silently skipping unknown
  * flags corrupted positionals for value-taking ones (`--branch dev URL`

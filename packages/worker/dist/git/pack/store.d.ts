@@ -37,7 +37,7 @@ export declare class PackObjectStore {
     private readonly cache;
     private readonly pages;
     constructor(fs: PackStoreFs, gitdir: string, options?: PackStoreOptions);
-    /** Whether some pack holds `oid`. */
+    /** Whether some pack holds `oid`; no rescan on a miss (a prefetch asks of many it lacks). */
     has(oid: string): Promise<boolean>;
     /** The object, its deltas applied; null when no pack holds it. */
     read(oid: string): Promise<StoredObject | null>;
@@ -60,6 +60,20 @@ export interface GitPacksSeam {
     read(gitdir: string, oid: string): Promise<StoredObject | null>;
     has(gitdir: string, oid: string): Promise<boolean>;
     expand(gitdir: string, prefix: string): Promise<string[]>;
+    /**
+     * Fetch, in one request, those of `oids` a partial clone lacks (git batches
+     * a checkout's, a diff's, a merge's); a no-op where nothing is missing or
+     * the repository has no promisor remote.
+     */
+    prefetch(gitdir: string, oids: Iterable<string>): Promise<void>;
 }
-export declare function packsSeam(fs: PackStoreFs, options?: PackStoreOptions): GitPacksSeam;
+/**
+ * A partial clone's promisor remote: fetches `oids` into a new pack, or
+ * declines (false) when `gitdir` has none, as git reads a missing object as
+ * absent outside a partial clone.
+ */
+export type PromisorFetch = (gitdir: string, oids: string[]) => Promise<boolean>;
+export declare function packsSeam(fs: PackStoreFs, options?: PackStoreOptions & {
+    promisor?: PromisorFetch;
+}): GitPacksSeam;
 //# sourceMappingURL=store.d.ts.map

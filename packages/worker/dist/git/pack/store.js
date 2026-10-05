@@ -47,9 +47,9 @@ export class PackObjectStore {
         this.cache = new ByteLru(cacheBytes, Math.floor(cacheBytes / 2));
         this.pages = new ByteLru(options.pageCacheBytes ?? DEFAULT_PAGE_CACHE_BYTES);
     }
-    /** Whether some pack holds `oid`. */
+    /** Whether some pack holds `oid`; no rescan on a miss (a prefetch asks of many it lacks). */
     async has(oid) {
-        return (await this.locate(oid)) !== null;
+        return (await this.locate(oid, true)) !== null;
     }
     /** The object, its deltas applied; null when no pack holds it. */
     async read(oid) {
@@ -208,9 +208,30 @@ export function packsSeam(fs, options = {}) {
             stores.set(gitdir, found = new PackObjectStore(fs, gitdir, options));
         return found;
     };
+    const fetchMissing = async (gitdir, oids) => {
+        if (options.promisor === undefined || oids.length === 0)
+            return false;
+        if (!await options.promisor(gitdir, oids))
+            return false;
+        store(gitdir).refresh();
+        return true;
+    };
     return {
-        read: (gitdir, oid) => store(gitdir).read(oid),
+        async read(gitdir, oid) {
+            const found = await store(gitdir).read(oid);
+            if (found !== null)
+                return found;
+            // A read the command did not prefetch: git's lazy fetch of one object.
+            return await fetchMissing(gitdir, [oid]) ? await store(gitdir).read(oid) : null;
+        },
         has: (gitdir, oid) => store(gitdir).has(oid),
         expand: (gitdir, prefix) => store(gitdir).expand(prefix),
+        async prefetch(gitdir, oids) {
+            const missing = [];
+            for (const oid of new Set(oids))
+                if (!await store(gitdir).has(oid))
+                    missing.push(oid);
+            await fetchMissing(gitdir, missing);
+        },
     };
 }
