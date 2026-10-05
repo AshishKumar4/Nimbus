@@ -51,6 +51,10 @@ function fakeSession() {
       const bytes = files.get(strip(path));
       return bytes === undefined ? null : bytes.slice(offset, offset + length);
     },
+    async readdir(path) {
+      const prefix = strip(path) + '/';
+      return [...new Set([...files.keys()].filter((key) => key.startsWith(prefix)).map((key) => key.slice(prefix.length).split('/')[0]))];
+    },
     async rename(from, to) {
       counters.rename++;
       files.set(strip(to), files.get(strip(from)));

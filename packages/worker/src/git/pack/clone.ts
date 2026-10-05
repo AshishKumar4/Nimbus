@@ -31,6 +31,8 @@ export interface CloneSupervisor {
   fsTruncate(path: string, size: number): Promise<unknown>;
   fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
   rename(from: string, to: string): Promise<unknown>;
+  /** Names in a directory, [] when it is absent. */
+  readdir(path: string): Promise<string[]>;
 }
 
 /** The wave writer's surface (git/wave-writer.ts), as a clone uses it. */
@@ -664,6 +666,12 @@ export async function cloneFinish(
   await writer.file('.git/index', 0o644, index);
   // With its history fetched (history.ts) the clone is no longer shallow.
   if (request.full === true) await writer.remove('.git/shallow');
+  // The staged files one record each: a write group holds a bounded number
+  // of rows, and one recursive delete of a full clone's staging (vscode:
+  // ~200 files) passes it ("logicalRows limit: 326 > 256").
+  for (const name of await context.supervisor.readdir(join(context.dir, STAGE_DIR))) {
+    await writer.remove(STAGE_DIR + '/' + name);
+  }
   await writer.remove(STAGE_DIR, true);
   await writer.flush();
   return { indexEntries: entries.length, indexBytes };
