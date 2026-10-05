@@ -11,6 +11,7 @@
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { DirCache } from './worktree/dircache.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
     /** Present on sinks that keep bytes verbatim (files, byte-capable pipes). */
@@ -70,9 +71,9 @@ export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
 /**
  * The index entries that restoring `restored` replaces (add_index_entry_with_check):
  * a file at one of a restored path's leading directories, or anything below a
- * restored path.
+ * restored path. Each restored path costs lookups, not a pass over the index.
  */
-export declare function replacedIndexEntries(index: readonly string[], restored: ReadonlySet<string>): string[];
+export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet<string>): Set<number>;
 /**
  * The `git` command handler. Split out from registration so it can be
  * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping
