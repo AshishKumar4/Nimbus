@@ -185,8 +185,16 @@ function indexShape(bytes) {
   return { listed, entries: out.subarray(0, previous).toString('hex'), extensions, tree };
 }
 
-/** After `args` in both, the same index entries (stat aside); Nimbus keeps no extension git would not. */
+/**
+ * After `args` in both, the same index entries (stat aside); Nimbus keeps no
+ * extension git would not. First a second goes by and both run status, which
+ * rewrites an index with racily clean entries: git add adds such entries
+ * again (and so invalidates their cache trees), and which ones are racy is
+ * each filesystem's clock, not git's behavior.
+ */
 async function sameIndexAfter(label, repo, args) {
+  await Bun.sleep(1100);
+  await both(repo, ['status', '--porcelain']);
   await both(repo, args);
   const real = indexShape(readFileSync(join(repo.disk, '.git/index')));
   const ours = indexShape(user.readFile(`${repo.virtual.slice(1)}/.git/index`));
@@ -408,6 +416,17 @@ try {
     out(repo.virtual.slice(1), copy);
     assert.equal(realGit(copy, ['fsck', '--strict', '--no-progress']).code, 0, 'commit -a: fsck');
     await statusAgrees('after commit -a', repo);
+    // The commit left a whole cache tree: a worktree change below a subtree it vouches for still shows.
+    for (const [path, content] of [['d/e/f', 'f3, longer\n'], ['d/e/g', 'new\n']]) {
+      writeFileSync(join(repo.disk, path), content);
+      user.writeFile(`${repo.virtual.slice(1)}/${path}`, content);
+    }
+    for (const args of [['diff', 'HEAD'], ['diff', 'HEAD', '--name-status'], ['diff', '--cached'], ['diff'], ['diff', 'HEAD', '--', 'd']]) {
+      await same(`a change below a cached subtree: ${args.join(' ')}`, repo, args);
+    }
+    await statusAgrees('a change below a cached subtree', repo);
+    await sameIndexAfter('add below a cached subtree', repo, ['add', 'd/e/g']);
+    await same('diff --cached below a cached subtree', repo, ['diff', '--cached', '--name-status']);
   }
 
   // ── Renames git status finds among staged adds and deletes ──

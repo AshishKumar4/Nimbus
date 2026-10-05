@@ -5,10 +5,10 @@
 // it, packed, and it is mirrored into a SqliteVFS) goes through status,
 // edits, status, diff, add -A, commit, a branch switch and back, reset and
 // reset --hard. Each command's output agrees with real git's on the same
-// repository, and for each the JS heap's peak over its start is sampled on
-// every 64th filesystem call: the peak at LARGE files may exceed SMALL's by
-// little more than the index's growth. Clean, `status` reads no file; after
-// edits, only the same-size ones.
+// repository, and for each the JS heap it retains is sampled (collected,
+// then measured) on every 4096th filesystem call and at its end: the peak at
+// LARGE files may exceed SMALL's by little more than the index's growth.
+// Clean, `status` reads no file; after edits, only the same-size ones.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -118,8 +118,11 @@ async function run(count) {
   let calls = 0;
   let peak = 0;
   let reads = 0;
+  // What is retained, not what is garbage yet to be collected: the garbage's peak is the collector's schedule.
   const sample = () => {
-    if (++calls % 64 === 0) peak = Math.max(peak, process.memoryUsage().heapUsed);
+    if (++calls % 4096 !== 0) return;
+    Bun.gc(true);
+    peak = Math.max(peak, process.memoryUsage().heapUsed);
   };
   const view = files.view({ pid: 1, cred: CRED_SESSION_USER });
   const observed = new Proxy(view, {
@@ -151,6 +154,7 @@ async function run(count) {
       stderr: { write(s) { stderr += s; } },
       vfs: observed,
     }, vfs);
+    Bun.gc(true);
     peak = Math.max(peak, process.memoryUsage().heapUsed);
     costs.push({ command: args.join(' '), ms: Math.round(performance.now() - started), peakMB: (peak - base) / MB, reads });
     assert.equal(code, 0, `git ${args.join(' ')}: ${stderr}`);
@@ -227,7 +231,7 @@ for (const { count, indexBytes, costs } of [small, large]) {
   }
 }
 // The heap may grow with the index (held as its bytes, and written as a copy) and little else.
-const allowance = (8 * (large.indexBytes - small.indexBytes)) / MB + 24;
+const allowance = (6 * (large.indexBytes - small.indexBytes)) / MB + 8;
 for (const [i, { command, peakMB }] of large.costs.entries()) {
   const growth = peakMB - small.costs[i].peakMB;
   assert.ok(growth <= allowance,

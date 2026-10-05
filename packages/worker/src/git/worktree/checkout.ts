@@ -143,7 +143,7 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
       targetAt.set(path, leaf);
       queue.push(path);
       if (leaf) targetDirs(path);
-    });
+    }, { cacheTree: dc.cacheTree() });
     const scan = await scanWorktree(tree, dc, { untracked: 'no', excludes: null });
     for (const i of scan.dirty.keys()) {
       const path = dc.path(i);

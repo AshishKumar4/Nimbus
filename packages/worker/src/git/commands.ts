@@ -1692,12 +1692,17 @@ async function changedPairs(wrepo: WorktreeRepo, dc: DirCache, base: DiffBase, s
   if (base.kind === 'index') {
     for (const [i, change] of dirty) record(indexSide(i), await worktreeSide(i, change));
   } else {
+    // Where the cache tree vouches for a subtree, the tree and the index agree there and the walk skips it;
+    // a worktree change below it is then the index's side against the worktree's.
+    const seen = new Set<number>();
     await walkTreeAndIndex(wrepo.store, base.tree, dc, specs, async (path, leaf, lo, hi) => {
       // diff-index: a path the index lacks (or holds unmerged) is deleted whatever the worktree holds.
       const entry = hi - lo === 1 && dc.stage(lo) === 0 ? lo : -1;
+      if (dirty.has(entry)) seen.add(entry);
       const two = entry < 0 ? null : base.cached ? indexSide(entry) : await worktreeSide(entry, dirty.get(entry));
       record(leaf && { path, oid: leaf.oid, mode: leaf.mode, worktree: false }, two);
-    });
+    }, { cacheTree: dc.cacheTree() });
+    for (const [i, change] of dirty) if (!seen.has(i) && dc.stage(i) === 0) record(indexSide(i), await worktreeSide(i, change));
   }
   const pathOf = (pair: QueuedPair<PendingSide>) => (pair.one ?? pair.two)!.path;
   return pairs.sort((a, b) => comparePaths(pathOf(a), pathOf(b)));
@@ -2097,7 +2102,7 @@ async function resetIndex(ctx: Ctx, wrepo: WorktreeRepo, tree: string, specs: re
     if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode) return;
     for (let i = lo; i < hi; i++) removed.add(i);
     if (leaf) added.push({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
-  });
+  }, { cacheTree: old.cacheTree() });
   const dc = removed.size || added.length ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
   const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null });
   if (!quiet && scan.dirty.size) {
