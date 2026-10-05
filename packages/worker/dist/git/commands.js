@@ -454,8 +454,13 @@ const commandCounters = new WeakMap();
 /** The repository at `root` as the worktree commands read it: its index, worktree and objects (through `fs`'s pack store). */
 function worktreeRepo(ctx, git, vfs, fs, gitdir, root) {
     let counters = commandCounters.get(fs);
-    if (!counters)
-        commandCounters.set(fs, counters = newCounters());
+    if (!counters) {
+        counters = newCounters();
+        // NIMBUS_GIT_COUNTERS=why also says why the first entries read had to be.
+        if (ctx.env.NIMBUS_GIT_COUNTERS === 'why')
+            counters.why = [];
+        commandCounters.set(fs, counters);
+    }
     return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env, counters);
 }
 /**

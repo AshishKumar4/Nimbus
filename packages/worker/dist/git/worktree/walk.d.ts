@@ -14,7 +14,7 @@
  * What is held is the listing of each directory on the current path, so
  * memory follows the tree's depth and its widest directory, not its size.
  */
-import { DirCache, type EntryStat } from './dircache.js';
+import { type DirCache, type EntryStat } from './dircache.js';
 import type { Excludes } from './excludes.js';
 /** What a worktree lstat says (the VFS's stat, times in ms). */
 export interface WorktreeStat extends EntryStat {
@@ -43,6 +43,8 @@ export interface WalkCounters {
     bytesRead: number;
     /** Objects read from the store: trees, mostly. */
     objectsRead: number;
+    /** When kept, why each of the first entries read had to be: the stat fields that did not match. */
+    why?: string[];
 }
 export declare function newCounters(): WalkCounters;
 /** One worktree in its repository's terms. */

@@ -127,6 +127,11 @@ export async function compareEntry(tree, dc, i, path, st, uncleanIsDirty = false
         dc.markUptodate(i);
         return null;
     }
+    if (tree.counters.why && tree.counters.why.length < 20) {
+        tree.counters.why.push(`${path}: ${racy ? 'racy ' : ''}changed=${changed} size ${dc.size(i)}/${st.size} `
+            + `mtime ${dc.mtimeSeconds(i)}/${Math.floor(st.mtimeMs / 1000)} ctime ${dc.ctimeSeconds(i)}/${Math.floor(st.ctimeMs / 1000)} `
+            + `ino ${dc.ino(i)}/${st.ino} owner ${dc.uid(i)}:${dc.gid(i)}/${st.uid}:${st.gid} index ${dc.timestamp}`);
+    }
     // The size moved on an entry that recorded one: modified, with nothing read. And, for git add,
     // any entry whose stat does not prove it clean: add_files_to_cache (DIFF_RACY_IS_MODIFIED) adds it again.
     if (((changed & DATA) && dc.size(i) !== 0) || uncleanIsDirty)

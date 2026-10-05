@@ -81,8 +81,10 @@ function decodeVarint(bytes, at) {
 }
 function encodeVarint(value) {
     const out = [value & 127];
-    while ((value = Math.floor(value / 128)))
-        out.unshift(128 | (--value & 127));
+    for (let rest = Math.floor(value / 128); rest; rest = Math.floor(rest / 128)) {
+        rest--;
+        out.unshift(128 | (rest & 127));
+    }
     return out;
 }
 /** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */

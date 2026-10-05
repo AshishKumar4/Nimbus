@@ -8,7 +8,7 @@
  * only the trees no store already holds.
  */
 import { type CacheTree } from './cachetree.js';
-import { DirCache } from './dircache.js';
+import { type DirCache } from './dircache.js';
 export declare const S_IFDIR = 16384;
 export declare const EMPTY_TREE = "4b825dc642cb6eb9a060e54bf8d69288fbee4904";
 /** The object calls trees, commits and staging make. */

@@ -20,7 +20,7 @@
  * written. Then files go, directories go (deepest first), directories come,
  * files come, and the index is written once.
  */
-import { DirCache, type IndexEdit } from './dircache.js';
+import { type DirCache, type IndexEdit } from './dircache.js';
 import type { Excludes } from './excludes.js';
 import { type ObjectStore } from './tree.js';
 import { type Worktree } from './walk.js';

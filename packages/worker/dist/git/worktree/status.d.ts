@@ -8,7 +8,7 @@
  * once at the end as git's string lists sort them.
  */
 import { type CacheTree } from './cachetree.js';
-import { DirCache } from './dircache.js';
+import { type DirCache } from './dircache.js';
 import { type Leaf, type ObjectStore } from './tree.js';
 import { type ScanOptions, type Worktree } from './walk.js';
 /** Whether `path` is one of `specs` or below one; no specs is everything. */

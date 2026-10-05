@@ -111,8 +111,10 @@ export async function collectStatus(store, tree, dc, head, options) {
     const changes = new Map();
     const change = (path) => {
         let found = changes.get(path);
-        if (!found)
-            changes.set(path, found = { path, index: ' ', worktree: ' ' });
+        if (!found) {
+            found = { path, index: ' ', worktree: ' ' };
+            changes.set(path, found);
+        }
         return found;
     };
     // diff-index --cached HEAD, adds and deletes queued for rename detection.
