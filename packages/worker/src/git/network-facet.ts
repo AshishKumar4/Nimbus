@@ -40,6 +40,13 @@ import type { CloneBatchResult, ClonePrepared } from './pack/clone.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 
+/**
+ * The clone's job marker, in its git directory from prepare until the clone
+ * is whole: the proof an abort needs that the destination is the clone's,
+ * and what tells every other git command the repository is not yet one.
+ */
+export const GIT_CLONE_JOB_MARKER = 'nimbus-clone-job';
+
 export interface GitNetworkOpts {
   op: GitNetworkOp;
   /** Invoking process identity used to bind every supervisor filesystem RPC. */
@@ -1257,7 +1264,7 @@ const METADATA_ENTRY_OVERHEAD_BYTES = 256;
 const CHECKOUT_DIRECTORY_MAX_ENTRIES = 20_000;
 const CHECKOUT_DIRECTORY_MAX_ACCOUNTED_BYTES = 4 * 1024 * 1024;
 const CHECKOUT_INDEX_MAX_CHUNKS = 20_000;
-const CLONE_JOB_MARKER = 'nimbus-clone-job';
+const CLONE_JOB_MARKER = ${JSON.stringify(GIT_CLONE_JOB_MARKER)};
 const cloneJobs = new Map();
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 const protocolTextEncoder = new TextEncoder();

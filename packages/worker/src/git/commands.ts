@@ -13,7 +13,7 @@ import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
-import { execGitNetwork } from './network-facet.js';
+import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
 import { packsSeam } from './pack/store.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
@@ -1887,6 +1887,16 @@ export async function runGitCommand(
       if (key === null) await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
       return key === null ? null : '/' + key;
     };
+    // A clone still running owns its repository: git would not show one
+    // half-made, and a command reading it now would take its shallow or
+    // partial state for the finished clone's.
+    if (sub !== 'init' && sub !== 'clone') {
+      const repo = await discoverRepo(repoVfs, dir);
+      if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
+        await ctx.stderr.write(`fatal: '${repo.worktree ?? repo.gitdir}' is still being cloned\n`);
+        return 128;
+      }
+    }
     switch (sub) {
       case 'init': {
         if (initPath) {
