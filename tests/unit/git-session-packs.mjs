@@ -78,6 +78,8 @@ try {
   for (let commit = 0; commit < 4; commit++) {
     mkdirSync(join(source, 'src'), { recursive: true });
     for (let f = 0; f < 12; f++) writeFileSync(join(source, `src/f${f}.txt`), text(2000 + f * 100) + `rev ${commit}\n`);
+    // Incompressible, so the pack outgrows a 1 MiB read page.
+    writeFileSync(join(source, `src/random${commit}.b64`), Buffer.from(crypto.getRandomValues(new Uint8Array(400_000))).toString('base64'));
     hostGit(source, ['add', '-A']);
     hostGit(source, ['commit', '-q', '-m', `c${commit}`]);
   }

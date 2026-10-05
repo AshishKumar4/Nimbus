@@ -349,6 +349,7 @@ try {
     'replaying the old cursor selected a different real checkout slice');
 
   const readsBeforeCold = calls.readFile.length;
+  const rangesBeforeCold = calls.fsReadRange.length;
   const coldFacet = await import(
     pathToFileURL(join(moduleRoot, 'git-network-worker-cold.mjs')).href
   );
@@ -373,10 +374,15 @@ try {
   const coldReads = calls.readFile.slice(readsBeforeCold);
   assert.equal(coldReads.filter(path => path === `${gitdir}/index`).length, 0,
     'cold real continuation read the cumulative Git index');
-  assert.equal(coldReads.filter(path => path === idxPath).length, 1,
-    'cold real continuation did not parse the pack index exactly once');
-  assert.equal(coldReads.filter(path => path === packPath).length, 1,
-    'cold real continuation did not load the pack exactly once');
+  // Packs are read by range (git/pack/store.ts): never whole, each idx page
+  // and each 1 MiB pack page at most once per invocation.
+  assert.equal(coldReads.filter(path => path === idxPath || path === packPath).length, 0,
+    'cold real continuation loaded a pack or its index whole');
+  const coldRanges = calls.fsReadRange.slice(rangesBeforeCold);
+  assert.ok(coldRanges.filter(path => path === idxPath).length <= Math.ceil(idxBytes.byteLength / 65536),
+    'cold real continuation read an index page twice');
+  assert.ok(coldRanges.filter(path => path === packPath).length <= Math.ceil(packBytes.byteLength / 1048576),
+    'cold real continuation read a pack page twice');
 
   let cursor = firstCursor;
   while (cursor !== null) {
@@ -446,10 +452,8 @@ try {
       );
     }
   }
-  assert.equal(calls.readFile.filter(path => path === idxPath).length, 2,
-    'warm real chunks reparsed the pack index outside the forced-cold resume');
-  assert.equal(calls.readFile.filter(path => path === packPath).length, 2,
-    'warm real chunks reloaded the pack outside the forced-cold resume');
+  assert.equal(calls.readFile.filter(path => path === idxPath || path === packPath).length, 0,
+    'real chunks loaded a pack or its index whole');
   assert.equal(calls.readFile.filter(path => path === `${gitdir}/index`).length, 0,
     'checkout read the cumulative Git index');
   assert.ok(calls.writeBatchStream < 1_400,

@@ -82,9 +82,9 @@ async function processWhole(pack, options = {}) {
 }
 
 /** Process with a budget that stops after every few entries, resuming until done. */
-async function processResumed(pack, budgetUnits, options = {}) {
+async function processResumed(pack, budgetUnits, { firstBudgetUnits = budgetUnits, ...options } = {}) {
   const store = memoryStore();
-  let result = await new PackStreamProcessor({ store, budgetUnits, ...options }).run(chunked(pack, [7, 4096, 65516]));
+  let result = await new PackStreamProcessor({ store, ...options, budgetUnits: firstBudgetUnits }).run(chunked(pack, [7, 4096, 65516]));
   let invocations = 1;
   while (result.checkpoint !== null) {
     result = await new PackStreamProcessor({ store, budgetUnits, ...options }).resume(result.checkpoint, result.packBytes);
@@ -169,6 +169,10 @@ try {
     assert.ok(invocations > 100, 'it stopped at every entry: ' + invocations);
     const { result: halves } = await processResumed(ofsPack, 2_000_000);
     assert.deepEqual(await idxOf(halves), ofsIdx);
+    // Store reads bound an invocation as work does: with no cache and no window of stored bytes, three apiece.
+    const reads = await processResumed(ofsPack, Number.POSITIVE_INFINITY, { cacheBytes: 2, recentBytes: 1, readAheadBytes: 64, maxStoreReads: 3, firstBudgetUnits: 1 });
+    assert.deepEqual(await idxOf(reads.result), ofsIdx, 'resumed at every third store read: idx equals git');
+    assert.ok(reads.invocations > 20, 'it stopped at the read budget: ' + reads.invocations);
   }
 
   // A thin pack: deltas against objects the receiver already has.

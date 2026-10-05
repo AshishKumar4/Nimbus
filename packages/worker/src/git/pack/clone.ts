@@ -125,6 +125,15 @@ const MAX_BATCHES = 16;
 const BATCH_CACHE_BYTES = 4 * 1024 * 1024;
 /** Trees a prepare holds to plan from; a shallow tree set is a few MB. */
 const PLAN_TREE_BYTES = 48 * 1024 * 1024;
+/**
+ * Store reads one invocation makes before it stops decoding and leaves the
+ * rest to a continuation: each is a supervisor RPC, a subrequest. A react
+ * history batch (18 MB pack) made enough to hit "Too many subrequests by
+ * single Worker invocation"; an invocation's other RPCs (appends at 448 KiB,
+ * waves) stay well under a few hundred more.
+ */
+const MAX_STORE_READS = 400;
+
 /** Blobs held while a filtered pack's trees are still arriving. */
 const HELD_BLOB_BYTES = 16 * 1024 * 1024;
 const READ_PIECE_BYTES = 4 * 1024 * 1024;
@@ -224,7 +233,8 @@ async function storePack(
   tmpName: string,
   options: StorePackOptions,
 ): Promise<{ result: PackProcessResult; summary: PackSummary }> {
-  const stored = await storePackResumable(context, writer, stream, tmpName, options);
+  // A clone's batches cannot resume: their reads are not capped.
+  const stored = await storePackResumable(context, writer, stream, tmpName, { maxStoreReads: Number.POSITIVE_INFINITY, ...options });
   if ('pending' in stored) {
     // A clone's batches are sized to decode within one invocation's budget.
     throw new PackFormatError('pack ' + tmpName + ' ran past its decoding budget after ' + stored.pending.decoded + ' entries');
@@ -236,6 +246,7 @@ export interface StorePackOptions {
   cacheBytes?: number;
   recentBytes?: number;
   budgetUnits?: number;
+  maxStoreReads?: number;
   onObject?: ConstructorParameters<typeof PackStreamProcessor>[0]['onObject'];
   promisor?: string;
 }
@@ -271,6 +282,7 @@ export async function storePackResumable(
     cacheBytes: options.cacheBytes,
     recentBytes: options.recentBytes,
     budgetUnits: options.budgetUnits,
+    maxStoreReads: options.maxStoreReads ?? MAX_STORE_READS,
     onObject: options.onObject,
   }).run(stream);
   return await settlePack(context, writer, tmpName, result, options.promisor);
@@ -291,6 +303,7 @@ export async function resumePack(
     cacheBytes: options.cacheBytes,
     recentBytes: options.recentBytes,
     budgetUnits: options.budgetUnits,
+    maxStoreReads: options.maxStoreReads ?? MAX_STORE_READS,
     onObject: options.onObject,
   }).resume({ offset: pending.offset, decoded: pending.decoded, records, externalBases: pending.externalBases }, pending.packBytes);
   return await settlePack(context, writer, pending.tmpName, result, pending.promisor);

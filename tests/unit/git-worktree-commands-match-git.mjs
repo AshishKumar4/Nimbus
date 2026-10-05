@@ -613,6 +613,11 @@ try {
       readlink: async (path) => bridge.readlink(path),
       fsReadRange: async (path, offset, length) => bridge.readRange(path, offset, length),
       writeBatchStream: async (stream) => user.writeStream(stream),
+      // The ranged calls git/pack/facet-packs.ts makes to store a fetched pack as it arrives.
+      fsWriteRange: async (path, offset, bytes) => bridge.writeRange(path, offset, bytes),
+      fsTruncate: async (path, size) => bridge.truncate(path, size),
+      rename: async (from, to) => bridge.rename(from, to),
+      unlink: async (path) => bridge.unlink(path),
       async stdout() {},
     },
   };

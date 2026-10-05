@@ -155,7 +155,6 @@ function createGitFs(vfs: ProjectFs, worktree: string | null = null, promisor?: 
     // Packed objects are read by range, never a whole pack (git/pack/store.ts).
     packs: packsSeam({
       readRange: async (path, offset, length) => await vfs.readRangeUncached(normalizePath(path), offset, length),
-      size: async (path) => (await lstatOrNull(normalizePath(path)))?.size ?? null,
       readdir: async (dir) => {
         try { return (await vfs.readdir(normalizePath(dir))).map((entry) => entry.name); }
         catch { return []; }
