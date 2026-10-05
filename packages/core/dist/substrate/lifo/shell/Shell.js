@@ -398,6 +398,7 @@ export class Shell {
         const cred = overrides?.['cred'];
         const setUmask = overrides?.['setUmask'];
         const resolvedPid = typeof pid === 'number' ? pid : this.commandIdentity.pid;
+        const accountWork = this.commandIdentity.accountWork;
         return {
             pid: resolvedPid,
             cred: isVfsCred(cred) ? cred : this.commandIdentity.cred,
@@ -405,11 +406,9 @@ export class Shell {
                 ? (mask) => setUmask(mask)
                 : this.commandIdentity.setUmask,
             runAs: this.commandIdentity.runAs,
-            // The work counted is the shell's own process's: a command run as
-            // another pid is not.
-            ...(resolvedPid === this.commandIdentity.pid && this.commandIdentity.beginWork
-                ? { beginWork: this.commandIdentity.beginWork }
-                : {}),
+            accountWork,
+            // Counted for the pid the command runs as, whichever it is.
+            ...(accountWork ? { beginWork: () => accountWork(resolvedPid) } : {}),
         };
     }
     /**
@@ -976,7 +975,7 @@ export class Shell {
         try {
             await this.interpreter.executeLine(actualLine, this.terminalStdin, {
                 interactive: true,
-                commandIdentity: this.commandIdentity,
+                commandIdentity: this.resolveCommandIdentity(undefined),
                 runAs: this.commandIdentity.runAs,
                 signal: this.abortController.signal,
             });

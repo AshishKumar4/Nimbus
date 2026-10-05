@@ -103,11 +103,27 @@ export declare class SessionProcessSupervisor {
      */
     beginAwait(pid: number, child: number): () => void;
     /**
+     * This table as the Dynamic Worker ledger reads it (fabric
+     * ProcessWaitGraph, bindProcessWaitGraph): a process's running children,
+     * and what a process holding no worker awaits. Paired with
+     * setOnWaitChange(processWaitGraphChanged). One binding for the session
+     * and for the ledger's protocol model, so the model reads the accounting
+     * the session keeps.
+     */
+    waitGraph(): {
+        children(pid: number): number[];
+        awaits(pid: number): number[] | null;
+    };
+    /**
      * The children `pid` awaits, when awaiting them is every unit of its own
      * in-flight work; null when it has other work, or none.
      */
     awaitsOnly(pid: number): number[] | null;
-    /** An ended process awaits nothing, and nothing awaits it any more. */
+    /**
+     * An ended process awaits nothing, and nothing awaits it any more; and it
+     * is no longer among its parent's running children. Told as a change even
+     * when it awaited nothing: the children are part of what the ledger reads.
+     */
     private forgetWaits;
     /**
      * Register how to stop the work behind `pid`. Background jobs started

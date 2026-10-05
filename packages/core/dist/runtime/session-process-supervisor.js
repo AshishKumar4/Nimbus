@@ -154,6 +154,20 @@ export class SessionProcessSupervisor {
         };
     }
     /**
+     * This table as the Dynamic Worker ledger reads it (fabric
+     * ProcessWaitGraph, bindProcessWaitGraph): a process's running children,
+     * and what a process holding no worker awaits. Paired with
+     * setOnWaitChange(processWaitGraphChanged). One binding for the session
+     * and for the ledger's protocol model, so the model reads the accounting
+     * the session keeps.
+     */
+    waitGraph() {
+        return {
+            children: (pid) => this.childrenOf(pid),
+            awaits: (pid) => this.awaitsOnly(pid),
+        };
+    }
+    /**
      * The children `pid` awaits, when awaiting them is every unit of its own
      * in-flight work; null when it has other work, or none.
      */
@@ -167,19 +181,19 @@ export class SessionProcessSupervisor {
             awaits += count;
         return awaits === works ? [...children.keys()] : null;
     }
-    /** An ended process awaits nothing, and nothing awaits it any more. */
+    /**
+     * An ended process awaits nothing, and nothing awaits it any more; and it
+     * is no longer among its parent's running children. Told as a change even
+     * when it awaited nothing: the children are part of what the ledger reads.
+     */
     forgetWaits(pid) {
-        let changed = this.works.delete(pid);
-        changed = this.awaiting.delete(pid) || changed;
+        this.works.delete(pid);
+        this.awaiting.delete(pid);
         for (const [parent, children] of this.awaiting) {
-            if (!children.delete(pid))
-                continue;
-            changed = true;
-            if (children.size === 0)
+            if (children.delete(pid) && children.size === 0)
                 this.awaiting.delete(parent);
         }
-        if (changed)
-            this.onWaitChange?.();
+        this.onWaitChange?.();
     }
     /**
      * Register how to stop the work behind `pid`. Background jobs started

@@ -409,40 +409,47 @@ function __nimbusEmitExit(code) {
   __nimbusExitEmitted = true;
   try { __processEvents.emit("exit", code); } catch {}
 }
-// The news of this process's children (a child's start, its output, the
-// end of a stream, its exit) is numbered by the session as it is produced,
-// and the reply that delivers a piece carries its number. Once a reply's
-// effect is applied (the bytes written, 'exit' emitted), its numbers are
-// applied too (__nimbusApplyNews); the frontier is the contiguous run of
-// numbers applied from 1, whatever order the replies came in.
-let __nimbusNewsFrontier = 0;
-const __nimbusNewsAhead = new Set();
-globalThis.__nimbusApplyNews = (numbers) => {
-  if (!Array.isArray(numbers)) return;
-  for (const n of numbers) if (typeof n === "number" && n > __nimbusNewsFrontier) __nimbusNewsAhead.add(n);
-  while (__nimbusNewsAhead.delete(__nimbusNewsFrontier + 1)) __nimbusNewsFrontier++;
-};
-// Said to the session as it changes (facets/manager.ts
-// __nimbusReportBlockedState): whether this process's only remaining work is
-// waiting on its children, and its frontier. A blocked program runs again
-// only on news of a child (it has no timer, socket or read of its own), so
-// the session takes the report only while the frontier is all the news it
-// issued (fabric budgets.ts setProcessBlocked). Numbered, so a late one is
-// dropped. Unref'd, in order: saying it is not work, and must not make the
-// program look busy.
-let __nimbusBlockedSaid = "";
-let __nimbusReportSeq = 0;
+// The news of this process's children, applied as each reply's effect is
+// (__nimbusApplyNews), and what it says of itself to the session as that
+// changes (facets/manager.ts __nimbusReportBlockedState): whether its only
+// remaining work is waiting on its children, at which frontier (child-news.ts).
+// A blocked program runs again only on news of a child (it has no timer,
+// socket or read of its own), so the session takes the report only while
+// the frontier is all the news it issued (fabric budgets.ts
+// setProcessBlocked). Sent unref'd, in order: saying it is not work, and
+// must not make the program look busy.
 let __nimbusBlockedChain = Promise.resolve();
-globalThis.__nimbusReportBlocked = (blocked) => {
-  if (__nimbusProgramStopped) return;
-  if (!__supervisor || typeof __supervisor.cpBlocked !== "function") return;
-  const key = blocked ? "blocked@" + __nimbusNewsFrontier : "running";
-  if (key === __nimbusBlockedSaid || (!blocked && __nimbusBlockedSaid === "")) return;
-  __nimbusBlockedSaid = key;
-  const report = { blocked, frontier: __nimbusNewsFrontier, seq: ++__nimbusReportSeq };
+const __nimbusChildNews = (function createChildNews(send) {
+  let frontier = 0;
+  const ahead = new Set();
+  let said = "";
+  let seq = 0;
+  return {
+    apply(numbers) {
+      if (!Array.isArray(numbers)) return;
+      for (const n of numbers) if (typeof n === "number" && n > frontier) ahead.add(n);
+      while (ahead.delete(frontier + 1)) frontier++;
+    },
+    say(blocked) {
+      const key = blocked ? "blocked@" + frontier : "running";
+      if (key === said || (!blocked && said === "")) return;
+      said = key;
+      send({ blocked: blocked === true, frontier, seq: ++seq });
+    },
+    inspect() {
+      return { frontier, ahead: [...ahead].sort((a, b) => a - b), said, seq };
+    },
+  };
+})((report) => {
   __nimbusBlockedChain = __nimbusBlockedChain
     .then(() => __nimbusUseRpcResultUnref(__supervisor.cpBlocked(report), () => undefined))
     .catch(() => {});
+});
+globalThis.__nimbusApplyNews = (numbers) => __nimbusChildNews.apply(numbers);
+globalThis.__nimbusReportBlocked = (blocked) => {
+  if (__nimbusProgramStopped) return;
+  if (!__supervisor || typeof __supervisor.cpBlocked !== "function") return;
+  __nimbusChildNews.say(blocked);
 };
 let __nimbusProcessExitResolve = null;
 let __nimbusProcessExitCode = null;
@@ -5856,9 +5863,11 @@ const __streamMod = (() => {
         destroyed: false,
         readableLength: 0,
         // A consumer reads it in readable mode: a 'readable' listener, or an
-        // async iterator, which owns it for its life. Node's flushStdio
-        // leaves such a stream to its consumer.
+        // async iterator, which owns it until it completes. Node's
+        // flushStdio leaves such a stream to its consumer. Kept current as
+        // listeners come and go (_updateReadableListening).
         readableListening: false,
+        iterating: false,
       };
       this.readable = true;
       if (opts?.read) this._read = opts.read.bind(this);
@@ -5976,10 +5985,28 @@ const __streamMod = (() => {
     on(event, listener) {
       const result = super.on(event, listener);
       if (event === 'data' && this._readableState.flowing !== false) this.resume();
-      else if (event === 'readable') this._readableState.readableListening = true;
+      else if (event === 'readable') this._updateReadableListening();
       return result;
     }
     addListener(event, listener) { return this.on(event, listener); }
+    // EventEmitter's off is its removeListener itself, not a call through
+    // the subclass, so both are overridden; once's wrapper removes itself
+    // through removeListener.
+    removeListener(event, listener) {
+      const result = super.removeListener(event, listener);
+      if (event === 'readable') this._updateReadableListening();
+      return result;
+    }
+    off(event, listener) { return this.removeListener(event, listener); }
+    removeAllListeners(...args) {
+      const result = super.removeAllListeners(...args);
+      if (args.length === 0 || args[0] === 'readable') this._updateReadableListening();
+      return result;
+    }
+    _updateReadableListening() {
+      const state = this._readableState;
+      state.readableListening = state.iterating === true || this.listenerCount('readable') > 0;
+    }
 
     pipe(dest, opts) {
       this.on('data', (chunk) => {
@@ -6033,7 +6060,13 @@ const __streamMod = (() => {
     [Symbol.asyncIterator]() {
       const self = this;
       const state = self._readableState;
-      state.readableListening = true;
+      // The iterator owns the stream until it completes.
+      state.iterating = true;
+      self._updateReadableListening();
+      const finish = () => {
+        state.iterating = false;
+        self._updateReadableListening();
+      };
       const iterator = {
         next() {
           return new Promise((resolve, reject) => {
@@ -6042,15 +6075,15 @@ const __streamMod = (() => {
               self._maybeEmitEnd();
               return resolve({ value: chunk, done: false });
             }
-            if (state.ended || state.destroyed) return resolve({ value: undefined, done: true });
+            if (state.ended || state.destroyed) { finish(); return resolve({ value: undefined, done: true }); }
             const cleanup = () => {
               self.off('data', onData);
               self.off('end', onEnd);
               self.off('error', onError);
             };
             const onData = (c) => { cleanup(); self.pause(); resolve({ value: c, done: false }); };
-            const onEnd = () => { cleanup(); resolve({ value: undefined, done: true }); };
-            const onError = (e) => { cleanup(); reject(e); };
+            const onEnd = () => { cleanup(); finish(); resolve({ value: undefined, done: true }); };
+            const onError = (e) => { cleanup(); finish(); reject(e); };
             self.once('data', onData);
             self.once('end', onEnd);
             self.once('error', onError);
@@ -6058,6 +6091,7 @@ const __streamMod = (() => {
           });
         },
         return() {
+          finish();
           self.destroy();
           return Promise.resolve({ value: undefined, done: true });
         },
