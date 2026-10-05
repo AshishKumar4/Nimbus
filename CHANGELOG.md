@@ -5,12 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-## 2026-10-05: core 0.15.2, worker 0.13.4
+## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
+
+loom moves only its fabric range.
 
 - `experimentalDecorators` and `useDefineForClassFields: false` (or a
   `target` below es2022 that implies it) are honoured in `transform()` and
-  `build()`, where 0.15.1 refused them by name for a TypeScript file with a
-  decorator or a class field; 0.14.0's esbuild honoured them. As in esbuild,
+  `build()`, as 0.14.0's esbuild honoured them (0.15.0 refused every
+  `tsconfigRaw`). As in esbuild,
   they change TypeScript files only. Legacy decorators are applied in tsc's
   order (instance members, then static members, then the constructor's
   parameters and the class), where Oxc's transform applies them in source
@@ -48,8 +50,9 @@ published independently in the `@nimbus-sh` npm scope.
 - A decorated class inside a decorator factory's callback keeps every
   class's decorators in tsc's order, and their source map, in a build.
 - The worker's Oxc transform is rebuilt through its pinned recipe:
-  2,430,868 bytes (was 2,333,997). The worker's cache keys (0.13.3) change
-  with it, so warm sessions transform and pre-bundle again.
+  2,430,868 bytes (0.15.0's was 2,333,997 before the JSX work). The
+  worker's cache keys (below) change with it, so warm sessions transform
+  and pre-bundle again.
 
 Checks: `tsconfig-jsx-differential` gains decorated classes (every kind of
 legacy decorator, what each is called with and returns, tsc's order alone),
@@ -60,13 +63,9 @@ and build (ESM, CommonJS), and the reviews' cases (helper imports, shadowed
 globals in every binding position, in and apart from the lowered class's
 scope, namespaces and enums, nested decorator runs, written fields): 929
 cases, 829 compiling, running and recording the same as esbuild 0.24.2, 63
-refused by name, 37 failing where it fails; 165 of them differ on 0.15.1.
+refused by name, 37 failing where it fails; 165 of them differ on main before this change.
 `build-decorators-sourcemap` checks the moved calls, flat and nested, still
 map to their decorators.
-
-## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
-
-loom moves only its fabric range.
 
 - Fixed: a warm session served transforms and pre-bundles an older engine
   made. The session's two persistent build caches, the Vite dev server's
