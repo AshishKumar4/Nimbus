@@ -131,10 +131,10 @@ for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
     return { env, calls, readIds };
   };
   const read = hanging([{ bytes: new Uint8Array([7]) }]);
-  const reader = new SupervisorRPC({ props: { doId: 'session', pid: 7 } }, read.env);
+  const reader = new SupervisorRPC({ props: { doId: 'session', pid: 7, writerId: 'read-run' } }, read.env);
   const write = hanging(3);
   const writer = new SupervisorRPC({
-    props: { doId: 'session', pid: 7, hostIncarnation: crypto.randomUUID() },
+    props: { doId: 'session', pid: 7, hostIncarnation: crypto.randomUUID(), writerId: 'write-run' },
   }, write.env);
   const startedAt = Date.now();
   const writing = writer.writeFile('/home/user/x', 'y');

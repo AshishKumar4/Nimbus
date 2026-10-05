@@ -714,7 +714,7 @@ export class CirrusReal {
             viteEnvMjs: VITE_ENV_MJS,
         });
         const ctxExports = getCtxExports();
-        const supervisorProps = supervisorBindingProps(ctx, pid);
+        const supervisorProps = supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID() });
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({ props: supervisorProps })
             : undefined;

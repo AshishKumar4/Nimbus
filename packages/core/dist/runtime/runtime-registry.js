@@ -42,7 +42,6 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
-import { programReadsStdinSync } from './stdin-read.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
  * The first one wins (Node's rule); the filesystem root is not a package.
@@ -114,20 +113,24 @@ export function buildRuntimeHandler(spec, ctx0) {
         // is a file, a pipe, a command substitution, or the capture sink of a
         // programmatic exec, the bytes have to come back in the result and be
         // written through ctx.stdout instead. A context with no fd table of its own
-        // — the child_process broker synthesizes one — says so directly.
-        const captureOutput = !!nimbusCtx.__nimbusCaptureOutput
-            || ctx.isFdTerminal?.(1) === false
-            || ctx.isFdTerminal?.(2) === false;
-        // fd 0 the same way: a pipe or redirect is the program's stdin. It used
-        // to be dropped, so `echo hi | node x.js` read nothing.
-        const pipedStdin = ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
-            ? ctx.stdin : undefined;
+        // — the child_process broker synthesizes one — says so directly, and that
+        // wins: a broker child's fds are pipes, and its live output reaches the
+        // parent through them (the broker routes a child pid's output to its queue).
+        const captureOutput = typeof nimbusCtx.__nimbusCaptureOutput === 'boolean'
+            ? nimbusCtx.__nimbusCaptureOutput
+            : ctx.isFdTerminal?.(1) === false || ctx.isFdTerminal?.(2) === false;
         // A bin wrapper or child-process broker may already own the process
         // entry; preserve it for eval/stdin programs as well as script files.
         const binSpawn = spec.supportsBinSpawn ? nimbusCtx.__nimbusBinSpawn : undefined;
+        // fd 0 the same way: a pipe or redirect is the program's stdin. It used
+        // to be dropped, so `echo hi | node x.js` read nothing. A process whose
+        // live input channel already is that stdin reads the channel.
+        const pipedStdin = binSpawn?.liveInput !== true && ctx.stdin && ctx.stdin !== ctx.terminalStdin && ctx.isFdTerminal?.(0) === false
+            ? ctx.stdin : undefined;
         const reservedProcess = binSpawn ? {
             skipSpawn: true, callerPid: binSpawn.callerPid,
             forceLongRunning: binSpawn.forceLongRunning === true, attachedTty: binSpawn.attachedTty === true,
+            ...(binSpawn.stdinWriter === true ? { stdinWriter: true } : {}),
         } : {};
         const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
         // How the analyses of a program's code read its modules: the command's
@@ -160,27 +163,17 @@ export function buildRuntimeHandler(spec, ctx0) {
                 argv: [name, ...programArgs],
             }, programHost);
         };
-        // The program's piped stdin, and whether its code reads it synchronously
-        // (RuntimeRunOpts.stdinReadsSync). A server is resident and never waits
-        // for its stdin, so its code is not asked.
-        const programStdin = async (code, path, dir, launchesServer) => {
-            if (pipedStdin === undefined)
-                return {};
-            // A `< file` is the file itself; nothing is read from its stream here.
-            const source = pipedStdin.file
+        // The program's piped stdin: a pipe streams to it as it arrives, and a
+        // `< file` is the file itself, nothing read from its stream here. A
+        // process whose own channel is its stdin (a child_process child's) reads
+        // that channel itself. Nothing is read ahead for the program: a
+        // synchronous read that needs more than has arrived waits for it in the
+        // runner, which stops the run and runs it again once the input is there
+        // (worker runtime/stop-replay.ts).
+        const programStdin = pipedStdin === undefined ? {}
+            : pipedStdin.file
                 ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
                 : { stdin: pipedStdin };
-            if (launchesServer || binSpawn?.forceLongRunning === true)
-                return source;
-            const key = normalizeVfsPath(dir);
-            const readsSync = await programReadsStdinSync({
-                source: code,
-                path,
-                dir: key,
-                packageRoot: (await nearestPackageDir(fs, key)) ?? key,
-            }, programHost);
-            return readsSync ? { ...source, stdinReadsSync: true } : source;
-        };
         // ── Flag-span computation (primitive #1) ──
         //
         // Real-Node only treats args UP TO the first non-flag token as
@@ -222,7 +215,6 @@ export function buildRuntimeHandler(spec, ctx0) {
                 return 1;
             }
             const launchesServer = await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2));
-            const stdin = await programStdin(code, null, ctx.cwd || '/home/user', launchesServer);
             const result = await spec.run(code, {
                 cred: ctx.cred,
                 invokerPid: ctx.pid,
@@ -233,7 +225,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -e ...`,
-                ...stdin,
+                ...programStdin,
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
@@ -416,7 +408,6 @@ export function buildRuntimeHandler(spec, ctx0) {
             : '/';
         // Judged on the code as it will run, after any TypeScript/ESM transform.
         const launchesServer = await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]);
-        const stdin = await programStdin(code, resolvedPath, dirname, launchesServer);
         const leadingFlags = args.slice(0, scriptIdx);
         const result = await spec.run(code, {
             cred: ctx.cred,
@@ -428,7 +419,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             filename,
             dirname,
             command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-            ...stdin,
+            ...programStdin,
             ...reservedProcess,
             ...(captureOutput ? { captureOutput: true } : {}),
             ...(bundleProfile ? { bundleProfile } : {}),

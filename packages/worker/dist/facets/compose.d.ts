@@ -54,6 +54,14 @@ export interface FacetManagerHostHooks {
     onExternalExit: NonNullable<FacetManagerHooks['onExternalExit']>;
     notify: NonNullable<FacetManagerHooks['notify']>;
     requestLaunchTurn: NonNullable<FacetManagerHooks['requestLaunchTurn']>;
+    /**
+     * Without these, what a process stopped at a read of stdin delivers goes to
+     * its log only, and it waits on its stdin in the session's input store
+     * (runtime/stop-replay.ts).
+     */
+    deliverOutput?: FacetManagerHooks['deliverOutput'];
+    stdinChannel?: FacetManagerHooks['stdinChannel'];
+    rewindProcessFiles?: FacetManagerHooks['rewindProcessFiles'];
     onSpawn?: FacetManagerHooks['onSpawn'];
     resolveWorkerLaunch?: FacetManagerHooks['resolveWorkerLaunch'];
 }

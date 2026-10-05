@@ -76,7 +76,8 @@ export interface ExecuteOptions {
    */
   onStdout?: (data: Uint8Array) => void | Promise<void>;
   onStderr?: (data: Uint8Array) => void | Promise<void>;
-  stdin?: string;
+  /** The commands' stdin: text, read to its end, or a stream they read as it arrives. */
+  stdin?: string | CommandInputStream;
   terminalStdin?: TerminalInputStream;
   signal?: AbortSignal;
   runExitTrap?: boolean;
@@ -460,11 +461,13 @@ export class Shell {
     }
 
     let stdinStream: CommandInputStream | undefined;
-    if (options?.stdin !== undefined) {
+    if (typeof options?.stdin === 'string') {
       const fixedStdin = new TerminalStdin();
       fixedStdin.feed(options.stdin);
       fixedStdin.close();
       stdinStream = fixedStdin;
+    } else {
+      stdinStream = options?.stdin;
     }
 
     try {

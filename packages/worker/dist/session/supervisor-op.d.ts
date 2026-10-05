@@ -40,8 +40,8 @@ export interface SessionSupervisorHost {
      * spawned. Absent, the session serves no delivered mutation.
      */
     readonly supervisorDeliveries?: SupervisorDeliveries;
-    _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
-    _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+    _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+    _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     /**
      * `envelope` served, not counted: a call the session makes to itself inside
      * another answer (session/rpc.ts _rpcFsAcquired's read). The host's
@@ -55,6 +55,8 @@ export interface SessionSupervisorOps {
     /** Drop a pid's bridge — a process exit ends its credential's validity. */
     readonly forget: (pid: number) => void;
     readonly dispose: () => Promise<void>;
+    /** Close a live pid's descriptors for a run that starts in place of another. */
+    rewind(pid: number): Promise<void>;
 }
 export declare function buildSessionSupervisorOps(host: SessionSupervisorHost, store?: SupervisorOpBridgeStore, methods?: SupervisorOpHost): SessionSupervisorOps;
 /**

@@ -409,7 +409,7 @@ export async function execGitNetwork(ctx, env, opts) {
         const ctxExports = getCtxExports();
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({
-                props: { ...supervisorBindingProps(ctx, opts.pid), mutationOwner },
+                props: { ...supervisorBindingProps(ctx, opts.pid, { writerId: crypto.randomUUID() }), mutationOwner },
             })
             : undefined;
         if (!supervisorBinding) {

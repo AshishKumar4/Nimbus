@@ -1,6 +1,7 @@
 import { requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { SUPERVISOR_OP_ROUTES, createSupervisorBridgeStore } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from '../session/supervisor-op.js';
@@ -193,10 +194,17 @@ class RuntimeOwner {
     }
     serveSupervisorOp(envelope) {
         this.assertOpen();
-        return this.supervisorOps().dispatch(envelope);
+        // A process that can stop at a read of stdin is answered through its
+        // journal (worker runtime/stop-replay.ts ReplayJournal).
+        const manager = this.facetManager;
+        if (!manager)
+            return this.supervisorOps().dispatch(envelope);
+        const op = envelope.op === SUPERVISOR_DELIVER_OP ? (envelope.delivery?.op ?? envelope.op) : envelope.op;
+        return manager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope));
     }
     supervisorBridge(pid) { return this.supervisorOps().bridge(pid); }
     supervisorForgetBridge(pid) { this.supervisorOps().forget(pid); }
+    supervisorRewindBridge(pid) { return this.supervisorOps().rewind(pid); }
     scheduleLogs() {
         if (this._w1SessionDestroyed)
             return;

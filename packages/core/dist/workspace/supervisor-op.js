@@ -125,6 +125,9 @@ export const SUPERVISOR_OPS = [
     'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
     'innerDoFetch', 'innerDoCall', 'fanoutExecute', 'processHostProbe', 'hostProcess',
     'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
+    'replayBoundary', 'netTls', 'outbound', 'stdinFileRead', 'stdinPrepared',
+    'getCachedTarball', 'putCachedTarball', 'getPackument',
+    'cacheResult',
 ];
 /**
  * An asynchronous read that meets bytes still being imported (N17) waits for
@@ -174,7 +177,13 @@ export const SUPERVISOR_OP_ROUTES = {
     cpSpawn: { method: '_rpcCpSpawn', args: [0] },
     cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0, 1] },
     cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
-    cpReadStdin: { method: '_rpcCpReadStdin', args: [0, 1, 2, 'pid'] },
+    cpReadStdin: { method: '_rpcCpReadStdin', args: [0, 1, 2, 'pid', 'writerId'] },
+    stdinFileRead: { method: '_rpcStdinFileRead', args: [0, 1, 2, 'pid'] },
+    stdinPrepared: { method: '_rpcStdinPrepared', args: ['pid', 'run'] },
+    getCachedTarball: { method: '_rpcGetCachedTarball', args: [0, 'pid', 'run'] },
+    putCachedTarball: { method: '_rpcPutCachedTarball', args: [0, 1] },
+    getPackument: { method: '_rpcGetPackument', args: [0, 1, 'pid', 'run'] },
+    cacheResult: { method: '_rpcCacheResult', args: [0, 1, 'pid', 'run'] },
     cpReadOutput: { method: '_rpcCpReadOutput', args: [0, 1, 2, 3, 4, 'pid'] },
     cpDrainOutput: { method: '_rpcCpDrainOutput', args: [0] },
     cpKill: { method: '_rpcCpKill', args: [0, 1] },
@@ -191,6 +200,10 @@ export const SUPERVISOR_OP_ROUTES = {
     cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
     hmrRelay: { method: '_rpcHmrRelay', args: [0, 1] },
     hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
+    // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
+    replayBoundary: { method: '_rpcReplayBoundary', args: ['pid', 'run'] },
+    netTls: { method: '_rpcNetTls', args: [0, 1, 2, 'pid', 'run'] },
+    outbound: { method: '_rpcOutbound', args: [0, 1, 'pid', 'run'] },
 };
 /** Every native op reads its filesystem the same way: the envelope's identity. */
 const fsFor = (e, tools) => tools.bridge(e.pid, e.cred);
@@ -323,6 +336,7 @@ export function createSupervisorBridgeStore(deps) {
             return lease.fs;
         },
         forget: (pid) => authority.releaseProcess(pid),
+        rewind: async (pid) => { await authority.rewindProcess?.(pid); },
         dispose: async () => {
             await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));
             hostLeases.clear();

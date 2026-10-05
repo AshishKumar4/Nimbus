@@ -279,8 +279,9 @@ export function makeCPythonRunnerFactory(deps) {
                 pyArgv = [parsed.scriptPath, ...parsed.scriptArgs];
             }
             else {
-                const stdinReader = ctx.stdin;
-                userCode = (stdinReader && typeof stdinReader.read === 'function' ? await stdinReader.read() : '') ?? '';
+                // The program is all of stdin, to its end, as CPython reads `-`: a
+                // pipe delivers it in pieces, as its writer writes them.
+                userCode = ctx.stdin ? await ctx.stdin.readAll() : '';
                 pyArgv = ['-', ...parsed.scriptArgs];
             }
             // sys.argv is set from Python rather than from WASI argv: the reactor has

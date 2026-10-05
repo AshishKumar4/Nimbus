@@ -84,6 +84,25 @@ export function ensureFacetManager(self, runtimeContext) {
             ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
             hooks: {
                 onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
+                deliverOutput: (pid, stream, bytes) => (stream === 'stdout' ? self._rpcStdout(pid, bytes) : self._rpcStderr(pid, bytes)),
+                rewindProcessFiles: (pid) => self.supervisorRewindBridge(pid),
+                // Where cpReadStdin reads a pid's stdin (session/rpc.ts): the input
+                // store when it has a channel there, else the broker's child queue.
+                stdinChannel: (pid) => {
+                    if (self.processes.hasInput(pid)) {
+                        return {
+                            read: (waitMs) => self.processes.readInput(pid, waitMs),
+                            unread: (packets) => self.processes.unreadInput(pid, packets),
+                        };
+                    }
+                    const broker = self.facetProcessManager;
+                    if (!broker || !broker.isChild(pid))
+                        return null;
+                    return {
+                        read: (waitMs) => broker.cpReadStdin(pid, waitMs),
+                        unread: (packets) => broker.unreadStdin(pid, packets.flatMap((p) => (p.data instanceof Uint8Array && p.data.byteLength > 0 ? [p.data] : []))),
+                    };
+                },
                 requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
                 resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
                 notify: (line) => runtimeContext.notify(line),
@@ -185,7 +204,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             }
             // Synthesize a CommandContext for the internal shell substrate.
             const ac = new AbortController();
-            const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
+            const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', opts.stdin ?? staticStdinReader(payload.stdin || ''), hooks);
             const ctx = {
                 ...io,
                 cred,
@@ -194,9 +213,15 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
                 signal: ac.signal,
                 setUmask: (mask) => { self.processes.setUmask(payload.processPid, mask); },
                 runAs: (targetCred, argv, options) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
-                // The program runs as the broker's pid, and its output reaches the
-                // child's live queues over runtime RPC.
-                __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' ') },
+                // Reuse the broker's pid and let runtime RPC output reach its
+                // live queues. A direct inline invocation without a managed child
+                // still needs a captured result.
+                __nimbusCaptureOutput: !self.facetProcessManager?.isChild(payload.processPid),
+                // A child's runtime reads its stdin from its own live channel, the
+                // broker's queue for its pid (NIMBUS_CP_CHILD_PID), as the parent writes it.
+                ...(self.facetProcessManager?.isChild(payload.processPid) ? {
+                    __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' '), liveInput: true },
+                } : {}),
             };
             // Admitted once on the Dynamic Worker ledger, before its preparation:
             // its transform, its prebundle and its program are that one worker,
@@ -261,14 +286,20 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
             return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
         },
     };
-    /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
+    /**
+     * A process's descriptors, environment and directory: its stdin, and its
+     * output over the broker's hooks. They are pipes (or /dev/null), never a
+     * terminal: the broker has none to give a child, and a shell that took
+     * its stdin for one read nothing from it.
+     */
     const processIo = (pid, env, cwd, stdin, hooks) => ({
         pid,
         env,
         cwd,
         stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
         stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
-        stdin: staticStdinReader(stdin),
+        stdin,
+        isFdTerminal: () => false,
     });
     /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
     const runBuiltin = async (cmd, name, args, io) => {
@@ -318,7 +349,7 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         const endWork = self.processes.beginWork(child.pid);
         let exitCode = 1;
         try {
-            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
+            const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal });
             exitCode = ended.status;
             return ended;
         }

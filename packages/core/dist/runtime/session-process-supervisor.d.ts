@@ -208,6 +208,7 @@ export declare class SessionProcessSupervisor {
     /** Queue input bytes exactly as given (a pipe or redirect). */
     writeInputBytes(pid: number, data: Uint8Array): {
         ok: boolean;
+        full?: boolean;
     };
     /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
     whenInputWritable(pid: number): Promise<boolean>;
@@ -216,6 +217,8 @@ export declare class SessionProcessSupervisor {
     /** End and drop the input channel entirely. */
     closeInput(pid: number): void;
     readInput(pid: number, waitMs?: number): Promise<ProcessInputPacket>;
+    /** See ProcessInputStore.unread: input taken back to the front of the queue. */
+    unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {
         ok: boolean;
     };

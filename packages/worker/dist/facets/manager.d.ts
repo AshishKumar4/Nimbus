@@ -28,6 +28,8 @@ import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { type BundleCellResultStore, type BundleCellTransformStats } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
+import { StdinTaken } from '../runtime/stop-replay-host.js';
+import type { ProcessInputPacket } from '@nimbus-sh/core/runtime/process-input.js';
 import { type ProcessHostFactory, type ResidentCodeSpec } from '@nimbus-sh/fabric/process-fabric.js';
 import { type OpencodeRunnerOptions } from '../runtime/opencode-facet-runner.js';
 import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
@@ -41,6 +43,13 @@ type LaunchFs = RuntimeFsBridge;
 /** A pipe or redirect's bytes, exactly as written, until it ends (null). */
 export interface StdinBytes {
     readBytes(maxLength: number): Promise<Uint8Array | null>;
+}
+/** A process's stdin channel as a stopped run waits on it (FacetManagerHooks.stdinChannel). */
+export interface StdinChannel {
+    /** The next packet: input, the end, or (after `waitMs`) nothing. */
+    read(waitMs: number): Promise<ProcessInputPacket>;
+    /** Put packets taken from it back in front of it, in order. */
+    unread(packets: readonly ProcessInputPacket[]): void;
 }
 /** Result returned from a facet execution */
 export interface FacetExecResult {
@@ -721,6 +730,25 @@ export interface FacetManagerHooks {
     /** Fired right after the supervisor's spawn — lets the session print a notification. */
     onSpawn?: (pid: number, command: string, longRunning: boolean) => void;
     /**
+     * Deliver output as the process's own, as its supervisor RPC would: what a
+     * run that stopped at a read of stdin had not delivered yet, and why a
+     * process that stopped could not go on (runtime/stop-replay.ts).
+     */
+    deliverOutput?: (pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
+    /**
+     * A process's stdin channel, wherever its writer queues it: the session's
+     * input store, or a child_process child's queue in the broker. A run that
+     * stopped at a read of stdin waits on it, and what it took goes back in
+     * front of it (runtime/stop-replay.ts). Null when the pid has none.
+     */
+    stdinChannel?: (pid: number) => StdinChannel | null;
+    /**
+     * Close a live process's descriptors: a run of it that stopped at a read of
+     * stdin goes, and the next opens its own, numbered as the run before's
+     * were (runtime/stop-replay.ts).
+     */
+    rewindProcessFiles?: (pid: number) => Promise<void>;
+    /**
      * Arrange for `pumpResidentLaunches` to run on a fresh Durable Object turn.
      *
      * The session satisfies this with an alarm, which is the only primitive that
@@ -851,6 +879,12 @@ export interface ResidentSpawnOptions {
     command?: string;
     port?: number;
     attachedTty?: boolean;
+    /**
+     * Its launcher writes its stdin and ends it, and does not wait for the
+     * boot (RuntimeRunOpts.stdinWriter): the boot may stop at a synchronous
+     * read of stdin and boot again once the input is there.
+     */
+    stdinWriter?: boolean;
     skipSpawn?: boolean;
     callerPid?: number;
     /** The process whose command starts this one: its parent, whose credential and exec id it takes. Never journalled. */
@@ -960,11 +994,25 @@ export declare class FacetManager {
     private debugEnabled;
     private processRpcResources;
     /**
-     * The session's pipe read-ahead budget (stdin-read.ts), held here because a
-     * read ahead is held in this Durable Object, whichever launch holds it. One
-     * byte over the bound shows whether a pipe ended exactly there.
+     * The session's budget for stdin held while a run is stopped (stdin-read.ts,
+     * _awaitStoppedInput), held here because the bytes are held in this
+     * Durable Object, whichever process waits for them.
      */
     readonly stdinReadAhead: ReadAheadBudget;
+    /** Per one-shot that can stop at a read of stdin: its output across its runs (gateOutput). */
+    private readonly outputGates;
+    /** Per stdin channel of a process that can stop: what its current run took (stdinTakenBy). */
+    private readonly stdinTaken;
+    /** Per process that can stop: what each of its runs was answered (journalCall). */
+    private readonly journals;
+    /**
+     * Connections a process that can stop opened through the session, by the
+     * token its socket names (netTls, outboundCall): where to, and the upgrade
+     * rendezvous between the guest asking and the outbound doing it.
+     */
+    private readonly netTargets;
+    /** A live fetch the outbound is making for a journaled answer: its result, by ticket. */
+    private readonly fetchTickets;
     /**
      * The content-addressed boot-image store (fabric's image-store.ts),
      * writing through this session's kernel-credentialed VFS and rooted off the
@@ -1383,13 +1431,9 @@ export declare class FacetManager {
          */
         stdinPipe?: StdinBytes;
         /**
-         * The pipe ends within what was read ahead of it: the program takes all
-         * of it before it starts, for its synchronous reads of stdin.
-         */
-        stdinWhole?: boolean;
-        /**
          * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
-         * program reads stdin synchronously, so it reads the file first.
+         * program reads the file ahead before it starts (a run after one that
+         * stopped at a synchronous read of it).
          */
         stdinFile?: {
             path: string;
@@ -1397,6 +1441,81 @@ export declare class FacetManager {
             syncRead: boolean;
         };
     }): Promise<FacetExecResult>;
+    /**
+     * A process stopped at a synchronous read of stdin that needs input not
+     * there yet (runtime/stop-replay.ts): deliver what its record carries of
+     * its output, wait for the input the read needs (the end of stdin, or any of
+     * it), hand the channel back what the run took and the input after it, and
+     * say how to run it again; or how the process ends instead. What the run
+     * took and what was shown are the session's own account (StdinTaken,
+     * ReplayOutputGate), not the record's.
+     */
+    private _resumeStoppedRun;
+    /**
+     * The input a stopped run's read waits for, taken off its channel: until
+     * the channel ends (\`end\`), or until it holds any (\`data\`). Held against
+     * the session's budget, at most STDIN_SYNC_READ_BYTES with what the run had
+     * already taken, as owned pieces however small the writes were; of the
+     * channel's control packets only the last resize is kept, and a terminating
+     * signal, the shell's abort or a kill ends the wait.
+     */
+    private _awaitStoppedInput;
+    /** `pid`'s stdin channel: the host's, else the session's input store when the pid has one. */
+    private _stdinChannel;
+    /** A process's output, delivered as its own supervisor RPC delivers it. */
+    private _deliverOutput;
+    /**
+     * A chunk a process printed, tagged with its run and its offset in what the
+     * run printed: the part to deliver (runtime/stop-replay.ts). A process with
+     * no gate cannot stop, and every chunk is delivered as it is.
+     */
+    gateOutput(pid: number, stream: 'stdout' | 'stderr', data: Uint8Array, at: number, run: number): Uint8Array;
+    /**
+     * The account of what the current run of a process that can stop takes
+     * from stdin channel \`pid\` (cpReadStdin notes each packet it hands over,
+     * and a read by a stopped run takes nothing); undefined for any other channel.
+     */
+    stdinTakenBy(pid: number): StdinTaken | undefined;
+    /**
+     * A supervisor call from a process, answered through \`dispatch\`: for one
+     * that can stop, through its journal (runtime/stop-replay.ts ReplayJournal),
+     * which counts what it does outside itself and checks what a run after a
+     * stop is answered against the run before it.
+     */
+    journalCall(op: string, args: readonly unknown[] | undefined, pid: number | undefined, run: string | undefined, dispatch: () => Promise<unknown>): Promise<unknown>;
+    /** Whether this bound run is still recording: cache reads must not fill shared stores. */
+    journalRecording(pid: number | undefined, run: string | undefined): boolean;
+    stdinPrepared(pid: number, run: string | undefined): void;
+    cacheResult(pid: number, run: string | undefined, ticket: string, result: {
+        value?: unknown;
+        failure?: unknown;
+        failed?: boolean;
+    }): Promise<void>;
+    /** The run after a stop reached the read the run before it stopped at. */
+    replayBoundary(pid: number, run: string | undefined): Promise<void>;
+    /**
+     * A process that can stop opening a TLS connection through the session
+     * (\`open\`: where to; the outbound proxies it), and asking for its upgrade
+     * (\`upgrade\`: answered once the outbound has made the TLS session with the
+     * server). Opening one is something a second run would do again.
+     */
+    netTls(pid: number, run: string | undefined, action: string, token: string, payload: Record<string, unknown> | undefined): Promise<unknown>;
+    /**
+     * The outbound side of a process's network (SupervisorRPC.fetch/connect,
+     * the globalOutbound of a run that can stop):
+     *   effect(what)            a request that is not a read, a plain connection
+     *   fetch(key, what)        a read: { replay: response } or { live: ticket }
+     *   fetched(ticket, result) what the live read got; answered when the
+     *                           program may have it
+     *   connect(token)          where a TLS connection goes
+     *   awaitUpgrade(token)     resolves when the guest asks for the TLS session
+     *   upgraded(token, result) whether the outbound made it
+     */
+    outboundCall(pid: number, run: string | undefined, action: string, payload: Record<string, unknown> | undefined): Promise<unknown>;
+    private _startFetchBody;
+    private _netTarget;
+    /** A process ended: its connections' names are forgotten and their waits answered. */
+    private _dropNetTargets;
     /**
      * Feed a pipe to `pid`'s input channel as it arrives, a chunk at a time:
      * a full queue waits for the program to read, and the pipe's end ends the

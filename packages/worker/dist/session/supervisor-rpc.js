@@ -51,33 +51,14 @@ import { SUPERVISOR_DELIVER_OP, } from '@nimbus-sh/core/workspace/supervisor-del
 import { VFS_DELIVERY_RETRY_WINDOW_MS } from '@nimbus-sh/core/constants.js';
 // W5: OOM discriminator — record last-known RPC frame on writeBatch entry
 import { setLastRpcFrame } from '@nimbus-sh/platform/oom-discriminator.js';
+import { ReplayBodyRecord, recordFailure, failureOf } from '../runtime/stop-replay-body.js';
 // Phase 2 A'.2 — supervisor in-flight RPC payload byte tracking.
 import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counters.js';
-// W4: R2 cross-tenant npm cache (tarballs + packuments)
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { isSupervisorAnsweredMethod, supervisorAnswer, } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { fsReadBatchRequestBytes } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
-/**
- * Drain the per-call event list captured by R2CacheClient during this
- * SupervisorRPC call.
- *
- * cache-obs-2 (the v2 fold-side flip):
- *   We RETURN the drained events to the facet so they propagate via
- *   the install-batch-facet result -> installer.ts fold -> DO
- *   singleton path. No recursion (return-value flow, not subrequest).
- *
- * The R2CacheClient instance lives only for the duration of one RPC
- * call (constructed fresh in _r2()). Draining its event list at the
- * end of the call is the natural lifecycle boundary.
- */
-function _drainCacheEvents(client) {
-    const drained = (client && Array.isArray(client._cacheEvents)) ? client._cacheEvents : [];
-    if (client && Array.isArray(client._cacheEvents))
-        client._cacheEvents = [];
-    return drained;
-}
 /**
  * W5 Lever 5: estimate the byte-cost of a writeBatch payload so the
  * /api/_diag/memory.rpc.lastFrame.payloadBytes field is meaningful.
@@ -110,6 +91,24 @@ function _estimateWriteBatchBytes(payload) {
 // back, and a hedge then costs a duplicate read only when that measurement
 // was wrong.
 export const SUPERVISOR_READ_HEDGE_AFTER_MS = 5_000;
+/**
+ * Runs whose network the session no longer records: each did something
+ * outside itself, so it cannot be run again and nothing it reads is checked
+ * (worker runtime/stop-replay.ts ReplayJournal.disqualify). Its requests and
+ * connections go straight out, without asking the session first. A run's
+ * identity is never reused; the oldest are forgotten past the bound (a
+ * forgotten run only asks again).
+ */
+const UNRECORDED_RUNS = new Set();
+const UNRECORDED_RUNS_MAX = 4096;
+function unrecorded(run) {
+    if (UNRECORDED_RUNS.size >= UNRECORDED_RUNS_MAX) {
+        const oldest = UNRECORDED_RUNS.values().next().value;
+        if (oldest !== undefined)
+            UNRECORDED_RUNS.delete(oldest);
+    }
+    UNRECORDED_RUNS.add(run);
+}
 export class SupervisorRPC extends WorkerEntrypoint {
     /**
      * A fresh stub for the host, by the route the binding carries, per call.
@@ -128,7 +127,29 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return this.ctx.props?.route;
     }
     _op(op, args = [], extra = {}) {
-        return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())({ op, args, ...extra });
+        // Every call says which run of the process made it: a process that can
+        // stop at a read of stdin is answered for its current run only.
+        return hostOpDispatch(this._host(), 'SupervisorRPC', this._route())(this._caller({ op, args, ...extra }));
+    }
+    /** Every path (including resent reads/mutations) uses the bound caller. */
+    _caller(envelope) {
+        const props = this.ctx.props;
+        const pid = props?.pid;
+        // The spawn/build helper has the explicitly bound pid 0. It is not a
+        // process and cannot use filesystem credentials (_pid still refuses it).
+        if (typeof pid !== 'number' || !Number.isInteger(pid) || pid < 0)
+            throw new Error('SupervisorRPC: missing or invalid caller pid in props');
+        const run = this._runId();
+        if (props?.bindingKind === 'infrastructure') {
+            if (run !== undefined)
+                throw new Error('infrastructure supervisor cannot carry a process run');
+            if (['stdout', 'stderr', 'reportExit', 'reportRuntimeCode', 'cpSpawn', 'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput', 'cpDrainOutput', 'cpKill', 'cpWait', 'cpBlocked', 'replayBoundary', 'stdinFileRead', 'stdinPrepared', 'netTls', 'outbound'].includes(envelope.op)) {
+                throw new Error('infrastructure supervisor refuses guest-originated operations');
+            }
+        }
+        else if (run === undefined)
+            throw new Error('process supervisor binding requires a run');
+        return { ...envelope, pid, run };
     }
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     _fsOp(op, args = []) {
@@ -197,6 +218,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * span, under the RPC span of the attempt that reached it.
      */
     _resent(envelope, trace, policy) {
+        envelope = this._caller(envelope);
         const operation = envelope.delivery?.op ?? envelope.op;
         // The binding's props, minted by supervisorBindingProps: attribute values only, nothing trusted.
         const props = this.ctx.props;
@@ -212,7 +234,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
             'nimbus.operation_id': trace.operationId,
             'nimbus.host_incarnation': envelope.delivery?.hostIncarnation,
             'nimbus.read_id': envelope.readId,
-        }, (span) => idempotent(operation, () => this._host(), (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope), { ...policy, span }));
+        }, (span) => idempotent(operation, () => this._host(), 
+        // Which run of the process sent it (see _op).
+        (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope), { ...policy, span }));
     }
     _hostIncarnation() {
         const props = this.ctx.props;
@@ -228,12 +252,36 @@ export class SupervisorRPC extends WorkerEntrypoint {
     _call(promise) {
         return useRpcResource(promise, (value) => value);
     }
+    async _cacheRead(plan, produce) {
+        const client = new R2CacheClient(this.env?.NPM_TARBALL_CACHE ?? null, this.env?.NPM_PACKUMENT_CACHE ?? null, plan.readOnly);
+        let value;
+        try {
+            value = await produce(client);
+        }
+        catch (error) {
+            if (plan.ticket)
+                await this._call(this._op('cacheResult', [plan.ticket, { failed: true, failure: recordFailure(error) }]));
+            throw error;
+        }
+        if (plan.ticket)
+            await this._call(this._op('cacheResult', [plan.ticket, { value }]));
+        return value;
+    }
+    _infrastructureCache(op, args) {
+        const caller = this._caller({ op, args });
+        return this.ctx.props?.bindingKind === 'infrastructure' && caller.run === undefined;
+    }
     _pid() {
         const pid = this.ctx.props?.pid;
         if (!Number.isInteger(pid) || typeof pid !== 'number' || pid <= 0) {
             throw new Error('SupervisorRPC: missing or invalid process pid in props');
         }
         return pid;
+    }
+    /** The run of the process this binding was minted for, when it has one. */
+    _runId() {
+        const run = this.ctx.props?.writerId;
+        return typeof run === 'string' && run.length > 0 ? run : undefined;
     }
     _writerId() {
         const writerId = this.ctx.props?.writerId;
@@ -617,24 +665,13 @@ export class SupervisorRPC extends WorkerEntrypoint {
     // to the facet without pinning a binding stub through the LOADER, we
     // proxy reads/writes through these RPC methods.
     //
-    // Counter increments live HERE (supervisor isolate, where diag-counters
-    // is module-scoped). The facet itself never sees the counter module.
+    // Reads and writes cross the session journal like every other operation.
+    // Cache-stat events still return to the calling facet for installer folding.
     //
     // Graceful-degrade: if NPM_TARBALL_CACHE / NPM_PACKUMENT_CACHE bindings
     // aren't configured (deploy without R2 buckets, or local dev), the
     // R2CacheClient falls through to null returns / no-op writes; the
     // facet sees null and uses its existing network-fetch path. No errors,
-    /**
-     * Build a fresh R2CacheClient bound to this request's env. Cheap to
-     * instantiate; does no async work. Called from each R2 RPC method to
-     * avoid keeping the client in instance state (the WorkerEntrypoint
-     * lifecycle is per-invocation and we want a clean closure each time).
-     */
-    _r2() {
-        const tar = this.env?.NPM_TARBALL_CACHE ?? null;
-        const pkm = this.env?.NPM_PACKUMENT_CACHE ?? null;
-        return new R2CacheClient(tar, pkm);
-    }
     /**
      * Look up a tarball in the R2 cross-tenant cache by its content
      * address (the resolved npm integrity string). Returns
@@ -653,13 +690,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * verification happens at the storage boundary and nowhere else.
      */
     async getCachedTarball(integrity) {
-        const r2 = this._r2();
-        const bytes = await r2.getTarball(integrity);
-        const events = _drainCacheEvents(r2);
-        if (bytes && bytes.length > 0 && bytes.length <= MAX_R2_TARBALL_BYTES) {
-            return { bytes, events };
-        }
-        return { bytes: null, events };
+        const plan = this._infrastructureCache('getCachedTarball', [integrity]) ? { readOnly: false }
+            : await this._call(this._op('getCachedTarball', [integrity]));
+        return this._cacheRead(plan, async (client) => {
+            const bytes = await client.getTarball(integrity);
+            return { bytes: bytes?.length && bytes.length <= MAX_R2_TARBALL_BYTES ? bytes : null, events: client._cacheEvents };
+        });
     }
     /**
      * Store a tarball in the R2 cross-tenant cache under its content
@@ -673,8 +709,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
         // its own cacheStatEvents list before calling putCachedTarball.
         // This RPC remains a one-way write (returns bool); the L4 event
         // does NOT flow through this return path.
-        const r2 = this._r2();
-        return r2.putTarball(integrity, bytes);
+        if (!this._infrastructureCache('putCachedTarball', [integrity, bytes]))
+            await this._call(this._op('putCachedTarball', [integrity, bytes]));
+        return new R2CacheClient(this.env?.NPM_TARBALL_CACHE ?? null, null).putTarball(integrity, bytes);
     }
     /**
      * Resolve one package's corgi packument: cross-tenant cache read, and
@@ -691,20 +728,22 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * (`options.registry`, the install's `NPM_REGISTRY`) has its own keys.
      */
     async getPackument(name, options) {
-        const r2 = this._r2();
-        const result = await r2.readThroughPackument(name, options);
-        return { ...result, events: _drainCacheEvents(r2) };
+        const plan = this._infrastructureCache('getPackument', [name, options]) ? { readOnly: false }
+            : await this._call(this._op('getPackument', [name, options]));
+        return this._cacheRead(plan, async (client) => ({ ...await client.readThroughPackument(name, options), events: client._cacheEvents }));
     }
     // ── Process I/O ───────────────────────────────────────────────────────
     //
     // A process's stdio is bytes end to end: stdout/stderr up, cpStdinWrite
     // down, cpReadStdin/cpReadOutput/cpDrainOutput in a child's direction. A
     // text producer encodes at its own edge; a text consumer decodes at its.
-    async stdout(data) {
-        return this._call(this._op('stdout', [data], { pid: this._reportingPid() }));
+    // `at` and `run`: where the chunk falls in what the run printed, and which
+    // run of the process printed it (runtime/stop-replay.ts, ReplayOutputGate).
+    async stdout(data, at, run) {
+        return this._call(this._op('stdout', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this._reportingPid() }));
     }
-    async stderr(data) {
-        return this._call(this._op('stderr', [data], { pid: this._reportingPid() }));
+    async stderr(data, at, run) {
+        return this._call(this._op('stderr', at === undefined || run === undefined ? [data] : [data, at, run], { pid: this._reportingPid() }));
     }
     /**
      * Report process exit to the supervisor. Called from the facet's own
@@ -784,8 +823,214 @@ export class SupervisorRPC extends WorkerEntrypoint {
      * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
      * asking. The caller's pid names whose credential answers it.
      */
+    // ── A process that can stop at a read of stdin ─────────────────────────
+    // (worker runtime/stop-replay.ts). Its run after a stop reached the read the
+    // run before stopped at; a TLS connection it opens through the session.
+    async replayBoundary() {
+        return this._call(this._op('replayBoundary', [], { pid: this._pid() }));
+    }
+    /** fd-0 preparation, not a program's ordinary read of this pathname. */
+    async stdinFileRead(path, offset, length) {
+        return this._call(this._op('stdinFileRead', [path, offset, length]));
+    }
+    async stdinPrepared() { return this._call(this._op('stdinPrepared')); }
+    async netTls(action, token, payload) {
+        return this._call(this._op('netTls', [action, token, payload], { pid: this._pid() }));
+    }
+    /**
+     * The program's network, when this binding is its globalOutbound (a run
+     * that can stop): a read is recorded with its bytes and answered again to a
+     * run after a stop; anything else is something done outside the process.
+     */
+    async fetch(request) {
+        const method = request.method.toUpperCase();
+        // A run the session no longer records (it did something outside itself
+        // and cannot be run again): its network goes straight out.
+        const run = this._runId();
+        if (run !== undefined && UNRECORDED_RUNS.has(run))
+            return fetch(request);
+        const outbound = (action, payload) => this._call(this._op('outbound', [action, payload], { pid: this._pid() }));
+        if ((method !== 'GET' && method !== 'HEAD') || request.headers.has('upgrade')) {
+            const answer = await outbound('effect', { what: `${method} ${request.url}` });
+            if (run !== undefined && typeof answer === 'object' && answer.unrecorded)
+                unrecorded(run);
+            return fetch(request);
+        }
+        const headers = [...request.headers].sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0));
+        const key = `${method} ${request.url} ${JSON.stringify(headers)}`;
+        const plan = await outbound('fetch', { key, what: `${method} ${request.url}` });
+        if ('error' in plan)
+            throw new Error(plan.error);
+        if ('unrecorded' in plan) {
+            if (run !== undefined)
+                unrecorded(run);
+            return fetch(request);
+        }
+        if ('replay' in plan) {
+            const r = plan.replay;
+            if (!r.hasBody)
+                return new Response(null, { status: r.status, statusText: r.statusText, headers: r.headers });
+            const recorder = new ReplayBodyRecord();
+            let at = 0, chunk = 0;
+            const body = new ReadableStream({
+                async pull(controller) {
+                    if (at < r.body.length) {
+                        const size = r.chunks?.[chunk++] ?? r.body.length;
+                        const bytes = r.body.subarray(at, at + size);
+                        at += bytes.length;
+                        recorder.add(bytes);
+                        controller.enqueue(bytes);
+                        return;
+                    }
+                    if (r.bodyError) {
+                        await outbound('fetchBody', { ticket: plan.ticket, result: { ...recorder.finish(), error: r.bodyError, failure: r.bodyFailure } });
+                        controller.error(r.bodyFailure ? failureOf(r.bodyFailure) : new Error(r.bodyError));
+                    }
+                    else {
+                        await outbound('fetchBody', { ticket: plan.ticket, result: recorder.finish() });
+                        controller.close();
+                    }
+                },
+            }, { highWaterMark: 0 });
+            return new Response(body, { status: r.status, statusText: r.statusText, headers: r.headers });
+        }
+        const ticket = plan.live;
+        let response;
+        try {
+            response = await fetch(request);
+        }
+        catch (error) {
+            await outbound('fetched', { ticket, result: { error: error instanceof Error ? error.message : String(error) } });
+            throw error;
+        }
+        const reader = response.body?.getReader();
+        const init = { status: response.status, statusText: response.statusText, headers: response.headers };
+        // Headers are their own observation. A body is recorded only while the
+        // caller consumes it, with backpressure; an endless SSE never holds them.
+        await outbound('fetched', {
+            ticket,
+            result: { status: response.status, statusText: response.statusText, headers: [...response.headers], hasBody: !!reader },
+        });
+        if (!reader)
+            return new Response(null, init);
+        const recorder = new ReplayBodyRecord();
+        let completed = false;
+        const finish = async (result) => {
+            if (completed)
+                return;
+            completed = true;
+            await outbound('fetchBody', { ticket, result });
+        };
+        const body = new ReadableStream({
+            async pull(controller) {
+                try {
+                    const next = await reader.read();
+                    if (next.done) {
+                        await finish(recorder.finish());
+                        controller.close();
+                    }
+                    else {
+                        recorder.add(next.value);
+                        if (recorder.over)
+                            await finish({ tooLarge: true });
+                        controller.enqueue(next.value);
+                    }
+                }
+                catch (error) {
+                    const failure = recordFailure(error);
+                    try {
+                        await finish({ ...recorder.finish(), error: failure.message, failure });
+                    }
+                    catch (journalError) {
+                        controller.error(journalError);
+                        return;
+                    }
+                    controller.error(failureOf(failure));
+                }
+            },
+            async cancel(reason) {
+                await finish({ error: 'response body was canceled: ' + String(reason) });
+                await reader.cancel(reason);
+            },
+        }, { highWaterMark: 0 });
+        return new Response(body, init);
+    }
+    /**
+     * A connection the program opens. One its TLS shim opened is named
+     * `<token>.nimbus-net.invalid`: the session says where it goes, and this
+     * side makes the TLS session with the server when the program asks for it
+     * (netTls 'upgrade'), then carries the plaintext both ways. workerd's
+     * outbound connect cannot carry TLS itself ("Incoming CONNECT with TLS not
+     * supported", worker-entrypoint.c++), which is why TLS ends here. Any
+     * other connection is proxied as it is.
+     */
+    async connect(socket) {
+        // Loaded here, not at the module's top: only a connection the program
+        // opens needs it, and hosts without it (unit tests under Bun) load this
+        // module all the same.
+        const { connect: connectSocket } = await import('cloudflare:sockets');
+        const outbound = (action, payload) => this._call(this._op('outbound', [action, payload], { pid: this._pid() }));
+        // A program can close its side before anything below is answered (it
+        // destroyed the socket at once): then nothing is waited for.
+        const gone = socket.closed.then(() => null, () => null);
+        const info = await Promise.race([socket.opened, gone]);
+        if (info === null)
+            return;
+        const address = info.localAddress ?? '';
+        const named = /^([0-9a-f]{32})\.nimbus-net\.invalid:\d+$/.exec(address);
+        if (!named) {
+            const answer = await outbound('connect', { token: address });
+            const run = this._runId();
+            if (run !== undefined && answer && answer.unrecorded)
+                unrecorded(run);
+            const upstream = connectSocket(address, { allowHalfOpen: true });
+            await Promise.all([socket.readable.pipeTo(upstream.writable), upstream.readable.pipeTo(socket.writable)]).catch(() => { });
+            return;
+        }
+        const token = named[1];
+        const target = await outbound('connect', { token });
+        // null: the process ended before it asked for the TLS session.
+        const request = await Promise.race([outbound('awaitUpgrade', { token }), gone]);
+        if (request === null) {
+            await socket.close().catch(() => { });
+            return;
+        }
+        let upstream;
+        try {
+            // TLS from the first byte: no plaintext was read, so the socket is free
+            // to be upgraded. A servername other than the host is the server's
+            // expected name (workerd's own node:tls does the same).
+            const address = `${target.host}:${target.port}`;
+            if (request.servername === undefined || request.servername === target.host) {
+                upstream = connectSocket(address, { secureTransport: 'on', allowHalfOpen: true });
+            }
+            else {
+                upstream = connectSocket(address, { secureTransport: 'starttls', allowHalfOpen: true })
+                    .startTls({ expectedServerHostname: request.servername });
+            }
+            await upstream.opened;
+        }
+        catch (error) {
+            await outbound('upgraded', { token, result: { ok: false, error: error instanceof Error ? error.message : String(error) } });
+            await socket.close().catch(() => { });
+            return;
+        }
+        await outbound('upgraded', { token, result: { ok: true } });
+        // Both ways, with each side's end carried to the other (half-close), and
+        // backpressure as the streams give it.
+        await Promise.all([
+            socket.readable.pipeTo(upstream.writable).catch(() => upstream.close().catch(() => { })),
+            upstream.readable.pipeTo(socket.writable).catch(() => socket.close().catch(() => { })),
+        ]);
+    }
     async cpReadStdin(childPid, waitMs, acquire) {
-        return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], { pid: this._reportingPid() }));
+        // The run reading: a run of the process that has stopped takes nothing
+        // (worker runtime/stop-replay.ts StdinTaken).
+        const writerId = this.ctx.props?.writerId;
+        return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], {
+            pid: this._reportingPid(),
+            ...(typeof writerId === 'string' && writerId.length > 0 ? { writerId } : {}),
+        }));
     }
     async cpReadOutput(childPid, fd, sinceSeq, waitMs, acquire) {
         return this._call(this._op('cpReadOutput', [childPid, fd, sinceSeq, waitMs, acquire ?? null], { pid: this._reportingPid() }));

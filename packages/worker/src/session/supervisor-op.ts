@@ -50,8 +50,8 @@ export interface SessionSupervisorHost {
    * spawned. Absent, the session serves no delivered mutation.
    */
   readonly supervisorDeliveries?: SupervisorDeliveries;
-  _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
-  _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+  _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+  _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
   /**
    * `envelope` served, not counted: a call the session makes to itself inside
    * another answer (session/rpc.ts _rpcFsAcquired's read). The host's
@@ -65,12 +65,21 @@ export interface SessionSupervisorOps {
   /** Drop a pid's bridge — a process exit ends its credential's validity. */
   readonly forget: (pid: number) => void;
   readonly dispose: () => Promise<void>;
+  /** Close a live pid's descriptors for a run that starts in place of another. */
+  rewind(pid: number): Promise<void>;
 }
 
 /** The stdout/stderr ops carry bytes; anything else is a caller bug, named. */
 function outputBytesArg(value: unknown): Uint8Array {
   if (value instanceof Uint8Array) return value;
   throw new Error(`supervisor op stdout/stderr: expected bytes, got ${typeof value}`);
+}
+
+/** A chunk's offset in what its run printed, and the run, when the guest sent them. */
+function outputPlace(args: SupervisorOpEnvelope['args']): [number, number] | [] {
+  const at = args?.[1];
+  const run = args?.[2];
+  return typeof at === 'number' && typeof run === 'number' ? [at, run] : [];
 }
 
 export function buildSessionSupervisorOps(
@@ -101,8 +110,8 @@ export function buildSessionSupervisorOps(
     },
     // stdout/stderr are session methods, not bridge ops: mirroring,
     // log-append and prior-generation filtering all live in _rpcStdout.
-    stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
-    stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
+    stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
+    stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
   };
   const dispatch = createSupervisorOpHandler({
     vfs: host.sqliteFs!,
@@ -127,7 +136,7 @@ export function buildSessionSupervisorOps(
     host.supervisorDeliveries?.forget(pid);
     return store.forget(pid);
   };
-  return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
+  return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => { await store.rewind?.(pid); }, dispose: store.dispose };
 }
 
 /**

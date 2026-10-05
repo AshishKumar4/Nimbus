@@ -32,6 +32,19 @@ import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 type RpcHost = any;
+export declare function _rpcGetCachedTarball(_self: RpcHost, _integrity: string, _pid?: number, _run?: string): Promise<{
+    readOnly: boolean;
+}>;
+export declare function _rpcGetPackument(_self: RpcHost, _name: string, _options?: unknown, _pid?: number, _run?: string): Promise<{
+    readOnly: boolean;
+}>;
+export declare function _rpcPutCachedTarball(_self: RpcHost, _integrity: string, _bytes: Uint8Array | ArrayBuffer): Promise<void>;
+export declare function _rpcCacheResult(self: RpcHost, ticket: string, result: {
+    value?: unknown;
+    failure?: unknown;
+    failed?: boolean;
+}, pid?: number, run?: string): Promise<void>;
+export declare function _rpcStdinPrepared(self: RpcHost, pid?: number, run?: string): Promise<void>;
 type ProcessRpcHost = Pick<NimbusSession, 'processes'>;
 type ReportRpcHost = ProcessRpcHost & Pick<NimbusSession, 'facetManager'>;
 type ExitRpcHost = ReportRpcHost & Pick<NimbusSession, 'terminal' | 'webSocketRelay' | 'supervisorForgetBridge' | 'servedReads' | '_emitExitDump' | 'nimbusDebug' | 'facetProcessManager'>;
@@ -260,6 +273,11 @@ export declare function _acquireForRoutedRequest(self: RpcHost, pid: number): Pr
  */
 export declare function _rpcFsList(self: RpcHost, after: string | null, limit: number | null, pid?: number): Promise<VfsListPage>;
 export declare function _rpcFsReadRange(self: RpcHost, path: string, offset: number, length: number, pid?: number, cred?: VfsCred): Promise<Uint8Array | null>;
+/** A bounded range used only to prepare fd 0, never an ordinary file read. */
+export declare function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{
+    data: Uint8Array;
+    size: number;
+}>;
 /**
  * Read many ranges, and lstat many paths, in ONE round trip.
  *
@@ -291,6 +309,9 @@ export declare function _rpcFsAppendAck(self: RpcHost, writerId: string, moduleI
 export declare function _rpcHmrRelay(self: RpcHost, clientId: string | null, msg: string): Promise<void>;
 /** Poll the HMR queue in the same DO that owns its browser connections. */
 export declare function _rpcHmrNextEvent(self: Pick<NimbusSession, 'cirrusReal'>, timeoutMs?: number): Promise<HmrEvent[]>;
+export declare function _rpcReplayBoundary(self: RpcHost, pid?: number, run?: string): Promise<void>;
+export declare function _rpcNetTls(self: RpcHost, action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
+export declare function _rpcOutbound(self: RpcHost, action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
 /**
  * Bulk-write files and directories via one transactionSync().
  * Called from facets that accumulate writes locally (git clone/fetch/pull,
@@ -336,8 +357,8 @@ export declare function _rpcPutRegistryEntries(self: RpcHost, entries: any[]): P
     failed: number;
 }>;
 export declare const PRIOR_GENERATION_EXIT_REASON = "process lost: instance reset";
-export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
-export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array): Promise<void>;
+export declare function _rpcStdout(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+export declare function _rpcStderr(self: RpcHost, pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 /** A live server can catch a codegen miss and continue serving: persist its
  * ledger before it is killed or evicted, without changing its process state. */
 export declare function _rpcReportRuntimeCode(self: ReportRpcHost, pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
@@ -412,11 +433,19 @@ export declare function _rpcTransform(self: RpcHost, code: string, loader: strin
 export declare function _rpcCpSpawn(self: RpcHost, req: any): Promise<{
     childPid: number;
 }>;
+/**
+ * A child's stdin is bytes: esbuild's service protocol is binary packets,
+ * and so is any pipe carrying an image or an archive. The facet queue, this
+ * contract and a long-running child's input store all carry them as bytes;
+ * the store used to take text, decoded here, which turned a byte that is not
+ * UTF-8 into U+FFFD.
+ */
 export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: Uint8Array): Promise<{
     ok: boolean;
+    full?: boolean;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;
-export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<{
+export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string): Promise<{
     data: Uint8Array;
     ended: boolean;
     resize?: {

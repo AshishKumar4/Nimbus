@@ -29,6 +29,9 @@ globalThis.fetch = (input, init) => {
 };
 
 const code = generateShimsCode();
+const nativeGetReader = ReadableStream.prototype.getReader;
+const nativeRead = ReadableStreamDefaultReader.prototype.read;
+const nativeClone = Response.prototype.clone;
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
   '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + code + '\n;return null;',
@@ -44,6 +47,9 @@ factory(
   '/home/user/main.mjs',
   '/home/user',
 );
+assert.equal(ReadableStream.prototype.getReader, nativeGetReader, 'a non-stoppable launch installs no journal reader wrapper');
+assert.equal(ReadableStreamDefaultReader.prototype.read, nativeRead);
+assert.equal(Response.prototype.clone, nativeClone);
 
 // ── loopback via 127.0.0.1 is routed to the supervisor ───────────────────────
 {

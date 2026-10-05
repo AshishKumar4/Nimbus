@@ -32,7 +32,8 @@ try {
     plugins: [{
       name: 'cloudflare-workers-test-stub',
       setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
+        // cloudflare:sockets too: SupervisorRPC.connect loads it, and nothing here calls that.
+        builder.onResolve({ filter: /^cloudflare:(workers|sockets)$/ }, () => ({
           path: 'cloudflare-workers',
           namespace: 'test',
         }));

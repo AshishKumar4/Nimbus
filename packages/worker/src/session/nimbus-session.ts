@@ -117,7 +117,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 import * as _rpc from './rpc.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { openSupervisorDeliveries, SUPERVISOR_DELIVER_OP, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -779,6 +779,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     this._supervisorOps?.forget(pid);
   }
 
+  supervisorRewindBridge(pid: number): Promise<void> { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
   // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
   // leaves the session here and is counted (answerSupervisorOp).
   supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
@@ -787,7 +788,13 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
 
   /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
   serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
-    const answer = this.supervisorOps().dispatch(envelope);
+    // A process that can stop at a read of stdin is answered through its
+    // journal, which is where what it does and sees is counted and checked
+    // (worker runtime/stop-replay.ts ReplayJournal).
+    const op = envelope.op === SUPERVISOR_DELIVER_OP ? (envelope.delivery?.op ?? envelope.op) : envelope.op;
+    const answer = this.facetManager
+      ? this.facetManager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope))
+      : this.supervisorOps().dispatch(envelope);
     if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number') return answer;
     // What this session served a process is the read profile's only evidence (read-profile.ts).
     return answer.then((value) => {
@@ -872,11 +879,22 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcHmrRelay(clientId: string | null, msg: string): Promise<void> { return _rpc._rpcHmrRelay(this as any, clientId, msg); }
   async _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]> { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
+  async _rpcReplayBoundary(pid?: number, run?: string): Promise<void> { return _rpc._rpcReplayBoundary(this as any, pid, run); }
+  async _rpcStdinPrepared(pid?: number, run?: string): Promise<void> { return _rpc._rpcStdinPrepared(this as any, pid, run); }
+  async _rpcGetCachedTarball(integrity: string, pid?: number, run?: string) { return _rpc._rpcGetCachedTarball(this as any, integrity, pid, run); }
+  async _rpcPutCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer) { return _rpc._rpcPutCachedTarball(this as any, integrity, bytes); }
+  async _rpcGetPackument(name: string, options?: { retries?: number; timeoutMs?: number; registry?: string }, pid?: number, run?: string) { return _rpc._rpcGetPackument(this as any, name, options, pid, run); }
+  async _rpcCacheResult(ticket: string, result: { value?: unknown; failure?: unknown; failed?: boolean }, pid?: number, run?: string) { return _rpc._rpcCacheResult(this as any, ticket, result, pid, run); }
+  async _rpcStdinFileRead(path: string, offset: number, length: number, pid?: number): Promise<{ data: Uint8Array; size: number }> {
+    return _rpc._rpcStdinFileRead(this as any, path, offset, length, pid);
+  }
+  async _rpcNetTls(action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> { return _rpc._rpcNetTls(this as any, action, token, payload, pid, run); }
+  async _rpcOutbound(action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown> { return _rpc._rpcOutbound(this as any, action, payload, pid, run); }
   async _rpcWriteBatch(payload: any, pid?: number): Promise<{ inodes: number; chunks: number }> { return _rpc._rpcWriteBatch(this as any, payload, pid); }
   async _rpcPutRegistryEntries(entries: any[]): Promise<{ written: number; failed: number }> { return _rpc._rpcPutRegistryEntries(this as any, entries); }
   async _rpcRecordCacheStats(events: any[]): Promise<void> { return _rpc._rpcRecordCacheStats(this as any, events); }
-  async _rpcStdout(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStdout(this as any, pid, data); }
-  async _rpcStderr(pid: number, data: Uint8Array): Promise<void> { return _rpc._rpcStderr(this as any, pid, data); }
+  async _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> { return _rpc._rpcStdout(this as any, pid, data, at, run); }
+  async _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void> { return _rpc._rpcStderr(this as any, pid, data, at, run); }
   async _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void> { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
   async _rpcReportRuntimeCode(pid: number, entries: unknown[], executedModules: string[] = [], dataReads: string[] = []): Promise<void> { return _rpc._rpcReportRuntimeCode(this, pid, entries, executedModules, dataReads); }
 
@@ -936,7 +954,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcCpSpawn(req: any): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req); }
   async _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }
   async _rpcCpStdinEnd(childPid: number): Promise<void> { return _rpc._rpcCpStdinEnd(this as any, childPid); }
-  async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid); }
+  async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid, writerId); }
   async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadOutput(this as any, childPid, fd, sinceSeq, waitMs, acquire, pid); }
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }

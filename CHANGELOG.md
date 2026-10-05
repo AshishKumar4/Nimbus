@@ -5,6 +5,71 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: synchronous-stdin replay is fail-closed at the session boundary.
+  Every supervisor operation has an explicit observation, effect, or
+  input/output-protocol classification; unknown operations forbid a later
+  replay. Caller pids are stamped from their bindings, acquired filesystem
+  bytes and namespace metadata are checked, and fd-0 preparation no longer
+  exempts ordinary reads of the same file. Reaching fd 0 before a previously
+  completed observation is delivered fails loudly without consuming new
+  input. Recorded GETs deliver headers immediately and record their streamed
+  bodies and errors; a still-unfinished body forbids a later replay.
+
+- Fixed: a synchronous read of stdin waits for its input, as Node's does,
+  and only a read that runs waits. `fs.readFileSync(0)` (and `/dev/stdin`)
+  waits for the end of stdin and `fs.readSync(0, …)` for any of it, so a
+  child can print READY and have its parent write only then, a parent can
+  write in delayed pieces, and a readSync prompt answers each line as it
+  comes. A Nimbus process cannot block, so the run stops at such a read
+  (`ctx.abort`, which the program cannot catch), the session waits for the
+  input, and the program runs again from its start with it: the second run
+  replays what the first drew (its random numbers, clock readings, random
+  bytes and stdin reads) and the output it already printed is checked and
+  not shown twice. What the session told the first run is journaled there,
+  out of the program's reach, and the second run must be told the same in
+  the same order: a file that changed while the program waited ends the
+  second run loudly instead of letting it go on with the new bytes, as
+  does any other way the second run strays before the read. Such a
+  program's network goes through the session too: a GET (`fetch`,
+  `https.get`) is recorded with its status, headers and bytes, and the
+  second run is handed the same response however it reads it; a request
+  still on its way at the stop is answered only past the read; and
+  `tls.connect`'s TLS session is made by the session, which sends the
+  server name the program gives (workerd's own node:tls sends the host). A
+  client certificate (`cert`, `key`, `pfx`) or a TLS session over a socket
+  the program opened (a STARTTLS) fails by name; a CA the program names
+  (`ca`) is not used, as workerd's own node:tls does not use it, and a
+  session that fails says so. Once such a program has done something
+  outside itself, nothing more it reads is recorded and its network goes
+  straight out. Only Nimbus can stop a run this way: a program that forges
+  a stop is not believed. A program that never makes such a read, or finds
+  its input there when it does, runs once and is never held: the guess
+  about which programs read stdin, made from their code before they ran,
+  is gone, and with it the read ahead of their pipe. So `sleep 30 | node
+  -e "function u(){fs.readFileSync(0)} console.log(1)"` prints at once,
+  and a child whose code merely mentions such a read no longer waits for a
+  stdin its parent leaves open. A program that changed something outside
+  itself before the read (a file write that reached the session, a spawn,
+  a request other than GET) cannot be run again, and the read fails with
+  `ERR_NIMBUS_SYNC_STDIN` naming that change, as does one that read
+  `process.stdin` as it arrived first; opening a connection counts as such
+  a change, however it was opened (node:net, node:tls, or workerd's own
+  socket class). What arrives on stdin while the program runs reaches a
+  later synchronous read, its end too, so a program its parent finishes
+  writing to before it reads never has to stop. Ctrl-C during the wait
+  ends the program with 130; a pipe that passes 16 MiB without ending
+  fails the read naming the bound, and output a piped program printed
+  before such a failure is still handed on, as is what it printed before a
+  second run that strays. A server the SDK starts with its stdin open
+  waits for what its caller writes the same way; one started from the
+  terminal answers such a read with `ERR_NIMBUS_SYNC_STDIN`, as nothing
+  can write its stdin while the shell waits for its boot.
+- Fixed: bytes a parent wrote to a child's stdin faster than the child
+  read them were dropped past the child's 256 KiB queue, all of them when
+  written before the child had started. A write waits for room now, as a
+  full pipe holds its writer, and goes in pieces no larger than the queue,
+  so one write larger than the queue gets through instead of never fitting.
+
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 loom moves only its fabric range.
@@ -544,6 +609,29 @@ below.
   enter (`python3: can't enter working directory '/x': [Errno 44] No such
   file or directory`). It started in `/`, so `open("hello.txt")` at the
   prompt looked in the root.
+- Fixed: a shell script that `child_process.spawn` starts (`spawn('./s.sh')`,
+  by absolute path, by its name on PATH, or `spawn('sh', ['s.sh'])`) got
+  no stdin. The broker ran it on an empty fixed stdin and never said its
+  descriptors were pipes, so `sh` took its stdin for a terminal and handed
+  its commands none, and a script of `cat` printed nothing. A child's stdin
+  is now a pipe its command reads as the parent writes it, for every kind
+  of child the broker runs: a registry command, a shell, or a program found
+  by name or path. It used to be what had been written once the parent
+  ended stdin or half a second had passed. So such a child answers each
+  line before its parent ends, as under Node, and a child that reads its
+  stdin waits for its parent to end it rather than giving up after half a
+  second. `sh` hands its stdin on to its program's commands as a stream,
+  where it read all of it first. A node run by a child's script reads the
+  script's stdin, not the child's queue, whose pid it inherits in its
+  environment. A runtime whose stdout is a pipe still hands its output
+  back when it exits. A command that does not read its stdin no longer
+  waits on it: the shell's builtins (`printf`, `true`, `echo`, `test` and
+  others) used to read their stdin to its end before running, so `sleep 5 |
+  true` took 5 seconds. `head -n 0` and `head -c 0` read nothing, as GNU
+  head does, where they waited on their stdin.
+- Fixed: bytes a parent wrote to a long-running child's stdin (a server it
+  started with `child_process.spawn`) were decoded as UTF-8 on the way, so
+  a byte that is not UTF-8 arrived as U+FFFD. They arrive as written.
 
 - Fixed: a filesystem refusal kept its reason only in its `cause`. A
   confined principal's widening `chmod` reached the caller as "EPERM:
