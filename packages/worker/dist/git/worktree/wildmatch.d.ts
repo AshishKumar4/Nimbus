@@ -6,6 +6,8 @@
  * git does, so a pattern and a path compare in their UTF-8 encodings; the end
  * of either array stands for C's terminating NUL.
  */
+/** ASCII letters match either case (git's WM_CASEFOLD, core.ignorecase). */
+export declare const WM_CASEFOLD = 1;
 /** '/' is matched only by a literal '/' or by '**' (git's WM_PATHNAME). */
 export declare const WM_PATHNAME = 2;
 /** wildmatch(): whether `pattern` matches all of `text`. */

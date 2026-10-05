@@ -6,6 +6,8 @@
  * git does, so a pattern and a path compare in their UTF-8 encodings; the end
  * of either array stands for C's terminating NUL.
  */
+/** ASCII letters match either case (git's WM_CASEFOLD, core.ignorecase). */
+export const WM_CASEFOLD = 1;
 /** '/' is matched only by a literal '/' or by '**' (git's WM_PATHNAME). */
 export const WM_PATHNAME = 2;
 const WM_MATCH = 0;
@@ -23,6 +25,8 @@ const DASH = 0x2d;
 const BANG = 0x21;
 const CARET = 0x5e;
 // The C locale's ctype classes, ASCII only.
+const isUpper = (c) => c >= 0x41 && c <= 0x5a;
+const isLower = (c) => c >= 0x61 && c <= 0x7a;
 const isDigit = (c) => c >= 0x30 && c <= 0x39;
 const isAlpha = (c) => (c >= 0x41 && c <= 0x5a) || (c >= 0x61 && c <= 0x7a);
 const CLASSES = {
@@ -32,11 +36,11 @@ const CLASSES = {
     cntrl: (c) => c < 0x20 || c === 0x7f,
     digit: isDigit,
     graph: (c) => c > 0x20 && c <= 0x7e,
-    lower: (c) => c >= 0x61 && c <= 0x7a,
+    lower: isLower,
     print: (c) => c >= 0x20 && c <= 0x7e,
     punct: (c) => c > 0x20 && c <= 0x7e && !isAlpha(c) && !isDigit(c),
     space: (c) => c === 0x20 || (c >= 0x09 && c <= 0x0d),
-    upper: (c) => c >= 0x41 && c <= 0x5a,
+    upper: isUpper,
     xdigit: (c) => isDigit(c) || (c >= 0x41 && c <= 0x46) || (c >= 0x61 && c <= 0x66),
 };
 /** dowild: `p` and `t` index `pat` and `text`; an index at the end reads as NUL. */
@@ -52,6 +56,11 @@ function dowild(pat, p, text, t, flags) {
         let tCh = at(text, t);
         if (tCh === 0 && pCh !== STAR)
             return WM_ABORT_ALL;
+        const fold = (flags & WM_CASEFOLD) !== 0;
+        if (fold && isUpper(tCh))
+            tCh += 0x20;
+        if (fold && isUpper(pCh))
+            pCh += 0x20;
         switch (pCh) {
             case BACKSLASH:
                 // A literal match with the next character; the end of the pattern fails it below.
@@ -105,7 +114,10 @@ function dowild(pat, p, text, t, flags) {
                     // A literal after the '*': skip ahead to where it next occurs.
                     pCh = at(pat, p);
                     if (pCh !== STAR && pCh !== QUESTION && pCh !== OPEN && pCh !== BACKSLASH) {
-                        for (tCh = at(text, t); tCh !== 0 && (matchSlash || tCh !== SLASH) && tCh !== pCh; tCh = at(text, ++t)) { /* skip */ }
+                        if (fold && isUpper(pCh))
+                            pCh += 0x20;
+                        const folded = (c) => (fold && isUpper(c) ? c + 0x20 : c);
+                        for (tCh = folded(at(text, t)); tCh !== 0 && (matchSlash || tCh !== SLASH) && tCh !== pCh; tCh = folded(at(text, ++t))) { /* skip */ }
                         if (tCh !== pCh)
                             return matchSlash ? WM_ABORT_ALL : WM_ABORT_TO_STARSTAR;
                     }
@@ -149,6 +161,8 @@ function dowild(pat, p, text, t, flags) {
                         }
                         if (tCh <= pCh && tCh >= prevCh)
                             matched = 1;
+                        else if (fold && isLower(tCh) && tCh - 0x20 <= pCh && tCh - 0x20 >= prevCh)
+                            matched = 1;
                         pCh = 0; // prev_ch becomes 0: a range ends a range
                     }
                     else if (pCh === OPEN && at(pat, p + 1) === COLON) {
@@ -166,10 +180,11 @@ function dowild(pat, p, text, t, flags) {
                                 matched = 1;
                         }
                         else {
-                            const test = CLASSES[String.fromCharCode(...pat.subarray(s, s + length))];
+                            const name = String.fromCharCode(...pat.subarray(s, s + length));
+                            const test = CLASSES[name];
                             if (!test)
                                 return WM_ABORT_ALL;
-                            if (test(tCh))
+                            if (test(tCh) || (name === 'upper' && fold && isLower(tCh)))
                                 matched = 1;
                             pCh = 0;
                         }

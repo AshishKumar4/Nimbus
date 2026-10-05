@@ -174,6 +174,8 @@ export async function collectStatus(store, tree, dc, head, options) {
     return {
         changes: [...changes.values()].sort((a, b) => comparePaths(a.path, b.path)),
         untracked: scan.untracked.sort(comparePaths),
+        // diff-files reports first, then read_directory.
+        errors: [...scan.errors.tracked, ...scan.errors.untracked],
     };
 }
 /**

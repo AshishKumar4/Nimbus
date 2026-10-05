@@ -15,7 +15,7 @@
  * Every pack arrives once, is decoded once, and is stored as it arrives;
  * nothing reads it back but a delta whose base has left the cache.
  */
-import { type IndexStat } from './index-file.js';
+import { type EntryStat } from '../worktree/dircache.js';
 import { oidFromHex } from './format.js';
 import { PackStreamProcessor, type PackProcessResult, type WorkTally } from './processor.js';
 import { type GitTransportAuth } from './upload-pack.js';
@@ -37,7 +37,7 @@ export interface CloneWriter {
     setPin(path: string, text: string, durable?: boolean): void;
     flush(): Promise<void>;
 }
-export interface CloneReceipt extends IndexStat {
+export interface CloneReceipt extends EntryStat {
     path: string;
 }
 export interface CloneContext {

@@ -20,7 +20,7 @@ import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_S
 import { encodeIdxV2, ENTRY_BYTES, entryOffset } from './idx.js';
 import { ByteLru } from './byte-lru.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
-import { encodeIndex, encodeIndexEntry, splitIndexEntries, type IndexStat } from './index-file.js';
+import { encodeIndexEntry, encodeIndexFile, splitIndexEntries, type EntryStat } from '../worktree/dircache.js';
 import { encodeNode, type BuiltSubtree } from '../worktree/cachetree.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor, type PackProcessResult, type PackStore, type WorkTally } from './processor.js';
@@ -46,7 +46,7 @@ export interface CloneWriter {
   flush(): Promise<void>;
 }
 
-export interface CloneReceipt extends IndexStat {
+export interface CloneReceipt extends EntryStat {
   path: string;
 }
 
@@ -434,7 +434,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest): P
   // Blobs a blob:limit pack carries, written as they arrive with their index entries.
   const arrived = new Set<string>();
   const inline: { path: string; mode: number; oid: Uint8Array }[] = [];
-  const receipts = new Map<string, IndexStat>();
+  const receipts = new Map<string, EntryStat>();
   let blobWriter: CloneWriter | null = null;
   const keepTree = (hex: string, data: Uint8Array): void => {
     treeBytes += data.byteLength;
@@ -627,7 +627,7 @@ export async function cloneBatch(
 ): Promise<CloneBatchResult> {
   const batchPath = join(context.dir, STAGE_DIR + '/batch-' + request.index);
   const blobs = decodeBatch(await readRange(context.supervisor, batchPath, 0, request.batchBytes));
-  const receipts = new Map<string, IndexStat>();
+  const receipts = new Map<string, EntryStat>();
   const writer = context.writer((published) => {
     for (const receipt of published) receipts.set(stripSlash(receipt.path), receipt);
   });
@@ -694,9 +694,9 @@ export async function cloneFinish(
   const wait = (newest + 1) * 1000 - Date.now();
   if (wait > 0) await new Promise((resolve) => setTimeout(resolve, wait));
   const extensions = request.cacheTreeBytes
-    ? [{ signature: 'TREE', data: await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/cache-tree'), 0, request.cacheTreeBytes) }]
+    ? [{ signature: 'TREE', bytes: await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/cache-tree'), 0, request.cacheTreeBytes) }]
     : [];
-  const index = encodeIndex(entries, extensions);
+  const index = encodeIndexFile(entries, extensions);
   const indexBytes = index.byteLength;
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);

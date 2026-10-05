@@ -39,9 +39,21 @@ export interface Refusal {
     directories: string[];
     untracked: string[];
 }
+/** What the refusal is of: a branch switch, or a merge's fast-forward. */
+export type CheckoutOperation = 'checkout' | 'merge';
+/** A refusal, git's message its own: nothing was written. */
 export declare class CheckoutRefused extends Error {
     readonly refusal: Refusal;
-    constructor(refusal: Refusal);
+    constructor(refusal: Refusal, operation: CheckoutOperation);
+}
+/**
+ * A branch switch over an index with unmerged entries: git refuses before
+ * looking at anything else, the refusal on stderr and each `<path>: needs
+ * merge` on stdout.
+ */
+export declare class UnmergedIndex extends Error {
+    readonly paths: string[];
+    constructor(paths: string[]);
 }
 export interface SwitchContext {
     store: ObjectStore;
@@ -51,6 +63,7 @@ export interface SwitchContext {
     /** The worktree's top, absolute. */
     root: string;
     writer: CheckoutWriter;
+    operation: CheckoutOperation;
 }
 /**
  * Move the worktree from `head` (a tree; null when forced or unborn) to

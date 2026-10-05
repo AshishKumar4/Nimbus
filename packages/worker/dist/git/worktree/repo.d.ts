@@ -61,6 +61,8 @@ export declare class WorktreeRepo {
     readonly gitdir: string;
     private readonly env;
     readonly counters: WalkCounters;
+    /** This command holds its repository's index lock. */
+    private locked;
     readonly store: ObjectStore;
     readonly fs: WorktreeFs;
     private readonly cache;
@@ -89,9 +91,22 @@ export declare class WorktreeRepo {
      * racily clean, its stat still matching, and its content no longer the blob.
      */
     private racilySmudged;
-    /** write_locked_index: `dc` with `edit` applied, its racily clean entries smudged. */
+    /**
+     * Run `fn` holding the repository's index lock: the index read in it is
+     * the one its write replaces. A command that changes the index reads and
+     * writes it in here; others wait their turn.
+     */
+    withIndexLock<T>(fn: () => Promise<T>): Promise<T>;
+    /** write_locked_index: `dc` with `edit` applied, its racily clean entries smudged. Only under the lock. */
     writeIndex(dc: DirCache, edit?: IndexEdit): Promise<void>;
-    /** repo_update_index_if_able: a status or diff writes back what it refreshed, or an index with racy entries. */
+    /** The checksum the index file ends with now, null when there is none. */
+    private currentTrailer;
+    /**
+     * repo_update_index_if_able: a status or diff, which read the index without
+     * the lock, writes back what it refreshed (or an index with racy entries)
+     * only if the index is still the one it read; a writer that came between
+     * wins, and the refresh is simply not kept.
+     */
     updateIndexIfAble(dc: DirCache): Promise<void>;
 }
 //# sourceMappingURL=repo.d.ts.map

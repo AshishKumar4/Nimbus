@@ -96,12 +96,33 @@ export interface ScanOptions {
      * do: the entry takes fresh stat and its directories' cache trees go.
      */
     uncleanIsDirty?: boolean;
+    /** Unmerged paths too, with what the worktree holds at each (add and commit -a resolve them). */
+    unmerged?: boolean;
+}
+/** An unmerged path: its stages, entries [lo, hi), and the worktree's lstat there (null: nothing). */
+export interface Unmerged {
+    path: string;
+    lo: number;
+    hi: number;
+    stat: WorktreeStat | null;
 }
 export interface ScanResult {
     /** Tracked entries that differ from the worktree, by entry number. */
     dirty: Map<number, Dirty>;
     /** Untracked paths in walk order; a directory ends in '/'. */
     untracked: string[];
+    /** With `unmerged`, the unmerged paths in index order. */
+    unmerged: Unmerged[];
+    /**
+     * What could not be read, as git reports it on stderr: an entry's lstat
+     * (`<path>: <strerror>`, diff-files'), and a directory the untracked scan
+     * could not open (read_directory's warning). Each command prints the two
+     * in its own order.
+     */
+    errors: {
+        tracked: string[];
+        untracked: string[];
+    };
 }
 /**
  * diff-files and read_directory over the whole worktree (or `specs`):
