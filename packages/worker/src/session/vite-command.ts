@@ -18,7 +18,8 @@ import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
-import { parseViteConfigSource, parseViteConfigTypeScript, viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
+import { viteBuildBlockingPlugins, unhandledVitePlugins, type ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
+import { readViteConfigFile } from '../facets/vite-config-file.js';
 import { findHtmlScriptEntrypoint, rewriteViteBuildHtml } from '../runtime/html-entrypoint.js';
 import { handKernelArtifact, projectEntryType, projectFs as viewFs } from '../runtime/project-fs.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
@@ -64,28 +65,15 @@ export function createViteCommand(self: ViteHost) {
     // credential: SQLite paths reach the engine, mounted ones their mount.
     const projectFs = viewFs(ctx.vfs);
 
-    const viteConfig: ParsedViteConfig = {};
-    for (const cfgName of ['vite.config.ts', 'vite.config.js', 'vite.config.mjs']) {
-      const cfgPath = cwd + '/' + cfgName;
-      if (await projectFs.exists(cfgPath)) {
-        try {
-          const cfgCode = await projectFs.readFileString(cfgPath);
-          // A .ts config needs esbuild only when it holds type syntax
-          // (parseViteConfigTypeScript); a plain one is read as is, so a
-          // fresh session's `vite` does not wait on the esbuild facet.
-          const parsed = cfgName.endsWith('.ts')
-            ? await parseViteConfigTypeScript(cfgCode, async (source) => {
-              if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
-              return (await self.esbuildService.transform(source, { loader: 'ts', format: 'esm' })).code;
-            })
-            : parseViteConfigSource(cfgCode);
-          Object.assign(viteConfig, parsed);
-        } catch (e: any) {
-          ctx.stderr.write(`Warning: could not parse ${cfgName}: ${e?.message}\n`);
-        }
-        break;
-      }
-    }
+    // A .ts config needs esbuild only when it holds type syntax
+    // (parseViteConfigTypeScript); a plain one is read as is, so a fresh
+    // session's `vite` does not wait on the esbuild facet.
+    const configFile = await readViteConfigFile(projectFs, cwd, async (source) => {
+      if (!self.esbuildService) self.esbuildService = supervisorEsbuildService(self.ctx, self.env, self.getFilesystemAuthority().namespaceFs(CRED_KERNEL));
+      return (await self.esbuildService.transform(source, { loader: 'ts', format: 'esm' })).code;
+    });
+    if (configFile.error) ctx.stderr.write(`Warning: ${configFile.error}\n`);
+    const viteConfig: ParsedViteConfig = configFile.config;
 
     // ── vite build ──
     if (args[0] === 'build') {
@@ -581,6 +569,17 @@ export function createViteCommand(self: ViteHost) {
     );
     if (handedOff) self.processes.setLongRunning(viteProcEntry.pid);
 
+    // The directory the config was read from, at its engine key (a mount has
+    // none: the server then never reads it again), and what a restore starts
+    // from, kept as the server reads the config again.
+    const configDir = await engineKey(ctx.vfs, self.sqliteFs, '/' + cwd);
+    const persisted = {
+      root: servedRoot, aliases: viteConfig.alias, define: viteDefine,
+      injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
+      port: resolvedPort,
+      identity: devServerIdentity(viteProcEntry),
+      ...(configDir !== null ? { configDir } : {}),
+    };
     self.viteDevServer = new ViteDevServer({
       vfs: self.sqliteFs!,
       // The server reads and writes as the principal who ran the command.
@@ -606,15 +605,17 @@ export function createViteCommand(self: ViteHost) {
       // after the banner.
       pid: viteProcEntry.pid,
       processes: self.processes,
+      ...(configDir !== null ? {
+        configDir,
+        onConfigChange: (config: ParsedViteConfig) => {
+          Object.assign(persisted, { aliases: config.alias, define: config.define, injectBasename: config.injectBasename });
+          self.ctx.storage.put(VITE_CONFIG_KEY, persisted).catch(() => {});
+        },
+      } : {}),
     });
     self.viteDevServer.start();
     try {
-      await self.ctx.storage.put(VITE_CONFIG_KEY, {
-        root: servedRoot, aliases: viteConfig.alias, define: viteDefine,
-        injectBasename: viteConfig.injectBasename, basePath: previewBasePath,
-        port: resolvedPort,
-        identity: devServerIdentity(viteProcEntry),
-      });
+      await self.ctx.storage.put(VITE_CONFIG_KEY, persisted);
     } catch {}
 
     // Register the port and build the long-running stub. The stub

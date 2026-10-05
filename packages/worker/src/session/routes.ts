@@ -40,6 +40,7 @@ import { DEFAULT_VITE_PORT, LRU_MAX_ENTRIES } from '@nimbus-sh/core/constants.js
 import { SEED_PROJECT_DIR, SEED_PROJECT_NAME } from '@nimbus-sh/core/vfs/seed-project.js';
 import { BASE_PATH_HEADER } from '../_shared/session-router.js';
 import { VITE_CONFIG_KEY } from './keys.js';
+import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { estimateSupervisorHeap, WORKERD_EVICTION_LABELS } from '@nimbus-sh/platform/heap-estimate.js';
 import { loadShellState, getScrollbackStats, clearSessionState, loadScrollback } from './state-store.js';
 import { classifyWsUpgrade, joinExistingSession } from './init-phases.js';
@@ -200,6 +201,13 @@ export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: num
     self.viteDevServer = new ViteDevServer({
       vfs: self.sqliteFs!, cred: entry.cred, esbuild: self.esbuildService!, root: config.root,
       aliases: config.aliases, define: config.define,
+      // A server `vite` started reads its vite.config again on an edit, as before the hibernation.
+      ...(typeof config.configDir === 'string' ? {
+        configDir: config.configDir,
+        onConfigChange: (next: ParsedViteConfig) => {
+          self.ctx.storage.put(VITE_CONFIG_KEY, { ...config, aliases: next.alias, define: next.define, injectBasename: next.injectBasename }).catch(() => {});
+        },
+      } : {}),
       onHmrMessage: () => {},
       sql: self.ctx.storage.sql,
       injectBasename: config.injectBasename,

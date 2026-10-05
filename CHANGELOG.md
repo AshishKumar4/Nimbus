@@ -21,6 +21,17 @@ published independently in the `@nimbus-sh` npm scope.
   `define`, which a pre-bundle no longer takes, as Vite's dependency
   optimizer takes none of it (worker `npm/cache-keys.ts`, core
   `PREBUNDLE_DEFINE`).
+- An edit of vite.config takes effect in the dev server `vite` started, as
+  Vite restarts on one: the server reads the config again (its
+  `resolve.alias`, `define` and `nimbusInjectBasename`), drops every module
+  it made under the old one, reloads the browser, and keeps the new config
+  for a restore after hibernation; a config that cannot be read leaves it
+  on the one it has, and root, base, port and outDir still take a new
+  `vite`. An edit of a tsconfig (`tsconfig*.json`, `jsconfig.json`) drops
+  every transformed module and reloads, as Vite does. A module a request
+  began making under the old config is not remembered. Before, the config
+  was read once at `vite`, and a tsconfig edit reloaded the browser onto
+  the same modules (worker `facets/vite-config-file.ts`).
 
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 

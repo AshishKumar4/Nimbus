@@ -49,6 +49,8 @@ import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { resolvePackageEntry, resolveExports } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { injectRouterBasename, shouldProcessForRouter } from '@nimbus-sh/core/runtime/router-basename.js';
 import { devStylesheet } from './dev-stylesheet.js';
+import { isViteConfigPath, readViteConfigFile } from './vite-config-file.js';
+import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 import { rewriteJavaScriptModuleSource, type StaticModuleSpecifierContext } from '@nimbus-sh/core/runtime/module-source-rewriter.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import {
@@ -110,6 +112,16 @@ export interface ViteDevServerOptions {
    */
   pid?: number;
   processes?: { appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void };
+  /**
+   * The directory whose vite.config `aliases`, `define` and `injectBasename`
+   * were read from (vite-config-file.ts), as a VFS path: when one there is
+   * added, changed or removed, the server reads it again and drops what it
+   * made under the old one, as Vite restarts on an edit of its config.
+   * Absent: the options are the caller's own (/api/start-vite), never re-read.
+   */
+  configDir?: string;
+  /** Told each config the server reads again, so a restore after hibernation starts from it. */
+  onConfigChange?: (config: ParsedViteConfig) => void;
 }
 
 interface BarrelModuleCacheInfo {
@@ -654,6 +666,15 @@ function resolveHashImportFromImporter(
     dir = dir.substring(0, lastSlashDir);
   }
   return null;
+}
+
+/**
+ * Whether `path` names a TypeScript project config outside node_modules
+ * (`tsconfig.json`, `tsconfig.app.json`, ...; `jsconfig.json`): an edit of
+ * one may change how every TypeScript module compiles.
+ */
+function isTsconfigPath(path: string): boolean {
+  return !/(^|\/)node_modules\//.test(path) && /(^|\/)(tsconfig[^/]*|jsconfig)\.json$/.test(path);
 }
 
 /**
@@ -1347,8 +1368,22 @@ export class ViteDevServer {
   private logPid: number | null = null;
   private logSink: { appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void } | null = null;
 
+  /** The vite.config directory the server re-reads (ViteDevServerOptions.configDir), or null. */
+  private configDir: string | null;
+  private onConfigChange: ((config: ParsedViteConfig) => void) | null;
+  /**
+   * Bumped each time the config the served modules depend on changes (a
+   * vite.config read again, a tsconfig edited): a module a request began
+   * making under an older one is served to that request, not remembered.
+   */
+  private configGeneration = 0;
+  /** The config re-read in flight, so edits in a burst read it once more, in order. */
+  private configReload: Promise<void> = Promise.resolve();
+
   constructor(opts: ViteDevServerOptions) {
     this.vfs = opts.vfs.as(opts.cred);
+    this.configDir = opts.configDir ? opts.configDir.replace(/^\/+|\/+$/g, '') : null;
+    this.onConfigChange = opts.onConfigChange ?? null;
     this.vfsEvents = opts.vfs.events;
     this.esbuild = opts.esbuild;
     this.injectBasename = opts.injectBasename !== false;
@@ -1574,6 +1609,53 @@ export class ViteDevServer {
     }
   }
 
+  /**
+   * Drop every module this server made (in memory; persisted rows are keyed
+   * on their request) and move to a new config generation, so a request
+   * still in flight under the old one does not put its module back.
+   */
+  private forgetModules(): void {
+    this.configGeneration++;
+    this.moduleCache.clear();
+  }
+
+  /** moduleCache.set, unless the config changed since `generation` (the module was made under the old one). */
+  private cacheModule(generation: number, key: string, entry: { code: string; timestamp: number; inputHash?: string }): void {
+    if (generation === this.configGeneration) this.moduleCache.set(key, entry);
+  }
+
+  /**
+   * Read the vite.config in configDir again (after the read in flight) and
+   * take its aliases, define and injectBasename, as `vite` read them at
+   * start; then forget every module and tell the browser to reload. A config
+   * that cannot be read leaves the server on the one it has, as Vite keeps
+   * running when a restart fails. What only a new `vite` takes (root, base,
+   * port, outDir) is named in the log.
+   */
+  private reloadConfig(): void {
+    const dir = this.configDir;
+    if (dir === null) return;
+    this.configReload = this.configReload.then(async () => {
+      const read = await readViteConfigFile(this.vfs, dir, async (source) => (await this.esbuild.transform(source, { loader: 'ts', format: 'esm' })).code);
+      if (!this.running) return;
+      if (read.error) {
+        this.log('error', `[vite-dev] ${read.error}; serving with the config read before`);
+        return;
+      }
+      const config = read.config;
+      this.aliases = config.alias || {};
+      this.define = { ...VITE_DEV_DEFINE, ...(config.define || {}) };
+      this.injectBasename = config.injectBasename !== false;
+      this.forgetModules();
+      this.log('info', `[vite-dev] ${read.path ?? `no vite.config in /${dir}`}: read again (aliases, define, nimbusInjectBasename); `
+        + 'root, base, port and outDir take a new `vite`');
+      try { this.onConfigChange?.(config); } catch { /* persistence is the caller's */ }
+      this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
+    }).catch((e: any) => {
+      this.log('error', `[vite-dev] reading the vite.config again failed: ${e?.message || e}`);
+    });
+  }
+
   /** Handle VFS change events → trigger HMR. */
   private handleVfsEvents(events: VfsEvent[]): void {
     if (!this.running) return;
@@ -1581,10 +1663,15 @@ export class ViteDevServer {
     let needsReload = false;
     let cssOnly = true;
     let nodeModulesChanged = false;
+    let configChanged = false;
+    let tsconfigChanged = false;
 
     for (const event of events) {
       if (event.type === 'addDir' || event.type === 'unlinkDir') continue;
       const path = event.path;
+      const touched = event.type === 'rename' && event.oldPath ? [path, event.oldPath] : [path];
+      if (this.configDir !== null && touched.some((p) => isViteConfigPath(p, this.configDir!))) configChanged = true;
+      if (touched.some(isTsconfigPath)) tsconfigChanged = true;
 
       // Cache keys are base-qualified (`<base>\x00<path>`), so a changed file
       // must be dropped across every base it was served under. Match on the
@@ -1630,6 +1717,21 @@ export class ViteDevServer {
         if (inner.startsWith('@modules/')) toDelete.push(key);
       }
       for (const k of toDelete) this.moduleCache.delete(k);
+    }
+
+    if (configChanged) {
+      // Vite restarts on an edit of its config: the server reads it again,
+      // and drops what it made under the old one when it has (a full reload
+      // goes out then, not before).
+      this.reloadConfig();
+      return;
+    }
+    if (tsconfigChanged) {
+      // A tsconfig decides how TypeScript compiles (Vite clears its cache and
+      // reloads): nothing transformed under the old one is served again.
+      this.forgetModules();
+      cssOnly = false;
+      needsReload = true;
     }
 
     if (needsReload) {
@@ -1874,6 +1976,7 @@ export class ViteDevServer {
 
   private async serveModule(specifier: string, headers: Record<string, string>, base: string): Promise<Response> {
     const JS_CT = 'application/javascript; charset=utf-8';
+    const generation = this.configGeneration;
     const cacheKey = this.ck(base, `@modules/${specifier}`);
     const barrelInfo = this.getBarrelModuleCacheInfo(specifier);
 
@@ -1917,7 +2020,7 @@ export class ViteDevServer {
         code = rewriteExternalRequires(code, base);
         code = rewriteAllImports(code, this.aliases, base);
         code = synthesizeCjsNamedExports(code);
-        this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
+        this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: esmBundle.inputHash });
         return new Response(code, {
           headers: { ...headers, 'Content-Type': JS_CT },
         });
@@ -1968,6 +2071,7 @@ export class ViteDevServer {
   ): Promise<Response> {
     const JS_CT = 'application/javascript; charset=utf-8';
     const cacheKey = this.ck(base, `@modules/${specifier}`);
+    const generation = this.configGeneration;
     // 3. On-demand bundle (cold path — resolve from node_modules, bundle via esbuild)
     //
     // Architecture: this used to call this.esbuild.build(...) in the
@@ -2246,7 +2350,7 @@ export class ViteDevServer {
           // named exports.
           code = synthesizeCjsNamedExports(code);
 
-          this.moduleCache.set(cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
+          this.cacheModule(generation, cacheKey, { code, timestamp: Date.now(), inputHash: barrelInfo?.inputHash ?? '' });
           return new Response(code, {
             headers: { ...headers, 'Content-Type': JS_CT },
           });
@@ -2301,7 +2405,7 @@ export class ViteDevServer {
         `export default undefined;\n` +
         `export const __nimbus_optional_dep_stub = true;\n`;
       // Cache so repeated transitive references don't re-walk + re-warn.
-      this.moduleCache.set(cacheKey, { code: stubCode, timestamp: Date.now() });
+      this.cacheModule(generation, cacheKey, { code: stubCode, timestamp: Date.now() });
       return new Response(stubCode, {
         headers: { ...headers, 'Content-Type': JS_CT },
       });
@@ -2811,6 +2915,7 @@ export class ViteDevServer {
       });
     }
 
+    const generation = this.configGeneration;
     let code = this.vfs.readFileString(vfsPath);
     const request = this.transformRequest(vfsPath, ext, base, code);
 
@@ -2827,7 +2932,7 @@ export class ViteDevServer {
     if (this.npmCache && contentHash) {
       const persisted = this.npmCache.getUserModuleTransform(vfsPath, base, contentHash, transformKey);
       if (persisted) {
-        this.moduleCache.set(memKey, { code: persisted.code, timestamp: Date.now() });
+        this.cacheModule(generation, memKey, { code: persisted.code, timestamp: Date.now() });
         return new Response(persisted.code, {
           headers: { ...headers, 'Content-Type': 'application/javascript; charset=utf-8' },
         });
@@ -2882,7 +2987,7 @@ if (!document.getElementById('nimbus-error-overlay')) {
       code = rewriteAllImports(code, request.rewrite.aliases, request.rewrite.base, importerCtx);
     }
 
-    this.moduleCache.set(memKey, { code, timestamp: Date.now() });
+    this.cacheModule(generation, memKey, { code, timestamp: Date.now() });
     if (this.npmCache && contentHash) {
       try {
         this.npmCache.putUserModuleTransform({

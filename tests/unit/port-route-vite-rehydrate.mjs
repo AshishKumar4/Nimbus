@@ -226,6 +226,29 @@ function request(path) {
   console.log('  [8] a config that names no credential is not restored');
 }
 
+// 9. A server `vite` started reads its vite.config again after the restore,
+//    and what it reads is what the next restore starts from; one the config
+//    of which came with the request (no configDir) never re-reads.
+{
+  const persisted = { ...HIBERNATED['vite-config'], configDir: ROOT, define: { __APP__: '"one"' } };
+  const self = makeWokenSession({ 'vite-config': persisted });
+  const response = await handleFetch(self, request('/preview/'));
+  assert.equal(response.status, 200);
+  const server = self.viteDevServer;
+  assert.equal(server.configDir, ROOT, 'the restored server re-reads the vite.config it was started from');
+  server.onConfigChange({ alias: { '@': './src' }, define: { __APP__: '"two"' }, injectBasename: false });
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const stored = self.store.get('vite-config');
+  assert.deepEqual([stored.define, stored.aliases, stored.injectBasename], [{ __APP__: '"two"' }, { '@': './src' }, false], 'the config read again is kept');
+  assert.equal(stored.configDir, ROOT);
+  assert.deepEqual(stored.identity, persisted.identity, 'with the rest of what a restore needs');
+
+  const plain = makeWokenSession(HIBERNATED);
+  await handleFetch(plain, request('/preview/'));
+  assert.equal(plain.viteDevServer.configDir, null, 'a config with no directory is never read again');
+  console.log('  [9] a restored server reads its vite.config again, and keeps what it reads');
+}
+
 await rm(outputDir, { recursive: true, force: true });
 
 console.log('port-route-vite-rehydrate OK: every route back to the dev server restores it');

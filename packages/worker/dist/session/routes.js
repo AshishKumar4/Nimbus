@@ -172,6 +172,13 @@ export async function restorePersistedDevServer(self, onlyPort) {
         self.viteDevServer = new ViteDevServer({
             vfs: self.sqliteFs, cred: entry.cred, esbuild: self.esbuildService, root: config.root,
             aliases: config.aliases, define: config.define,
+            // A server `vite` started reads its vite.config again on an edit, as before the hibernation.
+            ...(typeof config.configDir === 'string' ? {
+                configDir: config.configDir,
+                onConfigChange: (next) => {
+                    self.ctx.storage.put(VITE_CONFIG_KEY, { ...config, aliases: next.alias, define: next.define, injectBasename: next.injectBasename }).catch(() => { });
+                },
+            } : {}),
             onHmrMessage: () => { },
             sql: self.ctx.storage.sql,
             injectBasename: config.injectBasename,

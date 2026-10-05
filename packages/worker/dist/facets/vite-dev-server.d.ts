@@ -25,6 +25,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { BundlePoolProvider } from './prebundle-pool.js';
+import type { ParsedViteConfig } from '@nimbus-sh/core/runtime/vite-config-parser.js';
 export interface ViteDevServerOptions {
     vfs: SqliteVFS;
     /**
@@ -79,6 +80,16 @@ export interface ViteDevServerOptions {
     processes?: {
         appendOutput(pid: number, stream: 'stdout' | 'stderr', data: string): void;
     };
+    /**
+     * The directory whose vite.config `aliases`, `define` and `injectBasename`
+     * were read from (vite-config-file.ts), as a VFS path: when one there is
+     * added, changed or removed, the server reads it again and drops what it
+     * made under the old one, as Vite restarts on an edit of its config.
+     * Absent: the options are the caller's own (/api/start-vite), never re-read.
+     */
+    configDir?: string;
+    /** Told each config the server reads again, so a restore after hibernation starts from it. */
+    onConfigChange?: (config: ParsedViteConfig) => void;
 }
 /**
  * esbuild, when bundling CJS source with `external` specifiers, leaves the
@@ -235,6 +246,17 @@ export declare class ViteDevServer {
      */
     private logPid;
     private logSink;
+    /** The vite.config directory the server re-reads (ViteDevServerOptions.configDir), or null. */
+    private configDir;
+    private onConfigChange;
+    /**
+     * Bumped each time the config the served modules depend on changes (a
+     * vite.config read again, a tsconfig edited): a module a request began
+     * making under an older one is served to that request, not remembered.
+     */
+    private configGeneration;
+    /** The config re-read in flight, so edits in a burst read it once more, in order. */
+    private configReload;
     constructor(opts: ViteDevServerOptions);
     /**
      * The session's pre-bundle pool for on-demand bundling of
@@ -314,6 +336,23 @@ export declare class ViteDevServer {
      * oriented (the Process-tab UI splits on `\n`).
      */
     private log;
+    /**
+     * Drop every module this server made (in memory; persisted rows are keyed
+     * on their request) and move to a new config generation, so a request
+     * still in flight under the old one does not put its module back.
+     */
+    private forgetModules;
+    /** moduleCache.set, unless the config changed since `generation` (the module was made under the old one). */
+    private cacheModule;
+    /**
+     * Read the vite.config in configDir again (after the read in flight) and
+     * take its aliases, define and injectBasename, as `vite` read them at
+     * start; then forget every module and tell the browser to reload. A config
+     * that cannot be read leaves the server on the one it has, as Vite keeps
+     * running when a restart fails. What only a new `vite` takes (root, base,
+     * port, outDir) is named in the log.
+     */
+    private reloadConfig;
     /** Handle VFS change events → trigger HMR. */
     private handleVfsEvents;
     /** Normalize and sanitize a preview pathname to prevent traversal. */
