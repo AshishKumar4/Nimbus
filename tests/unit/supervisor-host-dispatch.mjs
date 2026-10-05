@@ -57,7 +57,9 @@ kernelVfs.symlink('file', 'home/user/link');
 
 const processes = new SessionProcessSupervisor();
 const pid = processes.spawn('probe', ['probe'], '/').pid;
-const writerId = 'writer', mutationOwner = 'lease';
+// The binding's lease is a live one, on a root no case writes under: a
+// leased writer's own writes elsewhere land, and present the lease.
+const writerId = 'writer', mutationOwner = rawVfs.acquireExclusiveMutation('home/user/leased', { includeMissingAncestors: true }).owner;
 // The fs ops mutate, so every one gets its own path — a shared fixture would
 // make the table's order load-bearing.
 const path = '/home/user/file', from = '/home/user/ren', to = '/home/user/ren2';
