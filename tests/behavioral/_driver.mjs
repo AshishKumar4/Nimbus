@@ -289,6 +289,9 @@ export class Terminal {
    */
   constructor(sid, options = {}) {
     this.sid = sid;
+    // Deploy readiness drives the freshly deployed target explicitly;
+    // it must not inherit BASE from another suite in the caller's env.
+    this.wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
     this.wsOptions = options.wsOptions ?? wsHeaders();
     this.ws = null;
     this.buf = '';
@@ -298,7 +301,7 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
-    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, this.wsOptions);
+    this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}/ws`, this.wsOptions);
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;

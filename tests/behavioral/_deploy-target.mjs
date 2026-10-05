@@ -24,6 +24,8 @@ import { spawnSync } from 'node:child_process';
 import { homedir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { Terminal, stripAnsi } from './_driver.mjs';
+import { deletionResult } from './_ledger.mjs';
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
 export const WRANGLER = join(ROOT, 'node_modules', '.bin', 'wrangler');
@@ -180,11 +182,12 @@ export async function cfApi(path, { account, token, method = 'GET', body, conten
  * answers 302 to the session shell; the Location's bootstrap token is for
  * browsers, so probes keep using the bearer token instead.
  */
-export async function createSession(base, jwt) {
+export async function createSession(base, jwt, { signal } = {}) {
   const response = await fetch(`${base}/new`, {
     method: 'POST',
     redirect: 'manual',
     headers: { Authorization: `Bearer ${jwt}` },
+    signal,
   });
   const location = response.headers.get('location');
   if (response.status !== 302 || !location) {
@@ -196,28 +199,70 @@ export async function createSession(base, jwt) {
 }
 
 /**
- * A fresh deployment takes a few seconds to answer on its hostname, and a
- * `wrangler secret put` needs its own propagation window. Poll `POST /new`
- * until it authenticates, then release the session so the readiness check
- * leaves nothing behind.
+ * The Worker can authenticate `/new` before its DO namespace/code is usable.
+ * Readiness requires a real terminal command and the confirmed public destroy
+ * result. A failed attempt owns its session until cleanup is acknowledged;
+ * never mint another one while the previous cleanup is unconfirmed.
  */
 export async function waitForTarget(base, jwt, timeoutMs = 90_000) {
   const deadline = Date.now() + timeoutMs;
+  const headers = { Authorization: `Bearer ${jwt}` };
+  const pendingCleanup = new Set();
+  const budget = (max) => {
+    const remaining = deadline - Date.now();
+    if (remaining <= 0) throw new Error('readiness deadline exceeded');
+    return Math.min(max, remaining);
+  };
+  const destroy = async (sid) => {
+    // Still attempt cleanup when a terminal consumed the readiness budget.
+    const timeout = Math.max(1_000, Math.min(10_000, deadline - Date.now()));
+    const result = await deletionResult(await fetch(`${base}/s/${encodeURIComponent(sid)}/`, {
+      method: 'DELETE',
+      headers: { ...headers, 'X-Nimbus-Cleanup-Reason': 'target-readiness' },
+      signal: AbortSignal.timeout(timeout),
+    }));
+    if (!result.ok) {
+      throw new Error(`DELETE ${sid} → ${result.status}: destroy unconfirmed: ${result.body.slice(0, 300)}`);
+    }
+    pendingCleanup.delete(sid);
+  };
   let last = '';
   while (Date.now() < deadline) {
+    let sid, terminal, ready = false;
     try {
-      const { sessionId } = await createSession(base, jwt);
-      await fetch(`${base}/s/${sessionId}/`, {
-        method: 'DELETE',
-        headers: { Authorization: `Bearer ${jwt}` },
-      }).catch(() => {});
-      return;
+      for (const pending of pendingCleanup) await destroy(pending);
+      const session = await createSession(base, jwt, { signal: AbortSignal.timeout(budget(15_000)) });
+      sid = session.sessionId;
+      pendingCleanup.add(sid);
+      terminal = new Terminal(sid, { base, wsOptions: { headers } });
+      await terminal.connect(budget(15_000));
+      await terminal.waitForPrompt(budget(30_000));
+      // The expected full marker is absent from the source, so a terminal
+      // echo cannot masquerade as successful command execution.
+      const command = await terminal.run('printf "__NIMBUS_READY_%s__\\n" "$((6*7))"', budget(30_000));
+      if (!/^__NIMBUS_READY_42__\r?$/m.test(stripAnsi(command.output))) {
+        throw new Error(`terminal command did not produce readiness output: ${command.output.slice(-300)}`);
+      }
+      ready = true;
     } catch (e) {
-      last = e.message;
-      await new Promise((r) => setTimeout(r, 3000));
+      last = e instanceof Error ? e.message : String(e);
+    } finally {
+      await terminal?.close();
+      if (sid) {
+        try { await destroy(sid); }
+        catch (e) {
+          ready = false;
+          const cleanup = e instanceof Error ? e.message : String(e);
+          last = last ? `${last}; cleanup failed: ${cleanup}` : `cleanup failed: ${cleanup}`;
+        }
+      }
     }
+    if (ready && pendingCleanup.size === 0) return;
+    const delay = Math.min(3_000, Math.max(0, deadline - Date.now()));
+    if (delay > 0) await new Promise((resolve) => setTimeout(resolve, delay));
   }
-  throw new Error(`target never authenticated within ${timeoutMs}ms: ${last}`);
+  const unresolved = pendingCleanup.size > 0 ? `; unconfirmed cleanup sessions: ${[...pendingCleanup].join(', ')}` : '';
+  throw new Error(`target never became ready within ${timeoutMs}ms: ${last}${unresolved}`);
 }
 
 // ── State ────────────────────────────────────────────────────────────
