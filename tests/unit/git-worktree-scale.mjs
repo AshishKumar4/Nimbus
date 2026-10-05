@@ -13,7 +13,7 @@
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { spawnSync } from 'node:child_process';
-import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, writeFileSync } from 'node:fs';
+import { lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -74,6 +74,9 @@ function build(disk, count) {
     writeFileSync(file, `file ${i}\n${'x'.repeat(i % 97)}\n`);
   }
   writeFileSync(join(disk, '.gitignore'), '*.log\nbuild/\n');
+  // An empty file and a link: a clean status reads neither (the empty blob's size 0 is no smudge).
+  writeFileSync(join(disk, 'src/empty'), '');
+  symlinkSync('m0', join(disk, 'src/link'));
   realGit(disk, 'add', '-A');
   realGit(disk, 'commit', '-q', '-m', 'seed');
   realGit(disk, 'checkout', '-q', '-b', 'other');
