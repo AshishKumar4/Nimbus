@@ -5,6 +5,7 @@ import { REPLAY_OPERATION_POLICY, operationPolicy } from '../../packages/worker/
 import { ReplayJournal, answerDigest } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
 import { mock } from 'bun:test';
 import { REPLAY_PUBLIC_METHOD_POLICY } from '../../packages/worker/src/runtime/stop-replay-policy.ts';
+import { spawnSync } from 'node:child_process';
 class TrustedWorkerEntrypoint {}
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: TrustedWorkerEntrypoint, DurableObject: class {}, RpcTarget: class {}, tracing: { startSpan: () => ({ end() {} }) } }));
 const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
@@ -32,13 +33,22 @@ function checkBinding(Binding) {
 }
 // Check the actual binding exports, not just the implementation constructor:
 // an embedder may export a subclass with additional reachable RPC methods.
-for (const entry of [
-  '../../packages/worker/src/index.ts', '../../packages/sdk/src/worker.ts',
-  '../../apps/probe/src/index.ts', '../../apps/hosted-demo/src/index.ts',
-]) {
-  const binding = (await import(new URL(entry, import.meta.url).href)).SupervisorRPC;
-  assert.equal(typeof binding, 'function', entry + ' must export the supervisor binding');
+if (process.env.NIMBUS_COVERAGE_ENTRY) {
+  const binding = (await import(new URL(process.env.NIMBUS_COVERAGE_ENTRY, import.meta.url).href)).SupervisorRPC;
+  assert.equal(typeof binding, 'function', 'entry must export the supervisor binding');
   checkBinding(binding);
+} else {
+  // Each entry owns composition state; source and package/dist exports must
+  // not be composed together in a single process merely for the coverage test.
+  for (const entry of [
+    '../../packages/worker/src/index.ts', '../../packages/sdk/src/worker.ts',
+    '../../apps/probe/src/index.ts', '../../apps/hosted-demo/src/index.ts',
+  ]) {
+    const checked = spawnSync(process.execPath, [new URL(import.meta.url).pathname], {
+      env: { ...process.env, NIMBUS_COVERAGE_ENTRY: entry }, encoding: 'utf8', timeout: 30000,
+    });
+    assert.equal(checked.status, 0, entry + ': ' + checked.stderr);
+  }
 }
 class Intermediate extends TrustedWorkerEntrypoint { inheritedMethod() {} }
 class InheritedBinding extends Intermediate {}
