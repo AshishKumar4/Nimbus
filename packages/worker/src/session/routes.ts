@@ -208,7 +208,10 @@ export async function restorePersistedDevServer(self: RoutesHost, onlyPort?: num
           self.ctx.storage.put(VITE_CONFIG_KEY, { ...config, aliases: next.alias, define: next.define, injectBasename: next.injectBasename }).catch(() => {});
         },
       } : {}),
-      onHmrMessage: () => {},
+      // The browser's reloads go where `vite`'s did: the session terminal's socket.
+      onHmrMessage: (msg) => {
+        if (self.terminal) try { self.terminal.ws.send(JSON.stringify({ type: 'hmr', data: msg })); } catch {}
+      },
       sql: self.ctx.storage.sql,
       injectBasename: config.injectBasename,
       basePath,

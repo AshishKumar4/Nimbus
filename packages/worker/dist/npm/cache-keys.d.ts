@@ -56,19 +56,31 @@ export interface PrebundleRequest {
     readonly manifests: ReadonlyArray<readonly [path: string, text: string | null]>;
 }
 /**
- * The package manifests of a pre-bundle's `sources`, in order, each with its
- * text as `read` gives it (null where it cannot): the package.json of every
- * package a source is in (the last `node_modules/<name>` or
- * `node_modules/@scope/<name>` of its path), and any package.json among
- * them. A reinstall at another version changes one; a row records its
+ * The package manifests a pre-bundle built from `sources` answers to, in
+ * order, each with its text as `read` gives it (null where it has none):
+ * manifestPathsOf each source. A reinstall at another version, or an edit of
+ * a package's `imports`, `exports` or `type`, changes one; a row records its
  * sources, so the same manifests are read back to check it.
  */
 export declare function manifestsOf(sources: readonly string[], read: (path: string) => string | null): Array<[string, string | null]>;
 /**
  * manifestsOf a slice: each manifest as the slice read it (what a pre-bundle
- * built from it was built from), else as `read` gives it now.
+ * built from it was built from), else as `read` gives it now, which is the
+ * walk's moment where it runs right after the walk.
  */
 export declare function sliceManifests(slice: readonly SliceEntry[], read: (path: string) => string | null): Array<[string, string | null]>;
+/**
+ * What a build read its sources' manifests as: `saw(path)`, as the build
+ * reads each file, records the text of every manifest that file answers to
+ * (manifestPathsOf), at that moment; `manifests(sources)` is manifestsOf the
+ * sources as recorded (as `read` gives it now, for one never seen).
+ */
+export declare function recordingManifests(read: (path: string) => string | null): {
+    saw(path: string): void;
+    manifests(sources: readonly string[]): Array<[string, string | null]>;
+};
+/** Whether every manifest still reads as it was recorded: a build whose inputs moved under it is not stored. */
+export declare function stillCurrent(manifests: ReadonlyArray<readonly [string, string | null]>, read: (path: string) => string | null): boolean;
 /**
  * The request the installer and the Vite dev server alike pre-bundle
  * `specifier` with on the build facet, from files whose manifests are

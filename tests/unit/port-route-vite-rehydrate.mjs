@@ -15,7 +15,9 @@ import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 // `session/routes.ts` reaches `cloudflare:workers` through its bindings
 // module, which bun cannot resolve outside workerd. Same stub-and-bundle
@@ -247,6 +249,34 @@ function request(path) {
   await handleFetch(plain, request('/preview/'));
   assert.equal(plain.viteDevServer.configDir, null, 'a config with no directory is never read again');
   console.log('  [9] a restored server reads its vite.config again, and keeps what it reads');
+}
+
+// 10. A restored server's reloads reach the browser: an edit of a file after
+//     the restore sends the session terminal's socket a full reload, as the
+//     server `vite` started did. Before, a restored server sent them nowhere.
+{
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = vfs.as(CRED_KERNEL);
+  const write = (path, content) => {
+    kernel.mkdir(path.slice(0, path.lastIndexOf('/')), { recursive: true, mode: 0o755 });
+    kernel.writeFile(path, new TextEncoder().encode(content), { mode: 0o644 });
+  };
+  write(`${ROOT}/index.html`, INDEX_HTML);
+  write(`${ROOT}/package.json`, JSON.stringify({ name: 'app' }));
+  write(`${ROOT}/src/main.ts`, 'export const a = 1;\n');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  const self = makeWokenSession(HIBERNATED);
+  self.sqliteFs = vfs;
+  const sent = [];
+  self.terminal = { ws: { send: (message) => sent.push(JSON.parse(message)) } };
+  const response = await handleFetch(self, request('/preview/'));
+  assert.equal(response.status, 200);
+  write(`${ROOT}/src/main.ts`, 'export const a = 2;\n');
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.deepEqual(sent.filter((m) => m.type === 'hmr').map((m) => m.data.event), ['full-reload'], `an edit after the restore reloads the browser: ${JSON.stringify(sent)}`);
+  self.viteDevServer.stop();
+  console.log('  [10] a restored server\'s reloads reach the session terminal');
 }
 
 await rm(outputDir, { recursive: true, force: true });

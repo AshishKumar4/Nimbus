@@ -9,6 +9,12 @@
 // cache. The parts: the transform's define (vite.config `define`), the
 // aliases and `package.json#imports` the import rewrite reads, the router
 // basename injection, and a dependency reinstalled at another version.
+// And what a request is made from is read once, when it is made: an input
+// that moves while it is made (an edit, a reinstall, during the transform's
+// or the build's await) is never what its row is keyed on while the row
+// holds the other (the moving cases below change it at that await). A
+// pre-bundle is keyed on every manifest its build consulted, a nested
+// package.json and a workspace package outside node_modules too.
 // And a pre-bundle has one request wherever it is made: the installer's
 // and the dev server's take the same define (Vite's dev values, none of
 // vite.config's, as Vite's optimizer), so a row either writes the other
@@ -29,8 +35,8 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const root = 'home/user/app';
 
-/** A session's SQLite with `files` under the project root. */
-function session(files) {
+/** A session's SQLite with `files` under the project root (`links`: symlinks, path → target). */
+function session(files, links = {}) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
@@ -40,12 +46,16 @@ function session(files) {
     kernel.writeFile(at, new TextEncoder().encode(content), { mode: 0o644 });
   };
   for (const [path, content] of Object.entries(files)) write(path, content);
+  for (const [path, target] of Object.entries(links)) {
+    const at = `${root}/${path}`;
+    kernel.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true, mode: 0o755 });
+    kernel.symlink(target, at);
+  }
   return { harness, vfs, write };
 }
 
-/** What a dev server started with `config` serves for `path`, on the session's cache. */
-async function serve({ harness, vfs }, config, path) {
-  const esbuild = new EsbuildService(undefined, { engine: esbuildEngine });
+/** What a dev server started with `config` serves for `path`, on the session's cache (`esbuild`: the service it transforms and builds with). */
+async function serve({ harness, vfs }, config, path, esbuild = new EsbuildService(undefined, { engine: esbuildEngine })) {
   const server = new ViteDevServer({
     vfs, cred: CRED_KERNEL, esbuild, root, sql: harness.sql, onHmrMessage() {}, basePath: '/preview', port: 5173, ...config,
   });
@@ -63,14 +73,14 @@ const failures = [];
  * an empty cache: the same. `writerFiles`, when given, are the project as
  * the writer saw it (a later edit, or a reinstall, gives the reader `files`).
  */
-async function sameAsCold(name, { files, writerFiles = files, writer, reader, path }) {
-  const warm = session(writerFiles);
+async function sameAsCold(name, { files, writerFiles = files, writer, reader, path, links = {} }) {
+  const warm = session(writerFiles, links);
   const writerSaw = await serve(warm, writer, path);
   for (const [file, content] of Object.entries(files)) {
     if (writerFiles[file] !== content) warm.write(file, content);
   }
   const served = await serve(warm, reader, path);
-  const cold = await serve(session(files), reader, path);
+  const cold = await serve(session(files, links), reader, path);
   assert.ok(cold.startsWith('200\n'), `${name}: the reader's own request is served (${cold.slice(0, 300)})`);
   if (writerSaw === cold) {
     failures.push(`${name}: the writer's and the reader's requests make the same output, so this case checks nothing`);
@@ -136,6 +146,93 @@ try {
     reader: {},
     path: '/@modules/pkg',
   });
+
+  // ── Inputs that move while a request is made ──────────────────────────
+  {
+    // A service whose transform, or build, changes the project at its await,
+    // once: `move` runs after the engine read what it reads, before it answers.
+    const moving = (move) => {
+      let moved = false;
+      const once = () => { if (!moved) { moved = true; move(); } };
+      const service = new EsbuildService(undefined, {
+        engine: esbuildEngine,
+        buildHost: async (options, plugin) => {
+          const out = await buildWithEsbuild(await esbuildEngine(), options, plugin);
+          once();
+          return out;
+        },
+      });
+      const transform = service.transform.bind(service);
+      service.transform = async (...args) => {
+        const out = await transform(...args);
+        once();
+        return out;
+      };
+      return service;
+    };
+    /** Serve `path` with the project moving under the first request; then, with `after` written, from that cache and from none. */
+    const moves = async (name, { files, during, after = {}, path }) => {
+      const warm = session(files);
+      await serve(warm, {}, path, moving(() => { for (const [file, content] of Object.entries(during)) warm.write(file, content); }));
+      for (const [file, content] of Object.entries(after)) warm.write(file, content);
+      const served = await serve(warm, {}, path);
+      const cold = await serve(session({ ...files, ...during, ...after }), {}, path);
+      if (served !== cold) failures.push(`${name}: served a row keyed on what moved\n    served: ${served.slice(0, 300)}\n    own:    ${cold.slice(0, 300)}`);
+      console.log(`  ${served === cold ? 'ok ' : 'RED'} ${name}`);
+    };
+    const imports = (target) => JSON.stringify({ name: 'app', type: 'module', imports: { '#lib': target } });
+    await moves('package.json#imports edited during the transform, then back', {
+      files: {
+        'package.json': imports('./src/a.ts'),
+        'src/a.ts': 'export const v = "a";\n', 'src/b.ts': 'export const v = "b";\n',
+        'src/value.ts': "import { v } from '#lib';\nexport const app: string = v;\n",
+      },
+      during: { 'package.json': imports('./src/b.ts') },
+      after: { 'package.json': imports('./src/a.ts') },
+      path: '/src/value.ts',
+    });
+    await moves('a dependency reinstalled during its pre-bundle\'s build', {
+      files: dependency('1.0.0', "export default 'version 1';\n"),
+      during: {
+        'node_modules/pkg/package.json': JSON.stringify({ name: 'pkg', version: '2.0.0', type: 'module', main: 'index.js' }),
+        'node_modules/pkg/index.js': "export default 'version 2';\n",
+      },
+      path: '/@modules/pkg',
+    });
+    // A nested package.json the build's resolver consulted (`#impl`, in pkg/part).
+    const nested = (impl) => ({
+      'package.json': PACKAGE,
+      'node_modules/pkg/package.json': JSON.stringify({ name: 'pkg', version: '1.0.0', type: 'module', main: 'index.js' }),
+      'node_modules/pkg/index.js': "export { v } from './part/x.js';\n",
+      'node_modules/pkg/part/package.json': JSON.stringify({ type: 'module', imports: { '#impl': impl } }),
+      'node_modules/pkg/part/x.js': "export { v } from '#impl';\n",
+      'node_modules/pkg/part/impl-a.js': "export const v = 'impl a';\n",
+      'node_modules/pkg/part/impl-b.js': "export const v = 'impl b';\n",
+    });
+    // A workspace package outside node_modules, linked in: its own package.json is its scope.
+    const workspace = (impl) => ({
+      'package.json': PACKAGE,
+      'packages/ui/package.json': JSON.stringify({ name: 'ui', version: '1.0.0', type: 'module', main: 'index.js', imports: { '#impl': impl } }),
+      'packages/ui/index.js': "export { v } from '#impl';\n",
+      'packages/ui/impl-a.js': "export const v = 'ui a';\n",
+      'packages/ui/impl-b.js': "export const v = 'ui b';\n",
+    });
+    await sameAsCold('a pre-bundle of a workspace package after its package.json changed', {
+      files: workspace('./impl-b.js'),
+      writerFiles: workspace('./impl-a.js'),
+      links: { 'node_modules/ui': `/${root}/packages/ui` },
+      writer: {},
+      reader: {},
+      path: '/@modules/ui',
+    });
+    await sameAsCold('a pre-bundle after a nested package.json its build read changed', {
+      files: nested('./impl-b.js'),
+      writerFiles: nested('./impl-a.js'),
+      writer: {},
+      reader: {},
+      path: '/@modules/pkg',
+    });
+  }
 
   // ── One pre-bundle request, the installer's and the dev server's ───────
   {

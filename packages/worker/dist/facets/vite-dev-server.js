@@ -22,7 +22,7 @@
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
 import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { manifestsOf, prebundleCacheKey, prebundleRequest, serviceBuildCacheKey, sliceManifests, userModuleTransformCacheKey } from '../npm/cache-keys.js';
+import { manifestsOf, prebundleCacheKey, prebundleRequest, recordingManifests, serviceBuildCacheKey, sliceManifests, stillCurrent, userModuleTransformCacheKey, } from '../npm/cache-keys.js';
 import { PREBUNDLE_DEFINE, VITE_DEV_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { R_OK } from '@nimbus-sh/core/runtime/process-files.js';
 import { NpmCache } from '../npm/cache.js';
@@ -479,52 +479,36 @@ function resolveBareSpecifier(specifier, aliases, basePath, importerCtx) {
         return null;
     return makeModuleUrl(basePath, specifier);
 }
-/**
- * Walk up from `importerCtx.importerVfsPath` looking for a
- * `package.json` with an `imports` field that exposes `specifier`.
- * Returns a VFS path to the resolved target, or null if no
- * `package.json#imports` covers it. First package.json wins per Node
- * spec — even if it has no `imports` field, we stop walking (the
- * specifier is unresolved against the importing module's package).
- *
- * Conditions: ESM browser default order
- * (`import` > `module` > `browser` > `default`) — matches what
- * `serveTransformed` is doing (we're serving for the browser).
- */
-function resolveHashImportFromImporter(specifier, ctx) {
-    let dir = ctx.importerVfsPath;
-    const lastSlash = dir.lastIndexOf('/');
-    if (lastSlash <= 0)
-        return null;
-    dir = dir.substring(0, lastSlash);
-    const visited = new Set();
-    while (dir && !visited.has(dir)) {
-        visited.add(dir);
+/** The package scope of `importerVfsPath`, read now from `vfs`. */
+function packageScopeOf(importerVfsPath, vfs) {
+    for (let dir = importerVfsPath.slice(0, Math.max(0, importerVfsPath.lastIndexOf('/'))); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
         const pkgJsonPath = dir + '/package.json';
-        if (ctx.vfs.exists(pkgJsonPath)) {
-            try {
-                const pkg = JSON.parse(ctx.vfs.readFileString(pkgJsonPath));
-                if (pkg && pkg.imports) {
-                    const target = resolveExports(pkg.imports, specifier);
-                    if (target) {
-                        const rel = target.replace(/^\.\//, '');
-                        const candidate = dir + '/' + rel;
-                        if (ctx.vfs.exists(candidate))
-                            return candidate;
-                    }
-                }
-            }
-            catch { /* malformed package.json — keep walking is wrong per
-                        spec; first package.json wins. Fall through to break. */
-            }
-            return null;
+        if (!vfs.exists(pkgJsonPath))
+            continue;
+        try {
+            const imports = JSON.parse(vfs.readFileString(pkgJsonPath))?.imports;
+            return { dir, imports: imports ?? null };
         }
-        const lastSlashDir = dir.lastIndexOf('/');
-        if (lastSlashDir <= 0)
-            break;
-        dir = dir.substring(0, lastSlashDir);
+        catch {
+            // Malformed: the first package.json still wins; it maps nothing.
+            return { dir, imports: null };
+        }
     }
     return null;
+}
+/**
+ * What `specifier` maps to in the importer's package scope: a VFS path, or
+ * null where its `imports` maps nothing for it. Conditions: ESM browser
+ * default order (`import` > `module` > `browser` > `default`), as
+ * `serveTransformed` serves for the browser. Whether the target exists is
+ * the browser's to find (a 404), as for any other import.
+ */
+function resolveHashImportFromImporter(specifier, ctx) {
+    const imports = ctx.scope?.imports;
+    if (!ctx.scope || !imports)
+        return null;
+    const target = resolveExports(imports, specifier);
+    return target ? ctx.scope.dir + '/' + target.replace(/^\.\//, '') : null;
 }
 /**
  * Whether `path` names a TypeScript project config outside node_modules
@@ -533,25 +517,6 @@ function resolveHashImportFromImporter(specifier, ctx) {
  */
 function isTsconfigPath(path) {
     return !/(^|\/)node_modules\//.test(path) && /(^|\/)(tsconfig[^/]*|jsconfig)\.json$/.test(path);
-}
-/**
- * The `imports` of the package.json that owns `importerVfsPath` (the first
- * up from it, as resolveHashImportFromImporter finds it): its text, so a
- * cache key can carry it; null where there is none.
- */
-function owningPackageImports(importerVfsPath, vfs) {
-    for (let dir = importerVfsPath.slice(0, Math.max(0, importerVfsPath.lastIndexOf('/'))); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
-        const pkgJsonPath = dir + '/package.json';
-        if (!vfs.exists(pkgJsonPath))
-            continue;
-        try {
-            return JSON.stringify(JSON.parse(vfs.readFileString(pkgJsonPath))?.imports ?? null);
-        }
-        catch {
-            return 'malformed';
-        }
-    }
-    return null;
 }
 /**
  * Rewrite all bare import/export specifiers in JS code.
@@ -1952,6 +1917,8 @@ export class ViteDevServer {
             // and its key there (bundleKeys): what built it, for which request.
             let bundledSources = [];
             let bundledHash = '';
+            // The manifests it was built from, as the build read them: checked still current before it is stored.
+            let bundledManifests = [];
             let synthetic = false;
             let syntheticReferencedFiles = null;
             if (isBarrel) {
@@ -2084,7 +2051,8 @@ export class ViteDevServer {
                             const sources = sliceSources(slice.slice);
                             // The installer's define (base-neutral: the @modules bundle is
                             // persisted raw and shared across mounts, module URLs get the
-                            // per-request base at serve time), so either's row is the other's.
+                            // per-request base at serve time), so either's row is the
+                            // other's; its manifests as the slice read them.
                             const request = prebundleRequest(specifier, sliceManifests(slice.slice, (path) => this.readText(path)));
                             const bundleHash = await prebundleCacheKey(request);
                             let spec = {
@@ -2107,6 +2075,7 @@ export class ViteDevServer {
                                 bundled = result.esmCode;
                                 bundledSources = sources;
                                 bundledHash = bundleHash;
+                                bundledManifests = request.manifests;
                             }
                             else if (result && result.errorText) {
                                 this.log('error', '[vite-dev] facet bundle failed for ' + specifier + ': ' + result.errorText);
@@ -2125,16 +2094,38 @@ export class ViteDevServer {
                     // Fallback — the EsbuildService's build (its build host). Used
                     // only when no bundle pool was provided.
                     try {
+                        // The build reads through `fs`, which records each source's
+                        // manifests as it reads it: the bundle is keyed on what it was
+                        // built from, not on what they read as once it is done.
+                        const recording = recordingManifests((path) => this.readText(path));
+                        const vfs = this.vfs;
+                        const fs = {
+                            exists: (path) => vfs.exists(path),
+                            isDirectory: (path) => vfs.isDirectory(path),
+                            readFile: (path) => {
+                                const bytes = vfs.readFile(path);
+                                recording.saw(path);
+                                return bytes;
+                            },
+                            readFileString: (path) => {
+                                const text = vfs.readFileString(path);
+                                recording.saw(path);
+                                return text;
+                            },
+                        };
                         const result = await this.esbuild.build([bundleEntryPath], {
                             ...SERVICE_PREBUNDLE_OPTIONS,
                             define: { ...SERVICE_PREBUNDLE_OPTIONS.define },
                             external: externals.length > 0 ? externals : undefined,
-                            fs: this.vfs,
+                            fs,
                         });
                         if (result.outputFiles?.length) {
                             bundled = result.outputFiles[0].contents;
                             bundledSources = vfsBuildInputs(result.metafile);
-                            bundledHash = (await this.bundleKeys(specifier, bundledSources))[1];
+                            bundledManifests = recording.manifests(bundledSources);
+                            bundledHash = await serviceBuildCacheKey(this.esbuild.transformHostId, {
+                                ...prebundleRequest(specifier, bundledManifests), options: SERVICE_PREBUNDLE_OPTIONS,
+                            });
                         }
                     }
                     catch (e) {
@@ -2150,7 +2141,12 @@ export class ViteDevServer {
                     // built it first and 404 the other. Cache ONLY successful bundles;
                     // a failed build left `bundled` null and never reaches here.
                     // A bundle whose sources are unknown would never be served from the cache.
-                    if (this.npmCache && bundledSources.length > 0) {
+                    // One whose manifests moved under the build (a reinstall while it
+                    // ran) is served to this request, not stored under them.
+                    const current = stillCurrent(bundledManifests, (path) => this.readText(path));
+                    if (!current)
+                        this.log('warn', `[vite-dev] ${specifier} changed while it was bundled: served, not cached`);
+                    if (this.npmCache && bundledSources.length > 0 && current) {
                         try {
                             this.npmCache.putEsmBundle({
                                 specifier,
@@ -2652,11 +2648,7 @@ export class ViteDevServer {
             if (!this.hasImportmap) {
                 // Pass importer context so `#X` subpath imports in this user JS
                 // file resolve against its owning package.json.
-                const importerCtx = {
-                    importerVfsPath: vfsPath,
-                    root: this.root,
-                    vfs: this.vfs,
-                };
+                const importerCtx = { root: this.root, scope: packageScopeOf(vfsPath, this.vfs) };
                 code = rewriteAllImports(code, this.aliases, base, importerCtx);
             }
             this.moduleCache.set(jsKey, { code, timestamp: Date.now() });
@@ -2698,8 +2690,9 @@ export class ViteDevServer {
             rewrite: this.hasImportmap ? null : {
                 aliases: this.aliases,
                 base,
-                // Read only by a `#name` specifier, which the text names in quotes.
-                packageImports: /["']#/.test(code) ? owningPackageImports(vfsPath, this.vfs) : null,
+                // Read only by a `#name` specifier, which the text names in quotes:
+                // read now, and what the rewrite resolves `#` against after the transform.
+                scope: /["']#/.test(code) ? packageScopeOf(vfsPath, this.vfs) : null,
             },
         };
     }
@@ -2773,11 +2766,7 @@ if (!document.getElementById('nimbus-error-overlay')) {
         // owning package.json — the rare-but-real case where a user .ts/
         // .tsx file directly uses a Node subpath import.
         if (request.rewrite) {
-            const importerCtx = {
-                importerVfsPath: vfsPath,
-                root: this.root,
-                vfs: this.vfs,
-            };
+            const importerCtx = { root: this.root, scope: request.rewrite.scope };
             code = rewriteAllImports(code, request.rewrite.aliases, request.rewrite.base, importerCtx);
         }
         this.cacheModule(generation, memKey, { code, timestamp: Date.now() });

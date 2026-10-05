@@ -12,15 +12,25 @@ published independently in the `@nimbus-sh` npm scope.
   aliases, the base, `package.json#imports`), beside the engines. Before,
   a row made under one `define` or `resolve.alias` was served after the
   config changed. A pre-bundle (pkg_esm_bundles) is keyed on its build
-  options, externals and the manifests of the packages it was built from:
-  a dependency reinstalled at another version was served (and skipped by
-  the installer) as its old bundle. The installer and the dev server
-  pre-bundle with one define, Vite's dev values (`NODE_ENV` development,
-  `global`, `import.meta.env`), so either's row is the other's; the
-  installer's had none, and the dev server's carried vite.config's
-  `define`, which a pre-bundle no longer takes, as Vite's dependency
-  optimizer takes none of it (worker `npm/cache-keys.ts`, core
-  `PREBUNDLE_DEFINE`).
+  options, externals and every manifest its build consulted (each
+  package's package.json, the closest one to each file it bundled, a
+  nested or workspace package's too): a dependency reinstalled at another
+  version was served (and skipped by the installer) as its old bundle.
+  What a row is keyed on is what it was made from, read once: a module's
+  `#` imports resolve against the package.json read when its request was
+  made, not one edited during its transform; a build's manifests are
+  recorded as it reads its files, and a bundle whose manifests changed
+  while it was built (a reinstall) is served but not stored. The installer
+  and the dev server pre-bundle with one define (core `PREBUNDLE_DEFINE`),
+  so either's row is the other's; the installer's had none, and the dev
+  server's carried vite.config's `define`, which a pre-bundle no longer
+  takes, as Vite's dependency optimizer takes none of it. Its
+  `process.env.NODE_ENV` ("development") is what Vite's optimizer defines;
+  its `global` (globalThis) and `import.meta.env` values (DEV, PROD, MODE,
+  SSR, BASE_URL "/") are Nimbus's own, kept from the dev server's
+  pre-bundles (worker `npm/cache-keys.ts`). A `#` import whose target file
+  is missing is now rewritten to its URL (a 404 in the browser), where the
+  specifier was left as written.
 - An edit of vite.config takes effect in the dev server `vite` started, as
   Vite restarts on one: the server reads the config again (its
   `resolve.alias`, `define` and `nimbusInjectBasename`), drops every module
@@ -31,7 +41,10 @@ published independently in the `@nimbus-sh` npm scope.
   every transformed module and reloads, as Vite does. A module a request
   began making under the old config is not remembered. Before, the config
   was read once at `vite`, and a tsconfig edit reloaded the browser onto
-  the same modules (worker `facets/vite-config-file.ts`).
+  the same modules (worker `facets/vite-config-file.ts`). A server
+  restored after hibernation sends its reloads to the session terminal, as
+  the server `vite` started did; before, it sent them nowhere, and the
+  browser never reloaded on an edit.
 
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 

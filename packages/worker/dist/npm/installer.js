@@ -29,7 +29,7 @@ import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
-import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests } from './cache-keys.js';
+import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, hoistPlacements, } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
@@ -2261,6 +2261,14 @@ export class NpmInstaller {
                         for (const w of result.warnings) {
                             safeProgress(`  [warn] ${next.specifier}: ${w}`);
                         }
+                    }
+                    // A package reinstalled while it was bundled: its bundle is not
+                    // stored under the manifests the slice read (the next install, or
+                    // the dev server on demand, bundles what is there now).
+                    if (!stillCurrent(request.manifests, read)) {
+                        safeProgress(`  pre-bundle of ${next.specifier} not cached: its package changed while it was bundled`);
+                        result = null;
+                        continue;
                     }
                     // Stamp into pkg_esm_bundles. Cache is supervisor-side SQLite,
                     // so the write happens here (not via writeBatch — that's VFS).

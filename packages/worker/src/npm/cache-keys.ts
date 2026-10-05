@@ -86,40 +86,104 @@ export interface PrebundleRequest {
 }
 
 /**
- * The package manifests of a pre-bundle's `sources`, in order, each with its
- * text as `read` gives it (null where it cannot): the package.json of every
- * package a source is in (the last `node_modules/<name>` or
- * `node_modules/@scope/<name>` of its path), and any package.json among
- * them. A reinstall at another version changes one; a row records its
+ * The manifests a source answers to: itself, where it is a package.json; the
+ * package.json of the package it is in under node_modules (the last
+ * `node_modules/<name>` or `node_modules/@scope/<name>` of its path); and
+ * the closest package.json up from it (its package scope, which a nested
+ * one such as `pkg/part/package.json` or a workspace package outside
+ * node_modules is). `read` gives a file's text, or null where there is none.
+ */
+function manifestPathsOf(path: string, read: (path: string) => string | null, closest: Map<string, string | null>): string[] {
+  const paths: string[] = [];
+  if (path === 'package.json' || path.endsWith('/package.json')) paths.push(path);
+  const at = path.lastIndexOf('/node_modules/');
+  if (at >= 0) {
+    const parts = path.slice(at + '/node_modules/'.length).split('/');
+    const length = parts[0]?.startsWith('@') ? 2 : 1;
+    if (parts.length > length) paths.push(`${path.slice(0, at)}/node_modules/${parts.slice(0, length).join('/')}/package.json`);
+  }
+  // The closest package.json up from the source's directory, memoized per directory.
+  const visited: string[] = [];
+  let found: string | null = null;
+  for (let dir = path.slice(0, Math.max(0, path.lastIndexOf('/'))); ; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
+    if (closest.has(dir)) {
+      found = closest.get(dir) ?? null;
+      break;
+    }
+    visited.push(dir);
+    const candidate = `${dir}/package.json`;
+    if (read(candidate) !== null) {
+      found = candidate;
+      break;
+    }
+    if (dir === '') break;
+  }
+  for (const dir of visited) closest.set(dir, found);
+  if (found) paths.push(found);
+  return paths;
+}
+
+/**
+ * The package manifests a pre-bundle built from `sources` answers to, in
+ * order, each with its text as `read` gives it (null where it has none):
+ * manifestPathsOf each source. A reinstall at another version, or an edit of
+ * a package's `imports`, `exports` or `type`, changes one; a row records its
  * sources, so the same manifests are read back to check it.
  */
 export function manifestsOf(sources: readonly string[], read: (path: string) => string | null): Array<[string, string | null]> {
   const paths = new Set<string>();
-  for (const path of sources) {
-    if (path === 'package.json' || path.endsWith('/package.json')) paths.add(path);
-    const at = path.lastIndexOf('/node_modules/');
-    if (at < 0) continue;
-    const parts = path.slice(at + '/node_modules/'.length).split('/');
-    const name = parts[0]?.startsWith('@') ? parts.slice(0, 2) : parts.slice(0, 1);
-    if (name.length === (parts[0]?.startsWith('@') ? 2 : 1) && parts.length > name.length) {
-      paths.add(`${path.slice(0, at)}/node_modules/${name.join('/')}/package.json`);
-    }
-  }
+  const closest = new Map<string, string | null>();
+  for (const path of sources) for (const manifest of manifestPathsOf(path, read, closest)) paths.add(manifest);
   return [...paths].sort().map((path) => [path, read(path)]);
 }
 
 /**
  * manifestsOf a slice: each manifest as the slice read it (what a pre-bundle
- * built from it was built from), else as `read` gives it now.
+ * built from it was built from), else as `read` gives it now, which is the
+ * walk's moment where it runs right after the walk.
  */
 export function sliceManifests(slice: readonly SliceEntry[], read: (path: string) => string | null): Array<[string, string | null]> {
   const decoder = new TextDecoder();
   const files = new Map<string, Uint8Array>();
   for (const entry of slice) if (!entry.isDir) files.set(entry.path, entry.bytes);
+  const text = new Map<string, string | null>();
   return manifestsOf(sliceSources(slice), (path) => {
-    const bytes = files.get(path);
-    return bytes ? decoder.decode(bytes) : read(path);
+    if (!text.has(path)) {
+      const bytes = files.get(path);
+      text.set(path, bytes ? decoder.decode(bytes) : read(path));
+    }
+    return text.get(path) ?? null;
   });
+}
+
+/**
+ * What a build read its sources' manifests as: `saw(path)`, as the build
+ * reads each file, records the text of every manifest that file answers to
+ * (manifestPathsOf), at that moment; `manifests(sources)` is manifestsOf the
+ * sources as recorded (as `read` gives it now, for one never seen).
+ */
+export function recordingManifests(read: (path: string) => string | null): {
+  saw(path: string): void;
+  manifests(sources: readonly string[]): Array<[string, string | null]>;
+} {
+  const recorded = new Map<string, string | null>();
+  const closest = new Map<string, string | null>();
+  const once = (path: string) => {
+    if (!recorded.has(path)) recorded.set(path, read(path));
+    return recorded.get(path) ?? null;
+  };
+  return {
+    saw(path) {
+      // Spelled as a pre-bundle's sources are: absolute.
+      for (const manifest of manifestPathsOf('/' + path.replace(/^\/+/, ''), once, closest)) once(manifest);
+    },
+    manifests: (sources) => manifestsOf(sources, once),
+  };
+}
+
+/** Whether every manifest still reads as it was recorded: a build whose inputs moved under it is not stored. */
+export function stillCurrent(manifests: ReadonlyArray<readonly [string, string | null]>, read: (path: string) => string | null): boolean {
+  return manifests.every(([path, text]) => read(path) === text);
 }
 
 /**

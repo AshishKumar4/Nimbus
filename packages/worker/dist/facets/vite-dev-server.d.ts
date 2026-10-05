@@ -160,23 +160,29 @@ export declare function rewriteExternalRequires(code: string, basePath: string):
  */
 export declare function synthesizeCjsNamedExports(code: string): string;
 /**
+ * The package scope of an importing file, read once: the first package.json
+ * up from it (Node's rule: the first one wins, `imports` or not) and its
+ * `imports`. A `#X` specifier resolves against this snapshot alone, so what
+ * a module's imports are rewritten to is a function of what was read when
+ * its request was made, which its cache key carries (npm/cache-keys.ts).
+ */
+interface PackageScope {
+    /** VFS path of the directory holding the package.json. */
+    dir: string;
+    /** Its `imports`, or null (none, or an unreadable package.json). */
+    imports: unknown;
+}
+/**
  * Importer context for `#X` subpath-import resolution. The dev-server
  * passes this through `rewriteAllImports` whenever it knows the source
- * file the imports came from (transformed user TS files; cached
- * pre-bundles via the package they belong to).
+ * file the imports came from (transformed user TS files, user JS).
  */
 interface HashImportCtx {
-    /** VFS path of the importing file (e.g. `home/user/example-app/src/foo.ts`). */
-    importerVfsPath: string;
     /** Project root (e.g. `home/user/example-app`). Used to clip the resolved
      *  target to a /preview-relative URL. */
     root: string;
-    /** VFS readers — kept narrow so callers don't have to expose the
-     *  full SqliteVFS surface. */
-    vfs: {
-        exists(p: string): boolean;
-        readFileString(p: string): string;
-    };
+    /** The importing file's package scope (packageScopeOf), or null where it has none. */
+    scope: PackageScope | null;
 }
 /**
  * Rewrite all bare import/export specifiers in JS code.
