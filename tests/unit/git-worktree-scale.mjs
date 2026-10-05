@@ -63,11 +63,18 @@ function newVfs() {
   return vfs;
 }
 
-/** The repository: `count` files three levels deep, ~50 to a directory, packed; branch `other` changes 40 of them. */
+/**
+ * The repository: `count` files four levels deep, two to a directory as in
+ * next.js (34k files in 17k directories), packed; branch `other` changes 40
+ * of them. Directories cost a walk too: a cache tree has a node for each.
+ */
 function build(disk, count) {
   mkdirSync(disk);
   realGit(disk, 'init', '-q', '-b', 'main');
-  const path = (i) => `src/m${i % 20}/p${Math.floor(i / 1000)}/q${Math.floor(i / 50) % 20}/f${i}.txt`;
+  const path = (i) => {
+    const d = Math.floor(i / 2);
+    return `src/a${d % 16}/b${Math.floor(d / 16) % 64}/c${Math.floor(d / 1024)}/f${i}.txt`;
+  };
   for (let i = 0; i < count; i++) {
     const file = join(disk, path(i));
     mkdirSync(join(file, '..'), { recursive: true });
@@ -233,8 +240,9 @@ for (const { count, indexBytes, costs } of [small, large]) {
     console.log(`  ${command.padEnd(32)} ${String(ms).padStart(6)} ms  peak +${peakMB.toFixed(1).padStart(6)} MiB  ${reads} files read`);
   }
 }
-// The heap may grow with the index (held as its bytes, and written as a copy) and little else.
-const allowance = (6 * (large.indexBytes - small.indexBytes)) / MB + 8;
+// The heap may grow with the index (held as its bytes, and written as a copy) and little else: not
+// with the directories (a cache tree of objects held 14 MiB more at 15,000 directories than at 1,500).
+const allowance = (2 * (large.indexBytes - small.indexBytes)) / MB + 4;
 for (const [i, { command, peakMB }] of large.costs.entries()) {
   const growth = peakMB - small.costs[i].peakMB;
   assert.ok(growth <= allowance,
