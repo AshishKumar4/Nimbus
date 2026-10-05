@@ -16,7 +16,7 @@
  */
 import { EMPTY_BLOB, S_IFGITLINK, S_IFLNK, S_IFMT, S_IFREG, decodePath, objectId } from './dircache.js';
 export function newCounters() {
-    return { readdirs: 0, lstats: 0, filesRead: 0, bytesRead: 0 };
+    return { readdirs: 0, lstats: 0, filesRead: 0, bytesRead: 0, objectsRead: 0 };
 }
 const textDecoder = new TextDecoder('utf-8', { fatal: true });
 const encoder = new TextEncoder();

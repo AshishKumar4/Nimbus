@@ -66,7 +66,7 @@ export declare class WorktreeRepo {
     private readonly cache;
     private worktreeConfig;
     /** `root` the worktree's top and `gitdir` its git directory, both absolute; `env` the command's. */
-    constructor(vfs: ProjectFs, git: RepoGit, gitFs: GitFs, root: string, gitdir: string, env: Record<string, string>);
+    constructor(vfs: ProjectFs, git: RepoGit, gitFs: GitFs, root: string, gitdir: string, env: Record<string, string>, counters?: WalkCounters);
     config(path: string): Promise<unknown>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;

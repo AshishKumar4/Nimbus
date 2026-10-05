@@ -21,7 +21,7 @@ import { DirCache, comparePaths, objectId } from './worktree/dircache.js';
 import { WorktreeRepo, configBool } from './worktree/repo.js';
 import { collectStatus, formatShortStatus, inSpecs, walkTreeAndIndex } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
-import { modeFromStat, scanWorktree, worktreeBlob } from './worktree/walk.js';
+import { modeFromStat, newCounters, scanWorktree, worktreeBlob } from './worktree/walk.js';
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
 // NOTE: local git ops (init, status, add, commit, log, branch, checkout,
 // diff, ls-files, rev-parse, remote, merge, reset, tag, config) run here in the supervisor DO.
@@ -450,9 +450,14 @@ async function writeBinary(stream, bin) {
         await stream.write(dec.decode(bytes));
 }
 // ── Staging ──────────────────────────────────────────────────────────────
+/** What one command's worktree work cost, by its filesystem (one per command): NIMBUS_GIT_COUNTERS=1 prints it. */
+const commandCounters = new WeakMap();
 /** The repository at `root` as the worktree commands read it: its index, worktree and objects (through `fs`'s pack store). */
 function worktreeRepo(ctx, git, vfs, fs, gitdir, root) {
-    return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env);
+    let counters = commandCounters.get(fs);
+    if (!counters)
+        commandCounters.set(fs, counters = newCounters());
+    return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env, counters);
 }
 /**
  * add_to_index: the worktree's file or link at `path` as an index entry, its
@@ -2389,6 +2394,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
     // Note: http transport isn't loaded here — network ops (clone/fetch/pull)
     // run inside the git-network-facet which imports its own http transport.
     let git;
+    // This command's filesystem, once made: what its worktree work cost is kept by it.
+    let commandFs = null;
     try {
         git = await getGit();
     }
@@ -2439,6 +2446,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
             return true;
         };
         const fs = createGitFs(repoVfs, null, promisor);
+        commandFs = fs;
         // The network commands write through the engine's streamed batches, at
         // the repository's engine key; a mounted repository has none.
         const onEngine = async (target) => {
@@ -2923,5 +2931,10 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
             return 141;
         ctx.stderr.write(`fatal: ${e?.message || e}\n`);
         return 128;
+    }
+    finally {
+        const counters = commandFs && commandCounters.get(commandFs);
+        if (counters && ctx.env.NIMBUS_GIT_COUNTERS)
+            await ctx.stderr.write(`[git] ${JSON.stringify(counters)}\n`);
     }
 }

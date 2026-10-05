@@ -32,19 +32,20 @@ export class WorktreeRepo {
     root;
     gitdir;
     env;
-    counters = newCounters();
+    counters;
     store;
     fs;
     cache = {};
     worktreeConfig = null;
     /** `root` the worktree's top and `gitdir` its git directory, both absolute; `env` the command's. */
-    constructor(vfs, git, gitFs, root, gitdir, env) {
+    constructor(vfs, git, gitFs, root, gitdir, env, counters = newCounters()) {
         this.vfs = vfs;
         this.git = git;
         this.gitFs = gitFs;
         this.root = root;
         this.gitdir = gitdir;
         this.env = env;
+        this.counters = counters;
         const at = (path) => (path ? `${root}/${path}` : root);
         this.fs = {
             list: async (dir) => {
@@ -87,6 +88,7 @@ export class WorktreeRepo {
         this.store = {
             // A loose object through cf-git; a packed one straight from the ranged store (a miss there costs no exception).
             read: async (oid) => {
+                this.counters.objectsRead++;
                 if (!await vfs.exists(loose(oid))) {
                     const packed = await gitFs.packs.read(gitdir, oid);
                     if (packed)

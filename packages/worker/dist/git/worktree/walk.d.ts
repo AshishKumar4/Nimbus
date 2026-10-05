@@ -39,6 +39,8 @@ export interface WalkCounters {
     lstats: number;
     filesRead: number;
     bytesRead: number;
+    /** Objects read from the store: trees, mostly. */
+    objectsRead: number;
 }
 export declare function newCounters(): WalkCounters;
 /** One worktree in its repository's terms. */
