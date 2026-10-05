@@ -1457,6 +1457,15 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(path, size)),
       fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(path, offset, length)),
       rename: (from, to) => counted('rename', () => supervisor.rename(from, to)),
+      async readdir(path) {
+        stats.supervisorRpc.readdir++;
+        try {
+          const entries = await useRpcResult(supervisor.readdir(normalizePath(path)), (result) => result);
+          return entries.map((entry) => typeof entry === 'string' ? entry : entry.name);
+        } catch {
+          return [];
+        }
+      },
     },
     writer(onReceipts) {
       return __nimbusGitWaveWriter.createWaveWriter({
@@ -2683,7 +2692,23 @@ export default {
         }
         mutated = true;
         cloneJobs.delete(opts.jobId);
-        await fs.promises.rmdir(normalizePath(opts.dir) + '/.git', { recursive: true });
+        // File by file, then the directories: one recursive delete of a full
+        // clone's .git (vscode: ~300 packs, idx and staged files) passes a
+        // write group's row limit, and the clone would stay marked.
+        const gitdir = normalizePath(opts.dir) + '/.git';
+        const directories = [];
+        const walk = async (dir) => {
+          directories.push(dir);
+          for (const name of await fs.promises.readdir(dir)) {
+            const path = dir + '/' + name;
+            const stat = await fs.promises.lstat(path);
+            if (stat.isDirectory()) await walk(path);
+            else if (name !== CLONE_JOB_MARKER) await fs.promises.unlink(path);
+          }
+        };
+        await walk(gitdir);
+        await flushWave();
+        for (const dir of directories.reverse()) await fs.promises.rmdir(dir, { recursive: true });
         await flushWave();
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,

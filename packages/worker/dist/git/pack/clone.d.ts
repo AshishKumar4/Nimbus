@@ -25,6 +25,8 @@ export interface CloneSupervisor {
     fsTruncate(path: string, size: number): Promise<unknown>;
     fsReadRange(path: string, offset: number, length: number): Promise<Uint8Array | null>;
     rename(from: string, to: string): Promise<unknown>;
+    /** Names in a directory, [] when it is absent. */
+    readdir(path: string): Promise<string[]>;
 }
 /** The wave writer's surface (git/wave-writer.ts), as a clone uses it. */
 export interface CloneWriter {

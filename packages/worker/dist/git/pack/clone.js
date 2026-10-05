@@ -528,6 +528,12 @@ export async function cloneFinish(context, request) {
     // With its history fetched (history.ts) the clone is no longer shallow.
     if (request.full === true)
         await writer.remove('.git/shallow');
+    // The staged files one record each: a write group holds a bounded number
+    // of rows, and one recursive delete of a full clone's staging (vscode:
+    // ~200 files) passes it ("logicalRows limit: 326 > 256").
+    for (const name of await context.supervisor.readdir(join(context.dir, STAGE_DIR))) {
+        await writer.remove(STAGE_DIR + '/' + name);
+    }
     await writer.remove(STAGE_DIR, true);
     await writer.flush();
     return { indexEntries: entries.length, indexBytes };
