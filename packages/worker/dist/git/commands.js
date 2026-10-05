@@ -2153,6 +2153,9 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                             // The same, for the fast clone's blob batches.
                             blobsPerBatch: Number(ctx.env.NIMBUS_GIT_BLOBS_PER_BATCH) || undefined,
                             batchConcurrency: Number(ctx.env.NIMBUS_GIT_BATCH_CONCURRENCY) || undefined,
+                            historyBlobsPerBatch: Number(ctx.env.NIMBUS_GIT_HISTORY_BLOBS_PER_BATCH) || undefined,
+                            historyCommitsPerChunk: Number(ctx.env.NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK) || undefined,
+                            historyBudgetUnits: Number(ctx.env.NIMBUS_GIT_HISTORY_BUDGET_UNITS) || undefined,
                             auth: {
                                 username: ctx.env.GIT_USERNAME || '',
                                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',

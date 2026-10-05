@@ -17,7 +17,7 @@
  */
 import { type IndexStat } from './index-file.js';
 import { oidFromHex } from './format.js';
-import { type WorkTally } from './processor.js';
+import { PackStreamProcessor, type PackProcessResult, type WorkTally } from './processor.js';
 import { type GitTransportAuth } from './upload-pack.js';
 /** The supervisor calls a clone makes beyond its wave writer's. */
 export interface CloneSupervisor {
@@ -106,6 +106,43 @@ export interface CloneBatchResult {
 export interface CloneUnsupported {
     unsupported: string;
 }
+export declare const STAGE_DIR = ".git/nimbus-clone";
+export declare const PACK_DIR = ".git/objects/pack";
+export declare function readRange(supervisor: CloneSupervisor, path: string, offset: number, length: number): Promise<Uint8Array>;
+export declare function join(dir: string, path: string): string;
+export interface StorePackOptions {
+    cacheBytes?: number;
+    recentBytes?: number;
+    budgetUnits?: number;
+    onObject?: ConstructorParameters<typeof PackStreamProcessor>[0]['onObject'];
+    promisor?: string;
+}
+/**
+ * A pack whose decoding ran past the invocation's budget: stored whole as
+ * `tmpName`, its idx records so far in STAGE_DIR/ckpt-<tmpName>. Plain
+ * data: it travels in the facet's result to the next invocation.
+ */
+export interface PendingPack {
+    tmpName: string;
+    packBytes: number;
+    offset: number;
+    decoded: number;
+    recordsBytes: number;
+    externalBases: string[];
+    promisor?: string;
+}
+export type StoredPack = {
+    result: PackProcessResult;
+    summary: PackSummary;
+} | {
+    pending: PendingPack;
+};
+/** storePack, or where its decoding stopped when the budget ran out first (see resumePack). */
+export declare function storePackResumable(context: CloneContext, writer: CloneWriter, stream: AsyncIterable<Uint8Array>, tmpName: string, options: StorePackOptions): Promise<StoredPack>;
+/** Continue decoding a pending pack from its stored bytes; it may stop at the budget again. */
+export declare function resumePack(context: CloneContext, writer: CloneWriter, pending: PendingPack, options: Omit<StorePackOptions, 'promisor'>): Promise<StoredPack>;
+/** The tree id a commit object names. */
+export declare function commitTree(commit: Uint8Array, oid: string): string;
 /**
  * The clone's metadata, its commit and trees, and its plan; or why the
  * server cannot serve the fast path.
@@ -118,6 +155,7 @@ export interface CloneUnsupported {
  * fetch would. Every pack of a partial clone is a promisor pack.
  */
 export declare function cloneFast(context: CloneContext, request: CloneRequest): Promise<ClonePrepared | CloneUnsupported>;
+export declare function concat(parts: Uint8Array[]): Uint8Array;
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */
 export declare function cloneBatch(context: CloneContext, request: {
     jobId: string;
@@ -132,6 +170,7 @@ export declare function cloneFinish(context: CloneContext, request: {
         name: string;
         bytes: number;
     }[];
+    full?: boolean;
 }): Promise<{
     indexEntries: number;
     indexBytes: number;

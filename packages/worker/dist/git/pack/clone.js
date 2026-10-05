@@ -23,8 +23,8 @@ import { encodeIndex, encodeIndexEntry, splitIndexEntries } from './index-file.j
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor } from './processor.js';
 import { discover, requestPack } from './upload-pack.js';
-const STAGE_DIR = '.git/nimbus-clone';
-const PACK_DIR = '.git/objects/pack';
+export const STAGE_DIR = '.git/nimbus-clone';
+export const PACK_DIR = '.git/objects/pack';
 /** Blobs per batch, and at most this many batches. */
 const BLOBS_PER_BATCH = 2_500;
 const MAX_BATCHES = 16;
@@ -62,7 +62,7 @@ class SupervisorPackStore {
         return await readRange(this.supervisor, this.path, offset, length);
     }
 }
-async function readRange(supervisor, path, offset, length) {
+export async function readRange(supervisor, path, offset, length) {
     const out = new Uint8Array(length);
     for (let at = 0; at < length; at += READ_PIECE_BYTES) {
         const want = Math.min(READ_PIECE_BYTES, length - at);
@@ -74,7 +74,7 @@ async function readRange(supervisor, path, offset, length) {
     }
     return out;
 }
-function join(dir, path) {
+export function join(dir, path) {
     return dir + '/' + path;
 }
 function stripSlash(path) {
@@ -120,16 +120,62 @@ function cloneConfig(url, fullRef, filter) {
  * ids the fetch asked for, one "<id> <name>" line each.
  */
 async function storePack(context, writer, stream, tmpName, options) {
+    const stored = await storePackResumable(context, writer, stream, tmpName, options);
+    if ('pending' in stored) {
+        // A clone's batches are sized to decode within one invocation's budget.
+        throw new PackFormatError('pack ' + tmpName + ' ran past its decoding budget after ' + stored.pending.decoded + ' entries');
+    }
+    return stored;
+}
+/** storePack, or where its decoding stopped when the budget ran out first (see resumePack). */
+export async function storePackResumable(context, writer, stream, tmpName, options) {
     const store = new SupervisorPackStore(context.supervisor, join(context.dir, PACK_DIR + '/' + tmpName));
-    const result = await new PackStreamProcessor({ store, cacheBytes: options.cacheBytes, onObject: options.onObject }).run(stream);
+    const result = await new PackStreamProcessor({
+        store,
+        cacheBytes: options.cacheBytes,
+        recentBytes: options.recentBytes,
+        budgetUnits: options.budgetUnits,
+        onObject: options.onObject,
+    }).run(stream);
+    return await settlePack(context, writer, tmpName, result, options.promisor);
+}
+/** Continue decoding a pending pack from its stored bytes; it may stop at the budget again. */
+export async function resumePack(context, writer, pending, options) {
+    const store = new SupervisorPackStore(context.supervisor, join(context.dir, PACK_DIR + '/' + pending.tmpName));
+    store.size = pending.packBytes;
+    const records = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/ckpt-' + pending.tmpName), 0, pending.recordsBytes);
+    const result = await new PackStreamProcessor({
+        store,
+        cacheBytes: options.cacheBytes,
+        recentBytes: options.recentBytes,
+        budgetUnits: options.budgetUnits,
+        onObject: options.onObject,
+    }).resume({ offset: pending.offset, decoded: pending.decoded, records, externalBases: pending.externalBases }, pending.packBytes);
+    return await settlePack(context, writer, pending.tmpName, result, pending.promisor);
+}
+/** Name a fully decoded pack and write its idx (and .promisor); or checkpoint it. */
+async function settlePack(context, writer, tmpName, result, promisor) {
     if (result.checkpoint !== null || result.entries === null) {
-        // A batch is sized to decode within one invocation's budget.
-        throw new PackFormatError('pack ' + tmpName + ' ran past its decoding budget after ' + result.checkpoint?.decoded + ' entries');
+        const checkpoint = result.checkpoint;
+        const recordsBytes = checkpoint.records.byteLength;
+        await writer.file(STAGE_DIR + '/ckpt-' + tmpName, 0o644, checkpoint.records);
+        await writer.flush();
+        return {
+            pending: {
+                tmpName,
+                packBytes: result.packBytes,
+                offset: checkpoint.offset,
+                decoded: checkpoint.decoded,
+                recordsBytes,
+                externalBases: checkpoint.externalBases,
+                ...(promisor === undefined ? {} : { promisor }),
+            },
+        };
     }
     const packSha = oidToHex(result.packSha);
-    await context.supervisor.rename(store.path, join(context.dir, PACK_DIR + '/pack-' + packSha + '.pack'));
-    if (options.promisor !== undefined) {
-        await writer.file(PACK_DIR + '/pack-' + packSha + '.promisor', 0o644, encoder.encode(options.promisor));
+    await context.supervisor.rename(join(context.dir, PACK_DIR + '/' + tmpName), join(context.dir, PACK_DIR + '/pack-' + packSha + '.pack'));
+    if (promisor !== undefined) {
+        await writer.file(PACK_DIR + '/pack-' + packSha + '.promisor', 0o644, encoder.encode(promisor));
     }
     const pieces = [];
     const entries = result.entries;
@@ -139,7 +185,7 @@ async function storePack(context, writer, stream, tmpName, options) {
     return { result, summary: { packSha, packBytes: result.packBytes, objects: result.objects, work: result.work } };
 }
 /** The tree id a commit object names. */
-function commitTree(commit, oid) {
+export function commitTree(commit, oid) {
     const line = /^tree ([0-9a-f]{40})\n/.exec(decoder.decode(commit.subarray(0, 46)));
     if (!line)
         throw new PackFormatError('commit ' + oid + ' names no tree');
@@ -389,7 +435,7 @@ export async function cloneFast(context, request) {
         packs,
     };
 }
-function concat(parts) {
+export function concat(parts) {
     let size = 0;
     for (const part of parts)
         size += part.byteLength;
@@ -468,6 +514,9 @@ export async function cloneFinish(context, request) {
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
     await writer.file('.git/index', 0o644, index);
+    // With its history fetched (history.ts) the clone is no longer shallow.
+    if (request.full === true)
+        await writer.remove('.git/shallow');
     await writer.remove(STAGE_DIR, true);
     await writer.flush();
     return { indexEntries: entries.length, indexBytes };

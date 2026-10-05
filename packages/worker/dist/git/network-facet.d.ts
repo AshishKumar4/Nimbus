@@ -81,6 +81,12 @@ export interface GitNetworkOpts {
     checkoutChunkMaxWallMs?: number;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
     filter?: string;
+    /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
+    historyBlobsPerBatch?: number;
+    /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
+    historyCommitsPerChunk?: number;
+    /** Fast clone, full history: work units one invocation decodes (tuning; processor.ts by default). */
+    historyBudgetUnits?: number;
     /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
     oids?: string[];
     /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
@@ -109,7 +115,7 @@ export interface GitMetadataOverlayStats {
     maxEntries: number;
     maxAccountedBytes: number;
 }
-export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-finish' | 'clone-checkout' | 'clone-abort';
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish' | 'clone-checkout' | 'clone-abort';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
     invocationId: string;
