@@ -4,7 +4,8 @@
 // after an import, on the import's own line, maps to its own column, and the
 // map's sourcesContent is the source. importsNotUsedAsValues "preserve" with
 // every import used (where it is honoured, not refused) is the case an edit
-// once moved.
+// once moved; a fragment that is a string of a line separator, the case a
+// raw one would move every line after it.
 
 import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
@@ -49,6 +50,7 @@ const files = {
   'home/user/p/main.ts': SOURCE,
   'home/user/p/a.ts': 'export const used = 1;\n',
   'home/user/p/b.ts': 'export const other = 2;\n',
+  'home/user/p/frag.tsx': 'export const e = <>x</>; export const after = 1;\nexport const later = 2;\n',
 };
 const strip = (p) => p.replace(/^\/+/, '');
 const fs = {
@@ -75,5 +77,19 @@ for (const compilerOptions of [{ importsNotUsedAsValues: 'preserve' }, { preserv
   }
   const index = map.sources.findIndex((s) => s.endsWith('main.ts'));
   assert.equal(map.sourcesContent[index], SOURCE, `${JSON.stringify(compilerOptions)}: the map's source is the module as written`);
+}
+
+for (const jsxFragment of ['"\u2028"', "'\u2029'"]) {
+  const result = await service.build(['/home/user/p/frag.tsx'], { sourcemap: 'external', jsxFragment });
+  const js = text(result.outputFiles.find((f) => f.path.endsWith('.js')));
+  const map = JSON.parse(text(result.outputFiles.find((f) => f.path.endsWith('.map'))));
+  assert.doesNotMatch(js, /[\u2028\u2029]/, `${jsxFragment}: no raw separator in the output`);
+  const lines = js.split('\n');
+  const sourceLines = files['home/user/p/frag.tsx'].split('\n');
+  for (const token of ['after = 1', 'later = 2']) {
+    const at = lines.findIndex((line) => line.includes(token));
+    const [line, column] = original(map, at + 1, lines[at].indexOf(token)) ?? [];
+    assert.equal(sourceLines[line - 1]?.slice(column, column + token.length), token, `${jsxFragment}: ${token} maps to line ${line}, column ${column}`);
+  }
 }
 console.log('build-tsconfig-sourcemap OK');

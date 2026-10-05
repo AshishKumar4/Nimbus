@@ -12,8 +12,8 @@
  * oxc 0.152.0, rustc 1.98.1 (48a229cea 2026-09-01), 2.23 MiB
  */
 export const OXC_VERSION = "0.152.0";
-export const OXC_WASM_ASSET_PATH = "/_assets/oxc/nimbus-oxc-802dcdbd2b2dfaa6.wasm";
-export const OXC_WASM_BUILD_ID = "802dcdbd2b2dfaa6";
-export const OXC_WASM_SHA256 = "802dcdbd2b2dfaa6636be883e8272e6d227cd24a6dee1b1f1ce96c6bb9bc6df8";
-export const OXC_WASM_BYTES = 2334233;
+export const OXC_WASM_ASSET_PATH = "/_assets/oxc/nimbus-oxc-cffda8a97e42eba6.wasm";
+export const OXC_WASM_BUILD_ID = "cffda8a97e42eba6";
+export const OXC_WASM_SHA256 = "cffda8a97e42eba6a95138485db5056ce363e8a1ce93d01fce99af693a422e79";
+export const OXC_WASM_BYTES = 2333997;
 export const OXC_WASM_MEMORY_PAGES = 67;

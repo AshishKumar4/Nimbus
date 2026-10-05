@@ -74,24 +74,35 @@ published independently in the `@nimbus-sh` npm scope.
   and compiles them with its own transform; it edits only that transform's
   output, at parsed nodes, keeping every position, so the transform's
   source map stays the map. No module's text is edited before rolldown
-  reads it. A constant fragment's placeholder is a name no identifier of the
-  module has, however its source spells it (a binding written
-  `\u005f_nimbusJsxFragment` no longer collides), in both engines.
+  reads it. Its imports are paired with the source's by the bindings they
+  make, so an import the transform adds (the automatic runtime's, its
+  `createElement` fallback's) is never taken for one of the module's; where
+  a pairing is not known the build fails saying so, rather than compile
+  the module otherwise. Under `jsx: 'preserve'` it compiles JSX to JSX. A
+  constant fragment's placeholder is a name no identifier of the module
+  has, however its source spells it (a binding written
+  `\u005f_nimbusJsxFragment` no longer collides), in both engines; a
+  string fragment's line and paragraph separators are written escaped, so
+  no line of the output moves.
 - The worker's Oxc transform (`scripts/oxc-wasm`) takes an import source,
   the development runtime, esbuild's KeepValues and KeepStmt, a constant
   fragment, `alwaysStrict` and the two refusals; rebuilt through its pinned
-  recipe, 2,334,233 bytes (was 2,276,933).
+  recipe, 2,333,997 bytes (was 2,276,933). Its KeepStmt no longer takes an
+  import the transform added (the JSX runtime's, which has no place in the
+  source) for the module's first import, so it keeps that one too.
 
-Checks: `tsconfig-jsx-differential` runs 583 cases against esbuild-wasm
+Checks: `tsconfig-jsx-differential` runs 629 cases against esbuild-wasm
 0.24.2: every JSX mode and source and their precedence (tsx and jsx), each
 other field on a source that shows it (each unused-import flag on imports of
 every shape: unused values, inline types, empty clauses, a brace in a
-comment, a name only a type), through transform (ESM, CommonJS) and build
-(ESM, CommonJS, IIFE). 530 must compile, run and record the same imports
+comment, a name only a type, a type-only import of the module the JSX
+runtime then imports from, preserved JSX), through transform (ESM, CommonJS)
+and build (ESM, CommonJS, IIFE). 576 must compile, run and record the same imports
 and calls as esbuild's output (two outputs that fail alike are no pass); 16
 are refused by field name where esbuild's output runs; 37 must fail where
 esbuild fails. `build-tsconfig-sourcemap` checks a build's map under each
-unused-import flag still maps each token to its own column.
+unused-import flag, and after a fragment of a line separator, still maps
+each token to its own column.
 `facet-host-tsconfig-jsx` runs Kinu's repro through `supervisorEsbuildService`
 from the `facet-host` entry with both facets as production loads them.
 

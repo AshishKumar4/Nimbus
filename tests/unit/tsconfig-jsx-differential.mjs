@@ -97,6 +97,23 @@ export const x = <b>{V}</b>;
   typeName: `import { Shape } from './shapes';
 export const x: Shape = 1;
 `,
+  // A type-only import of the module the automatic runtime's createElement
+  // fallback (a key after a spread) is then imported from.
+  typeFromRuntime: `import { type ReactNode } from 'react';
+const p = { title: 't' };
+export const e = <div {...p} key="k" />;
+export const node: ReactNode = null;
+`,
+  // A type-only import and an empty clause of one module: which comes out bare depends on the flags.
+  typesAndEmpty: `import { type T } from './side';
+import {} from './side';
+import { V } from './v';
+export const x: T = V === 2 ? 1 : 0;
+`,
+  // An empty clause beside preserved JSX.
+  emptyClausePreserved: `import {} from './side';
+export const e = <div />;
+`,
   // A bare import with a brace in a comment where a clause would be.
   keepComment: `import { V } from './v';
 import /* { */ './side';
@@ -129,6 +146,9 @@ const EXPECT = {
   keep: (o) => ran(o) && o.runs.exports.x === 1,
   keepUsed: (o) => ran(o) && o.runs.exports.x === 1,
   keepComment: (o) => ran(o) && o.runs.exports.x === 1,
+  typeFromRuntime: (o) => ran(o) && typeof o.runs.exports.e?.call === 'string',
+  emptyClausePreserved: (o) => o.runs?.preservedJsx === true,
+  typesAndEmpty: (o) => ran(o) && o.runs.exports.x === 1,
   typeName: (o) => ran(o) && o.runs.exports.x === 1,
   emptyClauses: (o) => ran(o) && typeof o.runs.exports.x?.call === 'string',
   fragmentCollision: (o) => ran(o) && typeof o.runs.exports.e?.call === 'string' && o.runs.exports.mine?.[0] === 'mine' && o.runs.exports.mine?.[1] === 'also mine',
@@ -182,6 +202,8 @@ const JSX_CASES = {
   'jsxFragment null': { jsxFragment: 'null' },
   'jsxFragment true': { jsxFragment: 'true' },
   'jsxFragment -1': { jsxFragment: '-1' },
+  'jsxFragment a line separator': { jsxFragment: '"\u2028"' },
+  'jsxFragment a paragraph separator, in single quotes': { jsxFragment: "'\u2029'" },
   'jsxFragment undefined (a name)': { jsxFragment: 'undefined' },
   'jsxFragment "frag", jsxFactory h': { jsxFactory: 'h', jsxFragment: '"frag"' },
   'jsxFragment "frag", tsconfig jsxFragmentFactory': { jsxFragment: '"frag"', tsconfigRaw: tc({ jsxFragmentFactory: 'Frag' }) },
@@ -238,6 +260,28 @@ const FIELD_CASES = {
   'a name only a type: no flags': { source: 'typeName', options: {} },
   'a name only a type: importsNotUsedAsValues preserve (import "x")': { source: 'typeName', options: { tsconfigRaw: tc({ importsNotUsedAsValues: 'preserve' }) } },
   'empty clauses, jsx automatic': { source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic' } },
+  // The createElement fallback's import, from the module a type-only import names.
+  'a type-only import of the runtime, jsx automatic, jsxDev, preserveValueImports': {
+    source: 'typeFromRuntime', loader: 'tsx', options: { jsx: 'automatic', jsxDev: true, tsconfigRaw: tc({ preserveValueImports: true }) },
+  },
+  'a type-only import of the runtime, jsx automatic, preserveValueImports': {
+    source: 'typeFromRuntime', loader: 'tsx', options: { jsx: 'automatic', tsconfigRaw: tc({ preserveValueImports: true }) },
+  },
+  'a type-only import of the runtime, jsx automatic, importsNotUsedAsValues preserve': {
+    source: 'typeFromRuntime', loader: 'tsx', options: { jsx: 'automatic', tsconfigRaw: tc({ importsNotUsedAsValues: 'preserve' }) },
+  },
+  'a type-only import of the runtime, jsx automatic, jsxDev': { source: 'typeFromRuntime', loader: 'tsx', options: { jsx: 'automatic', jsxDev: true } },
+  'a type-only import and an empty clause of one module: no flags': { source: 'typesAndEmpty', options: {} },
+  'a type-only import and an empty clause of one module: preserveValueImports': { source: 'typesAndEmpty', options: { tsconfigRaw: tc({ preserveValueImports: true }) } },
+  'a type-only import and an empty clause of one module: importsNotUsedAsValues preserve': {
+    source: 'typesAndEmpty', options: { tsconfigRaw: tc({ importsNotUsedAsValues: 'preserve' }) },
+  },
+  // An empty clause where the output keeps JSX.
+  'an empty clause, jsx preserve': { source: 'emptyClausePreserved', loader: 'tsx', options: { jsx: 'preserve' } },
+  'an empty clause, jsx preserve, importsNotUsedAsValues preserve': {
+    source: 'emptyClausePreserved', loader: 'tsx', options: { jsx: 'preserve', tsconfigRaw: tc({ importsNotUsedAsValues: 'preserve' }) },
+  },
+  'an empty clause, jsx preserve, preserveValueImports': { source: 'emptyClausePreserved', loader: 'tsx', options: { jsx: 'preserve', tsconfigRaw: tc({ preserveValueImports: true }) } },
   'empty clauses, jsx automatic, jsxDev': { source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic', jsxDev: true } },
   'empty clauses, jsx automatic, preserveValueImports': { source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic', tsconfigRaw: tc({ preserveValueImports: true }) } },
   'empty clauses, jsx automatic, importsNotUsedAsValues preserve': {
@@ -379,7 +423,8 @@ function importsOf(code) {
 let serial = 0;
 /** Run an output: an ES module, a CommonJS one, or an IIFE assigning `out`. */
 async function evaluate(code, format) {
-  if (/<(div|b)[\s>]/.test(code)) return { preservedJsx: true };
+  // Preserved JSX does not run: what it bundled is what it carries.
+  if (/<(div|b)[\s>]/.test(code)) return { preservedJsx: true, bundled: [...code.matchAll(/\.push\("([a-z0-9]+)"\)/g)].map((m) => m[1]) };
   const file = join(scratch, 'src', `out-${serial++}.${format === 'cjs' ? 'cjs' : 'mjs'}`);
   globalThis.__loaded = [];
   try {
@@ -528,11 +573,13 @@ try {
   const sourceFor = (source, loader) => (loader === 'js' ? SOURCES[source].replace(/: string\[\]|: number|: T \| U \| W \| 1|import type .*\n|type [TW],? ?/g, '') : SOURCES[source]);
   for (const [name, { source, loader = 'ts', options }] of Object.entries(FIELD_CASES)) {
     const code = sourceFor(source, loader);
-    for (const format of ['esm', 'cjs']) {
+    // Preserved JSX only as ES modules, as for the JSX cases.
+    const formats = options.jsx === 'preserve' ? ['esm'] : ['esm', 'cjs'];
+    for (const format of formats) {
       await same(`transform ${loader} ${format}: ${name}`, (engine) => transformOutcome(engine, code, loader, format, options), EXPECT[source]);
     }
     // An IIFE only for strictness, the one thing its wrapper changes.
-    for (const format of source === 'strict' ? ['esm', 'cjs', 'iife'] : ['esm', 'cjs']) {
+    for (const format of source === 'strict' ? ['esm', 'cjs', 'iife'] : formats) {
       await same(`build ${loader} ${format}: ${name}`, (engine) => buildOutcome(engine, code, loader, format, options), EXPECT[source]);
     }
   }

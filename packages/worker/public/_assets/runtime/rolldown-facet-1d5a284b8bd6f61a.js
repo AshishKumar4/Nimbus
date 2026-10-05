@@ -14641,7 +14641,8 @@ function ownCompile(api, settings, module) {
     return {
       from: stringOf(child(node, "source"), "value"),
       empty: hasEmptyClause(module.text, node, parsed.comments),
-      typesOnly: specifiers.length > 0 && specifiers.every((s2) => s2.type === "ImportSpecifier" && s2.importKind === "type")
+      typesOnly: specifiers.length > 0 && specifiers.every((s2) => s2.type === "ImportSpecifier" && s2.importKind === "type"),
+      locals: localsOf(node)
     };
   });
   const fixImports = imports && (oneFlag || !settings.keepStatements && sourceImports.some((i2) => i2.empty));
@@ -14655,7 +14656,7 @@ function ownCompile(api, settings, module) {
       const name50 = stringOf(node, "name");
       if (name50 !== null) taken.add(name50);
     }
-    constantText = typeof constant === "string" ? JSON.stringify(constant) : Object.is(constant, -0) ? "-0" : String(constant);
+    constantText = typeof constant === "string" ? JSON.stringify(constant).replace(/\u2028/g, "\\u2028").replace(/\u2029/g, "\\u2029") : Object.is(constant, -0) ? "-0" : String(constant);
     placeholder = "__nimbusJsxFragment".padEnd(constantText.length, "_");
     while (taken.has(placeholder)) placeholder += "_";
   }
@@ -14666,8 +14667,8 @@ function ownCompile(api, settings, module) {
     ...jsxAndTypescriptOf(settings, placeholder)
   });
   if (out.errors.length) return null;
-  const output = parse51(api, module, out.code, "js");
-  if (!output) return null;
+  const output = parse51(api, module, out.code, outputLang(settings, module));
+  if (!output) throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
   const edits = [];
   if (placeholder) {
     for (const node of nodes(output)) {
@@ -14684,13 +14685,17 @@ function ownCompile(api, settings, module) {
     if (!importEdits) return null;
     edits.push(...importEdits);
   }
-  return { code: applyEdits(out.code, edits), map: module.sourcemap ? out.map : void 0 };
+  return { code: applyEdits(out.code, edits), map: module.sourcemap ? out.map : void 0, moduleType: outputLang(settings, module) };
+}
+function outputLang(settings, module) {
+  return settings.jsx.preserve && (module.loader === "jsx" || module.loader === "tsx") ? "jsx" : "js";
 }
 var EMPTY_CLAUSE = /\bimport(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*\{(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*\}/;
 var importsOf = (program) => list(program, "body").filter((node) => node.type === "ImportDeclaration");
 function esbuildImports(api, settings, module, sourceImports, code3, output) {
-  const matched = matchImports(sourceImports, importsOf(output));
-  if (!matched) return null;
+  const blanks = (i2) => !settings.keepStatements && (i2.empty || settings.keepValues && i2.typesOnly);
+  const keptTypes = settings.keepValues || settings.keepStatements;
+  const matched = matchImports(module, sourceImports, importsOf(output), keptTypes, (a2, b2) => blanks(a2) === blanks(b2));
   const edits = [];
   if (!settings.keepStatements) {
     for (const [node, index] of matched) {
@@ -14702,35 +14707,57 @@ function esbuildImports(api, settings, module, sourceImports, code3, output) {
   const plain = { ...settings, keepValues: false, keepStatements: false };
   const out = transformOf(api)(module.path, module.text, { lang: module.loader, sourceType: "unambiguous", ...jsxAndTypescriptOf(plain) });
   if (out.errors.length) return null;
-  const plainOutput = parse51(api, module, out.code, "js");
-  const plainMatched = plainOutput ? matchImports(sourceImports, importsOf(plainOutput)) : null;
-  if (!plainMatched) return null;
+  const plainOutput = parse51(api, module, out.code, outputLang(settings, module));
+  if (!plainOutput) throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
+  const plainMatched = matchImports(module, sourceImports, importsOf(plainOutput), false, () => true);
   const kept = new Map(plainMatched.map(([node, index]) => [index, out.code.slice(node.start, node.end)]));
   for (const [node, index] of matched) {
     const current = code3.slice(node.start, node.end);
     const replacement = kept.get(index) ?? `import ${JSON.stringify(sourceImports[index].from)};`;
     if (replacement === current) continue;
     const firstLine = current.search(/[\n\r\u2028\u2029]/);
-    if (/[\n\r\u2028\u2029]/.test(replacement) || replacement.length > (firstLine < 0 ? current.length : firstLine)) return null;
+    if (/[\n\r\u2028\u2029]/.test(replacement) || replacement.length > (firstLine < 0 ? current.length : firstLine)) {
+      throw new Error(`Nimbus's bundler cannot fit esbuild's import of ${JSON.stringify(sourceImports[index].from)} in ${module.path} where it compiled one`);
+    }
     edits.push({ start: node.start, end: node.end, replacement: replacement + blanked(code3, node.start + replacement.length, node.end).replacement });
   }
   return edits;
 }
-function matchImports(sourceImports, outputImports) {
-  const out = [];
-  let at = 0;
+function localsOf(node) {
+  return list(node, "specifiers").map((specifier) => stringOf(child(specifier, "local"), "name")).filter((name50) => name50 !== null);
+}
+function matchImports(module, sourceImports, outputImports, keptTypes, alike) {
+  const ambiguous = (from) => new Error(`Nimbus's bundler cannot tell which import of ${JSON.stringify(from)} in ${module.path} its compilation kept, to keep it as esbuild would`);
+  const paired = [];
+  const taken = /* @__PURE__ */ new Set();
+  const bare2 = [];
   for (const node of outputImports) {
-    const from = stringOf(child(node, "source"), "value");
-    let found = at;
-    while (found < sourceImports.length && sourceImports[found].from !== from) found++;
-    if (found === sourceImports.length) {
-      if (sourceImports.some((i2) => i2.from === from)) return null;
+    const locals = localsOf(node);
+    if (locals.length === 0) {
+      bare2.push(node);
       continue;
     }
-    out.push([node, found]);
-    at = found + 1;
+    const owners = new Set(locals.map((name50) => sourceImports.findIndex((i2) => i2.locals.includes(name50))).filter((index) => index >= 0));
+    if (owners.size === 0) continue;
+    const [owner] = owners;
+    if (owners.size > 1 || taken.has(owner) || sourceImports[owner].from !== stringOf(child(node, "source"), "value")) {
+      throw ambiguous(stringOf(child(node, "source"), "value"));
+    }
+    taken.add(owner);
+    paired.push([node, owner]);
   }
-  return out;
+  const byModule = /* @__PURE__ */ new Map();
+  for (const node of bare2) {
+    const from = stringOf(child(node, "source"), "value");
+    byModule.set(from, [...byModule.get(from) ?? [], node]);
+  }
+  for (const [from, nodes2] of byModule) {
+    const candidates = sourceImports.map((i2, index) => index).filter((index) => !taken.has(index) && sourceImports[index].from === from && (sourceImports[index].locals.length === 0 || keptTypes && sourceImports[index].typesOnly));
+    if (nodes2.length > candidates.length) throw ambiguous(from);
+    if (nodes2.length < candidates.length && !candidates.every((index) => alike(sourceImports[index], sourceImports[candidates[0]]))) throw ambiguous(from);
+    nodes2.forEach((node, k2) => paired.push([node, candidates[k2]]));
+  }
+  return paired;
 }
 function devFallbackProps(program, importSource) {
   let local = null;
@@ -15388,7 +15415,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       if (compiled && "refused" in compiled) {
         raise(compiled.refused, "", spanLocation(fileOf2({ namespace, path: path3 }), text, compiled.start, compiled.end));
       }
-      if (compiled && "code" in compiled) return { code: compiled.code, map: compiled.map, moduleType: "js" };
+      if (compiled && "code" in compiled) return { code: compiled.code, map: compiled.map, moduleType: compiled.moduleType };
       const moduleType2 = LOADER_MODULE_TYPES[loader];
       if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf2({ namespace, path: path3 })})`);
       return { code: text, moduleType: moduleType2 };

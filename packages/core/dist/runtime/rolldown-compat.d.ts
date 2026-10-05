@@ -41,6 +41,12 @@ export interface CompatModule {
     /** Whether the build makes a source map. */
     sourcemap: boolean;
 }
+/** A module compiled here: JavaScript, or JSX where the build preserves it. */
+export interface CompatCompiled {
+    code: string;
+    map?: unknown;
+    moduleType: 'js' | 'jsx';
+}
 /** A refusal, placed at the module's [start, end) (UTF-16 offsets). */
 export interface CompatRefusal {
     refused: string;
@@ -57,8 +63,5 @@ export declare function jsxAndTypescriptOf(settings: TsSettings, fragment?: stri
  * (which then makes it as esbuild did), a refusal, or the compiled module.
  * Throws where it needs rolldown's transform or parser and the build has none.
  */
-export declare function compileForBuild(api: Partial<CompatApi>, settings: TsSettings, module: CompatModule): CompatRefusal | {
-    code: string;
-    map?: unknown;
-} | null;
+export declare function compileForBuild(api: Partial<CompatApi>, settings: TsSettings, module: CompatModule): CompatRefusal | CompatCompiled | null;
 //# sourceMappingURL=rolldown-compat.d.ts.map

@@ -773,7 +773,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 raise(compiled.refused, '', spanLocation(fileOf({ namespace, path }), text, compiled.start, compiled.end));
             }
             if (compiled && 'code' in compiled)
-                return { code: compiled.code, map: compiled.map, moduleType: 'js' };
+                return { code: compiled.code, map: compiled.map, moduleType: compiled.moduleType };
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)
                 raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path })})`);

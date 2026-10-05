@@ -233,6 +233,7 @@ function ownCompile(api, settings, module) {
             from: stringOf(child(node, 'source'), 'value'),
             empty: hasEmptyClause(module.text, node, parsed.comments),
             typesOnly: specifiers.length > 0 && specifiers.every((s) => s.type === 'ImportSpecifier' && s.importKind === 'type'),
+            locals: localsOf(node),
         };
     });
     const fixImports = imports && (oneFlag || (!settings.keepStatements && sourceImports.some((i) => i.empty)));
@@ -248,7 +249,10 @@ function ownCompile(api, settings, module) {
             if (name !== null)
                 taken.add(name);
         }
-        constantText = typeof constant === 'string' ? JSON.stringify(constant) : Object.is(constant, -0) ? '-0' : String(constant);
+        // A line or paragraph separator escaped: raw, it would end a line, and the map's lines with it.
+        constantText = typeof constant === 'string'
+            ? JSON.stringify(constant).replace(/\u2028/g, '\\u2028').replace(/\u2029/g, '\\u2029')
+            : Object.is(constant, -0) ? '-0' : String(constant);
         placeholder = '__nimbusJsxFragment'.padEnd(constantText.length, '_');
         while (taken.has(placeholder))
             placeholder += '_';
@@ -258,9 +262,9 @@ function ownCompile(api, settings, module) {
     });
     if (out.errors.length)
         return null;
-    const output = parse(api, module, out.code, 'js');
+    const output = parse(api, module, out.code, outputLang(settings, module));
     if (!output)
-        return null;
+        throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
     const edits = [];
     if (placeholder) {
         for (const node of nodes(output)) {
@@ -279,7 +283,11 @@ function ownCompile(api, settings, module) {
             return null;
         edits.push(...importEdits);
     }
-    return { code: applyEdits(out.code, edits), map: module.sourcemap ? out.map : undefined };
+    return { code: applyEdits(out.code, edits), map: module.sourcemap ? out.map : undefined, moduleType: outputLang(settings, module) };
+}
+/** What a compiled module is: JSX where the build preserves it, else JavaScript. */
+function outputLang(settings, module) {
+    return settings.jsx.preserve && (module.loader === 'jsx' || module.loader === 'tsx') ? 'jsx' : 'js';
 }
 /**
  * `import {}`, whitespace or comments anywhere between: an empty import
@@ -295,9 +303,9 @@ const importsOf = (program) => list(program, 'body').filter((node) => node.type 
  * the module itself.
  */
 function esbuildImports(api, settings, module, sourceImports, code, output) {
-    const matched = matchImports(sourceImports, importsOf(output));
-    if (!matched)
-        return null;
+    const blanks = (i) => !settings.keepStatements && (i.empty || (settings.keepValues && i.typesOnly));
+    const keptTypes = settings.keepValues || settings.keepStatements;
+    const matched = matchImports(module, sourceImports, importsOf(output), keptTypes, (a, b) => blanks(a) === blanks(b));
     const edits = [];
     if (!settings.keepStatements) {
         for (const [node, index] of matched) {
@@ -313,10 +321,11 @@ function esbuildImports(api, settings, module, sourceImports, code, output) {
     const out = transformOf(api)(module.path, module.text, { lang: module.loader, sourceType: 'unambiguous', ...jsxAndTypescriptOf(plain) });
     if (out.errors.length)
         return null;
-    const plainOutput = parse(api, module, out.code, 'js');
-    const plainMatched = plainOutput ? matchImports(sourceImports, importsOf(plainOutput)) : null;
-    if (!plainMatched)
-        return null;
+    const plainOutput = parse(api, module, out.code, outputLang(settings, module));
+    if (!plainOutput)
+        throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
+    // Every bare import of a module comes out \`import "x"\` here, whichever source import it was.
+    const plainMatched = matchImports(module, sourceImports, importsOf(plainOutput), false, () => true);
     const kept = new Map(plainMatched.map(([node, index]) => [index, out.code.slice(node.start, node.end)]));
     for (const [node, index] of matched) {
         const current = code.slice(node.start, node.end);
@@ -324,38 +333,71 @@ function esbuildImports(api, settings, module, sourceImports, code, output) {
         if (replacement === current)
             continue;
         const firstLine = current.search(/[\n\r\u2028\u2029]/);
-        if (/[\n\r\u2028\u2029]/.test(replacement) || replacement.length > (firstLine < 0 ? current.length : firstLine))
-            return null;
+        if (/[\n\r\u2028\u2029]/.test(replacement) || replacement.length > (firstLine < 0 ? current.length : firstLine)) {
+            throw new Error(`Nimbus's bundler cannot fit esbuild's import of ${JSON.stringify(sourceImports[index].from)} in ${module.path} where it compiled one`);
+        }
         edits.push({ start: node.start, end: node.end, replacement: replacement + blanked(code, node.start + replacement.length, node.end).replacement });
     }
     return edits;
 }
+/** The local names an import binds. */
+function localsOf(node) {
+    return list(node, 'specifiers').map((specifier) => stringOf(child(specifier, 'local'), 'name')).filter((name) => name !== null);
+}
 /**
- * The output's imports matched to the source's, by module in order (Oxc's
- * elision drops imports, never reorders them): each output import with the
- * index of its source import. An output import of a
- * module the source does not import is the transform's own (the automatic
- * runtime's), and is left; null where one has no source import left to be,
- * whose match then would be a guess.
+ * Each of a compiled module's imports paired with the source import it came
+ * from (its index), by provenance:
+ *
+ * - An import with names is the source import whose bindings it binds
+ *   (elision drops specifiers, never renames them). One binding none of the
+ *   source's is the transform's own (the automatic runtime's, its
+ *   createElement fallback's), and is left out of the pairing; so are the
+ *   names a transform adds to a source import.
+ * - A bare import (\`import "x"\`) is one of the source's imports of that
+ *   module that can come out bare, in order: one with no specifiers, or,
+ *   where the compilation kept type-only imports (\`keptTypes\`), one whose
+ *   every specifier is a type (Oxc's elision otherwise keeps a name of an
+ *   import or drops it whole). Where there are more such imports than bare
+ *   ones, which were dropped is not known: if \`alike\` says they would all
+ *   be edited the same, any pairing will do; else this throws, and the
+ *   build fails saying so, rather than guess.
  */
-function matchImports(sourceImports, outputImports) {
-    const out = [];
-    let at = 0;
+function matchImports(module, sourceImports, outputImports, keptTypes, alike) {
+    const ambiguous = (from) => new Error(`Nimbus's bundler cannot tell which import of ${JSON.stringify(from)} in ${module.path} its compilation kept, to keep it as esbuild would`);
+    const paired = [];
+    const taken = new Set();
+    const bare = [];
     for (const node of outputImports) {
-        const from = stringOf(child(node, 'source'), 'value');
-        let found = at;
-        while (found < sourceImports.length && sourceImports[found].from !== from)
-            found++;
-        if (found === sourceImports.length) {
-            // The transform's own (the automatic runtime's), unless the source imports it too.
-            if (sourceImports.some((i) => i.from === from))
-                return null;
+        const locals = localsOf(node);
+        if (locals.length === 0) {
+            bare.push(node);
             continue;
         }
-        out.push([node, found]);
-        at = found + 1;
+        const owners = new Set(locals.map((name) => sourceImports.findIndex((i) => i.locals.includes(name))).filter((index) => index >= 0));
+        if (owners.size === 0)
+            continue;
+        const [owner] = owners;
+        if (owners.size > 1 || taken.has(owner) || sourceImports[owner].from !== stringOf(child(node, 'source'), 'value')) {
+            throw ambiguous(stringOf(child(node, 'source'), 'value'));
+        }
+        taken.add(owner);
+        paired.push([node, owner]);
     }
-    return out;
+    const byModule = new Map();
+    for (const node of bare) {
+        const from = stringOf(child(node, 'source'), 'value');
+        byModule.set(from, [...(byModule.get(from) ?? []), node]);
+    }
+    for (const [from, nodes] of byModule) {
+        const candidates = sourceImports.map((i, index) => index).filter((index) => !taken.has(index) && sourceImports[index].from === from
+            && (sourceImports[index].locals.length === 0 || (keptTypes && sourceImports[index].typesOnly)));
+        if (nodes.length > candidates.length)
+            throw ambiguous(from);
+        if (nodes.length < candidates.length && !candidates.every((index) => alike(sourceImports[index], sourceImports[candidates[0]])))
+            throw ambiguous(from);
+        nodes.forEach((node, k) => paired.push([node, candidates[k]]));
+    }
+    return paired;
 }
 /**
  * The automatic runtime falls back to `createElement` for a key after a

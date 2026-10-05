@@ -172,6 +172,7 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
             program.body.retain(|statement| match statement {
                 Statement::ImportDeclaration(d) => {
                     !(d.specifiers.as_ref().is_none_or(|s| s.is_empty())
+                        && !d.span.is_empty()
                         && with_clause.iter().any(|(start, _, _)| *start == d.span.start))
                 }
                 _ => true,
@@ -321,7 +322,8 @@ fn keep_statements<'a>(allocator: &'a Allocator, program: &mut Program<'a>, with
         .body
         .iter()
         .filter_map(|statement| match statement {
-            Statement::ImportDeclaration(d) => Some(d.span.start),
+            // The transform's own imports (the JSX runtime's) have no span: none of them is the source's.
+            Statement::ImportDeclaration(d) if !d.span.is_empty() => Some(d.span.start),
             _ => None,
         })
         .collect();
