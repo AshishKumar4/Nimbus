@@ -37,6 +37,13 @@ published independently in the `@nimbus-sh` npm scope.
   and `extends` in a build (esbuild failed reading the file). esbuild's
   warnings about a tsconfig (a misplaced option, an invalid factory, an
   unknown target) are reported, without their place in it.
+- In a build, the development runtime's `jsxDEV` names each file by its
+  absolute path (`fileName: "/home/user/app/src/App.tsx"`): rolldown gave it
+  relative to its working directory (`home/user/…`), and 0.14.0's esbuild
+  put its plugin namespace before it (`nimbus-vfs:/home/user/…`). The build
+  facet transforms such a module itself with rolldown's own transform, given
+  the absolute path; its source map is unchanged. A transform has no path,
+  and names the file `<stdin>`, as esbuild did.
 - The worker's Oxc transform (`scripts/oxc-wasm`) takes an import source,
   the development runtime, `preserveValueImports`, `alwaysStrict` and the
   two refusals; rebuilt through its pinned recipe, 2,296,353 bytes (was

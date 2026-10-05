@@ -58,7 +58,9 @@ try {
   {
     const code = text(await service.build(['/a.tsx'], { jsx: 'automatic', jsxImportSource: 'preact', jsxDev: true }));
     assert.match(code, /^import \{ jsxDEV \} from "preact\/jsx-dev-runtime";$/m, code);
-    console.log('  ok  build: jsx automatic, jsxImportSource and jsxDev');
+    // jsxDEV names the file by its absolute path, as the session sees it.
+    assert.match(code, /_jsxFileName = "\/a\.tsx"/, code);
+    console.log('  ok  build: jsx automatic, jsxImportSource and jsxDev, the file named by its absolute path');
   }
   // The same tsconfig through transform(), which refused it too.
   {

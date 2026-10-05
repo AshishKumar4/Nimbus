@@ -4218,7 +4218,7 @@ function bindingifyPlugin(plugin, options, outputOptions, pluginContextData, nor
   const { plugin: resolveId, meta: resolveIdMeta, filter: resolveIdFilter } = bindingifyResolveId(args2);
   const { plugin: resolveDynamicImport, meta: resolveDynamicImportMeta } = bindingifyResolveDynamicImport(args2);
   const { plugin: buildEnd, meta: buildEndMeta } = bindingifyBuildEnd(args2);
-  const { plugin: transform, meta: transformMeta, filter: transformFilter } = bindingifyTransform(args2);
+  const { plugin: transform2, meta: transformMeta, filter: transformFilter } = bindingifyTransform(args2);
   const { plugin: moduleParsed, meta: moduleParsedMeta } = bindingifyModuleParsed(args2);
   const { plugin: load2, meta: loadMeta, filter: loadFilter } = bindingifyLoad(args2);
   const { plugin: renderChunk, meta: renderChunkMeta, filter: renderChunkFilter } = bindingifyRenderChunk(args2);
@@ -4248,7 +4248,7 @@ function bindingifyPlugin(plugin, options, outputOptions, pluginContextData, nor
     resolveDynamicImportMeta,
     buildEnd,
     buildEndMeta,
-    transform,
+    transform: transform2,
     transformMeta,
     transformFilter,
     moduleParsed,
@@ -4336,13 +4336,13 @@ function wrapHandlers(plugin, owner, timings) {
   return plugin;
 }
 function normalizeTransformOptions(inputOptions) {
-  const transform = inputOptions.transform;
-  const define = transform?.define ? Object.entries(transform.define) : void 0;
-  const inject = transform?.inject;
-  const dropLabels = transform?.dropLabels;
+  const transform2 = inputOptions.transform;
+  const define = transform2?.define ? Object.entries(transform2.define) : void 0;
+  const inject = transform2?.inject;
+  const dropLabels = transform2?.dropLabels;
   let oxcTransformOptions;
-  if (transform) {
-    const { define: _define, inject: _inject, dropLabels: _dropLabels, ...rest } = transform;
+  if (transform2) {
+    const { define: _define, inject: _inject, dropLabels: _dropLabels, ...rest } = transform2;
     if (Object.keys(rest).length > 0) {
       if (rest.jsx === false) rest.jsx = "disable";
       oxcTransformOptions = rest;
@@ -4480,7 +4480,7 @@ function bindingifyExperimental(experimental) {
   };
 }
 function bindingifyResolve(resolve) {
-  const yarnPnp = typeof process === "object" && !!process.versions?.pnp;
+  const yarnPnp2 = typeof process === "object" && !!process.versions?.pnp;
   if (resolve) {
     const { alias, extensionAlias, ...rest } = resolve;
     return {
@@ -4492,10 +4492,10 @@ function bindingifyResolve(resolve) {
         target: name50,
         replacements: value
       })) : void 0,
-      yarnPnp,
+      yarnPnp: yarnPnp2,
       ...rest
     };
-  } else return { yarnPnp };
+  } else return { yarnPnp: yarnPnp2 };
 }
 function bindingifyInject(inject) {
   if (inject) return Object.entries(inject).map(([alias, item]) => {
@@ -7876,6 +7876,47 @@ if (isMainThread) {
     subscriberGuard?.close();
   });
 }
+
+// ../../node_modules/.bun/rolldown@1.2.11/node_modules/rolldown/dist/shared/resolve-tsconfig-DHwpIs5e.mjs
+var import_binding8 = /* @__PURE__ */ n2(t2(), 1);
+var yarnPnp$1 = typeof process === "object" && !!process.versions?.pnp;
+function normalizeBindingWarning(warning) {
+  if (warning.type === "JsError") return warning.field0;
+  return {
+    code: warning.field0.kind,
+    message: warning.field0.message,
+    id: warning.field0.id,
+    exporter: warning.field0.exporter,
+    loc: warning.field0.loc,
+    pos: warning.field0.pos
+  };
+}
+function transformSync(filename, sourceText, options, cache) {
+  const result = (0, import_binding8.enhancedTransformSync)(filename, sourceText, options, cache, yarnPnp$1);
+  return {
+    ...result,
+    errors: result.errors.map(normalizeBindingError),
+    warnings: result.warnings.map(normalizeBindingWarning)
+  };
+}
+var yarnPnp = typeof process === "object" && !!process.versions?.pnp;
+var TsconfigCache = class extends import_binding8.TsconfigCache {
+  constructor(pathToTsconfig) {
+    super(yarnPnp, pathToTsconfig);
+  }
+};
+
+// ../../node_modules/.bun/rolldown@1.2.11/node_modules/rolldown/dist/experimental-index.mjs
+init_shims();
+var import_binding9 = /* @__PURE__ */ n(t(), 1);
+var transformSync2 = transformSync;
+var BindingRebuildStrategy = import_binding9.BindingRebuildStrategy;
+var ResolverFactory = import_binding9.ResolverFactory;
+var getNativeMemoryStats = import_binding9.getNativeMemoryStats;
+var isolatedDeclaration = import_binding9.isolatedDeclaration;
+var isolatedDeclarationSync = import_binding9.isolatedDeclarationSync;
+var moduleRunnerTransform = import_binding9.moduleRunnerTransform;
+var resetNativeMemoryStats = import_binding9.resetNativeMemoryStats;
 
 // ../../node_modules/.bun/css-tree@3.2.1/node_modules/css-tree/lib/utils/List.js
 var releasedCursors = null;
@@ -13656,7 +13697,7 @@ function quoted(text, quote) {
 }
 var quoteString = (text) => quoted(text, bestQuote(text, false));
 var printUrl = (url, alwaysQuoted) => `url(${quoted(url, bestQuote(url, !alwaysQuoted))})`;
-function printComponents(components, minify) {
+function printComponents(components, minify2) {
   let out = "";
   let pendingSpace = false;
   let afterComma = false;
@@ -13665,14 +13706,14 @@ function printComponents(components, minify) {
       if (c3.type === WhiteSpace) pendingSpace = true;
       continue;
     }
-    if (out && pendingSpace && c3.type !== Comma && !(afterComma && minify)) out += " ";
+    if (out && pendingSpace && c3.type !== Comma && !(afterComma && minify2)) out += " ";
     pendingSpace = false;
     afterComma = c3.type === Comma;
     const urlArgument = c3.type === Function && valueOf(c3) === "url" ? trim(c3.children ?? []) : [];
     if (c3.type === String2) out += quoteString(valueOf(c3));
     else if (c3.type === Url) out += printUrl(valueOf(c3), false);
     else if (urlArgument.length === 1 && urlArgument[0].type === String2) out += printUrl(valueOf(urlArgument[0]), false);
-    else if (c3.children) out += c3.text + printComponents(trim(c3.children), minify) + closing(c3);
+    else if (c3.children) out += c3.text + printComponents(trim(c3.children), minify2) + closing(c3);
     else out += c3.text;
   }
   return out;
@@ -13921,7 +13962,7 @@ function fileOf(module) {
   return module.namespace === "file" || module.namespace === "" ? module.path : `${module.namespace}:${module.path}`;
 }
 var utf8Length = (text) => new TextEncoder().encode(text).length;
-async function bundleCss(modules, plugin, assets, { minify }) {
+async function bundleCss(modules, plugin, assets, { minify: minify2 }) {
   const diagnostic = (module, at, length, text, pluginName = "") => {
     const before = module.source.slice(0, at);
     const line = before.split(/\r\n|\r|\n/).length;
@@ -14020,7 +14061,7 @@ async function bundleCss(modules, plugin, assets, { minify }) {
   }
   const order = importOrder(roots);
   const warnings = [...files.values()].flatMap((file) => file.sheet.warnings.map((w2) => diagnostic(file.module, w2.at, w2.length, w2.text)));
-  return { css: printBundle(order, minify), warnings };
+  return { css: printBundle(order, minify2), warnings };
 }
 function isConditionalImportRedundant(earlier, later) {
   if (later.length > earlier.length) return false;
@@ -14153,15 +14194,15 @@ function importOrder(roots) {
   }
   return merged;
 }
-function wrapRules(rules, conditions, minify) {
-  const block = (prelude, inner) => minify ? `${prelude}{${inner.join("")}}` : `${prelude} {
+function wrapRules(rules, conditions, minify2) {
+  const block = (prelude, inner) => minify2 ? `${prelude}{${inner.join("")}}` : `${prelude} {
 ${inner.join("\n")}
 }`;
   let out = rules;
   for (let i2 = conditions.length - 1; i2 >= 0; i2--) {
     const item = conditions[i2];
     for (const layer of item.layers) {
-      const name50 = layer.children ? printComponents(layer.children, minify) : "";
+      const name50 = layer.children ? printComponents(layer.children, minify2) : "";
       if (out.length === 0) {
         if (!layer.children) continue;
         out = [`@layer ${name50};`];
@@ -14170,16 +14211,16 @@ ${inner.join("\n")}
       out = [block(name50 ? `@layer ${name50}` : "@layer", out)];
     }
     if (out.length > 0) {
-      for (const supports of item.supports) out = [block(`@supports (${printComponents(supports.children ?? [], minify)})`, out)];
+      for (const supports of item.supports) out = [block(`@supports (${printComponents(supports.children ?? [], minify2)})`, out)];
     }
-    if (out.length > 0 && item.media.length > 0) out = [block(`@media ${printComponents(item.media, minify)}`, out)];
+    if (out.length > 0 && item.media.length > 0) out = [block(`@media ${printComponents(item.media, minify2)}`, out)];
   }
   return out;
 }
-function printImport(path3, conditions, minify) {
+function printImport(path3, conditions, minify2) {
   const parts = conditions ? [conditions.layers, conditions.supports, conditions.media].filter((p) => p.length) : [];
-  const printed = parts.map((p) => printComponents(p, minify)).join(" ");
-  return minify ? `@import${quoteString(path3)}${printed};` : `@import ${quoteString(path3)}${printed ? " " + printed : ""};`;
+  const printed = parts.map((p) => printComponents(p, minify2)).join(" ");
+  return minify2 ? `@import${quoteString(path3)}${printed};` : `@import ${quoteString(path3)}${printed ? " " + printed : ""};`;
 }
 function shortestDataUrl(mimeType, text) {
   const bytes = new TextEncoder().encode(text);
@@ -14205,29 +14246,29 @@ function percentEscapedDataUrl(mimeType, text) {
   }
   return out;
 }
-function printBundle(order, minify) {
+function printBundle(order, minify2) {
   const pieces = [];
   const legal = [];
   let charset = false;
   for (const entry of order) {
     if (entry.kind === "layers") {
-      const statement = entry.layers.length ? [`@layer ${entry.layers.map((name50) => name50.join(".")).join(minify ? "," : ", ")};`] : [];
-      pieces.push(wrapRules(statement, entry.conditions, minify).join(minify ? "" : "\n"));
+      const statement = entry.layers.length ? [`@layer ${entry.layers.map((name50) => name50.join(".")).join(minify2 ? "," : ", ")};`] : [];
+      pieces.push(wrapRules(statement, entry.conditions, minify2).join(minify2 ? "" : "\n"));
     } else if (entry.kind === "external") {
       let path3 = entry.path;
-      for (let i2 = entry.conditions.length - 1; i2 > 0; i2--) path3 = shortestDataUrl("text/css", printImport(path3, entry.conditions[i2], minify));
-      pieces.push(printImport(path3, entry.conditions[0], minify));
+      for (let i2 = entry.conditions.length - 1; i2 > 0; i2--) path3 = shortestDataUrl("text/css", printImport(path3, entry.conditions[i2], minify2));
+      pieces.push(printImport(path3, entry.conditions[0], minify2));
     } else {
       const file = entry.file;
       if (file.sheet.hasCharset) charset = true;
       for (const comment of file.sheet.legal) if (!legal.includes(comment)) legal.push(comment);
-      const body = wrapRules(file.rules, entry.conditions, minify).join(minify ? "" : "\n");
-      pieces.push(minify ? body : `/* ${fileOf(file.module)} */
+      const body = wrapRules(file.rules, entry.conditions, minify2).join(minify2 ? "" : "\n");
+      pieces.push(minify2 ? body : `/* ${fileOf(file.module)} */
 ${body}`);
     }
   }
   const head = charset ? ['@charset "UTF-8";'] : [];
-  const sheet = [...head, ...pieces.filter((piece) => piece !== "")].join(minify ? "" : "\n");
+  const sheet = [...head, ...pieces.filter((piece) => piece !== "")].join(minify2 ? "" : "\n");
   return `${sheet}
 ${legal.map((comment) => comment + "\n").join("")}`;
 }
@@ -14793,9 +14834,28 @@ function spanLocation(file, source, start, end) {
 }
 var UnresolvedImports = class extends Error {
 };
-function inputOptionsOf(options, settings = resolveTsSettings(options, "build")) {
-  const { jsx } = settings;
+function jsxAndTypescriptOf({ jsx, preserveValueImports }) {
   const classic = !jsx.preserve && !jsx.automatic;
+  return {
+    jsx: jsx.preserve ? "preserve" : jsx.automatic ? { runtime: "automatic", importSource: jsx.importSource ?? "react", development: jsx.development } : { runtime: "classic", pragma: jsx.factory ?? "React.createElement", pragmaFrag: jsx.fragment ?? "React.Fragment" },
+    typescript: {
+      // The import the classic factory keeps for the JSX that calls it. The
+      // automatic runtime and preserved JSX call nothing the file imports,
+      // so (as for esbuild) an import of React they leave unused is
+      // dropped: an empty pragma names no import.
+      jsxPragma: classic ? jsx.factory ?? "React.createElement" : "",
+      jsxPragmaFrag: classic ? jsx.fragment ?? "React.Fragment" : "",
+      onlyRemoveTypeImports: preserveValueImports
+    }
+  };
+}
+function devJsx(api, settings, path3, text, loader, sourcemap) {
+  if (!settings.jsx.automatic || !settings.jsx.development || loader !== "jsx" && loader !== "tsx") return null;
+  if (!api.transformSync) throw new Error("Nimbus's bundler has no transform of its own for jsxDev");
+  const out = api.transformSync(path3, text, { lang: loader, sourceType: "unambiguous", sourcemap, ...jsxAndTypescriptOf(settings) });
+  return out.errors.length ? null : { code: out.code, map: sourcemap ? out.map : void 0 };
+}
+function inputOptionsOf(options, settings = resolveTsSettings(options, "build")) {
   return {
     cwd: "/",
     platform: options.platform ?? "browser",
@@ -14803,16 +14863,7 @@ function inputOptionsOf(options, settings = resolveTsSettings(options, "build"))
     transform: {
       target: typeof options.target === "string" ? options.target : "esnext",
       define: options.define,
-      jsx: jsx.preserve ? "preserve" : jsx.automatic ? { runtime: "automatic", importSource: jsx.importSource ?? "react", development: jsx.development } : { runtime: "classic", pragma: jsx.factory ?? "React.createElement", pragmaFrag: jsx.fragment ?? "React.Fragment" },
-      typescript: {
-        // The import the classic factory keeps for the JSX that calls it. The
-        // automatic runtime and preserved JSX call nothing the file imports,
-        // so (as for esbuild) an import of React they leave unused is
-        // dropped: an empty pragma names no import.
-        jsxPragma: classic ? jsx.factory ?? "React.createElement" : "",
-        jsxPragmaFrag: classic ? jsx.fragment ?? "React.Fragment" : "",
-        onlyRemoveTypeImports: settings.preserveValueImports
-      }
+      ...jsxAndTypescriptOf(settings)
     },
     checks: { pluginTimings: false },
     // esbuild keeps an imported constant a reference: inlining its value
@@ -15059,6 +15110,13 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
         const found = refusedIn(this.parse, text, loader, settings.refuse);
         if (found) raise(found.text, "", spanLocation(fileOf2({ namespace, path: path3 }), text, found.start, found.end));
       }
+      let transformed = null;
+      try {
+        transformed = devJsx(api, settings, path3, text, loader, options.sourcemap !== void 0 && options.sourcemap !== false);
+      } catch (error2) {
+        raise(error2 instanceof Error ? error2.message : String(error2));
+      }
+      if (transformed) return { ...transformed, moduleType: "js" };
       const moduleType2 = LOADER_MODULE_TYPES[loader];
       if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf2({ namespace, path: path3 })})`);
       return { code: text, moduleType: moduleType2 };
@@ -15385,7 +15443,7 @@ async function prebundleSlice(spec2, build3) {
 
 // scripts/rolldown-facet/entry.mjs
 function build2(options, plugin) {
-  return buildWithRolldown({ rolldown }, options, plugin);
+  return buildWithRolldown({ rolldown, transformSync: transformSync2 }, options, plugin);
 }
 function prebundle(spec2) {
   return prebundleSlice(spec2, build2);

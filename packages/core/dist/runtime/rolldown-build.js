@@ -463,6 +463,43 @@ function spanLocation(file, source, start, end) {
 /** The build failed with imports that did not resolve: they are placed once its bundle is closed. */
 class UnresolvedImports extends Error {
 }
+/** rolldown's (Oxc's) JSX and TypeScript options for the settings, for its own transform and `devJsx`'s alike. */
+function jsxAndTypescriptOf({ jsx, preserveValueImports }) {
+    const classic = !jsx.preserve && !jsx.automatic;
+    return {
+        jsx: jsx.preserve
+            ? 'preserve'
+            : jsx.automatic
+                ? { runtime: 'automatic', importSource: jsx.importSource ?? 'react', development: jsx.development }
+                : { runtime: 'classic', pragma: jsx.factory ?? 'React.createElement', pragmaFrag: jsx.fragment ?? 'React.Fragment' },
+        typescript: {
+            // The import the classic factory keeps for the JSX that calls it. The
+            // automatic runtime and preserved JSX call nothing the file imports,
+            // so (as for esbuild) an import of React they leave unused is
+            // dropped: an empty pragma names no import.
+            jsxPragma: classic ? jsx.factory ?? 'React.createElement' : '',
+            jsxPragmaFrag: classic ? jsx.fragment ?? 'React.Fragment' : '',
+            onlyRemoveTypeImports: preserveValueImports,
+        },
+    };
+}
+/**
+ * A JSX module under the automatic runtime's development variant, transformed
+ * before rolldown sees it: jsxDEV's `fileName` is the path its transform is
+ * given, and rolldown gives its own transform the module's id relative to its
+ * cwd (`home/user/…`), where this one is given the module's absolute path
+ * (esbuild wrote its namespace before it, `nimbus-vfs:/home/user/…`). The
+ * same options, so the output is otherwise rolldown's; a module that does not
+ * parse is left to rolldown to report. Null for every other module.
+ */
+function devJsx(api, settings, path, text, loader, sourcemap) {
+    if (!settings.jsx.automatic || !settings.jsx.development || (loader !== 'jsx' && loader !== 'tsx'))
+        return null;
+    if (!api.transformSync)
+        throw new Error('Nimbus\'s bundler has no transform of its own for jsxDev');
+    const out = api.transformSync(path, text, { lang: loader, sourceType: 'unambiguous', sourcemap, ...jsxAndTypescriptOf(settings) });
+    return out.errors.length ? null : { code: out.code, map: sourcemap ? out.map : undefined };
+}
 /**
  * The input options a build and its placement pass give rolldown alike:
  * everything that decides which imports a module has (platform, target,
@@ -471,8 +508,6 @@ class UnresolvedImports extends Error {
  * (tsconfig-raw.ts), which build() has already checked.
  */
 function inputOptionsOf(options, settings = resolveTsSettings(options, 'build')) {
-    const { jsx } = settings;
-    const classic = !jsx.preserve && !jsx.automatic;
     return {
         cwd: '/',
         platform: options.platform ?? 'browser',
@@ -480,20 +515,7 @@ function inputOptionsOf(options, settings = resolveTsSettings(options, 'build'))
         transform: {
             target: typeof options.target === 'string' ? options.target : 'esnext',
             define: options.define,
-            jsx: jsx.preserve
-                ? 'preserve'
-                : jsx.automatic
-                    ? { runtime: 'automatic', importSource: jsx.importSource ?? 'react', development: jsx.development }
-                    : { runtime: 'classic', pragma: jsx.factory ?? 'React.createElement', pragmaFrag: jsx.fragment ?? 'React.Fragment' },
-            typescript: {
-                // The import the classic factory keeps for the JSX that calls it. The
-                // automatic runtime and preserved JSX call nothing the file imports,
-                // so (as for esbuild) an import of React they leave unused is
-                // dropped: an empty pragma names no import.
-                jsxPragma: classic ? jsx.factory ?? 'React.createElement' : '',
-                jsxPragmaFrag: classic ? jsx.fragment ?? 'React.Fragment' : '',
-                onlyRemoveTypeImports: settings.preserveValueImports,
-            },
+            ...jsxAndTypescriptOf(settings),
         },
         checks: { pluginTimings: false },
         // esbuild keeps an imported constant a reference: inlining its value
@@ -824,6 +846,15 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
                 if (found)
                     raise(found.text, '', spanLocation(fileOf({ namespace, path }), text, found.start, found.end));
             }
+            let transformed = null;
+            try {
+                transformed = devJsx(api, settings, path, text, loader, options.sourcemap !== undefined && options.sourcemap !== false);
+            }
+            catch (error) {
+                raise(error instanceof Error ? error.message : String(error));
+            }
+            if (transformed)
+                return { ...transformed, moduleType: 'js' };
             const moduleType = LOADER_MODULE_TYPES[loader];
             if (!moduleType)
                 raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf({ namespace, path })})`);

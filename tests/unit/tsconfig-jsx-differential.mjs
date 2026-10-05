@@ -22,20 +22,31 @@ import { oxcEngine } from './lib/oxc-engine.mjs';
 
 const esbuild = await esbuildEngine();
 assert.equal(esbuild.version, '0.24.2');
-const rolldown = await import(createRequire(new URL('../../packages/worker/package.json', import.meta.url)).resolve('rolldown'));
+const fromWorker = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
+// What the build facet's runtime hands the adapter (scripts/rolldown-facet/entry.mjs).
+const rolldown = {
+  rolldown: (await import(fromWorker.resolve('rolldown'))).rolldown,
+  transformSync: (await import(fromWorker.resolve('rolldown/experimental'))).transformSync,
+};
 
 const tc = (compilerOptions) => JSON.stringify({ compilerOptions });
 
 // ── Sources ─────────────────────────────────────────────────────────────
 
 // Every JSX shape a runtime sees differently: attributes, a key after a
-// spread, mapped children with keys, a fragment, a single child. The imports
-// serve the classic runtimes; TypeScript drops the ones a mode leaves unused.
+// spread, mapped children with keys, a fragment, a single child; and JSX in a
+// method, a function and an arrow, where the development runtime's \`self\` is
+// what \`this\` is there. The imports serve the classic runtimes; TypeScript
+// drops the ones a mode leaves unused.
 const JSX_SOURCE = `import React from 'react';
 import { h, Frag } from 'jsx-lib';
 const p = { title: 't' };
 export const el = <div id="a"><span key="k" {...p} />{[1, 2].map((n) => <i key={n}>{n}</i>)}<>frag</></div>;
 export const one = <b>1</b>;
+class View { name = 'view'; render() { return <p>{this.name}</p>; } }
+export const method = new View().render();
+export const fn = (function () { return <q />; }).call({ name: 'receiver' });
+export const arrow = (() => <s />)();
 `;
 const SOURCES = {
   jsx: JSX_SOURCE,
@@ -278,17 +289,18 @@ const PROJECT_MODULES = Object.fromEntries(['a', 'u', 'd', 'ns'].map((name) => [
  * are the bundler's to drop when the bundle never uses them (rolldown keeps
  * `import "x"` where esbuild kept the names; the module still runs first), so
  * a build's imports are the modules it imports. What the names did shows in
- * the run. jsxDEV's `fileName` names the module as each bundler does, its
- * path (rolldown: from `/`, without the slash; esbuild: in its namespace).
+ * the run. jsxDEV's `fileName` is the module's absolute path: esbuild wrote
+ * 0.14.0's plugin namespace before it (`nimbus-vfs:/home/user/…`), which is
+ * not part of the path, so the expected value is esbuild's without it.
  */
-function buildComparable(outcome) {
+function buildComparable(engine, outcome) {
   if (!outcome.imports) return outcome;
   const fileName = (value) => {
     if (Array.isArray(value)) return value.map(fileName);
     if (value === null || typeof value !== 'object') return value;
-    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, k === 'fileName' && typeof v === 'string' ? v.replace(/^(nimbus-vfs:)?\/?/, '/') : fileName(v)]));
+    return Object.fromEntries(Object.entries(value).map(([k, v]) => [k, k === 'fileName' && typeof v === 'string' ? v.replace(/^nimbus-vfs:/, '') : fileName(v)]));
   };
-  return { ...outcome, imports: outcome.imports.map((entry) => entry.split(':')[0]), runs: fileName(outcome.runs) };
+  return { ...outcome, imports: outcome.imports.map((entry) => entry.split(':')[0]), runs: engine === 'esbuild' ? fileName(outcome.runs) : outcome.runs };
 }
 
 async function buildOutcome(engine, code, loader, format, options) {
@@ -298,7 +310,7 @@ async function buildOutcome(engine, code, loader, format, options) {
     const result = await service.build([entry], { format, ...(format === 'iife' ? { globalName: 'out' } : {}), ...options });
     const { contents } = result.outputFiles.find((f) => f.path.endsWith('.js'));
     const output = typeof contents === 'string' ? contents : new TextDecoder().decode(contents);
-    return buildComparable({ imports: importsOf(output), runs: await evaluate(output, format), warnings: warningsOf(result.warnings) });
+    return buildComparable(engine, { imports: importsOf(output), runs: await evaluate(output, format), warnings: warningsOf(result.warnings) });
   } catch (error) {
     return { failure: error.message };
   }

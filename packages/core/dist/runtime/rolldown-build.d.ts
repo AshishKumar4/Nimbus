@@ -36,6 +36,15 @@ export interface RolldownApi {
         }>;
         close(): Promise<void>;
     }>;
+    /**
+     * rolldown's own transform (`rolldown/experimental`), for the one module a
+     * build transforms itself (see `devJsx`); without it such a build is refused.
+     */
+    transformSync?(filename: string, source: string, options: Record<string, unknown>): {
+        code: string;
+        map?: unknown;
+        errors: unknown[];
+    };
 }
 type RolldownOutput = {
     type: 'chunk';
