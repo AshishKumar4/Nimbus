@@ -233,10 +233,15 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   private _fsMutation<T>(op: SupervisorDeliveredOpName, args: NonNullable<SupervisorOpEnvelope['args']>): Promise<T> {
     const hostIncarnation = this._hostIncarnation();
-    if (hostIncarnation === undefined) return this._fsOp<T>(op, args);
+    // A binding minted under an exclusive mutation lease presents it on every
+    // mutation, as writeBatchStream does: the leased writer's own ranged
+    // writes land under its root, and every other writer's are EBUSY.
+    const mutationOwner = this._mutationOwner();
+    const lease = mutationOwner === undefined ? {} : { mutationOwner };
+    if (hostIncarnation === undefined) return this._op<T>(op, args, { pid: this._pid(), ...lease });
     const id = crypto.randomUUID();
     return this._resent<T>(
-      { op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id, hostIncarnation } },
+      { op: SUPERVISOR_DELIVER_OP, args, pid: this._pid(), delivery: { op, id, hostIncarnation }, ...lease },
       { kind: 'deliver', operationId: id },
       { retryWindowMs: VFS_DELIVERY_RETRY_WINDOW_MS },
     );
@@ -277,6 +282,12 @@ export class SupervisorRPC extends WorkerEntrypoint {
       (host) => hostOpDispatch(host, 'SupervisorRPC', this._route())(envelope) as Promise<T>,
       { ...policy, span },
     ));
+  }
+
+  private _mutationOwner(): string | undefined {
+    const props = this.ctx.props;
+    if (typeof props !== 'object' || props === null || !('mutationOwner' in props)) return undefined;
+    return typeof props.mutationOwner === 'string' ? props.mutationOwner : undefined;
   }
 
   private _hostIncarnation(): string | undefined {
@@ -707,8 +718,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     setLastRpcFrame('writeBatchStream', -1);
     rpcPayloadStart(STREAM_RESIDENT_BYTES);
     try {
-      const mutationOwner = (this.ctx as any).props?.mutationOwner;
-      return await this._call(this._op('writeBatchStream', [], { pid: this._pid(), mutationOwner: typeof mutationOwner === 'string' ? mutationOwner : undefined, stream }));
+      return await this._call(this._op('writeBatchStream', [], { pid: this._pid(), mutationOwner: this._mutationOwner(), stream }));
     } finally {
       rpcPayloadEnd(STREAM_RESIDENT_BYTES);
     }

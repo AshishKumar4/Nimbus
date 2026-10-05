@@ -3393,8 +3393,9 @@ export class SqliteVFS {
     }
   }
 
-  assertMutationAllowed(path: string): void {
-    this.assertMutationsAllowed([path]);
+  /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
+  assertMutationAllowed(path: string, owner?: string): void {
+    this.withMutationOwner(owner, () => this.assertMutationsAllowed([path]));
   }
 
   /**

@@ -52,6 +52,7 @@ import {
   type VfsListEntry,
   type VfsListPage,
   type VfsMutationReceipt,
+  type RuntimeMutationOwner,
 } from './os-contracts.js';
 import {
   closeDescriptions,
@@ -152,7 +153,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   readRange(path: RuntimeFsPath, offset: number, length: number, options?: RuntimeReadOptions): Uint8Array | null {
     this.guard(); return this.reading(() => this.target.readRange(path, offset, length, options));
   }
-  writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }): VfsMutationReceipt {
+  writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner): VfsMutationReceipt {
     this.guard(); return this.target.writeRange(path, offset, bytes, options);
   }
   writeFileFrom(path: RuntimeFsPath, size: number, source: AsyncIterable<Uint8Array>): Promise<number> {
@@ -169,7 +170,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
       guard();
     })());
   }
-  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): VfsMutationReceipt { this.guard(); return this.target.truncate(path, size, options); }
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner): VfsMutationReceipt { this.guard(); return this.target.truncate(path, size, options); }
   utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): VfsMutationReceipt {
     this.guard(); return this.target.utimes(path, atimeMs, mtimeMs, options);
   }
@@ -186,7 +187,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): void { this.guard(); return this.target.mkdir(path, options); }
   unlink(path: RuntimeFsPath): void { this.guard(); return this.target.unlink(path); }
   rmdir(path: RuntimeFsPath): void { this.guard(); return this.target.rmdir(path); }
-  rename(from: RuntimeFsPath, to: RuntimeFsPath): void { this.guard(); return this.target.rename(from, to); }
+  rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.rename(from, to, options); }
   readlink(path: RuntimeFsPath): string | null { this.guard(); return this.target.readlink(path); }
   linkLeadsTo(path: string, link: string): string | null { this.guard(); return this.target.linkLeadsTo(path, link); }
   symlink(target: string, path: RuntimeFsPath): void { this.guard(); return this.target.symlink(target, path); }
@@ -768,7 +769,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return this.clock();
     });
   }
-  writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number }) {
+  writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
       await this.namespace.writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
       return this.receipt();
@@ -787,7 +788,7 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
       return this.clock();
     });
   }
-  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }) {
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner) {
     return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
       await this.namespace.truncate((await this.path(path)), size);
       return this.receipt();
@@ -835,8 +836,8 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   rmdir(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir((await this.path(path, false))));
   }
-  rename(from: RuntimeFsPath, to: RuntimeFsPath) {
-    return this.either([from, to], () => this.bridge.rename(from, to), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
+  rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner) {
+    return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
   }
   realpath(path: RuntimeFsPath) {
     return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));

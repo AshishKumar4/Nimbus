@@ -3,7 +3,7 @@ import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
-import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeVfsStat } from '../runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
@@ -325,6 +325,10 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
 /** Every native op reads its filesystem the same way: the envelope's identity. */
 const fsFor = (e: SupervisorOpEnvelope, tools: SupervisorOpTools): RuntimeFsBridge => tools.bridge(e.pid, e.cred);
 
+/** The exclusive mutation lease the envelope's binding presents, if it holds one (SupervisorRPC props). */
+const leaseOf = (e: SupervisorOpEnvelope): RuntimeMutationOwner | undefined =>
+  e.mutationOwner === undefined ? undefined : { mutationOwner: e.mutationOwner };
+
 /** A whole-file read, leased for what the file holds. */
 async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path: RuntimeFsPath): Promise<Uint8Array | null> {
   const fs = fsFor(e, t);
@@ -412,14 +416,14 @@ const NATIVE_OPS = {
   mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
   rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
   unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),
-  rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
+  rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),
   symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
   access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
   chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
   chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
   utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
-  fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2)),
+  fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1), leaseOf(e)),
+  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2), leaseOf(e)),
   writeBatchStream: (e, t) => {
     if (!e.stream) throw new Error('supervisor op writeBatchStream: no stream');
     return fsFor(e, t).writeStream(e.stream, { mutationOwner: e.mutationOwner });

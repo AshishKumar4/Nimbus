@@ -310,6 +310,16 @@ export type RuntimeSynchronousFs = {
  */
 export interface VfsMutationReceipt { before: number; after: number }
 
+/**
+ * The exclusive mutation lease a write presents (acquireExclusiveMutation's
+ * owner): a leased writer's own ranged writes, truncations and renames under
+ * the leased root, as writeStream presents it for its batches. A trusted
+ * binding carries it (SupervisorRPC props); a process never names one.
+ */
+export interface RuntimeMutationOwner {
+  mutationOwner?: string;
+}
+
 export interface RuntimeFsBridge {
   readonly synchronous?: RuntimeSynchronousFs;
   /** N17: see {@link NimbusFilesystemAuthority.gateLaunch}; absent where nothing is ever imported lazily. */
@@ -348,9 +358,9 @@ export interface RuntimeFsBridge {
   writeRange(path: RuntimeFsPath, offset: number, bytes: Uint8Array, options?: {
     createParents?: boolean;
     expectedRevision?: number;
-  }): Awaitable<VfsMutationReceipt>;
+  } & RuntimeMutationOwner): Awaitable<VfsMutationReceipt>;
   /** Truncate or zero-extend to `size`, touching only the boundary chunk. */
-  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
+  truncate(path: RuntimeFsPath, size: number, options?: { followSymlinks?: boolean } & RuntimeMutationOwner): Awaitable<VfsMutationReceipt>;
   /** utimensat(2): null is now, undefined leaves that time; `followSymlinks: false` sets a link's own times. */
   utimes(path: RuntimeFsPath, atimeMs: number | null | undefined, mtimeMs: number | null | undefined, options?: { followSymlinks?: boolean }): Awaitable<VfsMutationReceipt>;
   /** Set permission bits (POSIX chmod — follows symlinks). */
@@ -367,7 +377,7 @@ export interface RuntimeFsBridge {
   mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): Awaitable<void>;
   unlink(path: RuntimeFsPath): Awaitable<void>;
   rmdir(path: RuntimeFsPath): Awaitable<void>;
-  rename(from: RuntimeFsPath, to: RuntimeFsPath): Awaitable<void>;
+  rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
   readlink(path: RuntimeFsPath): Awaitable<string | null>;
   /**
    * Where the link at `path` (an absolute namespace path), whose text is
