@@ -182,7 +182,10 @@ function __wasiFilesystem(parking) {
     if (parking === 'none')
         return supervisorFilesystem(sup, sup.synchronous);
     const cred = __wasiFS.cred;
-    if (cred === null)
+    // Nor can one whose engine has no JSPI (Node 22 without the flag): there a
+    // same-isolate supervisor answers synchronously and is used as it is.
+    const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+    if (cred === null || !canPark)
         return supervisorFilesystem(sup);
     if (__wasiResident === null || __wasiResident.sup !== sup)
         __wasiResident = { sup, fs: __wasiStartResident(sup, cred) };

@@ -253,7 +253,10 @@ function __wasiFilesystem(parking: WasiMakeImportsOptions['parking']): RuntimeFs
   // A guest that cannot park cannot wait for a listing or a fill: it reads the session's synchronous view.
   if (parking === 'none') return supervisorFilesystem(sup, sup.synchronous);
   const cred = __wasiFS.cred;
-  if (cred === null) return supervisorFilesystem(sup);
+  // Nor can one whose engine has no JSPI (Node 22 without the flag): there a
+  // same-isolate supervisor answers synchronously and is used as it is.
+  const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+  if (cred === null || !canPark) return supervisorFilesystem(sup);
   if (__wasiResident === null || __wasiResident.sup !== sup) __wasiResident = { sup, fs: __wasiStartResident(sup, cred) };
   return __wasiResident.fs;
 }

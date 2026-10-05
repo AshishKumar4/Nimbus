@@ -50,6 +50,8 @@ const MUTATIONS = new Set([
     'unlink', 'rmdir', 'rename', 'symlink', 'remove', 'copyFile', 'copyTree', 'ftruncate', 'fchmod', 'fchown',
     'futimes', 'appendOnce', 'acknowledgeAppend', 'writeBatch', 'writeStream',
 ]);
+/** Those that name their file by descriptor; every other one names a path, and may name a held file. */
+const DESCRIPTOR_MUTATIONS = new Set(['write', 'close', 'ftruncate', 'fchmod', 'fchown', 'futimes']);
 function after(value, next) {
     return value instanceof Promise ? value.then(next) : next(value);
 }
@@ -313,6 +315,10 @@ export function residentFilesystem(session, resident) {
     };
     const local = (handleId) => handles.get(handleId);
     const localBytes = (handle) => {
+        // A file this process is writing reads as it stands now, never as first read.
+        const writing = heldAt(handle.key);
+        if (writing !== undefined)
+            return writing.bytes.subarray(0, writing.length);
         if (handle.bytes !== null)
             return handle.bytes;
         return after(contentOf(handle.key, handle.entry), (bytes) => {
@@ -337,8 +343,13 @@ export function residentFilesystem(session, resident) {
             continue;
         const call = (...args) => Reflect.apply(value, authority, args);
         const mutates = MUTATIONS.has(name);
+        // A change by path (a rename of the file being written, a copy of it)
+        // acts on what the session has: what is held goes first.
+        const byPath = mutates && !DESCRIPTOR_MUTATIONS.has(name);
         Reflect.set(fs, name, mutates
-            ? (...args) => changing(name, () => call(...args))
+            ? (...args) => (byPath && writes.size > 0
+                ? fs.settle().then(() => changing(name, () => call(...args)))
+                : changing(name, () => call(...args)))
             : (...args) => { delegated(name); return call(...args); });
     }
     Reflect.set(fs, 'synchronous', authority.synchronous);
