@@ -91,6 +91,8 @@ export interface GitNetworkOpts {
     historyBudgetUnits?: number;
     /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */
     attempt?: number;
+    /** Fast clone: how long a batch or history piece may run before it is retried (tuning; CLONE_PIECE_TIMEOUT_MS). */
+    pieceTimeoutMs?: number;
     /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
     oids?: string[];
     /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */

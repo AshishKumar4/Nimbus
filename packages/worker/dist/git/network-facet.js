@@ -466,7 +466,24 @@ function transientPieceFailure(diagnostic, error) {
 async function invokeClonePhase(entrypoint, phase, opts, run) {
     let invocation;
     for (let attempt = 1; attempt <= CLONE_PIECE_ATTEMPTS; attempt++) {
-        invocation = await invokeFacet(entrypoint, phase, crypto.randomUUID(), { ...opts, attempt }, run.outerDeadline, phase === 'clone-finish' ? CLONE_PHASE_TIMEOUT_MS : CLONE_PIECE_TIMEOUT_MS, run.budgetContext);
+        try {
+            invocation = await invokeFacet(entrypoint, phase, crypto.randomUUID(), { ...opts, attempt }, run.outerDeadline, phase === 'clone-finish'
+                ? CLONE_PHASE_TIMEOUT_MS
+                : positiveSafeInteger(opts.pieceTimeoutMs, CLONE_PIECE_TIMEOUT_MS, 'piece timeout'), run.budgetContext);
+        }
+        catch (error) {
+            // A piece that hung (or whose facet call broke) throws rather than answers.
+            if (!(error instanceof GitClonePhaseError) || error instanceof GitCloneBudgetExceededError ||
+                phase === 'clone-finish' || attempt === CLONE_PIECE_ATTEMPTS ||
+                !transientPieceFailure(error.diagnostic, error.message)) {
+                throw error;
+            }
+            run.phases.push(error.diagnostic);
+            if (run.progress) {
+                await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`);
+            }
+            continue;
+        }
         run.phases.push(invocation.diagnostic);
         run.accountResult(invocation.result);
         const error = typeof invocation.result.error === 'string' ? invocation.result.error : '';
