@@ -147,7 +147,14 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
                 _ => None,
             })
             .collect();
-        let parameter_properties = (source_type.is_typescript() && !options.assign_class_fields).then(|| parameter_properties(&program));
+        // Bindings named as a global the generated code will read (the
+        // inlined helpers, the class-field lowering) are renamed now, by
+        // symbol, before the transform: what it generates for them (a
+        // namespace's `Object || (Object = {})`) follows the symbol.
+        let classes = source_type.is_typescript().then(|| classes(&program));
+        let generated = classes.as_ref().map_or_else(Vec::new, |classes| generated_globals(classes.lowered, options));
+        let renamed = rename_for_generated_globals(allocator, &mut program, &mut scoping, &generated);
+        let parameter_properties = classes.filter(|_| !options.assign_class_fields).map(|classes| classes.parameter_properties);
         let transform_options = transform_options(options, fragment.as_ref().map(|(name, _)| name.as_str()), source_type.is_typescript());
         let transformed = Transformer::new(allocator, std::path::Path::new(sourcefile), &transform_options)
             .build_with_scoping(scoping, &mut program);
@@ -155,6 +162,14 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
             return Output::failed(diagnostics::convert(source, sourcefile, transformed.diagnostics.into_vec()));
         }
         scoping = transformed.scoping;
+        if !renamed.is_empty() {
+            // An exported declaration of a renamed binding keeps its export
+            // name: `const Object2 = 0; export { Object2 as Object }`.
+            module::ModulePass::alias_exports(&mut program, allocator, &|ident| {
+                let original = renamed.iter().find(|(new, _)| new.as_str() == ident.name.as_str()).map(|(_, original)| original);
+                (ident.name.to_string(), original.map_or(ident.name, |original| oxc::str::Ident::from_str_in(original, &allocator)))
+            });
+        }
         if let Some(names) = &parameter_properties {
             drop_parameter_property_fields(&mut program, names);
         }
@@ -162,18 +177,23 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
             decorate_in_tsc_order(&mut program);
         }
         let mut read = inline_runtime_helpers(allocator, &mut program);
-        if options.assign_class_fields && source_type.is_typescript() {
+        if !read.is_empty() && options.assign_class_fields && source_type.is_typescript() {
             // Lowered private fields and methods are kept in these.
             read.extend(["WeakMap", "WeakSet"].map(String::from));
         }
-        if !read.is_empty() {
-            // What the helpers and the lowering read of the globals is no
-            // module binding's: one that would shadow it is renamed, as
-            // esbuild renames it (`Object2`), on the transformer's scoping,
-            // which knows the module's own symbols from what was generated.
-            rename_shadowing_bindings(allocator, &mut program, &mut scoping, &read);
-            // The helpers' declarations are new: their scoping is made again.
+        if !read.is_empty() || !renamed.is_empty() {
+            // The helpers' declarations and the export aliases are new: the
+            // scoping is made again.
             scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
+            // What the generated code reads of the globals is no binding's:
+            // were one left (a global missing from generated_globals), its
+            // output would call the module's own; refused rather than that.
+            if let Some(name) = read.iter().find(|name| scoping.symbol_names().any(|symbol| symbol == name.as_str())) {
+                let error = OxcDiagnostic::error(format!(
+                    "Nimbus's transform cannot keep a binding named \"{name}\" apart from the global its generated code reads"
+                ));
+                return Output::failed(diagnostics::convert(source, sourcefile, vec![error]));
+            }
         }
         if options.jsx == JsxMode::Automatic && options.jsx_dev {
             strip_dev_fallback_props(&mut program, options.jsx_import_source.as_deref().unwrap_or("react"));
@@ -288,48 +308,77 @@ fn generate(
     }
 }
 
-/// Each class's parameter properties (`constructor(public q)`), by name, in
-/// the order a visit meets the classes.
-fn parameter_properties(program: &Program<'_>) -> Vec<Vec<String>> {
-    use oxc::ast::ast::{Class, ClassElement, MethodDefinitionKind};
-    use oxc::ast_visit::{Visit, walk};
-    struct Collect(Vec<Vec<String>>);
-    impl<'a> Visit<'a> for Collect {
-        fn visit_class(&mut self, class: &Class<'a>) {
-            let names = class
-                .body
-                .body
-                .iter()
-                .find_map(|element| match element {
-                    ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor => Some(&m.value.params.items),
-                    _ => None,
-                })
-                .map(|params| {
-                    params
-                        .iter()
-                        .filter(|p| p.accessibility.is_some() || p.readonly || p.r#override)
-                        .filter_map(|p| p.pattern.get_identifier_name().map(|name| name.to_string()))
-                        .collect::<Vec<_>>()
-                })
-                .unwrap_or_default();
-            // A field the class writes of the same name is its own (Oxc adds
-            // none beside it, and esbuild keeps it): only the others are Oxc's.
-            let written: Vec<String> = class
-                .body
-                .body
-                .iter()
-                .filter_map(|element| match element {
-                    ClassElement::PropertyDefinition(p) if !p.declare && !p.r#static => p.key.static_name().map(|n| n.to_string()),
-                    _ => None,
-                })
-                .collect();
-            self.0.push(names.into_iter().filter(|name| !written.contains(name)).collect());
-            walk::walk_class(self, class);
-        }
+/// What a TypeScript module's classes hold that the transform answers for.
+struct Classes {
+    /// Each class's parameter properties (`constructor(public q)`), by name,
+    /// in the order a visit meets the classes.
+    parameter_properties: Vec<Vec<String>>,
+    lowered: Lowered,
+}
+
+/// What of a module the transform lowers with helpers: decorators (each on a
+/// class, a member or a parameter), and the class members the class-field
+/// lowering touches (fields, accessors, static blocks, private methods).
+#[derive(Clone, Copy, Default)]
+struct Lowered {
+    decorators: bool,
+    fields: bool,
+}
+
+fn classes(program: &Program<'_>) -> Classes {
+    use oxc::ast_visit::Visit;
+    let mut classes = Classes { parameter_properties: Vec::new(), lowered: Lowered::default() };
+    classes.visit_program(program);
+    classes
+}
+
+impl<'a> oxc::ast_visit::Visit<'a> for Classes {
+    fn visit_class(&mut self, class: &oxc::ast::ast::Class<'a>) {
+        use oxc::ast::ast::{ClassElement, MethodDefinitionKind};
+        let decorated = |element: &ClassElement<'a>| match element {
+            ClassElement::MethodDefinition(m) => !m.decorators.is_empty() || m.value.params.items.iter().any(|p| !p.decorators.is_empty()),
+            ClassElement::PropertyDefinition(p) => !p.decorators.is_empty(),
+            ClassElement::AccessorProperty(a) => !a.decorators.is_empty(),
+            _ => false,
+        };
+        let lowered_field = |element: &ClassElement<'a>| match element {
+            ClassElement::PropertyDefinition(p) => !p.declare,
+            ClassElement::AccessorProperty(_) | ClassElement::StaticBlock(_) => true,
+            ClassElement::MethodDefinition(m) => m.key.is_private_identifier(),
+            ClassElement::TSIndexSignature(_) => false,
+        };
+        self.lowered.decorators |= !class.decorators.is_empty() || class.body.body.iter().any(decorated);
+        self.lowered.fields |= class.body.body.iter().any(lowered_field);
+        let names = class
+            .body
+            .body
+            .iter()
+            .find_map(|element| match element {
+                ClassElement::MethodDefinition(m) if m.kind == MethodDefinitionKind::Constructor => Some(&m.value.params.items),
+                _ => None,
+            })
+            .map(|params| {
+                params
+                    .iter()
+                    .filter(|p| p.accessibility.is_some() || p.readonly || p.r#override)
+                    .filter_map(|p| p.pattern.get_identifier_name().map(|name| name.to_string()))
+                    .collect::<Vec<_>>()
+            })
+            .unwrap_or_default();
+        // A field the class writes of the same name is its own (Oxc adds
+        // none beside it, and esbuild keeps it): only the others are Oxc's.
+        let written: Vec<String> = class
+            .body
+            .body
+            .iter()
+            .filter_map(|element| match element {
+                ClassElement::PropertyDefinition(p) if !p.declare && !p.r#static => p.key.static_name().map(|n| n.to_string()),
+                _ => None,
+            })
+            .collect();
+        self.parameter_properties.push(names.into_iter().filter(|name| !written.contains(name)).collect());
+        oxc::ast_visit::walk::walk_class(self, class);
     }
-    let mut collect = Collect(Vec::new());
-    collect.visit_program(program);
-    collect.0
 }
 
 /// Oxc's TypeScript transform declares a field for each parameter property
@@ -430,63 +479,121 @@ fn inline_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
     read
 }
 
-/// Renames every module binding named one of `globals` (the generated code
-/// reads them as globals) and the references the module wrote to it, in the
-/// AST: the scoping is made again after, from the names. An exported
-/// declaration of one keeps its export name (`const Object2 = 0; export {
-/// Object2 as Object }`). A generated reference (no span) keeps the global's
-/// name: it is the global, now that nothing of the module shadows it.
-fn rename_shadowing_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, scoping: &mut oxc::semantic::Scoping, globals: &[String]) {
+/// What oxc_transformer's legacy decorators request of @oxc-project/runtime
+/// (decorateMetadata only with emitDecoratorMetadata, which is off).
+const DECORATOR_HELPERS: [&str; 2] = ["decorate", "decorateParam"];
+
+/// What its class-properties lowering can request.
+const CLASS_FIELD_HELPERS: [&str; 14] = [
+    "classPrivateFieldInitSpec", "classPrivateFieldGet2", "classPrivateFieldSet2", "classPrivateMethodInitSpec", "assertClassBrand",
+    "defineProperty", "superPropGet", "superPropSet", "toSetter", "readOnlyError", "writeOnlyError", "checkInRHS",
+    "classPrivateFieldLooseKey", "classPrivateFieldLooseBase",
+];
+
+/// The globals the inlined helpers in `helpers` (and what they import) read.
+fn helpers_read(helpers: &[&str]) -> Vec<String> {
+    let mut read: Vec<String> = Vec::new();
+    for helper in helpers {
+        let mut body = String::new();
+        let mut seen = Vec::new();
+        let Some(function) = emit_runtime_helper(helper, &mut body, &mut seen) else { continue };
+        for global in globals_read(&format!("var __helper = (() => {{\n{body}return {function};\n}})();")) {
+            if global != "arguments" && !read.contains(&global) {
+                read.push(global);
+            }
+        }
+    }
+    read
+}
+
+/// The globals a TypeScript module's transform will generate reads of: the
+/// decorator helpers' where it has a decorator and experimentalDecorators is
+/// on; the class-field helpers' and `WeakMap`, `WeakSet` (lowered private
+/// members are kept in them) where class fields are lowered and it has a
+/// class member that lowering touches.
+fn generated_globals(lowered: Lowered, options: &Options) -> Vec<String> {
+    use std::sync::OnceLock;
+    static DECORATORS: OnceLock<Vec<String>> = OnceLock::new();
+    static CLASS_FIELDS: OnceLock<Vec<String>> = OnceLock::new();
+    let mut globals: Vec<String> = Vec::new();
+    if options.experimental_decorators && lowered.decorators {
+        globals.extend(DECORATORS.get_or_init(|| helpers_read(&DECORATOR_HELPERS)).iter().cloned());
+    }
+    if options.assign_class_fields && lowered.fields {
+        let fields = CLASS_FIELDS.get_or_init(|| {
+            let mut read = helpers_read(&CLASS_FIELD_HELPERS);
+            read.extend(["WeakMap", "WeakSet"].map(String::from));
+            read
+        });
+        globals.extend(fields.iter().filter(|g| !globals.contains(g)).cloned().collect::<Vec<_>>());
+    }
+    globals
+}
+
+/// Renames every binding of the module named one of `globals` (the
+/// generated code will read them as globals) out of their way, as esbuild
+/// renames it (`Object2`): the symbol in `scoping`, and every binding and
+/// reference of it in the AST, by symbol, so what the transform generates
+/// for the symbol follows it. Returns (the new name, the original) of each,
+/// for the export aliases after the transform.
+fn rename_for_generated_globals<'a>(
+    allocator: &'a Allocator,
+    program: &mut Program<'a>,
+    scoping: &mut oxc::semantic::Scoping,
+    globals: &[String],
+) -> Vec<(String, String)> {
     use oxc::ast::ast::{BindingIdentifier, IdentifierReference};
     use oxc::ast_visit::{VisitMut, walk_mut};
     use oxc::semantic::SymbolId;
-    let mut names = names::Names::new(scoping);
-    let before: Vec<(SymbolId, String)> = scoping
+    // An ambient binding (`declare const WeakMap: ...`) is the global itself.
+    let shadowing: Vec<(SymbolId, String)> = scoping
         .symbol_ids()
+        .filter(|&symbol| !scoping.symbol_flags(symbol).is_ambient())
         .filter(|&symbol| globals.iter().any(|g| g == scoping.symbol_name(symbol)))
         .map(|symbol| (symbol, scoping.symbol_name(symbol).to_string()))
         .collect();
-    if before.is_empty() {
-        return;
+    if shadowing.is_empty() {
+        return Vec::new();
     }
+    let mut names = names::Names::new(scoping);
     for name in globals {
         names.reserve_global(name, scoping, allocator);
     }
-    let renamed: Vec<(SymbolId, String)> = before
+    let renamed: Vec<(SymbolId, String, String)> = shadowing
         .into_iter()
-        .filter_map(|(symbol, old)| {
+        .filter_map(|(symbol, original)| {
             let new = scoping.symbol_name(symbol);
-            (new != old).then(|| (symbol, new.to_string()))
+            (new != original).then(|| (symbol, new.to_string(), original))
         })
         .collect();
-    module::ModulePass::alias_renamed_exports(program, scoping, allocator);
     struct Rename<'s, 'a> {
         allocator: &'a Allocator,
         scoping: &'s oxc::semantic::Scoping,
-        renamed: &'s [(SymbolId, String)],
+        renamed: &'s [(SymbolId, String, String)],
+    }
+    impl<'a> Rename<'_, 'a> {
+        fn new_name(&self, symbol: Option<SymbolId>) -> Option<oxc::str::Ident<'a>> {
+            let symbol = symbol?;
+            let (_, new, _) = self.renamed.iter().find(|(s, _, _)| *s == symbol)?;
+            Some(oxc::str::Ident::from_str_in(new, &self.allocator))
+        }
     }
     impl<'a> VisitMut<'a> for Rename<'_, 'a> {
         fn visit_binding_identifier(&mut self, it: &mut BindingIdentifier<'a>) {
-            if let Some(symbol) = it.symbol_id.get()
-                && let Some((_, new)) = self.renamed.iter().find(|(s, _)| *s == symbol)
-            {
-                it.name = oxc::str::Ident::from_str_in(new, &self.allocator);
+            if let Some(name) = self.new_name(it.symbol_id.get()) {
+                it.name = name;
             }
         }
         fn visit_identifier_reference(&mut self, it: &mut IdentifierReference<'a>) {
-            if it.span.is_empty() {
-                return;
-            }
-            if let Some(reference) = it.reference_id.get()
-                && let Some(symbol) = self.scoping.get_reference(reference).symbol_id()
-                && let Some((_, new)) = self.renamed.iter().find(|(s, _)| *s == symbol)
-            {
-                it.name = oxc::str::Ident::from_str_in(new, &self.allocator);
+            let symbol = it.reference_id.get().and_then(|reference| self.scoping.get_reference(reference).symbol_id());
+            if let Some(name) = self.new_name(symbol) {
+                it.name = name;
             }
             walk_mut::walk_identifier_reference(self, it);
         }
     }
     Rename { allocator, scoping, renamed: &renamed }.visit_program(program);
+    renamed.into_iter().map(|(_, new, original)| (new, original)).collect()
 }
 
 /// The globals `text` reads: its unresolved references, but the one it

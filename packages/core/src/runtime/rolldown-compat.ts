@@ -737,32 +737,97 @@ function decorateInTscOrder(program: EsNode, code: string, map: unknown, written
 /** What the class-field lowering keeps private members in, read as globals. */
 const LOWERING_GLOBALS = ['WeakMap', 'WeakSet'];
 
-/** The names a declaration (or import, or parameter) binds directly. */
-function* boundNames(node: EsNode): Generator<string> {
-  const id = (key: string) => stringOf(child(node, key), 'name');
-  if (node.type === 'VariableDeclarator' && child(node, 'id')?.type === 'Identifier') yield* [id('id')].filter((n): n is string => n !== null);
-  if (node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration' || node.type === 'TSEnumDeclaration') {
-    const name = id('id');
-    if (name !== null) yield name;
+/** The names a binding binds: an identifier, or what the parts of a pattern bind. */
+function* patternNames(node: EsNode | null): Generator<string> {
+  switch (node?.type) {
+    case 'Identifier': {
+      const name = stringOf(node, 'name');
+      if (name !== null) yield name;
+      return;
+    }
+    case 'ObjectPattern':
+      for (const property of list(node, 'properties')) yield* patternNames(child(property, property.type === 'RestElement' ? 'argument' : 'value'));
+      return;
+    case 'ArrayPattern':
+      for (const element of list(node, 'elements')) yield* patternNames(element);
+      return;
+    case 'RestElement':
+      yield* patternNames(child(node, 'argument'));
+      return;
+    case 'AssignmentPattern':
+      yield* patternNames(child(node, 'left'));
+      return;
+    case 'TSParameterProperty':
+      yield* patternNames(child(node, 'parameter'));
+      return;
+    // `namespace A.B {}` binds A.
+    case 'TSQualifiedName':
+      yield* patternNames(child(node, 'left'));
+      return;
   }
-  if (node.type === 'ImportSpecifier' || node.type === 'ImportDefaultSpecifier' || node.type === 'ImportNamespaceSpecifier') {
-    const name = id('local');
-    if (name !== null) yield name;
+}
+
+/** Where a node keeps types, which bind nothing at run time. */
+const TYPE_KEYS = new Set(['typeAnnotation', 'typeParameters', 'returnType', 'typeArguments', 'superTypeArguments', 'implements', 'parent']);
+
+/** Nodes that bind nothing at run time: ambient declarations, type-only imports, types and signatures. */
+const TYPE_LEVEL = new Set(['TSInterfaceDeclaration', 'TSTypeAliasDeclaration', 'TSDeclareFunction', 'TSEmptyBodyFunctionExpression', 'TSIndexSignature']);
+
+/**
+ * Every name `value` binds at run time, in every binding position: variable
+ * declarations and their patterns, function and class declarations and
+ * expressions, parameters (and parameter properties), catch clauses,
+ * imports, enums and namespaces. An ambient declaration (`declare const
+ * WeakMap: ...`) is the global itself, and binds nothing.
+ */
+function* boundNames(value: unknown): Generator<string> {
+  if (Array.isArray(value)) {
+    for (const item of value) yield* boundNames(item);
+    return;
   }
+  if (!isNode(value) || value.declare === true || value.importKind === 'type' || TYPE_LEVEL.has(value.type)) return;
+  switch (value.type) {
+    case 'VariableDeclarator':
+      yield* patternNames(child(value, 'id'));
+      break;
+    case 'FunctionDeclaration':
+    case 'FunctionExpression':
+    case 'ArrowFunctionExpression':
+      yield* patternNames(child(value, 'id'));
+      for (const parameter of list(value, 'params')) yield* patternNames(parameter);
+      break;
+    case 'ClassDeclaration':
+    case 'ClassExpression':
+    case 'TSEnumDeclaration':
+    case 'TSModuleDeclaration':
+    case 'TSImportEqualsDeclaration':
+      yield* patternNames(child(value, 'id'));
+      break;
+    case 'CatchClause':
+      yield* patternNames(child(value, 'param'));
+      break;
+    case 'ImportSpecifier':
+    case 'ImportDefaultSpecifier':
+    case 'ImportNamespaceSpecifier':
+      yield* patternNames(child(value, 'local'));
+      break;
+  }
+  for (const [key, item] of Object.entries(value)) if (!TYPE_KEYS.has(key)) yield* boundNames(item);
 }
 
 /**
  * A TypeScript module whose class fields are lowered (useDefineForClassFields
  * false) keeps lowered private members in `new WeakMap()` and `new WeakSet()`,
- * read as globals; a binding of the module's by either name would take them
- * (the Oxc crate renames that binding, `WeakMap2`, as esbuild does; here the
- * compiled module is rolldown's transform's text, whose generated references
- * are not told from the module's). Such a module is refused, naming the
- * binding, rather than compiled to code that calls the module's own WeakMap.
+ * read as globals; a binding of the module's by either name, wherever it
+ * binds it, would take them (the Oxc crate renames that binding, `WeakMap2`,
+ * by its symbol; here the compiled module is rolldown's transform's text,
+ * whose generated references are not told from the module's). Such a module
+ * is refused, naming the binding, rather than compiled to code that calls
+ * the module's own WeakMap.
  */
 function shadowedLowering(module: CompatModule, source: EsNode, output: EsNode): void {
   const declared = new Set<string>();
-  for (const node of nodes(source)) for (const name of boundNames(node)) if (LOWERING_GLOBALS.includes(name)) declared.add(name);
+  for (const name of boundNames(source)) if (LOWERING_GLOBALS.includes(name)) declared.add(name);
   if (declared.size === 0) return;
   const created = (program: EsNode, name: string) =>
     [...nodes(program)].filter((node) => node.type === 'NewExpression' && stringOf(child(node, 'callee'), 'name') === name).length;

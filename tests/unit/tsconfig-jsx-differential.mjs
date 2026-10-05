@@ -166,6 +166,31 @@ function d(t: any) {}
 @d class A {}
 export const made = typeof A;
 `,
+  // A namespace and an enum named as a global the helpers read: their
+  // lowering's own references to them (\`Object || (Object = {})\`) are the
+  // module's, renamed with it; \`export =\` and \`export\` keep their names.
+  shadowNamespace: `namespace Object { export const x = 1; export const log: string[] = []; }
+function d(t: any, k?: string) { Object.log.push(k ?? 'class'); }
+@d class A { @d m() {} }
+export = Object;
+`,
+  shadowExportedNamespace: `export namespace Object { export const x = 1; export const log: string[] = []; }
+function d(t: any, k?: string) { Object.log.push(k ?? 'class'); }
+@d class A { @d m() {} }
+export const made = typeof A;
+`,
+  shadowEnum: `export enum Object { A = 1, B }
+const log: string[] = [];
+function d(t: any, k?: string) { log.push(k ?? String(Object.B)); }
+@d class A { @d m() {} }
+export const made = typeof A;
+export { log };
+`,
+  shadowEnumAssigned: `enum Object { A = 1, B }
+function d(t: any, k?: string) {}
+@d class A { @d m() {} }
+export = Object;
+`,
   // A module binding named as a global the class-field lowering reads.
   shadowFields: `export const WeakMap = 1;
 export class C { #p = 1; x = 2; static s = 3; get p() { return this.#p; } }
@@ -270,6 +295,11 @@ const EXPECT = {
   shadowDecorated: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.Object === 0,
   shadowExported: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.Object === 0,
   shadowFields: (o) => ran(o) && o.runs.exports.made === 1 && o.runs.exports.WeakMap === 1,
+  // \`export =\` as an ES module is CommonJS's: its value is the default export.
+  shadowNamespace: (o) => ran(o) && (o.runs.exports.default ?? o.runs.exports).log?.join() === 'm,class',
+  shadowExportedNamespace: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.Object?.log?.join() === 'm,class',
+  shadowEnum: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.Object?.B === 2 && o.runs.exports.log?.join() === 'm,2',
+  shadowEnumAssigned: (o) => ran(o) && (o.runs.exports.default ?? o.runs.exports).B === 2,
   userHelperImport: (o) => ran(o) && o.runs.exports.made === 'user:x',
   writtenParameterField: (o) => ran(o) && Array.isArray(o.runs.exports.made),
   paths: (o) => ran(o) && o.runs.exports.got === 'function',
@@ -432,6 +462,10 @@ const FIELD_CASES = {
   },
   'experimentalDecorators: a binding named Object': { source: 'shadowDecorated', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
   'experimentalDecorators: an exported binding named Object': { source: 'shadowExported', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
+  'experimentalDecorators: a namespace named Object, export =': { source: 'shadowNamespace', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
+  'experimentalDecorators: an exported namespace named Object': { source: 'shadowExportedNamespace', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
+  'experimentalDecorators: an exported enum named Object': { source: 'shadowEnum', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
+  'experimentalDecorators: an enum named Object, export =': { source: 'shadowEnumAssigned', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
   'a written field beside a parameter property': { source: 'writtenParameterField', options: {} },
   'a written field beside a parameter property, useDefineForClassFields false': {
     source: 'writtenParameterField', options: { tsconfigRaw: tc({ useDefineForClassFields: false }) },
@@ -451,6 +485,57 @@ const FIELD_CASES = {
   'compilerOptions not an object (ignored)': { source: 'strict', options: { tsconfigRaw: JSON.stringify({ compilerOptions: 1 }) } },
   'empty tsconfigRaw': { source: 'strict', options: { tsconfigRaw: '' } },
 };
+
+// A module that binds WeakMap (or WeakSet) where useDefineForClassFields
+// false lowers a private member into one: each binding position, which a
+// transform renames by its symbol and a build refuses by name. Types,
+// signatures and \`declare\` bind nothing at run time: not refused.
+const LOWERED_PRIVATE = 'export class C { #p = 1; get p() { return this.#p; } }\nexport const made = new C().p;\n';
+const LOWERED_PRIVATE_METHOD = 'export class C { #m() { return 1; } get p() { return this.#m(); } }\nexport const made = new C().p;\n';
+const BINDING_POSITIONS = {
+  'an object pattern': { code: 'const { WeakMap } = { WeakMap: 1 };\nexport const bound = WeakMap;\n' },
+  'an object pattern, renamed property': { code: 'const { a: WeakMap } = { a: 1 };\nexport const bound = WeakMap;\n' },
+  'an object rest': { code: 'const { ...WeakMap } = { a: 1 };\nexport const bound = WeakMap.a;\n' },
+  'an array pattern': { code: 'const [WeakMap] = [1];\nexport const bound = WeakMap;\n' },
+  'an array rest': { code: 'const [...WeakMap] = [1];\nexport const bound = WeakMap[0];\n' },
+  'a default value': { code: 'const { a: WeakMap = 1 } = {} as { a?: number };\nexport const bound = WeakMap;\n' },
+  'a nested pattern': { code: 'const { a: [{ b: WeakMap }] } = { a: [{ b: 1 }] };\nexport const bound = WeakMap;\n' },
+  'a for-of declaration': { code: 'let last = 0;\nfor (const WeakMap of [1]) last = WeakMap;\nexport const bound = last;\n' },
+  'a function parameter': { code: 'function f(WeakMap: number) { return WeakMap; }\nexport const bound = f(1);\n' },
+  'a destructured parameter': { code: 'function f({ WeakMap }: { WeakMap: number }) { return WeakMap; }\nexport const bound = f({ WeakMap: 1 });\n' },
+  'an arrow parameter': { code: 'const f = (WeakMap: number) => WeakMap;\nexport const bound = f(1);\n' },
+  'a method parameter': { code: 'const o = { m(WeakMap: number) { return WeakMap; } };\nexport const bound = o.m(1);\n' },
+  'a parameter property': { code: 'class K { constructor(public WeakMap: number) {} }\nexport const bound = new K(1).WeakMap;\n' },
+  'a catch clause': { code: 'let caught = 0;\ntry { throw 1; } catch (WeakMap) { caught = WeakMap as number; }\nexport const bound = caught;\n' },
+  'a destructured catch clause': { code: 'let caught = 0;\ntry { throw { WeakMap: 1 }; } catch ({ WeakMap }) { caught = WeakMap; }\nexport const bound = caught;\n' },
+  'a class declaration': { code: 'class WeakMap { static v() { return 1; } }\nexport const bound = WeakMap.v();\n' },
+  'a class expression': { code: 'const K = class WeakMap { static v() { return WeakMap === K ? 1 : 0; } };\nexport const bound = K.v();\n' },
+  'a function declaration': { code: 'function WeakMap() { return 1; }\nexport const bound = WeakMap();\n' },
+  'a function expression': { code: 'const f = function WeakMap(n: number): number { return n ? 1 : WeakMap(1); };\nexport const bound = f(0);\n' },
+  'a default import': { code: "import WeakMap from './a';\nexport const bound = WeakMap ? 1 : 0;\n" },
+  'a named import': { code: "import { used as WeakMap } from './a';\nexport const bound = WeakMap === 'a' ? 1 : 0;\n" },
+  'a namespace import': { code: "import * as WeakMap from './a';\nexport const bound = WeakMap.used === 'a' ? 1 : 0;\n" },
+  // \`require\` is CommonJS's.
+  'an import equals': { code: "import WeakMap = require('./a');\nexport const bound = WeakMap.used === 'a' ? 1 : 0;\n", formats: ['cjs'] },
+  'an enum': { code: 'enum WeakMap { A = 1 }\nexport const bound = WeakMap.A;\n' },
+  'a namespace': { code: 'namespace WeakMap { export const v = 1; }\nexport const bound = WeakMap.v;\n' },
+  'an object pattern, beside a private method': { code: 'const { WeakSet } = { WeakSet: 1 };\nexport const bound = WeakSet;\n', lowered: LOWERED_PRIVATE_METHOD, name: 'WeakSet' },
+  'types and ambient declarations': {
+    code: `declare const WeakMap: WeakMapConstructor;
+declare function WeakSet(): void;
+import type W from './a';
+interface I { f(WeakMap: number): void; }
+type F = (WeakMap: number) => void;
+abstract class B { abstract h(WeakMap: number): void; }
+function g<WeakMap>(x: WeakMap): WeakMap { return x; }
+function o(WeakMap: string): void;
+function o(x: unknown) { return x; }
+export const bound: W | 1 = g(new WeakMap().has({}) ? 0 : 1);
+`,
+    ambient: true,
+  },
+};
+const boundExpect = (o) => ran(o) && o.runs.exports.made === 1 && o.runs.exports.bound === 1;
 
 // What esbuild fails on, and so must the engines: `text`, when given, is
 // esbuild's error, which the engines' must contain too.
@@ -714,6 +799,24 @@ try {
     counts.refused++;
     if (!EXPECT.shadowFields(theirs) || !/declares its own WeakMap/.test(ours.failure ?? '')) {
       differences.push(`build ts ${format}: useDefineForClassFields false: a binding named WeakMap: refused by name${show(theirs, ours)}`);
+    }
+  }
+  for (const [position, { code, formats = ['esm', 'cjs'], lowered = LOWERED_PRIVATE, name = 'WeakMap', ambient = false }] of Object.entries(BINDING_POSITIONS)) {
+    const source = lowered + code;
+    const options = { tsconfigRaw: tc({ useDefineForClassFields: false }) };
+    for (const format of formats) {
+      const label = `ts ${format}: useDefineForClassFields false: ${name} bound by ${position}`;
+      await same(`transform ${label}`, (engine) => transformOutcome(engine, source, 'ts', format, options), boundExpect);
+      if (ambient) {
+        await same(`build ${label}`, (engine) => buildOutcome(engine, source, 'ts', format, options), boundExpect);
+        continue;
+      }
+      const theirs = await buildOutcome('esbuild', source, 'ts', format, options);
+      const ours = await buildOutcome('nimbus', source, 'ts', format, options);
+      counts.refused++;
+      if (!boundExpect(theirs) || !new RegExp(`declares its own ${name}`).test(ours.failure ?? '')) {
+        differences.push(`build ${label}: refused by name${show(theirs, ours)}`);
+      }
     }
   }
   // A helper import the module wrote is its own, in a transform (a build

@@ -9,11 +9,11 @@
  * nothing; its memory starts at OXC_WASM_MEMORY_PAGES pages (stack and static
  * data) and grows only while a transform runs.
  *
- * oxc 0.152.0, rustc 1.98.1 (48a229cea 2026-09-01), 2.31 MiB
+ * oxc 0.152.0, rustc 1.98.1 (48a229cea 2026-09-01), 2.32 MiB
  */
 export const OXC_VERSION = "0.152.0";
-export const OXC_WASM_ASSET_PATH = "/_assets/oxc/nimbus-oxc-96fbfd3127278970.wasm";
-export const OXC_WASM_BUILD_ID = "96fbfd3127278970";
-export const OXC_WASM_SHA256 = "96fbfd31272789708e5d145ec7a830bd000a0c47f1e0302356d19b6a34eb5d46";
-export const OXC_WASM_BYTES = 2424636;
+export const OXC_WASM_ASSET_PATH = "/_assets/oxc/nimbus-oxc-d60728d91cf4972b.wasm";
+export const OXC_WASM_BUILD_ID = "d60728d91cf4972b";
+export const OXC_WASM_SHA256 = "d60728d91cf4972bb470858a22f38fff9ca74e02e3df807c4116593d5829dd1c";
+export const OXC_WASM_BYTES = 2430868;
 export const OXC_WASM_MEMORY_PAGES = 67;

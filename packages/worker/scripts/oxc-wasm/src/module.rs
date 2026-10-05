@@ -253,6 +253,19 @@ impl<'a> ModulePass<'a> {
     /// global the output reads: `const Promise2 = 1; export { Promise2 as
     /// Promise }`, so the module's exports keep their names.
     pub(crate) fn alias_renamed_exports(program: &mut Program<'a>, scoping: &Scoping, allocator: &'a Allocator) {
+        Self::alias_exports(program, allocator, &|ident| {
+            let local = ident.symbol_id.get().map_or(ident.name.as_str(), |symbol| scoping.symbol_name(symbol));
+            (local.to_string(), ident.name)
+        });
+    }
+
+    /// `alias_renamed_exports` for a declaration whose bindings were renamed
+    /// in the AST itself: `exported_as` gives a binding's export name.
+    pub(crate) fn alias_exports(
+        program: &mut Program<'a>,
+        allocator: &'a Allocator,
+        exported_as: &dyn Fn(&BindingIdentifier<'a>) -> (String, Ident<'a>),
+    ) {
         // Every name the declaration binds, as (its spelling now, its export
         // name), once any of them was renamed: the declaration loses `export`,
         // so each of its names needs a specifier.
@@ -260,9 +273,9 @@ impl<'a> ModulePass<'a> {
             let mut pairs = Vec::new();
             let mut any = false;
             decl.bound_names(&mut |ident: &BindingIdentifier<'a>| {
-                let local = ident.symbol_id.get().map_or(ident.name.as_str(), |symbol| scoping.symbol_name(symbol));
-                any |= local != ident.name.as_str();
-                pairs.push((Ident::from(local), ident.name));
+                let (local, exported) = exported_as(ident);
+                any |= local != exported.as_str();
+                pairs.push((local, exported));
             });
             if !any {
                 pairs.clear();

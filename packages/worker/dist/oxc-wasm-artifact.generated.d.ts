@@ -9,7 +9,7 @@
  * nothing; its memory starts at OXC_WASM_MEMORY_PAGES pages (stack and static
  * data) and grows only while a transform runs.
  *
- * oxc 0.152.0, rustc 1.98.1 (48a229cea 2026-09-01), 2.31 MiB
+ * oxc 0.152.0, rustc 1.98.1 (48a229cea 2026-09-01), 2.32 MiB
  */
 export declare const OXC_VERSION: string;
 export declare const OXC_WASM_ASSET_PATH: string;

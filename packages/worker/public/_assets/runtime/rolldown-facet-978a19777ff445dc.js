@@ -14954,21 +14954,73 @@ function decorateInTscOrder(program, code3, map, written) {
   return { code: lines.join("\n"), map: mappings ? Object.assign({}, map, { mappings: encodeMappings(mappings) }) : map };
 }
 var LOWERING_GLOBALS = ["WeakMap", "WeakSet"];
-function* boundNames(node) {
-  const id2 = (key) => stringOf(child(node, key), "name");
-  if (node.type === "VariableDeclarator" && child(node, "id")?.type === "Identifier") yield* [id2("id")].filter((n5) => n5 !== null);
-  if (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration" || node.type === "TSEnumDeclaration") {
-    const name50 = id2("id");
-    if (name50 !== null) yield name50;
+function* patternNames(node) {
+  switch (node?.type) {
+    case "Identifier": {
+      const name50 = stringOf(node, "name");
+      if (name50 !== null) yield name50;
+      return;
+    }
+    case "ObjectPattern":
+      for (const property of list(node, "properties")) yield* patternNames(child(property, property.type === "RestElement" ? "argument" : "value"));
+      return;
+    case "ArrayPattern":
+      for (const element of list(node, "elements")) yield* patternNames(element);
+      return;
+    case "RestElement":
+      yield* patternNames(child(node, "argument"));
+      return;
+    case "AssignmentPattern":
+      yield* patternNames(child(node, "left"));
+      return;
+    case "TSParameterProperty":
+      yield* patternNames(child(node, "parameter"));
+      return;
+    // `namespace A.B {}` binds A.
+    case "TSQualifiedName":
+      yield* patternNames(child(node, "left"));
+      return;
   }
-  if (node.type === "ImportSpecifier" || node.type === "ImportDefaultSpecifier" || node.type === "ImportNamespaceSpecifier") {
-    const name50 = id2("local");
-    if (name50 !== null) yield name50;
+}
+var TYPE_KEYS = /* @__PURE__ */ new Set(["typeAnnotation", "typeParameters", "returnType", "typeArguments", "superTypeArguments", "implements", "parent"]);
+var TYPE_LEVEL = /* @__PURE__ */ new Set(["TSInterfaceDeclaration", "TSTypeAliasDeclaration", "TSDeclareFunction", "TSEmptyBodyFunctionExpression", "TSIndexSignature"]);
+function* boundNames(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) yield* boundNames(item);
+    return;
   }
+  if (!isNode(value) || value.declare === true || value.importKind === "type" || TYPE_LEVEL.has(value.type)) return;
+  switch (value.type) {
+    case "VariableDeclarator":
+      yield* patternNames(child(value, "id"));
+      break;
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ArrowFunctionExpression":
+      yield* patternNames(child(value, "id"));
+      for (const parameter of list(value, "params")) yield* patternNames(parameter);
+      break;
+    case "ClassDeclaration":
+    case "ClassExpression":
+    case "TSEnumDeclaration":
+    case "TSModuleDeclaration":
+    case "TSImportEqualsDeclaration":
+      yield* patternNames(child(value, "id"));
+      break;
+    case "CatchClause":
+      yield* patternNames(child(value, "param"));
+      break;
+    case "ImportSpecifier":
+    case "ImportDefaultSpecifier":
+    case "ImportNamespaceSpecifier":
+      yield* patternNames(child(value, "local"));
+      break;
+  }
+  for (const [key, item] of Object.entries(value)) if (!TYPE_KEYS.has(key)) yield* boundNames(item);
 }
 function shadowedLowering(module, source, output) {
   const declared = /* @__PURE__ */ new Set();
-  for (const node of nodes(source)) for (const name50 of boundNames(node)) if (LOWERING_GLOBALS.includes(name50)) declared.add(name50);
+  for (const name50 of boundNames(source)) if (LOWERING_GLOBALS.includes(name50)) declared.add(name50);
   if (declared.size === 0) return;
   const created = (program, name50) => [...nodes(program)].filter((node) => node.type === "NewExpression" && stringOf(child(node, "callee"), "name") === name50).length;
   for (const name50 of declared) {
