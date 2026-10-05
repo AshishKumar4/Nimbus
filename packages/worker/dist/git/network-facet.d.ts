@@ -79,6 +79,8 @@ export interface GitNetworkOpts {
     checkoutChunkMaxDecodedBytes?: number;
     /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
     checkoutChunkMaxWallMs?: number;
+    /** fetch: `depth` counts from the current shallow boundary (git fetch --deepen). */
+    relative?: boolean;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
     filter?: string;
     /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */

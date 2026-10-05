@@ -55,6 +55,15 @@ export interface ParsedCloneArgs {
 }
 export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]";
 /**
+ * `git fetch --depth <n> | --deepen <n> | --unshallow`, as cf-git's fetch
+ * takes them: a depth from the remote's tips, or (relative) from the
+ * repository's current shallow boundary.
+ */
+export declare function parseFetchDepth(args: readonly string[]): {
+    depth: number;
+    relative: boolean;
+} | undefined;
+/**
  * A partial clone's filter (list-objects-filter-options.c), normalized as
  * git normalizes it: blob:limit's size in bytes. The filters Nimbus
  * fetches with; any other is refused by name rather than ignored.

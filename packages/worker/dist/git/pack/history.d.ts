@@ -23,8 +23,13 @@
 import { type CloneContext, type PackSummary, type PendingPack } from './clone.js';
 /** Root trees per trees request. */
 export declare const COMMITS_PER_CHUNK = 5000;
-/** Blobs per blobs request. */
-export declare const BLOBS_PER_HISTORY_BATCH = 25000;
+/**
+ * Blobs per blobs request. Small enough that a batch's pack mostly fits the
+ * window of stored bytes kept readable, so evicted bases are re-inflated from
+ * memory rather than read back over RPC: live, react's 25,000-blob batches
+ * (packs to 52 MB) spent most of a 348 s clone in base reads and resumes.
+ */
+export declare const BLOBS_PER_HISTORY_BATCH = 10000;
 export interface StagedFile {
     name: string;
     bytes: number;

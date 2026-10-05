@@ -26,11 +26,16 @@ import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, storePackRe
 import { requestPack } from './upload-pack.js';
 /** Root trees per trees request. */
 export const COMMITS_PER_CHUNK = 5_000;
-/** Blobs per blobs request. */
-export const BLOBS_PER_HISTORY_BATCH = 25_000;
+/**
+ * Blobs per blobs request. Small enough that a batch's pack mostly fits the
+ * window of stored bytes kept readable, so evicted bases are re-inflated from
+ * memory rather than read back over RPC: live, react's 25,000-blob batches
+ * (packs to 52 MB) spent most of a 348 s clone in base reads and resumes.
+ */
+export const BLOBS_PER_HISTORY_BATCH = 10_000;
 /** History packs are resolved with this cache, and this many stored bytes kept readable. */
 const HISTORY_CACHE_BYTES = 8 * 1024 * 1024;
-const HISTORY_RECENT_BYTES = 16 * 1024 * 1024;
+const HISTORY_RECENT_BYTES = 24 * 1024 * 1024;
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
 function transport(context) {
