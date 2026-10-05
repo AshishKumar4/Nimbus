@@ -91,6 +91,8 @@ export interface GitNetworkOpts {
   historyBlobsPerBatch?: number;
   /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
   historyCommitsPerChunk?: number;
+  /** Fast clone, full history: pieces in flight at once (tuning; CLONE_HISTORY_CONCURRENCY). */
+  historyConcurrency?: number;
   /** Fast clone, full history: work units one invocation decodes (tuning; processor.ts by default). */
   historyBudgetUnits?: number;
   /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */
@@ -933,7 +935,8 @@ async function runCloneHistory(
   const roots = await piece('commits', 'commits', { head: fast.commit });
   const blobLists: StagedFile[] = [];
   const commitsPerChunk = positiveSafeInteger(facetOpts.historyCommitsPerChunk, COMMITS_PER_CHUNK, 'history commits per chunk');
-  await runPool(treeSlices(roots, commitsPerChunk), CLONE_HISTORY_CONCURRENCY, async (source, index) => {
+  const concurrency = positiveSafeInteger(facetOpts.historyConcurrency, CLONE_HISTORY_CONCURRENCY, 'history concurrency');
+  await runPool(treeSlices(roots, commitsPerChunk), concurrency, async (source, index) => {
     blobLists.push(...await piece('trees', 'trees-' + index, { source }));
   });
   const plan = await invokeClonePhase(entrypoint, 'clone-history', {
@@ -941,7 +944,7 @@ async function runCloneHistory(
     history: { step: 'plan', lists: blobLists, present: fast.batches.map((batch) => ({ name: 'batch-' + batch.index, bytes: batch.bytes })) },
   }, run);
   const batches = (plan.result as { history?: { batches: StagedFile[] } }).history?.batches ?? [];
-  await runPool(batches, CLONE_HISTORY_CONCURRENCY, async (source, index) => {
+  await runPool(batches, concurrency, async (source, index) => {
     await piece('blobs', 'blobs-' + index, { source });
   });
   if (run.progress) {

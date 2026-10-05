@@ -2424,6 +2424,7 @@ export async function runGitCommand(
               historyCommitsPerChunk: Number(ctx.env.NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK) || undefined,
               historyBudgetUnits: Number(ctx.env.NIMBUS_GIT_HISTORY_BUDGET_UNITS) || undefined,
               pieceTimeoutMs: Number(ctx.env.NIMBUS_GIT_PIECE_TIMEOUT_MS) || undefined,
+              historyConcurrency: Number(ctx.env.NIMBUS_GIT_HISTORY_CONCURRENCY) || undefined,
               auth: {
                 username: ctx.env.GIT_USERNAME || '',
                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
