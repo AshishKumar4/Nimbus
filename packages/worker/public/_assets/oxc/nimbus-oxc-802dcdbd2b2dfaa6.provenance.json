@@ -15,7 +15,7 @@
       "src/abi.rs": "45ce28d133daf01f8664e3c8d2eff54fc078df205d6487e21647115c381687dd",
       "src/diagnostics.rs": "d4b7330faedd3c439b62912c2a6f256d389773170dd3c553806167a5d472fdd3",
       "src/helpers.rs": "cf0da308d383ea902c44f55a9d1e04fcc991ce80d6c4f1c89a69901621be5d8f",
-      "src/lib.rs": "914a17ecd1e64b90876fae6d52e51deacd3c15f42af9c455db136f7350e08ae6",
+      "src/lib.rs": "c6f5dbcc2292651f2023bf05b12175ce32ac01d794c129f6bd65ef7aeced2091",
       "src/module.rs": "3173e956253e6b1cacedbe009a9aa0cc335347e1bd42fda8f13062bfec2df45b",
       "src/names.rs": "4b475452c58d047f4536a255d5ee6871e3fd905fe21fc715b0e55b08e9f117d0",
       "src/options.rs": "40588be338499fb54ddfc87588994ee849304d532c71da8ef7e4e78a3c46d779"
@@ -65,8 +65,8 @@
   },
   "outputs": {
     "nimbus-oxc.wasm": {
-      "bytes": 2335230,
-      "sha256": "6cc596d8c5af28c784505c21abd492e99af8b3bf0ac4b70b1f293ddd2641cd33"
+      "bytes": 2334233,
+      "sha256": "802dcdbd2b2dfaa6636be883e8272e6d227cd24a6dee1b1f1ce96c6bb9bc6df8"
     }
   }
 }

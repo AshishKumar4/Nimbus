@@ -124,11 +124,17 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
     let mut warnings = Vec::new();
 
     if source_type.is_typescript() || source_type.is_jsx() {
-        // A constant fragment is named by a placeholder the source does not
-        // use, then put in its place.
+        // A constant fragment is named by a placeholder no binding or
+        // reference of the module's has (however its source spells them),
+        // then put in its place: every reference by that name is the
+        // transform's.
         let fragment = options.jsx_fragment_constant.as_ref().filter(|_| options.jsx == JsxMode::Transform).map(|constant| {
+            let taken = |name: &str| {
+                scoping.symbol_names().any(|symbol| symbol == name)
+                    || scoping.root_unresolved_references().keys().any(|reference| reference.as_str() == name)
+            };
             let mut name = String::from("__nimbusJsxFragment");
-            while source.contains(name.as_str()) {
+            while taken(&name) {
                 name.push('_');
             }
             (name, constant)

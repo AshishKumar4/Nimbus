@@ -33,9 +33,12 @@ published independently in the `@nimbus-sh` npm scope.
   `preserveValueImports` (KeepValues) keeps unused value imports;
   `importsNotUsedAsValues` `preserve` and `error` (KeepStmt) keep an import
   statement as `import "x"` though nothing of it is used;
-  `verbatimModuleSyntax` does both; without KeepStmt, an import left with an
-  empty clause (`import {} from "x"`, or every specifier a type) is dropped,
-  also with no tsconfig, as esbuild drops it (Oxc and rolldown kept it).
+  `verbatimModuleSyntax` does both. Without KeepStmt, an import left with
+  an empty clause (`import {} from "x"`, or every specifier a type) is
+  dropped, also with no tsconfig, as esbuild drops it (Oxc and rolldown kept
+  it). rolldown's one option is both flags at once; a build with either
+  alone compiles its TypeScript modules keeping every import and makes each
+  what esbuild keeps of it (see rolldown-compat.ts below).
   `alwaysStrict` (else `strict`) makes every file strict code: what only a
   sloppy script may contain (`with`, a legacy octal, `delete x`, ...) is an
   error in a transform, as in esbuild, and CommonJS and IIFE output begins
@@ -52,7 +55,11 @@ published independently in the `@nimbus-sh` npm scope.
   unknown target) are reported, without their place in it. Known gap: in a
   build under `alwaysStrict`, sloppy-only syntax in a CommonJS module is not
   a build error, as it was in esbuild: rolldown's parser reports none of
-  those errors, so the bundle (strict, as esbuild's) fails when loaded.
+  those errors, so the bundle (strict, as esbuild's) fails when loaded. And
+  under `preserveValueImports` or `verbatimModuleSyntax` (which keep unused
+  names), a TypeScript import of a name its module exports only as a type,
+  without `type`, is a build error ("is not exported"), where esbuild left
+  it undefined; tsc rejects such an import under either setting.
 - In a build, the development runtime's `jsxDEV` names each file by its
   absolute path (`fileName: "/home/user/app/src/App.tsx"`): rolldown gave it
   relative to its working directory (`home/user/…`), and 0.14.0's esbuild
@@ -60,19 +67,31 @@ published independently in the `@nimbus-sh` npm scope.
   facet transforms such a module itself with rolldown's own transform, given
   the absolute path; its source map is unchanged. A transform has no path,
   and names the file `<stdin>`, as esbuild did.
+- What a build compiles itself so a module comes out as esbuild made it (the
+  development runtime, a constant fragment, the unused-import flags, empty
+  import clauses, the refusals) is core's
+  `runtime/rolldown-compat.ts`. It reads modules with rolldown's own parser
+  and compiles them with its own transform; it edits only that transform's
+  output, at parsed nodes, keeping every position, so the transform's
+  source map stays the map. No module's text is edited before rolldown
+  reads it. A constant fragment's placeholder is a name no identifier of the
+  module has, however its source spells it (a binding written
+  `\u005f_nimbusJsxFragment` no longer collides), in both engines.
 - The worker's Oxc transform (`scripts/oxc-wasm`) takes an import source,
   the development runtime, esbuild's KeepValues and KeepStmt, a constant
   fragment, `alwaysStrict` and the two refusals; rebuilt through its pinned
-  recipe, 2,335,230 bytes (was 2,276,933).
+  recipe, 2,334,233 bytes (was 2,276,933).
 
-Checks: `tsconfig-jsx-differential` runs 523 cases against esbuild-wasm
+Checks: `tsconfig-jsx-differential` runs 583 cases against esbuild-wasm
 0.24.2: every JSX mode and source and their precedence (tsx and jsx), each
-other field on a source that shows it, through transform (ESM, CommonJS)
-and build (ESM, CommonJS, IIFE). 470 must compile, run and record the
-same imports and calls as esbuild's output (two outputs that fail alike are
-no pass); 16 are refused by field name where esbuild's output runs; 37 must
-fail where esbuild fails. 0.15.0's code fails most of them; HEAD before the
-review fixes failed 169.
+other field on a source that shows it (each unused-import flag on imports of
+every shape: unused values, inline types, empty clauses, a brace in a
+comment, a name only a type), through transform (ESM, CommonJS) and build
+(ESM, CommonJS, IIFE). 530 must compile, run and record the same imports
+and calls as esbuild's output (two outputs that fail alike are no pass); 16
+are refused by field name where esbuild's output runs; 37 must fail where
+esbuild fails. `build-tsconfig-sourcemap` checks a build's map under each
+unused-import flag still maps each token to its own column.
 `facet-host-tsconfig-jsx` runs Kinu's repro through `supervisorEsbuildService`
 from the `facet-host` entry with both facets as production loads them.
 

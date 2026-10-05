@@ -23,28 +23,26 @@
  * `dataurl` exports a data URL (esbuild's encoding), `base64` the bytes in
  * base64, `text` the text, `binary` a Uint8Array.
  *
- * Self-contained but for types, css-bundle.ts and tsconfig-raw.ts: the build
- * facet's runtime bundles it (rolldown-facet/preamble.ts).
+ * Self-contained but for types, css-bundle.ts, tsconfig-raw.ts and
+ * rolldown-compat.ts (which compiles the modules rolldown's own transform
+ * cannot make as esbuild did): the build facet's runtime bundles it
+ * (rolldown-facet/preamble.ts).
  */
 import type * as esbuild from 'esbuild-wasm';
 import type { EsbuildBuildOutcome, EsbuildHostBuildOptions, EsbuildRemotePlugin } from './esbuild-service.js';
-/** The part of rolldown's JavaScript API a build uses. */
-export interface RolldownApi {
+import { type CompatApi } from './rolldown-compat.js';
+/**
+ * The part of rolldown's JavaScript API a build uses. Its transform and
+ * parser (`rolldown/experimental`) are for the modules rolldown-compat.ts
+ * compiles itself; a build that needs them and has none is refused.
+ */
+export interface RolldownApi extends Partial<CompatApi> {
     rolldown(options: Record<string, unknown>): Promise<{
         generate(options: Record<string, unknown>): Promise<{
             output: RolldownOutput[];
         }>;
         close(): Promise<void>;
     }>;
-    /**
-     * rolldown's own transform (`rolldown/experimental`), for the one module a
-     * build transforms itself (see `devJsx`); without it such a build is refused.
-     */
-    transformSync?(filename: string, source: string, options: Record<string, unknown>): {
-        code: string;
-        map?: unknown;
-        errors: unknown[];
-    };
 }
 type RolldownOutput = {
     type: 'chunk';

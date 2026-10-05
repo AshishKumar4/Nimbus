@@ -9,12 +9,12 @@
  * imports this module.
  */
 import { rolldown } from 'rolldown';
-import { transformSync } from 'rolldown/experimental';
+import { parseSync, transformSync } from 'rolldown/experimental';
 import { buildWithRolldown } from '../../../core/src/runtime/rolldown-build.ts';
 import { prebundleSlice } from '../../../core/src/runtime/prebundle-slice.ts';
 
 export function build(options, plugin) {
-  return buildWithRolldown({ rolldown, transformSync }, options, plugin);
+  return buildWithRolldown({ rolldown, transformSync, parseSync }, options, plugin);
 }
 
 export function prebundle(spec) {

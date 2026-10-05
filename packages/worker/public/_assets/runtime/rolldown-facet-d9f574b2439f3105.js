@@ -3392,9 +3392,9 @@ function bindingifyGeneralHookFilter(stringKind, pattern) {
   return ret.length > 0 ? { value: ret } : void 0;
 }
 function bindingifyFilterExpr(expr) {
-  let list = [];
-  bindingifyFilterExprImpl(expr, list);
-  return list;
+  let list2 = [];
+  bindingifyFilterExprImpl(expr, list2);
+  return list2;
 }
 function containsImporterId(expr) {
   switch (expr.kind) {
@@ -3432,12 +3432,12 @@ function containsStringId(expr) {
 function assertNoStringId(filterExprs, hookName) {
   if (filterExprs?.some(containsStringId)) throw new Error(`A string \`id\` filter is not supported for the \`${hookName}\` hook, because its \`id\` is the import specifier rather than a resolved path. Use a RegExp instead.`);
 }
-function bindingifyFilterExprImpl(expr, list) {
+function bindingifyFilterExprImpl(expr, list2) {
   switch (expr.kind) {
     case "and": {
       let args2 = expr.args;
-      for (let i2 = args2.length - 1; i2 >= 0; i2--) bindingifyFilterExprImpl(args2[i2], list);
-      list.push({
+      for (let i2 = args2.length - 1; i2 >= 0; i2--) bindingifyFilterExprImpl(args2[i2], list2);
+      list2.push({
         kind: "And",
         payload: args2.length
       });
@@ -3445,57 +3445,57 @@ function bindingifyFilterExprImpl(expr, list) {
     }
     case "or": {
       let args2 = expr.args;
-      for (let i2 = args2.length - 1; i2 >= 0; i2--) bindingifyFilterExprImpl(args2[i2], list);
-      list.push({
+      for (let i2 = args2.length - 1; i2 >= 0; i2--) bindingifyFilterExprImpl(args2[i2], list2);
+      list2.push({
         kind: "Or",
         payload: args2.length
       });
       break;
     }
     case "not":
-      bindingifyFilterExprImpl(expr.expr, list);
-      list.push({ kind: "Not" });
+      bindingifyFilterExprImpl(expr.expr, list2);
+      list2.push({ kind: "Not" });
       break;
     case "id":
-      list.push({
+      list2.push({
         kind: "Id",
         payload: expr.pattern
       });
-      if (expr.params.cleanUrl) list.push({ kind: "CleanUrl" });
+      if (expr.params.cleanUrl) list2.push({ kind: "CleanUrl" });
       break;
     case "importerId":
-      list.push({
+      list2.push({
         kind: "ImporterId",
         payload: expr.pattern
       });
-      if (expr.params.cleanUrl) list.push({ kind: "CleanUrl" });
+      if (expr.params.cleanUrl) list2.push({ kind: "CleanUrl" });
       break;
     case "moduleType":
-      list.push({
+      list2.push({
         kind: "ModuleType",
         payload: expr.pattern
       });
       break;
     case "code":
-      list.push({
+      list2.push({
         kind: "Code",
         payload: expr.pattern
       });
       break;
     case "include":
-      bindingifyFilterExprImpl(expr.expr, list);
-      list.push({ kind: "Include" });
+      bindingifyFilterExprImpl(expr.expr, list2);
+      list2.push({ kind: "Include" });
       break;
     case "exclude":
-      bindingifyFilterExprImpl(expr.expr, list);
-      list.push({ kind: "Exclude" });
+      bindingifyFilterExprImpl(expr.expr, list2);
+      list2.push({ kind: "Exclude" });
       break;
     case "query":
-      list.push({
+      list2.push({
         kind: "QueryKey",
         payload: expr.key
       });
-      list.push({
+      list2.push({
         kind: "QueryValue",
         payload: expr.pattern
       });
@@ -4881,9 +4881,9 @@ function _isValidObjectKey(object$1, key) {
 }
 // @__NO_SIDE_EFFECTS__
 function _joinExpects(values$1, separator) {
-  const list = [...new Set(values$1)];
-  if (list.length > 1) return `(${list.join(` ${separator} `)})`;
-  return list[0] ?? "never";
+  const list2 = [...new Set(values$1)];
+  if (list2.length > 1) return `(${list2.join(` ${separator} `)})`;
+  return list2[0] ?? "never";
 }
 function _standardSchema(schema) {
   schema["~standard"] = {
@@ -7594,11 +7594,11 @@ var Emitter = class {
     this.listeners[ev].push(fn);
   }
   removeListener(ev, fn) {
-    const list = this.listeners[ev];
-    const i2 = list.indexOf(fn);
+    const list2 = this.listeners[ev];
+    const i2 = list2.indexOf(fn);
     if (i2 === -1) return;
-    if (i2 === 0 && list.length === 1) list.length = 0;
-    else list.splice(i2, 1);
+    if (i2 === 0 && list2.length === 1) list2.length = 0;
+    else list2.splice(i2, 1);
   }
   emit(ev, code3, signal) {
     if (this.emitted[ev]) return false;
@@ -7909,6 +7909,7 @@ var TsconfigCache = class extends import_binding8.TsconfigCache {
 // ../../node_modules/.bun/rolldown@1.2.11/node_modules/rolldown/dist/experimental-index.mjs
 init_shims();
 var import_binding9 = /* @__PURE__ */ n(t(), 1);
+var parseSync2 = parseSync;
 var transformSync2 = transformSync;
 var BindingRebuildStrategy = import_binding9.BindingRebuildStrategy;
 var ResolverFactory = import_binding9.ResolverFactory;
@@ -8213,38 +8214,38 @@ var List = class _List {
   shift() {
     return this.head !== null ? this.remove(this.head) : null;
   }
-  prependList(list) {
-    return this.insertList(list, this.head);
+  prependList(list2) {
+    return this.insertList(list2, this.head);
   }
-  appendList(list) {
-    return this.insertList(list);
+  appendList(list2) {
+    return this.insertList(list2);
   }
-  insertList(list, before) {
-    if (list.head === null) {
+  insertList(list2, before) {
+    if (list2.head === null) {
       return this;
     }
     if (before !== void 0 && before !== null) {
-      this.updateCursors(before.prev, list.tail, before, list.head);
+      this.updateCursors(before.prev, list2.tail, before, list2.head);
       if (before.prev !== null) {
-        before.prev.next = list.head;
-        list.head.prev = before.prev;
+        before.prev.next = list2.head;
+        list2.head.prev = before.prev;
       } else {
-        this.head = list.head;
+        this.head = list2.head;
       }
-      before.prev = list.tail;
-      list.tail.next = before;
+      before.prev = list2.tail;
+      list2.tail.next = before;
     } else {
-      this.updateCursors(this.tail, list.tail, null, list.head);
+      this.updateCursors(this.tail, list2.tail, null, list2.head);
       if (this.tail !== null) {
-        this.tail.next = list.head;
-        list.head.prev = this.tail;
+        this.tail.next = list2.head;
+        list2.head.prev = this.tail;
       } else {
-        this.head = list.head;
+        this.head = list2.head;
       }
-      this.tail = list.tail;
+      this.tail = list2.tail;
     }
-    list.head = null;
-    list.tail = null;
+    list2.head = null;
+    list2.tail = null;
     return this;
   }
   replace(oldItem, newItemOrList) {
@@ -9288,17 +9289,17 @@ function readSequence(recognizer) {
         this.next();
         continue;
     }
-    let child = recognizer.getNode.call(this, context);
-    if (child === void 0) {
+    let child2 = recognizer.getNode.call(this, context);
+    if (child2 === void 0) {
       break;
     }
     if (space) {
       if (recognizer.onWhiteSpace) {
-        recognizer.onWhiteSpace.call(this, child, children, context);
+        recognizer.onWhiteSpace.call(this, child2, children, context);
       }
       space = false;
     }
-    children.push(child);
+    children.push(child2);
   }
   if (space && recognizer.onWhiteSpace) {
     recognizer.onWhiteSpace.call(this, null, children, context);
@@ -9321,11 +9322,11 @@ var arrayMethods = {
   createSingleNodeList(node) {
     return [node];
   },
-  getFirstListNode(list) {
-    return list && list[0] || null;
+  getFirstListNode(list2) {
+    return list2 && list2[0] || null;
   },
-  getLastListNode(list) {
-    return list && list.length > 0 ? list[list.length - 1] : null;
+  getLastListNode(list2) {
+    return list2 && list2.length > 0 ? list2[list2.length - 1] : null;
   }
 };
 var listMethods = {
@@ -9335,11 +9336,11 @@ var listMethods = {
   createSingleNodeList(node) {
     return new List().appendData(node);
   },
-  getFirstListNode(list) {
-    return list && list.first;
+  getFirstListNode(list2) {
+    return list2 && list2.first;
   },
-  getLastListNode(list) {
-    return list && list.last;
+  getLastListNode(list2) {
+    return list2 && list2.last;
   }
 };
 function createParseContext(name50) {
@@ -9523,10 +9524,10 @@ function createParser(config) {
       }
       return null;
     },
-    getLocationFromList(list) {
+    getLocationFromList(list2) {
       if (needPositions) {
-        const head = this.getFirstListNode(list);
-        const tail = this.getLastListNode(list);
+        const head = this.getFirstListNode(list2);
+        const tail = this.getLastListNode(list2);
         return locationMap.getLocationRange(
           head !== null ? head.loc.start.offset - locationMap.startOffset : this.tokenStart,
           tail !== null ? tail.loc.end.offset - locationMap.startOffset : this.tokenStart,
@@ -9565,7 +9566,7 @@ function createParser(config) {
     getLocation: (offset) => locationMap.getLocation(offset, filename),
     getRangeLocation: (start, end) => locationMap.getLocationRange(start, end, filename)
   });
-  const parse51 = function(source_, options) {
+  const parse52 = function(source_, options) {
     source = source_;
     options = options || {};
     parser.setSource(source, tokenize);
@@ -9583,11 +9584,11 @@ function createParser(config) {
     parser.parseRulePrelude = "parseRulePrelude" in options ? Boolean(options.parseRulePrelude) : true;
     parser.parseValue = "parseValue" in options ? Boolean(options.parseValue) : true;
     parser.parseCustomProperty = "parseCustomProperty" in options ? Boolean(options.parseCustomProperty) : false;
-    const { context = "default", list = true, onComment, onToken } = options;
+    const { context = "default", list: list2 = true, onComment, onToken } = options;
     if (context in parser.context === false) {
       throw new Error("Unknown context `" + context + "`");
     }
-    Object.assign(parser, list ? listMethods : arrayMethods);
+    Object.assign(parser, list2 ? listMethods : arrayMethods);
     if (Array.isArray(onToken)) {
       parser.forEachToken((type, start, end) => {
         onToken.push({ type, start, end });
@@ -9610,7 +9611,7 @@ function createParser(config) {
     }
     return ast;
   };
-  return Object.assign(parse51, {
+  return Object.assign(parse52, {
     SyntaxError: SyntaxError2,
     config: parser.config
   });
@@ -9830,11 +9831,11 @@ var font_face_default = {
 };
 
 // ../../node_modules/.bun/css-tree@3.2.1/node_modules/css-tree/lib/syntax/atrule/import.js
-function parseWithFallback(parse51, fallback) {
+function parseWithFallback(parse52, fallback) {
   return this.parseWithFallback(
     () => {
       try {
-        return parse51.call(this);
+        return parse52.call(this);
       } finally {
         this.skipSC();
         if (this.lookupNonWSType(0) !== RightParenthesis) {
@@ -10938,13 +10939,13 @@ function parse13(kind = "media") {
   };
 }
 function generate12(node) {
-  node.children.forEach((child) => {
-    if (child.type === "Condition") {
+  node.children.forEach((child2) => {
+    if (child2.type === "Condition") {
       this.token(LeftParenthesis, "(");
-      this.node(child);
+      this.node(child2);
       this.token(RightParenthesis, ")");
     } else {
-      this.node(child);
+      this.node(child2);
     }
   });
 }
@@ -12447,7 +12448,7 @@ var structure43 = {
 function parse44() {
   const start = this.tokenStart;
   const children = this.createList();
-  let child;
+  let child2;
   scan:
     while (!this.eof) {
       switch (this.tokenType) {
@@ -12459,25 +12460,25 @@ function parse44() {
             this.next();
             continue;
           }
-          child = this.Comment();
+          child2 = this.Comment();
           break;
         case CDO:
-          child = this.CDO();
+          child2 = this.CDO();
           break;
         case CDC:
-          child = this.CDC();
+          child2 = this.CDC();
           break;
         // CSS Syntax Module Level 3
         // §2.2 Error handling
         // At the "top level" of a stylesheet, an <at-keyword-token> starts an at-rule.
         case AtKeyword:
-          child = this.parseWithFallback(this.Atrule, consumeRaw5);
+          child2 = this.parseWithFallback(this.Atrule, consumeRaw5);
           break;
         // Anything else starts a qualified rule ...
         default:
-          child = this.parseWithFallback(this.Rule, consumeRaw5);
+          child2 = this.parseWithFallback(this.Rule, consumeRaw5);
       }
-      children.push(child);
+      children.push(child2);
     }
   return {
     type: "StyleSheet",
@@ -13247,9 +13248,9 @@ function ensureFunction(value) {
   return typeof value === "function" ? value : noop2;
 }
 function invokeForType(fn, type) {
-  return function(node, item, list) {
+  return function(node, item, list2) {
     if (node.type === type) {
-      fn.call(this, node, item, list);
+      fn.call(this, node, item, list2);
     }
   };
 }
@@ -13378,8 +13379,8 @@ function createWalker(config) {
   const fastTraversalIteratorsNatural = createFastTraveralMap(iteratorsNatural);
   const fastTraversalIteratorsReverse = createFastTraveralMap(iteratorsReverse);
   const walk = function(root, options) {
-    function walkNode(node, item, list) {
-      const enterRet = enter.call(context, node, item, list);
+    function walkNode(node, item, list2) {
+      const enterRet = enter.call(context, node, item, list2);
       if (enterRet === breakWalk) {
         return true;
       }
@@ -13391,7 +13392,7 @@ function createWalker(config) {
           return true;
         }
       }
-      if (leave.call(context, node, item, list) === breakWalk) {
+      if (leave.call(context, node, item, list2) === breakWalk) {
         return true;
       }
       return false;
@@ -13399,7 +13400,7 @@ function createWalker(config) {
     let enter = noop2;
     let leave = noop2;
     let iterators = iteratorsNatural;
-    let walkReducer = (ret, data, item, list) => ret || walkNode(data, item, list);
+    let walkReducer = (ret, data, item, list2) => ret || walkNode(data, item, list2);
     const context = {
       break: breakWalk,
       skip: skipNode,
@@ -13440,8 +13441,8 @@ function createWalker(config) {
   walk.skip = skipNode;
   walk.find = function(ast, fn) {
     let found = null;
-    walk(ast, function(node, item, list) {
-      if (fn.call(this, node, item, list)) {
+    walk(ast, function(node, item, list2) {
+      if (fn.call(this, node, item, list2)) {
         found = node;
         return breakWalk;
       }
@@ -13452,8 +13453,8 @@ function createWalker(config) {
     let found = null;
     walk(ast, {
       reverse: true,
-      enter(node, item, list) {
-        if (fn.call(this, node, item, list)) {
+      enter(node, item, list2) {
+        if (fn.call(this, node, item, list2)) {
           found = node;
           return breakWalk;
         }
@@ -13463,8 +13464,8 @@ function createWalker(config) {
   };
   walk.findAll = function(ast, fn) {
     const found = [];
-    walk(ast, function(node, item, list) {
-      if (fn.call(this, node, item, list)) {
+    walk(ast, function(node, item, list2) {
+      if (fn.call(this, node, item, list2)) {
         found.push(node);
       }
     });
@@ -13795,8 +13796,8 @@ function parseSheet(source) {
   const record2 = (names, enclosing) => {
     for (const name50 of names) sheet.layersPostImport.push([...enclosing, ...name50]);
   };
-  const visitLayers = (nodes, enclosing, anonymous) => {
-    for (const node of nodes) {
+  const visitLayers = (nodes2, enclosing, anonymous) => {
+    for (const node of nodes2) {
       if (node.type !== "Atrule" && node.type !== "Rule") continue;
       let inner = enclosing;
       let innerAnonymous = anonymous;
@@ -13923,8 +13924,8 @@ function print(source, node, rewriteUrl) {
     const { url, written } = rewriteUrl ? rewriteUrl(site.url) : { url: site.url, written: false };
     write(printUrl(url, written));
   }
-  walker_default2(node, (inner, item, list) => {
-    if (inner.type === "Comment" && item && list) list.remove(item);
+  walker_default2(node, (inner, item, list2) => {
+    if (inner.type === "Comment" && item && list2) list2.remove(item);
     else if (inner.type === "Atrule" && inner.prelude?.loc) {
       inner.prelude = { type: "Raw", value: " " + printComponents(componentsOf(sourceOf(source, inner.prelude)), true) };
     }
@@ -14025,17 +14026,17 @@ async function bundleCss(modules, plugin, assets, { minify: minify2 }) {
         file.targets.push({ kind: "external", path: answer.path ?? rule.path });
         continue;
       }
-      const child = { namespace: answer.namespace ?? "file", path: answer.path };
-      const loaded = await load2(module, child, rule.at, rule.length);
+      const child2 = { namespace: answer.namespace ?? "file", path: answer.path };
+      const loaded = await load2(module, child2, rule.at, rule.length);
       if (loaded.loader === "empty") {
         file.targets.push({ kind: "empty" });
         continue;
       }
-      if (!isCssLoader(loaded.loader ?? "css")) fail(module, rule.at, rule.length, `Cannot import ${JSON.stringify(fileOf(child))} into a CSS file`);
+      if (!isCssLoader(loaded.loader ?? "css")) fail(module, rule.at, rule.length, `Cannot import ${JSON.stringify(fileOf(child2))} into a CSS file`);
       const source = typeof loaded.contents === "string" ? loaded.contents : new TextDecoder().decode(loaded.contents);
-      const lastSlash = child.path.lastIndexOf("/");
-      const resolveDir = loaded.resolveDir ?? (lastSlash > 0 ? child.path.slice(0, lastSlash) : "/");
-      file.targets.push({ kind: "file", file: await add({ ...child, source, resolveDir }) });
+      const lastSlash = child2.path.lastIndexOf("/");
+      const resolveDir = loaded.resolveDir ?? (lastSlash > 0 ? child2.path.slice(0, lastSlash) : "/");
+      file.targets.push({ kind: "file", file: await add({ ...child2, source, resolveDir }) });
     }
     return file;
   };
@@ -14368,10 +14369,10 @@ function parseJsonc(text) {
       out += c3;
     }
   }
-  const blanked = out.replace(/"(?:[^"\\]|\\.)*"/g, (s2) => '"' + " ".repeat(s2.length - 2) + '"');
+  const blanked2 = out.replace(/"(?:[^"\\]|\\.)*"/g, (s2) => '"' + " ".repeat(s2.length - 2) + '"');
   let result = "";
   for (let i2 = 0; i2 < out.length; i2++) {
-    if (blanked[i2] === "," && /^\s*[}\]]/.test(blanked.slice(i2 + 1))) continue;
+    if (blanked2[i2] === "," && /^\s*[}\]]/.test(blanked2.slice(i2 + 1))) continue;
     result += out[i2];
   }
   return JSON.parse(result);
@@ -14515,6 +14516,255 @@ function finish(settings) {
     settings.jsx.importSource = null;
   }
   return settings;
+}
+
+// ../core/src/runtime/rolldown-compat.ts
+function isNode(value) {
+  return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && "start" in value && typeof value.start === "number" && "end" in value && typeof value.end === "number";
+}
+function child(node, key) {
+  const value = node?.[key];
+  return isNode(value) ? value : null;
+}
+function list(node, key) {
+  const value = node?.[key];
+  return Array.isArray(value) ? value.filter(isNode) : [];
+}
+function stringOf(node, key) {
+  const value = node?.[key];
+  return typeof value === "string" ? value : null;
+}
+function* nodes(value) {
+  if (Array.isArray(value)) {
+    for (const item of value) yield* nodes(item);
+    return;
+  }
+  if (typeof value !== "object" || value === null) return;
+  if (isNode(value)) yield value;
+  for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* nodes(item);
+}
+function transformOf(api) {
+  if (!api.transformSync) throw new Error("Nimbus's bundler has no transform of rolldown's for this module");
+  return api.transformSync;
+}
+function parseWithComments(api, module, source = module.text, lang = module.loader) {
+  if (!api.parseSync) throw new Error("Nimbus's bundler has no parser of rolldown's for this module");
+  const typescript = lang === "ts" || lang === "tsx";
+  const parsed = api.parseSync(module.path, source, { lang, sourceType: "unambiguous", astType: typescript ? "ts" : "js" });
+  if (parsed.errors.length !== 0 || !isNode(parsed.program)) return null;
+  return { program: parsed.program, comments: parsed.comments.filter(isNode) };
+}
+function parse51(api, module, source = module.text, lang = module.loader) {
+  return parseWithComments(api, module, source, lang)?.program ?? null;
+}
+function hasEmptyClause(source, node, comments) {
+  if (node.type !== "ImportDeclaration" || list(node, "specifiers").length > 0) return false;
+  const from = child(node, "source");
+  if (!from) return false;
+  for (let at = node.start; at < from.start; at++) {
+    const comment = comments.find((c3) => c3.start <= at && at < c3.end);
+    if (comment) at = comment.end - 1;
+    else if (source[at] === "{") return true;
+  }
+  return false;
+}
+function jsxAndTypescriptOf(settings, fragment = settings.jsx.fragment) {
+  const { jsx } = settings;
+  const classic = !jsx.preserve && !jsx.automatic;
+  return {
+    jsx: jsx.preserve ? "preserve" : jsx.automatic ? { runtime: "automatic", importSource: jsx.importSource ?? "react", development: jsx.development } : { runtime: "classic", pragma: jsx.factory ?? "React.createElement", pragmaFrag: fragment ?? "React.Fragment" },
+    typescript: {
+      // The import the classic factory keeps for the JSX that calls it. The
+      // automatic runtime and preserved JSX call nothing the file imports,
+      // so (as for esbuild) an import of React they leave unused is
+      // dropped: an empty pragma names no import.
+      jsxPragma: classic ? jsx.factory ?? "React.createElement" : "",
+      jsxPragmaFrag: classic ? fragment ?? "React.Fragment" : "",
+      // rolldown has one option for esbuild's two unused-import flags, both
+      // at once (verbatimModuleSyntax); with either alone a module is
+      // compiled keeping every import, then each is made what esbuild keeps
+      // of it (ownCompile).
+      onlyRemoveTypeImports: settings.keepValues || settings.keepStatements
+    }
+  };
+}
+function compileForBuild(api, settings, module) {
+  if (module.loader === "ts" || module.loader === "tsx") {
+    const refusal = refusedTypeScript(api, settings, module);
+    if (refusal) return refusal;
+  }
+  return ownCompile(api, settings, module);
+}
+function refusedTypeScript(api, settings, module) {
+  const decorators = settings.refuse.decorators && module.text.includes("@") ? settings.refuse.decorators : null;
+  const classFields = settings.refuse.classFields && /\bclass\b/.test(module.text) ? settings.refuse.classFields : null;
+  if (!decorators && !classFields) return null;
+  const program = parse51(api, module);
+  for (const node of nodes(program)) {
+    if (decorators && node.type === "Decorator") return { refused: decorators, start: node.start, end: node.end };
+    if (classFields && node.type === "PropertyDefinition" && node.declare !== true && child(node, "key")?.type !== "PrivateIdentifier") {
+      return { refused: classFields, start: node.start, end: node.end };
+    }
+  }
+  return null;
+}
+function applyEdits(code3, edits) {
+  let out = "";
+  let at = 0;
+  for (const { start, end, replacement } of [...edits].sort((a2, b2) => a2.start - b2.start)) {
+    if (start < at) continue;
+    if (replacement.length !== end - start) throw new Error("rolldown-compat: an edit must keep its length");
+    out += code3.slice(at, start) + replacement;
+    at = end;
+  }
+  return out + code3.slice(at);
+}
+var blanked = (code3, start, end) => ({
+  start,
+  end,
+  replacement: code3.slice(start, end).replace(/[^\n\r\u2028\u2029]/g, " ")
+});
+function ownCompile(api, settings, module) {
+  const { jsx } = settings;
+  const jsxModule = module.loader === "jsx" || module.loader === "tsx";
+  const typescript = module.loader === "ts" || module.loader === "tsx";
+  const classic = !jsx.preserve && !jsx.automatic;
+  const constant = jsxModule && classic && jsx.fragmentConstant ? jsx.fragmentConstant.value : void 0;
+  const development = jsxModule && jsx.automatic && jsx.development;
+  const oneFlag = settings.keepValues !== settings.keepStatements;
+  const imports = typescript && /\bimport\b/.test(module.text) && (oneFlag || !settings.keepStatements && EMPTY_CLAUSE.test(module.text));
+  if (!development && constant === void 0 && !imports) return null;
+  const parsed = parseWithComments(api, module);
+  if (!parsed) return null;
+  const sourceImports = list(parsed.program, "body").filter((node) => node.type === "ImportDeclaration" && node.importKind !== "type").map((node) => {
+    const specifiers = list(node, "specifiers");
+    return {
+      from: stringOf(child(node, "source"), "value"),
+      empty: hasEmptyClause(module.text, node, parsed.comments),
+      typesOnly: specifiers.length > 0 && specifiers.every((s2) => s2.type === "ImportSpecifier" && s2.importKind === "type")
+    };
+  });
+  const fixImports = imports && (oneFlag || !settings.keepStatements && sourceImports.some((i2) => i2.empty));
+  if (!development && constant === void 0 && !fixImports) return null;
+  let placeholder;
+  let constantText = "";
+  if (constant !== void 0) {
+    const program = parsed.program;
+    const taken = /* @__PURE__ */ new Set();
+    for (const node of nodes(program)) {
+      const name50 = stringOf(node, "name");
+      if (name50 !== null) taken.add(name50);
+    }
+    constantText = typeof constant === "string" ? JSON.stringify(constant) : Object.is(constant, -0) ? "-0" : String(constant);
+    placeholder = "__nimbusJsxFragment".padEnd(constantText.length, "_");
+    while (taken.has(placeholder)) placeholder += "_";
+  }
+  const out = transformOf(api)(module.path, module.text, {
+    lang: module.loader,
+    sourceType: "unambiguous",
+    sourcemap: module.sourcemap,
+    ...jsxAndTypescriptOf(settings, placeholder)
+  });
+  if (out.errors.length) return null;
+  const output = parse51(api, module, out.code, "js");
+  if (!output) return null;
+  const edits = [];
+  if (placeholder) {
+    for (const node of nodes(output)) {
+      if (node.type === "Identifier" && node.name === placeholder) {
+        edits.push({ start: node.start, end: node.end, replacement: constantText.padEnd(node.end - node.start) });
+      }
+    }
+  }
+  if (development) {
+    for (const [start, end] of devFallbackProps(output, jsx.importSource ?? "react")) edits.push(blanked(out.code, start, end));
+  }
+  if (fixImports) {
+    const importEdits = esbuildImports(api, settings, module, sourceImports, out.code, output);
+    if (!importEdits) return null;
+    edits.push(...importEdits);
+  }
+  return { code: applyEdits(out.code, edits), map: module.sourcemap ? out.map : void 0 };
+}
+var EMPTY_CLAUSE = /\bimport(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*\{(?:\s|\/\*[^]*?\*\/|\/\/[^\n\r\u2028\u2029]*)*\}/;
+var importsOf = (program) => list(program, "body").filter((node) => node.type === "ImportDeclaration");
+function esbuildImports(api, settings, module, sourceImports, code3, output) {
+  const matched = matchImports(sourceImports, importsOf(output));
+  if (!matched) return null;
+  const edits = [];
+  if (!settings.keepStatements) {
+    for (const [node, index] of matched) {
+      if (sourceImports[index].empty || settings.keepValues && sourceImports[index].typesOnly) edits.push(blanked(code3, node.start, node.end));
+    }
+    return edits;
+  }
+  if (settings.keepValues) return edits;
+  const plain = { ...settings, keepValues: false, keepStatements: false };
+  const out = transformOf(api)(module.path, module.text, { lang: module.loader, sourceType: "unambiguous", ...jsxAndTypescriptOf(plain) });
+  if (out.errors.length) return null;
+  const plainOutput = parse51(api, module, out.code, "js");
+  const plainMatched = plainOutput ? matchImports(sourceImports, importsOf(plainOutput)) : null;
+  if (!plainMatched) return null;
+  const kept = new Map(plainMatched.map(([node, index]) => [index, out.code.slice(node.start, node.end)]));
+  for (const [node, index] of matched) {
+    const current = code3.slice(node.start, node.end);
+    const replacement = kept.get(index) ?? `import ${JSON.stringify(sourceImports[index].from)};`;
+    if (replacement === current) continue;
+    const firstLine = current.search(/[\n\r\u2028\u2029]/);
+    if (/[\n\r\u2028\u2029]/.test(replacement) || replacement.length > (firstLine < 0 ? current.length : firstLine)) return null;
+    edits.push({ start: node.start, end: node.end, replacement: replacement + blanked(code3, node.start + replacement.length, node.end).replacement });
+  }
+  return edits;
+}
+function matchImports(sourceImports, outputImports) {
+  const out = [];
+  let at = 0;
+  for (const node of outputImports) {
+    const from = stringOf(child(node, "source"), "value");
+    let found = at;
+    while (found < sourceImports.length && sourceImports[found].from !== from) found++;
+    if (found === sourceImports.length) {
+      if (sourceImports.some((i2) => i2.from === from)) return null;
+      continue;
+    }
+    out.push([node, found]);
+    at = found + 1;
+  }
+  return out;
+}
+function devFallbackProps(program, importSource) {
+  let local = null;
+  for (const node of list(program, "body")) {
+    if (node.type !== "ImportDeclaration" || stringOf(child(node, "source"), "value") !== importSource) continue;
+    for (const specifier of list(node, "specifiers")) {
+      if (specifier.type === "ImportSpecifier" && stringOf(child(specifier, "imported"), "name") === "createElement") {
+        local = stringOf(child(specifier, "local"), "name");
+      }
+    }
+  }
+  if (!local) return [];
+  const ranges = [];
+  for (const node of nodes(program)) {
+    const callee = child(node, "callee");
+    const props = list(node, "arguments")[1];
+    if (node.type !== "CallExpression" || callee?.type !== "Identifier" || callee.name !== local || props?.type !== "ObjectExpression") continue;
+    const properties = list(props, "properties");
+    properties.forEach((property, i2) => {
+      const key = stringOf(child(property, "key"), "name");
+      if (property.type !== "Property" || key !== "__self" && key !== "__source") return;
+      if (i2 + 1 < properties.length) ranges.push([property.start, properties[i2 + 1].start]);
+      else if (i2 > 0) ranges.push([properties[i2 - 1].end, property.end]);
+      else ranges.push([property.start, property.end]);
+    });
+  }
+  ranges.sort((a2, b2) => a2[0] - b2[0]);
+  const merged = [];
+  for (const [start, end] of ranges) {
+    const last = merged[merged.length - 1];
+    if (last && start <= last[1]) last[1] = Math.max(last[1], end);
+    else merged.push([start, end]);
+  }
+  return merged;
 }
 
 // ../core/src/runtime/rolldown-build.ts
@@ -14869,84 +15119,6 @@ ${lines.join("\n")}`;
 function refuse(text) {
   throw new BuildError([message(text)]);
 }
-function blank(text, ranges) {
-  let out = "";
-  let at = 0;
-  for (const [start, end] of ranges.sort((a2, b2) => a2[0] - b2[0])) {
-    const from = Math.max(start, at);
-    if (end <= from) continue;
-    out += text.slice(at, from) + text.slice(from, end).replace(/[^\n\r\u2028\u2029]/g, " ");
-    at = end;
-  }
-  return out + text.slice(at);
-}
-function stripDevFallbackProps(parse51, code3, importSource) {
-  if (!/__source|__self/.test(code3)) return code3;
-  let program;
-  try {
-    program = parse51(code3, { lang: "js" });
-  } catch {
-    return code3;
-  }
-  let local = null;
-  for (const node of program.body ?? []) {
-    if (node.type !== "ImportDeclaration" || node.source.value !== importSource) continue;
-    for (const specifier of node.specifiers ?? []) {
-      if (specifier.type === "ImportSpecifier" && specifier.imported?.name === "createElement") local = specifier.local?.name ?? null;
-    }
-  }
-  if (!local) return code3;
-  const ranges = [];
-  const visit = (node) => {
-    if (node === null || typeof node !== "object") return;
-    if (Array.isArray(node)) return node.forEach(visit);
-    const n5 = node;
-    const callee = n5.callee;
-    const props = n5.arguments?.[1];
-    if (n5.type === "CallExpression" && callee?.type === "Identifier" && callee.name === local && props?.type === "ObjectExpression") {
-      const list = props.properties;
-      list.forEach((p, i2) => {
-        const key = p.key;
-        if (p.type !== "Property" || key?.name !== "__self" && key?.name !== "__source") return;
-        ranges.push(i2 + 1 < list.length ? [p.start, list[i2 + 1].start] : i2 > 0 ? [list[i2 - 1].end, p.end] : [p.start, p.end]);
-      });
-    }
-    for (const key of Object.keys(n5)) if (key !== "parent") visit(n5[key]);
-  };
-  visit(program);
-  return ranges.length ? blank(code3, ranges) : code3;
-}
-function refusedIn(parse51, text, lang, refuse2) {
-  const decorators = refuse2.decorators && text.includes("@") ? refuse2.decorators : null;
-  const classFields = refuse2.classFields && /\bclass\b/.test(text) ? refuse2.classFields : null;
-  if (!decorators && !classFields) return null;
-  let program;
-  try {
-    program = parse51(text, { lang, astType: "ts" });
-  } catch {
-    return null;
-  }
-  let found = null;
-  const visit = (node) => {
-    if (found || node === null || typeof node !== "object") return;
-    if (Array.isArray(node)) {
-      for (const child of node) visit(child);
-      return;
-    }
-    const n5 = node;
-    if (decorators && n5.type === "Decorator") {
-      found = { text: decorators, start: n5.start ?? 0, end: n5.end ?? 0 };
-      return;
-    }
-    if (classFields && n5.type === "PropertyDefinition" && n5.declare !== true && n5.key?.type !== "PrivateIdentifier") {
-      found = { text: classFields, start: n5.start ?? 0, end: n5.end ?? 0 };
-      return;
-    }
-    for (const key of Object.keys(n5)) if (key !== "parent") visit(n5[key]);
-  };
-  visit(program);
-  return found;
-}
 function spanLocation(file, source, start, end) {
   const lineStart = Math.max(source.lastIndexOf("\n", start - 1), source.lastIndexOf("\r", start - 1)) + 1;
   const line = (source.slice(0, lineStart).match(/\r\n|\r|\n/g)?.length ?? 0) + 1;
@@ -14956,68 +15128,6 @@ function spanLocation(file, source, start, end) {
 }
 var UnresolvedImports = class extends Error {
 };
-function jsxAndTypescriptOf({ jsx, keepValues }, fragment = jsx.fragment) {
-  const classic = !jsx.preserve && !jsx.automatic;
-  return {
-    jsx: jsx.preserve ? "preserve" : jsx.automatic ? { runtime: "automatic", importSource: jsx.importSource ?? "react", development: jsx.development } : { runtime: "classic", pragma: jsx.factory ?? "React.createElement", pragmaFrag: fragment ?? "React.Fragment" },
-    typescript: {
-      // The import the classic factory keeps for the JSX that calls it. The
-      // automatic runtime and preserved JSX call nothing the file imports,
-      // so (as for esbuild) an import of React they leave unused is
-      // dropped: an empty pragma names no import.
-      jsxPragma: classic ? jsx.factory ?? "React.createElement" : "",
-      jsxPragmaFrag: classic ? fragment ?? "React.Fragment" : "",
-      // esbuild's KeepValues; KeepStmt apart from it is `keepImports`'.
-      onlyRemoveTypeImports: keepValues
-    }
-  };
-}
-function keepImports(parse51, text, lang, { keepValues, keepStatements }) {
-  if (keepValues && keepStatements) return text;
-  const candidate = keepStatements ? /\bimport\b/ : keepValues ? /\bimport\s*\{/ : /\bimport\s*\{\s*\}/;
-  if (!candidate.test(text)) return text;
-  let program;
-  try {
-    program = parse51(text, { lang, astType: "ts" });
-  } catch {
-    return text;
-  }
-  const edits = [];
-  for (const node of program.body ?? []) {
-    if (node.type !== "ImportDeclaration" || node.importKind === "type") continue;
-    const specifiers = node.specifiers ?? [];
-    const clause = specifiers.length > 0 || text.slice(node.start, node.source.start).includes("{");
-    if (!clause) continue;
-    if (keepStatements) {
-      edits.push({ start: node.end, end: node.end, replacement: `;import ${JSON.stringify(node.source.value)};` });
-    } else if (specifiers.length === 0 || keepValues && specifiers.every((s2) => s2.type === "ImportSpecifier" && s2.importKind === "type")) {
-      edits.push({ start: node.start, end: node.end, replacement: blank(text.slice(node.start, node.end), [[0, node.end - node.start]]) });
-    }
-  }
-  let out = text;
-  for (const { start, end, replacement } of edits.reverse()) out = out.slice(0, start) + replacement + out.slice(end);
-  return out;
-}
-function ownJsx(api, parse51, settings, path3, text, loader, sourcemap) {
-  const { jsx } = settings;
-  const classic = !jsx.preserve && !jsx.automatic;
-  const constant = classic && jsx.fragmentConstant ? jsx.fragmentConstant.value : void 0;
-  if (loader !== "jsx" && loader !== "tsx") return null;
-  if (!(jsx.automatic && jsx.development) && constant === void 0) return null;
-  if (!api.transformSync) throw new Error("Nimbus's bundler has no transform of its own for this JSX");
-  let placeholder;
-  let constantText = "";
-  if (constant !== void 0) {
-    constantText = typeof constant === "string" ? JSON.stringify(constant) : Object.is(constant, -0) ? "-0" : String(constant);
-    placeholder = "__nimbusJsxFragment".padEnd(constantText.length, "_");
-    while (text.includes(placeholder)) placeholder += "_";
-  }
-  const out = api.transformSync(path3, text, { lang: loader, sourceType: "unambiguous", sourcemap, ...jsxAndTypescriptOf(settings, placeholder) });
-  if (out.errors.length) return null;
-  let code3 = placeholder ? out.code.split(placeholder).join(constantText.padEnd(placeholder.length)) : out.code;
-  if (jsx.automatic && jsx.development) code3 = stripDevFallbackProps(parse51, code3, jsx.importSource ?? "react");
-  return { code: code3, map: sourcemap ? out.map : void 0 };
-}
 function inputOptionsOf(options, settings = resolveTsSettings(options, "build")) {
   return {
     cwd: "/",
@@ -15126,13 +15236,13 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
   };
   const pending = /* @__PURE__ */ new Map();
   const inputBytes = /* @__PURE__ */ new Map();
-  const importsOf = /* @__PURE__ */ new Map();
+  const importsOf2 = /* @__PURE__ */ new Map();
   const importOrder2 = /* @__PURE__ */ new Map();
   const importedBy = (importer, id2, record2) => {
     if (importer === void 0) return;
-    const list = importsOf.get(importer) ?? [];
-    list.push({ id: id2, record: record2 });
-    importsOf.set(importer, list);
+    const list2 = importsOf2.get(importer) ?? [];
+    list2.push({ id: id2, record: record2 });
+    importsOf2.set(importer, list2);
   };
   const importsInOrder = (importer) => {
     const order = importOrder2.get(importer) ?? [];
@@ -15140,7 +15250,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       const i2 = order.indexOf(id2);
       return i2 < 0 ? order.length : i2;
     };
-    return (importsOf.get(importer) ?? []).map((entry, i2) => ({ ...entry, i: i2 })).sort((a2, b2) => at(a2.id) - at(b2.id) || a2.record.kind.localeCompare(b2.record.kind) || a2.i - b2.i).map((entry) => entry.record);
+    return (importsOf2.get(importer) ?? []).map((entry, i2) => ({ ...entry, i: i2 })).sort((a2, b2) => at(a2.id) - at(b2.id) || a2.record.kind.localeCompare(b2.record.kind) || a2.i - b2.i).map((entry) => entry.record);
   };
   const css = /* @__PURE__ */ new Map();
   const warnings = settings.warnings.map((text) => message(text));
@@ -15194,9 +15304,9 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
           if (seen.has(id2)) return;
           seen.add(id2);
           const info = this.getModuleInfo(id2);
-          for (const child of info?.importedIds ?? []) visit(child);
+          for (const child2 of info?.importedIds ?? []) visit(child2);
           if (css.has(id2)) order.push(id2);
-          for (const child of info?.dynamicallyImportedIds ?? []) visit(child);
+          for (const child2 of info?.dynamicallyImportedIds ?? []) visit(child2);
         };
         visit(out.facadeModuleId);
         cssOrder.set(out.fileName, order);
@@ -15269,21 +15379,19 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       if (loader === "binary") {
         return { code: `module.exports = Uint8Array.from(atob(${JSON.stringify(base64Of(bytesOf()))}), (c) => c.charCodeAt(0));`, moduleType: "js" };
       }
-      if ((loader === "ts" || loader === "tsx") && (settings.refuse.decorators || settings.refuse.classFields)) {
-        const found = refusedIn(this.parse, text, loader, settings.refuse);
-        if (found) raise(found.text, "", spanLocation(fileOf2({ namespace, path: path3 }), text, found.start, found.end));
-      }
-      const code3 = loader === "ts" || loader === "tsx" ? keepImports(this.parse, text, loader, settings) : text;
-      let transformed = null;
+      let compiled = null;
       try {
-        transformed = ownJsx(api, this.parse, settings, path3, code3, loader, options.sourcemap !== void 0 && options.sourcemap !== false);
+        compiled = compileForBuild(api, settings, { path: path3, text, loader, sourcemap: options.sourcemap !== void 0 && options.sourcemap !== false });
       } catch (error2) {
         raise(error2 instanceof Error ? error2.message : String(error2));
       }
-      if (transformed) return { ...transformed, moduleType: "js" };
+      if (compiled && "refused" in compiled) {
+        raise(compiled.refused, "", spanLocation(fileOf2({ namespace, path: path3 }), text, compiled.start, compiled.end));
+      }
+      if (compiled && "code" in compiled) return { code: compiled.code, map: compiled.map, moduleType: "js" };
       const moduleType2 = LOADER_MODULE_TYPES[loader];
       if (!moduleType2) raise(`Nimbus's bundler does not support the "${loader}" loader (${fileOf2({ namespace, path: path3 })})`);
-      return { code: code3, moduleType: moduleType2 };
+      return { code: text, moduleType: moduleType2 };
     }
   };
   const bundle = await api.rolldown({
@@ -15607,7 +15715,7 @@ async function prebundleSlice(spec2, build3) {
 
 // scripts/rolldown-facet/entry.mjs
 function build2(options, plugin) {
-  return buildWithRolldown({ rolldown, transformSync: transformSync2 }, options, plugin);
+  return buildWithRolldown({ rolldown, transformSync: transformSync2, parseSync: parseSync2 }, options, plugin);
 }
 function prebundle(spec2) {
   return prebundleSlice(spec2, build2);

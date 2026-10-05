@@ -29,6 +29,7 @@ const fromWorker = createRequire(new URL('../../packages/worker/package.json', i
 const rolldown = {
   rolldown: (await import(fromWorker.resolve('rolldown'))).rolldown,
   transformSync: (await import(fromWorker.resolve('rolldown/experimental'))).transformSync,
+  parseSync: (await import(fromWorker.resolve('rolldown/experimental'))).parseSync,
 };
 
 const tc = (compilerOptions) => JSON.stringify({ compilerOptions });
@@ -77,6 +78,37 @@ export { log };
   paths: "import { helper } from '@lib/helper';\nexport const got = typeof helper;\n",
   // What each elision keeps: an import whose specifiers are all types, an
   // empty clause, a default beside a type, an unused value, a bare import.
+  // Every import used: no elision has anything to drop.
+  keepUsed: `import { V } from './v';
+import d from './dw';
+import * as ns from './ns';
+import './bare';
+export const x = [V, d, typeof ns].length === 3 ? 1 : 0;
+`,
+  // Empty clauses beside a bare import with one in a comment, under the
+  // automatic runtime, whose import the transform adds first.
+  emptyClauses: `import {} from './e';
+import /* {} */ './bare';
+import { V } from './v';
+import {} /* x */ from './dw';
+export const x = <b>{V}</b>;
+`,
+  // A name its module exports only as a type: kept as a name, a missing export.
+  typeName: `import { Shape } from './shapes';
+export const x: Shape = 1;
+`,
+  // A bare import with a brace in a comment where a clause would be.
+  keepComment: `import { V } from './v';
+import /* { */ './side';
+export const x = V === 2 ? 1 : 0;
+`,
+  // A binding spelled with an escape, the name a constant fragment's placeholder would take.
+  fragmentCollision: `import React from 'react';
+const \\u005f_nimbusJsxFragment = 'mine';
+const \\u005f_nimbusJsxFragment_ = 'also mine';
+export const e = <>x</>;
+export const mine = [\\u005f_nimbusJsxFragment, \\u005f_nimbusJsxFragment_];
+`,
   keep: `import { type T } from './side';
 import type { U } from './u2';
 import { V } from './v';
@@ -95,6 +127,11 @@ const EXPECT = {
     || (ran(o) && ['el', 'one', 'spreadKey', 'method', 'fn', 'arrow'].every((k) => typeof o.runs.exports[k]?.call === 'string')),
   imports: (o) => ran(o) && o.runs.exports.x === 'a',
   keep: (o) => ran(o) && o.runs.exports.x === 1,
+  keepUsed: (o) => ran(o) && o.runs.exports.x === 1,
+  keepComment: (o) => ran(o) && o.runs.exports.x === 1,
+  typeName: (o) => ran(o) && o.runs.exports.x === 1,
+  emptyClauses: (o) => ran(o) && typeof o.runs.exports.x?.call === 'string',
+  fragmentCollision: (o) => ran(o) && typeof o.runs.exports.e?.call === 'string' && o.runs.exports.mine?.[0] === 'mine' && o.runs.exports.mine?.[1] === 'also mine',
   strict: (o) => ran(o) && typeof o.runs.exports.strict === 'boolean',
   fields: (o) => ran(o) && Array.isArray(o.runs.exports.log),
   noFields: (o) => ran(o) && o.runs.exports.made === 1,
@@ -192,6 +229,21 @@ const FIELD_CASES = {
     source: 'keep', options: { tsconfigRaw: tc({ preserveValueImports: true, importsNotUsedAsValues: 'preserve' }) },
   },
   'keep: verbatimModuleSyntax false, preserveValueImports': { source: 'keep', options: { tsconfigRaw: tc({ verbatimModuleSyntax: false, preserveValueImports: true }) } },
+  // Where no import would come out differently, a build honours each.
+  'keep, every import used: no flags': { source: 'keepUsed', options: {} },
+  'keep, every import used: preserveValueImports': { source: 'keepUsed', options: { tsconfigRaw: tc({ preserveValueImports: true }) } },
+  'keep, every import used: importsNotUsedAsValues preserve': { source: 'keepUsed', options: { tsconfigRaw: tc({ importsNotUsedAsValues: 'preserve' }) } },
+  'keep, every import used: verbatimModuleSyntax': { source: 'keepUsed', options: { tsconfigRaw: tc({ verbatimModuleSyntax: true }) } },
+  'keep: a bare import with a brace in a comment, preserveValueImports': { source: 'keepComment', options: { tsconfigRaw: tc({ preserveValueImports: true }) } },
+  'a name only a type: no flags': { source: 'typeName', options: {} },
+  'a name only a type: importsNotUsedAsValues preserve (import "x")': { source: 'typeName', options: { tsconfigRaw: tc({ importsNotUsedAsValues: 'preserve' }) } },
+  'empty clauses, jsx automatic': { source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic' } },
+  'empty clauses, jsx automatic, jsxDev': { source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic', jsxDev: true } },
+  'empty clauses, jsx automatic, preserveValueImports': { source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic', tsconfigRaw: tc({ preserveValueImports: true }) } },
+  'empty clauses, jsx automatic, importsNotUsedAsValues preserve': {
+    source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic', tsconfigRaw: tc({ importsNotUsedAsValues: 'preserve' }) },
+  },
+  'empty clauses, jsx automatic, verbatimModuleSyntax': { source: 'emptyClauses', loader: 'tsx', options: { jsx: 'automatic', tsconfigRaw: tc({ verbatimModuleSyntax: true }) } },
   'keep: JavaScript (no elision)': { source: 'keep', loader: 'js', options: { tsconfigRaw: tc({ preserveValueImports: true }) } },
   // `extends` that names no file: nothing to read.
   'extends []': { source: 'strict', options: { tsconfigRaw: JSON.stringify({ extends: [] }) } },
@@ -296,6 +348,8 @@ write('node_modules/@lib/helper/index.js', 'exports.helper = () => 1;');
 for (const name of ['a', 'u', 'd', 'ns', 'side', 'v', 'e', 'dw', 'bare']) {
   write(`src/${name}.js`, `exports.used = 'a'; exports.unusedValue = 1; exports.V = 2; exports.default = 3;`);
 }
+// Imported once per process (Node caches it), so a transform's run compares its imports, not its loads.
+write('src/shapes.js', 'exports.unrelated = 1;');
 
 /** A value as data: symbols and functions by name, so two runs compare. */
 function label(value) {
@@ -376,10 +430,13 @@ async function transformOutcome(engine, code, loader, format, options) {
 }
 
 // A build's project: the entry and the modules it imports, as side effects say.
-const PROJECT_MODULES = Object.fromEntries(['a', 'u', 'd', 'ns', 'side', 'v', 'e', 'dw', 'bare'].map((name) => [
-  `/home/user/p/src/${name}.ts`,
-  `(globalThis.__loaded ??= []).push(${JSON.stringify(name)});\nexport const used = 'a'; export const unusedValue = 1; export const V = 2; export default 3;\n`,
-]));
+const PROJECT_MODULES = {
+  ...Object.fromEntries(['a', 'u', 'd', 'ns', 'side', 'v', 'e', 'dw', 'bare'].map((name) => [
+    `/home/user/p/src/${name}.ts`,
+    `(globalThis.__loaded ??= []).push(${JSON.stringify(name)});\nexport const used = 'a'; export const unusedValue = 1; export const V = 2; export default 3;\n`,
+  ])),
+  '/home/user/p/src/shapes.ts': '(globalThis.__loaded ??= []).push("shapes");\nexport type Shape = number;\n',
+};
 
 /**
  * A build's output as compared: bundled, an external module's import names
@@ -477,6 +534,18 @@ try {
     // An IIFE only for strictness, the one thing its wrapper changes.
     for (const format of source === 'strict' ? ['esm', 'cjs', 'iife'] : ['esm', 'cjs']) {
       await same(`build ${loader} ${format}: ${name}`, (engine) => buildOutcome(engine, code, loader, format, options), EXPECT[source]);
+    }
+  }
+  // A constant fragment beside bindings that spell its placeholder's name with an escape.
+  for (const jsxFragment of ['"frag"', '0']) {
+    for (const loader of ['tsx', 'jsx']) {
+      const options = { jsxFragment };
+      for (const format of ['esm', 'cjs']) {
+        await same(`transform ${loader} ${format}: jsxFragment ${jsxFragment}, a binding of its placeholder's name`,
+          (engine) => transformOutcome(engine, SOURCES.fragmentCollision, loader, format, options), EXPECT.fragmentCollision);
+      }
+      await same(`build ${loader} esm: jsxFragment ${jsxFragment}, a binding of its placeholder's name`,
+        (engine) => buildOutcome(engine, SOURCES.fragmentCollision, loader, 'esm', options), EXPECT.fragmentCollision);
     }
   }
   // `extends` naming a file: a transform never reads it.
