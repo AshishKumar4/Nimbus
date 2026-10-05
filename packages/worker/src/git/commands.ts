@@ -1950,6 +1950,9 @@ export async function runGitCommand(
               checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
                 ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
                 : undefined,
+              // The same, for the fast clone's blob batches.
+              blobsPerBatch: Number(ctx.env.NIMBUS_GIT_BLOBS_PER_BATCH) || undefined,
+              batchConcurrency: Number(ctx.env.NIMBUS_GIT_BATCH_CONCURRENCY) || undefined,
               auth: {
                 username: ctx.env.GIT_USERNAME || '',
                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',

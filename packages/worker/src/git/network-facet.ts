@@ -75,6 +75,10 @@ export interface GitNetworkOpts {
   checkoutChunkMaxDecodedBytes?: number;
   /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
   checkoutChunkMaxWallMs?: number;
+  /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
+  blobsPerBatch?: number;
+  /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
+  batchConcurrency?: number;
 }
 
 export interface GitSupervisorRpcCounters {
@@ -708,9 +712,11 @@ async function writeCloneChunkProgress(
  * Batches of a fast clone that run at once. Facets loaded by one session
  * share its thread (measured: four 4.2 s CPU burners took 18.8 s), so more
  * at once buy only overlapping network waits, and each holds its own
- * buffers: ~15 MB with a 4 MiB base cache.
+ * buffers (two waves of up to 4 MiB, a 4 MiB base cache). Measured
+ * 2026-10-05, vscode depth 1 at four: the session object peaked at 207 MiB
+ * and was reset (GraphQL fatalInternalErrors 1).
  */
-const CLONE_BATCH_CONCURRENCY = 4;
+const CLONE_BATCH_CONCURRENCY = 2;
 
 interface CloneBatchRun {
   outerDeadline: number;
@@ -774,7 +780,8 @@ async function runCloneBatches(
       }
     }
   };
-  await Promise.all(Array.from({ length: Math.min(CLONE_BATCH_CONCURRENCY, queue.length) }, worker));
+  const concurrency = positiveSafeInteger(facetOpts.batchConcurrency, CLONE_BATCH_CONCURRENCY, 'batch concurrency');
+  await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
   if (failure !== null) throw failure;
   const finish = await invokeFacet(
     entrypoint,

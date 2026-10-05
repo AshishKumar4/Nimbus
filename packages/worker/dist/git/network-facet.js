@@ -409,9 +409,11 @@ async function writeCloneChunkProgress(supervisor, diagnostic, chunk, progress) 
  * Batches of a fast clone that run at once. Facets loaded by one session
  * share its thread (measured: four 4.2 s CPU burners took 18.8 s), so more
  * at once buy only overlapping network waits, and each holds its own
- * buffers: ~15 MB with a 4 MiB base cache.
+ * buffers (two waves of up to 4 MiB, a 4 MiB base cache). Measured
+ * 2026-10-05, vscode depth 1 at four: the session object peaked at 207 MiB
+ * and was reset (GraphQL fatalInternalErrors 1).
  */
-const CLONE_BATCH_CONCURRENCY = 4;
+const CLONE_BATCH_CONCURRENCY = 2;
 /**
  * The fast clone after prepare: its blob batches, CLONE_BATCH_CONCURRENCY at
  * a time, then finish. A failed batch stops new ones; those in flight are
@@ -449,7 +451,8 @@ async function runCloneBatches(entrypoint, facetOpts, identity, fast, run) {
             }
         }
     };
-    await Promise.all(Array.from({ length: Math.min(CLONE_BATCH_CONCURRENCY, queue.length) }, worker));
+    const concurrency = positiveSafeInteger(facetOpts.batchConcurrency, CLONE_BATCH_CONCURRENCY, 'batch concurrency');
+    await Promise.all(Array.from({ length: Math.min(concurrency, queue.length) }, worker));
     if (failure !== null)
         throw failure;
     const finish = await invokeFacet(entrypoint, 'clone-finish', crypto.randomUUID(), { ...facetOpts, ...identity, shares }, run.outerDeadline, CLONE_PHASE_TIMEOUT_MS, run.budgetContext);

@@ -73,6 +73,10 @@ export interface GitNetworkOpts {
     checkoutChunkMaxDecodedBytes?: number;
     /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
     checkoutChunkMaxWallMs?: number;
+    /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
+    blobsPerBatch?: number;
+    /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
+    batchConcurrency?: number;
 }
 export interface GitSupervisorRpcCounters {
     stat: number;
