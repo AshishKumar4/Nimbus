@@ -19,8 +19,12 @@ export interface WaveBenchOptions {
     files: number;
     /** File sizes, cycled. */
     sizes: number[];
+    /** One-file waves each producer sends first, flushed one at a time: the per-wave round trip. */
+    pings?: number;
 }
 export interface WaveBenchProducer {
+    /** Mean wall of a one-file wave, sent and published alone. */
+    pingMs: number;
     files: number;
     bytes: number;
     wallMs: number;

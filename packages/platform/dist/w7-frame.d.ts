@@ -43,7 +43,12 @@ export interface BatchWritePayload {
     streams?: BatchStreamEntry[];
 }
 export declare const W7_MAGIC: Uint8Array<ArrayBuffer>;
-export declare const W7_MAX_PATHS_PER_BATCH = 128;
+/**
+ * A batch's owned paths. Each stream costs the receiver a round trip and a
+ * publication's fixed work, so a batch is as wide as its byte budget allows;
+ * ownership is a set of names, small beside the bytes.
+ */
+export declare const W7_MAX_PATHS_PER_BATCH = 1024;
 export declare const W7_MAX_OWNED_PATH_BYTES: number;
 export declare const W7_MAX_RECORD_BYTES: number;
 declare const MODE: "path-atomic-committed-prefix";

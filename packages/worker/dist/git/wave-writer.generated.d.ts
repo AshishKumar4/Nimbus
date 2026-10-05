@@ -7,7 +7,7 @@
  * An IIFE binding `__nimbusGitWaveWriter` (createWaveWriter, WaveFailure, …)
  * in the module that splices it: the git network facet.
  *
- * Size: 32.58 KiB
+ * Size: 32.62 KiB
  */
 export declare const GIT_WAVE_WRITER_SRC: string;
 //# sourceMappingURL=wave-writer.generated.d.ts.map
