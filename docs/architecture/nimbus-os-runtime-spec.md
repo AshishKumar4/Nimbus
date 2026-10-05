@@ -177,6 +177,22 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   native ABI diagnostics. Unmodified opencode and the local Proteus CLI are not
   yet proven as working Nimbus workloads; native-package shards still need
   Nimbus ABI artifacts or precise diagnostics.
+- `git` is Nimbus's own command over isomorphic-git (`packages/worker/src/git`).
+  Its worktree commands (`status`, `diff`, `add`, `commit`, `ls-files`,
+  `reset`, `checkout`, and the worktree side of `merge`) read the index as
+  its own bytes and walk the worktree a directory at a time
+  (`git/worktree/`), so they run in the session at Linux's scale (96k files)
+  with memory that grows only with the index, and read no file whose stat
+  matches it (git's racy-git rules included). `status -s`, `status
+  --porcelain[=v1]` (with `-z`, `-u<mode>`, `--[no-]renames`, pathspecs), the
+  `diff` forms, the index after `add`, and the commit a `commit` makes are
+  byte-identical to git's (`tests/unit/git-status-matches-git.mjs`). Plain
+  `git status` is Nimbus's own form, not git's long form: the short lines,
+  colored, or "nothing to commit, working tree clean". Not supported: the long
+  form, `status -b`/`--ignored`/porcelain v2, pathspec globs and magic,
+  `core.ignorecase`, `diff` between two commits, and history-walking revision
+  syntax (`HEAD~1`); a merge that is not a fast-forward builds its tree in
+  isomorphic-git.
 - The shell has a structured lexer/parser/interpreter for common POSIX-like
   constructs, including many redirects and subshell/group forms, but it is not
   complete POSIX shell parity. The final OS shell still needs broader structured
