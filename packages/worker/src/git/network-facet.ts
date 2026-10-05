@@ -95,6 +95,8 @@ export interface GitNetworkOpts {
   historyBudgetUnits?: number;
   /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */
   attempt?: number;
+  /** Fast clone: how long a batch or history piece may run before it is retried (tuning; CLONE_PIECE_TIMEOUT_MS). */
+  pieceTimeoutMs?: number;
   /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
   oids?: string[];
   /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
@@ -803,15 +805,31 @@ async function invokeClonePhase(
 ): Promise<{ result: FacetInvocationResult; diagnostic: GitNetworkPhaseDiagnostic }> {
   let invocation!: { result: FacetInvocationResult; diagnostic: GitNetworkPhaseDiagnostic };
   for (let attempt = 1; attempt <= CLONE_PIECE_ATTEMPTS; attempt++) {
-    invocation = await invokeFacet(
-      entrypoint,
-      phase,
-      crypto.randomUUID(),
-      { ...opts, attempt } as Omit<GitNetworkOpts, 'mutationOwner'>,
-      run.outerDeadline,
-      phase === 'clone-finish' ? CLONE_PHASE_TIMEOUT_MS : CLONE_PIECE_TIMEOUT_MS,
-      run.budgetContext,
-    );
+    try {
+      invocation = await invokeFacet(
+        entrypoint,
+        phase,
+        crypto.randomUUID(),
+        { ...opts, attempt } as Omit<GitNetworkOpts, 'mutationOwner'>,
+        run.outerDeadline,
+        phase === 'clone-finish'
+          ? CLONE_PHASE_TIMEOUT_MS
+          : positiveSafeInteger(opts.pieceTimeoutMs, CLONE_PIECE_TIMEOUT_MS, 'piece timeout'),
+        run.budgetContext,
+      );
+    } catch (error) {
+      // A piece that hung (or whose facet call broke) throws rather than answers.
+      if (!(error instanceof GitClonePhaseError) || error instanceof GitCloneBudgetExceededError ||
+          phase === 'clone-finish' || attempt === CLONE_PIECE_ATTEMPTS ||
+          !transientPieceFailure(error.diagnostic, error.message)) {
+        throw error;
+      }
+      run.phases.push(error.diagnostic);
+      if (run.progress) {
+        await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`);
+      }
+      continue;
+    }
     run.phases.push(invocation.diagnostic);
     run.accountResult(invocation.result);
     const error = typeof invocation.result.error === 'string' ? invocation.result.error : '';

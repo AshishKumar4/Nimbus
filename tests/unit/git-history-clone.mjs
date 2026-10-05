@@ -11,8 +11,9 @@
 //   - the same objects as host git's clone, and git fsck --full clean;
 //   - not shallow; HEAD, config, index and worktree as git's;
 //   - every pack's idx equal to git index-pack's for it;
-//   - one blobs request broken off mid-pack, and one batch whose write to
-//     the session is lost, are each retried as a fresh piece.
+//   - one blobs request broken off mid-pack, one batch whose write to the
+//     session is lost, and one trees piece that never answers, are each
+//     retried as a fresh piece.
 
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -84,11 +85,14 @@ try {
   };
   // A wave of the first batch (prepare publishes three) loses its connection.
   session.requests.failWaveAt = 5;
+  // The second history invocation hangs; after the piece timeout it runs again.
+  session.requests.hangPhaseAt = { phase: 'clone-history', at: 2, seen: 0 };
   try {
     const cloned = await session.git('/home/user', ['clone', '--no-shallow', server.url + '/repo.git', 'repo'], {
       NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK: '7',
       NIMBUS_GIT_HISTORY_BLOBS_PER_BATCH: '15',
       NIMBUS_GIT_HISTORY_BUDGET_UNITS: '200000',
+      NIMBUS_GIT_PIECE_TIMEOUT_MS: '2000',
     });
     assert.equal(cloned.code, 0, cloned.stderr);
     const phases = session.requests.phases;
@@ -98,7 +102,7 @@ try {
     assert.equal(count('clone-history:plan'), 1);
     assert.equal(posts > 4, true);
     const attempts = session.requests.attempts;
-    assert.ok(attempts.filter((attempt) => attempt === 2).length >= 2, 'both broken pieces were attempted again: ' + attempts);
+    assert.ok(attempts.filter((attempt) => attempt >= 2).length >= 3, 'each of the three faults was followed by another attempt: ' + attempts);
     assert.ok(session.requests.phases.indexOf('clone-batch') !== session.requests.phases.lastIndexOf('clone-batch'),
       'the batch whose wave was lost ran again');
 

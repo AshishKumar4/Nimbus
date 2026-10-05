@@ -58,7 +58,8 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
   const lease = () => (owner === undefined ? {} : { mutationOwner: owner });
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
-  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeWrites: [], waves: 0, failWaveAt: 0 };
+  // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
+  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeWrites: [], waves: 0, failWaveAt: 0, hangPhaseAt: null };
   const supervisor = {
     async stat(path) { try { return bridge.stat(path); } catch { return null; } },
     async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
@@ -103,6 +104,8 @@ export async function createFacetSession(work, { realGit = false } = {}) {
                 if (body.op === 'fetch-objects') requests.fetchObjects++;
                 requests.phases.push(body.phase === 'clone-history' ? 'clone-history:' + body.history?.step : body.phase ?? body.op);
                 if (body.attempt !== undefined) requests.attempts.push(body.attempt);
+                const hang = requests.hangPhaseAt;
+                if (hang !== null && body.phase === hang.phase && ++hang.seen === hang.at) return new Promise(() => {});
                 return facet.default.fetch(request, { SUPERVISOR: supervisor });
               },
             };
