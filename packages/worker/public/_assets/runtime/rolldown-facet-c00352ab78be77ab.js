@@ -14659,13 +14659,14 @@ function ownCompile(api, settings, module) {
   if (classes) {
     for (const [start, end] of parameterPropertyDeclarations(output, classes)) edits.push(blanked(out.code, start, end));
   }
+  if (assign) shadowedLowering(module, parsed.program, output);
   const code3 = applyEdits(out.code, edits);
   const map = module.sourcemap ? out.map : void 0;
   const moduleType2 = outputLang(settings, module);
   if (!decorators) return { code: code3, map, moduleType: moduleType2 };
   const edited = parse51(api, module, code3, moduleType2);
   if (!edited) throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
-  return { ...decorateInTscOrder(edited, code3, map), moduleType: moduleType2 };
+  return { ...decorateInTscOrder(edited, code3, map, new Set(sourceImports.flatMap((i2) => i2.locals))), moduleType: moduleType2 };
 }
 function outputLang(settings, module) {
   return settings.jsx.preserve && (module.loader === "jsx" || module.loader === "tsx") ? "jsx" : "js";
@@ -14791,10 +14792,11 @@ var classesOf = (program) => [...nodes(program)].filter((node) => node.type === 
 function parameterPropertiesOf(program) {
   const classes = classesOf(program).map((node) => {
     const constructor = list(child(node, "body"), "body").find((member) => member.type === "MethodDefinition" && member.kind === "constructor");
+    const written = new Set(list(child(node, "body"), "body").filter((member) => member.type === "PropertyDefinition" && member.declare !== true && member.static !== true).map((member) => stringOf(child(member, "key"), "name")));
     const properties = list(child(constructor ?? null, "value"), "params").filter((param) => param.type === "TSParameterProperty").map((param) => {
       const parameter = child(param, "parameter");
       return stringOf(parameter?.type === "AssignmentPattern" ? child(parameter, "left") : parameter, "name");
-    }).filter((name50) => name50 !== null);
+    }).filter((name50) => name50 !== null && !written.has(name50));
     return { name: stringOf(child(node, "id"), "name"), properties };
   });
   return classes.some((c3) => c3.properties.length) ? classes : null;
@@ -14892,10 +14894,14 @@ function decorateKind(statement, decorate) {
   }
   return null;
 }
-function decorateInTscOrder(program, code3, map) {
-  const helper = list(program, "body").find((node) => node.type === "ImportDeclaration" && stringOf(child(node, "source"), "value") === "@oxc-project/runtime/helpers/decorate");
-  const specifier = list(helper ?? null, "specifiers")[0];
-  const decorate = specifier?.type === "ImportDefaultSpecifier" ? stringOf(child(specifier, "local"), "name") : null;
+function decorateInTscOrder(program, code3, map, written) {
+  let decorate = null;
+  for (const node of list(program, "body")) {
+    if (node.type !== "ImportDeclaration" || stringOf(child(node, "source"), "value") !== "@oxc-project/runtime/helpers/decorate") continue;
+    const specifier = list(node, "specifiers")[0];
+    const local = specifier?.type === "ImportDefaultSpecifier" ? stringOf(child(specifier, "local"), "name") : null;
+    if (local !== null && !written.has(local)) decorate = local;
+  }
   if (decorate === null) return { code: code3, map };
   const lineStarts = [0];
   for (let i2 = 0; i2 < code3.length; i2++) if (code3[i2] === "\n") lineStarts.push(i2 + 1);
@@ -14940,11 +14946,36 @@ function decorateInTscOrder(program, code3, map) {
   const mappingsText = typeof map === "object" && map !== null && "mappings" in map && typeof map.mappings === "string" ? map.mappings : null;
   const mappings = mappingsText === null ? null : decodeMappings(mappingsText);
   while (mappings && mappings.length < lines.length) mappings.push([]);
+  moves.sort((a2, b2) => a2.last - a2.first - (b2.last - b2.first));
   for (const { first, last, order } of moves) {
     lines.splice(first, last - first + 1, ...order.flatMap(([from, to]) => lines.slice(from, to + 1)));
     if (mappings) mappings.splice(first, last - first + 1, ...order.flatMap(([from, to]) => mappings.slice(from, to + 1)));
   }
   return { code: lines.join("\n"), map: mappings ? Object.assign({}, map, { mappings: encodeMappings(mappings) }) : map };
+}
+var LOWERING_GLOBALS = ["WeakMap", "WeakSet"];
+function* boundNames(node) {
+  const id2 = (key) => stringOf(child(node, key), "name");
+  if (node.type === "VariableDeclarator" && child(node, "id")?.type === "Identifier") yield* [id2("id")].filter((n5) => n5 !== null);
+  if (node.type === "FunctionDeclaration" || node.type === "ClassDeclaration" || node.type === "TSEnumDeclaration") {
+    const name50 = id2("id");
+    if (name50 !== null) yield name50;
+  }
+  if (node.type === "ImportSpecifier" || node.type === "ImportDefaultSpecifier" || node.type === "ImportNamespaceSpecifier") {
+    const name50 = id2("local");
+    if (name50 !== null) yield name50;
+  }
+}
+function shadowedLowering(module, source, output) {
+  const declared = /* @__PURE__ */ new Set();
+  for (const node of nodes(source)) for (const name50 of boundNames(node)) if (LOWERING_GLOBALS.includes(name50)) declared.add(name50);
+  if (declared.size === 0) return;
+  const created = (program, name50) => [...nodes(program)].filter((node) => node.type === "NewExpression" && stringOf(child(node, "callee"), "name") === name50).length;
+  for (const name50 of declared) {
+    if (created(output, name50) > created(source, name50)) {
+      throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name50} where useDefineForClassFields is false and a class has private members (${module.path}): lowering them reads the global ${name50}, which the module's binding would shadow`);
+    }
+  }
 }
 
 // ../core/src/runtime/rolldown-build.ts

@@ -135,6 +135,53 @@ export const made = typeof Ordered;
 export { order };
 `,
   noDecorators: '/** @param x a value */\nexport class A { m(x: number) { return x; } }\nexport const made = new A().m(1);\n',
+  // A decorated class in a decorator factory's callback, then outer members:
+  // each class's calls in tsc's order, the inner ones as the factory runs.
+  decoratorNested: `const order: string[] = [];
+const d = (tag: string) => () => { order.push(tag); };
+function factory(tag: string, body: () => void) { body(); return d(tag); }
+class Outer {
+  @d('outer static') static t = 1;
+  @factory('outer method', () => {
+    @d('inner class') class Inner {
+      @d('inner static') static s = 1;
+      @d('inner field') x = 2;
+    }
+  })
+  m() {}
+  @d('outer field') y = 2;
+}
+export const made = typeof Outer;
+export { order };
+`,
+  // A module binding named as a global the helpers read.
+  shadowDecorated: `const Object = 0;
+function d(t: any, k?: string) {}
+@d class A { @d m() {} }
+export { A, Object };
+export const made = typeof A;
+`,
+  shadowExported: `export const Object = 0;
+function d(t: any) {}
+@d class A {}
+export const made = typeof A;
+`,
+  // A module binding named as a global the class-field lowering reads.
+  shadowFields: `export const WeakMap = 1;
+export class C { #p = 1; x = 2; static s = 3; get p() { return this.#p; } }
+export const made = new C().p;
+`,
+  // A helper import the module wrote itself: its own, kept.
+  userHelperImport: `import key from '@oxc-project/runtime/helpers/classPrivateFieldLooseKey';
+function d(t: any) {}
+@d export class A {}
+export const made = key('x');
+`,
+  // A field the class writes beside a parameter property of the same name.
+  writtenParameterField: `export class A { q: number; x = 1; constructor(public q: number) {} }
+export class B { x = 1; q!: number; constructor(public q: number, readonly r = 2) {} }
+export const made = [Object.keys(new A(1)), Object.keys(new B(1))];
+`,
   paths: "import { helper } from '@lib/helper';\nexport const got = typeof helper;\n",
   // What each elision keeps: an import whose specifiers are all types, an
   // empty clause, a default beside a type, an unused value, a bare import.
@@ -219,6 +266,12 @@ const EXPECT = {
   decorators: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.result?.log?.length > 0,
   decoratorOrder: (o) => ran(o) && o.runs.exports.made === 'function' && Array.isArray(o.runs.exports.order),
   noDecorators: (o) => ran(o) && o.runs.exports.made === 1,
+  decoratorNested: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.order?.length === 6,
+  shadowDecorated: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.Object === 0,
+  shadowExported: (o) => ran(o) && o.runs.exports.made === 'function' && o.runs.exports.Object === 0,
+  shadowFields: (o) => ran(o) && o.runs.exports.made === 1 && o.runs.exports.WeakMap === 1,
+  userHelperImport: (o) => ran(o) && o.runs.exports.made === 'user:x',
+  writtenParameterField: (o) => ran(o) && Array.isArray(o.runs.exports.made),
   paths: (o) => ran(o) && o.runs.exports.got === 'function',
 };
 
@@ -374,6 +427,15 @@ const FIELD_CASES = {
   },
   'experimentalDecorators and useDefineForClassFields false': { source: 'decorators', options: { tsconfigRaw: tc({ experimentalDecorators: true, useDefineForClassFields: false }) } },
   'experimentalDecorators, target es2020': { source: 'decoratorOrder', options: { tsconfigRaw: tc({ experimentalDecorators: true, target: 'es2020' }) } },
+  'experimentalDecorators: a decorated class in a decorator factory\'s callback': {
+    source: 'decoratorNested', options: { tsconfigRaw: tc({ experimentalDecorators: true }) },
+  },
+  'experimentalDecorators: a binding named Object': { source: 'shadowDecorated', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
+  'experimentalDecorators: an exported binding named Object': { source: 'shadowExported', options: { tsconfigRaw: tc({ experimentalDecorators: true }) } },
+  'a written field beside a parameter property': { source: 'writtenParameterField', options: {} },
+  'a written field beside a parameter property, useDefineForClassFields false': {
+    source: 'writtenParameterField', options: { tsconfigRaw: tc({ useDefineForClassFields: false }) },
+  },
   'experimentalDecorators, jsx react-jsx and strict (a Vite tsconfig with decorators)': {
     source: 'decorators', options: { tsconfigRaw: tc({ experimentalDecorators: true, jsx: 'react-jsx', strict: true, target: 'ES2020', useDefineForClassFields: true }) },
   },
@@ -459,6 +521,9 @@ for (const name of ['a', 'u', 'd', 'ns', 'side', 'v', 'e', 'dw', 'bare']) {
 }
 // Imported once per process (Node caches it), so a transform's run compares its imports, not its loads.
 write('src/shapes.js', 'exports.unrelated = 1;');
+// A helper the module imports itself, which says it is the module's.
+write('node_modules/@oxc-project/runtime/package.json', JSON.stringify({ name: '@oxc-project/runtime', exports: { './helpers/*': './helpers/*.js' } }));
+write('node_modules/@oxc-project/runtime/helpers/classPrivateFieldLooseKey.js', "module.exports = (name) => 'user:' + name;");
 
 /** A value as data: symbols and functions by name, so two runs compare. */
 function label(value) {
@@ -585,7 +650,7 @@ async function buildOutcome(engine, code, loader, format, options) {
 // ── Comparison ──────────────────────────────────────────────────────────
 
 const differences = [];
-const counts = { same: 0, failing: 0 };
+const counts = { same: 0, refused: 0, failing: 0 };
 const show = (theirs, ours) => `\n    esbuild: ${JSON.stringify(theirs)}\n    nimbus:  ${JSON.stringify(ours)}`;
 const outcomeOf = (call) => (call === 'build' ? buildOutcome : transformOutcome);
 
@@ -639,6 +704,24 @@ try {
       await same(`build ${loader} ${format}: ${name}`, (engine) => buildOutcome(engine, code, loader, format, options), EXPECT[source]);
     }
   }
+  // A binding named WeakMap where class fields are lowered: renamed in a
+  // transform, as esbuild renames it; a build refuses it by name (FAILING_CASES' neighbour).
+  for (const format of ['esm', 'cjs']) {
+    await same(`transform ts ${format}: useDefineForClassFields false: a binding named WeakMap`,
+      (engine) => transformOutcome(engine, SOURCES.shadowFields, 'ts', format, { tsconfigRaw: tc({ useDefineForClassFields: false }) }), EXPECT.shadowFields);
+    const theirs = await buildOutcome('esbuild', SOURCES.shadowFields, 'ts', format, { tsconfigRaw: tc({ useDefineForClassFields: false }) });
+    const ours = await buildOutcome('nimbus', SOURCES.shadowFields, 'ts', format, { tsconfigRaw: tc({ useDefineForClassFields: false }) });
+    counts.refused++;
+    if (!EXPECT.shadowFields(theirs) || !/declares its own WeakMap/.test(ours.failure ?? '')) {
+      differences.push(`build ts ${format}: useDefineForClassFields false: a binding named WeakMap: refused by name${show(theirs, ours)}`);
+    }
+  }
+  // A helper import the module wrote is its own, in a transform (a build
+  // resolves @oxc-project/runtime to rolldown's own copy, ahead of its plugins).
+  for (const format of ['esm', 'cjs']) {
+    await same(`transform ts ${format}: experimentalDecorators: a helper import the module wrote`,
+      (engine) => transformOutcome(engine, SOURCES.userHelperImport, 'ts', format, { tsconfigRaw: tc({ experimentalDecorators: true }) }), EXPECT.userHelperImport);
+  }
   // A constant fragment beside bindings that spell its placeholder's name with an escape.
   for (const jsxFragment of ['"frag"', '0']) {
     for (const loader of ['tsx', 'jsx']) {
@@ -664,7 +747,7 @@ try {
   await stopEsbuildEngine();
 }
 
-const total = counts.same + counts.failing;
+const total = counts.same + counts.refused + counts.failing;
 assert.equal(differences.length, 0, `${differences.length} of ${total} cases differ from esbuild 0.24.2:\n  ${differences.join('\n  ')}`);
 console.log(`tsconfig-jsx-differential OK: ${counts.same} cases compile, run and record the same as esbuild 0.24.2; `
-  + `${counts.failing} fail where esbuild fails`);
+  + `${counts.refused} refused by name where esbuild's output runs; ${counts.failing} fail where esbuild fails`);

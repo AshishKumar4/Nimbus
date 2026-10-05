@@ -275,6 +275,8 @@ function ownCompile(api, settings, module) {
         for (const [start, end] of parameterPropertyDeclarations(output, classes))
             edits.push(blanked(out.code, start, end));
     }
+    if (assign)
+        shadowedLowering(module, parsed.program, output);
     const code = applyEdits(out.code, edits);
     const map = module.sourcemap ? out.map : undefined;
     const moduleType = outputLang(settings, module);
@@ -283,7 +285,7 @@ function ownCompile(api, settings, module) {
     const edited = parse(api, module, code, moduleType);
     if (!edited)
         throw new Error(`Nimbus's bundler could not read back its own compilation of ${module.path}`);
-    return { ...decorateInTscOrder(edited, code, map), moduleType };
+    return { ...decorateInTscOrder(edited, code, map, new Set(sourceImports.flatMap((i) => i.locals))), moduleType };
 }
 /** What a compiled module is: JSX where the build preserves it, else JavaScript. */
 function outputLang(settings, module) {
@@ -477,24 +479,28 @@ const classesOf = (program) => [...nodes(program)].filter((node) => node.type ==
 function parameterPropertiesOf(program) {
     const classes = classesOf(program).map((node) => {
         const constructor = list(child(node, 'body'), 'body').find((member) => member.type === 'MethodDefinition' && member.kind === 'constructor');
+        // A field the class writes of the same name is its own (Oxc adds none
+        // beside it, and esbuild keeps it): only the others are Oxc's.
+        const written = new Set(list(child(node, 'body'), 'body')
+            .filter((member) => member.type === 'PropertyDefinition' && member.declare !== true && member.static !== true)
+            .map((member) => stringOf(child(member, 'key'), 'name')));
         const properties = list(child(constructor ?? null, 'value'), 'params')
             .filter((param) => param.type === 'TSParameterProperty')
             .map((param) => {
             const parameter = child(param, 'parameter');
             return stringOf(parameter?.type === 'AssignmentPattern' ? child(parameter, 'left') : parameter, 'name');
         })
-            .filter((name) => name !== null);
+            .filter((name) => name !== null && !written.has(name));
         return { name: stringOf(child(node, 'id'), 'name'), properties };
     });
     return classes.some((c) => c.properties.length) ? classes : null;
 }
 /**
  * The field declarations Oxc adds for parameter properties, in a compiled
- * module (the Oxc crate's drop_parameter_property_fields). A class cannot
- * declare a field its parameter property also declares (TypeScript's
- * duplicate identifier), so a value-less instance field of that name is
- * Oxc's. Classes are matched to the source's by order and name; were they
- * not to match, none is taken.
+ * module (the Oxc crate's drop_parameter_property_fields): value-less
+ * instance fields named by `classes`' properties, which leave out any the
+ * class writes itself. Classes are matched to the source's by order and
+ * name; were they not to match, none is taken.
  */
 function parameterPropertyDeclarations(output, classes) {
     const compiled = classesOf(output);
@@ -610,11 +616,17 @@ function decorateKind(statement, decorate) {
  * lines of its own there: whole lines move, and the source map's lines with
  * them; a run that does not is left.
  */
-function decorateInTscOrder(program, code, map) {
-    const helper = list(program, 'body').find((node) => node.type === 'ImportDeclaration'
-        && stringOf(child(node, 'source'), 'value') === '@oxc-project/runtime/helpers/decorate');
-    const specifier = list(helper ?? null, 'specifiers')[0];
-    const decorate = specifier?.type === 'ImportDefaultSpecifier' ? stringOf(child(specifier, 'local'), 'name') : null;
+function decorateInTscOrder(program, code, map, written) {
+    // The transformer's import of the helper: not one the module wrote (`written`, its imports' bindings).
+    let decorate = null;
+    for (const node of list(program, 'body')) {
+        if (node.type !== 'ImportDeclaration' || stringOf(child(node, 'source'), 'value') !== '@oxc-project/runtime/helpers/decorate')
+            continue;
+        const specifier = list(node, 'specifiers')[0];
+        const local = specifier?.type === 'ImportDefaultSpecifier' ? stringOf(child(specifier, 'local'), 'name') : null;
+        if (local !== null && !written.has(local))
+            decorate = local;
+    }
     if (decorate === null)
         return { code, map };
     const lineStarts = [0];
@@ -671,10 +683,58 @@ function decorateInTscOrder(program, code, map) {
     const mappings = mappingsText === null ? null : decodeMappings(mappingsText);
     while (mappings && mappings.length < lines.length)
         mappings.push([]);
+    // Innermost first: a run nested in a statement of another (a decorated
+    // class in a decorator factory's callback) permutes lines within that
+    // statement's, so the outer run's line numbers stay right; the other way
+    // round, the outer move would leave the inner one's stale.
+    moves.sort((a, b) => (a.last - a.first) - (b.last - b.first));
     for (const { first, last, order } of moves) {
         lines.splice(first, last - first + 1, ...order.flatMap(([from, to]) => lines.slice(from, to + 1)));
         if (mappings)
             mappings.splice(first, last - first + 1, ...order.flatMap(([from, to]) => mappings.slice(from, to + 1)));
     }
     return { code: lines.join('\n'), map: mappings ? Object.assign({}, map, { mappings: encodeMappings(mappings) }) : map };
+}
+/** What the class-field lowering keeps private members in, read as globals. */
+const LOWERING_GLOBALS = ['WeakMap', 'WeakSet'];
+/** The names a declaration (or import, or parameter) binds directly. */
+function* boundNames(node) {
+    const id = (key) => stringOf(child(node, key), 'name');
+    if (node.type === 'VariableDeclarator' && child(node, 'id')?.type === 'Identifier')
+        yield* [id('id')].filter((n) => n !== null);
+    if (node.type === 'FunctionDeclaration' || node.type === 'ClassDeclaration' || node.type === 'TSEnumDeclaration') {
+        const name = id('id');
+        if (name !== null)
+            yield name;
+    }
+    if (node.type === 'ImportSpecifier' || node.type === 'ImportDefaultSpecifier' || node.type === 'ImportNamespaceSpecifier') {
+        const name = id('local');
+        if (name !== null)
+            yield name;
+    }
+}
+/**
+ * A TypeScript module whose class fields are lowered (useDefineForClassFields
+ * false) keeps lowered private members in `new WeakMap()` and `new WeakSet()`,
+ * read as globals; a binding of the module's by either name would take them
+ * (the Oxc crate renames that binding, `WeakMap2`, as esbuild does; here the
+ * compiled module is rolldown's transform's text, whose generated references
+ * are not told from the module's). Such a module is refused, naming the
+ * binding, rather than compiled to code that calls the module's own WeakMap.
+ */
+function shadowedLowering(module, source, output) {
+    const declared = new Set();
+    for (const node of nodes(source))
+        for (const name of boundNames(node))
+            if (LOWERING_GLOBALS.includes(name))
+                declared.add(name);
+    if (declared.size === 0)
+        return;
+    const created = (program, name) => [...nodes(program)].filter((node) => node.type === 'NewExpression' && stringOf(child(node, 'callee'), 'name') === name).length;
+    for (const name of declared) {
+        if (created(output, name) > created(source, name)) {
+            throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name} where useDefineForClassFields is false `
+                + `and a class has private members (${module.path}): lowering them reads the global ${name}, which the module's binding would shadow`);
+        }
+    }
 }

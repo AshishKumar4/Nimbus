@@ -161,7 +161,17 @@ pub fn transform(allocator: &Allocator, source: &str, options: &Options) -> Outp
         if source_type.is_typescript() && options.experimental_decorators {
             decorate_in_tsc_order(&mut program);
         }
-        if inline_runtime_helpers(allocator, &mut program) {
+        let mut read = inline_runtime_helpers(allocator, &mut program);
+        if options.assign_class_fields && source_type.is_typescript() {
+            // Lowered private fields and methods are kept in these.
+            read.extend(["WeakMap", "WeakSet"].map(String::from));
+        }
+        if !read.is_empty() {
+            // What the helpers and the lowering read of the globals is no
+            // module binding's: one that would shadow it is renamed, as
+            // esbuild renames it (`Object2`), on the transformer's scoping,
+            // which knows the module's own symbols from what was generated.
+            rename_shadowing_bindings(allocator, &mut program, &mut scoping, &read);
             // The helpers' declarations are new: their scoping is made again.
             scoping = SemanticBuilder::new().build(&program).semantic.into_scoping();
         }
@@ -299,10 +309,21 @@ fn parameter_properties(program: &Program<'_>) -> Vec<Vec<String>> {
                         .iter()
                         .filter(|p| p.accessibility.is_some() || p.readonly || p.r#override)
                         .filter_map(|p| p.pattern.get_identifier_name().map(|name| name.to_string()))
-                        .collect()
+                        .collect::<Vec<_>>()
                 })
                 .unwrap_or_default();
-            self.0.push(names);
+            // A field the class writes of the same name is its own (Oxc adds
+            // none beside it, and esbuild keeps it): only the others are Oxc's.
+            let written: Vec<String> = class
+                .body
+                .body
+                .iter()
+                .filter_map(|element| match element {
+                    ClassElement::PropertyDefinition(p) if !p.declare && !p.r#static => p.key.static_name().map(|n| n.to_string()),
+                    _ => None,
+                })
+                .collect();
+            self.0.push(names.into_iter().filter(|name| !written.contains(name)).collect());
             walk::walk_class(self, class);
         }
     }
@@ -315,10 +336,10 @@ fn parameter_properties(program: &Program<'_>) -> Vec<Vec<String>> {
 /// (`q;`, first in the class), as tsc does under useDefineForClassFields;
 /// esbuild assigns it in the constructor alone. Those declarations go, so the
 /// object's own keys are in esbuild's order (the fields', then the parameter
-/// properties'). A class cannot declare a field its parameter property also
-/// declares (TypeScript's duplicate identifier), so a value-less field of
-/// that name is Oxc's. The transform keeps the classes and their order; were
-/// it not to, nothing is taken.
+/// properties'). `names` is, per class, the parameter properties the class
+/// does not also write as a field: Oxc adds no declaration beside a written
+/// one, and esbuild keeps the written one where it is. The transform keeps
+/// the classes and their order; were it not to, nothing is taken.
 fn drop_parameter_property_fields(program: &mut Program<'_>, names: &[Vec<String>]) {
     use oxc::ast::ast::{Class, ClassElement};
     use oxc::ast_visit::{Visit, VisitMut, walk, walk_mut};
@@ -362,7 +383,8 @@ const RUNTIME_HELPERS: &str = "@oxc-project/runtime/helpers/";
 fn runtime_helper_local<'p>(program: &'p Program<'_>, name: &str) -> Option<&'p str> {
     use oxc::ast::ast::ImportDeclarationSpecifier;
     program.body.iter().find_map(|statement| match statement {
-        Statement::ImportDeclaration(d) if d.source.value.as_str().strip_prefix(RUNTIME_HELPERS) == Some(name) => {
+        // The transformer's own import has no span; one the module wrote is the module's.
+        Statement::ImportDeclaration(d) if d.span.is_empty() && d.source.value.as_str().strip_prefix(RUNTIME_HELPERS) == Some(name) => {
             match d.specifiers.as_ref()?.first()? {
                 ImportDeclarationSpecifier::ImportDefaultSpecifier(s) => Some(s.local.name.as_str()),
                 _ => None,
@@ -378,11 +400,16 @@ fn runtime_helper_local<'p>(program: &'p Program<'_>, name: &str) -> Option<&'p 
 /// `var _decorate = (() => { ...; return __decorate; })();`, what the helper
 /// imports defined inside the same function, so no name of theirs reaches
 /// the module's scope. Returns whether there was any.
-fn inline_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> bool {
+fn inline_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a>) -> Vec<String> {
     use oxc::ast::ast::ImportDeclarationSpecifier;
-    let mut inlined = false;
+    let mut read: Vec<String> = Vec::new();
     for statement in program.body.iter_mut() {
         let Statement::ImportDeclaration(d) = statement else { continue };
+        // Only the transformer's (no span): an import the module wrote is its
+        // own, kept, so a stateful helper keeps one state across modules.
+        if !d.span.is_empty() {
+            continue;
+        }
         let Some(name) = d.source.value.as_str().strip_prefix(RUNTIME_HELPERS) else { continue };
         let Some(ImportDeclarationSpecifier::ImportDefaultSpecifier(local)) = d.specifiers.as_ref().and_then(|s| s.first()) else {
             continue;
@@ -391,12 +418,92 @@ fn inline_runtime_helpers<'a>(allocator: &'a Allocator, program: &mut Program<'a
         let mut seen = Vec::new();
         let Some(function) = emit_runtime_helper(name, &mut body, &mut seen) else { continue };
         let text = format!("var {} = /* @__PURE__ */ (() => {{\n{body}return {function};\n}})();", local.local.name);
+        for global in globals_read(&text) {
+            if !read.contains(&global) {
+                read.push(global);
+            }
+        }
         if let Some(helper) = module::parse_statements(allocator, text).pop() {
             *statement = helper;
-            inlined = true;
         }
     }
-    inlined
+    read
+}
+
+/// Renames every module binding named one of `globals` (the generated code
+/// reads them as globals) and the references the module wrote to it, in the
+/// AST: the scoping is made again after, from the names. An exported
+/// declaration of one keeps its export name (`const Object2 = 0; export {
+/// Object2 as Object }`). A generated reference (no span) keeps the global's
+/// name: it is the global, now that nothing of the module shadows it.
+fn rename_shadowing_bindings<'a>(allocator: &'a Allocator, program: &mut Program<'a>, scoping: &mut oxc::semantic::Scoping, globals: &[String]) {
+    use oxc::ast::ast::{BindingIdentifier, IdentifierReference};
+    use oxc::ast_visit::{VisitMut, walk_mut};
+    use oxc::semantic::SymbolId;
+    let mut names = names::Names::new(scoping);
+    let before: Vec<(SymbolId, String)> = scoping
+        .symbol_ids()
+        .filter(|&symbol| globals.iter().any(|g| g == scoping.symbol_name(symbol)))
+        .map(|symbol| (symbol, scoping.symbol_name(symbol).to_string()))
+        .collect();
+    if before.is_empty() {
+        return;
+    }
+    for name in globals {
+        names.reserve_global(name, scoping, allocator);
+    }
+    let renamed: Vec<(SymbolId, String)> = before
+        .into_iter()
+        .filter_map(|(symbol, old)| {
+            let new = scoping.symbol_name(symbol);
+            (new != old).then(|| (symbol, new.to_string()))
+        })
+        .collect();
+    module::ModulePass::alias_renamed_exports(program, scoping, allocator);
+    struct Rename<'s, 'a> {
+        allocator: &'a Allocator,
+        scoping: &'s oxc::semantic::Scoping,
+        renamed: &'s [(SymbolId, String)],
+    }
+    impl<'a> VisitMut<'a> for Rename<'_, 'a> {
+        fn visit_binding_identifier(&mut self, it: &mut BindingIdentifier<'a>) {
+            if let Some(symbol) = it.symbol_id.get()
+                && let Some((_, new)) = self.renamed.iter().find(|(s, _)| *s == symbol)
+            {
+                it.name = oxc::str::Ident::from_str_in(new, &self.allocator);
+            }
+        }
+        fn visit_identifier_reference(&mut self, it: &mut IdentifierReference<'a>) {
+            if it.span.is_empty() {
+                return;
+            }
+            if let Some(reference) = it.reference_id.get()
+                && let Some(symbol) = self.scoping.get_reference(reference).symbol_id()
+                && let Some((_, new)) = self.renamed.iter().find(|(s, _)| *s == symbol)
+            {
+                it.name = oxc::str::Ident::from_str_in(new, &self.allocator);
+            }
+            walk_mut::walk_identifier_reference(self, it);
+        }
+    }
+    Rename { allocator, scoping, renamed: &renamed }.visit_program(program);
+}
+
+/// The globals `text` reads: its unresolved references, but the one it
+/// assigns (its own binding, resolved where it is inserted).
+fn globals_read(text: &str) -> Vec<String> {
+    let allocator = Allocator::default();
+    let parsed = Parser::new(&allocator, text, SourceType::mjs()).parse();
+    let scoping = SemanticBuilder::new().build(&parsed.program).semantic.into_scoping();
+    let declared: Vec<&str> = scoping.symbol_names().collect();
+    scoping
+        .root_unresolved_references()
+        .keys()
+        .map(|name| name.as_str())
+        .filter(|name| !declared.contains(name))
+        .filter(|name| !text.starts_with(&format!("var {name} ")))
+        .map(String::from)
+        .collect()
 }
 
 /// The helper `name`'s source, after the helpers it imports (each once, and

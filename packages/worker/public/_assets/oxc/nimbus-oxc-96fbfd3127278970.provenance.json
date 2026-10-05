@@ -15,8 +15,8 @@
       "src/abi.rs": "45ce28d133daf01f8664e3c8d2eff54fc078df205d6487e21647115c381687dd",
       "src/diagnostics.rs": "d4b7330faedd3c439b62912c2a6f256d389773170dd3c553806167a5d472fdd3",
       "src/helpers.rs": "cf0da308d383ea902c44f55a9d1e04fcc991ce80d6c4f1c89a69901621be5d8f",
-      "src/lib.rs": "a6075b30846072df19f05f00d95abbd30e148f4f9bb45f826bd56f271e22abcd",
-      "src/module.rs": "ecee4de76b1be17e07e93b1cc6bbad47ef07ec03a66e142a1d9f9b93477e79cf",
+      "src/lib.rs": "ee6b0be98332b2d2b3e85634cb28fadfc489d3a95716826c77fdf95792ea37ac",
+      "src/module.rs": "667669e8813eb5c347a0781eac53a034fdf1f3cea8c8dec7ebbae5f88d8addaf",
       "src/names.rs": "4b475452c58d047f4536a255d5ee6871e3fd905fe21fc715b0e55b08e9f117d0",
       "src/options.rs": "8c76e6aea3f2c85e0613856eb69bc24c8397b80de4696fd49f1f95f202939278",
       "src/runtime_helpers.rs": "095df814d958394b226418ac51ffaae379d835e346a98118ecaa19201024e178"
@@ -66,8 +66,8 @@
   },
   "outputs": {
     "nimbus-oxc.wasm": {
-      "bytes": 2399444,
-      "sha256": "797e695a918acbb364abe364bb6959d2116153423e2efdb573b6732b56bc4155"
+      "bytes": 2424636,
+      "sha256": "96fbfd31272789708e5d145ec7a830bd000a0c47f1e0302356d19b6a34eb5d46"
     }
   }
 }

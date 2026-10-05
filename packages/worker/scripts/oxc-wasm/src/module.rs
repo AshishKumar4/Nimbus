@@ -232,7 +232,9 @@ impl<'a> ModulePass<'a> {
         }
 
         let scoping = traverse_mut(&mut self, allocator, program, scoping, ());
-        if !self.to_cjs && self.names.is_some() {
+        // Renamed here, or before (lib.rs: a binding that would shadow a
+        // global the inlined helpers read).
+        if !self.to_cjs {
             Self::alias_renamed_exports(program, &scoping, allocator);
         }
         if self.options.format == Format::Cjs
@@ -250,7 +252,7 @@ impl<'a> ModulePass<'a> {
     /// `export const Promise = 1`, its binding renamed out of the way of a
     /// global the output reads: `const Promise2 = 1; export { Promise2 as
     /// Promise }`, so the module's exports keep their names.
-    fn alias_renamed_exports(program: &mut Program<'a>, scoping: &Scoping, allocator: &'a Allocator) {
+    pub(crate) fn alias_renamed_exports(program: &mut Program<'a>, scoping: &Scoping, allocator: &'a Allocator) {
         // Every name the declaration binds, as (its spelling now, its export
         // name), once any of them was renamed: the declaration loses `export`,
         // so each of its names needs a specifier.
