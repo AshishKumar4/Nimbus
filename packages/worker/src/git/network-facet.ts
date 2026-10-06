@@ -38,6 +38,7 @@ import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import type { CloneBatchResult, ClonePrepared, CloneStreamed } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
+import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
 
@@ -233,30 +234,6 @@ interface GitFacetEntrypoint {
 
 interface GitFacetWorker {
   getEntrypoint(): GitFacetEntrypoint;
-}
-
-interface GitHttpRequest {
-  url: unknown;
-  method?: string;
-  body?: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null;
-  [key: string]: unknown;
-}
-
-interface GitHttpResponse {
-  statusCode: number;
-  body?: {
-    cancel?: () => unknown;
-  } | null;
-  [key: string]: unknown;
-}
-
-interface GitHttp {
-  request(req: GitHttpRequest): Promise<GitHttpResponse>;
-}
-
-interface GitHttpRetryOptions {
-  maxAttempts?: number;
-  backoffMs?: readonly number[];
 }
 
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
@@ -695,31 +672,19 @@ async function runPool<T>(items: readonly T[], concurrency: number, run: (item: 
 }
 
 /**
- * Attempts at a batch or history piece that failed in transit: its request
- * to the git server (UploadPackError); its write waves to the session
- * ("Network connection lost": the batch facet's writeBatchStream through
- * SupervisorRPC to the session's Durable Object, seen live on Linux,
- * TypeScript and vscode, while the session stayed up, since the clone it
- * orchestrates carried on and GraphQL counts no reset: an infrastructure
- * network error, which the Durable Objects docs say to retry, with backoff,
- * when the request is idempotent); or the piece as a whole, hung (react's
- * first batch, three times in five clones, with no stall from its request).
- * Objects are addressed by content: a piece run again writes the same files
- * and the same pack, its earlier attempt's temporary pack discarded first.
+ * A batch or history piece that failed in transit, or hung, is tried again
+ * under the one lost-transport policy (pack/transport.ts): seen live as a
+ * request to the git server failing (UploadPackError), a write wave to the
+ * session lost ("Network connection lost", on Linux, TypeScript and vscode,
+ * the session up throughout), and a piece hung (react's first batch, three
+ * times in five clones). Its earlier attempt's temporary pack is discarded.
  */
-const CLONE_PIECE_ATTEMPTS = 3;
-const CLONE_PIECE_BACKOFF_MS = [1_000, 3_000];
+const CLONE_PIECE_ATTEMPTS = RETRY_ATTEMPTS;
 /** A piece takes seconds (Linux's batches ~17 s, react's largest history piece 51 s): one hung this long is retried. */
 const CLONE_PIECE_TIMEOUT_MS = 150_000;
 
-function sleepMs(ms: number): Promise<void> {
-  return new Promise((resolve) => setTimeout(resolve, ms));
-}
-
 function transientPieceFailure(diagnostic: GitNetworkPhaseDiagnostic, error: string): boolean {
-  return diagnostic.outcome === 'timeout' ||
-    error.startsWith('git upload-pack: ') ||
-    error.includes('Network connection lost');
+  return diagnostic.outcome === 'timeout' || isLostTransport(error);
 }
 
 /** One fast-clone facet invocation after prepare; its failure is the clone's. */
@@ -759,7 +724,7 @@ async function invokeClonePhase(
       if (run.progress) {
         await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`);
       }
-      await sleepMs(CLONE_PIECE_BACKOFF_MS[attempt - 1]);
+      await retryDelay(attempt - 1);
       continue;
     }
     run.phases.push(invocation.diagnostic);
@@ -772,7 +737,7 @@ async function invokeClonePhase(
     if (run.progress) {
       await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`);
     }
-    if (attempt < CLONE_PIECE_ATTEMPTS) await sleepMs(CLONE_PIECE_BACKOFF_MS[attempt - 1]);
+    if (attempt < CLONE_PIECE_ATTEMPTS) await retryDelay(attempt - 1);
   }
   if (invocation.result.success !== true) {
     throw new GitClonePhaseError(
@@ -1264,66 +1229,6 @@ export async function execGitNetwork(
   }
 }
 
-export function createRetryingGitHttp(
-  baseHttp: GitHttp,
-  opts?: GitHttpRetryOptions,
-): GitHttp {
-  const transientStatuses = new Set([502, 503, 504, 522, 523, 524, 525]);
-  const maxAttempts = Math.max(1, Math.floor(opts?.maxAttempts ?? 3));
-  const backoffMs = opts?.backoffMs?.length ? opts.backoffMs : [400, 1200];
-
-  const waitBeforeRetry = async (attempt: number): Promise<void> => {
-    const baseMs = backoffMs[Math.min(attempt, backoffMs.length - 1)] ?? 0;
-    const span = baseMs * 0.25;
-    const delayMs = Math.max(0, Math.round(baseMs + (Math.random() * 2 - 1) * span));
-    await new Promise<void>((resolve) => setTimeout(resolve, delayMs));
-  };
-
-  const collectBody = async (
-    body: AsyncIterable<Uint8Array> | Iterable<Uint8Array>,
-  ): Promise<Uint8Array[]> => {
-    const chunks: Uint8Array[] = [];
-    for await (const chunk of body) chunks.push(chunk);
-    return chunks;
-  };
-
-  return {
-    async request(req): Promise<GitHttpResponse> {
-      const method = req.method ?? 'GET';
-      const idempotent = method === 'GET' || String(req.url).includes('git-upload-pack');
-      const body = idempotent && method !== 'GET' && req.body
-        ? await collectBody(req.body)
-        : undefined;
-      const request = body ? { ...req, body } : req;
-      let attempt = 0;
-
-      while (true) {
-        const lastAttempt = attempt + 1 >= maxAttempts;
-        let response: GitHttpResponse;
-        try {
-          response = await baseHttp.request(request);
-        } catch (error) {
-          if (!idempotent || lastAttempt) throw error;
-          await waitBeforeRetry(attempt);
-          attempt++;
-          continue;
-        }
-
-        if (!idempotent || !transientStatuses.has(response.statusCode) || lastAttempt) {
-          return response;
-        }
-        try {
-          if (response.body && typeof response.body.cancel === 'function') {
-            await response.body.cancel();
-          }
-        } catch {}
-        await waitBeforeRetry(attempt);
-        attempt++;
-      }
-    },
-  };
-}
-
 /**
  * Generate the dynamic worker code for the git network facet.
  *
@@ -1349,7 +1254,6 @@ const METADATA_ENTRY_OVERHEAD_BYTES = 256;
 const CLONE_JOB_MARKER = ${JSON.stringify(GIT_CLONE_JOB_MARKER)};
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
-${createRetryingGitHttp.toString()}
 
 function protocolError(message) {
   return new Error('git clone protocol: ' + message);
@@ -2323,7 +2227,7 @@ export default {
       // http/web has both { request } named and { default: { request } };
       // the namespace bundle.gitHttp exposes request directly, which is
       // what isomorphic-git looks for.
-      http = createRetryingGitHttp(bundle.gitHttp);
+      http = __nimbusGitPack.retryingGitHttp(bundle.gitHttp);
     } catch (e) {
       return respond(false, {
         error: 'Failed to load bundled isomorphic-git: ' + (e && e.message),

@@ -16,3 +16,4 @@ export { oidToHex, oidFromHex, PackFormatError } from './format.js';
 export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
 export { facetPacks } from './facet-packs.js';
+export { retryingGitHttp } from './transport.js';

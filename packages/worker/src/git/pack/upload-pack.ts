@@ -9,6 +9,7 @@
  * processor buffers more than one side-band packet.
  */
 
+import { RETRY_ATTEMPTS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX, retryDelay } from './transport.js';
 import { PackFormatError } from './format.js';
 
 export interface GitTransportAuth {
@@ -60,7 +61,7 @@ export interface PackResponse {
 
 export class UploadPackError extends Error {
   constructor(message: string, readonly status?: number) {
-    super('git upload-pack: ' + message);
+    super(UPLOAD_PACK_ERROR_PREFIX + message);
     this.name = 'UploadPackError';
   }
 }
@@ -68,8 +69,6 @@ export class UploadPackError extends Error {
 const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const TRANSIENT_STATUSES: Record<number, true> = { 502: true, 503: true, 504: true, 522: true, 523: true, 524: true, 525: true };
-const RETRY_BACKOFF_MS = [400, 1200];
 
 function pktLine(text: string): Uint8Array {
   const body = encoder.encode(text);
@@ -91,11 +90,11 @@ function repoUrl(url: string): string {
   return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 
-/** A request whose transient failures (connection, 5xx at the edge) are retried before any byte is read. */
+/** A request whose transient failures are retried before any byte is read (transport.ts). */
 async function send(options: UploadPackOptions, path: string, init: RequestInit): Promise<Response> {
   const doFetch = options.fetch ?? fetch;
   for (let attempt = 0; ; attempt++) {
-    const last = attempt >= RETRY_BACKOFF_MS.length;
+    const last = attempt + 1 >= RETRY_ATTEMPTS;
     let response: Response;
     // Headers that do not come within the stall time are a stall too.
     const stallMs = options.stallMs ?? STALL_MS;
@@ -107,28 +106,18 @@ async function send(options: UploadPackOptions, path: string, init: RequestInit)
       response = await Promise.race([doFetch(repoUrl(options.url) + path, { ...init, signal: options.signal }), stalled]);
     } catch (error) {
       if (last) throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
-      await backoff(attempt);
+      await retryDelay(attempt);
       continue;
     } finally {
       if (timer !== null) clearTimeout(timer);
     }
-    if (!TRANSIENT_STATUSES[response.status] || last) return response;
+    if (!TRANSIENT_HTTP_STATUSES.has(response.status) || last) return response;
     await response.body?.cancel();
-    await backoff(attempt);
+    await retryDelay(attempt);
   }
 }
 
-function backoff(attempt: number): Promise<void> {
-  // The executor form: the worker's ES2022 lib has no Promise.withResolvers.
-  return new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
-}
-
-/**
- * A response that sends nothing for this long has stalled: git's own
- * http.lowSpeedTime is the same idea. Measured: a GitHub batch on react
- * hung 240 s with no bytes; a healthy one never pauses for more than a few.
- */
-export const STALL_MS = 45_000;
+export { STALL_MS };
 
 /** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
 class PktReader {
