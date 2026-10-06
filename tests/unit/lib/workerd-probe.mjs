@@ -17,7 +17,7 @@
 // or packages/worker/scripts/bundle-facet-workers.mjs).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -132,7 +132,10 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     for (const { name, version, entry } of staged) catalog.runtimes[name] = { default: version, versions: { [version]: entry } };
     const catalogPath = join(work, 'catalog.json');
     await Bun.write(catalogPath, JSON.stringify(catalog, null, 2));
-    await putObjects([...staged.flatMap((s) => s.puts), { key: 'catalog/v1.json', file: catalogPath, contentType: 'application/json' }], persist, work);
+    // The worker reads the catalog its NIMBUS_RUNTIME_CATALOG_SHA256 var
+    // names, by that digest: this one, staged under it and passed below.
+    const catalogSha256 = createHash('sha256').update(readFileSync(catalogPath)).digest('hex');
+    await putObjects([...staged.flatMap((s) => s.puts), { key: `catalog/sha256/${catalogSha256}.json`, file: catalogPath, contentType: 'application/json' }], persist, work);
 
     const secret = randomBytes(24).toString('hex');
     const deadline = Date.now() + bootTimeoutMs;
@@ -149,6 +152,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       child = spawn(WRANGLER, [
         'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
+        '--var', `NIMBUS_RUNTIME_CATALOG_SHA256:${catalogSha256}`,
         ...Object.entries(vars).flatMap(([key, value]) => ['--var', `${key}:${value}`]),
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
       child.stdout.on('data', (d) => { log += d; });
