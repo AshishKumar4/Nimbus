@@ -396,7 +396,16 @@ const command: Command = async (ctx) => {
     let salt: Uint8Array = crypto.getRandomValues(new Uint8Array(16));
     if (randomSource !== undefined) {
       try {
-        salt = (await ctx.vfs.readFile(resolve(ctx.cwd, randomSource))).subarray(0, 16);
+        // Its first 16 bytes, read as such: the source may be a device without end (/dev/zero) or a large file.
+        const path = resolve(ctx.cwd, randomSource);
+        const parts: Uint8Array[] = [];
+        for (let got = 0; got < 16;) {
+          const chunk = await ctx.vfs.readRange(path, got, 16 - got);
+          if (chunk.length === 0) break;
+          parts.push(chunk);
+          got += chunk.length;
+        }
+        salt = concatBytes(parts).subarray(0, 16);
       } catch (error) {
         await ctx.stderr.write(`sort: open failed: ${randomSource}: ${strerror(error)}\n`);
         return 2;

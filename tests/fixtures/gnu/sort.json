@@ -382,6 +382,16 @@
    "args": "--sort= l1",
    "stdout": "",
    "exit": 1
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=/dev/zero rin",
+   "stdout": "a\na\nb\nb a\nB\nd\ne\na b\nc\n",
+   "exit": 0
+  },
+  {
+   "args": "LC_ALL=C %T -R --random-source=/dev/null rin",
+   "stdout": "",
+   "exit": 2
   }
  ]
 }
