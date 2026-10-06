@@ -12,7 +12,8 @@
 //   - in a depth-1 clone, git fetch --deepen 2 then --unshallow leave the
 //     shallow file, objects and history host git's do (a single stream);
 //   - refs and the shallow file change only after the pack is stored: while
-//     it is still arriving, another command sees the old tip and boundary.
+//     it is still arriving, another command sees the old tip and boundary;
+//   - a fetch whose pack turns out corrupt fails, and leaves no temporary file.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
@@ -60,6 +61,24 @@ try {
     for (let n = 3; n < 6; n++) commit(n, 'second ' + n);
     hostGit(source, ['push', '-q', bare, 'main']);
     const packsBefore = new Set(readdirSync(join(session.materialize('home/user/repo', mkdtempSync(join(work, 'before-')), '.git'), '.git/objects/pack')));
+
+    // A fetch whose pack is corrupt past its first pieces: it fails, and leaves no temporary file.
+    const realFetch = globalThis.fetch;
+    globalThis.fetch = async (input, init) => {
+      const response = await realFetch(input, init);
+      if (init?.method !== 'POST') return response;
+      globalThis.fetch = realFetch;
+      const body = new Uint8Array(await response.arrayBuffer());
+      body[Math.floor(body.byteLength * 0.8)] ^= 0x55;
+      return new Response(body, { status: response.status, headers: response.headers });
+    };
+    const writesBeforeBroken = session.requests.rangeWrites.length;
+    const broken = await session.git('/home/user/repo', ['fetch']);
+    globalThis.fetch = realFetch;
+    assert.notEqual(broken.code, 0, 'a fetch of a corrupt pack succeeded');
+    assert.ok(session.requests.rangeWrites.slice(writesBeforeBroken).some((write) => write.path.includes('/tmp_pack_')), 'the corrupt pack was stored in part');
+    const leftovers = session.kernel.readdir('home/user/repo/.git/objects/pack').map((entry) => entry.name ?? entry).filter((name) => name.startsWith('tmp_'));
+    assert.deepEqual(leftovers, [], 'the failed fetch left temporary files');
 
     const writesBefore = session.requests.rangeWrites.length;
     // What another command sees while the pack arrives: the refs and shallow file as they were.

@@ -13,7 +13,9 @@
 //   - every pack's idx equal to git index-pack's for it;
 //   - one blobs request broken off mid-pack, one batch whose write to the
 //     session is lost, and one trees piece that never answers, are each
-//     retried as a fresh piece.
+//     retried as a fresh piece; a resumed piece whose pack was named but
+//     whose answer was lost is run again from the outcome it recorded (its
+//     pack cannot be fetched again).
 
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -87,6 +89,15 @@ try {
   session.requests.failWaveAt = 5;
   // The second history invocation hangs; after the piece timeout it runs again.
   session.requests.hangPhaseAt = { phase: 'clone-history', at: 2, seen: 0 };
+  // The first resumed history pack's naming lands, its answer does not.
+  let lostRename = null;
+  session.requests.loseRename = (from, to) => {
+    if (lostRename !== null || !/\/tmp_pack_[^/]*_(commits|trees|blobs)-[^/]*$/.test(from) || !to.endsWith('.pack')) return false;
+    const resumes = session.requests.phases.filter((phase) => phase === 'clone-history:resume').length;
+    if (resumes === 0 || session.requests.phases.at(-1) !== 'clone-history:resume') return false;
+    lostRename = from;
+    return true;
+  };
   try {
     const cloned = await session.git('/home/user', ['clone', '--no-shallow', server.url + '/repo.git', 'repo'], {
       NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK: '7',
@@ -102,7 +113,8 @@ try {
     assert.equal(count('clone-history:plan'), 1);
     assert.equal(posts > 4, true);
     const attempts = session.requests.attempts;
-    assert.ok(attempts.filter((attempt) => attempt >= 2).length >= 3, 'each of the three faults was followed by another attempt: ' + attempts);
+    assert.ok(lostRename !== null, 'no resumed pack was named');
+    assert.ok(attempts.filter((attempt) => attempt >= 2).length >= 4, 'each of the four faults was followed by another attempt: ' + attempts);
     assert.ok(session.requests.phases.indexOf('clone-batch') !== session.requests.phases.lastIndexOf('clone-batch'),
       'the batch whose wave was lost ran again');
 

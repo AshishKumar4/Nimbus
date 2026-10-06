@@ -90,7 +90,12 @@ export async function createFacetSession(work, { realGit = false } = {}) {
         return refused(async () => bridge.writeRange(path, offset, bytes, { createParents: true, ...lease }));
       },
       async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
-      async rename(from, to) { return refused(async () => bridge.rename(from, to, lease)); },
+      async rename(from, to) {
+        const result = await refused(async () => bridge.rename(from, to, lease));
+        // loseRename: a rename that is applied but whose answer is lost, once.
+        if (requests.loseRename?.(from, to)) throw new Error('Network connection lost.');
+        return result;
+      },
       async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {

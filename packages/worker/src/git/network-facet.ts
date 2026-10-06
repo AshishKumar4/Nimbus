@@ -1560,7 +1560,10 @@ async function discardEarlierAttempts(context, opts, prefix, suffix) {
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);
   for (let attempt = 1; attempt < opts.attempt; attempt++) {
-    await writer.remove('.git/objects/pack/' + prefix + opts.jobId + (attempt > 1 ? '_' + attempt : '') + suffix);
+    const name = opts.jobId + (attempt > 1 ? '_' + attempt : '') + suffix;
+    await writer.remove('.git/objects/pack/' + prefix + name);
+    // Its idx, if it reached install.ts.
+    await writer.remove('.git/objects/pack/tmp_idx_' + name);
   }
   await writer.flush();
 }
@@ -1581,11 +1584,6 @@ function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
     rename: (from, to) => counted('rename', () => supervisor.rename(normalizePath(from), normalizePath(to))),
     unlink: (path) => counted('rename', () => supervisor.unlink(normalizePath(path))),
     ensureDirectory,
-    async size(path) {
-      stats.supervisorRpc.stat++;
-      const stat = await useRpcResult(supervisor.stat(normalizePath(path)), (result) => result);
-      return stat && stat.type === 'file' ? stat.size : null;
-    },
     async readdir(path) {
       stats.supervisorRpc.readdir++;
       try {

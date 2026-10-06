@@ -30,6 +30,7 @@ import {
   join,
   readRange,
   resumePack,
+  settledBefore,
   storePackResumable,
   type CloneContext,
   type CloneWriter,
@@ -195,16 +196,25 @@ export async function historyResume(
   context: CloneContext,
   request: { kind: HistoryKind; piece: string; part: number; pending: PendingPack; budgetUnits?: number },
 ): Promise<HistoryStepResult> {
+  // A resumed pack cannot be fetched again: a step run again after its
+  // answer was lost finds the outcome it recorded before naming its pack.
+  const recordName = 'settled-' + request.pending.tmpName;
+  const settled = await settledBefore(context, request.pending.tmpName, recordName);
+  if (settled !== null) return { kind: request.kind, pack: settled.summary, pending: null, lists: settled.extra as StagedFile[] };
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);
   const list = new ListWriter();
+  const listName = 'list-' + request.piece + '-' + request.part;
+  let lists: StagedFile[] = [];
   const stored = await resumePack(context, writer, request.pending, {
     cacheBytes: HISTORY_CACHE_BYTES,
     recentBytes: HISTORY_RECENT_BYTES,
     budgetUnits: request.budgetUnits,
     onObject: lister(request.kind, list),
+    record: { name: recordName, publish: async () => (lists = await list.write(writer, listName)) },
   });
-  return await settle(writer, request.kind, stored, list, 'list-' + request.piece + '-' + request.part);
+  if ('pending' in stored) return await settle(writer, request.kind, stored, list, listName);
+  return { kind: request.kind, pack: stored.summary, pending: null, lists };
 }
 
 /** An open-addressing set of 20-byte ids, each with a basename: the plan's only large structure. */

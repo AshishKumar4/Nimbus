@@ -17,7 +17,8 @@
  */
 
 import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
-import { encodeIdxV2, ENTRY_BYTES, entryOffset } from './idx.js';
+import { ENTRY_BYTES, entryOffset } from './idx.js';
+import { installPack, RangedPackFile, readRange, resumeInstall, type PackFiles, type PackSummary } from './install.js';
 import { ByteLru } from './byte-lru.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries, type EntryStat } from '../worktree/dircache.js';
@@ -107,12 +108,7 @@ export interface ClonePrepared {
   packs: PackSummary[];
 }
 
-export interface PackSummary {
-  packSha: string;
-  packBytes: number;
-  objects: number;
-  work: WorkTally;
-}
+export type { PackSummary };
 
 export interface CloneBatchResult {
   index: number;
@@ -158,47 +154,31 @@ const STREAM_RECENT_BYTES = 24 * 1024 * 1024;
 
 /** Blobs held while a filtered pack's trees are still arriving. */
 const HELD_BLOB_BYTES = 16 * 1024 * 1024;
-const READ_PIECE_BYTES = 4 * 1024 * 1024;
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
 
-/** A pack stored as it arrives, by ranged writes the clone's lease covers. */
-class SupervisorPackStore implements PackStore {
-  size = 0;
+export { readRange };
 
-  constructor(private readonly supervisor: CloneSupervisor, readonly path: string) {}
-
-  async append(bytes: Uint8Array): Promise<void> {
-    const at = this.size;
-    this.size += bytes.byteLength;
-    await this.supervisor.fsWriteRange(this.path, at, bytes);
-  }
-
-  async writeAt(offset: number, bytes: Uint8Array): Promise<void> {
-    await this.supervisor.fsWriteRange(this.path, offset, bytes);
-  }
-
-  async truncate(size: number): Promise<void> {
-    this.size = size;
-    await this.supervisor.fsTruncate(this.path, size);
-  }
-
-  async read(offset: number, length: number): Promise<Uint8Array> {
-    return await readRange(this.supervisor, this.path, offset, length);
-  }
+/** A resumed step run again after its answer was lost: its recorded outcome, its pack's naming finished; or null. */
+export async function settledBefore(context: CloneContext, tmpName: string, recordName: string): Promise<{ summary: PackSummary; extra: unknown } | null> {
+  return await resumeInstall(packFiles(context), join(context.dir, PACK_DIR), tmpName, join(context.dir, STAGE_DIR + '/' + recordName));
 }
 
-export async function readRange(supervisor: CloneSupervisor, path: string, offset: number, length: number): Promise<Uint8Array> {
-  const out = new Uint8Array(length);
-  for (let at = 0; at < length; at += READ_PIECE_BYTES) {
-    const want = Math.min(READ_PIECE_BYTES, length - at);
-    const piece = await supervisor.fsReadRange(path, offset + at, want);
-    if (piece === null || piece.byteLength !== want) {
-      throw new PackFormatError(path + ': range ' + (offset + at) + '+' + want + ' came back ' + (piece === null ? 'missing' : piece.byteLength + ' bytes'));
-    }
-    out.set(piece, at);
-  }
-  return out;
+/** The clone's ranged file calls (its lease covers them); a removal is a wave of the clone's writer. */
+function packFiles(context: CloneContext): PackFiles {
+  const supervisor = context.supervisor;
+  return {
+    fsWriteRange: (path, offset, bytes) => supervisor.fsWriteRange(path, offset, bytes),
+    fsTruncate: (path, size) => supervisor.fsTruncate(path, size),
+    fsReadRange: (path, offset, length) => supervisor.fsReadRange(path, offset, length),
+    rename: (from, to) => supervisor.rename(from, to),
+    readdir: (path) => supervisor.readdir(path),
+    async remove(path) {
+      const writer = context.writer();
+      await writer.remove(path.slice(context.dir.length + 1));
+      await writer.flush();
+    },
+  };
 }
 
 export function join(dir: string, path: string): string {
@@ -276,6 +256,13 @@ export interface StorePackOptions {
   maxStoreReads?: number;
   onObject?: ConstructorParameters<typeof PackStreamProcessor>[0]['onObject'];
   promisor?: string;
+  /**
+   * For a step that may run again after its answer is lost: what else it
+   * writes once the pack is decoded (publish, with the step's writer; its
+   * value is recorded with the pack's summary), and the record's name in
+   * STAGE_DIR (install.ts resumeInstall).
+   */
+  record?: { name: string; publish(): Promise<unknown> };
 }
 
 /**
@@ -303,7 +290,7 @@ export async function storePackResumable(
   tmpName: string,
   options: StorePackOptions,
 ): Promise<StoredPack> {
-  const store = new SupervisorPackStore(context.supervisor, join(context.dir, PACK_DIR + '/' + tmpName));
+  const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + tmpName));
   const result = await new PackStreamProcessor({
     store,
     cacheBytes: options.cacheBytes,
@@ -312,7 +299,7 @@ export async function storePackResumable(
     maxStoreReads: options.maxStoreReads ?? MAX_STORE_READS,
     onObject: options.onObject,
   }).run(stream);
-  return await settlePack(context, writer, tmpName, result, options.promisor);
+  return await settlePack(context, writer, tmpName, result, options.promisor, options.record);
 }
 
 /** Continue decoding a pending pack from its stored bytes; it may stop at the budget again. */
@@ -322,7 +309,7 @@ export async function resumePack(
   pending: PendingPack,
   options: Omit<StorePackOptions, 'promisor'>,
 ): Promise<StoredPack> {
-  const store = new SupervisorPackStore(context.supervisor, join(context.dir, PACK_DIR + '/' + pending.tmpName));
+  const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + pending.tmpName));
   store.size = pending.packBytes;
   const records = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/ckpt-' + pending.tmpName), 0, pending.recordsBytes);
   const result = await new PackStreamProcessor({
@@ -333,7 +320,7 @@ export async function resumePack(
     maxStoreReads: options.maxStoreReads ?? MAX_STORE_READS,
     onObject: options.onObject,
   }).resume({ offset: pending.offset, decoded: pending.decoded, records, externalBases: pending.externalBases }, pending.packBytes);
-  return await settlePack(context, writer, pending.tmpName, result, pending.promisor);
+  return await settlePack(context, writer, pending.tmpName, result, pending.promisor, options.record);
 }
 
 /** Name a fully decoded pack and write its idx (and .promisor); or checkpoint it. */
@@ -343,6 +330,7 @@ async function settlePack(
   tmpName: string,
   result: PackProcessResult,
   promisor: string | undefined,
+  record?: StorePackOptions['record'],
 ): Promise<StoredPack> {
   if (result.checkpoint !== null || result.entries === null) {
     const checkpoint = result.checkpoint!;
@@ -361,16 +349,18 @@ async function settlePack(
       },
     };
   }
-  const packSha = oidToHex(result.packSha);
-  await context.supervisor.rename(join(context.dir, PACK_DIR + '/' + tmpName), join(context.dir, PACK_DIR + '/pack-' + packSha + '.pack'));
-  if (promisor !== undefined) {
-    await writer.file(PACK_DIR + '/pack-' + packSha + '.promisor', 0o644, encoder.encode(promisor));
-  }
-  const pieces: Uint8Array[] = [];
-  const entries = result.entries;
-  for await (const piece of encodeIdxV2(result.objects, result.packSha, async function* () { yield entries; })) pieces.push(piece);
-  await writer.file(PACK_DIR + '/pack-' + packSha + '.idx', 0o644, concat(pieces));
-  return { result, summary: { packSha, packBytes: result.packBytes, objects: result.objects, work: result.work } };
+  // What the step writes besides is durable before its pack is named.
+  const extra = record === undefined ? undefined : await record.publish();
+  await writer.flush();
+  const summary = await installPack(packFiles(context), {
+    dir: join(context.dir, PACK_DIR),
+    tmpName,
+    result,
+    promisor,
+    record: record === undefined ? undefined : { path: join(context.dir, STAGE_DIR + '/' + record.name), extra },
+  });
+  if (summary === null) throw new PackFormatError('pack ' + tmpName + ' holds no objects');
+  return { result, summary };
 }
 
 /** The tree id a commit object names. */
