@@ -298,6 +298,33 @@ for (const via of ['writeBatch', 'writeStream']) {
   assert.deepEqual(bus, ['home/user/dst'], 'the bus heard of a copy more than once');
 }
 
+// ── A copy reports only the rows it inserted: one another writer made at
+//    the target first (the copy's INSERT OR IGNORE kept it) is not the
+//    copier's create ──
+{
+  const { raw, harness, vfs } = open();
+  vfs.mkdir('home/user/src');
+  for (let index = 0; index < 3; index++) vfs.writeFile(`home/user/src/f${index}`, `file ${index}`);
+  vfs.writeFile('home/user/intruder', 'theirs');
+  const { events } = record(raw);
+  let copies = 0;
+  harness.setFaultInjector((statement) => {
+    if (!statement.sql.includes('INSERT OR IGNORE INTO vfs_inodes') || ++copies !== 2) return null;
+    // Another writer's row at the target, committed before this page's insert.
+    harness.db.run(`INSERT INTO vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)
+      SELECT 'home/user/dst/f1', 'home/user/dst', kind, size, atime, mtime, ctime, mode, uid, gid, 900001, gen, chunk_id, content_id, dacl
+      FROM vfs_inodes WHERE path = 'home/user/intruder'`);
+    return null;
+  });
+  const copied = await vfs.copyTreeAsync('home/user/src', 'home/user/dst');
+  harness.clearFault();
+  assert.ok(copies >= 2, 'the copy did not insert a second page');
+  const paths = events.map((event) => event.path).sort();
+  assert.deepEqual(paths, ['home/user/dst', 'home/user/dst/f0', 'home/user/dst/f2'],
+    `a row the copy did not insert was reported as its create: ${JSON.stringify(paths)}`);
+  assert.equal(copied, 3, 'the copy counted a row it did not insert');
+}
+
 // ── Metadata and truncation are reported, with what they replaced ──
 {
   const { raw, vfs } = open();
