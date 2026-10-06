@@ -6317,16 +6317,24 @@ export class SqliteVFS {
   snapshot(name: string, options: { quiesce?: boolean } = {}): SnapshotInfo | Promise<SnapshotInfo> {
     if (typeof name !== 'string' || name === '' || name.length > 256) throw vfsError('EINVAL', 'invalid snapshot name');
     this.settleAppends();
-    if (!options.quiesce) return this.pinSnapshot(name);
+    if (!options.quiesce) {
+      // It cannot wait for a holder's decided operations: refused (EAGAIN),
+      // their recall started, until every delegation is shared.
+      for (const [owner, lease] of this.exclusiveMutationLeases) {
+        if (lease.delegation !== null && !lease.shared) throw this.recallRequired(owner, lease, 'share', lease.root);
+      }
+      return this.pinSnapshot(name);
+    }
     return this.quiesced(() => this.pinSnapshot(name));
   }
 
   /**
-   * Run `pin` once nothing spans awaits and no exclusive lease is held: the
-   * check and `pin` run in one turn, so nothing can start between them. New
-   * spanning work waits behind the gate until then (Kinu N14: await, never
-   * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
-   * is waited out too.
+   * Run `pin` once nothing spans awaits, no plain exclusive lease is held,
+   * and every delegation is shared (its holder's decided operations stored):
+   * the check and `pin` run in one turn, so nothing can start between them.
+   * New spanning work waits behind the gate until then (Kinu N14: await,
+   * never EBUSY). A lease is synchronous and cannot wait, so one taken
+   * meanwhile is waited out too.
    */
   private quiesced<T>(pin: () => T): Promise<T> {
     const previous = this.quiesceGate ?? Promise.resolve();
@@ -6339,7 +6347,13 @@ export class SqliteVFS {
         await previous;
         for (;;) {
           if (this.activeWork.size > 0) { await Promise.allSettled([...this.activeWork]); continue; }
-          if (this.exclusiveMutationLeases.size > 0) { await yieldToStorage(); continue; }
+          // A plain lease is waited out. A delegation may stand for as long
+          // as its holder works: its decided operations are recalled (shared)
+          // instead, so the snapshot holds them, and it stays.
+          const leases = [...this.exclusiveMutationLeases];
+          if (leases.some(([, lease]) => lease.delegation === null)) { await yieldToStorage(); continue; }
+          const unshared = leases.find(([, lease]) => !lease.shared);
+          if (unshared !== undefined) { await this.recallRequired(unshared[0], unshared[1], 'share', unshared[1].root).recall(); continue; }
           return pin();
         }
       } finally {

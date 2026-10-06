@@ -213,4 +213,20 @@ function open() {
   assert.equal(dec.decode(kernel.readFile('work/d/held')), "the holder's");
 }
 
+// ── A snapshot holds what a holder decided: a quiesced one recalls (shares)
+//    each delegation first; one that cannot wait is refused with the recall
+//    started ──
+{
+  const { raw } = open();
+  const holder = delegate(raw, 'work/d');
+  holder.decide('work/d/a', 'decided before the snapshot');
+  await raw.snapshot('s1', { quiesce: true });
+  assert.deepEqual(holder.recalls, ['share']);
+  assert.equal(dec.decode(raw.at('s1').readFile('work/d/a')), 'decided before the snapshot');
+  const other = delegate(raw, 'outside-tree');
+  other.decide('outside-tree/x', 'unsent');
+  assert.throws(() => raw.snapshot('s2'), (error) => error instanceof RecallRequired && error.kind === 'share');
+  assert.deepEqual(other.recalls, ['share']);
+}
+
 console.log('sqlite-vfs delegation: ok');
