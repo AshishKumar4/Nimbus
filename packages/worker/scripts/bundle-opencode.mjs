@@ -59,6 +59,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { buildOpencodeAttachEntryFromSources, chunkClosure } from './build-opencode-attach-entry.mjs';
 import { readCorePin, sha256Hex } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -333,25 +334,9 @@ async function main() {
     const packEntry = staged.find((f) => f.name === CHUNKS_PACK);
     if (packEntry) {
       const pack = JSON.parse(packEntry.bytes.toString('utf8'));
-      const sources = new Map(Object.entries(pack));
-      for (const f of staged) {
-        if (f.name === 'index.js' || f.name === 'worker.js') {
-          sources.set(f.name, f.bytes.toString('utf8'));
-        }
-      }
-      const CHUNK_REF_RE = /["']\.\/(chunk-[a-z0-9]+\.js)["']/g;
-      const reachable = new Set();
-      const queue = ['index.js', 'worker.js'];
-      while (queue.length > 0) {
-        const src = sources.get(queue.pop());
-        if (!src) continue;
-        for (const m of src.matchAll(CHUNK_REF_RE)) {
-          if (!reachable.has(m[1])) {
-            reachable.add(m[1]);
-            queue.push(m[1]);
-          }
-        }
-      }
+      const entries = staged.filter((f) => f.name === 'index.js' || f.name === 'worker.js')
+        .map((f) => f.bytes.toString('utf8'));
+      const reachable = chunkClosure(entries, (name) => pack[name]);
       const packed = new Set(Object.keys(pack));
       const missing = [...reachable].filter((n) => !packed.has(n));
       const extra = [...packed].filter((n) => !reachable.has(n));
@@ -372,7 +357,6 @@ async function main() {
   {
     const packEntry = staged.find((f) => f.name === CHUNKS_PACK);
     if (packEntry) {
-      const { buildOpencodeAttachEntryFromSources } = await import('./build-opencode-attach-entry.mjs');
       const indexEntry = staged.find((f) => f.name === 'index.js');
       const attachText = await buildOpencodeAttachEntryFromSources(
         indexEntry.bytes.toString('utf8'),
