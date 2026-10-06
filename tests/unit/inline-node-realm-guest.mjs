@@ -20,11 +20,14 @@
 //   vfserror  a filesystem refusal keeps its class: rm({ force: true }) of a
 //             missing path succeeds; a plain error keeps its errno;
 //   cost      a trivial ES module, and CommonJS and ES modules that load http
-//             without a server, end as soon as their event loop is empty:
-//             their run returns within 100 ms of their main script's end.
+//             without a server, start without waiting (under 100 ms idle
+//             before their output, by the scheduler's accounting) and end as
+//             soon as their event loop is empty (their run returns within
+//             100 ms of their main script's end).
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
+import { readdirSync, readFileSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
 
 const CASES = ['start', 'port', 'body', 'abort', 'timer', 'rejection', 'vfserror', 'cost'];
@@ -208,34 +211,75 @@ switch (process.env.CASE) {
     break;
   }
   case 'cost': {
-    // Each program prints the time its main script ends, its event loop then
-    // empty; what is measured is how long after that its run returns. The
-    // launch before it (reading and compiling the modules) is not: it is CPU,
-    // and a loaded machine stretches it past any bound (a whole run took
-    // 60-136 ms on a machine at load 107, against 21 ms quiet), while the
-    // wait this guards against is idle (runNodeProgram's polls, five 30 ms
-    // sleeps after a trivial module's main script, 167 ms in all).
+    // A run's cost is measured in two parts, each the way load cannot move it.
+    //
+    // Startup, from the run's start to its program's first output: the time
+    // in it that the threads doing the work (this process's main thread, and
+    // the threads the run starts, its realm's worker among them) spent
+    // neither on a CPU nor waiting in its run queue, from Linux's per-thread
+    // scheduler accounting (/proc/self/task/*/schedstat: CPU time and run-
+    // queue wait, ns). That is the startup's idle: a sleep or a poll before
+    // the program runs. Its CPU (reading and compiling the modules) is not
+    // counted, nor is the wait for a CPU, which a loaded machine stretches past
+    // any bound (a whole run took 60-136 ms at load 107, against 21 ms quiet).
+    // Measured: about 0 ms quiet, and about 0 ms on one CPU beside three busy
+    // loops, where the startup took twice as long.
+    //
+    // Teardown, from the main script's end (the program prints the time) to
+    // the run's return: what runNodeProgram's polls cost (five 30 ms sleeps
+    // after a trivial module's main script, 167 ms in all). It is timed by
+    // the wall clock, as the realm's worker has gone by then and its
+    // accounting with it.
+    const threads = () => {
+      const seen = new Map();
+      for (const tid of readdirSync('/proc/self/task')) {
+        try {
+          const [cpu, wait] = readFileSync(`/proc/self/task/${tid}/schedstat`, 'utf8').split(' ').map(Number);
+          seen.set(tid, cpu + wait);
+        } catch { /* ended */ }
+      }
+      return seen;
+    };
+    const busySince = (before, after) => {
+      let ns = 0;
+      for (const [tid, total] of after) {
+        if (tid === String(process.pid)) ns += total - before.get(tid);
+        else if (!before.has(tid)) ns += total;
+      }
+      return ns / 1e6;
+    };
     await ws.fs.mkdir('/home/user/m', { recursive: true });
     await ws.fs.writeFile('/home/user/m/one.mjs', 'export {};\nconsole.log(Date.now());\n');
     await run('node m/one.mjs');
+    const median = (values) => values.sort((a, b) => a - b)[2];
     const time = async (line) => {
-      const times = [];
+      const startups = [];
+      const teardowns = [];
       for (let i = 0; i < 5; i++) {
-        const r = await run(line);
+        let first = null;
+        const before = threads();
+        const started = performance.now();
+        const r = await run(line, { onStdout: () => { first ??= { at: performance.now(), threads: threads() }; } });
         const returned = Date.now();
         assert.equal(r.code, 0, r.err);
-        times.push(returned - Number(r.out.trim()));
+        assert.ok(first, `${line}: its output reached the host as it was written`);
+        startups.push(Math.max(0, first.at - started - busySince(before, first.threads)));
+        teardowns.push(returned - Number(r.out.trim()));
       }
-      return times.sort((a, b) => a - b)[2];
+      return { startup: median(startups), teardown: median(teardowns) };
     };
     await ws.fs.writeFile('/home/user/m/http.mjs', "import 'http';\nconsole.log(Date.now());\n");
     const trivial = await time('node m/one.mjs');
     const http = await time(`node -e "require('http'); console.log(Date.now())"`);
     const esmHttp = await time('node m/http.mjs');
-    console.log(`  from its main script's end to its run's return: a trivial ES module ${trivial.toFixed(1)} ms; loading http without a server ${http.toFixed(1)} ms (CommonJS), ${esmHttp.toFixed(1)} ms (ES module)`);
-    assert.ok(trivial < 100, `a trivial ES module ends as its event loop empties (${trivial.toFixed(0)} ms)`);
-    assert.ok(http < 100, `loading http without a server ends as its event loop empties (${http.toFixed(0)} ms)`);
-    assert.ok(esmHttp < 100, `an ES module loading http without a server ends as its event loop empties (${esmHttp.toFixed(0)} ms)`);
+    console.log(`  idle before the program's output: a trivial ES module ${trivial.startup.toFixed(1)} ms; loading http without a server ${http.startup.toFixed(1)} ms (CommonJS), ${esmHttp.startup.toFixed(1)} ms (ES module)`);
+    console.log(`  from its main script's end to its run's return: a trivial ES module ${trivial.teardown.toFixed(1)} ms; loading http without a server ${http.teardown.toFixed(1)} ms (CommonJS), ${esmHttp.teardown.toFixed(1)} ms (ES module)`);
+    assert.ok(trivial.startup < 100, `a trivial ES module starts without waiting (${trivial.startup.toFixed(0)} ms idle before its output)`);
+    assert.ok(http.startup < 100, `loading http without a server starts without waiting (${http.startup.toFixed(0)} ms idle before its output)`);
+    assert.ok(esmHttp.startup < 100, `an ES module loading http without a server starts without waiting (${esmHttp.startup.toFixed(0)} ms idle before its output)`);
+    assert.ok(trivial.teardown < 100, `a trivial ES module ends as its event loop empties (${trivial.teardown.toFixed(0)} ms)`);
+    assert.ok(http.teardown < 100, `loading http without a server ends as its event loop empties (${http.teardown.toFixed(0)} ms)`);
+    assert.ok(esmHttp.teardown < 100, `an ES module loading http without a server ends as its event loop empties (${esmHttp.teardown.toFixed(0)} ms)`);
     break;
   }
 }
