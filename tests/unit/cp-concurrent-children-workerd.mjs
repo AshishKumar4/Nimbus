@@ -6,25 +6,20 @@
 //
 // What has to hold:
 //   - a child that never exits (a server, a watcher) does not hold back a
-//     second child: B prints while A lives, about as soon as a child spawned
-//     alone does. Before, B waited the whole of A's life (15.6 s on a 15 s A),
-//     queued behind A on the one slot of the spawn pool that relayed it.
+//     second child: B prints while A lives, in the first half of A's life.
+//     Before, B waited the whole of A's life (15.6 s on a 15 s A), queued
+//     behind A on the one slot of the spawn pool that relayed it.
 //   - killing A frees what it held at once: a child spawned after the kill
 //     runs at once, and A's Dynamic Worker leaves the ledger (before, A's
 //     program ran on to its natural end and held both).
 //   - N children spawned together all run at once and all complete.
-//   - a burst wider than the Durable Object's Dynamic Worker limit waits on
-//     the ledger for room and completes, never past the limit.
 //   - a child that spawns a grandchild and waits for it completes (before,
 //     the grandchild queued behind its own parent: a deadlock).
-//   - with the parent and nine children filling the limit, a TypeScript
-//     child waits for room before its transform: its transform, its
-//     prebundle and its program are one admission on the ledger, which never
-//     counts past the limit (before, the transform facet was an eleventh
-//     worker, refused on the platform), and it runs once a child ends.
 //
-// The ledger's refusal of a wait nothing can satisfy (children filling the
-// limit, each waiting on a grandchild): cp-dynamic-worker-refusal-workerd.
+// Children past the Durable Object's Dynamic Worker limit:
+// cp-concurrent-children-burst-workerd. The ledger's refusal of a wait
+// nothing can satisfy (children filling the limit, each waiting on a
+// grandchild): cp-dynamic-worker-refusal-workerd.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -75,50 +70,29 @@ const { spawn } = require('child_process');
 const t0 = Date.now();
 const N = 8;
 const results = [];
+// Each child says it is up, then waits for a word on stdin that the parent
+// sends only once all N are up: they end only if all N ran at once.
+const children = [];
+let up = 0;
 for (let i = 0; i < N; i++) {
-  const c = spawn('node', ['-e', 'setTimeout(() => console.log("C' + i + '"), 4000)']);
+  const c = spawn('node', ['-e', 'console.log("up"); process.stdin.once("data", () => console.log("C' + i + '"))']);
+  children.push(c);
   let out = '';
-  c.stdout.on('data', (d) => { out += d; });
+  c.stdout.on('data', (d) => {
+    const was = out;
+    out += d;
+    if (!was.startsWith('up') && out.startsWith('up') && ++up === N) {
+      console.log('T ' + (Date.now() - t0) + ' all up');
+      for (const child of children) child.stdin.end('go\\n');
+    }
+  });
   c.on('close', (code) => {
-    results.push('C' + i + ':' + code + ':' + out.trim());
+    results.push('C' + i + ':' + code + ':' + out.replace(/^up\\n/, '').trim());
     if (results.length === N) {
       console.log('T ' + (Date.now() - t0) + ' all closed');
       console.log('ALL ' + results.sort().join(' '));
     }
   });
-}
-`,
-  burst: `
-const { spawn } = require('child_process');
-const N = 14;
-const results = [];
-for (let i = 0; i < N; i++) {
-  const c = spawn('node', ['-e', 'setTimeout(() => console.log("C' + i + '"), 3000)']);
-  let out = '';
-  c.stdout.on('data', (d) => { out += d; });
-  c.on('close', (code) => {
-    results.push('C' + i + ':' + code + ':' + out.trim());
-    if (results.length === N) console.log('ALL ' + results.sort().join(' '));
-  });
-}
-`,
-  tsburst: `
-const { spawn } = require('child_process');
-require('fs').writeFileSync('/home/user/child.ts', "const n: number = 40 + 2;\\nconsole.log('TS ' + n);\\n");
-const results = [];
-const done = (label) => (code) => { results.push(label + ':' + code); if (results.length === 10) console.log('ALL ' + results.sort().join(' ')); };
-// Once all nine run, with the parent they fill the limit.
-let up = 0;
-for (let i = 0; i < 9; i++) {
-  const c = spawn('node', ['-e', "console.log('up'); setTimeout(() => {}, 3000)"]);
-  c.stdout.once('data', () => { if (++up === 9) startTs(); });
-  c.on('close', done('C' + i));
-}
-function startTs() {
-  const ts = spawn('node', ['/home/user/child.ts']);
-  let out = '';
-  ts.stdout.on('data', (d) => { out += d; });
-  ts.on('close', (code) => { console.log('TS said ' + out.trim()); done('TS')(code); });
 }
 `,
   nested: `
@@ -145,11 +119,8 @@ function split(text) {
   return { lines: lines.filter((l) => !/^T \d+ /.test(l)), timings };
 }
 
-// Host node has no Dynamic Worker ledger to wait on; tsburst is asserted on its own.
-const NO_DIFFERENTIAL = new Set(['tsburst']);
 const host = {};
 for (const [name, source] of Object.entries(SCENARIOS)) {
-  if (NO_DIFFERENTIAL.has(name)) continue;
   const r = spawnSync('node', ['-e', source], { encoding: 'utf8', timeout: 60_000 });
   assert.equal(r.status, 0, `host node ${name}: ${r.stderr}`);
   host[name] = split(r.stdout);
@@ -165,6 +136,10 @@ try {
       const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/${name}.js', Buffer.from('${b64}', 'base64'))"`);
       assert.equal(w.status, 0, w.stdout);
     }
+    // A scenario's family can take minutes on a loaded machine, one launch
+    // after another: what tells a hang from that is the session's Dynamic
+    // Worker ledger, which stops changing.
+    const ledger = async () => { const { loader } = await terminal.memory(); return [loader.holders, loader.waiters, loader.news]; };
     const run = async (name, { poll, args = '' } = {}) => {
       const samples = [];
       let polling = !!poll;
@@ -174,63 +149,56 @@ try {
           await new Promise((resolve) => setTimeout(resolve, 250));
         }
       })();
-      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 180_000);
+      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 280_000, { progress: ledger, stalledMs: 120_000 });
       polling = false;
       await poller;
       assert.equal(r.status, 0, `${name}: ${r.stdout.slice(-800)}`);
       const got = split(r.stdout);
-      if (!NO_DIFFERENTIAL.has(name)) assert.deepEqual(got.lines, host[name].lines, `${name}: the same lines, in the same order, as under host node`);
+      assert.deepEqual(got.lines, host[name].lines, `${name}: the same lines, in the same order, as under host node`);
       return { ...got, samples };
     };
 
-    // A child spawned alone: the floor a second child is measured against.
+    // What a child held is measured against what holding it would cost, timed
+    // beside it under the same load: never against a launch timed earlier,
+    // which a loaded machine makes slower or faster at will (a solo launch of
+    // 443 ms, then one of 2129 ms after a kill, with nothing held between).
     const solo = await run('solo');
-    const floor = solo.timings['B data'];
-    console.log(`  solo: B printed ${floor} ms after its spawn`);
+    console.log(`  solo: B printed ${solo.timings['B data']} ms after its spawn`);
 
+    // A and B launch together, A to live 12 s. Had B waited on anything A
+    // held, it would print once A closed; it prints in the first half of
+    // A's life, about when A itself is up.
     const ab = await run('ab');
     console.log(`  ab: B printed at ${ab.timings['B data']} ms while A ran to ${ab.timings['A close']} ms`);
-    assert.ok(ab.timings['B data'] < ab.timings['A close'] - 5_000, 'B printed while A was still running, well before A ended');
-    assert.ok(ab.timings['B data'] < floor + 2_000,
-      `B printed about as soon as a child spawned alone (${ab.timings['B data']} ms against ${floor} ms): A held nothing B needed`);
+    assert.ok(ab.timings['B data'] < ab.timings['A close'] - 6_000,
+      `B printed while A was still running, in the first half of A's 12 s life (${ab.timings['B data']} ms, A closed at ${ab.timings['A close']} ms): A held nothing B needed`);
 
+    // Had the kill not ended A's program, it would run on for the rest of
+    // its 120 s holding its worker, and B would wait on it.
     const killed = await run('kill');
     console.log(`  kill: B printed ${killed.timings['B data']} ms after A was killed`);
-    assert.ok(killed.timings['B data'] < floor + 2_000, `a child spawned after the kill runs at once (${killed.timings['B data']} ms)`);
-    // The parent has exited; A's program must not run on, holding its worker, for the rest of its 120 s.
-    let ledger = (await terminal.memory()).loader;
-    for (let i = 0; i < 20 && ledger.inFlightWorkers.length > 0; i++) {
-      await new Promise((resolve) => setTimeout(resolve, 100));
-      ledger = (await terminal.memory()).loader;
+    assert.ok(killed.timings['B data'] < 60_000,
+      `a child spawned after the kill runs at once, not once A's program would have ended (${killed.timings['B data']} ms of A's 120 s)`);
+    // The parent has exited; A's program must not run on, holding its worker,
+    // for the rest of its 120 s: its worker leaves the ledger well before.
+    let loader = (await terminal.memory()).loader;
+    for (const until = Date.now() + 60_000; loader.inFlightWorkers.length > 0 && Date.now() < until;) {
+      await new Promise((resolve) => setTimeout(resolve, 250));
+      loader = (await terminal.memory()).loader;
     }
-    assert.deepEqual(ledger.inFlightWorkers, [], "the killed child's Dynamic Worker left the ledger with it");
+    assert.deepEqual(loader.inFlightWorkers, [], "the killed child's Dynamic Worker left the ledger with it");
 
+    // Each of the eight ends only once all eight are up (the scenario's
+    // barrier): one at a time, the first would wait for good.
     const many = await run('many');
-    console.log(`  many: 8 children of 4 s each all closed at ${many.timings['all closed']} ms`);
-    // One at a time they take 8 × (a launch + 4 s); a launch is CPU this
-    // machine's workerd runs in turn, the 4 s are not.
-    const serial = 8 * (floor + 4_000);
-    assert.ok(many.timings['all closed'] < serial - 3 * 4_000,
-      `their lives overlapped: one at a time they take ${serial} ms or more`);
-
-    const burst = await run('burst', { poll: true });
-    const waited = Math.max(...burst.samples.map((s) => s.waiting));
-    const peak = Math.max(...burst.samples.map((s) => s.peak));
-    console.log(`  burst: 14 children, at most ${waited} waiting for room at once, ledger peak ${peak}`);
-    assert.ok(waited > 0, 'the burst was wider than the room: some children waited on the ledger');
-    assert.ok(peak <= burst.samples[0].limit, `and none went past the Dynamic Worker limit (peak ${peak})`);
+    console.log(`  many: 8 children all up at ${many.timings['all up']} ms, all closed at ${many.timings['all closed']} ms`);
+    assert.ok(Number.isFinite(many.timings['all up']) && many.timings['all up'] <= many.timings['all closed'], 'all eight were running at once, and then all ended');
 
     await run('nested');
-
-    const tsburst = await run('tsburst', { poll: true });
-    const tsPeak = Math.max(...tsburst.samples.map((s) => s.peak));
-    console.log(`  tsburst: ledger peak ${tsPeak}`);
-    assert.deepEqual(tsburst.lines, ['TS said TS 42', 'ALL C0:0 C1:0 C2:0 C3:0 C4:0 C5:0 C6:0 C7:0 C8:0 TS:0']);
-    assert.ok(tsPeak <= tsburst.samples[0].limit, `the TypeScript child's transform waited inside its admission: peak ${tsPeak}`);
   } finally {
     await terminal.close();
   }
 } finally {
   await probe.stop();
 }
-console.log('ok - cp-concurrent-children-workerd (B beside a live A, kill frees at once, N together, a burst past the limit, nested)');
+console.log('ok - cp-concurrent-children-workerd (B beside a live A, kill frees at once, N together, nested)');
