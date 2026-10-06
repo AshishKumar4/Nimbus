@@ -89,6 +89,20 @@ published independently in the `@nimbus-sh` npm scope.
   (`fatal: '<dir>' is still being cloned`). A failed clone's abort deletes
   `.git` file by file (one recursive delete passed a write group's row
   limit).
+### Breaking changes for embedders
+
+- `nimbus install` reads the runtime catalog by its SHA-256 and nothing
+  else. The Worker that binds `NIMBUS_RUNTIME_CACHE` must carry the var
+  `NIMBUS_RUNTIME_CATALOG_SHA256`, which `nimbus runtime sync` prints after
+  filling the bucket (`buildNimbusWranglerConfig({ runtimeCatalogSha256 })`
+  carries it). The catalog is read from `catalog/sha256/<digest>.json` and
+  served only if its bytes hash to the var. A missing var, a missing object
+  or other bytes fail the install with a message that names which. Before,
+  every deployment read `catalog/v1.json`, so a publish for one deployment
+  changed what all of them installed. `catalog/v1.json` is still written,
+  for deployments built before this change. Re-run `nimbus runtime sync`
+  once to write the catalog under its digest and get the value.
+
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 loom moves only its fabric range.

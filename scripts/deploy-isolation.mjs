@@ -210,8 +210,8 @@ const SHARED_BY_DESIGN = new Map([
     'never written by the Worker — runtime-catalog.ts only fetches blobs, ' +
     'manifests and the catalog; an operator script publishes them. The Worker ' +
     'DOES write the colo cache in front of it, so every entry there is keyed ' +
-    'by its own digest and re-hashed on read, chained to the build-time ' +
-    'RUNTIME_CATALOG_SHA256 pin (packages/worker/src/runtime/runtime-catalog.ts)'],
+    'by its own digest and re-hashed on read, chained to the deployment\'s ' +
+    'NIMBUS_RUNTIME_CATALOG_SHA256 var (packages/worker/src/runtime/runtime-catalog.ts)'],
 ]);
 
 /**
@@ -250,6 +250,24 @@ const REQUIRED_BINDINGS = [
       'catalog, manifest and blob fetches',
   },
 ];
+
+/**
+ * A block that binds the runtime cache must name the catalog it reads there
+ * (vars.NIMBUS_RUNTIME_CATALOG_SHA256): runtime-catalog.ts reads the catalog
+ * by that digest and refuses every `nimbus install` without it. Unlike a
+ * missing capability this is a violation, production included: a deploy
+ * that binds the cache and cannot read it is a deploy with a broken install.
+ */
+export function missingCatalogPin(block) {
+  const binds = (block.r2_buckets ?? []).some((r) => r.binding === 'NIMBUS_RUNTIME_CACHE');
+  const pin = block.vars?.NIMBUS_RUNTIME_CATALOG_SHA256;
+  if (!binds || (typeof pin === 'string' && /^[a-f0-9]{64}$/.test(pin))) return [];
+  return [
+    `vars.NIMBUS_RUNTIME_CATALOG_SHA256 is ${pin === undefined ? 'absent' : `"${pin}", not a hex SHA-256`} ` +
+    'while NIMBUS_RUNTIME_CACHE is bound: every `nimbus install` would fail ' +
+    '(packages/worker/src/runtime/runtime-catalog.ts). `bundle-runtime.mjs --pin-catalog` writes it',
+  ];
+}
 
 /** Load-bearing bindings absent from `block`, with what each one breaks. */
 export function missingCapabilities(block) {
@@ -611,6 +629,7 @@ export function checkPreview(relPath, {
     }
   }
 
+  result.violations.push(...missingCatalogPin(resolvePreview(config, envName)));
   result.missing = missingCapabilities(resolvePreview(config, envName, { inherit: true }));
   const declared = bindingNames(block);
   for (const [name, kind] of bindingNames(resolveEnvironment(config, envName))) {
@@ -634,6 +653,7 @@ export function checkConfig(relPath, {
   const prodName = [...prodNames].join(', ');
   const targetName = resolveWorkerName(config, envName, workerName);
   const isProductionDeploy = envName === PRODUCTION_ENV && !workerName;
+  violations.push(...missingCatalogPin(resolveEnvironment(config, envName)));
 
   if (isProductionDeploy) {
     return {
@@ -674,10 +694,21 @@ export function checkConfig(relPath, {
   };
 }
 
+/**
+ * The preflight: every deployable target's isolation, and production's own
+ * config read, not deployed. A production deploy goes through checkConfig
+ * with its env (the pin, nothing else); reading it here as well means a pin
+ * removed from production alone fails this check, not the deploy.
+ */
 export function checkAll({ root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS } = {}) {
-  return deployableTargets({ root, configs }).map(({ config, envName, preview }) => (preview
+  const results = deployableTargets({ root, configs }).map(({ config, envName, preview }) => (preview
     ? checkPreview(config, { root, envName, configs })
     : checkConfig(config, { root, envName, configs })));
+  for (const relPath of configs) {
+    if (loadConfig(relPath, root).env?.[PRODUCTION_ENV] === undefined) continue;
+    results.push(checkConfig(relPath, { root, envName: PRODUCTION_ENV, configs }));
+  }
+  return results;
 }
 
 /**

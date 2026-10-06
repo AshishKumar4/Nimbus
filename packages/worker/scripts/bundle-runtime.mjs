@@ -19,14 +19,19 @@
  *   - Blobs are content-addressed under `blobs/<name>-<version>/<sha256>/<file>`.
  *   - Per-version manifest at `manifests/<name>-<version>.json` lists
  *     the files (path-in-VFS, content R2 key, sha256, size, mode).
- *   - Top-level `catalog/v1.json` lists known runtimes, each with the
- *     sha256 of its manifest.
+ *   - The catalog lists known runtimes, each with the sha256 of its
+ *     manifest. It is written at `catalog/sha256/<its own sha256>.json`, which
+ *     is what a deployment reads (by its NIMBUS_RUNTIME_CATALOG_SHA256 var),
+ *     and at `catalog/v1.json`, which only deployments that predate the
+ *     content-addressed read still do.
  *
  * Every artifact the supervisor reads is named by a digest that the artifact
- * above it vouches for, and the top of that chain is pinned into the worker
- * build as src/runtime-catalog.generated.ts. This script owns both ends: it
- * writes `manifest_sha256` into the catalog and rewrites the pin. See the
- * trust-model note in src/runtime/runtime-catalog.ts for what the chain buys.
+ * above it vouches for, and the top of that chain is each deployment's
+ * NIMBUS_RUNTIME_CATALOG_SHA256 var. This script owns both ends: it writes
+ * `manifest_sha256` into the catalog, and for the production bucket rewrites
+ * that var in Nimbus's own configs (CATALOG_PIN_CONFIGS); for any other bucket
+ * it prints it, for the embedder's config. See the trust-model note in
+ * src/runtime/runtime-catalog.ts for what the chain buys.
  *
  * For `clang binji-2020`, the upstream is:
  *   https://raw.githubusercontent.com/binji/wasm-clang/master/{clang,lld,sysroot.tar}
@@ -35,7 +40,7 @@
  *   1. Downloads each upstream file to /tmp.
  *   2. Computes sha256.
  *   3. Uploads to R2 via `wrangler r2 object put`.
- *   4. Writes a per-version manifest + appends to catalog/v1.json.
+ *   4. Writes a per-version manifest and the updated catalog (both keys).
  *
  * Idempotent: re-running compares sha256 with what's currently
  * uploaded; skips re-upload on match. Re-run is safe at any time.
@@ -72,13 +77,28 @@ const USAGE =
   '  --keep-default  add the version to the catalog without making it the\n' +
   '                  default: for a build whose runner contract a deployment\n' +
   '                  still reading the catalog cannot bind yet. Re-run without\n' +
-  '                  the flag once every deployment can; the re-run is idempotent.';
+  '                  the flag once every deployment can; the re-run is idempotent.\n' +
+  '                  A runtime the catalog does not list yet has no default to\n' +
+  '                  keep: its first version becomes its default either way.\n' +
+  '  --pin-catalog   point Nimbus\'s configs at the catalog the bucket holds now\n' +
+  '                  (catalog/v1.json), once catalog/sha256/<its digest>.json\n' +
+  '                  holds the same bytes. Writes nothing to R2.';
 
 /** The bucket the deployed Worker's NIMBUS_RUNTIME_CACHE binding points at.
  *  Only a publish to THIS bucket may rewrite the catalog pin: the pin
  *  describes what production reads, so regenerating it from an isolated
  *  test bucket would point the deploy at a catalog it never fetches. */
 const PRODUCTION_BUCKET = 'nimbus-runtime-cache';
+/** The var a deployment reads its catalog by (runtime-catalog.ts). */
+const PIN_VAR = 'NIMBUS_RUNTIME_CATALOG_SHA256';
+
+/** Nimbus's own configs that bind PRODUCTION_BUCKET: every vars block in each carries the pin. */
+const CATALOG_PIN_CONFIGS = ['../../../apps/hosted-demo/wrangler.jsonc', '../../../apps/probe/wrangler.jsonc'];
+
+/** Where a catalog is kept by the digest of its bytes (runtime-catalog.ts catalogKey reads the same). */
+function catalogKey(sha256) {
+  return `catalog/sha256/${sha256}.json`;
+}
 
 const rawArgs = process.argv.slice(2);
 const positionalArgs = [];
@@ -134,7 +154,7 @@ if (!NPM_OUT_DIR && !ACCOUNT) {
 // already in R2. Read-only: it publishes nothing, so it is safe to run at any
 // time, including while another ingest is in flight against a different bucket.
 if (PIN_ONLY) {
-  pinCatalogFromR2();
+  await pinCatalogFromR2();
   process.exit();
 }
 
@@ -370,6 +390,18 @@ if (spec.ingest_only) {
 
   const catalogLocal = join(workDir, 'catalog.json');
   writeFileSync(catalogLocal, JSON.stringify(catalog, null, 2));
+  const catalogSha256 = createHash('sha256').update(readFileSync(catalogLocal)).digest('hex');
+  // By digest first: a deployment pointed at this catalog must find it.
+  const catalogShaKey = catalogKey(catalogSha256);
+  console.log(`[bundle-runtime] put r2://${BUCKET}/${catalogShaKey}`);
+  execSync(
+    `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${catalogShaKey} --file "${catalogLocal}" --content-type application/json --remote`,
+    { stdio: 'inherit' },
+  );
+  // catalog/v1.json is written only for deployments that read it, the ones
+  // built before runtime-catalog.ts read catalogs by digest. Delete this write
+  // when no deployed version reads catalog/v1.json any more; the read-modify-
+  // write above then reads the catalog the production pin names instead.
   console.log(`[bundle-runtime] put r2://${BUCKET}/${catalogR2Key}`);
   execSync(
     `CLOUDFLARE_ACCOUNT_ID=${ACCOUNT} ${WRANGLER} r2 object put ${BUCKET}/${catalogR2Key} --file "${catalogLocal}" --content-type application/json --remote`,
@@ -377,7 +409,7 @@ if (spec.ingest_only) {
   );
 
   // The catalog just changed, so the pin the deploy carries is now stale.
-  writeCatalogPin(readFileSync(catalogLocal));
+  await writeCatalogPin(catalogSha256);
 
   console.log(`\n[bundle-runtime] DONE`);
   console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
@@ -465,68 +497,85 @@ function bucketIsReadable() {
 // ── Catalog pin ──────────────────────────────────────────────────────
 
 /**
- * Rewrite the build-time root of trust from the exact catalog bytes.
+ * Point the deployment at the catalog whose bytes hash to `sha256`, and
+ * print the one line every caller reads for it, whatever the bucket:
+ * `NIMBUS_RUNTIME_CATALOG_SHA256=<digest>` (`nimbus runtime sync` collects
+ * it).
  *
- * Only a production-bucket catalog may be pinned: the constant describes what
- * the deployed Worker's NIMBUS_RUNTIME_CACHE binding reads, so pinning an
- * isolated test bucket's catalog would disable the colo cache in production
- * and quietly discard a good pin.
+ * For the production bucket that is also Nimbus's own configs: the value of
+ * NIMBUS_RUNTIME_CATALOG_SHA256 in every vars block of CATALOG_PIN_CONFIGS
+ * (wrangler vars do not inherit, so each environment and each Preview states
+ * its own). Each block must already carry the var: one that does not is an
+ * environment this script does not know, and is refused rather than guessed
+ * at, with no config changed. For any other bucket the line is for the
+ * embedder's own config.
  */
-function writeCatalogPin(catalogBytes) {
-  if (BUCKET !== PRODUCTION_BUCKET) {
-    console.log(
-      `[bundle-runtime] catalog pin: LEFT ALONE (bucket '${BUCKET}' is not ` +
-      `'${PRODUCTION_BUCKET}', which is what the deploy reads)`,
-    );
-    return;
-  }
-  const sha256 = createHash('sha256').update(catalogBytes).digest('hex');
-  // Resolved here rather than at module scope: `--pin-catalog` runs before
-  // the rest of this file's top-level consts initialise.
-  writeFileSync(
-    new URL('../src/runtime-catalog.generated.ts', import.meta.url),
-    `/**
- * runtime-catalog.generated.ts — AUTO-GENERATED by scripts/bundle-runtime.mjs
- * DO NOT EDIT.
- *
- * SHA-256 of the \`catalog/v1.json\` bytes in the ${PRODUCTION_BUCKET} bucket.
- * This is the root of trust for the runtime package manager: the catalog
- * names each manifest's digest, each manifest names its blobs' digests, and
- * the blobs are interpreters. Pinning the root at build time is what makes
- * the chain verifiable rather than merely well-shaped.
- *
- * The pin governs the L2 (\`caches.default\`) tier only — see the trust-model
- * note in runtime/runtime-catalog.ts. R2 is the trusted tier, so a pin that
- * has drifted behind a fresh publish costs a colo cache, never correctness:
- * the catalog is simply read from R2 and not cached until the pin is
- * regenerated.
- *
- * Regenerate with a read-only catalog fetch (no publish, no R2 write):
- *
- *   CLOUDFLARE_ACCOUNT_ID=<account> node scripts/bundle-runtime.mjs --pin-catalog
- *
- * A normal \`bundle-runtime.mjs <spec>\` publish rewrites it too, from the
- * exact bytes it just uploaded. Commit the result and deploy.
- *
- * The empty string means "not pinned yet" — the catalog stays out of L2 and
- * the supervisor warns once per isolate.
- */
-
-export const RUNTIME_CATALOG_SHA256: string = ${JSON.stringify(sha256)};
-`,
-    'utf8',
-  );
-  console.log(`[bundle-runtime] catalog pin: ${sha256}`);
-  console.log('[bundle-runtime] commit packages/worker/src/runtime-catalog.generated.ts and redeploy');
+async function writeCatalogPin(sha256) {
+  if (BUCKET === PRODUCTION_BUCKET) await pinNimbusConfigs(sha256);
+  else console.log(`[bundle-runtime] catalog pin for '${BUCKET}': set this var in the wrangler config that binds it`);
+  console.log(`NIMBUS_RUNTIME_CATALOG_SHA256=${sha256}`);
 }
 
 /**
- * `--pin-catalog`: fetch the published catalog read-only and regenerate the
- * pin from it. Downloads to a file rather than `--pipe` because the digest
+ * Where wrangler reads vars in a config (`tree`, jsonc-parser's): the top
+ * level, each env, and the `previews` of each. Paths of the blocks present.
+ */
+function varsBlocks(jsonc, tree) {
+  const envs = jsonc.findNodeAtLocation(tree, ['env']);
+  const bases = [[], ...(envs?.type === 'object' ? envs.children.map((p) => ['env', p.children[0].value]) : [])];
+  return bases
+    .flatMap((base) => [[...base, 'vars'], [...base, 'previews', 'vars']])
+    .filter((path) => jsonc.findNodeAtLocation(tree, path)?.type === 'object');
+}
+
+/**
+ * Set the pin in every vars block of Nimbus's own configs, through a JSONC
+ * editor: only the values change, comments and layout stay, and a `"vars"`
+ * in a comment is a comment. All configs are checked before any is written.
+ */
+async function pinNimbusConfigs(sha256) {
+  // Only Nimbus's own tree pins its configs, so only it needs the editor.
+  const jsonc = await import('jsonc-parser');
+  const edits = [];
+  for (const relative of CATALOG_PIN_CONFIGS) {
+    const url = new URL(relative, import.meta.url);
+    const text = readFileSync(url, 'utf8');
+    const errors = [];
+    const tree = jsonc.parseTree(text, errors, { allowTrailingComma: true });
+    if (!tree || errors.length > 0) {
+      console.error(`ERROR: ${url.pathname} is not valid JSONC (${errors.map((e) => jsonc.printParseErrorCode(e.error)).join(', ')}). No config was changed.`);
+      process.exit(1);
+    }
+    const blocks = varsBlocks(jsonc, tree);
+    const unpinned = blocks.filter((path) => jsonc.findNodeAtLocation(tree, [...path, PIN_VAR])?.type !== 'string');
+    if (blocks.length === 0 || unpinned.length > 0) {
+      console.error(`ERROR: ${url.pathname}: ${blocks.length === 0 ? 'no vars block' : unpinned.map((p) => p.join('.')).join(', ')} without ${PIN_VAR};`);
+      console.error('       every vars block must carry it. No config was changed.');
+      process.exit(1);
+    }
+    let next = text;
+    for (const path of blocks) next = jsonc.applyEdits(next, jsonc.modify(next, [...path, PIN_VAR], sha256, {}));
+    // What changed is the pins and nothing else.
+    const expected = jsonc.parse(text, [], { allowTrailingComma: true });
+    for (const path of blocks) path.reduce((at, key) => at[key], expected)[PIN_VAR] = sha256;
+    if (JSON.stringify(jsonc.parse(next, [], { allowTrailingComma: true })) !== JSON.stringify(expected)) {
+      console.error(`ERROR: rewriting ${url.pathname} changed more than its pins. No config was changed.`);
+      process.exit(1);
+    }
+    edits.push([url, next]);
+  }
+  for (const [url, text] of edits) writeFileSync(url, text, 'utf8');
+  console.log(`[bundle-runtime] catalog pin: ${sha256}`);
+  console.log(`[bundle-runtime] commit ${CATALOG_PIN_CONFIGS.map((c) => c.replace('../../../', '')).join(' and ')}, and redeploy`);
+}
+
+/**
+ * `--pin-catalog`: fetch the published catalog read-only and point the
+ * configs at it, once it is also held by its digest. Downloads to a file rather than `--pipe` because the digest
  * must cover the object's exact bytes, and a piped stream cannot be told
  * apart from a stream wrangler decorated.
  */
-function pinCatalogFromR2() {
+async function pinCatalogFromR2() {
   const workDir = join(tmpdir(), `nimbus-catalog-pin-${process.pid}`);
   mkdirSync(workDir, { recursive: true });
   const local = join(workDir, 'catalog.json');
@@ -561,7 +610,22 @@ function pinCatalogFromR2() {
       return;
     }
     console.log(`[bundle-runtime] catalog lists: ${Object.keys(parsed.runtimes).join(', ') || '(none)'}`);
-    writeCatalogPin(bytes);
+    // A deployment pointed at this digest reads it by digest: the object must be there, byte for byte.
+    const sha256 = createHash('sha256').update(bytes).digest('hex');
+    const byDigest = join(workDir, 'catalog-by-digest.json');
+    const fetched = spawnSync(
+      WRANGLER,
+      ['r2', 'object', 'get', `${BUCKET}/${catalogKey(sha256)}`, '--file', byDigest, '--remote'],
+      { encoding: 'utf8', env: { ...process.env, CLOUDFLARE_ACCOUNT_ID: ACCOUNT } },
+    );
+    if (fetched.status !== 0 || !existsSync(byDigest) || !readFileSync(byDigest).equals(bytes)) {
+      console.error(`ERROR: ${catalogKey(sha256)} is not in '${BUCKET}' with catalog/v1.json's bytes;`);
+      console.error('       a deployment pinned to it would fail every install. Nothing was changed.');
+      console.error(`       Put it there first: wrangler r2 object put ${BUCKET}/${catalogKey(sha256)} --file <catalog/v1.json bytes> --remote`);
+      process.exitCode = 1;
+      return;
+    }
+    await writeCatalogPin(sha256);
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }

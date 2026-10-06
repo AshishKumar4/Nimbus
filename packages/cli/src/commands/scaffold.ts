@@ -208,6 +208,10 @@ function renderWranglerJsonc(name: string): string {
     { "binding": "NPM_PACKUMENT_CACHE",  "bucket_name": "${name}-npm-packument-cache" },
     { "binding": "NIMBUS_RUNTIME_CACHE", "bucket_name": "nimbus-runtime-cache-public" }
   ]
+  // \`nimbus install\` reads the runtime catalog in NIMBUS_RUNTIME_CACHE by its
+  // digest: after \`nimbus runtime sync\` fills the bucket, add the value it
+  // prints here and redeploy:
+  //   "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "<the 64-hex digest>" }
 }
 `;
 }
