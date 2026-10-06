@@ -30,7 +30,7 @@ import type { Kernel, VirtualRequest } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns'>>;
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 /** A synchronous call the guest makes. */
@@ -90,9 +90,10 @@ export type HostEvent = {
 } | {
     readonly type: 'changed';
 };
-/** What the realm starts with: the program. */
+/** What the realm starts with: the program, and the kernel's /etc/hosts its dns.lookup answers from. */
 export interface NodeRealmPayload {
     readonly program: NodeProgram;
+    readonly hosts?: string;
 }
 export declare function isGuestEvent(value: unknown): value is GuestEvent;
 export declare function isHostEvent(value: unknown): value is HostEvent;

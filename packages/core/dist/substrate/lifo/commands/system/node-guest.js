@@ -14,13 +14,19 @@
  */
 import realm from 'node:process';
 import { joinRealm } from '../../../../runtime/realm-guest.js';
+import { DNSResolver } from '../../kernel/dns-resolver.js';
+import { createHostsResolver } from '../../kernel/index.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import { isDirEntries, isHostEvent, isNodeRealmPayload, isStat, } from './node-realm.js';
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload))
     throw new Error('node-guest: started without a program');
-const { program } = joined.payload;
+const { program, hosts } = joined.payload;
+// The kernel's resolver, as the host sent it; one with the default /etc/hosts without a kernel.
+const dns = hosts === undefined ? createHostsResolver() : new DNSResolver();
+if (hosts !== undefined)
+    dns.loadHostsFile(hosts);
 const { events } = joined;
 /** A synchronous call to the host: its value is the host's answer, as cloned. */
 const call = (request) => joined.call(request);
@@ -174,6 +180,7 @@ const end = await runNodeProgram(program, {
     stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
     portRegistry: ports,
     routeLoopback,
+    dns,
 });
 if (end.ended)
     exitNow(end.code);

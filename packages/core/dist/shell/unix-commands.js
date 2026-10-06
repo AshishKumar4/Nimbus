@@ -1,21 +1,16 @@
 /**
- * unix-commands.ts — Nimbus v2.0 Unix command implementations.
- *
- * Every command is a real implementation operating on SqliteVFS.
- * No stubs, no "not implemented" — each does actual work.
- *
- * Commands: which, env, export, unset, history, clear, alias, date,
- * uptime, tree, grep -r, head, tail, wc, diff, sort, uniq,
- * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
- * du, man/help, basename, dirname, printf, true, false, seq, sleep,
- * touch, stat, file, xxd, od, hexdump, base64, sha256sum, id, hostname,
- * realpath
+ * unix-commands.ts — the Unix commands that need the shell's own machinery:
+ * credentials, mounts, command resolution (which/type/command/xargs) and the
+ * durable store's metadata. Every command is a real implementation; the
+ * pure byte/text tools are the substrate's (substrate/lifo/commands), which
+ * `textCommand` wraps where this module registers one of them.
+ * `registerUnixCommands` at the end is the list.
  */
 import { requireVfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
+import { shellEscape } from '../_shared/shell-quote.js';
 import { NIMBUS_VERSION } from '../constants.js';
-import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
 import { resolutionOf, searchPath } from './exec-dispatch.js';
 import { BASH_BUILTINS } from '../substrate/lifo/shell/bash-builtins.js';
@@ -27,20 +22,23 @@ import sortCommand from '../substrate/lifo/commands/text/sort.js';
 import uniqCommand from '../substrate/lifo/commands/text/uniq.js';
 import catCommand from '../substrate/lifo/commands/fs/cat.js';
 import * as checksum from '../substrate/lifo/commands/system/checksum.js';
-import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
+import { isBrokenPipe, readAllInput, writeBytes } from '../substrate/lifo/utils/bytes-io.js';
 import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
-import { dirname, resolve } from '../substrate/lifo/utils/path.js';
+import { echoOutput, expandBackslashEscapes } from '../substrate/lifo/utils/backslash-escapes.js';
+import { resolve } from '../substrate/lifo/utils/path.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import { findUnixGroupName, findUnixUserName, } from './unix-accounts.js';
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, syscallError, VFS_STRERROR, strerror } from '../vfs/vfs-error.js';
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
-import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
+import { globMatch } from '../substrate/lifo/utils/glob.js';
+import { humanReadable, parseSuffixedCount } from '../substrate/lifo/utils/size-units.js';
+import { formatUptime, uptimeSeconds } from '../substrate/lifo/utils/system-info.js';
+import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
-import { isDirectory } from '../vfs/vfs.js';
 /**
  * A resolved entry as a command this module can run. Every handler in the
  * registry takes a command context; the ones registered below read the string
@@ -66,10 +64,11 @@ async function stdinText(ctx) {
  * A text command shared with the lifo registry: one implementation, reading
  * standard input as the byte stream it is, not a decoded string.
  */
-function textCommand(sqliteVfs, command) {
-    return wrap(withInvocationVfs(sqliteVfs, () => command));
+function textCommand(command) {
+    return wrap(withInvocationVfs(() => command));
 }
-function withInvocationVfs(_sqliteVfs, factory) {
+/** `factory`'s command over the invocation's own view, once the call carries a credential. */
+function withInvocationVfs(factory) {
     return async (ctx) => {
         requireVfsCred(ctx.cred, 'unix command dispatch');
         return (await factory(ctx.vfs)(ctx));
@@ -122,23 +121,6 @@ function resolvePath(cwd, p) {
 }
 async function readSymlinkTarget(vfs, path) {
     return await vfs.isSymlink(path) ? (await vfs.readlink(path)) : null;
-}
-async function resolveSymlinkPath(vfs, startPath) {
-    let current = resolvePath('/', startPath);
-    for (let hops = 0; hops < 40; hops++) {
-        const text = (await readSymlinkTarget(vfs, current));
-        if (text === null)
-            return current;
-        // Where the link leads in this namespace (a mount may read it from its
-        // own root); one whose target it has no name for is named by itself.
-        const target = await vfs.linkLeadsTo(current, text);
-        if (target === null)
-            return current;
-        current = target.startsWith('/')
-            ? resolvePath('/', target)
-            : resolvePath(dirname(current), target);
-    }
-    return null;
 }
 // ── Command implementations ─────────────────────────────────────────────
 /**
@@ -296,15 +278,17 @@ async function _whichLookup(registry, name, from) {
  * file a user sees. A program a search of PATH found is that file
  * (executable or not, as bash reports either); a path is itself; a command
  * that is one of bash's builtins is a shell builtin, whatever PATH holds of
- * its name, as bash classifies builtins before files; any other command the
+ * its name, as bash classifies builtins before files: a registered one, or
+ * one the running shell runs itself (`shellBuiltin`: cd, export), never a
+ * name of bash's this shell does not run (bind); any other command the
  * workspace knows (external, runtime, npm or gem) is where
  * `_knownCommandPath` puts it, or else a shell builtin (a runtime's install
  * hint with no bin is not found). A resolution that failed is not found.
  */
-async function _describeCommand(registry, name, from) {
+async function _describeCommand(registry, name, from, shellBuiltin) {
     const resolved = await _registryResolved(registry, name, from, { includeInstallHints: true });
     if (resolved === null)
-        return null;
+        return !name.includes('/') && shellBuiltin(name) ? { kind: 'builtin' } : null;
     const resolution = resolutionOf(resolved);
     if (resolution?.kind === 'failed')
         return null;
@@ -446,7 +430,7 @@ function mkCommand(vfs, registry) {
         const from = resolveContext(ctx.cwd, ctx.env, vfs);
         if (mode === '-v' || mode === '-V') {
             const name = args[0];
-            const described = await _describeCommand(registry, name, from);
+            const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
             if (mode === '-v') {
                 if (described === null)
                     return 1;
@@ -504,7 +488,7 @@ function mkType(vfs, registry) {
         let exit = 0;
         const from = resolveContext(ctx.cwd, ctx.env, vfs);
         for (const name of ctx.args) {
-            const described = await _describeCommand(registry, name, from);
+            const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
             if (described === null) {
                 (await ctx.stderr.write(`type: ${name}: not found\n`));
                 exit = 1;
@@ -514,14 +498,6 @@ function mkType(vfs, registry) {
             }
         }
         return exit;
-    };
-}
-function mkEnv() {
-    return async (ctx) => {
-        for (const [k, v] of Object.entries(ctx.env)) {
-            (await ctx.stdout.write(`${k}=${v}\n`));
-        }
-        return 0;
     };
 }
 function mkExport() {
@@ -863,23 +839,23 @@ function strftime(d, fmt, utc) {
     }
     return out;
 }
+/** uptime as procps prints it, counting from the shell's start (the registration below starts the clock). */
 function mkUptime() {
-    const start = Date.now();
+    uptimeSeconds();
     return async (ctx) => {
-        const secs = Math.floor((Date.now() - start) / 1000);
-        const h = Math.floor(secs / 3600);
-        const m = Math.floor((secs % 3600) / 60);
-        (await ctx.stdout.write(` ${new Date().toTimeString().split(' ')[0]} up ${h}:${String(m).padStart(2, '0')}, 1 user\n`));
+        (await ctx.stdout.write(` ${new Date().toTimeString().split(' ')[0]} up ${formatUptime(uptimeSeconds())},  1 user\n`));
         return 0;
     };
 }
+/** tree: `-L n` bounds the depth (unbounded without it), `-d` lists directories alone. */
 function mkTree(vfs) {
     return async (ctx) => {
         const level = ctx.args.indexOf('-L');
+        const dirsOnly = ctx.args.includes('-d');
         // `-L n` takes the next word; the first other non-option word is the directory.
         const operand = ctx.args.find((a, i) => !a.startsWith('-') && (level === -1 || i !== level + 1)) ?? '.';
         const root = resolvePath(ctx.cwd, operand);
-        const maxDepth = level === -1 ? 3 : parseInt(ctx.args[level + 1]) || 3;
+        const maxDepth = level === -1 ? Infinity : parseInt(ctx.args[level + 1]) || Infinity;
         const MAX_ENTRIES = 2000; // Safety limit to prevent hanging on huge repos
         let dirs = 0, files = 0, total = 0;
         let truncated = false;
@@ -887,7 +863,11 @@ function mkTree(vfs) {
             if (depth > maxDepth || truncated)
                 return;
             try {
-                const entries = (await vfs.readdir(path)).sort((a, b) => a.name.localeCompare(b.name));
+                const listed = await Promise.all((await vfs.readdir(path)).map(async (e) => ({
+                    name: e.name,
+                    directory: (await direntTypeIn(vfs, path, e)) === 'directory',
+                })));
+                const entries = listed.filter((e) => !dirsOnly || e.directory).sort((a, b) => a.name.localeCompare(b.name));
                 for (let i = 0; i < entries.length; i++) {
                     if (total >= MAX_ENTRIES) {
                         truncated = true;
@@ -899,7 +879,7 @@ function mkTree(vfs) {
                     const connector = isLast ? '└── ' : '├── ';
                     const childPrefix = isLast ? '    ' : '│   ';
                     (await ctx.stdout.write(prefix + connector + e.name + '\n'));
-                    if ((await direntTypeIn(vfs, path, e)) === 'directory') {
+                    if (e.directory) {
                         dirs++;
                         (await walk(resolvePath(path, e.name), prefix + childPrefix, depth + 1));
                     }
@@ -919,175 +899,9 @@ function mkTree(vfs) {
         (await walk(root, '', 1));
         if (truncated)
             (await ctx.stdout.write(`\n... truncated at ${MAX_ENTRIES} entries\n`));
-        (await ctx.stdout.write(`\n${dirs} directories, ${files} files\n`));
+        (await ctx.stdout.write(dirsOnly ? `\n${dirs} directories\n` : `\n${dirs} directories, ${files} files\n`));
         return 0;
     };
-}
-/** `-c N`, `-cN`, `--bytes=N`, `-n N`, `-nN`, `--lines=N`, `-N`, `-q`, `-v`. */
-function parseHeadArgs(args) {
-    const result = { lines: 10, files: [] };
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        const option = matchCountOption(arg, args[i + 1], 'c', 'bytes')
-            ?? matchCountOption(arg, args[i + 1], 'n', 'lines');
-        if (option) {
-            i += option.consumed;
-            const count = parseByteCount(option.value);
-            if (count === null) {
-                const what = option.flag === 'c' ? 'bytes' : 'lines';
-                return { ...result, error: `invalid number of ${what}: '${option.value}'` };
-            }
-            if (option.flag === 'c')
-                result.bytes = count;
-            else
-                result.lines = count;
-        }
-        else if (/^-\d+$/.test(arg)) {
-            result.lines = Number.parseInt(arg.slice(1), 10);
-        }
-        else if (arg === '-q' || arg === '--quiet' || arg === '-v' || arg === '--verbose') {
-            continue;
-        }
-        else if (arg !== '-' && arg.startsWith('-') && !arg.startsWith('--') && arg.length > 1) {
-            // A cluster of switches, `-qn 1`; `c` and `n` take the rest of the
-            // cluster or the next argument.
-            let consumed = false;
-            for (let j = 1; j < arg.length && !consumed; j++) {
-                const flag = arg[j];
-                if (flag === 'q' || flag === 'v')
-                    continue;
-                if (flag !== 'c' && flag !== 'n') {
-                    return { ...result, error: `invalid option -- '${flag}'` };
-                }
-                const text = arg.slice(j + 1) || (args[++i] ?? '');
-                const count = parseByteCount(text);
-                if (count === null) {
-                    const what = flag === 'c' ? 'bytes' : 'lines';
-                    return { ...result, error: `invalid number of ${what}: '${text}'` };
-                }
-                if (flag === 'c')
-                    result.bytes = count;
-                else
-                    result.lines = count;
-                consumed = true;
-            }
-        }
-        else if (arg !== '-' && arg.startsWith('--')) {
-            return { ...result, error: `unrecognized option '${arg}'` };
-        }
-        else {
-            result.files.push(arg);
-        }
-    }
-    return result;
-}
-function matchCountOption(arg, next, flag, long) {
-    if (arg === `-${flag}`)
-        return { flag, value: next ?? '', consumed: 1 };
-    if (arg.startsWith(`-${flag}`) && arg.length > 2)
-        return { flag, value: arg.slice(2), consumed: 0 };
-    if (arg === `--${long}`)
-        return { flag, value: next ?? '', consumed: 1 };
-    if (arg.startsWith(`--${long}=`))
-        return { flag, value: arg.slice(long.length + 3), consumed: 0 };
-    return null;
-}
-/** `head`/`dd`-style counts: plain digits with an optional binary/SI suffix. */
-function parseByteCount(value) {
-    const match = /^(\d+)([bkKmMgG]?[Bb]?)$/.exec(value.trim());
-    if (!match)
-        return null;
-    const scale = {
-        '': 1, b: 512, k: 1024, K: 1024, kB: 1000, KB: 1000,
-        m: 1024 ** 2, M: 1024 ** 2, mB: 1000 ** 2, MB: 1000 ** 2,
-        g: 1024 ** 3, G: 1024 ** 3, gB: 1000 ** 3, GB: 1000 ** 3,
-    };
-    const factor = scale[match[2]];
-    if (factor === undefined)
-        return null;
-    return Number.parseInt(match[1], 10) * factor;
-}
-/**
- * `head -c N` — emit the first N bytes. Streams through the positional read
- * so byte counts hold for any N and character devices such as /dev/zero,
- * which have no stored content to read whole, work like they do on Unix.
- */
-async function headBytes(ctx, files, limit) {
-    const writer = new SinkWriter(ctx.stdout);
-    if (files.length === 0 || (files.length === 1 && files[0] === '-')) {
-        await streamStdinBytes(ctx, writer, limit);
-        writer.end();
-        return 0;
-    }
-    let exit = 0;
-    for (const f of files) {
-        const path = resolvePath(ctx.cwd, f);
-        try {
-            if (files.length > 1)
-                (await ctx.stdout.write(`==> ${f} <==\n`));
-            (await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
-                length: limit,
-                signal: ctx.signal,
-            }));
-        }
-        catch (error) {
-            (await ctx.stderr.write(`head: ${f}: ${strerror(error)}\n`));
-            exit = 1;
-        }
-    }
-    writer.end();
-    return exit;
-}
-/**
- * Pull at most `limit` bytes from stdin, whether the shell handed us an
- * already-drained string or a live pipe reader. Reading only the string form
- * would make `producer | head -c N` emit nothing at all.
- */
-async function streamStdinBytes(ctx, writer, limit) {
-    const stdin = ctx.stdin;
-    if (typeof stdin === 'string') {
-        (await writer.write(enc.encode(stdin).subarray(0, limit)));
-        return;
-    }
-    const reader = stdin;
-    if (typeof reader?.read !== 'function')
-        return;
-    let copied = 0;
-    while (copied < limit) {
-        const want = limit - copied;
-        let chunk;
-        if (reader.readBytes) {
-            chunk = await reader.readBytes(want);
-        }
-        else {
-            // Text-only readers report EOF with null; encoding that null into an
-            // empty chunk would spin the loop forever without advancing.
-            const text = await reader.read();
-            if (text === null)
-                break;
-            chunk = enc.encode(text);
-        }
-        if (chunk === null)
-            break;
-        const bytes = chunk.subarray(0, want);
-        (await writer.write(bytes));
-        copied += bytes.length;
-    }
-}
-/** Absolute, mount-aware path — `ctx.vfs` resolves virtual mounts like /dev. */
-async function readWholeFileString(ctx, path) {
-    if ((await statOrThrow(ctx.vfs, path)).type === 'directory') {
-        throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
-    }
-    return dec.decode((await ctx.vfs.readFile(path)));
-}
-function applyTailCount(result, spec) {
-    const value = /^([+-]?)(\d+)$/.exec(spec.trim());
-    if (value === null)
-        return `invalid number of lines: '${spec}'`;
-    result.fromStart = value[1] === '+';
-    result.count = Number.parseInt(value[2], 10);
-    return null;
 }
 /**
  * shell compatibility (2026-05-11): expanded awk subset.
@@ -2009,53 +1823,20 @@ function mkXargs(vfs, registry) {
     };
 }
 /**
- * shell compatibility (2026-05-11): du flag parsing for combined forms.
- * Pre-fix `du -sh` didn't activate -h because we checked for literal
- * `-h` only — `-sh` is a single arg containing both flags. POSIX
- * conformant short-flag stacking.
+ * du -B's block size: a count with GNU's suffixes for it. A unit with no
+ * count (`K`, `MB`, `KiB`) is also what du prints after each size: the
+ * letter as GNU spells it (`k` for the 1000-based kilo, else upper case)
+ * and its `B` or `iB`.
  */
-/**
- * GNU du's human-readable size (-h, or --si with `base` 1000): rounded up,
- * one decimal below 10 of a unit, whole units from 10 up, bytes below one unit.
- */
-function duHuman(bytes, base) {
-    if (bytes < base)
-        return String(bytes);
-    const units = base === 1024 ? ['K', 'M', 'G', 'T', 'P', 'E'] : ['k', 'M', 'G', 'T', 'P', 'E'];
-    let value = bytes / base;
-    let unit = 0;
-    for (;;) {
-        const shown = value < 10 ? Math.ceil(value * 10) / 10 : Math.ceil(value);
-        if (shown < base || unit === units.length - 1) {
-            return `${shown < 10 ? shown.toFixed(1) : String(shown)}${units[unit]}`;
-        }
-        value /= base;
-        unit++;
-    }
-}
-/** A GNU size argument (`-B`, `-t`): digits, a unit (K, KiB: 1024s; KB: 1000s; M, G, T, P, E), or both. */
-function parseDuSize(text) {
-    const m = /^(-?\d*)([KMGTPE](?:iB|B)?|[kKMGTPE]B?)?$/.exec(text);
-    if (!m || (m[1] === '' || m[1] === '-') && !m[2])
+function parseDuBlockSize(text) {
+    const bytes = parseSuffixedCount(text, 'EgGkKmMPtTYZ0');
+    if (bytes === null)
         return null;
-    const powers = 'KMGTPE';
-    let factor = 1;
-    if (m[2]) {
-        const letter = m[2][0].toUpperCase();
-        const base = m[2].length === 2 && m[2][1] === 'B' ? 1000 : 1024;
-        factor = base ** (powers.indexOf(letter) + 1);
-    }
-    const count = m[1] === '' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
-    // A unit alone is also the suffix du prints; GNU spells the 1000-based kilo `kB`.
-    const suffix = m[1] === '' ? (m[2] ?? '').replace(/^[kK]B$/, 'kB') : '';
-    return { bytes: count * factor, suffix };
-}
-/** A shell glob (`*`, `?`, `[...]`) as a whole-string regular expression, for --exclude. */
-function duGlob(pattern) {
-    let source = '';
-    for (const ch of pattern)
-        source += ch === '*' ? '.*' : ch === '?' ? '.' : ch === '[' || ch === ']' ? ch : ch.replace(/[.+^${}()|\\/]/g, '\\$&');
-    return new RegExp(`^${source}$`);
+    const unit = /^([a-zA-Z])(iB|B)?$/.exec(text);
+    if (unit === null)
+        return { bytes, suffix: '' };
+    const letter = unit[2] === 'B' && unit[1].toLowerCase() === 'k' ? 'k' : unit[1].toUpperCase();
+    return { bytes, suffix: letter + (unit[2] ?? '') };
 }
 /**
  * du: disk usage, as GNU du reports it. The VFS allocates a file ceil(size /
@@ -2081,7 +1862,7 @@ function mkDu(vfs) {
             return 1;
         };
         const setBlock = async (text, option) => {
-            const size = parseDuSize(text);
+            const size = parseDuBlockSize(text);
             if (!size || size.bytes <= 0) {
                 await ctx.stderr.write(`du: invalid ${option} argument '${text}'\n`);
                 return false;
@@ -2099,12 +1880,14 @@ function mkDu(vfs) {
             return true;
         };
         const setThreshold = async (text) => {
-            const size = parseDuSize(text);
-            if (!size || (size.bytes === 0 && text.startsWith('-'))) {
+            // A signed count in base 0 (0x hex, 0 octal), as GNU's xstrtoimax reads it.
+            const negative = text.startsWith('-');
+            const bytes = parseSuffixedCount(negative ? text.slice(1) : text, 'kKmMGTPEZYRQ0', 0);
+            if (bytes === null || (bytes === 0 && negative)) {
                 await usage(`invalid --threshold argument '${text}'`);
                 return false;
             }
-            threshold = size.bytes;
+            threshold = negative ? -bytes : bytes;
             return true;
         };
         const args = ctx.args;
@@ -2193,7 +1976,7 @@ function mkDu(vfs) {
                             return 1;
                         break;
                     case '--exclude':
-                        excludes.push(duGlob(value));
+                        excludes.push(value);
                         break;
                     case '--time':
                     case '--time-style':
@@ -2291,13 +2074,14 @@ function mkDu(vfs) {
             operands.push('.');
         const end = nul ? '\0' : '\n';
         const fmt = (bytes) => (human !== null
-            ? duHuman(bytes, human)
+            ? humanReadable(bytes, human)
             : `${Math.ceil(bytes / block.bytes)}${block.suffix}`);
         const usageOf = (st) => (apparent
             ? (st.type === 'directory' ? 0 : st.size)
             : (st.type === 'file' ? Math.ceil(st.size / 512) * 512 : 0));
         const shown = (bytes) => (threshold >= 0 ? bytes >= threshold : bytes <= -threshold);
-        const excluded = (name, path) => excludes.some((re) => re.test(name) || re.test(path));
+        // --exclude's patterns are fnmatch's, as GNU du reads them: `*` crosses a `/`.
+        const excluded = (name, path) => excludes.some((pattern) => globMatch(pattern, name) || globMatch(pattern, path));
         let failed = false;
         let grand = 0;
         const seen = new Set();
@@ -2375,75 +2159,6 @@ function mkDu(vfs) {
         return failed ? 1 : 0;
     };
 }
-function mkDiff(vfs) {
-    return async (ctx) => {
-        if (ctx.args.length < 2) {
-            (await ctx.stderr.write('Usage: diff FILE1 FILE2\n'));
-            return 1;
-        }
-        const f1 = resolvePath(ctx.cwd, ctx.args[0]);
-        const f2 = resolvePath(ctx.cwd, ctx.args[1]);
-        try {
-            const a = (await vfs.readFileString(f1)).split('\n');
-            const b = (await vfs.readFileString(f2)).split('\n');
-            let hasDiff = false;
-            const maxLen = Math.max(a.length, b.length);
-            for (let i = 0; i < maxLen; i++) {
-                if (a[i] !== b[i]) {
-                    hasDiff = true;
-                    if (a[i] !== undefined && b[i] === undefined)
-                        (await ctx.stdout.write(`${i + 1}d${i}\n< ${a[i]}\n`));
-                    else if (a[i] === undefined && b[i] !== undefined)
-                        (await ctx.stdout.write(`${i}a${i + 1}\n> ${b[i]}\n`));
-                    else
-                        (await ctx.stdout.write(`${i + 1}c${i + 1}\n< ${a[i]}\n---\n> ${b[i]}\n`));
-                }
-            }
-            return hasDiff ? 1 : 0;
-        }
-        catch (e) {
-            // `diff` reports the thrown value's `message`, whatever it holds, rather
-            // than the value: a throw carrying none has always printed `undefined`.
-            const message = typeof e === 'object' && e !== null && 'message' in e ? e.message : undefined;
-            (await ctx.stderr.write(`diff: ${String(message)}\n`));
-            return 2;
-        }
-    };
-}
-/**
- * POSIX rm: -f makes a missing target no error (exit 0), -r removes a
- * directory tree, and a failure is reported with the POSIX text.
- */
-/** The single-character backslash escapes `echo -e` and `printf` both expand. */
-const BACKSLASH_ESCAPES = {
-    '\\': '\\',
-    n: '\n',
-    t: '\t',
-    r: '\r',
-    a: '\x07',
-    b: '\b',
-    f: '\f',
-    v: '\v',
-};
-/**
- * Expand POSIX backslash escapes in one pass.
- *
- * A pass per escape needs somewhere to park a literal `\` so the later passes
- * cannot read it as the start of an escape, and whatever character that is, the
- * text may hold one already — or an earlier escape may have just produced one.
- * NUL was the parking spot, so `printf 'a\0b'` and `echo -e 'a\x00b'` both came
- * back as `a\b`: the NUL they had just produced was restored as a backslash.
- * One left-to-right pass consumes `\\` as a unit and needs no parking spot.
- */
-function expandBackslashEscapes(text) {
-    return text.replace(/\\(?:([\\ntrabfv])|0([0-7]{1,3})?|x([0-9a-fA-F]{1,2}))/g, (_match, simple, octal, hex) => {
-        if (simple !== undefined)
-            return BACKSLASH_ESCAPES[simple];
-        if (hex !== undefined)
-            return String.fromCharCode(parseInt(hex, 16));
-        return String.fromCharCode(octal ? parseInt(octal, 8) : 0);
-    });
-}
 /**
  * pwd(1) as coreutils' program, for what starts one without a shell (find
  * -execdir, xargs, sudo): the working directory with every link resolved,
@@ -2513,63 +2228,11 @@ function mkPwd(vfs) {
     };
 }
 /**
- * shell compatibilityb (2026-05-11): registry-level echo so `X | xargs echo`
- * resolves. `echo` is a Shell.builtins entry, NOT in the
- * registry map. xargs's cross-command dispatch goes through
- * registry.resolve(name) — without a registry entry for echo it falls
- * back to 'command not found'. The init.ts override for echo flag
- * handling targets Shell.builtins; we additionally register a copy
- * here so registry-driven callers (xargs) can find it. Behaviour
- * matches the BUG-SWEEP-4 nimbusEcho impl: -n / -e / -E / combined.
+ * echo for what runs it by name rather than through the shell (`xargs echo`,
+ * `find -exec echo`): the builtin's own output, from the one echoOutput.
  */
 function mkEcho() {
-    return async (ctx) => {
-        const args = ctx.args;
-        let interpretEscapes = false;
-        let suppressNewline = false;
-        let i = 0;
-        while (i < args.length) {
-            const a = args[i];
-            if (a === '--') {
-                i++;
-                break;
-            }
-            if (a === '-n') {
-                suppressNewline = true;
-                i++;
-                continue;
-            }
-            if (a === '-e') {
-                interpretEscapes = true;
-                i++;
-                continue;
-            }
-            if (a === '-E') {
-                interpretEscapes = false;
-                i++;
-                continue;
-            }
-            if (/^-[neE]+$/.test(a)) {
-                for (const ch of a.slice(1)) {
-                    if (ch === 'n')
-                        suppressNewline = true;
-                    else if (ch === 'e')
-                        interpretEscapes = true;
-                    else if (ch === 'E')
-                        interpretEscapes = false;
-                }
-                i++;
-                continue;
-            }
-            break;
-        }
-        let out = args.slice(i).join(' ');
-        if (interpretEscapes) {
-            out = expandBackslashEscapes(out);
-        }
-        (await ctx.stdout.write(suppressNewline ? out : out + '\n'));
-        return 0;
-    };
+    return async (ctx) => { (await ctx.stdout.write(echoOutput(ctx.args))); return 0; };
 }
 /**
  * SHELL-R6-4 (2026-05-12): symlink-aware `ls`.
@@ -2752,6 +2415,10 @@ function mkLs(vfs) {
         return exit;
     };
 }
+/**
+ * POSIX rm: -f makes a missing target no error (exit 0), -r removes a
+ * directory tree, and a failure is reported with the POSIX text.
+ */
 function mkRm(vfs) {
     return async (ctx) => {
         const recursive = ctx.args.some(arg => /^-[^-]*[rR]/.test(arg) || arg === '--recursive');
@@ -3321,34 +2988,33 @@ function mkBase64(vfs) {
         }
         const file = positional[0];
         let bytes;
-        if (file !== undefined && file !== '-') {
-            try {
-                bytes = (await vfs.readFile(resolvePath(ctx.cwd, file)));
-            }
-            catch (error) {
-                (await ctx.stderr.write(`base64: ${file}: ${strerror(error)}\n`));
-                return 1;
-            }
+        // The operand's bytes, or stdin's as the pipe carries them.
+        try {
+            bytes = await readAllInput({ cwd: ctx.cwd, vfs, stdin: ctx.stdin }, file);
         }
-        else {
-            bytes = enc.encode((await stdinText(ctx)) ?? '');
+        catch (error) {
+            (await ctx.stderr.write(`base64: ${file ?? '-'}: ${strerror(error)}\n`));
+            return 1;
         }
         if (flags.decode) {
+            // As GNU's: what decodes before the first byte that is not base64 is
+            // written, and that byte is an error.
             const source = dec.decode(bytes).replace(/\s+/g, '');
+            const bad = source.search(/[^A-Za-z0-9+/=]/);
+            const valid = bad === -1 ? source : source.slice(0, bad - (bad % 4));
             let decoded;
             try {
-                const binary = atob(source);
-                decoded = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+                decoded = Uint8Array.from(atob(valid), (c) => c.charCodeAt(0));
             }
             catch {
                 (await ctx.stderr.write('base64: invalid input\n'));
                 return 1;
             }
-            if (ctx.stdout.writeBytes)
-                (await ctx.stdout.writeBytes(decoded));
-            else
-                (await ctx.stdout.write(dec.decode(decoded)));
-            return 0;
+            await writeBytes(ctx.stdout, decoded);
+            if (bad === -1)
+                return 0;
+            (await ctx.stderr.write('base64: invalid input\n'));
+            return 1;
         }
         let binary = '';
         for (const byte of bytes)
@@ -3356,33 +3022,12 @@ function mkBase64(vfs) {
         const encoded = btoa(binary);
         if (encoded === '')
             return 0;
-        const lines = wrap > 0
-            ? (encoded.match(new RegExp(`.{1,${wrap}}`, 'g')) ?? [encoded])
-            : [encoded];
-        (await ctx.stdout.write(lines.join('\n') + '\n'));
-        return 0;
-    };
-}
-function mkSeq() {
-    return async (ctx) => {
-        const nums = ctx.args.map(Number).filter(n => !isNaN(n));
-        let start = 1, step = 1, end = 1;
-        if (nums.length === 1)
-            end = nums[0];
-        else if (nums.length === 2) {
-            start = nums[0];
-            end = nums[1];
+        // -w 0 writes one line with no newline, as GNU's.
+        if (wrap === 0) {
+            (await ctx.stdout.write(encoded));
+            return 0;
         }
-        else if (nums.length >= 3) {
-            start = nums[0];
-            step = nums[1];
-            end = nums[2];
-        }
-        for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
-            if (ctx.signal.aborted)
-                return 130;
-            (await ctx.stdout.write(i + '\n'));
-        }
+        (await ctx.stdout.write(`${(encoded.match(new RegExp(`.{1,${wrap}}`, 'g')) ?? [encoded]).join('\n')}\n`));
         return 0;
     };
 }
@@ -3434,28 +3079,6 @@ function mkTest(sqliteVfs) {
         catch {
             return 1;
         }
-    };
-}
-function mkHostname() {
-    return async (ctx) => { (await ctx.stdout.write('nimbus\n')); return 0; };
-}
-function mkBasename() {
-    return async (ctx) => {
-        const p = ctx.args[0] || '';
-        const suffix = ctx.args[1] || '';
-        let base = p.split('/').pop() || '';
-        if (suffix && base.endsWith(suffix))
-            base = base.slice(0, -suffix.length);
-        (await ctx.stdout.write(base + '\n'));
-        return 0;
-    };
-}
-function mkDirname() {
-    return async (ctx) => {
-        const p = ctx.args[0] || '';
-        const dir = p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '.';
-        (await ctx.stdout.write((dir || '/') + '\n'));
-        return 0;
     };
 }
 /**
@@ -3699,17 +3322,18 @@ function mkPrintf() {
     return async (ctx) => {
         if (ctx.args.length === 0)
             return 0;
-        const rawFmt = ctx.args[0];
         const vals = ctx.args.slice(1);
-        // Process backslash escapes in the format string first.
-        const fmt = expandBackslashEscapes(rawFmt);
+        // Process backslash escapes in the format string first. A `\c` in it,
+        // or in a %b argument, ends the output there.
+        const { text: fmt, stopped: formatStops } = expandBackslashEscapes(ctx.args[0], 'printf');
+        let stopped = false;
         let out = '';
         let argIdx = 0;
         function applyFormat() {
             // Run the format string once; return true if it consumed any args.
             let i = 0;
             const startArg = argIdx;
-            while (i < fmt.length) {
+            while (i < fmt.length && !stopped) {
                 const ch = fmt[i];
                 if (ch !== '%') {
                     out += ch;
@@ -3743,17 +3367,25 @@ function mkPrintf() {
                 const conv = fmt[i];
                 i++;
                 const arg = vals[argIdx++];
-                out += formatOneArg(spec + conv, arg);
+                if (conv === 'b') {
+                    // %b: the argument's escapes expanded, then laid out as %s would be.
+                    const expanded = expandBackslashEscapes(arg ?? '', 'printf-b');
+                    out += formatOneArg(`${spec}s`, expanded.text);
+                    stopped = expanded.stopped;
+                }
+                else {
+                    out += formatOneArg(spec + conv, arg);
+                }
             }
             return argIdx > startArg;
         }
         // bash printf: re-run the format until args are exhausted; if
         // format consumes zero args (no %X specifiers), run it once.
-        if (vals.length === 0) {
+        if (vals.length === 0 || formatStops) {
             applyFormat();
         }
         else {
-            while (argIdx < vals.length) {
+            while (argIdx < vals.length && !stopped) {
                 if (!applyFormat())
                     break;
             }
@@ -3849,15 +3481,6 @@ function formatOneArg(spec, arg) {
                 body = '0' + body;
             break;
         }
-        case 'b': {
-            // bash printf %b: interpret backslash escapes in the arg
-            let s = String(arg ?? '');
-            s = s.replace(/\\\\/g, '\u0000')
-                .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
-                .replace(/\\u0000/g, '\\');
-            body = s;
-            break;
-        }
         case 'c': {
             if (typeof arg === 'number')
                 body = String.fromCharCode(arg);
@@ -3865,15 +3488,10 @@ function formatOneArg(spec, arg) {
                 body = String(arg ?? '').charAt(0);
             break;
         }
-        case 'q': {
-            // bash printf %q: shell-quote
-            const s = String(arg ?? '');
-            if (/^[A-Za-z0-9_/.,:=+@%-]+$/.test(s))
-                body = s;
-            else
-                body = "'" + s.replace(/'/g, `'\\''`) + "'";
+        case 'q':
+            // coreutils printf %q: the argument as quotearg's shell-escape style writes it.
+            body = shellEscape(String(arg ?? ''));
             break;
-        }
         default: body = '%' + conv;
     }
     // Apply width padding.
@@ -3919,53 +3537,84 @@ function mkFalse() { return () => 1; }
  * Flags: -f (canonicalize — follow chain to final target), default
  * (one-hop). -e variant (verify) deferred.
  */
+/**
+ * readlink, as GNU coreutils 9.7: a link's text, or under -f (all but the
+ * last component must exist), -e (every one) or -m (none need) the name
+ * canonicalized by canonicalizePath, as realpath's. Quiet unless -v: a name
+ * it cannot answer for exits 1 and says nothing. -n drops the newline after
+ * a lone name; -z ends each with NUL.
+ */
 function mkReadlink(vfs) {
+    const USAGE = "Try 'readlink --help' for more information.\n";
+    const LONG = {
+        canonicalize: 'f', 'canonicalize-existing': 'e', 'canonicalize-missing': 'm', 'no-newline': 'n',
+        quiet: 'q', silent: 's', verbose: 'v', zero: 'z',
+    };
     return async (ctx) => {
-        const args = [...ctx.args];
-        let canonicalize = false;
+        let mode = null;
+        let noNewline = false;
+        let verbose = false;
+        let zero = false;
         const targets = [];
-        for (const a of args) {
-            if (a === '-f' || a === '--canonicalize') {
-                canonicalize = true;
-                continue;
-            }
-            if (a.startsWith('-') && a !== '-') {
-                for (const ch of a.slice(1))
-                    if (ch === 'f')
-                        canonicalize = true;
-                continue;
-            }
-            targets.push(a);
-        }
-        if (targets.length === 0) {
-            (await ctx.stderr.write('readlink: missing operand\n'));
+        const refuse = async (message) => {
+            (await ctx.stderr.write(`readlink: ${message}\n${USAGE}`));
             return 1;
+        };
+        for (let i = 0; i < ctx.args.length; i++) {
+            const arg = ctx.args[i];
+            if (arg === '--') {
+                targets.push(...ctx.args.slice(i + 1));
+                break;
+            }
+            const flags = arg.startsWith('--') ? LONG[arg.slice(2)] : arg.length > 1 && arg.startsWith('-') ? arg.slice(1) : null;
+            if (flags === null) {
+                targets.push(arg);
+                continue;
+            }
+            if (flags === undefined)
+                return refuse(`unrecognized option '${arg}'`);
+            for (const flag of flags) {
+                if (flag === 'f')
+                    mode = 'E';
+                else if (flag === 'e' || flag === 'm')
+                    mode = flag;
+                else if (flag === 'n')
+                    noNewline = true;
+                else if (flag === 'q' || flag === 's')
+                    verbose = false;
+                else if (flag === 'v')
+                    verbose = true;
+                else if (flag === 'z')
+                    zero = true;
+                else
+                    return refuse(`invalid option -- '${flag}'`);
+            }
         }
+        if (targets.length === 0)
+            return refuse('missing operand');
+        const end = zero ? '\0' : noNewline && targets.length === 1 ? '' : '\n';
         let exit = 0;
         for (const t of targets) {
             const fp = resolvePath(ctx.cwd, t);
-            if (canonicalize) {
-                // -f: follow chain; succeed even if target doesn't exist YET
-                // (matches `readlink -f` which canonicalizes anyway).
-                const resolved = (await resolveSymlinkPath(vfs, fp));
-                if (resolved !== null) {
-                    (await ctx.stdout.write(resolved + '\n'));
+            try {
+                const answer = mode === null
+                    ? await readSymlinkTarget(vfs, fp)
+                    // The name as given, so a trailing slash still asks for a directory.
+                    : await canonicalizePath(ctx.vfs, t.startsWith('/') ? t : `${resolvePath(ctx.cwd, '.')}/${t}`, { mode, logical: false, noSymlinks: false });
+                if (answer !== null) {
+                    (await ctx.stdout.write(answer + end));
                     continue;
                 }
-                (await ctx.stderr.write(`readlink: ${t}: Too many levels of symbolic links\n`));
-                exit = 1;
-                continue;
+                // Not a link: EINVAL, as readlink(2) says, once the name is known to exist.
+                await statOrThrow(vfs, fp);
+                if (verbose)
+                    (await ctx.stderr.write(`readlink: ${t}: Invalid argument\n`));
             }
-            // Default: one-hop. Print target verbatim (preserves relative/absolute).
-            const direct = (await readSymlinkTarget(vfs, fp));
-            if (direct !== null) {
-                (await ctx.stdout.write(direct + '\n'));
-                continue;
-            }
-            // Not a symlink. GNU readlink exits 1 silently for regular
-            // files / dirs; emits stderr for missing.
-            if (!(await vfs.exists(fp))) {
-                (await ctx.stderr.write(`readlink: ${t}: No such file or directory\n`));
+            catch (error) {
+                if (!isVfsError(error))
+                    throw error;
+                if (verbose)
+                    (await ctx.stderr.write(`readlink: ${t}: ${VFS_STRERROR[error.code]}\n`));
             }
             exit = 1;
         }
@@ -3979,6 +3628,10 @@ function mkFile(vfs) {
             try {
                 if ((await vfs.isDirectory(fp))) {
                     (await ctx.stdout.write(`${f}: directory\n`));
+                    continue;
+                }
+                if ((await statOrThrow(vfs, fp)).size === 0) {
+                    (await ctx.stdout.write(`${f}: empty\n`));
                     continue;
                 }
                 // BUG-SWEEP-3 (2026-05-11): scan raw bytes for NUL or non-text
@@ -4037,7 +3690,7 @@ function mkFile(vfs) {
                 else if (f.endsWith('.css'))
                     (await ctx.stdout.write(`${f}: CSS stylesheet\n`));
                 else
-                    (await ctx.stdout.write(`${f}: ASCII text, ${content.split('\n').length} lines\n`));
+                    (await ctx.stdout.write(`${f}: ASCII text\n`));
             }
             catch {
                 (await ctx.stderr.write(`file: ${f}: No such file\n`));
@@ -4049,35 +3702,13 @@ function mkFile(vfs) {
 }
 // ── Hex dumps: od, hexdump, xxd ─────────────────────────────────────────
 /**
- * Dump-tool byte counts: decimal, `0x` hex, leading-zero octal, and the
- * classic suffixes (`b` blocks of 512, K/KiB, KB, M, G — powers of 1024
- * except the round-decimal `KB`/`MB`/`GB` spellings). Null means the value
- * is not a count these tools accept.
+ * Dump-tool byte counts, as GNU od reads -j/-N: base 0 (`0x` hex, leading-zero
+ * octal) and od's suffixes. hexdump and xxd read theirs the same way. Null
+ * means the value is not a count these tools accept, or past what is exact.
  */
 function parseDumpCount(value) {
-    const match = /^(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)([bB]|[kKmMgGtT](?:i?[bB])?)?$/.exec(value);
-    if (match === null)
-        return null;
-    const digits = match[1];
-    const base = digits.startsWith('0x') || digits.startsWith('0X')
-        ? Number.parseInt(digits, 16)
-        : /^0/.test(digits) ? Number.parseInt(digits, 8) : Number.parseInt(digits, 10);
-    if (!Number.isSafeInteger(base) || base < 0)
-        return null;
-    if (match[2] === undefined || match[2] === '')
-        return base;
-    const scale = {
-        b: 512, B: 512,
-        k: 1024, K: 1024, KiB: 1024, kB: 1000, KB: 1000,
-        m: 1024 ** 2, M: 1024 ** 2, MiB: 1024 ** 2, mB: 1000 ** 2, MB: 1000 ** 2,
-        g: 1024 ** 3, G: 1024 ** 3, GiB: 1024 ** 3, gB: 1000 ** 3, GB: 1000 ** 3,
-        t: 1024 ** 4, T: 1024 ** 4, TiB: 1024 ** 4, tB: 1000 ** 4, TB: 1000 ** 4,
-    };
-    const factor = scale[match[2]];
-    if (factor === undefined)
-        return null;
-    const total = base * factor;
-    return Number.isSafeInteger(total) ? total : null;
+    const count = parseSuffixedCount(value, 'bEGKkMmPQRTYZ0', 0);
+    return count !== null && Number.isSafeInteger(count) ? count : null;
 }
 /** Little-endian word; a short final chunk reads its missing bytes as zero. */
 function leWord(chunk) {
@@ -5396,7 +5027,6 @@ function wrap(fn) {
             return await fn(ctx);
         }
         catch (e) {
-            // A closed pipe is the shell's to report (SIGPIPE), not the command's.
             if (isBrokenPipe(e))
                 throw e;
             (await ctx.stderr.write(`${errorText(e)}\n`));
@@ -5404,12 +5034,55 @@ function wrap(fn) {
         }
     };
 }
+/**
+ * shopt for a shell with no shopt options (pipefail and the like are `set
+ * -o`'s): `-s`/`-u NAME` is bash's "invalid shell option name", exit 1; `-q
+ * NAME` is unset, 1; a bare listing lists nothing.
+ */
+function mkShopt() {
+    return async (ctx) => {
+        const names = ctx.args.filter((a) => !a.startsWith('-'));
+        const quiet = ctx.args.some((a) => /^-[a-z]*q/.test(a));
+        if (names.length === 0)
+            return 0;
+        if (!quiet)
+            for (const name of names)
+                (await ctx.stderr.write(`shopt: ${name}: invalid shell option name\n`));
+        return 1;
+    };
+}
+const ULIMIT_RESOURCES = {
+    c: 'core file size', d: 'data seg size', f: 'file size', l: 'max locked memory', m: 'max memory size',
+    n: 'open files', s: 'stack size', t: 'cpu time', u: 'max user processes', v: 'virtual memory',
+};
+/**
+ * ulimit for a shell that enforces no resource limit: a query answers
+ * `unlimited` (-a lists each resource), and setting one fails as bash's does
+ * when a limit cannot be changed, exit 1.
+ */
+function mkUlimit() {
+    return async (ctx) => {
+        const flags = ctx.args.filter((a) => a.startsWith('-')).join('').replace(/-/g, '').replace(/[HS]/g, '');
+        const value = ctx.args.find((a) => !a.startsWith('-'));
+        if (flags.includes('a')) {
+            for (const [letter, name] of Object.entries(ULIMIT_RESOURCES))
+                (await ctx.stdout.write(`${`${name} (-${letter})`.padEnd(28)}unlimited\n`));
+            return 0;
+        }
+        const letter = flags.at(-1) ?? 'f';
+        if (value !== undefined) {
+            (await ctx.stderr.write(`ulimit: ${ULIMIT_RESOURCES[letter] ?? letter}: cannot modify limit: Operation not permitted\n`));
+            return 1;
+        }
+        (await ctx.stdout.write('unlimited\n'));
+        return 0;
+    };
+}
 export function registerUnixCommands(registry, sqliteVfs) {
-    registry.register('which', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhich(vfs, registry))));
-    registry.register('whereis', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhereis(vfs, registry))));
-    registry.register('command', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkCommand(vfs, registry))));
-    registry.register('type', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkType(vfs, registry))));
-    registry.register('env', wrap(mkEnv()));
+    registry.register('which', wrap(withInvocationVfs((vfs) => mkWhich(vfs, registry))));
+    registry.register('whereis', wrap(withInvocationVfs((vfs) => mkWhereis(vfs, registry))));
+    registry.register('command', wrap(withInvocationVfs((vfs) => mkCommand(vfs, registry))));
+    registry.register('type', wrap(withInvocationVfs((vfs) => mkType(vfs, registry))));
     registry.register('export', wrap(mkExport()));
     registry.register('unset', wrap(mkUnset()));
     registry.register('clear', wrap(mkClear()));
@@ -5417,54 +5090,49 @@ export function registerUnixCommands(registry, sqliteVfs) {
     registry.register('getfacl', wrap(mkGetfacl(sqliteVfs)));
     registry.register('date', wrap(mkDate()));
     registry.register('uptime', wrap(mkUptime()));
-    registry.register('tree', wrap(withInvocationVfs(sqliteVfs, mkTree)));
-    registry.register('grep', textCommand(sqliteVfs, grepCommand));
+    registry.register('tree', wrap(withInvocationVfs(mkTree)));
+    registry.register('grep', textCommand(grepCommand));
     // SHELL-R6-B2: head reads the pipe reader itself, so it terminates after
     // N lines, triggering the abort cascade for upstream producers like `yes`.
-    registry.register('head', textCommand(sqliteVfs, headCommand));
-    registry.register('tail', textCommand(sqliteVfs, tailCommand));
-    registry.register('wc', textCommand(sqliteVfs, wcCommand));
-    registry.register('sort', textCommand(sqliteVfs, sortCommand));
-    registry.register('uniq', textCommand(sqliteVfs, uniqCommand));
-    registry.register('sed', textCommand(sqliteVfs, sedCommand));
-    registry.register('awk', wrap(withInvocationVfs(sqliteVfs, mkAwk)));
-    registry.register('xargs', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkXargs(vfs, registry))));
-    registry.register('tee', textCommand(sqliteVfs, teeCommand));
-    registry.register('du', wrap(withInvocationVfs(sqliteVfs, mkDu)));
-    registry.register('diff', wrap(withInvocationVfs(sqliteVfs, mkDiff)));
+    registry.register('head', textCommand(headCommand));
+    registry.register('tail', textCommand(tailCommand));
+    registry.register('wc', textCommand(wcCommand));
+    registry.register('sort', textCommand(sortCommand));
+    registry.register('uniq', textCommand(uniqCommand));
+    registry.register('sed', textCommand(sedCommand));
+    registry.register('awk', wrap(withInvocationVfs(mkAwk)));
+    registry.register('xargs', wrap(withInvocationVfs((vfs) => mkXargs(vfs, registry))));
+    registry.register('tee', textCommand(teeCommand));
+    registry.register('du', wrap(withInvocationVfs(mkDu)));
     // Registry-level echo + cat for xargs cross-command dispatch.
     // Shell.builtins still wins for direct `echo X` invocations; this
     // entry is only reached when a command (xargs etc.) looks them up
     // via the registry path.
     registry.register('echo', wrap(mkEcho()));
-    registry.register('pwd', wrap(withInvocationVfs(sqliteVfs, mkPwd)));
-    registry.register('cat', textCommand(sqliteVfs, catCommand));
-    registry.register('tac', textCommand(sqliteVfs, tacCommand));
-    registry.register('ls', wrap(withInvocationVfs(sqliteVfs, mkLs)));
-    registry.register('rm', wrap(withInvocationVfs(sqliteVfs, mkRm)));
-    registry.register('touch', wrap(withInvocationVfs(sqliteVfs, mkTouch)));
-    registry.register('stat', wrap(withInvocationVfs(sqliteVfs, (v) => mkStat(v, sqliteVfs))));
-    registry.register('base64', wrap(withInvocationVfs(sqliteVfs, mkBase64)));
-    registry.register('seq', wrap(mkSeq()));
+    registry.register('pwd', wrap(withInvocationVfs(mkPwd)));
+    registry.register('cat', textCommand(catCommand));
+    registry.register('tac', textCommand(tacCommand));
+    registry.register('ls', wrap(withInvocationVfs(mkLs)));
+    registry.register('rm', wrap(withInvocationVfs(mkRm)));
+    registry.register('touch', wrap(withInvocationVfs(mkTouch)));
+    registry.register('stat', wrap(withInvocationVfs((v) => mkStat(v, sqliteVfs))));
+    registry.register('base64', wrap(withInvocationVfs(mkBase64)));
     registry.register('id', wrap(mkId(sqliteVfs)));
-    registry.register('hostname', wrap(mkHostname()));
-    registry.register('basename', wrap(mkBasename()));
-    registry.register('dirname', wrap(mkDirname()));
-    registry.register('realpath', wrap(withInvocationVfs(sqliteVfs, mkRealpath)));
+    registry.register('realpath', wrap(withInvocationVfs(mkRealpath)));
     registry.register('printf', wrap(mkPrintf()));
     registry.register('true', wrap(mkTrue()));
     registry.register('false', wrap(mkFalse()));
-    registry.register('readlink', wrap(withInvocationVfs(sqliteVfs, mkReadlink)));
-    registry.register('md5sum', textCommand(sqliteVfs, checksum.md5sum));
-    registry.register('sha1sum', textCommand(sqliteVfs, checksum.sha1sum));
-    registry.register('sha224sum', textCommand(sqliteVfs, checksum.sha224sum));
-    registry.register('sha256sum', textCommand(sqliteVfs, checksum.sha256sum));
-    registry.register('sha384sum', textCommand(sqliteVfs, checksum.sha384sum));
-    registry.register('sha512sum', textCommand(sqliteVfs, checksum.sha512sum));
-    registry.register('b2sum', textCommand(sqliteVfs, checksum.b2sum));
-    registry.register('cksum', textCommand(sqliteVfs, checksum.cksum));
-    registry.register('sum', textCommand(sqliteVfs, checksum.sum));
-    registry.register('file', wrap(withInvocationVfs(sqliteVfs, mkFile)));
+    registry.register('readlink', wrap(withInvocationVfs(mkReadlink)));
+    registry.register('md5sum', textCommand(checksum.md5sum));
+    registry.register('sha1sum', textCommand(checksum.sha1sum));
+    registry.register('sha224sum', textCommand(checksum.sha224sum));
+    registry.register('sha256sum', textCommand(checksum.sha256sum));
+    registry.register('sha384sum', textCommand(checksum.sha384sum));
+    registry.register('sha512sum', textCommand(checksum.sha512sum));
+    registry.register('b2sum', textCommand(checksum.b2sum));
+    registry.register('cksum', textCommand(checksum.cksum));
+    registry.register('sum', textCommand(checksum.sum));
+    registry.register('file', wrap(withInvocationVfs(mkFile)));
     // od/hexdump/xxd read operands and sinks through ctx.vfs — the
     // mount-aware seam the host hands every command — so they need no
     // invocation-scoped raw view of their own.
@@ -5519,25 +5187,13 @@ export function registerUnixCommands(registry, sqliteVfs) {
     // `which read` doesn't error; the builtin always wins dispatch
     // (interp.executeSimpleCommand checks builtins.get BEFORE
     // registry.resolve — index-Djm2onjx.js:5182-5186).
-    registry.register('read', wrap((ctx) => {
-        const args = ctx.args.filter((a) => !a.startsWith('-'));
-        const varName = args[0] || 'REPLY';
-        ctx.env[varName] = '';
-        return 0;
-    }));
-    // exit — exit with code
-    registry.register('exit', wrap((ctx) => {
-        return parseInt(ctx.args[0] || '0') || 0;
-    }));
-    // source / . — source a file (stub)
-    registry.register('source', wrap(() => 0));
-    registry.register('.', wrap(() => 0));
-    // noop commands that scripts might call
-    registry.register('set', wrap(() => 0));
-    registry.register('shopt', wrap(() => 0));
-    registry.register('trap', wrap(() => 0));
+    // read, exit, source, ., set and trap are the shell's own builtins; run by
+    // name (xargs, find -exec) they are not found, as on a system that ships no
+    // /usr/bin copies of them. shopt and ulimit answer for this shell: it has
+    // no shopt options and enforces no resource limit.
+    registry.register('shopt', wrap(mkShopt()));
     registry.register('umask', createUmaskCommand());
     registry.register('su', createSuCommand());
     registry.register('sudo', createSudoCommand());
-    registry.register('ulimit', wrap(() => 0));
+    registry.register('ulimit', wrap(mkUlimit()));
 }

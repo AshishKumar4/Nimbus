@@ -26,3 +26,16 @@ export const RegistrySearchResponseSchema = z.object({
         }).passthrough(),
     })),
 }).passthrough();
+/**
+ * `npm search`'s results table, which `lifo search` prints too: NAME (30
+ * columns, cut at 28 with `..`), VERSION (12), and 40 columns of
+ * DESCRIPTION, under a 70-dash rule.
+ */
+export function renderSearchTable(rows) {
+    let out = `${'NAME'.padEnd(30)}${'VERSION'.padEnd(12)}DESCRIPTION\n${'-'.repeat(70)}\n`;
+    for (const row of rows) {
+        const name = row.name.length > 28 ? `${row.name.slice(0, 28)}..` : row.name;
+        out += `${name.padEnd(30)}${row.version.padEnd(12)}${(row.description || '').slice(0, 40)}\n`;
+    }
+    return out;
+}

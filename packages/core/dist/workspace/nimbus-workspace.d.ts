@@ -23,7 +23,7 @@ import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
-import type { CommandResult, RunOptions } from '../substrate/lifo/sandbox/types.js';
+import { type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import type { SqlDatabase, TransactionHost } from '../runtime/os-contracts.js';

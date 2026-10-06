@@ -3,39 +3,20 @@ import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
-import { RegistryPackumentSchema, RegistrySearchResponseSchema, RegistryVersionInfoSchema, } from './registry-schemas.js';
+import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, RegistryVersionInfoSchema, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
-import { npmLogEnabled } from './npm-log.js';
+import { installSummary, npmLogEnabled } from './npm-log.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 /** The registry an install reads from when its env names none. */
 export const NPM_REGISTRY_ORIGIN = 'https://registry.npmjs.org';
 export const NPM_VERSION = '10.0.0';
-/** The end-of-install report, shared by every install path so a failure
- *  reads the same regardless of which engine ran it. Byte-identical to
- *  what the worker's wrapper printed. */
+/** The end-of-install report (installSummary), on the command's own streams. */
 async function writeInstallSummary(ctx, installed, failed, opts) {
-    if (failed.length > 0) {
-        await ctx.stderr.write(`\x1b[31mFailed: ${failed.join(', ')}\x1b[0m\n`);
-    }
-    const secs = ((Date.now() - opts.startedAt) / 1000).toFixed(1);
-    if (installed.length === 0 && failed.length === 0) {
-        await ctx.stdout.write(`\x1b[32mup to date in ${secs}s\x1b[0m\n`);
-        return;
-    }
-    if (installed.length === 0)
-        return;
-    const partial = failed.length > 0;
-    const color = partial ? '\x1b[33m' : '\x1b[32m';
-    const suffix = partial ? ` (${failed.length} failed, see above)` : '';
-    const files = opts.totalFiles !== undefined ? ` (${opts.totalFiles} files)` : '';
-    await ctx.stdout.write(`\n${color}added ${installed.length} packages${files} in ${secs}s${suffix}\x1b[0m\n`);
-    if (opts.fromCacheHits) {
-        await ctx.stdout.write(`\x1b[2m  (${opts.fromCacheHits} from cache)\x1b[0m\n`);
-    }
-    if (opts.linkedBins) {
-        const n = opts.linkedBins;
-        await ctx.stdout.write(`\x1b[2m  linked ${n} bin${n === 1 ? '' : 's'} into ${opts.globalBinDir}\x1b[0m\n`);
-    }
+    const { stdout, stderr } = installSummary({ ...opts, installed: installed.length, failed, elapsedMs: Date.now() - opts.startedAt });
+    if (stderr)
+        await ctx.stderr.write(stderr);
+    if (stdout)
+        await ctx.stdout.write(stdout);
 }
 // ─── Helpers ───
 /**
@@ -197,6 +178,40 @@ async function writeProjectPackageJson(vfs, cwd, pkg) {
     (await vfs.writeFile(pkgPath, JSON.stringify(pkg, null, 2) + '\n'));
 }
 /** A package's bins, name -> target inside the package, as npm installs them (npmBinMap). */
+/**
+ * The packages in a node_modules directory, by name (`pkg` or `@scope/pkg`):
+ * each entry that is a directory or a link (an `npm link`ed or workspace
+ * package), a scope's entries in its place. Names starting with `.` (`.bin`,
+ * `.package-lock.json`) are npm's own files, not packages; a directory that
+ * cannot be read holds none.
+ */
+export async function* packagesIn(vfs, modulesDir) {
+    const read = async (dir) => {
+        try {
+            return await vfs.readdir(dir);
+        }
+        catch {
+            return [];
+        }
+    };
+    for (const entry of await read(modulesDir)) {
+        if (entry.name.startsWith('.'))
+            continue;
+        const type = await direntTypeIn(vfs, modulesDir, entry);
+        if (type !== 'directory' && type !== 'symlink')
+            continue;
+        if (!entry.name.startsWith('@')) {
+            yield entry.name;
+            continue;
+        }
+        const scopeDir = join(modulesDir, entry.name);
+        for (const child of await read(scopeDir)) {
+            const childType = await direntTypeIn(vfs, scopeDir, child);
+            if (childType === 'directory' || childType === 'symlink')
+                yield `${entry.name}/${child.name}`;
+        }
+    }
+}
 export function getBinEntries(pkg) {
     return Object.fromEntries(npmBinMap(pkg.name ?? '', pkg.bin));
 }
@@ -520,29 +535,9 @@ async function npmList(ctx) {
         await ctx.stdout.write('└── (empty)\n');
         return 0;
     }
-    const entries = (await ctx.vfs.readdir(modulesDir));
     const packages = [];
-    for (const entry of entries) {
-        if ((await direntTypeIn(ctx.vfs, modulesDir, entry)) !== 'directory')
-            continue;
-        if (entry.name.startsWith('@')) {
-            // Scoped packages
-            try {
-                const scopeDir = join(modulesDir, entry.name);
-                const scopeEntries = (await ctx.vfs.readdir(scopeDir));
-                for (const se of scopeEntries) {
-                    if ((await direntTypeIn(ctx.vfs, scopeDir, se)) !== 'directory')
-                        continue;
-                    const v = (await readPkgVersion(ctx.vfs, join(modulesDir, entry.name, se.name)));
-                    packages.push({ name: `${entry.name}/${se.name}`, version: v });
-                }
-            }
-            catch { /* ignore */ }
-        }
-        else {
-            const v = (await readPkgVersion(ctx.vfs, join(modulesDir, entry.name)));
-            packages.push({ name: entry.name, version: v });
-        }
+    for await (const name of packagesIn(ctx.vfs, modulesDir)) {
+        packages.push({ name, version: await readPkgVersion(ctx.vfs, join(modulesDir, name)) });
     }
     if (packages.length === 0) {
         await ctx.stdout.write('└── (empty)\n');
@@ -627,32 +622,9 @@ async function npmRun(ctx, shellExecute, registry, kernel) {
 /** Scan node_modules for packages with bin entries and register them as commands */
 async function registerLocalBins(vfs, cwd, registry, kernel) {
     const nmDir = join(cwd, 'node_modules');
-    if (!(await vfs.exists(nmDir)))
-        return 0;
     let count = 0;
-    try {
-        const entries = (await vfs.readdir(nmDir));
-        for (const dirent of entries) {
-            const name = dirent.name;
-            if (name.startsWith('.'))
-                continue;
-            if (name.startsWith('@')) {
-                // Scoped packages: read @scope/pkg
-                const scopeDir = join(nmDir, name);
-                try {
-                    const scopeEntries = (await vfs.readdir(scopeDir));
-                    for (const scopeEntry of scopeEntries) {
-                        count += (await registerPkgBins(vfs, join(scopeDir, scopeEntry.name), registry, kernel));
-                    }
-                }
-                catch { /* ignore */ }
-            }
-            else {
-                count += (await registerPkgBins(vfs, join(nmDir, name), registry, kernel));
-            }
-        }
-    }
-    catch { /* ignore */ }
+    for await (const name of packagesIn(vfs, nmDir))
+        count += await registerPkgBins(vfs, join(nmDir, name), registry, kernel);
     return count;
 }
 async function registerPkgBins(vfs, pkgDir, registry, kernel) {
@@ -742,15 +714,7 @@ async function npmSearch(ctx) {
             await ctx.stdout.write('No results found\n');
             return 0;
         }
-        // Header
-        await ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
-        await ctx.stdout.write('-'.repeat(70) + '\n');
-        for (const r of results) {
-            const p = r.package;
-            const name = p.name.length > 28 ? p.name.slice(0, 28) + '..' : p.name;
-            const desc = (p.description || '').slice(0, 40);
-            await ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
-        }
+        await ctx.stdout.write(renderSearchTable(results.map((r) => r.package)));
     }
     catch (e) {
         await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);

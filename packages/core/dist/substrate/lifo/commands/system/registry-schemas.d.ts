@@ -41,4 +41,16 @@ export declare const RegistrySearchResponseSchema: z.ZodObject<{
         }, z.core.$loose>;
     }, z.core.$strip>>;
 }, z.core.$loose>;
+/** A search hit as the results table shows it. */
+export interface SearchRow {
+    readonly name: string;
+    readonly version: string;
+    readonly description?: string;
+}
+/**
+ * `npm search`'s results table, which `lifo search` prints too: NAME (30
+ * columns, cut at 28 with `..`), VERSION (12), and 40 columns of
+ * DESCRIPTION, under a 70-dash rule.
+ */
+export declare function renderSearchTable(rows: readonly SearchRow[]): string;
 //# sourceMappingURL=registry-schemas.d.ts.map
