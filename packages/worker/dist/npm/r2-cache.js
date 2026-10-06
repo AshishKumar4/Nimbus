@@ -207,7 +207,8 @@ async function l2Put(key, body) {
  *
  * Returns null for anything we cannot verify the same way twice: an empty
  * string, a bare legacy `dist.shasum` (hex, no algorithm prefix), a
- * multi-entry SRI, an unknown algorithm, or malformed base64. A null
+ * multi-entry SRI, an unknown algorithm, or a digest that is not one of its
+ * algorithm (which an install refuses). A null
  * address means the tarball does not participate in the shared cache at
  * all — we neither read nor write it. Refusing to cache what we cannot
  * verify is the whole point; there is no "trust the name instead" fallback.
@@ -216,16 +217,16 @@ export function parseTarballAddress(integrity) {
     // A single SRI entry only: whitespace means a multi-hash string.
     if (typeof integrity !== 'string' || /\s/.test(integrity))
         return null;
-    const [entry] = sriEntries(integrity);
-    if (!entry)
-        return null;
-    let raw;
+    let entry;
     try {
-        raw = atob(entry.digest);
+        [entry] = sriEntries(integrity);
     }
     catch {
         return null;
     }
+    if (!entry)
+        return null;
+    const raw = atob(entry.digest);
     let hex = '';
     for (let i = 0; i < raw.length; i++) {
         hex += raw.charCodeAt(i).toString(16).padStart(2, '0');
@@ -544,6 +545,8 @@ export class R2CacheClient {
         const timeoutMs = options?.timeoutMs ?? 15_000;
         let resp;
         try {
+            // One try is the request and, for a 2xx, reading its body: a body
+            // that breaks off mid-read is tried again like a request that failed.
             resp = await retryingRegistryFetch(async () => {
                 const ctl = new AbortController();
                 const timer = setTimeout(() => ctl.abort(), timeoutMs);
@@ -554,10 +557,11 @@ export class R2CacheClient {
                     // libc). It omits `exports`; that is read from the tarball's
                     // package.json in the VFS at require time, where the resolver's
                     // packument copy is `?? null` anyway.
-                    return await fetch(url, {
+                    const answer = await fetch(url, {
                         headers: { Accept: 'application/vnd.npm.install-v1+json' },
                         signal: ctl.signal,
                     });
+                    return answer.ok ? new Response(await answer.text(), { status: answer.status }) : answer;
                 }
                 finally {
                     clearTimeout(timer);

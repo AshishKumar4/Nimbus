@@ -46,13 +46,16 @@ export declare function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath:
  */
 export declare function declaredPackageBins(vfs: Pick<VfsLike, 'readFileString'>, packagePath: string): Promise<string[]>;
 /**
- * The bin `npx` runs from the package at `packagePath` for `binName`, as a
- * linked bin is validated (target present, `.js`/`.cjs`/`.mjs` probed, a
- * staged-artifact sentinel passed through). A package that maps `bin` names
- * runs its first entry when none is `binName`, as npm runs a single-binary
- * package; a string `bin` runs only under the package's own name.
+ * The bin `npx` runs from the package at `packagePath`: under
+ * `--package=<pkg> <command>`, the one named `command`; for `npx <pkg>`
+ * (`command` null), the one libnpmexec's getBinFromManifest chooses: the
+ * first, when every bin names one target; else the one named after the
+ * package, its scope dropped; else none ("could not determine executable to
+ * run"). Only the chosen bin is then validated as a linked bin is (target
+ * present, `.js`/`.cjs`/`.mjs` probed, a staged-artifact sentinel passed
+ * through): a broken one runs nothing, never another bin in its place.
  */
-export declare function npxPackageBin(vfs: BinTargetFs & Pick<VfsLike, 'readFileString'>, packagePath: string, binName: string): Promise<NpmBinEntry | null>;
+export declare function npxPackageBin(vfs: BinTargetFs & Pick<VfsLike, 'readFileString'>, packagePath: string, command: string | null): Promise<NpmBinEntry | null>;
 export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Promise<NpmBinResolution | null>;
 /**
  * A path-shaped invocation of an npm bin shim: an executable entry of a

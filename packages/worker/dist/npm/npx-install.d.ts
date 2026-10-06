@@ -72,7 +72,7 @@ export interface NpxResolveResult {
 /**
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
- *   2. Checking node_modules/.bin/<binName> in cwd, then NPX cache.
+ *   2. Checking the package in cwd/node_modules, then the NPX cache, for its bin.
  *   3. If absent, installing the package via NpmInstaller into
  *      /tmp/.npx-cache, then re-checking.
  *

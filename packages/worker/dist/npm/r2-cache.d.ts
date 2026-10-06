@@ -202,7 +202,8 @@ export interface TarballAddress {
  *
  * Returns null for anything we cannot verify the same way twice: an empty
  * string, a bare legacy `dist.shasum` (hex, no algorithm prefix), a
- * multi-entry SRI, an unknown algorithm, or malformed base64. A null
+ * multi-entry SRI, an unknown algorithm, or a digest that is not one of its
+ * algorithm (which an install refuses). A null
  * address means the tarball does not participate in the shared cache at
  * all — we neither read nor write it. Refusing to cache what we cannot
  * verify is the whole point; there is no "trust the name instead" fallback.

@@ -342,7 +342,9 @@ async function npmInstall(ctx, registry, kernel, deps) {
                         let versionStr = 'latest';
                         try {
                             const ipkg = JSON.parse((await ctx.vfs.readFileString(installedPkgPath)));
-                            versionStr = '^' + ipkg.version;
+                            // An alias (`mine@npm:real@^1`) saves the package it
+                            // installed, as npm does: "mine": "npm:real@^1.1.0".
+                            versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
                         }
                         catch { /* ignore */ }
                         if (invocation.saveDev) {
