@@ -9,8 +9,6 @@ export type {
 export { Kernel } from './kernel/index.js';
 export type { VirtualRequest, VirtualResponse, VirtualRequestHandler } from './kernel/index.js';
 
-// Filesystem: the namespace is core/src/vfs (CompositeVFS), bound by ProcessFiles.
-export { getMimeType } from './utils/mime.js';
 
 // Commands
 export { CommandRegistry, createDefaultRegistry } from './commands/registry.js';

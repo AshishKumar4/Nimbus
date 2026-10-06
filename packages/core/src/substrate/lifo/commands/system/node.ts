@@ -1124,23 +1124,6 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 				fn = new Function('return ' + wrapped)();
 			} catch (e) {
 				const err = e instanceof Error ? e : new Error(String(e));
-				ctx.stderr.write(`[ESM-FAIL] file=${modFilename} srcLen=${modSource.length} err=${err.message}\n`);
-				// Binary search for exact error location, matching specific error
-				const lines = cleanSource.split('\n');
-				const targetErr = err.message;
-				let lo = 0, hi = lines.length;
-				while (hi - lo > 3) {
-					const mid = (lo + hi) >>> 1;
-					const partial = lines.slice(0, mid).join('\n');
-					try { new Function(partial); lo = mid; } catch (e2) {
-						if (e2 instanceof Error && e2.message === targetErr) hi = mid;
-						else lo = mid; // Different error (e.g. unclosed), keep going
-					}
-				}
-				ctx.stderr.write(`[ESM-FAIL] error at L${lo}-${hi}, showing L${Math.max(1, lo - 25)} to L${hi + 3}:\n`);
-				for (let li = Math.max(0, lo - 25); li < Math.min(lines.length, hi + 3); li++) {
-					ctx.stderr.write(`[ESM-FAIL] ${li + 1 === lo || li + 1 === hi ? '>>>' : '   '} L${li + 1}: ${lines[li]?.slice(0, 200)}\n`);
-				}
 				err.message = `[${modFilename}] ${err.message}`;
 				throw err;
 			}

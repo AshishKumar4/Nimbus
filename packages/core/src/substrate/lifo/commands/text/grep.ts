@@ -2,7 +2,7 @@ import type { Command, CommandInputStream } from '../types.js';
 import type { ProcessView } from '../../../../runtime/process-files.js';
 import { resolve } from '../../utils/path.js';
 import { globMatch as fnmatch } from '../../utils/glob.js';
-import { NOT_WORD, PosixRegexSyntax, WORD, translate, literalChar } from '../../utils/posix-regex.js';
+import { NOT_WORD, PosixRegexSyntax, WORD, translate, literal } from '../../utils/posix-regex.js';
 
 // GNU grep (3.12) in a UTF-8 locale. Patterns: BRE (default), ERE (-E),
 // fixed strings (-F) and Perl-style (-P, as JavaScript's regex). A line is a
@@ -39,7 +39,7 @@ interface Matcher {
 function compile(patterns: string[], syntax: Syntax, ignoreCase: boolean, word: boolean, whole: boolean, multiline: boolean): Matcher {
   const flags = `u${ignoreCase ? 'i' : ''}${multiline ? 's' : ''}`;
   const sources = patterns.map((p) => {
-    let source = syntax === 'F' ? [...p].map((c) => literalChar(c)).join('') : syntax === 'P' ? p : translate(p, { extended: syntax === 'E' });
+    let source = syntax === 'F' ? [...p].map((c) => literal(c)).join('') : syntax === 'P' ? p : translate(p, { extended: syntax === 'E' });
     if (whole) source = `^(?:${source})$`;
     else if (word) source = `(?<!${WORD})(?:${source})(?!${WORD})`;
     return source;

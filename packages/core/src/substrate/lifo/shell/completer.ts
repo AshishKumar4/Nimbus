@@ -96,20 +96,8 @@ function determineContext(beforeCursor: string, word: string): CompletionType {
     return 'command';
   }
 
-  // After 'cd' -> directory only
-  const tokens = prefix.split(/\s+/).filter(Boolean);
-  if (tokens.length > 0 && tokens[tokens.length - 1] === 'cd') {
-    // Wait, we need to check if the first token after the operator is 'cd'
-    // Actually let's check if the command is 'cd'
-    const lastCmd = getLastCommandName(prefix);
-    if (lastCmd === 'cd') {
-      return 'directory';
-    }
-  }
-
-  // Check if after cd more generally
-  const lastCmd = getLastCommandName(prefix);
-  if (lastCmd === 'cd') {
+  // The words of a cd -> directory only
+  if (getLastCommandName(prefix) === 'cd') {
     return 'directory';
   }
 
