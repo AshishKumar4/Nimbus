@@ -10,7 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { loaderOutbound, workspaceNetwork } from '../../packages/core/src/_shared/workspace-network.ts';
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
@@ -40,7 +40,7 @@ function recordingEgress() {
       if (url.hostname === 'registry.npmjs.org') {
         return Response.json({
           name: 'via-egress', version: '1.0.0', description: 'answered by the egress',
-          'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { name: 'via-egress', version: '1.0.0', dist: { tarball: 'https://registry.npmjs.org/x.tgz' } } },
+          'dist-tags': { latest: '1.0.0' }, versions: { '1.0.0': { name: 'via-egress', version: '1.0.0', description: 'answered by the egress', dist: { tarball: 'https://registry.npmjs.org/x.tgz' } } },
           dist: { tarball: 'https://registry.npmjs.org/x.tgz' },
         });
       }
