@@ -28,6 +28,7 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
+export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
@@ -42,6 +43,28 @@ export interface ExclusiveMutationLease {
 }
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
+    /**
+     * Make the lease a delegation: its holder decides the subtree's operations
+     * itself and sends them later (as writes under the lease), so another
+     * caller's access recalls them first (RecallRequired) instead of being
+     * refused.
+     */
+    readonly delegation?: DelegationTerms;
+}
+/** What a delegation's holder agreed to (ExclusiveMutationOptions.delegation). */
+export interface DelegationTerms {
+    /** Another caller's reads under the root recall too, not only its writes: the holder's writes may be unsent. */
+    readonly reads: boolean;
+    /**
+     * Bring the holder's decided operations in. Settles once every operation
+     * it decided before the recall is stored here, and the holder has done
+     * what `kind` asks: 'share', send each operation as it decides it from
+     * now on (another caller reads the subtree; the delegation stays), or
+     * 'revoke', give the subtree up (another caller writes it; the lease
+     * ends, and the holder's later writes under it are ESTALE). The engine
+     * joins concurrent recalls of one delegation into one.
+     */
+    recall(kind: 'share' | 'revoke'): Promise<void>;
 }
 export interface VfsOpenDescription {
     /** Inode number the description currently resolves; 0 is never issued. */
@@ -510,6 +533,10 @@ export declare class SqliteVFS {
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
     private activeMutationOwner;
+    /** The lease the running view call presents (callerView): its holder's own lookups recall nothing. */
+    private activeLeaseHolder;
+    /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
+    private activeWrite;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -1039,6 +1066,20 @@ export declare class SqliteVFS {
      */
     rotateExclusiveMutation(owner: string): string;
     hasExclusiveMutation(): boolean;
+    /**
+     * Recall a read-covering delegation `key` lies in, for any caller but its
+     * holder (the lease a mutation scope or a view presents).
+     */
+    private recallReads;
+    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
+    private recallDelegationsAt;
+    /**
+     * The refusal for an access to `key` that `lease`'s holder must answer
+     * first, and the recall it waits on: one per delegation at a time, a
+     * revoke superseding a share. A shared delegation stays; a revoked one
+     * ends here, so its holder's later writes under it are ESTALE.
+     */
+    private recallRequired;
     private withMutationOwner;
     /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
     assertMutationAllowed(path: string, owner?: string): void;
@@ -1395,11 +1436,12 @@ export declare class SqliteVFS {
         quiesce: true;
     }): Promise<SnapshotInfo>;
     /**
-     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
-     * check and `pin` run in one turn, so nothing can start between them. New
-     * spanning work waits behind the gate until then (Kinu N14: await, never
-     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
-     * is waited out too.
+     * Run `pin` once nothing spans awaits, no plain exclusive lease is held,
+     * and every delegation is shared (its holder's decided operations stored):
+     * the check and `pin` run in one turn, so nothing can start between them.
+     * New spanning work waits behind the gate until then (Kinu N14: await,
+     * never EBUSY). A lease is synchronous and cannot wait, so one taken
+     * meanwhile is waited out too.
      */
     private quiesced;
     /**

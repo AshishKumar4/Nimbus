@@ -42,6 +42,8 @@ import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
+import { RecallRequired } from './recall.js';
+export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
@@ -542,6 +544,10 @@ const OWNED_MUTATIONS = new Set([
     'setDefaultAcl', 'chown', 'unlink', 'rmdir', 'removeRecursive', 'rename', 'copyFile', 'copyTree', 'writeBatch',
     'mkdirBatch',
 ]);
+/** The mutations of a credentialed view that span turns (their slices carry the caller's lease themselves). */
+const SPANNING_MUTATIONS = new Set([
+    'writeFileFrom', 'copyTreeAsync', 'writeStream',
+]);
 const NO_STRUCTURAL_CHANGES = new Map();
 /** The directories among `inodes`, each reported as having gone from its name. */
 function removedDirectories(inodes) {
@@ -824,6 +830,10 @@ export class SqliteVFS {
     }
     exclusiveMutationLeases = new Map();
     activeMutationOwner = null;
+    /** The lease the running view call presents (callerView): its holder's own lookups recall nothing. */
+    activeLeaseHolder = null;
+    /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
+    activeWrite = false;
     /** Shared by every concurrent stream targeting this session's VFS. */
     writeStreamCredits = new WeightedCreditPool(MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
     _stagedStreamBytes = 0;
@@ -1406,7 +1416,16 @@ export class SqliteVFS {
     openDescription(path, cred, rights, principal) {
         const origin = principal ?? this.activeOrigin ?? Object.freeze({ cred });
         const asOpener = (call) => (...args) => this.asOrigin(origin, () => call(...args));
-        const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+        // Opened to write, it revokes a delegation it meets, rather than sharing it.
+        const priorWrite = this.activeWrite;
+        this.activeWrite = priorWrite || rights.write;
+        let resolved;
+        try {
+            resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+        }
+        finally {
+            this.activeWrite = priorWrite;
+        }
         if (!resolved.inode)
             throw vfsKeyError('ENOENT', path);
         // Descriptions share the canonical inode object: a second descriptor
@@ -2048,11 +2067,17 @@ export class SqliteVFS {
             if (typeof method !== 'function')
                 continue;
             const settles = !LEAF_READS.has(key);
+            const writes = OWNED_MUTATIONS.has(key) || SPANNING_MUTATIONS.has(key);
             const owned = mutationOwner !== undefined && OWNED_MUTATIONS.has(key);
             Reflect.set(view, key, (...args) => {
                 const prior = this.privileged;
+                const priorHolder = this.activeLeaseHolder;
+                const priorWrite = this.activeWrite;
                 if (privileged)
                     this.privileged = true;
+                if (mutationOwner !== undefined)
+                    this.activeLeaseHolder = mutationOwner;
+                this.activeWrite = writes;
                 try {
                     if (settles)
                         this.settleAppends();
@@ -2061,6 +2086,8 @@ export class SqliteVFS {
                 }
                 finally {
                     this.privileged = prior;
+                    this.activeLeaseHolder = priorHolder;
+                    this.activeWrite = priorWrite;
                 }
             });
         }
@@ -2092,7 +2119,14 @@ export class SqliteVFS {
      * (appendThrough): every call that names a path comes through here.
      */
     resolvePath(path, cred, followLeaf, allowMissing, tree = this.inodes) {
+        // A delegated subtree's live state may be its holder's, not stored yet:
+        // a lookup into it, by name or through a link, recalls it first.
+        const live = tree === this.inodes && this.exclusiveMutationLeases.size > 0;
+        if (live)
+            this.recallReads(this.nameOf(path, cred));
         const resolved = this.walkPath(path, cred, followLeaf, allowMissing, tree);
+        if (live && this.exclusiveMutationLeases.size > 0)
+            this.recallReads(resolved.path);
         if (tree !== this.inodes || resolved.inode === undefined || !this.appendRuns.has(resolved.inode.ino))
             return resolved;
         this.settleAppend(resolved.inode.ino);
@@ -2679,13 +2713,13 @@ export class SqliteVFS {
                     break;
             }
         }
-        for (const lockedRoot of this.exclusiveMutationLeases.values()) {
-            if (pathsOverlap(root, lockedRoot)) {
-                throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lockedRoot}`);
+        for (const lease of this.exclusiveMutationLeases.values()) {
+            if (pathsOverlap(root, lease.root)) {
+                throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
             }
         }
         const owner = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(owner, root);
+        this.exclusiveMutationLeases.set(owner, { root, delegation: options.delegation ?? null, shared: false, recalling: null });
         return { root, owner };
     }
     acquireGlobalExclusiveMutation() {
@@ -2694,7 +2728,7 @@ export class SqliteVFS {
             throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
         }
         const owner = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(owner, '');
+        this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, shared: false, recalling: null });
         return { root: '', owner };
     }
     releaseExclusiveMutation(owner) {
@@ -2707,16 +2741,73 @@ export class SqliteVFS {
      * answer timed out) loses its authority before the work is redone.
      */
     rotateExclusiveMutation(owner) {
-        const root = this.exclusiveMutationLeases.get(owner);
-        if (root === undefined)
+        const lease = this.exclusiveMutationLeases.get(owner);
+        if (lease === undefined)
             throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
         this.exclusiveMutationLeases.delete(owner);
         const next = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(next, root);
+        this.exclusiveMutationLeases.set(next, lease);
         return next;
     }
     hasExclusiveMutation() {
         return this.exclusiveMutationLeases.size > 0;
+    }
+    /**
+     * Recall a read-covering delegation `key` lies in, for any caller but its
+     * holder (the lease a mutation scope or a view presents).
+     */
+    recallReads(key) {
+        const holder = this.activeMutationOwner ?? this.activeLeaseHolder;
+        for (const [owner, lease] of this.exclusiveMutationLeases) {
+            if (lease.delegation === null || !lease.delegation.reads || lease.shared || owner === holder)
+                continue;
+            const { root } = lease;
+            if (root === '' || key === root || key.startsWith(`${root}/`))
+                throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
+        }
+    }
+    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
+    async recallDelegationsAt(key, owner) {
+        for (;;) {
+            const normalized = normalizeVfsPath(key);
+            const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (lease.delegation !== null && id !== owner && pathsOverlap(normalized, lease.root)));
+            if (met === undefined)
+                return;
+            await this.recallRequired(met[0], met[1], 'revoke', normalized).recall();
+        }
+    }
+    /**
+     * The refusal for an access to `key` that `lease`'s holder must answer
+     * first, and the recall it waits on: one per delegation at a time, a
+     * revoke superseding a share. A shared delegation stays; a revoked one
+     * ends here, so its holder's later writes under it are ESTALE.
+     */
+    recallRequired(owner, lease, kind, key) {
+        const recall = () => {
+            const running = lease.recalling;
+            if (running !== null && (running.kind === kind || running.kind === 'revoke'))
+                return running.done;
+            const done = (async () => {
+                if (running !== null)
+                    await running.done.catch(() => { });
+                if (this.exclusiveMutationLeases.get(owner) !== lease)
+                    return;
+                await lease.delegation.recall(kind);
+                if (kind === 'share')
+                    lease.shared = true;
+                else if (this.exclusiveMutationLeases.get(owner) === lease)
+                    this.exclusiveMutationLeases.delete(owner);
+            })().finally(() => {
+                if (lease.recalling?.done === done)
+                    lease.recalling = null;
+            });
+            lease.recalling = { kind, done };
+            return done;
+        };
+        // Started now, whether or not the caller can wait for it: one that
+        // cannot is refused, and its retry finds the subtree recalled.
+        recall().catch(() => { });
+        return new RecallRequired(lease.root, kind, key, recall);
     }
     withMutationOwner(owner, callback) {
         if (owner === undefined)
@@ -2758,13 +2849,17 @@ export class SqliteVFS {
             this.exclusiveMutationLeases.size > 0) {
             return { code: 'EBUSY', detail: 'locked while an exclusive mutation is active' };
         }
-        for (const [owner, root] of this.exclusiveMutationLeases) {
+        for (const [owner, lease] of this.exclusiveMutationLeases) {
+            const { root } = lease;
             if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
                 continue;
+            // A delegation's holder may have decided what this would change: it gives the subtree up first.
+            if (lease.delegation !== null)
+                throw this.recallRequired(owner, lease, 'revoke', normalized);
             return { code: 'EBUSY', detail: `locked by an exclusive mutation at /${root}` };
         }
         if (this.activeMutationOwner !== null) {
-            const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
+            const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner)?.root;
             if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
                 return { code: 'EPERM', detail: `outside the exclusive mutation root /${ownedRoot ?? ''}` };
             }
@@ -5091,16 +5186,24 @@ export class SqliteVFS {
         if (typeof name !== 'string' || name === '' || name.length > 256)
             throw vfsError('EINVAL', 'invalid snapshot name');
         this.settleAppends();
-        if (!options.quiesce)
+        if (!options.quiesce) {
+            // It cannot wait for a holder's decided operations: refused (EAGAIN),
+            // their recall started, until every delegation is shared.
+            for (const [owner, lease] of this.exclusiveMutationLeases) {
+                if (lease.delegation !== null && !lease.shared)
+                    throw this.recallRequired(owner, lease, 'share', lease.root);
+            }
             return this.pinSnapshot(name);
+        }
         return this.quiesced(() => this.pinSnapshot(name));
     }
     /**
-     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
-     * check and `pin` run in one turn, so nothing can start between them. New
-     * spanning work waits behind the gate until then (Kinu N14: await, never
-     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
-     * is waited out too.
+     * Run `pin` once nothing spans awaits, no plain exclusive lease is held,
+     * and every delegation is shared (its holder's decided operations stored):
+     * the check and `pin` run in one turn, so nothing can start between them.
+     * New spanning work waits behind the gate until then (Kinu N14: await,
+     * never EBUSY). A lease is synchronous and cannot wait, so one taken
+     * meanwhile is waited out too.
      */
     quiesced(pin) {
         const previous = this.quiesceGate ?? Promise.resolve();
@@ -5116,8 +5219,17 @@ export class SqliteVFS {
                         await Promise.allSettled([...this.activeWork]);
                         continue;
                     }
-                    if (this.exclusiveMutationLeases.size > 0) {
+                    // A plain lease is waited out. A delegation may stand for as long
+                    // as its holder works: its decided operations are recalled (shared)
+                    // instead, so the snapshot holds them, and it stays.
+                    const leases = [...this.exclusiveMutationLeases];
+                    if (leases.some(([, lease]) => lease.delegation === null)) {
                         await yieldToStorage();
+                        continue;
+                    }
+                    const unshared = leases.find(([, lease]) => !lease.shared);
+                    if (unshared !== undefined) {
+                        await this.recallRequired(unshared[0], unshared[1], 'share', unshared[1].root).recall();
                         continue;
                     }
                     return pin();
@@ -5462,7 +5574,7 @@ export class SqliteVFS {
         else {
             // A full restore changes everything: only the caller's own global lease may be live.
             const owner = this.activeMutationOwner;
-            const others = [...this.exclusiveMutationLeases].filter(([id, root]) => id !== owner || root !== '');
+            const others = [...this.exclusiveMutationLeases].filter(([id, { root }]) => id !== owner || root !== '');
             if (others.length > 0)
                 throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
         }
@@ -7398,6 +7510,15 @@ export class SqliteVFS {
                     throw new Error('w7-frame: stream ended without batch-end');
                 }
                 const record = next.value;
+                // A record that lands in another holder's delegation waits for it to
+                // be given up first, here between records, where the stream may wait:
+                // its group's commit would otherwise be refused.
+                if (this.exclusiveMutationLeases.size > 0) {
+                    const lands = record.type === 'delete' ? record.path
+                        : record.type === 'directory' || record.type === 'file-begin' ? record.inode.path : null;
+                    if (lands !== null)
+                        await this.recallDelegationsAt(lands, options.mutationOwner);
+                }
                 switch (record.type) {
                     case 'delete': {
                         // A delete observes everything the stream wrote before it.

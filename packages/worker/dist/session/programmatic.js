@@ -31,6 +31,7 @@ import { parseShellState } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { _acquireForRoutedRequest } from './rpc.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /**
  * Run `body` in the named shell `options.shellId`, or with none when no
  * `shellId` was given. The named shells are the workspace's
@@ -965,17 +966,19 @@ export async function rpcDeleteFile(self, path, options = {}, cred) {
     await ensureProgrammaticReady(self);
     const p = String(path).replace(/^\/+/, '');
     const vfs = self.sqliteFs.as(cred === undefined ? CRED_KERNEL : requireVfsCred(cred, 'files.delete'));
-    if (!vfs.exists(p))
-        return;
-    if (vfs.isDirectory(p)) {
-        if (!options.recursive) {
-            vfs.rmdir(p);
+    // A delegation it meets is recalled first.
+    await withRecall(() => {
+        if (!vfs.exists(p))
+            return;
+        if (vfs.isDirectory(p)) {
+            if (!options.recursive)
+                vfs.rmdir(p);
+            else
+                vfs.removeRecursive(p);
             return;
         }
-        vfs.removeRecursive(p);
-        return;
-    }
-    vfs.unlink(p);
+        vfs.unlink(p);
+    });
 }
 export async function rpcDestroy(self, options = {}) {
     self.ensureSqliteFs();

@@ -66,6 +66,7 @@ import { Fanout, MAX_PEER_FANOUT } from '@nimbus-sh/fabric/fanout.js';
 import { runWaveBench } from '../git/wave-bench.js';
 import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { z } from 'zod/v4';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 // `SessionPortHost`, `routeToSessionPort` and `routeCapabilityPort` live in
 // session/port-capability.ts so the composed manager's `apps` surface can
 // call the one implementation without importing this file (which reaches
@@ -1244,14 +1245,17 @@ async function routeFetch(self, request) {
             const vfs = self.sqliteFs.as(CRED_KERNEL);
             const body = await parseJsonBody(request, WriteFileBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            // Ensure parent dirs
-            const parts = path.split('/');
-            for (let i = 1; i < parts.length; i++) {
-                const dir = parts.slice(0, i).join('/');
-                if (dir && !vfs.exists(dir))
-                    vfs.mkdir(dir, { recursive: true });
-            }
-            vfs.writeFile(path, body.content);
+            // A delegation it meets is recalled first; the whole write is repeatable.
+            await withRecall(() => {
+                // Ensure parent dirs
+                const parts = path.split('/');
+                for (let i = 1; i < parts.length; i++) {
+                    const dir = parts.slice(0, i).join('/');
+                    if (dir && !vfs.exists(dir))
+                        vfs.mkdir(dir, { recursive: true });
+                }
+                vfs.writeFile(path, body.content);
+            });
             return Response.json({ ok: true, path });
         }
         catch (e) {
@@ -1263,7 +1267,7 @@ async function routeFetch(self, request) {
         try {
             const body = await parseJsonBody(request, MkdirBodySchema);
             const path = body.path.replace(/^\/+/, '');
-            self.sqliteFs.as(CRED_KERNEL).mkdir(path, { recursive: true });
+            await withRecall(() => self.sqliteFs.as(CRED_KERNEL).mkdir(path, { recursive: true }));
             return Response.json({ ok: true, path });
         }
         catch (e) {
