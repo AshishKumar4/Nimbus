@@ -15,7 +15,7 @@
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -31,6 +31,7 @@ import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const ROOT = '/home/user/dio';
 const files = {
@@ -174,12 +175,7 @@ const env = {
     },
     get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const manager = new FacetManager(
   createFacetCtx(createFacetWorld(() => ({})), 'one-shot-dynamic-import'),

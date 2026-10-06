@@ -48,6 +48,7 @@ import { buildPublicPreviewHost } from '../../packages/worker/src/_shared/previe
 import { PUBLIC_BEARER_HEADER, PREVIEW_CAPABILITY_HEADER } from '../../packages/worker/src/_shared/session-router.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -124,17 +125,7 @@ function setup({ storage = new Map(), world, directory = fakeDirectory(), notice
     LOADER: world.loader,
     NIMBUS_PREVIEW_HOST_SUFFIX: SUFFIX,
     NIMBUS_PUBLIC_DIRECTORY: directory.namespace,
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        try {
-          const { readFile } = await import('node:fs/promises');
-          return new Response(await readFile(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-        } catch {
-          return new Response('', { status: 404 });
-        }
-      },
-    },
+    ASSETS: stagedAssets,
   };
   const processes = new SessionProcessSupervisor();
   const portRegistry = new PortRegistry();

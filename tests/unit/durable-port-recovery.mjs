@@ -34,6 +34,7 @@ import {
 } from './facet-host-harness.mjs';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -86,20 +87,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
   const ctx = createFacetCtx(world, 'durable-port-do', storage);
   const env = {
     LOADER: world.loader,
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        try {
-          const { readFile } = await import('node:fs/promises');
-          return new Response(
-            await readFile(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-            { status: 200 },
-          );
-        } catch {
-          return new Response('', { status: 404 });
-        }
-      },
-    },
+    ASSETS: stagedAssets,
   };
   const processes = new SessionProcessSupervisor();
   const portRegistry = new PortRegistry();

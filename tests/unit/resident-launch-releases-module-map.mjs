@@ -53,6 +53,7 @@ import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { nodeFacetSources } from './lib/node-facet-sources.mjs';
 import { generatedModuleSet, moduleMapText } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
@@ -128,15 +129,7 @@ const world = createFacetWorld(() => ({
 const ctx = createFacetCtx(world, 'resident-launch-release');
 const env = {
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 const manager = new FacetManager(

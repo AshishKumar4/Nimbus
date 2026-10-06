@@ -11,7 +11,6 @@
 // manager's store — and asserts on the next launch's module map.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -24,6 +23,7 @@ import { runtimeCodeKey, runtimeCodeModuleName } from '../../packages/core/src/_
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 
@@ -33,12 +33,7 @@ const world = createFacetWorld(() => ({
 }));
 const env = {
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const processes = new SessionProcessSupervisor();
 const manager = new FacetManager(createFacetCtx(world, 'runtime-code-report'), env, processes, new PortRegistry(), processHostFor, {});

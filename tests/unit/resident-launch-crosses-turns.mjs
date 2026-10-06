@@ -30,6 +30,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { moduleMapText } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -49,15 +50,7 @@ function makeManager(label, turns) {
     LOADER: world.loader,
     // Force a bound an ordinary program crosses many times over.
     NIMBUS_LAUNCH_CHUNK_BYTES: '2048',
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        return new Response(
-          readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-          { status: 200 },
-        );
-      },
-    },
+    ASSETS: stagedAssets,
   };
   const manager = new FacetManager(
     ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor,

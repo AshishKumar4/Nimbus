@@ -22,7 +22,6 @@
 //   - the next resident starts the cycle again.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -30,6 +29,7 @@ import { pathToFileURL } from 'node:url';
 
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
 const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-hosted-rehydrate-'));
@@ -73,12 +73,7 @@ try {
 
 bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', hostDispatchMethod: 'supervisorOp' });
 
-const ASSETS = {
-  async fetch(request) {
-    const path = new URL(request.url).pathname.replace(/^\//, '');
-    return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-  },
-};
+const ASSETS = stagedAssets;
 
 const settle = async (predicate, tries = 400) => {
   for (let i = 0; i < tries && !predicate(); i++) await new Promise((r) => setTimeout(r, 5));

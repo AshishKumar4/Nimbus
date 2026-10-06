@@ -45,6 +45,7 @@ import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { importModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs';
 import { facetSql } from './lib/resident-body.mjs';
 import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
@@ -122,12 +123,7 @@ const env = {
     },
     get: (...args) => world.loader.get(...args),
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const manager = new FacetManager(createFacetCtx(world, 'node-async-mount'), env, ws.processes, new PortRegistry(), processHostFor, {});
 manager.setVfs(ws.vfs, ws.filesystem);

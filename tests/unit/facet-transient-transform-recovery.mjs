@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,6 +14,7 @@ import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
 import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const { host, rawVfs, kfs } = createAuthority();
 const root = 'home/user/transient-transform';
@@ -62,7 +63,7 @@ const env = {
     },
     get() { throw new Error('unexpected keyed loader publication'); },
   },
-  ASSETS: { async fetch(request) { return new Response(readFileSync(new URL('../../packages/worker/public/' + new URL(request.url).pathname.replace(/^\//, ''), import.meta.url))); } },
+  ASSETS: stagedAssets,
 };
 const manager = new FacetManager(createFacetCtx(createFacetWorld(() => ({})), 'transient-transform-recovery'), env, host.processes, new PortRegistry(), processHostFor, {});
 manager.setVfs(rawVfs, processFiles(rawVfs));

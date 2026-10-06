@@ -18,3 +18,10 @@ export const stagedAssets = {
     }
   },
 };
+
+/** An `env.ASSETS` with nothing staged: every fetch is a 404. */
+export const missingAssets = {
+  async fetch() {
+    return new Response('not found', { status: 404 });
+  },
+};

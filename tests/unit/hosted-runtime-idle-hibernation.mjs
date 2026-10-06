@@ -23,7 +23,6 @@
 //       drops the persisted logs it never held in memory, then schedules nothing.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -32,6 +31,7 @@ import { Database } from 'bun:sqlite';
 
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const RETAIN_AFTER_EXIT_MS = 10 * 60 * 1000;
 
@@ -108,12 +108,7 @@ const settle = () => new Promise((resolve) => realSetTimeout(resolve, 50));
 const db = new Database(':memory:');
 const tasks = new Map();
 
-const ASSETS = {
-  async fetch(request) {
-    const path = new URL(request.url).pathname.replace(/^\//, '');
-    return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-  },
-};
+const ASSETS = stagedAssets;
 const world = createFacetWorld(() => ({
   async startProcess() { return { ok: true }; },
   async handleHttpRequest() { return new Response('ok'); },

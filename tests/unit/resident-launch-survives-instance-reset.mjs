@@ -21,7 +21,6 @@
 // carried over in memory.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -35,6 +34,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -109,15 +109,7 @@ function createInstance(session, generation, { pumpWhile, crashable = false }) {
   const env = {
     LOADER: world.loader,
     NIMBUS_LAUNCH_CHUNK_BYTES: '2048',
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        return new Response(
-          readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-          { status: 200 },
-        );
-      },
-    },
+    ASSETS: stagedAssets,
   };
   const ctx = createFacetCtx(world, session.label, session.storage, { crashable });
   let waiting = false;

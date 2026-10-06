@@ -16,7 +16,6 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { readFileSync } from 'node:fs';
 import {
   persistPortCapability,
   readPortExposure,
@@ -26,6 +25,7 @@ import {
 } from '../../packages/worker/src/session/port-capability.ts';
 import { PORT_CAPABILITY_KEY_PREFIX } from '../../packages/worker/src/session/keys.ts';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -55,12 +55,7 @@ const world = createFacetWorld(() => {
 
 const env = {
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const ctx = createFacetCtx(world, 'do-test');
 const processes = new SessionProcessSupervisor();

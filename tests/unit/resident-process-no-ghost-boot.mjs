@@ -28,8 +28,8 @@ import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { readFileSync } from 'node:fs';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -54,12 +54,7 @@ const env = {
   LOADER: world.loader,
   // spawnNode stages the node shims from ASSETS (integrity-checked) before it
   // boots anything, so serve the real staged artifact.
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const ctx = createFacetCtx(world, 'do-test');
 const processes = new SessionProcessSupervisor();

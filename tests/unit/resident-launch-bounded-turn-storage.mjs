@@ -17,7 +17,6 @@
 // writes much" — a bound that must hold however large the image is.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -30,6 +29,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -87,15 +87,7 @@ const manager = new FacetManager(
     // A small work budget so the launch yields often; the image write's own
     // bound is what has to hold the turn down, not this.
     NIMBUS_LAUNCH_CHUNK_BYTES: '65536',
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        return new Response(
-          readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-          { status: 200 },
-        );
-      },
-    },
+    ASSETS: stagedAssets,
   },
   new SessionProcessSupervisor(),
   new PortRegistry(),

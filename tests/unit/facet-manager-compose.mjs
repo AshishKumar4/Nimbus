@@ -18,7 +18,6 @@
 //      transforms in the same loader-backed facet, never in the host isolate.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -35,6 +34,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
 import { composeFacetManager } from '../../packages/worker/src/facets/compose.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -44,12 +44,7 @@ adoptCtxExports({
   }),
 });
 
-const ASSETS = {
-  async fetch(request) {
-    const path = new URL(request.url).pathname.replace(/^\//, '');
-    return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-  },
-};
+const ASSETS = stagedAssets;
 
 /** A filesystem with enough of a dependency tree that a node launch is paced. */
 function createDisk() {

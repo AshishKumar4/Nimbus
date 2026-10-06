@@ -12,7 +12,7 @@
 // refused where that principal is.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -27,6 +27,7 @@ import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
 import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const { host, rawVfs } = createAuthority();
 const dec = new TextDecoder();
@@ -61,12 +62,7 @@ const env = {
     },
     get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)));
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 const manager = new FacetManager(
