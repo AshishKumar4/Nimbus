@@ -1231,13 +1231,24 @@ const APPEND_RUN_LATENCY_MS = 100;
 /**
  * The calls of a credentialed view that look at no file but the one their
  * path resolves to (resolvePath writes its held appends): every other call
- * writes them all first (settlingView).
+ * writes them all first (callerView).
  */
-const LEAF_READS: ReadonlySet<string> = new Set([
+const LEAF_READS: ReadonlySet<keyof CredentialedVfs> = new Set([
   'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
   'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat',
   'getDefaultAcl', 'readdir', 'contentKey', 'storageKey',
-]);
+] satisfies (keyof CredentialedVfs)[]);
+
+/**
+ * The synchronous mutations of a credentialed view: a view bound to a
+ * mutation lease makes each within it (callerView). Spanning ones
+ * (writeFileFrom, copyTreeAsync, writeStream) carry the owner per slice.
+ */
+const OWNED_MUTATIONS: ReadonlySet<keyof CredentialedVfs> = new Set([
+  'mkdir', 'writeFile', 'symlink', 'writeRange', 'appendOnce', 'acknowledgeAppend', 'truncate', 'utimes', 'chmod',
+  'setDefaultAcl', 'chown', 'unlink', 'rmdir', 'removeRecursive', 'rename', 'copyFile', 'copyTree', 'writeBatch',
+  'mkdirBatch',
+] satisfies (keyof CredentialedVfs)[]);
 
 /**
  * A directory change a delta reports as structural, which a reader answers by
@@ -2691,28 +2702,6 @@ export class SqliteVFS {
   // ── Filesystem operations ─────────────────────────────────────────────
 
   /**
-   * uid 0's view: its writes may use the storage the ledger keeps back from
-   * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
-   * Covers each call's synchronous part; the kernel's bookkeeping is that.
-   */
-  private privilegedView(view: CredentialedVfs): CredentialedVfs {
-    const out = {} as CredentialedVfs;
-    for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(view))) {
-      const value = descriptor.value;
-      if (typeof value === 'function') {
-        descriptor.value = (...args: unknown[]) => {
-          const prior = this.privileged;
-          this.privileged = true;
-          try { return value(...args); } finally { this.privileged = prior; }
-        };
-      }
-      Object.defineProperty(out, key, descriptor);
-    }
-    return out;
-  }
-
-
-  /**
    * Bind credentials and, optionally, the capability of a live mutation
    * lease; `actor` names the principal finer than its uid, in the write
    * events its mutations make (observeWrites).
@@ -2808,38 +2797,7 @@ export class SqliteVFS {
       // Live: a view outlives rotateIncarnation.
       get epoch() { return engine._epoch; },
     };
-    if (mutationOwner !== undefined) {
-      // Only synchronous mutations enter an ambient scope; spanning work carries the owner per slice.
-      const mutations: Partial<CredentialedVfs> = {
-        mkdir: (path, options) => this.withMutationOwner(mutationOwner, () => this.mkdir(path, options, bound)),
-        writeFile: (path, content, options) => this.withMutationOwner(mutationOwner, () => this.writeFile(path, content, options, bound)),
-        symlink: (target, path) => this.withMutationOwner(mutationOwner, () => this.symlink(target, path, bound)),
-        writeRange: (path, offset, bytes) => this.withMutationOwner(mutationOwner, () => this.writeRange(path, offset, bytes, bound)),
-        appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => this.withMutationOwner(mutationOwner,
-          () => this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)),
-        acknowledgeAppend: (pid, writerId, moduleId, operationId) => this.withMutationOwner(mutationOwner,
-          () => this.acknowledgeAppend(pid, writerId, moduleId, operationId)),
-        truncate: (path, size) => this.withMutationOwner(mutationOwner, () => this.truncate(path, size, bound)),
-        utimes: (path, atimeMs, mtimeMs, options) => this.withMutationOwner(mutationOwner,
-          () => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false)),
-        chmod: (path, mode) => this.withMutationOwner(mutationOwner, () => this.chmod(path, mode, bound)),
-        setDefaultAcl: (path, perms) => this.withMutationOwner(mutationOwner, () => this.setDefaultAcl(path, perms, bound)),
-        chown: (path, uid, gid, options) => this.withMutationOwner(mutationOwner,
-          () => this.chown(path, uid, gid, bound, options?.followSymlinks !== false)),
-        unlink: (path) => this.withMutationOwner(mutationOwner, () => this.unlink(path, bound)),
-        rmdir: (path) => this.withMutationOwner(mutationOwner, () => this.rmdir(path, bound)),
-        removeRecursive: (path) => this.withMutationOwner(mutationOwner, () => this.removeRecursive(path, bound)),
-        rename: (from, to) => this.withMutationOwner(mutationOwner, () => this.rename(from, to, bound)),
-        copyFile: (from, to) => this.withMutationOwner(mutationOwner, () => this.copyFile(from, to, bound)),
-        copyTree: (from, to, options) => this.withMutationOwner(mutationOwner,
-          () => this.copyTreeNow(this.planCopyTree(from, to, bound, options))),
-        writeBatch: (payload) => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, bound)),
-        mkdirBatch: (paths) => this.withMutationOwner(mutationOwner, () => this.mkdirBatch(paths, bound)),
-      };
-      Object.assign(view, mutations);
-    }
-    const settling = this.settlingView(view, origin);
-    return bound.uid === 0 ? this.privilegedView(settling) : settling;
+    return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner });
   }
 
   /** `run` as `origin`'s call: the principal its write events name. */
@@ -2850,20 +2808,40 @@ export class SqliteVFS {
   }
 
   /**
-   * `view`, each of its calls but LEAF_READS first writing every append
-   * this VFS holds (appendThrough): a view is how a caller changes the
-   * store or reads more of it than one file, and none may do either
-   * without them. A leaf read looks at the one file it names, which path
-   * resolution writes the appends of, so a program reading one file while
-   * appending to another is not made to store each append as it comes.
+   * `view`, each call made as its caller, the one place a view's calls
+   * enter the engine: with the caller's privilege (uid 0 may use the
+   * storage the ledger keeps back from everyone else, N18's kernel reserve,
+   * as ext4 reserves blocks for root), as its principal (the write events
+   * it makes), and, for a synchronous mutation (OWNED_MUTATIONS), within
+   * its mutation lease (spanning work carries the owner per slice). Each
+   * call but a LEAF_READS one first writes every append this VFS holds
+   * (appendThrough): a view is how a caller changes the store or reads more
+   * of it than one file, and none may do either without them. A leaf read
+   * looks at the one file it names, which path resolution writes the
+   * appends of, so a program reading one file while appending to another is
+   * not made to store each append as it comes. Each covers its call's
+   * synchronous part; work it defers re-enters it (asCaller).
    */
-  private settlingView(view: CredentialedVfs, origin: Principal): CredentialedVfs {
-    for (const key of Object.keys(view)) {
+  private callerView(
+    view: CredentialedVfs,
+    caller: { origin: Principal; privileged: boolean; mutationOwner: string | undefined },
+  ): CredentialedVfs {
+    const { origin, privileged, mutationOwner } = caller;
+    for (const key of Object.keys(view) as (keyof CredentialedVfs)[]) {
       const method: unknown = Reflect.get(view, key);
-      if (typeof method !== 'function' || LEAF_READS.has(key)) continue;
+      if (typeof method !== 'function') continue;
+      const settles = !LEAF_READS.has(key);
+      const owned = mutationOwner !== undefined && OWNED_MUTATIONS.has(key);
       Reflect.set(view, key, (...args: unknown[]) => {
-        this.settleAppends();
-        return this.asOrigin(origin, () => Reflect.apply(method, view, args));
+        const prior = this.privileged;
+        if (privileged) this.privileged = true;
+        try {
+          if (settles) this.settleAppends();
+          const call = (): unknown => Reflect.apply(method, view, args);
+          return this.asOrigin(origin, owned ? () => this.withMutationOwner(mutationOwner, call) : call);
+        } finally {
+          this.privileged = prior;
+        }
       });
     }
     return view;
@@ -8260,7 +8238,7 @@ export class SqliteVFS {
     origin: Principal | null = null,
   ): Promise<number> {
     if (!Number.isSafeInteger(size) || size < 0) throw vfsError('EINVAL', path, `invalid size ${size}`);
-    // uid 0 may use the ledger's kernel reserve (privilegedView), but that view
+    // uid 0 may use the ledger's kernel reserve (callerView), but that view
     // only covers a call's synchronous part, and this one awaits its source:
     // each transaction below is run with the caller's own privilege, as its call.
     const asCaller = <T>(fn: () => T): T => {
