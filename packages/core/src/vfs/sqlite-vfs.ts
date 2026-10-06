@@ -1229,6 +1229,16 @@ interface Mutation {
 /** The principal of a mutation no view made (the engine's own work). */
 const KERNEL_ORIGIN: Principal = Object.freeze({ cred: null });
 
+/** The paths a W7 record writes at (none for a chunk, a file's end or the batch's end). */
+function recordPaths(record: W7DecodedRecord): string[] {
+  switch (record.type) {
+    case 'delete': case 'truncate': case 'setattr': return [record.path];
+    case 'directory': case 'file-begin': return [record.inode.path];
+    case 'rename': return [record.from, record.to];
+    default: return [];
+  }
+}
+
 /** Whether two calls are the same principal's: one credential (sameCred) and one actor. */
 function samePrincipal(a: Principal | null, b: Principal | null): boolean {
   if (a === b) return true;
@@ -8706,9 +8716,7 @@ export class SqliteVFS {
         // be given up first, here between records, where the stream may wait:
         // its group's commit would otherwise be refused.
         if (this.exclusiveMutationLeases.size > 0) {
-          const lands = record.type === 'delete' ? record.path
-            : record.type === 'directory' || record.type === 'file-begin' ? record.inode.path : null;
-          if (lands !== null) await this.recallDelegationsAt(lands, options.mutationOwner);
+          for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, options.mutationOwner);
         }
         switch (record.type) {
           case 'delete': {
@@ -8729,6 +8737,9 @@ export class SqliteVFS {
             phase = 'validation';
             this.validateFileChunks(record.inode, []);
             phase = 'publish';
+            // Records commit in their order: files the stream wrote before
+            // this directory commit before it.
+            if (groupInodes.length > 0) flushGroup();
             // Directory inodes carry no payload: rows are the only bound in
             // reach, priced by the plan's own accounting (each row, the
             // parent it dates, and a snapshot's before-images of both), so
@@ -8860,6 +8871,25 @@ export class SqliteVFS {
             groupStagedBytes += file.stagedBytes;
             groupPaths++;
             activeFile = null;
+            break;
+          }
+          case 'rename':
+          case 'truncate':
+          case 'setattr': {
+            // Like a delete, it observes everything the stream wrote before it.
+            phase = 'publish';
+            flushGroup();
+            flushDirectories();
+            options.admit?.();
+            asCaller(() => {
+              if (record.type === 'rename') this.rename(record.from, record.to, cred);
+              else if (record.type === 'truncate') this.truncate(record.path, record.size, cred);
+              else if ('mode' in record.attrs) this.chmod(record.path, record.attrs.mode, cred);
+              else if ('uid' in record.attrs) this.chown(record.path, record.attrs.uid, record.attrs.gid, cred, true);
+              else this.utimes(record.path, record.attrs.atime, record.attrs.mtime, cred, true);
+            });
+            progress.committedGroupSequence++;
+            progress.committedPathCount += record.type === 'rename' ? 2 : 1;
             break;
           }
           case 'batch-end':

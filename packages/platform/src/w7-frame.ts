@@ -1,6 +1,12 @@
 /**
- * W7 v3 — incremental typed records for streamed bulk filesystem writes.
- * The format is internal: every producer and consumer deploys together.
+ * W7 v4 — incremental typed records for streamed filesystem writes, in
+ * program order: the records are the operations a writer made, in the order
+ * it made them, and a stream that stops commits a prefix of them (each group
+ * whole). A path may be named by several operations (a file written, renamed,
+ * written again). Every producer speaks v4; the format is internal, and every
+ * producer and consumer deploys together. v3 (no rename, truncate or setattr,
+ * one operation per path, deletes then directories then files) is still
+ * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  */
 
 import { crc32 } from './crc32.js';
@@ -54,9 +60,34 @@ export interface BatchWritePayload {
   deletePaths?: string[];
   /** Files streamed from a source rather than given as chunks; encoder only. */
   streams?: BatchStreamEntry[];
+  /**
+   * The operations themselves, in program order (encoder only): a writer
+   * with an order to keep (a delegation's holder) gives these, and nothing
+   * in `inodes`, `chunks`, `deletePaths` or `streams`. Without them, a
+   * payload is encoded as its deletes, then its directories, then its files.
+   */
+  ops?: W7Op[];
 }
 
-export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
+/** One attribute change (setattr): the mode, the owner, or the times; what chmod, chown and utimes each make. */
+export type W7Attrs =
+  | { mode: number }
+  | { uid: number; gid: number }
+  | { atime: number; mtime: number };
+
+/** One operation of a program-order payload (BatchWritePayload.ops). */
+export type W7Op =
+  | { type: 'delete'; path: string }
+  | { type: 'directory'; inode: BatchInodeEntry }
+  | { type: 'file'; inode: BatchInodeEntry; data: Uint8Array }
+  | { type: 'file'; inode: BatchInodeEntry; source: AsyncIterable<Uint8Array> }
+  | { type: 'rename'; from: string; to: string }
+  | { type: 'truncate'; path: string; size: number }
+  | { type: 'setattr'; path: string; attrs: W7Attrs };
+
+export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x04]);
+/** v3's magic: decoded, never encoded, for the release that rolls v4 out. Delete with v3 decoding. */
+const W7_MAGIC_V3 = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 
 const ENCODER_QUEUE_HWM = 0;
 const ENCODER_PULL_BYTES = 256 * 1024;
@@ -97,13 +128,19 @@ const enum RecordTag {
   FileChunk = 5,
   FileEnd = 6,
   BatchEnd = 7,
+  Rename = 8,
+  Truncate = 9,
+  SetAttr = 10,
 }
 
-const MODE = 'path-atomic-committed-prefix' as const;
+const MODE = 'program-order-committed-prefix' as const;
+/** v3's batch mode. Delete with v3 decoding. */
+const MODE_V3 = 'path-atomic-committed-prefix' as const;
+type W7Mode = typeof MODE | typeof MODE_V3;
 
 interface BatchBeginMetadata {
   id: string;
-  mode: typeof MODE;
+  mode: W7Mode;
 }
 
 interface DeleteMetadata {
@@ -143,6 +180,8 @@ export interface W7BatchSummary {
   fileCount: number;
   chunkCount: number;
   byteCount: number;
+  /** Renames, truncates and attribute changes (v4; none in v3). */
+  opCount: number;
   check: number;
 }
 
@@ -183,13 +222,25 @@ export type W7DecodedRecord =
       chunkCount: number;
       check: number;
     }
+  | { type: 'rename'; from: string; to: string }
+  | { type: 'truncate'; path: string; size: number }
+  | { type: 'setattr'; path: string; attrs: W7Attrs }
   | { type: 'batch-end'; summary: W7BatchSummary };
 
 export interface W7DecodedStream {
   readonly batchId: string;
-  readonly mode: typeof MODE;
+  readonly mode: W7Mode;
   readonly records: AsyncIterable<W7DecodedRecord>;
 }
+
+/** An operation as the encoder writes it, in the payload's program order. */
+type EncoderOp =
+  | { kind: 'delete'; path: string }
+  | { kind: 'directory'; inode: W7DirectoryInode }
+  | { kind: 'file'; file: EncoderFile }
+  | { kind: 'rename'; from: string; to: string }
+  | { kind: 'truncate'; path: string; size: number }
+  | { kind: 'setattr'; path: string; attrs: W7Attrs };
 
 interface EncoderFile {
   inode: W7ContentInode;
@@ -212,8 +263,7 @@ interface EncoderState {
  */
 export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array> {
   const batchId = crypto.randomUUID();
-  const { deletes, directories, files } = preparePayload(payload, batchId);
-  const iterator = encodeRecords(batchId, deletes, directories, files);
+  const iterator = encodeRecords(batchId, preparePayload(payload, batchId));
   let closed = false;
   let magicEmitted = false;
   const source: UnderlyingByteSource = {
@@ -280,15 +330,16 @@ export async function decodeWriteBatchStream(
   try {
     throwIfAborted(options.signal);
     const magic = await buffer.readExact(W7_MAGIC.length, 'magic');
-    if (!bytesEqual(magic, W7_MAGIC)) {
+    const v3 = bytesEqual(magic, W7_MAGIC_V3);
+    if (!v3 && !bytesEqual(magic, W7_MAGIC)) {
       const version = magic.length === 4
         && magic[0] === 0x4e && magic[1] === 0x57 && magic[2] === 0x37
         ? magic[3]
         : null;
       if (version !== null) {
-        throw new Error(`w7-frame: unsupported protocol version ${version}; expected 3`);
+        throw new Error(`w7-frame: unsupported protocol version ${version}; expected 4`);
       }
-      throw new Error(`w7-frame: bad magic, expected NW7\\x03, got ${hex(magic)}`);
+      throw new Error(`w7-frame: bad magic, expected NW7\\x04, got ${hex(magic)}`);
     }
     const beginEnvelope = await readEnvelope(buffer, 'batch-begin');
     if (beginEnvelope.tag !== RecordTag.BatchBegin) {
@@ -300,13 +351,13 @@ export async function decodeWriteBatchStream(
       );
     }
     const beginPayload = await buffer.readExact(beginEnvelope.length, 'batch-begin payload');
-    const begin = parseBatchBegin(beginPayload);
+    const begin = parseBatchBegin(beginPayload, v3 ? MODE_V3 : MODE);
     const initialCheck = updateRecordCheck(0, beginEnvelope.header, beginPayload);
     handedOff = true;
     return {
       batchId: begin.id,
       mode: begin.mode,
-      records: decodeRecords(stream, reader, buffer, options, initialCheck),
+      records: decodeRecords(stream, reader, buffer, options, initialCheck, v3),
     };
   } catch (error) {
     if (!handedOff) await cancelReader(reader, error);
@@ -320,8 +371,10 @@ async function* decodeRecords(
   buffer: ExactByteReader,
   options: W7DecodeOptions,
   initialCheck: number,
+  /** A v3 stream: no renames, truncates or attribute changes, and each path once. */
+  v3: boolean,
 ): AsyncGenerator<W7DecodedRecord> {
-  const ownedPaths = new PathOwnership();
+  const ownedPaths = new PathOwnership(!v3);
   const contentIds = new Set<string>();
   let active: {
     metadata: FileBeginMetadata;
@@ -341,6 +394,7 @@ async function* decodeRecords(
     fileCount: 0,
     chunkCount: 0,
     byteCount: 0,
+    opCount: 0,
   };
   let completed = false;
   let failure: unknown = new DOMException('W7 consumer cancelled', 'AbortError');
@@ -435,7 +489,7 @@ async function* decodeRecords(
       switch (envelope.tag) {
         case RecordTag.Delete: {
           const metadata = parseDelete(payload);
-          claimPath(ownedPaths, metadata.path);
+          ownedPaths.claim(metadata.path);
           summary.pathCount++;
           summary.deleteCount++;
           yield { type: 'delete', path: metadata.path };
@@ -443,7 +497,7 @@ async function* decodeRecords(
         }
         case RecordTag.Directory: {
           const metadata = parseDirectory(payload);
-          claimPath(ownedPaths, metadata.path);
+          ownedPaths.claim(metadata.path);
           summary.pathCount++;
           summary.directoryCount++;
           yield { type: 'directory', inode: directoryInode(metadata) };
@@ -451,7 +505,7 @@ async function* decodeRecords(
         }
         case RecordTag.FileBegin: {
           const metadata = parseFileBegin(payload);
-          claimPath(ownedPaths, metadata.path);
+          ownedPaths.claim(metadata.path);
           if (contentIds.has(metadata.contentId)) {
             throw new Error(`w7-frame: duplicate stream content id ${metadata.contentId}`);
           }
@@ -499,9 +553,31 @@ async function* decodeRecords(
           yield record;
           break;
         }
+        case RecordTag.Rename:
+        case RecordTag.Truncate:
+        case RecordTag.SetAttr: {
+          if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
+          summary.pathCount++;
+          summary.opCount++;
+          if (envelope.tag === RecordTag.Rename) {
+            const value = parseObject(payload, 'rename', ['from', 'to']);
+            const from = ownedPaths.claim(canonicalPath(value.from, 'rename source'));
+            const to = ownedPaths.claim(canonicalPath(value.to, 'rename target'));
+            yield { type: 'rename', from, to };
+          } else if (envelope.tag === RecordTag.Truncate) {
+            const value = parseObject(payload, 'truncate', ['path', 'size']);
+            yield { type: 'truncate', path: ownedPaths.claim(canonicalPath(value.path, 'truncate path')), size: safeInteger(value.size, 'truncate size') };
+          } else {
+            const value = parseObject(payload, 'setattr', ['path'], ['mode', 'uid', 'gid', 'atime', 'mtime']);
+            const path = ownedPaths.claim(canonicalPath(value.path, 'setattr path'));
+            const { path: _path, ...attrs } = value;
+            yield { type: 'setattr', path, attrs: parseAttrs(attrs, 'setattr') };
+          }
+          break;
+        }
         case RecordTag.BatchEnd: {
           if (active) throw new Error(`w7-frame: batch-end while file ${active.inode.path} is active`);
-          const actual = parseBatchEnd(payload);
+          const actual = parseBatchEnd(payload, v3);
           const expected = { ...summary, check: batchCheck };
           if (!sameSummary(actual, expected)) {
             throw new Error(
@@ -531,12 +607,7 @@ async function* decodeRecords(
   }
 }
 
-async function* encodeRecords(
-  batchId: string,
-  deletes: string[],
-  directories: W7DirectoryInode[],
-  files: EncoderFile[],
-): AsyncGenerator<Uint8Array[]> {
+async function* encodeRecords(batchId: string, ops: readonly EncoderOp[]): AsyncGenerator<Uint8Array[]> {
   const state: EncoderState = {
     batchCheck: 0,
     summary: {
@@ -547,62 +618,84 @@ async function* encodeRecords(
       fileCount: 0,
       chunkCount: 0,
       byteCount: 0,
+      opCount: 0,
     },
   };
   yield encodeMetadataRecord(RecordTag.BatchBegin, { id: batchId, mode: MODE }, state);
-  for (const path of deletes) {
-    state.summary.pathCount++;
-    state.summary.deleteCount++;
-    yield encodeMetadataRecord(RecordTag.Delete, { path }, state);
-  }
-  for (const inode of directories) {
-    state.summary.pathCount++;
-    state.summary.directoryCount++;
-    yield encodeMetadataRecord(RecordTag.Directory, {
-      ...inodeMetadata(inode),
-      kind: inode.kind,
-    }, state);
-  }
-  for (const file of files) {
-    state.summary.pathCount++;
-    state.summary.fileCount++;
-    yield encodeMetadataRecord(RecordTag.FileBegin, {
-      ...inodeMetadata(file.inode),
-      kind: file.inode.kind,
-      contentId: file.contentId,
-      size: file.inode.size,
-      chunkCount: file.inode.chunkCount,
-    }, state);
-    let fileCheck = 0;
-    let chunkId = 0;
-    const pieces = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
-    for await (const data of pieces) {
-      const contentBytes = new TextEncoder().encode(file.contentId);
-      const prefix = new Uint8Array(4 + contentBytes.length + 8);
-      writeU32LE(prefix, 0, contentBytes.length);
-      prefix.set(contentBytes, 4);
-      writeU32LE(prefix, 4 + contentBytes.length, chunkId++);
-      writeU32LE(prefix, 8 + contentBytes.length, data.byteLength);
-      const header = recordHeader(RecordTag.FileChunk, prefix.byteLength + data.byteLength);
-      state.batchCheck = updateRecordCheck(state.batchCheck, header, prefix, data);
-      state.summary.recordCount++;
-      state.summary.chunkCount++;
-      state.summary.byteCount += data.byteLength;
-      fileCheck = crc32(data, fileCheck);
-      yield [concatBytes(header, prefix), data];
+  for (const op of ops) {
+    switch (op.kind) {
+      case 'delete':
+        state.summary.pathCount++;
+        state.summary.deleteCount++;
+        yield encodeMetadataRecord(RecordTag.Delete, { path: op.path }, state);
+        break;
+      case 'directory':
+        state.summary.pathCount++;
+        state.summary.directoryCount++;
+        yield encodeMetadataRecord(RecordTag.Directory, { ...inodeMetadata(op.inode), kind: op.inode.kind }, state);
+        break;
+      case 'file':
+        yield* encodeFile(op.file, state);
+        break;
+      case 'rename':
+        state.summary.pathCount++;
+        state.summary.opCount++;
+        yield encodeMetadataRecord(RecordTag.Rename, { from: op.from, to: op.to }, state);
+        break;
+      case 'truncate':
+        state.summary.pathCount++;
+        state.summary.opCount++;
+        yield encodeMetadataRecord(RecordTag.Truncate, { path: op.path, size: op.size }, state);
+        break;
+      case 'setattr':
+        state.summary.pathCount++;
+        state.summary.opCount++;
+        yield encodeMetadataRecord(RecordTag.SetAttr, { path: op.path, ...op.attrs }, state);
+        break;
     }
-    yield encodeMetadataRecord(RecordTag.FileEnd, {
-      contentId: file.contentId,
-      size: file.inode.size,
-      chunkCount: file.inode.chunkCount,
-      check: fileCheck,
-    }, state);
   }
   const end: W7BatchSummary = {
     ...state.summary,
     check: state.batchCheck,
   };
   yield encodeMetadataRecord(RecordTag.BatchEnd, end);
+}
+
+/** One file's records: its begin, its chunks, its end. */
+async function* encodeFile(file: EncoderFile, state: EncoderState): AsyncGenerator<Uint8Array[]> {
+  state.summary.pathCount++;
+  state.summary.fileCount++;
+  yield encodeMetadataRecord(RecordTag.FileBegin, {
+    ...inodeMetadata(file.inode),
+    kind: file.inode.kind,
+    contentId: file.contentId,
+    size: file.inode.size,
+    chunkCount: file.inode.chunkCount,
+  }, state);
+  let fileCheck = 0;
+  let chunkId = 0;
+  const pieces = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
+  for await (const data of pieces) {
+    const contentBytes = new TextEncoder().encode(file.contentId);
+    const prefix = new Uint8Array(4 + contentBytes.length + 8);
+    writeU32LE(prefix, 0, contentBytes.length);
+    prefix.set(contentBytes, 4);
+    writeU32LE(prefix, 4 + contentBytes.length, chunkId++);
+    writeU32LE(prefix, 8 + contentBytes.length, data.byteLength);
+    const header = recordHeader(RecordTag.FileChunk, prefix.byteLength + data.byteLength);
+    state.batchCheck = updateRecordCheck(state.batchCheck, header, prefix, data);
+    state.summary.recordCount++;
+    state.summary.chunkCount++;
+    state.summary.byteCount += data.byteLength;
+    fileCheck = crc32(data, fileCheck);
+    yield [concatBytes(header, prefix), data];
+  }
+  yield encodeMetadataRecord(RecordTag.FileEnd, {
+    contentId: file.contentId,
+    size: file.inode.size,
+    chunkCount: file.inode.chunkCount,
+    check: fileCheck,
+  }, state);
 }
 
 /** Each chunk's bytes, read as the encoder reaches it (a producer's `data` may copy on access). */
@@ -662,16 +755,19 @@ function encodeMetadataRecord(
   return [concatBytes(header, payload)];
 }
 
-function preparePayload(
-  payload: BatchWritePayload,
-  batchId: string,
-): { deletes: string[]; directories: W7DirectoryInode[]; files: EncoderFile[] } {
+/**
+ * The payload's operations in the order they are encoded: its `ops` as
+ * given, or its deletes, then its directories, then its files (one per path,
+ * since chunks are matched to their file by path).
+ */
+function preparePayload(payload: BatchWritePayload, batchId: string): EncoderOp[] {
   if (!payload || !Array.isArray(payload.inodes) || !Array.isArray(payload.chunks)) {
     throw new Error('w7-frame: payload must contain inode and chunk arrays');
   }
-  const ownedPaths = new PathOwnership();
+  if (payload.ops !== undefined) return prepareOps(payload, batchId);
+  const ownedPaths = new PathOwnership(false);
   const deletes = [...(payload.deletePaths ?? [])];
-  for (const path of deletes) claimPath(ownedPaths, canonicalPath(path, 'delete path'));
+  for (const path of deletes) ownedPaths.claim(canonicalPath(path, 'delete path'));
   const streamsByPath = new Map<string, AsyncIterable<Uint8Array>>();
   for (const stream of payload.streams ?? []) {
     const path = canonicalPath(stream.path, 'stream path');
@@ -685,27 +781,25 @@ function preparePayload(
     if (list) list.push(chunk);
     else chunksByPath.set(path, [chunk]);
   }
-  const directories: W7DirectoryInode[] = [];
-  const files: EncoderFile[] = [];
+  const directories: EncoderOp[] = [];
+  const files: EncoderOp[] = [];
   let fileIndex = 0;
   for (const inode of payload.inodes) {
     const path = canonicalPath(inode.path, 'inode path');
     if (path !== inode.path) throw new Error(`w7-frame: noncanonical inode path ${inode.path}`);
-    claimPath(ownedPaths, path);
+    ownedPaths.claim(path);
     const normalizedInode = normalizeInode(inode);
     const fileChunks = chunksByPath.get(path) ?? [];
     const streamed = streamsByPath.get(path) ?? null;
     if (normalizedInode.kind === 'directory') {
       if (fileChunks.length > 0 || streamed !== null) throw new Error(`w7-frame: directory ${path} has chunks`);
-      directories.push(normalizedInode);
+      directories.push({ kind: 'directory', inode: normalizedInode });
     } else {
       if (streamed === null) validateChunks(normalizedInode, fileChunks);
       else if (fileChunks.length > 0) throw new Error(`w7-frame: streamed file ${path} also has chunks`);
       files.push({
-        inode: normalizedInode,
-        contentId: `${batchId}:${fileIndex++}`,
-        chunks: fileChunks,
-        source: streamed,
+        kind: 'file',
+        file: { inode: normalizedInode, contentId: `${batchId}:${fileIndex++}`, chunks: fileChunks, source: streamed },
       });
     }
     chunksByPath.delete(path);
@@ -717,14 +811,62 @@ function preparePayload(
   if (streamsByPath.size > 0) {
     throw new Error(`w7-frame: stream has no inode: ${streamsByPath.keys().next().value}`);
   }
-  return { deletes, directories, files };
+  return [...deletes.map((path): EncoderOp => ({ kind: 'delete', path })), ...directories, ...files];
 }
 
-function parseBatchBegin(bytes: Uint8Array): BatchBeginMetadata {
+/** A program-order payload's operations, each checked as the decoder will check it. */
+function prepareOps(payload: BatchWritePayload, batchId: string): EncoderOp[] {
+  if (payload.inodes.length > 0 || payload.chunks.length > 0 || (payload.deletePaths?.length ?? 0) > 0 || (payload.streams?.length ?? 0) > 0) {
+    throw new Error('w7-frame: a payload of ops carries nothing else');
+  }
+  const ownedPaths = new PathOwnership(true);
+  let fileIndex = 0;
+  return payload.ops!.map((op): EncoderOp => {
+    switch (op.type) {
+      case 'delete':
+        return { kind: 'delete', path: ownedPaths.claim(canonicalPath(op.path, 'delete path')) };
+      case 'directory': {
+        const inode = normalizeInode({ ...op.inode, path: ownedPaths.claim(canonicalPath(op.inode.path, 'inode path')) });
+        if (inode.kind !== 'directory') throw new Error(`w7-frame: directory op ${inode.path} is a ${inode.kind}`);
+        return { kind: 'directory', inode };
+      }
+      case 'file': {
+        const inode = normalizeInode({ ...op.inode, path: ownedPaths.claim(canonicalPath(op.inode.path, 'inode path')) });
+        if (inode.kind === 'directory') throw new Error(`w7-frame: file op ${inode.path} is a directory`);
+        const contentId = `${batchId}:${fileIndex++}`;
+        if ('source' in op) return { kind: 'file', file: { inode, contentId, chunks: [], source: op.source } };
+        const chunks = w7Chunks(inode.path, op.data);
+        validateChunks(inode, chunks);
+        return { kind: 'file', file: { inode, contentId, chunks, source: null } };
+      }
+      case 'rename':
+        return {
+          kind: 'rename',
+          from: ownedPaths.claim(canonicalPath(op.from, 'rename source')),
+          to: ownedPaths.claim(canonicalPath(op.to, 'rename target')),
+        };
+      case 'truncate':
+        return { kind: 'truncate', path: ownedPaths.claim(canonicalPath(op.path, 'truncate path')), size: safeInteger(op.size, 'truncate size') };
+      case 'setattr':
+        return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs as Record<string, unknown>, 'setattr') };
+    }
+  });
+}
+
+function parseBatchBegin(bytes: Uint8Array, mode: W7Mode): BatchBeginMetadata {
   const value = parseObject(bytes, 'batch-begin', ['id', 'mode']);
   const id = boundedString(value.id, 'batch id', MAX_BATCH_ID_BYTES);
-  if (value.mode !== MODE) throw new Error(`w7-frame: unsupported batch mode ${String(value.mode)}`);
-  return { id, mode: MODE };
+  if (value.mode !== mode) throw new Error(`w7-frame: unsupported batch mode ${String(value.mode)}`);
+  return { id, mode };
+}
+
+/** One attribute change: exactly the mode, the owner (uid and gid), or the times (atime and mtime). */
+function parseAttrs(value: Record<string, unknown>, label: string): W7Attrs {
+  const keys = Object.keys(value).sort().join(',');
+  if (keys === 'mode') return { mode: u32(value.mode, `${label} mode`) };
+  if (keys === 'gid,uid') return { uid: u32(value.uid, `${label} uid`), gid: u32(value.gid, `${label} gid`) };
+  if (keys === 'atime,mtime') return { atime: safeInteger(value.atime, `${label} atime`), mtime: safeInteger(value.mtime, `${label} mtime`) };
+  throw new Error(`w7-frame: ${label} changes the mode, the owner or the times, one of them: got ${keys || 'nothing'}`);
 }
 
 function parseDelete(bytes: Uint8Array): DeleteMetadata {
@@ -774,10 +916,10 @@ function parseFileEnd(bytes: Uint8Array): FileEndMetadata {
   };
 }
 
-function parseBatchEnd(bytes: Uint8Array): W7BatchSummary {
+function parseBatchEnd(bytes: Uint8Array, v3: boolean): W7BatchSummary {
   const keys = [
     'recordCount', 'pathCount', 'deleteCount', 'directoryCount',
-    'fileCount', 'chunkCount', 'byteCount', 'check',
+    'fileCount', 'chunkCount', 'byteCount', 'check', ...(v3 ? [] : ['opCount']),
   ];
   const value = parseObject(bytes, 'batch-end', keys);
   return {
@@ -788,6 +930,7 @@ function parseBatchEnd(bytes: Uint8Array): W7BatchSummary {
     fileCount: safeInteger(value.fileCount, 'batch file count'),
     chunkCount: safeInteger(value.chunkCount, 'batch chunk count'),
     byteCount: safeInteger(value.byteCount, 'batch byte count'),
+    opCount: v3 ? 0 : safeInteger(value.opCount, 'batch op count'),
     check: u32(value.check, 'batch check'),
   };
 }
@@ -921,12 +1064,22 @@ function canonicalPath(value: unknown, label: string): string {
   return path;
 }
 
+/**
+ * The distinct paths a batch names, within W7's bounds. A program-order
+ * batch (v4) may name a path in several operations; a v3 batch, and a payload
+ * matched to its chunks by path, names each once.
+ */
 class PathOwnership {
   private readonly paths = new Set<string>();
   private pathBytes = 0;
 
-  claim(path: string): void {
-    if (this.paths.has(path)) throw new Error(`w7-frame: duplicate path ownership: ${path}`);
+  constructor(private readonly repeats: boolean) {}
+
+  claim(path: string): string {
+    if (this.paths.has(path)) {
+      if (this.repeats) return path;
+      throw new Error(`w7-frame: duplicate path ownership: ${path}`);
+    }
     if (this.paths.size >= W7_MAX_PATHS_PER_BATCH) {
       throw new Error(`w7-frame: batch exceeds ${W7_MAX_PATHS_PER_BATCH} owned paths`);
     }
@@ -938,11 +1091,8 @@ class PathOwnership {
     }
     this.paths.add(path);
     this.pathBytes = nextPathBytes;
+    return path;
   }
-}
-
-function claimPath(paths: PathOwnership, path: string): void {
-  paths.claim(path);
 }
 
 function normalizePath(path: string): string {
@@ -991,6 +1141,7 @@ function sameSummary(left: W7BatchSummary, right: W7BatchSummary): boolean {
     && left.fileCount === right.fileCount
     && left.chunkCount === right.chunkCount
     && left.byteCount === right.byteCount
+    && left.opCount === right.opCount
     && left.check === right.check;
 }
 
