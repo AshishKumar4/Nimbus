@@ -53,6 +53,10 @@
  * dynamically-referenced icon."
  */
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '@nimbus-sh/core/runtime/comment-strip.js';
+import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
+import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 /**
  * Stable signature for a barrel bundle's source import set. Stored in
  * pkg_esm_bundles.input_hash so a synthetic bundle generated for
@@ -65,46 +69,87 @@ export function namedImportSignature(pkgName, names) {
     return `barrel:${pkgName}:${Array.from(names).sort().join(',')}`;
 }
 /**
- * Static-import scanner. Walks the user's source tree under projDir
- * and extracts named-import sets. Returns a map keyed by package name.
+ * Scan the project's browser source under `projDir`: `.ts/.tsx/.jsx/.js/.mjs`
+ * files up to six directories deep, skipping node_modules, .git, dist and
+ * build, and the build tools' own config files at the project root
+ * (vite.config.ts and friends), whose imports run server-side.
  *
- * Recognized syntax:
+ * Named imports recognized:
  *   import { A } from 'pkg'
  *   import { A, B } from 'pkg'
  *   import { A as X, B as Y } from 'pkg'
  *   import D, { A } from 'pkg'   // only A is captured (D is default)
+ *   import { type A } from 'pkg' // captured; the bundle strips it
  *
- * NOT recognized (intentional — these can't be statically tree-shaken):
- *   import * as M from 'pkg'             — caller must bundle whole pkg
- *   import('pkg')                         — dynamic; runtime resolution
- *   const { A } = require('pkg')          — CJS at runtime
+ * NOT recognized as named (intentional — these can't be statically
+ * tree-shaken): `import * as M from 'pkg'`, `import('pkg')`,
+ * `const { A } = require('pkg')`, and named imports from a subpath, which
+ * esbuild resolves file by file.
  *
- * The scanner is intentionally conservative-text-based. We do NOT
- * parse a full AST — that would require shipping acorn or esbuild's
- * parser at runtime in the supervisor. The regex covers the >99% case
- * for browser source code in TS/JS/JSX/TSX.
- *
- * Costs: O(files × content_length). For Mossaic (199 source files,
- * ~150 KiB total source) this is single-digit ms.
+ * Each file is read through core's import lexer (comment-strip.ts
+ * maskSourceForImports: comments, strings, regexes and JSX told apart, as
+ * TypeScript's parser reads them; import-scan-differential.mjs holds it to
+ * the parser over this repository's sources), then the grammars above. A
+ * file the lexer cannot decide is read through `parse` instead
+ * (parsedImportView). The lexer reads ~77 MB/s where Oxc's transform,
+ * in-process, reads ~26 MB/s and costs a transform-facet hop besides, so
+ * the parser is the exception, not the path.
  */
-export function scanNamedImports(vfs, projDir) {
-    const result = new Map();
+export async function scanProjectImports(vfs, projDir, parse) {
+    const bare = new Set();
+    const namedImports = new Map();
     const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
-    const add = (pkgName, name) => {
-        let set = result.get(pkgName);
+    // vite.config.ts/js/mjs/cjs and *.config.{ts,js,mjs,cjs} at the project
+    // root. Limited to depth 0 so browser code under e.g. src/config/foo.ts
+    // is still read. (@tailwindcss/vite, pre-bundled as a browser module,
+    // trips esbuild's fs shim; the dev server never serves these.)
+    const isServerOnlyTopLevel = (name) => /^(?:vite|vitest|astro|rollup|tsup|tailwind|postcss|prettier|eslint|stylelint|rolldown)\.config\.[mc]?[jt]s$/.test(name)
+        || (/\.config\.[mc]?[jt]s$/.test(name) && name.split('.').length === 3);
+    // `import { ... } from 'spec'` and `import D, { ... } from 'spec'`:
+    // 1 is the named-import body, 2 the specifier.
+    const namedImportRe = /import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]+)\}\s*from\s*["']([^"']+)["']/g;
+    const addNamed = (pkgName, name) => {
+        let set = namedImports.get(pkgName);
         if (!set) {
             set = new Set();
-            result.set(pkgName, set);
+            namedImports.set(pkgName, set);
         }
         set.add(name);
     };
-    // Match `import { ... } from 'spec'` and `import D, { ... } from 'spec'`.
-    // Non-greedy to handle multiple imports per file. The `[^"']*?` after
-    // the closing brace tolerates whitespace + the optional `from`.
-    // Captures:
-    //   1: the named-import body (between { and })
-    //   2: the specifier
-    const namedImportRe = /import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]+)\}\s*from\s*["']([^"']+)["']/g;
+    // Files the lexer cannot decide, read with the parser once the walk is done.
+    const undecided = [];
+    const scan = (code, ext) => {
+        for (const specifier of importedSpecifiers(code)) {
+            if (specifier.startsWith('.') || specifier.startsWith('/'))
+                continue;
+            const clean = specifier.split('?')[0];
+            bare.add(clean);
+            bare.add(packageNameFromSpecifier(clean));
+        }
+        if ((ext === '.tsx' || ext === '.jsx') && bare.has('react')) {
+            bare.add('react/jsx-runtime');
+            bare.add('react/jsx-dev-runtime');
+        }
+        for (const m of code.matchAll(namedImportRe)) {
+            const specRaw = m[2];
+            if (specRaw.startsWith('.') || specRaw.startsWith('/') || specRaw.startsWith('node:'))
+                continue;
+            const pkgName = packageNameFromSpecifier(specRaw);
+            if (specRaw !== pkgName)
+                continue;
+            // Each item is `X`, `X as Y` or `type X`: the SOURCE name (the
+            // package's export) is captured, not the local alias.
+            for (const partRaw of m[1].split(',')) {
+                const part = partRaw.trim();
+                if (!part)
+                    continue;
+                const named = /^([A-Za-z_$][\w$]*)(?:\s+as\s+[A-Za-z_$][\w$]*)?$/.exec(part)
+                    ?? /^type\s+([A-Za-z_$][\w$]*)/.exec(part);
+                if (named)
+                    addNamed(pkgName, named[1]);
+            }
+        }
+    };
     const walk = (dir, depth) => {
         if (depth > 6)
             return;
@@ -124,65 +169,60 @@ export function scanNamedImports(vfs, projDir) {
                 walk(path, depth + 1);
                 continue;
             }
+            if (depth === 0 && isServerOnlyTopLevel(entry.name))
+                continue;
             const dot = entry.name.lastIndexOf('.');
             if (dot < 0)
                 continue;
             const ext = entry.name.substring(dot);
             if (!scanExts.has(ext))
                 continue;
-            let code;
+            let source;
             try {
-                code = vfs.readFileString(path);
+                source = vfs.readFileString(path);
             }
             catch {
                 continue;
             }
-            let m;
-            while ((m = namedImportRe.exec(code)) !== null) {
-                const body = m[1];
-                const specRaw = m[2];
-                // Skip relative + builtin imports: only bare package specifiers.
-                if (specRaw.startsWith('.') || specRaw.startsWith('/') || specRaw.startsWith('node:'))
-                    continue;
-                // Skip subpath imports — the user is opting into per-file
-                // resolution; esbuild bundles the specific file directly.
-                const pkgName = packageNameFromSpecifier(specRaw);
-                if (specRaw !== pkgName)
-                    continue;
-                // Parse the named-import body. Each item is one of:
-                //   X
-                //   X as Y
-                //   "X" as Y         (TS bracket-import, rare)
-                // We capture the SOURCE name (the export name on the package),
-                // NOT the local alias.
-                for (const partRaw of body.split(',')) {
-                    const part = partRaw.trim();
-                    if (!part)
-                        continue;
-                    const asMatch = part.match(/^([A-Za-z_$][\w$]*)\s+as\s+[A-Za-z_$][\w$]*$/);
-                    if (asMatch) {
-                        add(pkgName, asMatch[1]);
-                        continue;
-                    }
-                    // Plain identifier — capture as-is. Reject anything that's not
-                    // a clean JS identifier (e.g. comments, type-only imports).
-                    if (/^[A-Za-z_$][\w$]*$/.test(part)) {
-                        add(pkgName, part);
-                    }
-                    else if (/^type\s+([A-Za-z_$][\w$]*)/.test(part)) {
-                        // `import { type Foo } from 'pkg'` — capture, esbuild will
-                        // strip type-only imports during bundle.
-                        const tm = part.match(/^type\s+([A-Za-z_$][\w$]*)/);
-                        if (tm)
-                            add(pkgName, tm[1]);
-                    }
-                    // Anything else (e.g. "default as X") is non-named; skip.
-                }
-            }
+            const view = lexedImportView(source, path);
+            if (view === null)
+                undecided.push({ source, path, ext });
+            else
+                scan(view, ext);
         }
     };
     walk(projDir, 0);
-    return result;
+    for (const { source, path, ext } of undecided)
+        scan(await parsedImportView(source, path, parse), ext);
+    return { bareSpecifiers: [...bare], namedImports };
+}
+/** A SourceParser over a transform service: `.tsx`/`.ts` as TypeScript, anything else as JavaScript with JSX. */
+export function transformParser(service) {
+    return async (path, source) => {
+        const loader = /\.[mc]?tsx$/.test(path) ? 'tsx' : /\.[mc]?ts$/.test(path) ? 'ts' : 'jsx';
+        return (await service.transform(source, { loader, format: 'esm' })).code;
+    };
+}
+/** `source`'s import-detection view as the lexer reads it, or null for a file it cannot decide (UndecidableSourceError). */
+function lexedImportView(source, path) {
+    try {
+        return maskSourceForImports(source, path);
+    }
+    catch (error) {
+        if (error instanceof UndecidableSourceError)
+            return null;
+        throw error;
+    }
+}
+/**
+ * The import-detection view of a file the lexer cannot decide: the lexer's
+ * view of what `parse` makes of it. A transform drops the imports a
+ * TypeScript module names only as types or never uses, which name nothing
+ * to bundle.
+ */
+async function parsedImportView(source, path, parse) {
+    // The transform's output holds no JSX: read it as a `.ts` file is read.
+    return maskSourceForImports(await parse(path, source), path.replace(/\.[^./]*$/, '') + '.ts');
 }
 export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
     if (names.size === 0)
@@ -398,7 +438,7 @@ export function buildSyntheticEntry(vfs, nmDir, pkgName, names) {
  * which empirically covers icon-libraries with up to ~400 imported
  * icons (each pulling 1-2 transitive shared utility files).
  */
-export function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, transitiveCap = 800) {
+export async function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFiles, parse, transitiveCap = 800) {
     const entries = [];
     let totalBytes = 0;
     const visited = new Set();
@@ -445,13 +485,12 @@ export function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFile
             addDir(filePath.substring(0, slash));
         entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
         totalBytes += bytes.length + filePath.length;
-        // Parse relative imports and queue them. Same regex as
-        // scanNamedImports but with relative-path predicate.
-        const text = new TextDecoder().decode(bytes);
-        const importRe = /(?:from\s+|import\s*\(?\s*)["'](\.\.?\/[^"']+)["']/g;
-        let m;
-        while ((m = importRe.exec(text)) !== null) {
-            const rel = m[1];
+        // Queue the relative imports, read by the project scan's grammar.
+        const source = new TextDecoder().decode(bytes);
+        const view = lexedImportView(source, filePath) ?? await parsedImportView(source, filePath, parse);
+        for (const rel of importedSpecifiers(view)) {
+            if (!rel.startsWith('./') && !rel.startsWith('../'))
+                continue;
             const dir = filePath.substring(0, slash > 0 ? slash : 0);
             const candidate = normalizeJoin(dir, rel);
             // Try with extensions (.js, .mjs, no-ext-as-dir/index.js).
@@ -472,9 +511,10 @@ export function buildScopedSliceForSynthetic(vfs, nmDir, pkgName, referencedFile
     return { entries, totalBytes };
 }
 /**
- * Resolve the package's main ESM entry file path (preferring the
- * `module` field, then `main`). Returns null if the package isn't
- * installed or doesn't expose a JS entry.
+ * Resolve the package's root ESM entry file path: its `exports` under the
+ * bundle's import conditions, else `module`, else `main`, as a pre-bundle
+ * of it resolves (core bundler-resolution.ts). Returns null if the package
+ * isn't installed or doesn't expose a JS entry.
  */
 function findPackageEsmEntry(vfs, nmDir, pkgName) {
     const pkgRoot = nmDir + '/' + pkgName;
@@ -488,36 +528,15 @@ function findPackageEsmEntry(vfs, nmDir, pkgName) {
     catch {
         return null;
     }
-    // Prefer module (ESM), then main.
-    const candidates = [];
-    if (typeof pkg.module === 'string')
-        candidates.push(pkg.module);
-    if (typeof pkg.main === 'string')
-        candidates.push(pkg.main);
-    // Some packages publish `exports` field with a default condition
-    // pointing at ESM; try that as a tiebreaker.
-    if (pkg.exports && typeof pkg.exports === 'object') {
-        const root = pkg.exports['.'] || pkg.exports;
-        if (root && typeof root === 'object') {
-            const m = root.import || root.module || root.default;
-            if (typeof m === 'string')
-                candidates.unshift(m);
-        }
-        else if (typeof root === 'string') {
-            candidates.unshift(root);
-        }
-    }
-    for (const rel of candidates) {
-        const clean = rel.replace(/^\.\//, '');
-        const abs = pkgRoot + '/' + clean;
-        if (vfs.exists(abs) && !vfs.isDirectory(abs))
-            return abs;
-        // Try with index.js if rel is a directory.
-        const idx = abs + '/index.js';
-        if (vfs.exists(idx))
-            return idx;
-    }
-    return null;
+    // The package's root entry as a bundle's import of it resolves.
+    const rel = resolvePackageEntry(pkg, '.', BUNDLER_IMPORT_CONDITIONS);
+    if (!rel)
+        return null;
+    const abs = normalizeJoin(pkgRoot, rel);
+    if (vfs.exists(abs) && !vfs.isDirectory(abs))
+        return abs;
+    const idx = abs + '/index.js';
+    return vfs.exists(idx) ? idx : null;
 }
 /**
  * Normalize-join two paths: `dir + '/' + rel`, resolving `.` and `..`
@@ -525,16 +544,7 @@ function findPackageEsmEntry(vfs, nmDir, pkgName) {
  * relative paths like `./icons/house.js`.
  */
 function normalizeJoin(dir, rel) {
-    const stack = dir.split('/').filter(Boolean);
-    for (const seg of rel.split('/')) {
-        if (seg === '.' || seg === '')
-            continue;
-        if (seg === '..')
-            stack.pop();
-        else
-            stack.push(seg);
-    }
-    return (dir.startsWith('/') ? '/' : '') + stack.join('/');
+    return (dir.startsWith('/') ? '/' : '') + normalizeVfsPath(`${dir}/${rel}`);
 }
 /**
  * VFS path where synthetic entries are written. Lives under the

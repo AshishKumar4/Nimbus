@@ -4537,10 +4537,10 @@ function bindingifyInput(input) {
   if (input === void 0) return [];
   if (typeof input === "string") return [{ import: input }];
   if (Array.isArray(input)) return input.map((src2) => ({ import: src2 }));
-  return Object.entries(input).map(([name50, import_path]) => {
+  return Object.entries(input).map(([name50, import_path2]) => {
     return {
       name: name50,
-      import: import_path
+      import: import_path2
     };
   });
 }
@@ -14274,6 +14274,53 @@ ${body}`);
 ${legal.map((comment) => comment + "\n").join("")}`;
 }
 
+// ../core/src/runtime/jsonc.ts
+var LINE_END = {
+  tsconfck: /\n/,
+  esbuild: /[\n\r\u2028\u2029]/
+};
+function jsoncToJson(text, dialect) {
+  const lineEnd = LINE_END[dialect];
+  const blank = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
+  const source = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
+  let out = "";
+  for (let i2 = 0; i2 < source.length; i2++) {
+    const c3 = source[i2];
+    if (c3 === '"') {
+      const start = i2;
+      for (i2++; i2 < source.length && source[i2] !== '"'; i2++) if (source[i2] === "\\") i2++;
+      out += source.slice(start, i2 + 1);
+    } else if (c3 === "/" && source[i2 + 1] === "/") {
+      let end = i2;
+      while (end < source.length && !lineEnd.test(source[end])) end++;
+      out += blank(source.slice(i2, end));
+      i2 = end - 1;
+    } else if (c3 === "/" && source[i2 + 1] === "*") {
+      const close = source.indexOf("*/", i2 + 2);
+      if (close < 0 && dialect === "esbuild") throw new Error('Expected "*/" to terminate multi-line comment');
+      const end = close < 0 ? source.length : close + 2;
+      out += blank(source.slice(i2, end));
+      i2 = end - 1;
+    } else {
+      out += dialect === "esbuild" && lineEnd.test(c3) ? "\n" : c3;
+    }
+  }
+  const blanked2 = out.replace(/"(?:[^"\\]|\\.)*"/g, (s2) => '"' + " ".repeat(s2.length - 2) + '"');
+  let result = "";
+  for (let i2 = 0; i2 < out.length; i2++) {
+    if (blanked2[i2] === ",") {
+      let next = i2 + 1;
+      while (next < blanked2.length && /\s/.test(blanked2[next])) next++;
+      if (blanked2[next] === "}" || blanked2[next] === "]") continue;
+    }
+    result += out[i2];
+  }
+  return result;
+}
+function isJsonRecord(value) {
+  return value !== null && typeof value === "object" && !Array.isArray(value);
+}
+
 // ../core/src/runtime/tsconfig-raw.ts
 var TsconfigRefusal = class extends Error {
 };
@@ -14344,36 +14391,6 @@ function memberExpression(text, warnings) {
   warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
   return null;
 }
-var LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
-function parseJsonc(text) {
-  let out = "";
-  for (let i2 = 0; i2 < text.length; i2++) {
-    const c3 = text[i2];
-    if (c3 === '"') {
-      const start = i2;
-      for (i2++; i2 < text.length && text[i2] !== '"'; i2++) if (text[i2] === "\\") i2++;
-      out += text.slice(start, i2 + 1);
-    } else if (c3 === "/" && text[i2 + 1] === "/") {
-      while (i2 < text.length && !LINE_TERMINATOR.test(text[i2])) i2++;
-      out += "\n";
-    } else if (c3 === "/" && text[i2 + 1] === "*") {
-      const end = text.indexOf("*/", i2 + 2);
-      if (end < 0) throw new Error('Expected "*/" to terminate multi-line comment');
-      i2 = end + 1;
-      out += " ";
-    } else {
-      out += c3;
-    }
-  }
-  const blanked2 = out.replace(/"(?:[^"\\]|\\.)*"/g, (s2) => '"' + " ".repeat(s2.length - 2) + '"');
-  let result = "";
-  for (let i2 = 0; i2 < out.length; i2++) {
-    if (blanked2[i2] === "," && /^\s*[}\]]/.test(blanked2.slice(i2 + 1))) continue;
-    result += out[i2];
-  }
-  return JSON.parse(result);
-}
-var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
 var COMPILER_OPTION_KEYS = [
   "alwaysStrict",
   "baseUrl",
@@ -14428,14 +14445,14 @@ function resolveTsSettings(inputs, call) {
   let config;
   if (typeof raw === "string") {
     try {
-      config = parseJsonc(raw);
+      config = JSON.parse(jsoncToJson(raw, "esbuild"));
     } catch (error2) {
       throw new Error(`tsconfigRaw is not valid JSON: ${error2 instanceof Error ? error2.message : String(error2)}`);
     }
   } else {
     config = raw;
   }
-  if (!isObject(config)) return finish(settings);
+  if (!isJsonRecord(config)) return finish(settings);
   for (const key of Object.keys(config)) {
     if (COMPILER_OPTION_KEYS.includes(key)) {
       warnings.push(`Expected the ${JSON.stringify(key)} option to be nested inside a "compilerOptions" object`);
@@ -14447,7 +14464,7 @@ function resolveTsSettings(inputs, call) {
     throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
   }
   const options = config.compilerOptions;
-  if (!isObject(options)) return finish(settings);
+  if (!isJsonRecord(options)) return finish(settings);
   const string2 = (key) => typeof options[key] === "string" ? options[key] : void 0;
   const boolean2 = (key) => typeof options[key] === "boolean" ? options[key] : void 0;
   switch (string2("jsx")?.toLowerCase()) {
@@ -15910,6 +15927,103 @@ function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_ESM_CONDIT
   return subpath;
 }
 
+// ../core/src/vfs/path.ts
+var NOT_NORMAL = /\/$|\/\/|(?:^|\/)\.\.?(?:\/|$)/;
+function normalizeVfsPath(p) {
+  const text = String(p ?? "");
+  if (!NOT_NORMAL.test(text)) return text.charCodeAt(0) === 47 ? text.slice(1) : text;
+  const segments = text.split("/");
+  const out = [];
+  for (const seg of segments) {
+    if (seg === "..") out.pop();
+    else if (seg !== "." && seg !== "") out.push(seg);
+  }
+  return out.join("/");
+}
+
+// ../core/src/runtime/barrel-detect.ts
+function splitBareSpecifier(specifier) {
+  const parts = specifier.split("/");
+  const nameLength = specifier.startsWith("@") ? 2 : 1;
+  return { name: parts.slice(0, nameLength).join("/"), subpath: parts.slice(nameLength).join("/") };
+}
+
+// ../core/src/runtime/bundler-resolution.ts
+var BUNDLER_EXTENSIONS = ["", ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cjs", ".json", ".css"];
+var INDEX_FILES = ["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs"];
+var TYPESCRIPT_TWINS = { js: [".ts", ".tsx"], jsx: [".tsx", ".ts"], mjs: [".mts", ".ts"], cjs: [".cts", ".ts"] };
+function bundlerConditions(kind) {
+  return kind === "require-call" || kind === "require-resolve" ? BUNDLER_REQUIRE_CONDITIONS : BUNDLER_IMPORT_CONDITIONS;
+}
+var BUNDLER_IMPORT_CONDITIONS = ["import", "module", "browser", "default"];
+var BUNDLER_REQUIRE_CONDITIONS = ["require", "node", "browser", "default"];
+function* isFile(path3) {
+  return (yield { op: "isFile", path: path3 }) === true;
+}
+function* isDirectory(path3) {
+  return (yield { op: "isDirectory", path: path3 }) === true;
+}
+function* packageJson(path3) {
+  if (!(yield* isFile(path3))) return null;
+  const text = yield { op: "readText", path: path3 };
+  if (typeof text !== "string") return null;
+  try {
+    const parsed = JSON.parse(text);
+    return parsed !== null && typeof parsed === "object" ? parsed : null;
+  } catch {
+    return null;
+  }
+}
+function* fileSteps(base) {
+  const path3 = "/" + normalizeVfsPath(base);
+  for (const ext of BUNDLER_EXTENSIONS) if (yield* isFile(path3 + ext)) return path3 + ext;
+  const named = /\.(js|mjs|cjs|jsx)$/.exec(path3);
+  if (named) {
+    const stem = path3.slice(0, path3.length - named[0].length);
+    for (const ext of TYPESCRIPT_TWINS[named[1]]) if (yield* isFile(stem + ext)) return stem + ext;
+  }
+  if (yield* isDirectory(path3)) {
+    for (const index of INDEX_FILES) if (yield* isFile(path3 + "/" + index)) return path3 + "/" + index;
+  }
+  return null;
+}
+function* ancestors(dir) {
+  for (let at = normalizeVfsPath(dir); at; at = at.slice(0, Math.max(0, at.lastIndexOf("/")))) yield "/" + at;
+}
+function* packageImportSteps(specifier, fromDir) {
+  for (const dir of ancestors(fromDir)) {
+    if (!(yield* isFile(dir + "/package.json"))) continue;
+    const pkg = yield* packageJson(dir + "/package.json");
+    const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
+    return target ? yield* fileSteps(dir + "/" + target.replace(/^\.\//, "")) : null;
+  }
+  return null;
+}
+function* barePackageSteps(specifier, fromDir, conditions) {
+  const { name: name50, subpath } = splitBareSpecifier(specifier);
+  for (const dir of ancestors(fromDir)) {
+    const packageDir = dir + "/node_modules/" + name50;
+    if (!(yield* isDirectory(packageDir))) continue;
+    const pkg = yield* packageJson(packageDir + "/package.json");
+    const entry = pkg ? resolvePackageEntry(pkg, subpath ? "./" + subpath : ".", conditions) : null;
+    const resolved = entry && (yield* fileSteps(packageDir + "/" + entry.replace(/^\.\//, ""))) || subpath && (yield* fileSteps(packageDir + "/" + subpath)) || (yield* fileSteps(packageDir + "/index"));
+    if (resolved) return resolved;
+  }
+  return null;
+}
+function createSyncBundlerResolver(fs) {
+  const run = (steps) => {
+    let step = steps.next();
+    while (!step.done) step = steps.next(fs[step.value.op](step.value.path));
+    return step.value;
+  };
+  return {
+    resolveFile: (base) => run(fileSteps(base)),
+    resolvePackageImport: (specifier, fromDir) => run(packageImportSteps(specifier, fromDir)),
+    resolveBarePackage: (specifier, fromDir, conditions) => run(barePackageSteps(specifier, fromDir, conditions))
+  };
+}
+
 // ../core/src/runtime/prebundle-slice.ts
 var VITE_DEV_DEFINE = Object.freeze({
   "import.meta.env.DEV": "true",
@@ -15929,16 +16043,11 @@ function prebundleBuildOptions(define) {
     format: "esm",
     target: "esnext",
     platform: "browser",
-    conditions: ESM_CONDITIONS,
+    conditions: BUNDLER_IMPORT_CONDITIONS,
     mainFields: ["module", "browser", "main"],
     define: define && Object.keys(define).length > 0 ? { ...define } : void 0
   };
 }
-var EXTS = ["", ".ts", ".tsx", ".js", ".jsx", ".mts", ".mjs", ".cjs", ".json", ".css"];
-var INDEX_FILES = ["index.ts", "index.tsx", "index.js", "index.jsx", "index.mjs"];
-var SWAPS = { js: [".ts", ".tsx"], jsx: [".tsx", ".ts"], mjs: [".mts", ".ts"], cjs: [".cts", ".ts"] };
-var ESM_CONDITIONS = ["import", "module", "browser", "default"];
-var CJS_CONDITIONS = ["require", "node", "browser", "default"];
 function loaderOf(path3) {
   if (path3.endsWith(".ts") || path3.endsWith(".mts") || path3.endsWith(".cts")) return "ts";
   if (path3.endsWith(".tsx")) return "tsx";
@@ -15947,18 +16056,6 @@ function loaderOf(path3) {
   if (path3.endsWith(".css")) return "css";
   if (path3.endsWith(".wasm") || path3.endsWith(".node")) return "binary";
   return "js";
-}
-function normalizePath(p) {
-  const out = [];
-  for (const seg of p.split("/")) {
-    if (seg === "" || seg === ".") continue;
-    if (seg === "..") {
-      if (out.length > 0) out.pop();
-      continue;
-    }
-    out.push(seg);
-  }
-  return (p.startsWith("/") ? "/" : "") + out.join("/");
 }
 var bare = (path3) => !path3.startsWith("/") && !path3.startsWith(".") && !path3.startsWith("#");
 async function prebundleSlice(spec2, build3) {
@@ -15976,53 +16073,14 @@ async function prebundleSlice(spec2, build3) {
   for (const p of files.keys()) {
     for (let slash = p.lastIndexOf("/"); slash > 0; slash = p.lastIndexOf("/", slash - 1)) dirs.add(p.slice(0, slash));
   }
-  const fileExists = (p) => files.has(norm(p));
-  const dirExists = (p) => dirs.has(norm(p));
-  const packageJson = (path3) => {
-    try {
-      return JSON.parse(new TextDecoder().decode(files.get(norm(path3))));
-    } catch {
-      return null;
+  const resolver = createSyncBundlerResolver({
+    isFile: (p) => files.has(norm(p)),
+    isDirectory: (p) => dirs.has(norm(p)),
+    readText: (p) => {
+      const bytes = files.get(norm(p));
+      return bytes ? new TextDecoder().decode(bytes) : null;
     }
-  };
-  const tryResolve = (base) => {
-    const n5 = normalizePath(base);
-    for (const ext of EXTS) if (fileExists(n5 + ext)) return n5 + ext;
-    const swap = /\.(js|mjs|cjs|jsx)$/.exec(n5);
-    if (swap) {
-      const without = n5.slice(0, n5.length - swap[0].length);
-      for (const ext of SWAPS[swap[1]] ?? []) if (fileExists(without + ext)) return without + ext;
-    }
-    if (dirExists(n5)) {
-      for (const index of INDEX_FILES) if (fileExists(n5 + "/" + index)) return n5 + "/" + index;
-    }
-    return null;
-  };
-  const resolvePackageImport = (specifier, fromDir) => {
-    for (let dir = fromDir.replace(/^\/+/, ""); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")))) {
-      const pkgJsonPath = "/" + dir + "/package.json";
-      if (!fileExists(pkgJsonPath)) continue;
-      const pkg = packageJson(pkgJsonPath);
-      const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
-      return target ? tryResolve("/" + dir + "/" + target.replace(/^\.\//, "")) : null;
-    }
-    return null;
-  };
-  const resolveBarePkg = (specifier, fromDir, conditions) => {
-    const parts = specifier.split("/");
-    const scoped2 = specifier.startsWith("@");
-    const pkgName = parts.slice(0, scoped2 ? 2 : 1).join("/");
-    const subpath = parts.slice(scoped2 ? 2 : 1).join("/");
-    for (let dir = fromDir.replace(/^\/+/, ""); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf("/")))) {
-      const nm = "/" + dir + "/node_modules/" + pkgName;
-      if (!dirExists(nm)) continue;
-      const pkg = fileExists(nm + "/package.json") ? packageJson(nm + "/package.json") : null;
-      const entry = pkg ? resolvePackageEntry(pkg, subpath ? "./" + subpath : ".", conditions) : null;
-      const resolved = entry && tryResolve(nm + "/" + entry.replace(/^\.\//, "")) || subpath && tryResolve(nm + "/" + subpath) || tryResolve(nm + "/index");
-      if (resolved) return resolved;
-    }
-    return null;
-  };
+  });
   const externalExact = /* @__PURE__ */ new Set();
   const externalPrefixes = [];
   for (const pattern of spec2.externals) {
@@ -16035,23 +16093,22 @@ async function prebundleSlice(spec2, build3) {
     async resolve(args2) {
       const at = (path3) => path3 ? { path: path3, namespace: "nimbus-slice" } : null;
       if (args2.path.startsWith("#") && args2.resolveDir) {
-        const resolved = at(resolvePackageImport(args2.path, args2.resolveDir));
+        const resolved = at(resolver.resolvePackageImport(args2.path, args2.resolveDir));
         if (resolved) return resolved;
         warnings.push(`unresolved subpath import "${args2.path}" from ${args2.importer || "?"} (no owning package.json#imports entry); marked external`);
         return { external: true };
       }
       if (bare(args2.path) && isExternal(args2.path)) return { external: true };
       if (args2.path.startsWith("/")) {
-        const resolved = at(tryResolve(args2.path));
+        const resolved = at(resolver.resolveFile(args2.path));
         if (resolved) return resolved;
       }
       if (args2.path.startsWith(".") && args2.resolveDir) {
-        const resolved = at(tryResolve(args2.resolveDir + "/" + args2.path));
+        const resolved = at(resolver.resolveFile(args2.resolveDir + "/" + args2.path));
         if (resolved) return resolved;
       }
       if (bare(args2.path)) {
-        const conditions = args2.kind === "require-call" || args2.kind === "require-resolve" ? CJS_CONDITIONS : ESM_CONDITIONS;
-        const resolved = at(resolveBarePkg(args2.path, args2.resolveDir || "/home/user", conditions));
+        const resolved = at(resolver.resolveBarePackage(args2.path, args2.resolveDir || "/home/user", bundlerConditions(args2.kind)));
         if (resolved) return resolved;
         warnings.push(`unresolved bare import "${args2.path}" from ${args2.importer || "?"} \u2192 marked external`);
       }

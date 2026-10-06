@@ -1,5 +1,51 @@
 "use strict";
 (() => {
+  var LINE_END = {
+    tsconfck: /\n/,
+    esbuild: /[\n\r\u2028\u2029]/
+  };
+  function jsoncToJson(text, dialect) {
+    const lineEnd2 = LINE_END[dialect];
+    const blank = dialect === "tsconfck" ? (comment) => comment.replace(/\S/g, " ") : () => " ";
+    const source = text.charCodeAt(0) === 65279 ? text.slice(1) : text;
+    let out = "";
+    for (let i = 0; i < source.length; i++) {
+      const c = source[i];
+      if (c === '"') {
+        const start = i;
+        for (i++; i < source.length && source[i] !== '"'; i++) if (source[i] === "\\") i++;
+        out += source.slice(start, i + 1);
+      } else if (c === "/" && source[i + 1] === "/") {
+        let end = i;
+        while (end < source.length && !lineEnd2.test(source[end])) end++;
+        out += blank(source.slice(i, end));
+        i = end - 1;
+      } else if (c === "/" && source[i + 1] === "*") {
+        const close = source.indexOf("*/", i + 2);
+        if (close < 0 && dialect === "esbuild") throw new Error('Expected "*/" to terminate multi-line comment');
+        const end = close < 0 ? source.length : close + 2;
+        out += blank(source.slice(i, end));
+        i = end - 1;
+      } else {
+        out += dialect === "esbuild" && lineEnd2.test(c) ? "\n" : c;
+      }
+    }
+    const blanked = out.replace(/"(?:[^"\\]|\\.)*"/g, (s) => '"' + " ".repeat(s.length - 2) + '"');
+    let result = "";
+    for (let i = 0; i < out.length; i++) {
+      if (blanked[i] === ",") {
+        let next = i + 1;
+        while (next < blanked.length && /\s/.test(blanked[next])) next++;
+        if (blanked[next] === "}" || blanked[next] === "]") continue;
+      }
+      result += out[i];
+    }
+    return result;
+  }
+  function isJsonRecord(value) {
+    return value !== null && typeof value === "object" && !Array.isArray(value);
+  }
+
   var TsconfigRefusal = class extends Error {
   };
   var KEYWORDS =   new Set([
@@ -69,36 +115,6 @@
     warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
     return null;
   }
-  var LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
-  function parseJsonc(text) {
-    let out = "";
-    for (let i = 0; i < text.length; i++) {
-      const c = text[i];
-      if (c === '"') {
-        const start = i;
-        for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === "\\") i++;
-        out += text.slice(start, i + 1);
-      } else if (c === "/" && text[i + 1] === "/") {
-        while (i < text.length && !LINE_TERMINATOR.test(text[i])) i++;
-        out += "\n";
-      } else if (c === "/" && text[i + 1] === "*") {
-        const end = text.indexOf("*/", i + 2);
-        if (end < 0) throw new Error('Expected "*/" to terminate multi-line comment');
-        i = end + 1;
-        out += " ";
-      } else {
-        out += c;
-      }
-    }
-    const blanked = out.replace(/"(?:[^"\\]|\\.)*"/g, (s) => '"' + " ".repeat(s.length - 2) + '"');
-    let result = "";
-    for (let i = 0; i < out.length; i++) {
-      if (blanked[i] === "," && /^\s*[}\]]/.test(blanked.slice(i + 1))) continue;
-      result += out[i];
-    }
-    return JSON.parse(result);
-  }
-  var isObject = (value) => typeof value === "object" && value !== null && !Array.isArray(value);
   var COMPILER_OPTION_KEYS = [
     "alwaysStrict",
     "baseUrl",
@@ -153,14 +169,14 @@
     let config;
     if (typeof raw === "string") {
       try {
-        config = parseJsonc(raw);
+        config = JSON.parse(jsoncToJson(raw, "esbuild"));
       } catch (error) {
         throw new Error(`tsconfigRaw is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
       }
     } else {
       config = raw;
     }
-    if (!isObject(config)) return finish(settings);
+    if (!isJsonRecord(config)) return finish(settings);
     for (const key of Object.keys(config)) {
       if (COMPILER_OPTION_KEYS.includes(key)) {
         warnings.push(`Expected the ${JSON.stringify(key)} option to be nested inside a "compilerOptions" object`);
@@ -172,7 +188,7 @@
       throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
     }
     const options = config.compilerOptions;
-    if (!isObject(options)) return finish(settings);
+    if (!isJsonRecord(options)) return finish(settings);
     const string = (key) => typeof options[key] === "string" ? options[key] : void 0;
     const boolean = (key) => typeof options[key] === "boolean" ? options[key] : void 0;
     switch (string("jsx")?.toLowerCase()) {
@@ -5896,6 +5912,18 @@ error: the Oxc transform crashed (${reason})`);
     return Parser.tokenizer(input, options);
   }
 
+  function applySourceEdits(source, edits) {
+    const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
+    const parts = [];
+    let at2 = 0;
+    for (const { start, end, text } of ordered) {
+      if (start < at2) throw new Error(`overlapping source edits at ${start}`);
+      parts.push(source.slice(at2, start), text);
+      at2 = end;
+    }
+    parts.push(source.slice(at2));
+    return parts.join("");
+  }
   var NODE_TYPES = new Set(Object.keys({
     ArrayExpression: true,
     ArrayPattern: true,
@@ -8490,10 +8518,10 @@ error: the Oxc transform crashed (${reason})`);
 
   var IMPORT_SYNTAX = /\bimport\s*(?:[(.]|\/[/*])/;
   var IMPORT_SYNTAX_ALL = new RegExp(IMPORT_SYNTAX.source, "g");
-  var LINE_END = /[\n\r\u2028\u2029]/g;
+  var LINE_END2 = /[\n\r\u2028\u2029]/g;
   function lineEnd(text, at2) {
-    LINE_END.lastIndex = at2;
-    return LINE_END.exec(text)?.index ?? text.length;
+    LINE_END2.lastIndex = at2;
+    return LINE_END2.exec(text)?.index ?? text.length;
   }
   function firstAtOrAfter(positions, at2) {
     let low = 0;
@@ -8919,115 +8947,191 @@ error: the Oxc transform crashed (${reason})`);
 const ${binding} = arguments[2];
 ` });
     }
-    edits.sort((a, b) => a.start - b.start || a.end - b.end);
-    const parts = [];
-    let at2 = 0;
-    for (const { start, end, text } of edits) {
-      parts.push(code.slice(at2, start), text);
-      at2 = end;
-    }
-    parts.push(code.slice(at2));
-    return parts.join("");
+    return applySourceEdits(code, edits);
   }
 
   function lowerAsyncModule(esm) {
-    const program = Parser.parse(esm, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
-    let prefix = "__nimbus_m";
-    while (esm.includes(prefix)) prefix += "_";
-    let temps = 0;
-    const temp = () => `${prefix}${temps++}`;
-    const key = (name) => `[${JSON.stringify(name)}]`;
+    return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
+  }
+  function readEsmRecords(source) {
+    const program = Parser.parse(source, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
-    const sourceOf = (node) => JSON.stringify(String(node.value));
-    const exportsRef = temp();
-    const exportGetter = temp();
-    const defineProperty = temp();
-    const live = (exported, value) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`;
-    const requires = [];
-    const imported = [];
-    const getters = [];
-    const edits = [];
-    let exportsAnything = false;
-    if (esm.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
+    const records = [];
     for (const node of program.body) {
       switch (node.type) {
-        case "ImportDeclaration": {
-          edits.push({ start: node.start, end: node.end, text: "" });
-          if (node.specifiers.length === 0) {
-            requires.push(`require(${sourceOf(node.source)});`);
-            break;
-          }
-          const mod = temp();
-          requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
-          for (const specifier of node.specifiers) {
-            const local = specifier.local.name;
-            if (specifier.type === "ImportNamespaceSpecifier") imported.push(`const ${local} = ${mod};`);
-            else if (specifier.type === "ImportDefaultSpecifier") {
-              imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
-            } else imported.push(`const ${local} = ${mod}${key(nameOf(specifier.imported))};`);
-          }
+        case "ImportDeclaration":
+          records.push({
+            kind: "import",
+            start: node.start,
+            end: node.end,
+            source: String(node.source.value),
+            bindings: node.specifiers.map((specifier) => specifier.type === "ImportNamespaceSpecifier" ? { kind: "namespace", local: specifier.local.name } : {
+              kind: "named",
+              local: specifier.local.name,
+              imported: specifier.type === "ImportDefaultSpecifier" ? "default" : nameOf(specifier.imported)
+            })
+          });
           break;
-        }
-        case "ExportNamedDeclaration": {
-          exportsAnything = true;
+        case "ExportNamedDeclaration":
           if (node.declaration) {
-            edits.push({ start: node.start, end: node.declaration.start, text: "" });
-            for (const name of declaredNames(node.declaration)) getters.push([name, name]);
-          } else if (node.source) {
-            const mod = temp();
-            edits.push({ start: node.start, end: node.end, text: "" });
-            requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
-            for (const s of node.specifiers) getters.push([nameOf(s.exported), `${mod}${key(nameOf(s.local))}`]);
+            records.push({
+              kind: "export",
+              start: node.start,
+              end: node.declaration.start,
+              source: null,
+              names: declaredNames(node.declaration).map((name) => ({ kind: "named", exported: name, local: name }))
+            });
           } else {
-            edits.push({ start: node.start, end: node.end, text: "" });
-            for (const s of node.specifiers) getters.push([nameOf(s.exported), nameOf(s.local)]);
-          }
-          break;
-        }
-        case "ExportDefaultDeclaration": {
-          exportsAnything = true;
-          const declaration = node.declaration;
-          if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
-            edits.push({ start: node.start, end: declaration.start, text: "" });
-            getters.push(["default", declaration.id.name]);
-          } else {
-            edits.push({
+            records.push({
+              kind: "export",
               start: node.start,
               end: node.end,
-              text: `${exportsRef}.default = (${esm.slice(declaration.start, declaration.end)});`
+              source: node.source ? String(node.source.value) : null,
+              names: node.specifiers.map((s) => ({ kind: "named", exported: nameOf(s.exported), local: nameOf(s.local) }))
+            });
+          }
+          break;
+        case "ExportDefaultDeclaration": {
+          const declaration = node.declaration;
+          if ((declaration.type === "FunctionDeclaration" || declaration.type === "ClassDeclaration") && declaration.id) {
+            records.push({
+              kind: "export",
+              start: node.start,
+              end: declaration.start,
+              source: null,
+              names: [{ kind: "named", exported: "default", local: declaration.id.name }]
+            });
+          } else {
+            records.push({
+              kind: "export-default",
+              start: node.start,
+              end: node.end,
+              expression: { start: declaration.start, end: declaration.end }
             });
           }
           break;
         }
-        case "ExportAllDeclaration": {
-          exportsAnything = true;
-          const mod = temp();
-          edits.push({ start: node.start, end: node.end, text: "" });
-          requires.push(`const ${mod} = require(${sourceOf(node.source)});`);
-          if (node.exported) getters.push([nameOf(node.exported), mod]);
-          else requires.push(`for (const k in ${mod}) if (k !== "default" && k !== "__esModule") ${exportGetter}(k, () => ${mod}[k]);`);
+        case "ExportAllDeclaration":
+          if (node.exported) {
+            records.push({
+              kind: "export",
+              start: node.start,
+              end: node.end,
+              source: String(node.source.value),
+              names: [{ kind: "namespace", exported: nameOf(node.exported) }]
+            });
+          } else {
+            records.push({ kind: "export-all", start: node.start, end: node.end, source: String(node.source.value) });
+          }
           break;
-        }
         default:
           break;
       }
     }
-    const parts = [];
-    let at2 = 0;
-    for (const { start, end, text } of edits.sort((a, b) => a.start - b.start)) {
-      parts.push(esm.slice(at2, start), text);
-      at2 = end;
+    return records;
+  }
+  function emitCommonJs(source, records, options) {
+    let prefix = "__nimbus_m";
+    while (source.includes(prefix)) prefix += "_";
+    let temps = 0;
+    const temp = () => `${prefix}${temps++}`;
+    const key = (name) => `[${JSON.stringify(name)}]`;
+    const requireFunction = options.requireFunction ?? "require";
+    const requireOf = (specifier) => `${requireFunction}(${JSON.stringify(specifier)})`;
+    const exportsRef = temp();
+    const exportGetter = temp();
+    const ownKey = temp();
+    const namespaceOf = temp();
+    let namespaces = false;
+    const namespace = (mod) => {
+      namespaces = true;
+      return `${namespaceOf}(${mod})`;
+    };
+    const requires = [];
+    const imported = [];
+    const getters = [];
+    const stars = [];
+    const edits = [...options.edits ?? []];
+    let exportsAnything = false;
+    if (source.startsWith("#!")) edits.push({ start: 0, end: 2, text: "//" });
+    for (const record of records) {
+      switch (record.kind) {
+        case "import": {
+          edits.push({ start: record.start, end: record.end, text: "" });
+          if (record.bindings.length === 0) {
+            requires.push(`${requireOf(record.source)};`);
+            break;
+          }
+          const mod = temp();
+          requires.push(`const ${mod} = ${requireOf(record.source)};`);
+          for (const binding of record.bindings) {
+            const { local } = binding;
+            if (binding.kind === "namespace") imported.push(`const ${local} = ${namespace(mod)};`);
+            else if (binding.imported === "default") imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+            else imported.push(`const ${local} = ${mod}${key(binding.imported)};`);
+          }
+          break;
+        }
+        case "export": {
+          exportsAnything = true;
+          edits.push({ start: record.start, end: record.end, text: "" });
+          if (record.source === null) {
+            for (const name of record.names) {
+              if (name.kind !== "named") throw new Error(`export of the namespace ${name.exported} without a source module`);
+              getters.push([name.exported, name.local]);
+            }
+            break;
+          }
+          const mod = temp();
+          requires.push(`const ${mod} = ${requireOf(record.source)};`);
+          for (const name of record.names) {
+            getters.push([name.exported, name.kind === "namespace" ? namespace(mod) : `${mod}${key(name.local)}`]);
+          }
+          break;
+        }
+        case "export-default": {
+          exportsAnything = true;
+          const value = temp();
+          edits.push({
+            start: record.start,
+            end: record.end,
+            text: `var ${value} = ({ default: (${source.slice(record.expression.start, record.expression.end)}) }).default;`
+          });
+          getters.push(["default", value]);
+          break;
+        }
+        case "export-all": {
+          exportsAnything = true;
+          const mod = temp();
+          edits.push({ start: record.start, end: record.end, text: "" });
+          requires.push(`const ${mod} = ${requireOf(record.source)};`);
+          stars.push(
+            `for (const k in ${mod}) if (k !== "default" && !${ownKey}(${exportsRef}, k)) ${exportGetter}(k, () => ${mod}[k]);`
+          );
+          break;
+        }
+      }
     }
-    parts.push(esm.slice(at2));
     const header = exportsAnything ? [
-      `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true; const ${defineProperty} = Object.defineProperty;`,
-      `const ${exportGetter} = (name, get) => ${defineProperty}(${exportsRef}, name, { enumerable: true, configurable: true, get });`
+      `const ${exportsRef} = ${options.exportsObject ?? "module.exports"}; ({}).constructor.defineProperty(${exportsRef}, "__esModule", { value: true });`,
+      `const ${exportGetter} = (name, get) => ({}).constructor.defineProperty(${exportsRef}, name, { enumerable: true, get });`,
+      `const ${ownKey} = (o, k) => ({}).hasOwnProperty.call(o, k);`
     ] : [];
-    const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => live(exported, value));
-    return `${[...header, ...requires].join("\n")}
-return (async () => { ${[...imported, ...installed].join(" ")}
-${parts.join("")}
+    if (namespaces) {
+      header.push(
+        `const ${namespaceOf} = (m) => { if (m && m.__esModule) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; };`
+      );
+    }
+    const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
+    const prologue = [...imported, ...installed, ...stars].join(" ");
+    const body = applySourceEdits(source, edits);
+    return options.body === "async" ? `${[...header, ...requires].join("\n")}
+return (async () => { ${prologue}
+${body}
 })();
+` : `${[...header, ...requires].join("\n")}
+${prologue}
+${body}
 `;
   }
   function declaredNames(declaration) {

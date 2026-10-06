@@ -582,65 +582,120 @@ return globalThis.Go;
     }
   }
 
-  var FILESYSTEM_RPC_METHODS = {
-    stat: "stat",
-    readFile: "readFileBytes",
-    writeFile: "writeFile",
-    readRange: "fsReadRange",
-    writeRange: "fsWriteRange",
-    truncate: "fsTruncate",
-    utimes: "utimes",
-    chmod: "chmod",
-    access: "access",
-    chown: "chown",
-    open: "fsOpen",
-    read: "fsRead",
-    write: "fsWrite",
-    close: "fsClose",
-    readdir: "readdir",
-    mkdir: "mkdir",
-    unlink: "unlink",
-    rmdir: "rmdir",
-    rename: "rename",
-    readlink: "readlink",
-    linkLeadsTo: "fsLinkLeadsTo",
-    symlink: "symlink",
-    fsync: "fsSync",
-    revision: "fsRevision",
-    acquire: "fsAcquire",
-    list: "fsList",
-    realpath: "fsRealpath",
-    remove: "fsRemove",
-    copyFile: "fsCopyFile",
-    copyTree: "fsCopyTree",
-    fstat: "fsFstat",
-    dup: "fsDup",
-    seek: "fsSeek",
-    setStatus: "fsSetStatus",
-    readdirHandle: "fsReaddirHandle",
-    ftruncate: "fsFtruncate",
-    fchmod: "fsFchmod",
-    fchown: "fsFchown",
-    futimes: "fsFutimes",
-    appendOnce: "fsAppend",
-    acknowledgeAppend: "fsAppendAck",
-    writeBatch: "writeBatch",
-    writeStream: "writeBatchStream",
-    acquireExclusiveMutation: "fsAcquireExclusiveMutation",
-    releaseExclusiveMutation: "fsReleaseExclusiveMutation"
-  };
   function pending(result) {
     return (typeof result === "object" || typeof result === "function") && result !== null && typeof result.then === "function";
   }
-  function hop(result) {
+  function answerValue(result) {
     return pending(result) ? Promise.resolve(result) : result;
   }
-  function bytes(result) {
+  function answerBytes(result) {
     return pending(result) ? Promise.resolve(result).then(asBytes) : asBytes(result);
+  }
+  function answerStream(result) {
+    return Promise.resolve(result);
   }
   function asBytes(value) {
     return value instanceof ArrayBuffer ? new Uint8Array(value) : value;
   }
+
+  var FILESYSTEM_ANSWERED_RPC_METHODS = [
+    "stat",
+    "readFileBytes",
+    "writeFile",
+    "fsReadRange",
+    "fsWriteRange",
+    "fsTruncate",
+    "utimes",
+    "chmod",
+    "access",
+    "chown",
+    "fsOpen",
+    "fsRead",
+    "fsWrite",
+    "fsClose",
+    "readdir",
+    "mkdir",
+    "unlink",
+    "rmdir",
+    "rename",
+    "readlink",
+    "fsLinkLeadsTo",
+    "symlink",
+    "fsSync",
+    "fsRevision",
+    "fsAcquire",
+    "fsList",
+    "fsRealpath",
+    "fsRemove",
+    "fsCopyFile",
+    "fsCopyTree",
+    "fsFstat",
+    "fsDup",
+    "fsSeek",
+    "fsSetStatus",
+    "fsReaddirHandle",
+    "fsFtruncate",
+    "fsFchmod",
+    "fsFchown",
+    "fsFutimes",
+    "fsAppend",
+    "fsAppendAck",
+    "writeBatch",
+    "fsAcquireExclusiveMutation",
+    "fsReleaseExclusiveMutation"
+  ];
+  function bridgeOverSupervisor(supervisor, local) {
+    return {
+      synchronous: local.synchronous,
+      writeFileFrom: local.writeFileFrom,
+      stat: (...args) => answerValue(supervisor.stat(...args)),
+      readFile: (...args) => answerBytes(supervisor.readFileBytes(...args)),
+      writeFile: (...args) => answerValue(supervisor.writeFile(...args)),
+      readRange: (...args) => answerBytes(supervisor.fsReadRange(...args)),
+      writeRange: (...args) => answerValue(supervisor.fsWriteRange(...args)),
+      truncate: (...args) => answerValue(supervisor.fsTruncate(...args)),
+      utimes: (...args) => answerValue(supervisor.utimes(...args)),
+      chmod: (...args) => answerValue(supervisor.chmod(...args)),
+      access: (...args) => answerValue(supervisor.access(...args)),
+      chown: (...args) => answerValue(supervisor.chown(...args)),
+      open: (...args) => answerValue(supervisor.fsOpen(...args)),
+      read: (...args) => answerBytes(supervisor.fsRead(...args)),
+      write: (...args) => answerValue(supervisor.fsWrite(...args)),
+      close: (...args) => answerValue(supervisor.fsClose(...args)),
+      readdir: (...args) => answerValue(supervisor.readdir(...args)),
+      mkdir: (...args) => answerValue(supervisor.mkdir(...args)),
+      unlink: (...args) => answerValue(supervisor.unlink(...args)),
+      rmdir: (...args) => answerValue(supervisor.rmdir(...args)),
+      rename: (...args) => answerValue(supervisor.rename(...args)),
+      readlink: (...args) => answerValue(supervisor.readlink(...args)),
+      linkLeadsTo: (...args) => answerValue(supervisor.fsLinkLeadsTo(...args)),
+      symlink: (...args) => answerValue(supervisor.symlink(...args)),
+      fsync: (...args) => answerValue(supervisor.fsSync(...args)),
+      revision: (...args) => answerValue(supervisor.fsRevision(...args)),
+      acquire: (...args) => answerValue(supervisor.fsAcquire(...args)),
+      list: (...args) => answerValue(supervisor.fsList(...args)),
+      realpath: (...args) => answerValue(supervisor.fsRealpath(...args)),
+      remove: (...args) => answerValue(supervisor.fsRemove(...args)),
+      copyFile: (...args) => answerValue(supervisor.fsCopyFile(...args)),
+      copyTree: (...args) => answerValue(supervisor.fsCopyTree(...args)),
+      fstat: (...args) => answerValue(supervisor.fsFstat(...args)),
+      dup: (...args) => answerValue(supervisor.fsDup(...args)),
+      seek: (...args) => answerValue(supervisor.fsSeek(...args)),
+      setStatus: (...args) => answerValue(supervisor.fsSetStatus(...args)),
+      readdirHandle: (...args) => answerValue(supervisor.fsReaddirHandle(...args)),
+      ftruncate: (...args) => answerValue(supervisor.fsFtruncate(...args)),
+      fchmod: (...args) => answerValue(supervisor.fsFchmod(...args)),
+      fchown: (...args) => answerValue(supervisor.fsFchown(...args)),
+      futimes: (...args) => answerValue(supervisor.fsFutimes(...args)),
+      appendOnce: (...args) => answerValue(supervisor.fsAppend(...args)),
+      acknowledgeAppend: (...args) => answerValue(supervisor.fsAppendAck(...args)),
+      writeBatch: (...args) => answerValue(supervisor.writeBatch(...args)),
+      writeStream: (...args) => answerStream(supervisor.writeBatchStream(...args)),
+      acquireExclusiveMutation: (...args) => answerValue(supervisor.fsAcquireExclusiveMutation(...args)),
+      releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args))
+    };
+  }
+
   var NODE_SHIM_RPC_METHODS = [
     "readFile",
     "writeFileStat",
@@ -654,9 +709,7 @@ return globalThis.Go;
     "fsReadBatch"
   ];
   var SUPERVISOR_ANSWERED_METHODS = [
-    ...Object.values(FILESYSTEM_RPC_METHODS).filter(
-      (name) => name !== FILESYSTEM_RPC_METHODS.writeStream
-    ),
+    ...FILESYSTEM_ANSWERED_RPC_METHODS,
     ...NODE_SHIM_RPC_METHODS
   ];
   var ANSWERED = new Set(SUPERVISOR_ANSWERED_METHODS);
@@ -707,59 +760,13 @@ return globalThis.Go;
     });
   }
   function supervisorFilesystem(remote, local) {
-    const supervisor = answeringSupervisor(remote);
-    return {
+    return bridgeOverSupervisor(answeringSupervisor(remote), {
       synchronous: local,
-      stat: (...args) => hop(supervisor.stat(...args)),
-      readFile: (...args) => bytes(supervisor.readFileBytes(...args)),
-      writeFile: (...args) => hop(supervisor.writeFile(...args)),
-      readRange: (...args) => bytes(supervisor.fsReadRange(...args)),
-      writeRange: (...args) => hop(supervisor.fsWriteRange(...args)),
-      truncate: (...args) => hop(supervisor.fsTruncate(...args)),
-      utimes: (...args) => hop(supervisor.utimes(...args)),
-      chmod: (...args) => hop(supervisor.chmod(...args)),
-      access: (...args) => hop(supervisor.access(...args)),
-      chown: (...args) => hop(supervisor.chown(...args)),
-      open: (...args) => hop(supervisor.fsOpen(...args)),
-      read: (...args) => bytes(supervisor.fsRead(...args)),
-      write: (...args) => hop(supervisor.fsWrite(...args)),
-      close: (...args) => hop(supervisor.fsClose(...args)),
-      readdir: (...args) => hop(supervisor.readdir(...args)),
-      mkdir: (...args) => hop(supervisor.mkdir(...args)),
-      unlink: (...args) => hop(supervisor.unlink(...args)),
-      rmdir: (...args) => hop(supervisor.rmdir(...args)),
-      rename: (...args) => hop(supervisor.rename(...args)),
-      readlink: (...args) => hop(supervisor.readlink(...args)),
-      linkLeadsTo: (...args) => hop(supervisor.fsLinkLeadsTo(...args)),
-      symlink: (...args) => hop(supervisor.symlink(...args)),
-      fsync: (...args) => hop(supervisor.fsSync(...args)),
-      revision: (...args) => hop(supervisor.fsRevision(...args)),
-      acquire: (...args) => hop(supervisor.fsAcquire(...args)),
-      list: (...args) => hop(supervisor.fsList(...args)),
-      realpath: (...args) => hop(supervisor.fsRealpath(...args)),
-      remove: (...args) => hop(supervisor.fsRemove(...args)),
-      copyFile: (...args) => hop(supervisor.fsCopyFile(...args)),
-      copyTree: (...args) => hop(supervisor.fsCopyTree(...args)),
-      fstat: (...args) => hop(supervisor.fsFstat(...args)),
-      dup: (...args) => hop(supervisor.fsDup(...args)),
-      seek: (...args) => hop(supervisor.fsSeek(...args)),
-      setStatus: (...args) => hop(supervisor.fsSetStatus(...args)),
-      readdirHandle: (...args) => hop(supervisor.fsReaddirHandle(...args)),
-      ftruncate: (...args) => hop(supervisor.fsFtruncate(...args)),
-      fchmod: (...args) => hop(supervisor.fsFchmod(...args)),
-      fchown: (...args) => hop(supervisor.fsFchown(...args)),
-      futimes: (...args) => hop(supervisor.fsFutimes(...args)),
-      appendOnce: (...args) => hop(supervisor.fsAppend(...args)),
-      acknowledgeAppend: (...args) => hop(supervisor.fsAppendAck(...args)),
-      writeBatch: (...args) => hop(supervisor.writeBatch(...args)),
-      writeStream: (...args) => Promise.resolve(supervisor.writeBatchStream(...args)),
       writeFileFrom: async (path) => {
         const name = typeof path === "string" ? path : path.path;
         throw Object.assign(new Error(`ENOTSUP: a streamed whole-file write is a host operation, write '${name}' as a W7 stream`), { code: "ENOTSUP" });
-      },
-      acquireExclusiveMutation: (...args) => hop(supervisor.fsAcquireExclusiveMutation(...args)),
-      releaseExclusiveMutation: (...args) => hop(supervisor.fsReleaseExclusiveMutation(...args))
-    };
+      }
+    });
   }
 
   var O_WRONLY = 1;
@@ -849,13 +856,13 @@ return globalThis.Go;
     output;
     stdinOffset = 0;
     held = [];
-    hold(fd, bytes2) {
-      this.held.push({ fd, bytes: bytes2 });
+    hold(fd, bytes) {
+      this.held.push({ fd, bytes });
     }
-    async write(fd, bytes2) {
+    async write(fd, bytes) {
       await this.flush();
-      for (let done = 0; done < bytes2.length; done += WRITE_SLICE_BYTES) {
-        await this.output(fd, bytes2.slice(done, done + WRITE_SLICE_BYTES));
+      for (let done = 0; done < bytes.length; done += WRITE_SLICE_BYTES) {
+        await this.output(fd, bytes.slice(done, done + WRITE_SLICE_BYTES));
       }
     }
     async flush() {
@@ -944,9 +951,9 @@ return globalThis.Go;
             if (position === null) open.position += chunk.length;
             return chunk.length;
           }
-          const bytes2 = await vfs.read(open.handle, position, length);
-          buffer.set(bytes2, offset);
-          return bytes2.length;
+          const bytes = await vfs.read(open.handle, position, length);
+          buffer.set(bytes, offset);
+          return bytes.length;
         }, callback);
       },
       open(path, flags, mode, callback) {
@@ -958,9 +965,9 @@ return globalThis.Go;
             if (!found) throw errno("ENOENT", target);
             if (found.type === "directory") return add({ kind: "directory", path: target, stat: goStats(found) });
             if (flags & O_DIRECTORY) throw errno("ENOTDIR", target);
-            const bytes2 = await vfs.readFile(target);
-            if (!bytes2) throw errno("ENOENT", target);
-            return add({ kind: "bytes", path: target, bytes: bytes2, stat: goStats(found, bytes2.length), position: 0 });
+            const bytes = await vfs.readFile(target);
+            if (!bytes) throw errno("ENOENT", target);
+            return add({ kind: "bytes", path: target, bytes, stat: goStats(found, bytes.length), position: 0 });
           }
           const openFlags = {
             read: access === O_RDWR,

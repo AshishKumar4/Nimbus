@@ -317,7 +317,7 @@ function __nimbusWasmDigest(bytes) {
     if (Array.isArray(h)) return h.some((p) => String(p?.[0]).toLowerCase() === "user-agent");
     return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
   };
-  const __loopbackHosts = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+  const __loopbackHosts = new Set(["localhost","127.0.0.1","0.0.0.0","[::1]"]);
   const __fetchUrl = (input) => {
     try {
       const href = typeof input === "string" ? input
@@ -381,7 +381,7 @@ function __nimbusWasmDigest(bytes) {
     for (const name of __aiCredentialHeaders) {
       const raw = __headerOf(input, init, name);
       if (!raw) continue;
-      if (String(raw).trim().replace(/^bearer\s+/i, "") !== token) continue;
+      if (presentedCredential(String(raw)) !== token) continue;
       return Promise.resolve(__supervisor.routeLoopback(8790, __supervisorRequest(url, input, init)));
     }
     return null;
@@ -5710,10 +5710,12 @@ globalThis.WebSocket = __NimbusRelayedWebSocket;
 //
 // History: F1 root cause in framework-fixes wave. Pre-fix create-next-app
 // errored with "Cannot find module 'node:constants'" at module init.
-const __constantsMod = {
-  // ── dlopen flags ──────────────────────────────────────────────────
-  RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0, RTLD_DEEPBIND: 8,
-  // ── errno (Linux ABI) ─────────────────────────────────────────────
+// The errno, signal, priority and dlopen tables, written once: node:constants
+// spreads them flat, os.constants nests them by name.
+const __dlopenConstants = { RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0, RTLD_DEEPBIND: 8 };
+// Errno (Linux ABI). fs/network libraries (graceful-fs, retry layers in
+// node-fetch wrappers) probe these to decide retry strategy.
+const __errnoConstants = {
   E2BIG: 7, EACCES: 13, EADDRINUSE: 98, EADDRNOTAVAIL: 99, EAFNOSUPPORT: 97,
   EAGAIN: 11, EALREADY: 114, EBADF: 9, EBADMSG: 74, EBUSY: 16,
   ECANCELED: 125, ECHILD: 10, ECONNABORTED: 103, ECONNREFUSED: 111,
@@ -5731,10 +5733,14 @@ const __constantsMod = {
   EPROTONOSUPPORT: 93, EPROTOTYPE: 91, ERANGE: 34, EROFS: 30,
   ESPIPE: 29, ESRCH: 3, ESTALE: 116, ETIME: 62, ETIMEDOUT: 110,
   ETXTBSY: 26, EWOULDBLOCK: 11, EXDEV: 18,
-  // ── Process priority (os.setPriority / os.getPriority) ────────────
+};
+// Process priority, for os.setPriority / os.getPriority.
+const __priorityConstants = {
   PRIORITY_LOW: 19, PRIORITY_BELOW_NORMAL: 10, PRIORITY_NORMAL: 0,
   PRIORITY_ABOVE_NORMAL: -7, PRIORITY_HIGH: -14, PRIORITY_HIGHEST: -20,
-  // ── Signals (POSIX + Linux) ───────────────────────────────────────
+};
+// Signals (POSIX + Linux), numbered as the Linux ABI numbers them.
+const __signalConstants = {
   SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
   SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9,
   SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14,
@@ -5742,6 +5748,12 @@ const __constantsMod = {
   SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
   SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
   SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31,
+};
+const __constantsMod = {
+  ...__dlopenConstants,
+  ...__errnoConstants,
+  ...__priorityConstants,
+  ...__signalConstants,
   // ── fs constants (O_*, S_IF*, S_I*, F_OK.., COPYFILE_*, UV_*) ────
   // Node's constants module is the union of os, fs and crypto constants;
   // the fs slice is __fsConstants, the same object fs.constants exposes.
@@ -5823,59 +5835,10 @@ const __osMod = {
   // "console.log(require('os').constants)"`). The shape is stable;
   // pinning POSIX signal numbers per the LSB / glibc table.
   constants: {
-    // ── Signals ──────────────────────────────────────────────────
-    // Standard POSIX + Linux-specific signals as Node exposes them.
-    // Numbers match the Linux ABI; portable signal-name lookups
-    // (which is what 100% of npm consumers do) work regardless of
-    // platform.
-    signals: {
-      SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGILL: 4, SIGTRAP: 5,
-      SIGABRT: 6, SIGIOT: 6, SIGBUS: 7, SIGFPE: 8, SIGKILL: 9,
-      SIGUSR1: 10, SIGSEGV: 11, SIGUSR2: 12, SIGPIPE: 13, SIGALRM: 14,
-      SIGTERM: 15, SIGCHLD: 17, SIGSTKFLT: 16, SIGCONT: 18, SIGSTOP: 19,
-      SIGTSTP: 20, SIGTTIN: 21, SIGTTOU: 22, SIGURG: 23, SIGXCPU: 24,
-      SIGXFSZ: 25, SIGVTALRM: 26, SIGPROF: 27, SIGWINCH: 28, SIGIO: 29,
-      SIGPOLL: 29, SIGPWR: 30, SIGSYS: 31,
-    },
-    // ── Errno ────────────────────────────────────────────────────
-    // Standard Linux errno codes. fs/network libraries (e.g.
-    // graceful-fs, retry layers in node-fetch wrappers) probe these
-    // to decide retry strategy. Subset matches Node's exposed surface.
-    errno: {
-      E2BIG: 7, EACCES: 13, EADDRINUSE: 98, EADDRNOTAVAIL: 99,
-      EAFNOSUPPORT: 97, EAGAIN: 11, EALREADY: 114, EBADF: 9,
-      EBADMSG: 74, EBUSY: 16, ECANCELED: 125, ECHILD: 10,
-      ECONNABORTED: 103, ECONNREFUSED: 111, ECONNRESET: 104,
-      EDEADLK: 35, EDESTADDRREQ: 89, EDOM: 33, EDQUOT: 122,
-      EEXIST: 17, EFAULT: 14, EFBIG: 27, EHOSTUNREACH: 113,
-      EIDRM: 43, EILSEQ: 84, EINPROGRESS: 115, EINTR: 4, EINVAL: 22,
-      EIO: 5, EISCONN: 106, EISDIR: 21, ELOOP: 40, EMFILE: 24,
-      EMLINK: 31, EMSGSIZE: 90, EMULTIHOP: 72, ENAMETOOLONG: 36,
-      ENETDOWN: 100, ENETRESET: 102, ENETUNREACH: 101, ENFILE: 23,
-      ENOBUFS: 105, ENODATA: 61, ENODEV: 19, ENOENT: 2, ENOEXEC: 8,
-      ENOLCK: 37, ENOLINK: 67, ENOMEM: 12, ENOMSG: 42, ENOPROTOOPT: 92,
-      ENOSPC: 28, ENOSR: 63, ENOSTR: 60, ENOSYS: 38, ENOTCONN: 107,
-      ENOTDIR: 20, ENOTEMPTY: 39, ENOTSOCK: 88, ENOTSUP: 95,
-      ENOTTY: 25, ENXIO: 6, EOPNOTSUPP: 95, EOVERFLOW: 75, EPERM: 1,
-      EPIPE: 32, EPROTO: 71, EPROTONOSUPPORT: 93, EPROTOTYPE: 91,
-      ERANGE: 34, EROFS: 30, ESPIPE: 29, ESRCH: 3, ESTALE: 116,
-      ETIME: 62, ETIMEDOUT: 110, ETXTBSY: 26, EWOULDBLOCK: 11, EXDEV: 18,
-    },
-    // ── Priority ────────────────────────────────────────────────
-    // Process priority constants for os.setPriority / os.getPriority.
-    // Not used by anything we've observed, but Node exposes them and
-    // some libs check defined-ness before falling through.
-    priority: {
-      PRIORITY_LOW: 19,
-      PRIORITY_BELOW_NORMAL: 10,
-      PRIORITY_NORMAL: 0,
-      PRIORITY_ABOVE_NORMAL: -7,
-      PRIORITY_HIGH: -14,
-      PRIORITY_HIGHEST: -20,
-    },
-    // ── dlopen flags ────────────────────────────────────────────
-    // Documented for completeness; Nimbus has no real dlopen.
-    dlopen: { RTLD_LAZY: 1, RTLD_NOW: 2, RTLD_GLOBAL: 256, RTLD_LOCAL: 0 },
+    signals: __signalConstants,
+    errno: __errnoConstants,
+    priority: __priorityConstants,
+    dlopen: __dlopenConstants,
   },
 };
 
@@ -12171,31 +12134,28 @@ function __resolveFile(base) {
   // that this cannot find; both come from src/_shared/typescript-specifiers.ts
   // and tests/unit/typescript-specifier-resolution.mjs compares them.
   const baseTrim = base.replace(/\/+$/, "");
-  for (const cand of __typescriptFallbackCandidates(baseTrim)) {
+  for (const cand of typescriptFallbackCandidates(baseTrim)) {
     if (__pathIsFile(cand)) return cand;
   }
-  for (const ext of __TYPESCRIPT_INDEX_CANDIDATES) {
+  for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
     const cand = baseTrim + ext;
     if (__pathIsFile(cand)) return cand;
   }
   return null;
 }
 
-// ── Single-source-of-truth exports/imports resolver (W2) ───────────────
-// Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
-// Declares: resolveExports, resolveConditionValue, resolvePackageEntry,
-//           DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS.
-
-// ── exports-resolver.js (auto-generated; keep in sync with src/_shared/exports-resolver.ts) ──
-const DEFAULT_ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
-const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'default'];
-
-function resolveExports(exportsField, subpath, conditions) {
-  if (subpath === undefined) subpath = '.';
-  if (!conditions) conditions = DEFAULT_ESM_CONDITIONS;
-  if (exportsField === undefined || exportsField === null) return null;
-  if (typeof exportsField === 'string') {
-    return subpath === '.' ? exportsField : null;
+// ── Resolution and credential rules, compiled from @nimbus-sh/core ──────
+// _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
+// resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
+// DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
+// TYPESCRIPT_INDEX_CANDIDATES and presentedCredential (a function declaration,
+// so the fetch patch above can call it).
+var DEFAULT_ESM_CONDITIONS = ["import", "module", "browser", "default"];
+var DEFAULT_CJS_CONDITIONS = ["require", "node", "default"];
+function resolveExports(exportsField, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
+  if (exportsField === void 0 || exportsField === null) return null;
+  if (typeof exportsField === "string") {
+    return subpath === "." ? exportsField : null;
   }
   if (Array.isArray(exportsField)) {
     for (const item of exportsField) {
@@ -12204,47 +12164,40 @@ function resolveExports(exportsField, subpath, conditions) {
     }
     return null;
   }
-  if (typeof exportsField !== 'object') return null;
+  if (typeof exportsField !== "object") return null;
   const keys = Object.keys(exportsField);
   if (keys.length === 0) return null;
-  const isSubpathMap = keys[0].startsWith('.') || keys[0].startsWith('#');
+  const isSubpathMap = keys[0].startsWith(".") || keys[0].startsWith("#");
   if (isSubpathMap) {
     if (subpath in exportsField) {
       const target = exportsField[subpath];
       if (target === null) return null;
       return resolveConditionValue(target, conditions);
     }
-    const wildcardKeys = keys
-      .filter(k => k.includes('*'))
-      .sort((a, b) => b.length - a.length);
+    const wildcardKeys = keys.filter((k) => k.includes("*")).sort((a, b) => b.length - a.length);
     for (const pattern of wildcardKeys) {
       const target = exportsField[pattern];
-      const starIdx = pattern.indexOf('*');
+      const starIdx = pattern.indexOf("*");
       const prefix = pattern.slice(0, starIdx);
       const suffix = pattern.slice(starIdx + 1);
-      if (
-        subpath.startsWith(prefix) &&
-        (suffix ? subpath.endsWith(suffix) : true) &&
-        subpath.length >= prefix.length + suffix.length
-      ) {
+      if (subpath.startsWith(prefix) && (suffix ? subpath.endsWith(suffix) : true) && subpath.length >= prefix.length + suffix.length) {
         if (target === null) return null;
         const matched = subpath.slice(
           prefix.length,
-          suffix ? subpath.length - suffix.length : undefined,
+          suffix ? subpath.length - suffix.length : void 0
         );
         const resolved = resolveConditionValue(target, conditions);
-        if (resolved) return resolved.split('*').join(matched);
+        if (resolved) return resolved.split("*").join(matched);
       }
     }
     return null;
   }
-  if (subpath !== '.') return null;
+  if (subpath !== ".") return null;
   return resolveConditionValue(exportsField, conditions);
 }
-
 function resolveConditionValue(target, conditions) {
-  if (target === null || target === undefined) return null;
-  if (typeof target === 'string') return target;
+  if (target === null || target === void 0) return null;
+  if (typeof target === "string") return target;
   if (Array.isArray(target)) {
     for (const item of target) {
       const r = resolveConditionValue(item, conditions);
@@ -12252,54 +12205,42 @@ function resolveConditionValue(target, conditions) {
     }
     return null;
   }
-  if (typeof target !== 'object') return null;
+  if (typeof target !== "object") return null;
   for (const cond of conditions) {
     if (cond in target) {
       const r = resolveConditionValue(target[cond], conditions);
       if (r) return r;
     }
   }
-  if (!conditions.includes('default') && 'default' in target) {
+  if (!conditions.includes("default") && "default" in target) {
     return resolveConditionValue(target.default, conditions);
   }
   return null;
 }
-
-function resolvePackageEntry(pkg, subpath, conditions) {
-  if (subpath === undefined) subpath = '.';
-  if (!conditions) conditions = DEFAULT_ESM_CONDITIONS;
-  if (pkg.exports !== undefined && pkg.exports !== null) {
+function resolvePackageEntry(pkg, subpath = ".", conditions = DEFAULT_ESM_CONDITIONS) {
+  if (pkg.exports !== void 0 && pkg.exports !== null) {
     const entry = resolveExports(pkg.exports, subpath, conditions);
     if (entry) return entry;
     return null;
   }
-  if (subpath === '.') {
-    if (conditions.includes('module') && pkg.module) return pkg.module;
+  if (subpath === ".") {
+    if (conditions.includes("module") && pkg.module) return pkg.module;
     if (pkg.main) return pkg.main;
     return null;
   }
   return subpath;
 }
-
 function packageSelfReferenceSubpath(pkg, specifier) {
-  if (!pkg || typeof pkg.name !== 'string' || pkg.name.length === 0) return null;
-  if (pkg.exports === undefined || pkg.exports === null) return null;
-  if (specifier === pkg.name) return '.';
-  if (!specifier.startsWith(pkg.name + '/')) return null;
-  return '.' + specifier.slice(pkg.name.length);
+  if (!pkg || typeof pkg.name !== "string" || pkg.name.length === 0) return null;
+  if (pkg.exports === void 0 || pkg.exports === null) return null;
+  if (specifier === pkg.name) return ".";
+  if (!specifier.startsWith(`${pkg.name}/`)) return null;
+  return `.${specifier.slice(pkg.name.length)}`;
 }
-// ── end exports-resolver.js ────────────────────────────────────────────
 
-
-// ── TypeScript specifier fallbacks ────────────────────────────────────────
-// Emitted from src/_shared/typescript-specifiers.ts. Declares:
-// __typescriptFallbackCandidates, __TYPESCRIPT_INDEX_CANDIDATES.
-
-// ── typescript-specifiers (mirrors src/_shared/typescript-specifiers.ts) ──
-const __NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
-const __TYPESCRIPT_INDEX_CANDIDATES = ["/index.ts","/index.tsx"];
-function __typescriptFallbackCandidates(base) {
-  if (__NON_MAPPING_EXTENSION.test(base)) return [];
+var NON_MAPPING_EXTENSION = /\.(ts|tsx|mts|cts|json|node|cjs)$/;
+function typescriptFallbackCandidates(base) {
+  if (NON_MAPPING_EXTENSION.test(base)) return [];
   if (base.endsWith(".mjs")) return [base.slice(0, -4) + ".mts"];
   if (base.endsWith(".js")) {
     const stem = base.slice(0, -3);
@@ -12307,7 +12248,12 @@ function __typescriptFallbackCandidates(base) {
   }
   return [base + ".ts", base + ".tsx"];
 }
+var TYPESCRIPT_INDEX_CANDIDATES = ["/index.ts", "/index.tsx"];
 
+function presentedCredential(value) {
+  const trimmed = value.trim();
+  return /^bearer\s+/i.test(trimmed) ? trimmed.replace(/^bearer\s+/i, "") : trimmed;
+}
 
 /** Conditions for runtime CJS resolution (user-shell node). */
 const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default"];

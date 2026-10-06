@@ -24,9 +24,11 @@
  * attack class — see RFC 8725 §3.1).
  */
 import { DEFAULT_TOKEN_TTL_MS, MAX_TOKEN_TTL_MS, ID_COMPONENT_RE, NimbusAuthConfigError, NimbusTokenMalformedError, NimbusTokenSignatureError, NimbusTokenClaimsError, NimbusTokenExpiredError, NimbusTokenTtlError, } from './types.js';
+import { base64Url, base64UrlDecode, decodeJsonBase64Url, encodeJsonBase64Url } from '@nimbus-sh/core/_shared/crypto.js';
+import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 /** Constant JWT header. Serialized at module load; we just splice the cached b64. */
 const HEADER_JSON = '{"alg":"HS256","typ":"JWT"}';
-const HEADER_B64 = b64urlEncodeString(HEADER_JSON);
+const HEADER_B64 = base64Url(enc.encode(HEADER_JSON));
 /**
  * Mint a Nimbus JWT.
  *
@@ -90,10 +92,10 @@ export async function issueNimbusToken(env, input, opts = {}) {
         iat,
         exp,
     };
-    const payloadB64 = b64urlEncodeString(JSON.stringify(claims));
+    const payloadB64 = encodeJsonBase64Url(claims);
     const signingInput = `${HEADER_B64}.${payloadB64}`;
     const sig = await hmacSha256(env.JWT_SECRET, signingInput);
-    return `${signingInput}.${b64urlEncodeBytes(sig)}`;
+    return `${signingInput}.${base64Url(sig)}`;
 }
 /**
  * Verify a Nimbus JWT and return the parsed claims + canonical DO name.
@@ -130,7 +132,13 @@ export async function verifyNimbusToken(env, token) {
     const [headerB64, payloadB64, sigB64] = parts;
     const signingInput = `${headerB64}.${payloadB64}`;
     // Verify against primary, then previous (for rotation windows).
-    const sigBytes = b64urlDecodeBytes(sigB64);
+    let sigBytes;
+    try {
+        sigBytes = base64UrlDecode(sigB64);
+    }
+    catch {
+        throw new NimbusTokenMalformedError('signature is not base64url');
+    }
     const okPrimary = await hmacVerify(env.JWT_SECRET, signingInput, sigBytes);
     if (!okPrimary) {
         if (env.JWT_SECRET_PREVIOUS) {
@@ -145,7 +153,7 @@ export async function verifyNimbusToken(env, token) {
     // Decode + claim-shape validate.
     let claims;
     try {
-        claims = JSON.parse(b64urlDecodeString(payloadB64));
+        claims = decodeJsonBase64Url(payloadB64);
     }
     catch (e) {
         throw new NimbusTokenMalformedError(`payload is not valid JSON: ${e?.message || e}`);
@@ -194,40 +202,12 @@ export async function verifyNimbusToken(env, token) {
  * per request.
  */
 async function hmacSha256(secret, data) {
-    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
-    const sig = await crypto.subtle.sign('HMAC', key, new TextEncoder().encode(data));
+    const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['sign']);
+    const sig = await crypto.subtle.sign('HMAC', key, enc.encode(data));
     return new Uint8Array(sig);
 }
 /** Constant-time verify via `crypto.subtle.verify` (no manual loop needed). */
 async function hmacVerify(secret, data, expected) {
-    const key = await crypto.subtle.importKey('raw', new TextEncoder().encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
-    return crypto.subtle.verify('HMAC', key, expected, new TextEncoder().encode(data));
-}
-/** base64url-encode a UTF-8 string. No padding. */
-function b64urlEncodeString(s) {
-    return b64urlEncodeBytes(new TextEncoder().encode(s));
-}
-/** base64url-encode raw bytes. No padding (per RFC 7515 §2). */
-function b64urlEncodeBytes(bytes) {
-    // workerd has btoa; convert bytes -> binary string -> btoa -> url-safe -> strip pad.
-    let binary = '';
-    for (let i = 0; i < bytes.length; i++)
-        binary += String.fromCharCode(bytes[i]);
-    return btoa(binary).replace(/\+/g, '-').replace(/\//g, '_').replace(/=+$/, '');
-}
-/** base64url-decode to a UTF-8 string. */
-function b64urlDecodeString(s) {
-    return new TextDecoder().decode(b64urlDecodeBytes(s));
-}
-/** base64url-decode to raw bytes. */
-function b64urlDecodeBytes(s) {
-    // Re-pad to a multiple of 4 + restore +/.
-    const padded = s.replace(/-/g, '+').replace(/_/g, '/');
-    const pad = (4 - (padded.length % 4)) % 4;
-    const padStr = padded + '='.repeat(pad);
-    const binary = atob(padStr);
-    const out = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++)
-        out[i] = binary.charCodeAt(i);
-    return out;
+    const key = await crypto.subtle.importKey('raw', enc.encode(secret), { name: 'HMAC', hash: 'SHA-256' }, false, ['verify']);
+    return crypto.subtle.verify('HMAC', key, expected, enc.encode(data));
 }

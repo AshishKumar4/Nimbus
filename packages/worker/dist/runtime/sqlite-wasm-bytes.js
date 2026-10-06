@@ -17,7 +17,7 @@
  */
 import { SQLJS_VERSION } from '@nimbus-sh/core/constants.js';
 import { SQLITE_WASM_SHA256 } from '../sqlite-wasm-bundle.generated.js';
-import { fetchStagedBytes } from './staged-source.js';
+import { fetchStagedBytes, stagedAsset } from './staged-source.js';
 /**
  * Path inside env.ASSETS where the sql.js wasm binary lives. Versioned so
  * a future sql.js bump produces a different asset name and forces a fresh
@@ -40,17 +40,12 @@ export const SQLITE_WASM_L2_KEY = `https://nimbus-cache.invalid/_assets/sqljs-${
 export function fetchSqliteWasmBytes(env) {
     return fetchStagedBytes(env, SQLITE_WASM_ASSET);
 }
-const SQLITE_WASM_ASSET = {
+const SQLITE_WASM_ASSET = stagedAsset({
+    label: 'sql.js wasm',
     path: SQLITE_WASM_ASSET_PATH,
     l2Key: SQLITE_WASM_L2_KEY,
     sha256: SQLITE_WASM_SHA256,
     contentType: 'application/wasm',
-    poisonedCache: 'reject',
-    missingBinding: `Nimbus: node:sqlite requires an env.ASSETS binding (serves ${SQLITE_WASM_ASSET_PATH})`,
-    fetchFailed: (res) => `sql.js wasm asset fetch failed: ${res.status} ${res.statusText} ` +
-        `for ${SQLITE_WASM_ASSET_PATH} — deploy is missing the wasm asset`,
-    integrityFailed: (digest, from) => `sql.js wasm integrity check failed: expected ${SQLITE_WASM_SHA256}, got ` +
-        `${digest} (${from}) for ${SQLITE_WASM_ASSET_PATH} — ` +
-        'the staged asset is corrupt or out of sync; rerun ' +
-        'scripts/bundle-sqlite-wasm.mjs and redeploy',
-};
+    requiredBy: 'node:sqlite',
+    stagedBy: 'scripts/bundle-sqlite-wasm.mjs',
+});
