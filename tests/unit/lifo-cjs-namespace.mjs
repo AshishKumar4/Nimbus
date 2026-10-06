@@ -9,12 +9,14 @@
 // (`module.exports = require(...)`, `...require(...)` in the literal),
 // followed through the loader. A name in a comment or a string is none, and
 // a name detected but never set is undefined. The lifo node returned
-// module.exports itself. The cases run in Node 22 where it is installed;
-// the scan (runtime/cjs-export-names.ts) is also checked against the real
+// module.exports itself. One module's namespace is one object, however
+// import() names it; the lifo node made a new one for each import(). The
+// cases run in Node 22 where it is installed; the scan
+// (runtime/cjs-export-names.ts) is also checked against the real
 // cjs-module-lexer, the worker's build-time dependency, over a corpus.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -27,13 +29,14 @@ const FILES = {
   "obj.cjs": "const x = 1, y = 2;\nmodule.exports = { x, why: y, ...require('./star.cjs'), 'q': 3 };\n",
   "star.cjs": "exports.fromStar = 's';\n",
   "re.cjs": "module.exports = require('./lib.cjs');\n",
-  "main.mjs": "for (const file of ['./lib.cjs', './obj.cjs', './re.cjs', 'node:path']) {\n  const ns = await import(file);\n  const keys = Object.keys(ns).filter((k) => !(file === 'node:path' && !['default', 'join', 'sep'].includes(k)));\n  const values = keys.filter((k) => k !== 'default').map((k) => `${k}=${typeof ns[k] === 'function' ? 'fn' : JSON.stringify(ns[k])}`);\n  console.log(file, keys.join(','), values.join(' '), ns.default === (file === 'node:path' ? (await import('node:module')).createRequire(import.meta.url)(file) : undefined) || typeof ns.default, Object.prototype.toString.call(ns));\n}\n",
+  "main.mjs": "for (const file of ['./lib.cjs', './obj.cjs', './re.cjs', 'node:path']) {\n  const ns = await import(file);\n  const keys = Object.keys(ns).filter((k) => !(file === 'node:path' && !['default', 'join', 'sep'].includes(k)));\n  const values = keys.filter((k) => k !== 'default').map((k) => `${k}=${typeof ns[k] === 'function' ? 'fn' : JSON.stringify(ns[k])}`);\n  console.log(file, keys.join(','), values.join(' '), ns.default === (file === 'node:path' ? (await import('node:module')).createRequire(import.meta.url)(file) : undefined) || typeof ns.default, Object.prototype.toString.call(ns));\n}\nconst lib = await import('./lib.cjs');\nconsole.log('same', lib === await import('./lib.cjs'), lib === await import('../ns/lib.cjs'), (await import('path')) === (await import('node:path')));\n",
 };
 const WANT = [
   './lib.cjs a,b,c-d,default,e,never a=1 b=2 c-d=3 e=4 never=undefined object [object Module]',
   './obj.cjs default,fromStar,why,x fromStar="s" why=2 x=1 object [object Module]',
   './re.cjs a,b,c-d,default,e,never a=1 b=2 c-d=3 e=4 never=undefined object [object Module]',
   'node:path default,join,sep join=fn sep="/" true [object Module]',
+  'same true true true',
   '',
 ].join('\n');
 
@@ -61,11 +64,12 @@ try {
     assert.deepEqual(scanCjsExports(source), { names: real.exports, reexports: real.reexports }, source);
   }
   for (const [name, text] of Object.entries(FILES)) {
-    writeFileSync(join(disk, name), text);
+    mkdirSync(join(disk, 'ns'), { recursive: true });
+    writeFileSync(join(disk, 'ns', name), text);
     await ws.fs.mkdir('/home/user/ns', { recursive: true });
     await ws.fs.writeFile(`/home/user/ns/${name}`, text);
   }
-  if (node?.startsWith('v22')) assert.equal(spawnSync('node', ['main.mjs'], { cwd: disk, encoding: 'utf8' }).stdout, WANT, `Node ${node} agrees`);
+  if (node?.startsWith('v22')) assert.equal(spawnSync('node', ['main.mjs'], { cwd: join(disk, 'ns'), encoding: 'utf8' }).stdout, WANT, `Node ${node} agrees`);
   const ours = await ws.exec('cd /home/user/ns && node main.mjs');
   assert.equal(ours.stderr, '');
   assert.equal(ours.stdout, WANT);

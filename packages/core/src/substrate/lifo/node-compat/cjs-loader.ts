@@ -232,6 +232,8 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 	const builtins = new Map<string, unknown>();
 	/** The files this loader ran as ES modules: their exports are their namespaces. */
 	const lowered = new Set<string>();
+	/** import()'s namespace of each CommonJS module and built-in, by its filename or `node:` name. */
+	const namespaces = new Map<string, object>();
 	const cache: Record<string, unknown> = Object.create(null);
 
 	// createRequire(filename) is require as a module at `filename` has it: a path, or a file: URL's decoded path.
@@ -382,10 +384,18 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 	function importNamespace(id: string, dir: string): unknown {
 		const exports = requireModule(id, dir);
 		const name = id.startsWith('node:') ? id.slice(5) : id;
-		if (moduleMap[name]) return namespaceObject(exports, typeof exports === 'object' && exports !== null ? Object.keys(exports) : []);
-		const filename = resolveFilename(name, dir);
-		if (filename === null || lowered.has(filename)) return exports;
-		return namespaceObject(exports, filename.endsWith('.json') ? [] : [...cjsExportNames(filename, new Set())]);
+		const filename = moduleMap[name] ? null : resolveFilename(name, dir);
+		if (!moduleMap[name] && (filename === null || lowered.has(filename))) return exports;
+		// One namespace per module, however import() names it, as Node's module map keeps it.
+		const key = filename ?? `node:${name}`;
+		const cached = namespaces.get(key);
+		if (cached) return cached;
+		const names = filename === null
+			? (typeof exports === 'object' && exports !== null ? Object.keys(exports) : [])
+			: filename.endsWith('.json') ? [] : [...cjsExportNames(filename, new Set())];
+		const namespace = namespaceObject(exports, names);
+		namespaces.set(key, namespace);
+		return namespace;
 	}
 
 	/** A CommonJS module's export names as Node's ESM loader detects them (cjs-module-lexer), reexports followed. */
