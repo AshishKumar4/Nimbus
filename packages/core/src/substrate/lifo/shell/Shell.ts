@@ -6,6 +6,7 @@ import type { ChildExit, CommandContext, CommandRunAsHost } from '../commands/ty
 import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
+import { echoOutput } from '../utils/backslash-escapes.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 
 import {
@@ -1189,46 +1190,7 @@ export class Shell {
   }
 
   private async builtinEcho(args: string[], stdout: CommandOutputStream): Promise<number> {
-    let interpretEscapes = false;
-    let suppressNewline = false;
-    let i = 0;
-
-    while (i < args.length) {
-      const arg = args[i];
-      if (arg === '--') {
-        i++;
-        break;
-      }
-      if (arg === '-n') {
-        suppressNewline = true;
-        i++;
-        continue;
-      }
-      if (arg === '-e') {
-        interpretEscapes = true;
-        i++;
-        continue;
-      }
-      if (arg === '-E') {
-        interpretEscapes = false;
-        i++;
-        continue;
-      }
-      if (isEchoFlagCluster(arg)) {
-        for (const ch of arg.slice(1)) {
-          if (ch === 'n') suppressNewline = true;
-          else if (ch === 'e') interpretEscapes = true;
-          else if (ch === 'E') interpretEscapes = false;
-        }
-        i++;
-        continue;
-      }
-      break;
-    }
-
-    const body = args.slice(i).join(' ');
-    const output = interpretEscapes ? decodeEchoEscapes(body) : body;
-    (await stdout.write(suppressNewline ? output : `${output}\n`));
+    (await stdout.write(echoOutput(args)));
     return 0;
   }
 
@@ -1926,87 +1888,6 @@ export class Shell {
 
 }
 
-function isEchoFlagCluster(arg: string): boolean {
-  if (arg.length < 2 || arg[0] !== '-') return false;
-  for (const ch of arg.slice(1)) {
-    if (ch !== 'n' && ch !== 'e' && ch !== 'E') return false;
-  }
-  return true;
-}
-
-function decodeEchoEscapes(input: string): string {
-  let output = '';
-  for (let i = 0; i < input.length; i++) {
-    const ch = input[i];
-    if (ch !== '\\' || i + 1 >= input.length) {
-      output += ch;
-      continue;
-    }
-
-    const next = input[++i];
-    switch (next) {
-      case '\\': output += '\\'; break;
-      case 'n': output += '\n'; break;
-      case 't': output += '\t'; break;
-      case 'r': output += '\r'; break;
-      case 'b': output += '\b'; break;
-      case 'f': output += '\f'; break;
-      case 'v': output += '\v'; break;
-      case 'a': output += '\x07'; break;
-      case 'x': {
-        const parsed = readHexEscape(input, i + 1);
-        if (parsed) {
-          output += String.fromCharCode(parsed.value);
-          i = parsed.end - 1;
-        } else {
-          output += 'x';
-        }
-        break;
-      }
-      case '0': {
-        const parsed = readOctalEscape(input, i + 1);
-        output += String.fromCharCode(parsed.value);
-        i = parsed.end - 1;
-        break;
-      }
-      default:
-        output += next;
-        break;
-    }
-  }
-  return output;
-}
-
-function readHexEscape(input: string, pos: number): { value: number; end: number } | null {
-  let value = 0;
-  let end = pos;
-  while (end < input.length && end - pos < 2) {
-    const digit = hexValue(input.charCodeAt(end));
-    if (digit === null) break;
-    value = value * 16 + digit;
-    end++;
-  }
-  return end === pos ? null : { value, end };
-}
-
-function readOctalEscape(input: string, pos: number): { value: number; end: number } {
-  let value = 0;
-  let end = pos;
-  while (end < input.length && end - pos < 3) {
-    const code = input.charCodeAt(end);
-    if (code < 48 || code > 55) break;
-    value = value * 8 + (code - 48);
-    end++;
-  }
-  return { value, end };
-}
-
-function hexValue(code: number): number | null {
-  if (code >= 48 && code <= 57) return code - 48;
-  if (code >= 65 && code <= 70) return code - 55;
-  if (code >= 97 && code <= 102) return code - 87;
-  return null;
-}
 
 type ReadArgs =
   | { ok: true; names: string[]; prompt?: string }

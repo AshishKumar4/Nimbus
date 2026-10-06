@@ -32,6 +32,7 @@ import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
 import { parseArgs } from '../substrate/lifo/utils/args.js';
+import { echoOutput, expandBackslashEscapes } from '../substrate/lifo/utils/backslash-escapes.js';
 import { dirname, resolve } from '../substrate/lifo/utils/path.js';
 import { encode } from '../substrate/lifo/utils/encoding.js';
 import {
@@ -42,9 +43,8 @@ import {
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, syscallError, VFS_STRERROR, strerror } from '../vfs/vfs-error.js';
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
-import { isCharacterDevice, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
+import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
-import { exists, isDirectory, isSymlink } from '../vfs/vfs.js';
 
 /**
  * stdin as the shell hands it over: a pipe reader, whose `readAll` resolves
@@ -2143,39 +2143,6 @@ function mkDu(vfs: UnixVfs): CmdFn {
   };
 }
 
-/** The single-character backslash escapes `echo -e` and `printf` both expand. */
-const BACKSLASH_ESCAPES: Readonly<Record<string, string>> = {
-  '\\': '\\',
-  n: '\n',
-  t: '\t',
-  r: '\r',
-  a: '\x07',
-  b: '\b',
-  f: '\f',
-  v: '\v',
-};
-
-/**
- * Expand POSIX backslash escapes in one pass.
- *
- * A pass per escape needs somewhere to park a literal `\` so the later passes
- * cannot read it as the start of an escape, and whatever character that is, the
- * text may hold one already — or an earlier escape may have just produced one.
- * NUL was the parking spot, so `printf 'a\0b'` and `echo -e 'a\x00b'` both came
- * back as `a\b`: the NUL they had just produced was restored as a backslash.
- * One left-to-right pass consumes `\\` as a unit and needs no parking spot.
- */
-function expandBackslashEscapes(text: string): string {
-  return text.replace(
-    /\\(?:([\\ntrabfv])|0([0-7]{1,3})?|x([0-9a-fA-F]{1,2}))/g,
-    (_match, simple: string | undefined, octal: string | undefined, hex: string | undefined) => {
-      if (simple !== undefined) return BACKSLASH_ESCAPES[simple];
-      if (hex !== undefined) return String.fromCharCode(parseInt(hex, 16));
-      return String.fromCharCode(octal ? parseInt(octal, 8) : 0);
-    },
-  );
-}
-
 /**
  * pwd(1) as coreutils' program, for what starts one without a shell (find
  * -execdir, xargs, sudo): the working directory with every link resolved,
@@ -2238,45 +2205,11 @@ function mkPwd(vfs: UnixVfs): CmdFn {
 }
 
 /**
- * shell compatibilityb (2026-05-11): registry-level echo so `X | xargs echo`
- * resolves. `echo` is a Shell.builtins entry, NOT in the
- * registry map. xargs's cross-command dispatch goes through
- * registry.resolve(name) — without a registry entry for echo it falls
- * back to 'command not found'. The init.ts override for echo flag
- * handling targets Shell.builtins; we additionally register a copy
- * here so registry-driven callers (xargs) can find it. Behaviour
- * matches the BUG-SWEEP-4 nimbusEcho impl: -n / -e / -E / combined.
+ * echo for what runs it by name rather than through the shell (`xargs echo`,
+ * `find -exec echo`): the builtin's own output, from the one echoOutput.
  */
 function mkEcho(): CmdFn {
-  return async (ctx) => {
-    const args = ctx.args;
-    let interpretEscapes = false;
-    let suppressNewline = false;
-    let i = 0;
-    while (i < args.length) {
-      const a = args[i];
-      if (a === '--') { i++; break; }
-      if (a === '-n') { suppressNewline = true; i++; continue; }
-      if (a === '-e') { interpretEscapes = true; i++; continue; }
-      if (a === '-E') { interpretEscapes = false; i++; continue; }
-      if (/^-[neE]+$/.test(a)) {
-        for (const ch of a.slice(1)) {
-          if (ch === 'n') suppressNewline = true;
-          else if (ch === 'e') interpretEscapes = true;
-          else if (ch === 'E') interpretEscapes = false;
-        }
-        i++;
-        continue;
-      }
-      break;
-    }
-    let out = args.slice(i).join(' ');
-    if (interpretEscapes) {
-      out = expandBackslashEscapes(out);
-    }
-    (await ctx.stdout.write(suppressNewline ? out : out + '\n'));
-    return 0;
-  };
+  return async (ctx) => { (await ctx.stdout.write(echoOutput(ctx.args))); return 0; };
 }
 
 /**
@@ -3291,10 +3224,11 @@ async function canonicalizePath(
 function mkPrintf(): CmdFn {
   return async (ctx) => {
     if (ctx.args.length === 0) return 0;
-    const rawFmt = ctx.args[0];
     const vals = ctx.args.slice(1);
-    // Process backslash escapes in the format string first.
-    const fmt = expandBackslashEscapes(rawFmt);
+    // Process backslash escapes in the format string first. A `\c` in it,
+    // or in a %b argument, ends the output there.
+    const { text: fmt, stopped: formatStops } = expandBackslashEscapes(ctx.args[0], 'printf');
+    let stopped = false;
 
     let out = '';
     let argIdx = 0;
@@ -3303,7 +3237,7 @@ function mkPrintf(): CmdFn {
       // Run the format string once; return true if it consumed any args.
       let i = 0;
       const startArg = argIdx;
-      while (i < fmt.length) {
+      while (i < fmt.length && !stopped) {
         const ch = fmt[i];
         if (ch !== '%') { out += ch; i++; continue; }
         if (fmt[i + 1] === '%') { out += '%'; i += 2; continue; }
@@ -3319,17 +3253,24 @@ function mkPrintf(): CmdFn {
         const conv = fmt[i];
         i++;
         const arg = vals[argIdx++];
-        out += formatOneArg(spec + conv, arg);
+        if (conv === 'b') {
+          // %b: the argument's escapes expanded, then laid out as %s would be.
+          const expanded = expandBackslashEscapes(arg ?? '', 'printf-b');
+          out += formatOneArg(`${spec}s`, expanded.text);
+          stopped = expanded.stopped;
+        } else {
+          out += formatOneArg(spec + conv, arg);
+        }
       }
       return argIdx > startArg;
     }
 
     // bash printf: re-run the format until args are exhausted; if
     // format consumes zero args (no %X specifiers), run it once.
-    if (vals.length === 0) {
+    if (vals.length === 0 || formatStops) {
       applyFormat();
     } else {
-      while (argIdx < vals.length) {
+      while (argIdx < vals.length && !stopped) {
         if (!applyFormat()) break;
       }
     }
@@ -3407,15 +3348,6 @@ function formatOneArg(spec: string, arg: string | undefined): string {
       const n = typeof arg === 'number' ? Math.trunc(arg) : Math.trunc(parseFloat(String(arg ?? '0')));
       body = (Number.isFinite(n) ? n >>> 0 : 0).toString(8);
       if (flags.includes('#') && !body.startsWith('0')) body = '0' + body;
-      break;
-    }
-    case 'b': {
-      // bash printf %b: interpret backslash escapes in the arg
-      let s = String(arg ?? '');
-      s = s.replace(/\\\\/g, '\u0000')
-        .replace(/\\n/g, '\n').replace(/\\t/g, '\t').replace(/\\r/g, '\r')
-        .replace(/\\u0000/g, '\\');
-      body = s;
       break;
     }
     case 'c': {

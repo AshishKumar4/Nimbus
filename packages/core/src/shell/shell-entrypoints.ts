@@ -301,10 +301,6 @@ function stdinChunkToString(chunk: unknown): string {
   return String(chunk);
 }
 
-function normalizeArgs(args: string[] | undefined): string[] {
-  return Array.isArray(args) ? args.map(String) : [];
-}
-
 function formatError(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
