@@ -49,10 +49,6 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('module-format/dynamic-import');
 
-async function writeFile(path, contents) {
-  await t.run(`cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${contents}\nNIMBUS_HEREDOC_EOF`, 10_000);
-}
-
 // ── Check 1: synthetic-resolve ──────────────────────────────────────
 //
 // entry.mjs does `import('./mod.mjs').then(m => console.log('RESULT=' + m.X))`.
@@ -61,8 +57,8 @@ async function writeFile(path, contents) {
 // resolves via VFS → m.X is "RES_OK".
 
 await t.run('rm -rf /home/user/dyn-r && mkdir -p /home/user/dyn-r', 5_000);
-await writeFile('/home/user/dyn-r/mod.mjs', "export const X = 'RES_OK';");
-await writeFile(
+await t.writeFile('/home/user/dyn-r/mod.mjs', "export const X = 'RES_OK';");
+await t.writeFile(
   '/home/user/dyn-r/entry.mjs',
   `import('./mod.mjs').then(m => console.log('RESULT=' + m.X));`,
 );
@@ -86,7 +82,7 @@ A.check(
 // handler fired AT ALL.)
 
 await t.run('rm -rf /home/user/dyn-rej && mkdir -p /home/user/dyn-rej', 5_000);
-await writeFile(
+await t.writeFile(
   '/home/user/dyn-rej/entry.mjs',
   `import('./does-not-exist.mjs').catch(e => console.log('CAUGHT=' + (e && e.message ? e.message : String(e))));`,
 );
@@ -106,13 +102,13 @@ A.check(
 // CJS body.
 
 await t.run('rm -rf /home/user/dyn-tla && mkdir -p /home/user/dyn-tla', 5_000);
-await writeFile('/home/user/dyn-tla/mod.mjs', "export const Y = 'TLA_OK';");
+await t.writeFile('/home/user/dyn-tla/mod.mjs', "export const Y = 'TLA_OK';");
 const tlaSrc = `
 import { join } from 'node:path';
 const m = await import('./mod.mjs');
 console.log('RESULT=' + m.Y + ' join=' + (typeof join));
 `;
-await writeFile('/home/user/dyn-tla/entry.mjs', tlaSrc);
+await t.writeFile('/home/user/dyn-tla/entry.mjs', tlaSrc);
 const tlaR = await t.run('cd /home/user/dyn-tla && node entry.mjs', 30_000);
 const tlaOut = tlaR.output;
 A.check(
@@ -130,7 +126,7 @@ A.check(
 // through the .catch — but the SHAPE proves the lowering happened.
 
 await t.run('rm -rf /home/user/dyn-shape && mkdir -p /home/user/dyn-shape', 5_000);
-await writeFile('/home/user/dyn-shape/entry.mjs', `
+await t.writeFile('/home/user/dyn-shape/entry.mjs', `
 import('./does-not-exist.mjs').then(
   m => console.log('UNEXPECTED_OK'),
   e => console.log('CAUGHT=' + (e && e.message ? e.message : String(e))),

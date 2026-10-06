@@ -5,7 +5,7 @@
 //
 // Category: R (runtime-behavioral)
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('console-facet/globalThis-console-error-emits');
@@ -24,11 +24,6 @@ await t.waitForPrompt(60_000);
 // match — the terminal echoes the command (including the string
 // literal arg) before running the process, so substring search
 // would falsely match the echo even when the process emitted nothing.
-
-function hasOutputLine(stripped, marker) {
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  return lines.some((l) => l === marker);
-}
 
 // 1. Bare console.error baseline.
 {

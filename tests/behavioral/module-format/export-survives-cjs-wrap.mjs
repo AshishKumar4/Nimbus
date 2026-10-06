@@ -41,11 +41,6 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('module-format/export-survives-cjs-wrap');
 
-// Helper: write file via heredoc.
-async function writeFile(path, contents) {
-  await t.run(`cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${contents}\nNIMBUS_HEREDOC_EOF`, 10_000);
-}
-
 // All synthetics route through the two-pass path: TLA + an import.
 // The .mjs prints its OWN sentinel via console.log inside the module
 // body (no exports relied upon for the assertion; we only confirm the
@@ -68,8 +63,8 @@ console.log('CONST=' + SENTINEL_CONST);
 console.log('FUNC=' + getSentinel());
 console.log('CLASS=' + (new SentinelHolder()).value);
 `;
-await writeFile('/home/user/ex-decl/sib.mjs', declSrc);
-await writeFile('/home/user/ex-decl/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-decl/sib.mjs', declSrc);
+await t.writeFile('/home/user/ex-decl/consumer.js', "require('./sib.mjs');");
 const declResult = await t.run('cd /home/user/ex-decl && node consumer.js', 30_000);
 const declOut = declResult.output;
 A.check(
@@ -100,8 +95,8 @@ export { innerA, innerB as renamedB, innerC$1 as renamedC };
 console.log('LIST_LOAD=' + (typeof join) + '_tla=' + _t);
 console.log('A=' + innerA + ' B=' + innerB + ' C=' + innerC$1);
 `;
-await writeFile('/home/user/ex-list/sib.mjs', listSrc);
-await writeFile('/home/user/ex-list/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-list/sib.mjs', listSrc);
+await t.writeFile('/home/user/ex-list/consumer.js', "require('./sib.mjs');");
 const listResult = await t.run('cd /home/user/ex-list && node consumer.js', 30_000);
 const listOut = listResult.output;
 A.check(
@@ -125,8 +120,8 @@ export default myDefault;
 console.log('DEF_LOAD=' + (typeof join) + '_tla=' + _t);
 console.log('DEFVAL=' + JSON.stringify(myDefault));
 `;
-await writeFile('/home/user/ex-def/sib.mjs', defSrc);
-await writeFile('/home/user/ex-def/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-def/sib.mjs', defSrc);
+await t.writeFile('/home/user/ex-def/consumer.js', "require('./sib.mjs');");
 const defResult = await t.run('cd /home/user/ex-def && node consumer.js', 30_000);
 const defOut = defResult.output;
 A.check(
@@ -142,15 +137,15 @@ A.check(
 
 // ── Check 4: re-export named — `export { x } from "./sub";` ────────
 await t.run('rm -rf /home/user/ex-re && mkdir -p /home/user/ex-re', 5_000);
-await writeFile('/home/user/ex-re/sub.js', 'module.exports.viaRe = "REEXP_OK";');
+await t.writeFile('/home/user/ex-re/sub.js', 'module.exports.viaRe = "REEXP_OK";');
 const reSrc = `
 import { join } from 'node:path';
 const _t = await Promise.resolve(2);
 export { viaRe } from './sub.js';
 console.log('RE_LOAD=' + (typeof join) + '_tla=' + _t);
 `;
-await writeFile('/home/user/ex-re/sib.mjs', reSrc);
-await writeFile('/home/user/ex-re/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-re/sib.mjs', reSrc);
+await t.writeFile('/home/user/ex-re/consumer.js', "require('./sib.mjs');");
 const reResult = await t.run('cd /home/user/ex-re && node consumer.js', 30_000);
 const reOut = reResult.output;
 A.check(
@@ -166,15 +161,15 @@ A.check(
 
 // ── Check 5: re-export star — `export * from "./sub";` ─────────────
 await t.run('rm -rf /home/user/ex-star && mkdir -p /home/user/ex-star', 5_000);
-await writeFile('/home/user/ex-star/sub.js', 'module.exports.foo = "F"; module.exports.bar = "B";');
+await t.writeFile('/home/user/ex-star/sub.js', 'module.exports.foo = "F"; module.exports.bar = "B";');
 const starSrc = `
 import { join } from 'node:path';
 const _t = await Promise.resolve(3);
 export * from './sub.js';
 console.log('STAR_LOAD=' + (typeof join) + '_tla=' + _t);
 `;
-await writeFile('/home/user/ex-star/sib.mjs', starSrc);
-await writeFile('/home/user/ex-star/consumer.js', "require('./sib.mjs');");
+await t.writeFile('/home/user/ex-star/sib.mjs', starSrc);
+await t.writeFile('/home/user/ex-star/consumer.js', "require('./sib.mjs');");
 const starResult = await t.run('cd /home/user/ex-star && node consumer.js', 30_000);
 const starOut = starResult.output;
 A.check(

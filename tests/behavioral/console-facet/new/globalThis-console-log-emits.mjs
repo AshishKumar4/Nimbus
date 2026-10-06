@@ -13,7 +13,7 @@
 //   $ node -e 'globalThis.console.log("g-B")'  -> (silent — no output)
 //
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('console-facet/globalThis-console-log-emits');
@@ -30,11 +30,6 @@ await t.waitForPrompt(60_000);
 // even when the process emitted nothing. We split into lines and
 // require an EXACT-line match (the actual print output appears as
 // its own line, the echo appears as part of the longer command line).
-
-function hasOutputLine(stripped, marker) {
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  return lines.some((l) => l === marker);
-}
 
 // 1. Bare console.log baseline — must work (regression-class check
 //    that we didn't break the existing happy path while wiring the
