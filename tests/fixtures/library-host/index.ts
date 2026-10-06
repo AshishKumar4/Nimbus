@@ -15,6 +15,7 @@ import {
   type HostedRuntimeOptions,
 } from '@nimbus-sh/worker/workspace-host';
 import { loaderFacetHost } from '@nimbus-sh/worker/facet-host';
+import { workspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 
 export {
   SupervisorRPC,
@@ -95,7 +96,8 @@ export class EmbeddedWorkspace extends DurableObject<Env> {
       vfs,
       processes,
       generation: generation(this.ctx),
-      facets: loaderFacetHost(this.env, this.ctx),
+      // The workspace's network: this host gives the workspace no egress.
+      facets: loaderFacetHost(this.env, this.ctx, workspaceNetwork()),
       runtimeSource: runtimeCatalogSource(this.env),
       runtimeInstall: 'on-demand',
     });

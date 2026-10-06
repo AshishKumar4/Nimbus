@@ -3,6 +3,7 @@
  * on. The substrates themselves live in `@nimbus-sh/fabric/process-host.js`;
  * this module owns only the deployment config that picks between them.
  */
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { createProcessHost, } from '@nimbus-sh/fabric/process-host.js';
 /**
  * The var that picks the substrate, and the only place its name appears.
@@ -21,6 +22,8 @@ export function processHostMode(env) {
     throw new Error(`Nimbus: NIMBUS_PROCESS_HOST must be 'facet' or 'peer' (got '${String(raw)}')`);
 }
 /** The substrate for this deployment, resolved once. */
-export function processHostFor(ctx, env, disk) {
-    return createProcessHost(processHostMode(env), ctx, env, disk);
+export function processHostFor(ctx, env, disk, 
+/** The workspace's network (the session's composition supplies it); absent, the isolate's own. */
+network = () => ISOLATE_NETWORK) {
+    return createProcessHost(processHostMode(env), ctx, env, disk, network);
 }

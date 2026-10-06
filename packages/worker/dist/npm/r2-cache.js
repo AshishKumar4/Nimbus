@@ -59,6 +59,7 @@
  *     stream directly from npm.
  *   - npm publish webhook -> cache invalidation.
  */
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 /** Schema version baked into every cache key. Bump to invalidate
  *  everything atomically (e.g. if the storage shape changes or a bug
@@ -553,9 +554,16 @@ export class R2CacheClient {
      * `status` is set when the registry answered 4xx (no such package);
      * `failure` when every attempt failed. Both leave `json` null.
      */
-    async readThroughPackument(name, options) {
+    async readThroughPackument(name, options, 
+    /**
+     * The workspace's network. Under an egress the shared cache is neither
+     * read (the egress sees every registry read) nor filled (what an egress
+     * answered is the workspace's, never every tenant's).
+     */
+    network = ISOLATE_NETWORK) {
         const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
-        const cached = await this.getPackument(name, registry);
+        const shared = network.egress === undefined;
+        const cached = shared ? await this.getPackument(name, registry) : null;
         if (cached && !cached.expired && cached.json) {
             return { json: cached.json, source: 'r2-cache' };
         }
@@ -575,7 +583,7 @@ export class R2CacheClient {
                     // libc). It omits `exports`; that is read from the tarball's
                     // package.json in the VFS at require time, where the resolver's
                     // packument copy is `?? null` anyway.
-                    resp = await fetch(url, {
+                    resp = await network.fetch(url, {
                         headers: { Accept: 'application/vnd.npm.install-v1+json' },
                         signal: ctl.signal,
                     });
@@ -588,7 +596,7 @@ export class R2CacheClient {
                     this._recordHit('L4', 'packument', json.length);
                     // Best-effort fill, awaited so a follow-up read in the same
                     // install sees it.
-                    if (!this.readOnly)
+                    if (!this.readOnly && shared)
                         await this.putPackument(name, json, registry);
                     return { json, source: 'network' };
                 }

@@ -23,6 +23,7 @@
  *     mounted project's packages are put there through the view (see
  *     fetchIntoMount)
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessFiles } from '@nimbus-sh/core/runtime/process-files.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -71,6 +72,8 @@ export declare class NpmInstaller {
      * when the feature flag is on, using the facet's own global fetch.
      */
     private fetchFn;
+    /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
+    private readonly network;
     /**
      * npm-protocol log sink for the install in flight. Set per invocation
      * because `--loglevel` is a per-invocation flag; the no-op default is
@@ -84,6 +87,8 @@ export declare class NpmInstaller {
         env?: any;
         onProgress?: (msg: string) => void;
         fetchFn?: FetchFn;
+        /** The workspace's network (`workspace.network`). */
+        network: WorkspaceNetwork;
     });
     /** Expose cache for external use (e.g., serveModule in vite-dev-server). */
     get npmCache(): NpmCache;

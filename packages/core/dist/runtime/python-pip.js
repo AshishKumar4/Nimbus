@@ -466,7 +466,7 @@ async function resolveRequirements(roots, constraints, includeDependencies, runt
             : null;
         const metadata = dependencyLines
             ? null
-            : await fetchPypiJson(name, resolvedPkg.package.version);
+            : await fetchPypiJson(runtimeContext.network, name, resolvedPkg.package.version);
         if (metadata && 'error' in metadata)
             return metadata;
         for (const depLine of dependencyLines ?? metadata?.data.info.requires_dist ?? []) {
@@ -534,7 +534,7 @@ async function resolveOneRequirement(req, runtimeContext) {
     const sourcePolicy = PIP_SOURCE_PACKAGES[req.name];
     if (sourcePolicy)
         return resolveSourcePolicy(req, sourcePolicy);
-    const metadata = await fetchPypiJson(req.name);
+    const metadata = await fetchPypiJson(runtimeContext.network, req.name);
     if ('error' in metadata)
         return metadata;
     const releases = metadata.data.releases || {};
@@ -544,7 +544,7 @@ async function resolveOneRequirement(req, runtimeContext) {
     if (!version) {
         return { error: `no PyPI release of ${req.name} satisfies ${range || '>=0'}` };
     }
-    const versionMetadata = await fetchPypiJson(req.name, version);
+    const versionMetadata = await fetchPypiJson(runtimeContext.network, req.name, version);
     if ('error' in versionMetadata)
         return versionMetadata;
     const files = versionMetadata.data.urls || releases[version] || [];
@@ -605,16 +605,17 @@ function findBestVersion(versions, range) {
         return null;
     }
 }
-async function fetchPypiJson(name, version) {
+async function fetchPypiJson(network, name, version) {
     const canonical = canonicalPackageName(name);
-    const key = version ? `${canonical}@${version}` : canonical;
+    // Cached per network: what one workspace's egress answered is never another's.
+    const key = `${network.id}|` + (version ? `${canonical}@${version}` : canonical);
     let entry = pypiCache.get(key);
     if (!entry) {
         const url = version
             ? `${PYPI_API}/${encodeURIComponent(canonical)}/${encodeURIComponent(version)}/json`
             : `${PYPI_API}/${encodeURIComponent(canonical)}/json`;
         entry = {
-            promise: fetch(url).then(async (resp) => {
+            promise: network.fetch(url).then(async (resp) => {
                 if (!resp.ok)
                     throw new Error(`HTTP ${resp.status}`);
                 return PypiJsonSchema.parse(await resp.json());

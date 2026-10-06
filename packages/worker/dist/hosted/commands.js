@@ -105,7 +105,7 @@ export async function registerHostedCommands(self, workspace) {
     // first `git` invocation so it stays out of the cold script-eval graph.
     registry.register('git', async (ctx) => {
         const { runGitCommand } = await import('../git/commands.js');
-        return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
     });
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
@@ -162,6 +162,7 @@ export async function registerHostedCommands(self, workspace) {
         return await makeCPythonRunnerFactory({
             facets: facetHostForManager(facetMgr),
             startResident: cpythonResidentStart(facetMgr),
+            network: workspace.network,
         })(manifest, installRoot, binName, binKind)(ctx);
     });
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
@@ -198,6 +199,7 @@ export async function registerHostedCommands(self, workspace) {
             registry,
             startResident: rubyResidentStart(facetMgr),
             getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
+            network: workspace.network,
         })(manifest, installRoot, binName, binKind);
         return runner(ctx);
     });
@@ -533,7 +535,7 @@ export async function registerHostedCommands(self, workspace) {
                 const { loaderFacetHost } = await import('../runtime/facet-loader-host.js');
                 const wasmSpec = wasmRunnerSpec({
                     filesystem: workspace.filesystem,
-                    facets: loaderFacetHost(self.env, self.ctx),
+                    facets: loaderFacetHost(self.env, self.ctx, workspace.network),
                     processes: self.processes,
                 });
                 wasmHandler = buildRuntimeHandler(wasmSpec, {
@@ -663,6 +665,7 @@ export async function registerHostedCommands(self, workspace) {
                 '   \x1b[2mDeploy with real wrangler to get the real bindings.\x1b[0m\n\n');
         }
         self.nimbusWrangler = new NimbusWrangler({
+            network: workspace.network,
             vfs: kernelFs,
             vfsEvents: sqliteFs.events,
             esbuild: self.esbuildService,

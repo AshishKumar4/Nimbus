@@ -1,3 +1,4 @@
+import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { resolveContext } from '../registry.js';
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
@@ -136,15 +137,15 @@ function encodePackageName(name) {
         ? '@' + encodeURIComponent(name.slice(1))
         : encodeURIComponent(name);
 }
-async function fetchPackageInfo(registry, name, version, signal) {
+async function fetchPackageInfo(network, registry, name, version, signal) {
     // If version is a semver range, resolve it against all versions
     if (version && isVersionRange(version)) {
-        return (await fetchWithRange(registry, name, version, signal));
+        return (await fetchWithRange(network, registry, name, version, signal));
     }
     // Exact version or dist-tag (or null → latest)
     const tag = version || 'latest';
     const url = `${registry}/${encodePackageName(name)}/${tag}`;
-    const response = await fetch(url, { signal });
+    const response = await network.fetch(url, { signal });
     if (!response.ok) {
         if (response.status === 404) {
             throw new Error(`Package '${name}${version ? '@' + version : ''}' not found in registry`);
@@ -153,9 +154,9 @@ async function fetchPackageInfo(registry, name, version, signal) {
     }
     return RegistryVersionInfoSchema.parse(await response.json());
 }
-async function fetchWithRange(registry, name, range, signal) {
+async function fetchWithRange(network, registry, name, range, signal) {
     const url = `${registry}/${encodePackageName(name)}`;
-    const response = await fetch(url, {
+    const response = await network.fetch(url, {
         signal,
         headers: { Accept: 'application/json' },
     });
@@ -174,8 +175,8 @@ async function fetchWithRange(registry, name, range, signal) {
     }
     return data.versions[matching[0].version];
 }
-async function fetchAndStreamPackage(tarballUrl, targetDir, vfs, signal) {
-    const response = await fetch(tarballUrl, { signal });
+async function fetchAndStreamPackage(network, tarballUrl, targetDir, vfs, signal) {
+    const response = await network.fetch(tarballUrl, { signal });
     if (!response.ok) {
         throw new Error(`Failed to download tarball: ${response.status}`);
     }
@@ -223,10 +224,11 @@ async function installSinglePackage(name, version, targetBase, vfs, npmRegistry,
         return 0;
     }
     (await stdout.write(`  ${name}${version ? '@' + version : ''}...\n`));
-    const info = await fetchPackageInfo(npmRegistry, name, version, signal);
+    const network = kernel?.network ?? ISOLATE_NETWORK;
+    const info = await fetchPackageInfo(network, npmRegistry, name, version, signal);
     // writeTarballStream throws when the archive carried no manifest and writes
     // package.json last, so a return here is a complete package on disk.
-    await fetchAndStreamPackage(info.dist.tarball, targetDir, vfs, signal);
+    await fetchAndStreamPackage(network, info.dist.tarball, targetDir, vfs, signal);
     let installed = 1;
     // Global install: link binaries into the resolved prefix's bin dir
     if (isGlobal && globalBinDir) {
@@ -682,7 +684,7 @@ async function registerPkgBins(vfs, pkgDir, registry, kernel) {
     catch { /* ignore */ }
     return count;
 }
-async function npmInfo(ctx) {
+async function npmInfo(ctx, network) {
     const args = ctx.args.slice(1);
     const spec = args[0];
     if (!spec) {
@@ -692,7 +694,7 @@ async function npmInfo(ctx) {
     const { name, version } = parsePackageSpec(spec);
     const npmRegistry = getRegistry(ctx.env);
     try {
-        const info = await fetchPackageInfo(npmRegistry, name, version, ctx.signal);
+        const info = await fetchPackageInfo(network, npmRegistry, name, version, ctx.signal);
         await ctx.stdout.write(`\n${info.name}@${info.version}\n`);
         if (info.description)
             await ctx.stdout.write(`${info.description}\n`);
@@ -722,7 +724,7 @@ async function npmInfo(ctx) {
     }
     return 0;
 }
-async function npmSearch(ctx) {
+async function npmSearch(ctx, network) {
     const args = ctx.args.slice(1);
     const term = args.join(' ');
     if (!term) {
@@ -732,7 +734,7 @@ async function npmSearch(ctx) {
     const npmRegistry = getRegistry(ctx.env);
     const url = `${npmRegistry}/-/v1/search?text=${encodeURIComponent(term)}&size=10`;
     try {
-        const response = await fetch(url, { signal: ctx.signal });
+        const response = await network.fetch(url, { signal: ctx.signal });
         if (!response.ok) {
             throw new Error(`Registry returned ${response.status}`);
         }
@@ -795,9 +797,9 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
             case 'info':
             case 'view':
             case 'show':
-                return (await npmInfo(ctx));
+                return (await npmInfo(ctx, kernel?.network ?? ISOLATE_NETWORK));
             case 'search':
-                return (await npmSearch(ctx));
+                return (await npmSearch(ctx, kernel?.network ?? ISOLATE_NETWORK));
             case '-v':
             case '--version':
                 await ctx.stdout.write(NPM_VERSION + '\n');

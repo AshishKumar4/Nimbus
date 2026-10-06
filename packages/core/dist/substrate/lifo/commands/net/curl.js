@@ -1,3 +1,4 @@
+import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { resolve } from '../../utils/path.js';
 import { dispatchWorkspaceRequest, workspaceRequestPort } from './kernel-fetch.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
@@ -122,9 +123,10 @@ function createCurlImpl(kernel) {
                 // followed manually here; without -D the fetch-native follow keeps
                 // its proven semantics.
                 if (options.followRedirects && !headers.inert) {
-                    return await followExternalWithDump(ctx, options, url, headers, requestSignal.signal);
+                    return await followExternalWithDump(ISOLATE_NETWORK, ctx, options, url, headers, requestSignal.signal);
                 }
-                const response = await fetch(url, {
+                // No kernel bound (the process-wide default): the isolate's own network.
+                const response = await ISOLATE_NETWORK.fetch(url, {
                     method: options.method,
                     headers: Object.keys(options.headers).length > 0 ? options.headers : undefined,
                     body: options.data,
@@ -171,13 +173,13 @@ const CONTENT_HEADERS = ['content-type', 'content-length', 'transfer-encoding', 
  * and body; content headers go with the body, and credential headers are
  * stripped when a hop crosses origins.
  */
-async function followExternalWithDump(ctx, options, startUrl, headers, signal) {
+async function followExternalWithDump(network, ctx, options, startUrl, headers, signal) {
     let current = new URL(startUrl);
     let method = options.method;
     let data = options.data;
     let requestHeaders = new Headers(Object.keys(options.headers).length > 0 ? options.headers : {});
     for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-        const response = await fetch(current, {
+        const response = await network.fetch(current, {
             method,
             headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
             body: data,
@@ -542,7 +544,8 @@ async function executeKernelRequest(kernel, ctx, options, startUrl, headers, sig
                 }
             }
         }
-        response ??= await fetch(current, {
+        // Off the box: through the workspace's network (its host's egress, when it supplied one).
+        response ??= await kernel.network.fetch(current, {
             method,
             headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
             body: data,

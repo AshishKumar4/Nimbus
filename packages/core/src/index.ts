@@ -59,6 +59,7 @@ export type {
   RuntimeManifest,
 } from './runtime/runtime-manifest.js';
 export { localFacetHost } from './runtime/local-facet-host.js';
+export { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from './_shared/workspace-network.js';
 export type {
   Facet,
   FacetBindings,

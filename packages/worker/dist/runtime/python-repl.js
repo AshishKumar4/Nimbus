@@ -200,6 +200,8 @@ class PythonReplAdapter {
             concurrency: 1,
             preamble: buildCPythonPreamble(),
             wasmModules: { 'python.wasm': this.wasmBytes },
+            // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
+            network: host.network,
         };
         const pid = this.deps.pid;
         this.pool = typeof pid === 'number' && pid > 0

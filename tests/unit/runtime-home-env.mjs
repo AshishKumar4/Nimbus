@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
 
@@ -47,7 +48,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
       kind: 'workerd-adapter',
     }],
   };
-  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx) })(
+  const run = makeCPythonRunnerFactory({ facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK) })(
     manifest,
     '/runtime/python',
     'python',
@@ -75,7 +76,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
     files: [{ path: 'share/ruby/ruby+stdlib.wasm' }],
   };
   const run = await makeRubyRunnerFactory({
-    facets: loaderFacetHost(harness.env, harness.ctx),
+    facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK),
     filesystem,
     getHome: () => '/home/session',
   })(
@@ -112,7 +113,7 @@ const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: [
     resolve: (name) => commands.get(name) ?? null,
   };
   await makeRubyRunnerFactory({
-    facets: loaderFacetHost(harness.env, harness.ctx),
+    facets: loaderFacetHost(harness.env, harness.ctx, ISOLATE_NETWORK),
     filesystem,
     registry,
     getHome: () => '/home/session',

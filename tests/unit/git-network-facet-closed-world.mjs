@@ -17,6 +17,7 @@
 //   - a fetch's stats and listings fall through to the session below the
 //     repository, and its pending writes keep their modes.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -171,7 +172,7 @@ export const git = {
           }),
         },
       },
-      { op: 'clone', pid: 1, dir, url, depth: 1, exclusiveDestination: true, ...extra },
+      { op: 'clone', pid: 1, dir, url, depth: 1, exclusiveDestination: true, ...extra }, ISOLATE_NETWORK,
     );
   }
 

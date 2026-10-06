@@ -17,6 +17,7 @@
  * install and runtime operations do not appear successful after partial
  * dispatch.
  */
+import { networkRef, requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool } from './isolate-pool.js';
@@ -94,6 +95,7 @@ export class Fanout {
         // IsolatePool also enforces this, but checking up front points the
         // diagnostic at the fanout construction site rather than the
         // deferred isolate-pool one.
+        requireNetwork(opts.network, 'Fanout');
         const env = rawEnv ?? {};
         if (!env.LOADER || typeof env.LOADER.get !== 'function') {
             throw new BindingError('Fanout: env.LOADER binding missing or invalid. ' +
@@ -172,6 +174,7 @@ export class Fanout {
             extraBindings: this.opts.extraBindings,
             omitSupervisor: this.opts.omitSupervisor,
             supervisorPid: this.opts.supervisorPid,
+            network: this.opts.network,
         });
         try {
             const items = tasks.map((t) => t.args);
@@ -255,6 +258,8 @@ export class Fanout {
                                     wasmModules: this.opts.wasmModules,
                                     extraBindings: this.opts.extraBindings,
                                     omitSupervisor: this.opts.omitSupervisor,
+                                    // The workspace's egress: the peer's facets go out through it too.
+                                    network: networkRef(this.opts.network),
                                     // INSTALL-HONESTY: forward the COORDINATOR's full doId so
                                     // the peer's IsolatePool can mint a SUPERVISOR
                                     // binding that routes back HERE (the user's session DO),
