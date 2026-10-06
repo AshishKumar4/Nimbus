@@ -221,7 +221,7 @@ export class Shell {
     }
 
     // Initialize job table (legacy - still used for backward compat)
-    this.jobTable = new JobTable();
+    this.jobTable = new JobTable(processRegistry);
 
     // Use shared process registry from Kernel
     this.processRegistry = processRegistry;
@@ -616,15 +616,11 @@ export class Shell {
       return;
     }
 
-    // Report finished background jobs from JobTable (legacy)
-    const doneJobs = this.jobTable.collectDone();
-    for (const job of doneJobs) {
+    // Report the jobs that finished, then reap their processes (and any other zombie).
+    for (const job of this.jobTable.collectDone()) {
       this.writeToTerminal(`[${job.id}] Done    ${job.command}\n`);
     }
-
-    // Collect and reap zombie processes from ProcessRegistry
     this.processRegistry.collectZombies();
-    // Zombies are already logged by JobTable above, so no need to log again
 
     this.terminal.write(formatShellPrompt(this.env, this.cwd));
   }
@@ -1734,11 +1730,6 @@ export class Shell {
 
   private async builtinJobs(args: string[], stdout: CommandOutputStream, stderr: CommandOutputStream): Promise<number> {
     const jobs = this.jobTable.list();
-    for (const job of jobs) {
-      const proc = job.pid === undefined ? undefined : this.processRegistry.get(job.pid);
-      if (proc?.status === 'stopped') job.status = 'stopped';
-      else if (job.status === 'stopped' && proc?.status === 'running') job.status = 'running';
-    }
     let format = '';
     let filter = '';
     let index = 0;
@@ -1791,7 +1782,7 @@ export class Shell {
       return 1;
     }
     await stdout.write(`${job.command}\n`);
-    if (job.pid !== undefined && this.processRegistry.get(job.pid)?.status === 'stopped') this.processRegistry.kill(job.pid, 'CONT');
+    if (this.processRegistry.get(job.pid)?.status === 'stopped') this.processRegistry.kill(job.pid, 'CONT');
     const exitCode = await job.promise;
     this.jobTable.reap(job);
     return exitCode;
@@ -1807,8 +1798,7 @@ export class Shell {
       await stderr.write(`bg: ${spec}: ${job === 'ambiguous' ? 'ambiguous job spec' : 'no such job'}\n`);
       return 1;
     }
-    if (job.pid !== undefined) this.processRegistry.kill(job.pid, 'CONT');
-    job.status = 'running';
+    this.processRegistry.kill(job.pid, 'CONT');
     await stdout.write(`[${job.id}]+ ${job.command} &\n`);
     return 0;
   }

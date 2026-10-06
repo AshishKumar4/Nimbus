@@ -510,20 +510,13 @@ export class Interpreter {
         }
       })();
 
-      const pid = this.config.processRegistry.spawn({
-        command: commandText.split(' ')[0] || 'unknown',
-        args: commandText.split(' '),
+      const { pid, id: jobId } = this.config.jobTable.start({
+        command: commandText,
         cwd: this.config.getCwd(),
         env: { ...this.config.env },
-        isForeground: false,
         promise,
         abortController,
       });
-      const waitable = this.config.processRegistry.get(pid)?.promise ?? promise;
-      const jobId = this.config.jobTable.add(commandText, waitable, abortController, pid);
-      // `%N` (kill, fg, wait) names the job by the table's number.
-      const registered = this.config.processRegistry.get(pid);
-      if (registered) registered.jobId = jobId;
       this.config.env['!'] = String(pid);
 
       // An interactive bash reports the job; a script (bash -c) says nothing.
