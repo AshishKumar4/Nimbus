@@ -6,18 +6,30 @@ published independently in the `@nimbus-sh` npm scope.
 ## Unreleased
 
 - Fixed: `git clone --no-shallow` made a depth-1 clone. The git facet replaced a missing depth with 1, so the flag never reached isomorphic-git. A clone without a depth now fetches the whole history.
-- `git clone` no longer holds a pack in memory. A server that offers
+- `git clone` no longer holds a pack in memory, and every clone checks
+  out one way: prepare, batches, finish. A server without `filter` or wants
+  by id sends one pack, as git would fetch it; it is stored and indexed as
+  it arrives, its decoding continues from the stored bytes, and the
+  checkout is planned from it and written by batches that read their blobs
+  from it (cf-git's clone and its chunked checkout are gone). A server
+  that offers
   `filter` and wants by object id (GitHub, GitLab) gets the fast path
   (`git/pack/`): prepare fetches the commit and its trees (`filter
   blob:none`), plans the checkout from them and writes the repository's
   metadata; batches of ~2,500-6,000 blobs, two at a time, are fetched by id
   and each blob is written at its paths as it resolves; finish writes the
   index (with git's TREE extension) from the stat the session reported for
-  each file, so `git status` is clean without reading them. Every pack is
+  each file, so `git status` is clean without reading them. A clone follows
+  tags as git's does (`include-tag`; the tags of what it fetched are
+  written). Every pack is
   decoded as it arrives (native zlib, SHA-1 and CRC, a byte-bounded
   delta-base cache, evicted bases re-read by range), stored by ranged
   appends and indexed in the same pass; its `.idx` is byte-identical to
-  `git index-pack`'s. A decoding pass stops at a work budget (a third of
+  `git index-pack`'s. A delta chain is applied one delta at a time. Packs
+  are installed one way (`git/pack/install.ts`, git's order: idx under a
+  temporary name, .promisor, pack, idx last); a resumed pack records its
+  outcome before it is named, so a step run again after its answer was
+  lost finishes the naming. A decoding pass stops at a work budget (a third of
   the facet's measured 30 s CPU limit) or 400 store reads and continues in
   another invocation from the stored pack. Live, depth 1 (before → after):
   express 4.4 → 3.1 s; vscode 88.6 → 60.9 s (one batch at a time);
@@ -33,7 +45,10 @@ published independently in the `@nimbus-sh` npm scope.
   once the pack and its idx are durable): `checkout`, `reset --hard` and
   `merge` prefetch the commits' trees and then blobs, `diff` its pairs'
   blobs, each in one request; any other read that misses fetches lazily.
-  Other filters are refused by name.
+  Other filters are refused by name, and so is `--filter` against a server
+  that cannot serve it (no `filter`, or no wants by id), before anything is
+  written. Staged and committed objects are local (loose): a prefetch never
+  asks the promisor for them.
 - `git clone --no-shallow` takes the fast path for its worktree and then
   fetches the history in self-contained pieces: every commit (`filter
   tree:0`), the trees of 5,000 commits at a time (`filter blob:none`), and
@@ -44,31 +59,32 @@ published independently in the `@nimbus-sh` npm scope.
 - `git fetch` and `git pull` store the pack as it arrives (cf-git's
   side-band demux now waits while 64 packets sit unread, and `_fetch` hands
   the stream to the filesystem's `packs.ingest`), complete a thin pack as
-  `index-pack --fix-thin` does, and read packed objects by range. `git
+  `index-pack --fix-thin` does, and read packed objects by range. Refs and
+  `.git/shallow` move only after the pack and its idx are durable; a fetch
+  whose pack fails leaves no temporary file. `git
   fetch --depth <n> | --deepen <n> | --unshallow` deepen a shallow clone
   (one request, decoded in one invocation).
 - Packed objects are read by range everywhere (`git/pack/store.ts`: an
-  idx a 64 KiB page at a time, packs in 1 MiB pages), in the session and in
-  the facet, never a whole pack; the facet's reads skip the session's
-  content cache.
+  idx a 64 KiB page at a time, packs in 1 MiB pages, an object of any size
+  included), in the session and in the facet, never a whole pack; the
+  facet's reads skip the session's content cache.
 - `status`, `diff`, `add`, `commit`, `ls-files`, `reset` and `checkout` read
   the index as its own bytes and walk the worktree a directory at a time
   (`git/worktree/`), at Linux's scale; see the runtime spec.
 - The session ingests a clone's waves wider (up to 1,024 paths and 256 KiB
   of path bytes per W7 batch, a 64 KiB decoder read-ahead): one writer
   338 → ~780 files/s.
-- Retries. A request to the git server is retried twice, 400 ms and
-  1.2 s apart, on a connection failure or HTTP 502, 503, 504 or 522-525
-  before any byte of its body is read; one whose response stops (45 s
-  without a byte, or without headers) or breaks off fails as a transport
-  error. A batch or history piece whose request fails so, whose write wave
-  to the session loses its connection ("Network connection lost", a
-  transient Worker-to-Durable-Object error; the session itself stays up),
-  or that runs past 150 s, is run again, at most three times, 1 s and 3 s
-  apart, each failure written to the terminal; objects are addressed by
-  content, so the piece rewrites the same files and pack, its earlier
-  temporary pack discarded. Finish, budget overruns and other errors are
-  not retried.
+- Retries: one lost-transport policy (`git/pack/transport.ts`), three
+  tries 1 s and 3 s apart (jittered), for an idempotent request to the git
+  server (a connection failure, HTTP 502, 503, 504 or 522-525 before its
+  body, no headers in 45 s; cf-git's fetch, pull and push included) and for
+  a clone's batch or history piece (its request failed so, its write wave
+  to the session lost its connection, "Network connection lost", or it ran
+  past 150 s), each failure written to the terminal. A piece that hung
+  loses its write authority first: the clone's lease passes to a new owner
+  (`SqliteVFS.rotateExclusiveMutation`) and its late writes are refused;
+  an abort does the same. Finish, budget overruns and other errors are not
+  retried.
 - A git command run in a repository whose clone is still running refuses
   (`fatal: '<dir>' is still being cloned`). A failed clone's abort deletes
   `.git` file by file (one recursive delete passed a write group's row
