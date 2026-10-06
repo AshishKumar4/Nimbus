@@ -167,26 +167,33 @@ export interface NimbusWorkspaceOptions {
     readonly runtimeSource?: RuntimeSource;
     /**
      * The workspace's egress: every network request made on behalf of the
-     * workspace's commands and programs goes through it. Its `fetch` sees HTTP
-     * and WebSocket upgrades; its `connect`, when it has one, sees plain TCP
-     * sockets. Typically a service binding or a `ctx.exports` entrypoint
-     * minted with the workspace's identity in its props, which may record,
-     * rewrite or refuse each request.
+     * workspace's commands and programs goes through it. A Fetcher's `fetch`
+     * and `connect` (`WorkspaceEgress`): `fetch` sees HTTP and WebSocket
+     * upgrades, `connect` plain TCP sockets. Typically a service binding or a
+     * `ctx.exports` entrypoint minted with the workspace's identity in its
+     * props, which may record, rewrite or refuse each request.
      *
      * Covered: git's clone, fetch, pull and push (every Dynamic Worker they
      * load) and its on-demand object fetches; npm's registry and tarball
      * requests (the install facets, in this Durable Object and in peers);
-     * curl, wget, dig and ping; pip's and gem's index and downloads; a child
-     * process's fetch, http/https, WebSocket and plain TCP sockets; a worker or
-     * dev server a command starts. A child's TLS socket (`tls.connect`) is
-     * refused under an egress: a Fetcher's `connect()` carries plain TCP only,
-     * so the TLS session could only be made off the egress. HTTPS by fetch or
-     * `https` is not affected. Responses from Nimbus's shared npm packument
-     * cache are not used under an egress, so the egress sees every registry
-     * read; integrity-checked tarballs may still come from the shared cache.
+     * curl, wget, dig and ping; pip's and gem's index requests and downloads;
+     * a process's fetch, http/https, WebSocket and plain TCP
+     * sockets; the one-shot runtimes and REPLs, whose facets go out through it
+     * (with `facets`, bind them to this network: `loaderFacetHost(env, ctx,
+     * workspaceNetwork(egress))`), TLS CPython makes itself included; an inline
+     * `node` program's fetch and http/https, streamed and redirected as Node's
+     * fetch does; a worker or dev server a command starts.
      *
-     * Not covered: Nimbus's own infrastructure traffic (R2, the runtime
-     * catalog, OAuth, AI inference, static assets, its own Durable Objects).
+     * Refused: a process's TLS socket (`tls.connect`), because a Fetcher's
+     * `connect()` carries plain TCP only and the TLS session could only be
+     * made off the egress (HTTPS by fetch or `https` is not affected); an
+     * inline `node` program's WebSocket, which cannot cross its realm.
+     *
+     * Not covered: responses from Nimbus's shared npm packument cache are not
+     * used under an egress, so the egress sees every registry read, but
+     * integrity-checked tarballs may still come from the shared tarball cache;
+     * Nimbus's own infrastructure traffic (R2, the runtime catalog, OAuth, AI
+     * inference, static assets, its own Durable Objects).
      *
      * Absent, the workspace uses the isolate's own network, as before.
      */

@@ -145,7 +145,7 @@ network per egress object, so it is the workspace's own).
 | Traffic | Through the egress |
 |---|---|
 | git clone, fetch, pull, push, on-demand object fetches | yes |
-| npm install (registry and tarballs, every install facet and peer) | yes; the shared packument cache is not used |
+| npm install (registry and tarballs, every install facet and peer) | yes; the shared packument cache is not used, but an integrity-checked tarball may come from Nimbus's shared tarball cache |
 | curl, wget, dig, ping, `npm view`/`search`, gem/bundle | yes |
 | pip: PyPI metadata, and the wheel and source downloads (made inside CPython) | yes |
 | a node or bun program's fetch, `http`/`https` and clients over them (node-fetch, undici), WebSocket | yes |
