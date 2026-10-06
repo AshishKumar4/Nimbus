@@ -5,7 +5,16 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: `git clone --no-shallow` made a depth-1 clone. The git facet replaced a missing depth with 1, so the flag never reached isomorphic-git. A clone without a depth now fetches the whole history.
+## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
+
+core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
+published; they ship with this release and carry the 2026-10-05 entries
+too. platform, config and cli move because their sources changed since
+their last published versions; core, fabric and worker require platform
+^0.7.2, and cli config ^0.2.4.
+
+### Git at scale
+
 - `git clone` no longer holds a pack in memory, and every clone checks
   out one way: prepare, batches, finish. A server without `filter` or wants
   by id sends one pack, as git would fetch it; it is stored and indexed as
@@ -89,6 +98,53 @@ published independently in the `@nimbus-sh` npm scope.
   (`fatal: '<dir>' is still being cloned`). A failed clone's abort deletes
   `.git` file by file (one recursive delete passed a write group's row
   limit).
+- Every pack the git facet installs gets its reverse index (`.rev`), byte
+  for byte what `git index-pack --rev-index` writes. A clone writes
+  `packed-refs` as git clone does (the remote-tracking branch, or a cloned
+  tag and its peeled id), and the local branch, `origin/HEAD` and followed
+  tags loose: `tests/unit/git-clone-matches-git-workerd.mjs` compares HEAD,
+  config, packed-refs, shallow, every ref and the index with git 2.53's
+  depth-1 clone. A command's one-shot pack read caches only the bases its
+  delta chain is built on, as git's delta_base_cache does.
+- Live, on a throwaway (2026-10-06, release head): next.js depth 1 in
+  32-50 s, 20 of 20 with no piece retried; TypeScript depth 1 in 37-62 s;
+  Linux depth 1 in 170-191 s; react `--no-shallow` in 107-123 s; vscode
+  `--no-shallow` in 548-587 s (the previous release candidate: 714 s and a
+  hang). A clone piece may run 300 s before it is taken as hung.
+
+### Session ingest and write waves
+
+- One wave writer for every W7 producer (`@nimbus-sh/platform/wave-writer.js`:
+  git, npm's install facet, the installer bins and the clang sysroot), with
+  one lost-call policy (`lost-call.ts`): a wave nothing reads for 10 s, or
+  unanswered 20 s after it ends, is sent again on a fresh call, up to six
+  times with backoff. Each attempt carries a fence: the session admits a
+  wave only under a writer epoch it issued and holds open
+  (`openWaveWriter`), and refuses an attempt older than one it has seen, so
+  a re-sent wave's late original never applies.
+- Fixed: two concurrent write streams could wait forever on the 1 MiB
+  small-request reserve, each holding its own group and file; a stream now
+  gives back every lease it holds before it waits for credit.
+- A write stream authorises a group of files at once, in the turn that
+  commits them; W7 decode makes no encoder per record. A directory's mtime
+  and ctime move when its entries change, and a stream's directory records
+  commit in batches its plan can hold.
+
+### Resident WASI filesystem
+
+- A WASI guest whose engine can park answers from a resident store of its
+  own, with one copy of a file's bytes; a change by path settles held
+  writes first, a held file's pinned copy is one version's, and a CPython
+  start that failed is ended and named before any port is advertised.
+
+### Known: rollout right after a deploy
+
+- A clone started within about a minute of a fresh deploy may meet
+  Cloudflare's version rollout: seen once as a clone batch that hung until
+  its 300 s timeout (retried behind its fence; the clone completed) and
+  once as a session reset (WebSocket 1006). Neither recurred in 20 clones
+  in steady state.
+
 ### Breaking changes for embedders
 
 - `nimbus install` reads the runtime catalog by its SHA-256 and nothing
@@ -102,6 +158,9 @@ published independently in the `@nimbus-sh` npm scope.
   changed what all of them installed. `catalog/v1.json` is still written,
   for deployments built before this change. Re-run `nimbus runtime sync`
   once to write the catalog under its digest and get the value.
+
+### Synchronous stdin, sockets and TLS
+
 - Fixed: a child stopped at a synchronous stdin read releases its Dynamic
   Worker launch admission while it waits. A replay queues fairly to regain
   admission before preparation, so stopped children cannot prevent a
