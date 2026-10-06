@@ -46,7 +46,7 @@ import { createServer as createTcpServer } from 'node:net';
 import { networkInterfaces, tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { startLocalProbe } from './lib/workerd-probe.mjs';
+import { startLocalProbe, terminalCommandRunner } from './lib/workerd-probe.mjs';
 
 const CHILDREN = {
   ready: [
@@ -471,18 +471,8 @@ try {
   try {
     await t.connect();
     await t.waitForPrompt(60_000);
-    let serial = 0;
     // A command's own output and status, the echo and prompt stripped.
-    const run = async (command, timeoutMs = 120_000) => {
-      const mark = `__NIMBUS_DONE_${++serial}__`;
-      const { output } = await t.run(`${command}; echo "${mark}$?"`, timeoutMs);
-      const text = strip(output);
-      const end = text.lastIndexOf(mark);
-      if (end < 0) throw new Error(`${command}: no completion marker within ${timeoutMs} ms:\n${text.slice(-800)}`);
-      const status = Number(/^\d+/.exec(text.slice(end + mark.length))?.[0]);
-      const echoed = text.lastIndexOf(`echo "${mark}$?"`);
-      return { stdout: text.slice(text.indexOf('\n', echoed) + 1, end), status };
-    };
+    const run = terminalCommandRunner(t);
     const write = (path, content) => run(`node -e "require('fs').writeFileSync('${path}', Buffer.from('${Buffer.from(content).toString('base64')}', 'base64'))"`);
     await run(`mkdir -p ${W}`);
 
@@ -731,10 +721,8 @@ try {
     await box.destroy().catch(() => {});
   }
 } catch (error) {
-  // What the worker said, for a failure the driver only sees as a closed socket.
-  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
-  writeFileSync(logPath, probe.log());
-  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
+  // CI retains the worker log with this test's output, without a tmp leak.
+  console.error(`sync-stdin-replay-workerd: the worker's log:\n${probe.log()}`);
   throw error;
 } finally {
   workerLog = probe.log();
@@ -743,9 +731,7 @@ try {
   rmSync(fixtureDir, { recursive: true, force: true });
 }
 if (failures.length > 0) {
-  const logPath = join(tmpdir(), `sync-stdin-replay-workerd-${Date.now()}.log`);
-  writeFileSync(logPath, workerLog);
-  console.error(`sync-stdin-replay-workerd: the worker's log is ${logPath}`);
+  console.error(`sync-stdin-replay-workerd: the worker's log:\n${workerLog}`);
   console.error(`sync-stdin-replay-workerd: ${failures.length} failure(s):\n${failures.join('\n\n')}`);
   process.exit(1);
 }

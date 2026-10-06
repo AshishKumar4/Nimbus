@@ -117,13 +117,33 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
   const persist = join(work, 'state');
   let child = null;
+  const owned = new Set();
+  const stopped = new WeakMap();
+  const stopChild = (process) => {
+    if (stopped.has(process)) return stopped.get(process);
+    const task = (async () => {
+      const closed = new Promise((done) => {
+        let timer;
+        const finish = () => { clearTimeout(timer); process.off('close', finish); done(); };
+        process.once('close', finish);
+        timer = setTimeout(finish, 5000);
+        if (process.exitCode !== null && process.stdout?.destroyed && process.stderr?.destroyed) finish();
+      });
+      // An exited leader can leave workerd holding its pipes and group alive.
+      // Only groups created here are signalled, including a failed attempt.
+      try { globalThis.process.kill(-process.pid, process.exitCode === null ? 'SIGTERM' : 'SIGKILL'); } catch { /* gone */ }
+      await closed;
+      try { globalThis.process.kill(-process.pid, 'SIGKILL'); } catch { /* gone */ }
+      process.stdout?.destroy();
+      process.stderr?.destroy();
+      process.unref();
+      owned.delete(process);
+    })();
+    stopped.set(process, task);
+    return task;
+  };
   const stop = async () => {
-    if (child && child.exitCode === null) {
-      // wrangler spawns workerd beneath it: end the whole group.
-      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
-      await new Promise((done) => { child.once('close', done); setTimeout(done, 5000); });
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-    }
+    await Promise.all([...owned].map(stopChild));
     rmSync(work, { recursive: true, force: true });
   };
   try {
@@ -159,6 +179,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
         ...Object.entries(vars).flatMap(([key, value]) => ['--var', `${key}:${value}`]),
         ...(inspectorPort===null?[]:['--inspector-port',String(inspectorPort)]),
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
+      owned.add(child);
       // wrangler dev rebuilds and reloads the worker when a file it bundles
       // changes, which resets every session it serves: a test running then
       // fails on a socket closed with 1006 and nothing else to say why
@@ -176,7 +197,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       child.stderr.on('data', watchReload);
       for (;;) {
         if (child.exitCode !== null) {
-          if (attempt < 3 && /Address already in use/.test(log)) break;
+          if (attempt < 3 && /Address already in use/.test(log)) { await stopChild(child); break; }
           throw new Error(`wrangler dev exited ${child.exitCode}:\n${log.slice(-2000)}`);
         }
         const ready = /Ready on (http:\/\/127\.0\.0\.1:\d+)/.exec(log);
@@ -202,8 +223,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
 }
 
 /**
- * A terminal session on a local probe with `nimbus install <runtime>` done,
- * running commands through the real shell. `run(command)` returns the
+ * A command runner on an existing terminal. `run(command)` returns the
  * command's own output (the echo and prompts stripped) and its exit status.
  *
  * A command is done when its completion marker has printed its status and
@@ -214,14 +234,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
  * wait then fails once neither it nor the terminal's output has changed for
  * `stalledMs`, or at `timeoutMs` however it moves.
  */
-export async function localTerminal(probe, { install = ['bash'] } = {}) {
-  process.env.BASE = probe.base;
-  process.env.NIMBUS_PROBE_TOKEN = probe.token;
-  const { mintSession, deleteSession, Terminal, requestHeaders } = await import('../../behavioral/_driver.mjs');
-  const sid = await mintSession();
-  const terminal = new Terminal(sid);
-  await terminal.connect();
-  await terminal.waitForPrompt(60_000);
+export function terminalCommandRunner(terminal) {
   const strip = (text) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
   /** Its answer, or `undefined` if it has none within `ms` (a session too busy to answer has not moved). */
   const within = (promise, ms) => {
@@ -267,6 +280,19 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
     const start = text.indexOf('\n', echoed) + 1;
     return { stdout: text.slice(start, end), status };
   };
+  return run;
+}
+
+/** A session on a local probe, with the requested runtimes installed. */
+export async function localTerminal(probe, { install = ['bash'] } = {}) {
+  process.env.BASE = probe.base;
+  process.env.NIMBUS_PROBE_TOKEN = probe.token;
+  const { mintSession, deleteSession, Terminal, requestHeaders } = await import('../../behavioral/_driver.mjs');
+  const sid = await mintSession();
+  const terminal = new Terminal(sid);
+  await terminal.connect();
+  await terminal.waitForPrompt(60_000);
+  const run = terminalCommandRunner(terminal);
   for (const name of install) {
     const r = await run(`nimbus install ${name}`, 240_000);
     if (r.status !== 0) throw new Error(`nimbus install ${name} failed (${r.status}):\n${r.stdout.slice(-800)}`);

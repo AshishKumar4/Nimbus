@@ -12,6 +12,7 @@ import assert from 'node:assert/strict';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
@@ -89,13 +90,7 @@ async function dispatch(bytes, argv) {
         };
       },
     },
-    processes: {
-      spawn: () => ({ pid: 42 }),
-      appendOutput() {},
-      exit() {},
-      getExit: () => null,
-      markExit() {},
-    },
+    processes: new SessionProcessSupervisor(),
   });
   const result = await run('', {
     argv,
