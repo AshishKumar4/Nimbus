@@ -154,9 +154,11 @@ export interface WasiMakeImportsOptions {
      * program whose output need not be UTF-8 (git's cat-file, archive or a diff
      * of a Latin-1 file) or splits a character across writes. Given, it takes
      * the stream's place in stdoutWrite/stderrWrite and the readable buffer.
+     * A sink that returns a promise holds the writer until it settles (the
+     * bytes are the sink's either way): how output relayed live pushes back.
      */
-    stdoutBytes?: (bytes: Uint8Array) => void;
-    stderrBytes?: (bytes: Uint8Array) => void;
+    stdoutBytes?: (bytes: Uint8Array) => void | Promise<void>;
+    stderrBytes?: (bytes: Uint8Array) => void | Promise<void>;
 }
 /**
  * The WASI import table, exhaustively.
@@ -254,6 +256,8 @@ export interface WasiInstanceBundle {
     wasiImport: WasiImports;
     /** The `nimbus_proc` imports (wasi/processes.ts), for a guest built to start children through the host. */
     procImport: Record<string, (...args: number[]) => SyscallResult>;
+    /** Once the guest exited: stop following its children (they run on, as orphans do). */
+    procDispose(): void;
     getStdout(): string;
     getStderr(): string;
 }

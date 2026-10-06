@@ -66,6 +66,17 @@ export interface PipeFdEntry {
     rights?: bigint;
     rightsInheriting?: bigint;
 }
+/**
+ * The guest's half of the session's Dynamic Worker ledger (worker
+ * runtime/child-news.ts, which node's child_process speaks too): the news of
+ * its children it has applied, and whether its only remaining work is
+ * waiting on them. The session refuses a spawn no release could ever make
+ * room for (EAGAIN) only when every holder says so.
+ */
+export interface ChildNews {
+    apply(numbers: number[] | undefined): void;
+    say(blocked: boolean): void;
+}
 export interface ProcessHostOptions {
     /** The guest's descriptor table, shared with the rest of its WASI layer. */
     fds: Map<number, FdEntry | PipeFdEntry>;
@@ -80,6 +91,8 @@ export interface ProcessHostOptions {
     release(): Promise<void>;
     /** After input: the guest's next filesystem answer takes the barrier. */
     inbound(): void;
+    /** The ledger's news protocol, where the session speaks it. */
+    news: ChildNews | null;
 }
 /** What a poll of a pipe end finds: bytes waiting (or room), whether the other end is gone; null once it gave up. */
 export interface PipeReadiness {
@@ -98,10 +111,16 @@ export interface ProcessHost {
     isPipe(fd: number): boolean;
     /**
      * When pipe descriptor `fd` (isPipe) is ready for `want`, for poll_oneoff:
-     * at once when it is, else when it becomes so, or null once the wait gave
-     * up at PROCESS_PARK_MS.
+     * at once when it is, else a wait that answers when it becomes so, or null
+     * once it gave up at PROCESS_PARK_MS. A poll that returns cancels the waits
+     * it no longer needs.
      */
-    readiness(fd: number, want: 'read' | 'write'): PipeReadiness | null | Promise<PipeReadiness | null>;
+    readiness(fd: number, want: 'read' | 'write'): PipeReadiness | {
+        ready: Promise<PipeReadiness | null>;
+        cancel(): void;
+    };
+    /** The guest exited: its children's output and ends are no longer followed. */
+    dispose(): void;
 }
 export declare function processHost(opts: ProcessHostOptions): ProcessHost;
 //# sourceMappingURL=processes.d.ts.map
