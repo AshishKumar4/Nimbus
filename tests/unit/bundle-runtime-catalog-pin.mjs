@@ -13,6 +13,12 @@
 //   4. A vars block without the var is an environment the script does not
 //      know: refused, no config changed.
 //   5. The key the script reads is the key the Worker reads (catalogKey).
+//   6. Every run prints NIMBUS_RUNTIME_CATALOG_SHA256=<digest>, the line
+//      `nimbus runtime sync` reads, the production bucket's included.
+//   7. The blocks are the config's, as wrangler reads it (top level, each
+//      env, their previews), not text that looks like one: a `"vars"` in a
+//      comment is neither counted nor written, and a block without the var
+//      is refused even when a comment carries one.
 //
 // The script runs for real against a stub wrangler, from a temp tree laid out
 // as the repo is: it resolves the configs from import.meta.url, so a copy in
@@ -20,7 +26,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { catalogKey } from '../../packages/worker/src/runtime/runtime-catalog.ts';
@@ -30,10 +36,14 @@ const CORE = new URL('../../packages/core', import.meta.url).pathname;
 const CATALOG = JSON.stringify({ version: 1, runtimes: { python: { default: '1.0', versions: {} } } }, null, 2);
 const CATALOG_SHA = createHash('sha256').update(CATALOG).digest('hex');
 const OLD = 'f'.repeat(64);
+// A wrangler config: the first block the top level's vars, the rest env1, env2, ….
 const config = (blocks) => `{
   // A comment the rewrite keeps.
   "name": "app",
-${blocks.map((vars, i) => `  "block${i}": {\n    "vars": {\n${vars}\n    }\n  }`).join(',\n')}
+  "vars": {\n${blocks[0]}\n  },
+  "env": {
+${blocks.slice(1).map((vars, i) => `    "env${i + 1}": {\n      "vars": {\n${vars}\n      }\n    }`).join(',\n')}
+  }
 }
 `;
 const pinned = `      // the catalog this environment reads\n      "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}",\n      "OTHER": "x"`;
@@ -46,6 +56,8 @@ try {
   cpSync(join(WORKER, 'runtime-contracts'), join(root, 'packages/worker/runtime-contracts'), { recursive: true });
   mkdirSync(join(root, 'node_modules/@nimbus-sh'), { recursive: true });
   symlinkSync(CORE, join(root, 'node_modules/@nimbus-sh/core'));
+  // The JSONC editor the production path loads, as the worker package resolves it.
+  symlinkSync(realpathSync(join(WORKER, 'node_modules/jsonc-parser')), join(root, 'node_modules/jsonc-parser'));
   mkdirSync(join(root, 'apps/hosted-demo'), { recursive: true });
   mkdirSync(join(root, 'apps/probe'), { recursive: true });
   mkdirSync(join(root, 'bin'), { recursive: true });
@@ -95,6 +107,7 @@ process.exit(1);
   setObjects(both);
   const production = run();
   assert.equal(production.status, 0, production.stderr);
+  assert.match(production.stdout, new RegExp(`^NIMBUS_RUNTIME_CATALOG_SHA256=${CATALOG_SHA}$`, 'm'), 'the production bucket prints the line too');
   assert.deepEqual(values(hosted), Array(3).fill(CATALOG_SHA));
   assert.deepEqual(values(probe), Array(2).fill(CATALOG_SHA));
   assert.match(readFileSync(hosted, 'utf8'), /A comment the rewrite keeps\./);
@@ -118,6 +131,43 @@ process.exit(1);
   assert.notEqual(unknown.status, 0);
   assert.match(unknown.stderr, /every vars block must carry it/);
   assert.deepEqual(values(probe), Array(2).fill(OLD));
+
+  // 7. A commented example of a vars block is a comment.
+  const commentedVars = `      // e.g. "vars": { "OTHER": "y" }\n${pinned}`;
+  resetConfigs([commentedVars, pinned, pinned]);
+  setObjects(both);
+  const commented = run();
+  assert.equal(commented.status, 0, commented.stderr);
+  assert.deepEqual(values(hosted), Array(3).fill(CATALOG_SHA));
+  assert.match(readFileSync(hosted, 'utf8'), /\/\/ e\.g\. "vars": \{ "OTHER": "y" \}/, 'the comment is kept as it was');
+
+  // 7. A block without the var is refused even when a comment carries one, and the comment is left.
+  const commentedPin = `      // was: "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}"\n      "OTHER": "x"`;
+  resetConfigs([pinned, commentedPin, pinned]);
+  setObjects(both);
+  const disguised = run();
+  assert.notEqual(disguised.status, 0, 'a block without the var passed because a comment carried one');
+  assert.match(disguised.stderr, /env\.env1\.vars without NIMBUS_RUNTIME_CATALOG_SHA256/);
+  assert.deepEqual(values(probe), Array(2).fill(OLD));
+
+  // 7. Every block wrangler reads: the top level, each env, and their previews.
+  writeFileSync(hosted, `{
+  "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}" },
+  "previews": { "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}", }, },
+  "env": {
+    "staging": {
+      "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}" },
+      "previews": { "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}" } }
+    },
+    "production": { "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}" } }
+  }
+}
+`);
+  writeFileSync(probe, config([pinned]));
+  setObjects(both);
+  const everyBlock = run();
+  assert.equal(everyBlock.status, 0, everyBlock.stderr);
+  assert.deepEqual(values(hosted), Array(5).fill(CATALOG_SHA), 'top level, env, and previews');
 
   // An unreadable bucket pins nothing.
   resetConfigs();
