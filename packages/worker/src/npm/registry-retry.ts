@@ -8,16 +8,14 @@
  * client waits far longer, but here an install's iteration speed matters
  * more than its last-ditch resilience.
  *
- * Self-contained but for retrying and REGISTRY_RETRY_BACKOFF_MS, which it
- * names: the install facet carries all three by source (its preamble,
- * loaders/npm-install-preamble.ts), so a tarball fetch there and a packument
- * fetch in the supervisor (r2-cache.ts) retry alike.
+ * Self-contained but for retrying, a function too: the install facet
+ * carries both by source (its preamble, loaders/npm-install-preamble.ts), so
+ * a tarball fetch there and a packument fetch in the supervisor (r2-cache.ts)
+ * retry alike. The schedule is a literal here, not a module constant: the
+ * preamble keeps the identifiers the Worker's bundler gives only functions.
  */
 
 import { retrying } from '@nimbus-sh/platform/retry.js';
-
-/** The waits before each re-try of a registry request. */
-export const REGISTRY_RETRY_BACKOFF_MS: readonly number[] = [500, 1500, 4500];
 
 /**
  * `fetchOnce(n)` (try n, 0-based) under the registry's retry policy: the last
@@ -30,7 +28,8 @@ export function retryingRegistryFetch(
 ): Promise<Response> {
   return retrying(fetchOnce, {
     retries: Math.max(0, options?.retries ?? 3),
-    schedule: REGISTRY_RETRY_BACKOFF_MS,
+    // The waits before each re-try.
+    schedule: [500, 1500, 4500],
     retryReason: (outcome) => {
       if (outcome.ok) return outcome.value.status >= 500 && outcome.value.status <= 599 ? 'HTTP ' + outcome.value.status : null;
       const error = outcome.error;

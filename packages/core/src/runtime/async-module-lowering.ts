@@ -39,7 +39,7 @@
  */
 import { Parser, type Pattern } from 'acorn';
 import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
-import { bindingScope, list, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
+import { bindingScope, list, namesBinding, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
 
 /**
  * One name an import binds: the module's namespace, or one of its exports
@@ -203,33 +203,6 @@ function importReferences(program: unknown, names: readonly string[]): Map<strin
     found.push({ start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
   }
   return references;
-}
-
-/** Whether an identifier under `parent` by `key` names a binding, rather than a property, a key or a label. */
-function namesBinding(parent: EsNode, key: string): boolean {
-  switch (parent.type) {
-    case 'MemberExpression':
-      return key !== 'property' || parent.computed === true;
-    case 'Property':
-    case 'MethodDefinition':
-    case 'PropertyDefinition':
-      return key !== 'key' || parent.computed === true;
-    case 'ImportAttribute':
-      return key !== 'key';
-    case 'LabeledStatement':
-    case 'BreakStatement':
-    case 'ContinueStatement':
-    case 'MetaProperty':
-    // A declaration's own names: the emitter replaces the declaration whole.
-    case 'ImportSpecifier':
-    case 'ImportDefaultSpecifier':
-    case 'ImportNamespaceSpecifier':
-    case 'ExportSpecifier':
-    case 'ExportAllDeclaration':
-      return false;
-    default:
-      return true;
-  }
 }
 
 /** How an identifier under `parent` by `key` uses the binding it names. */
