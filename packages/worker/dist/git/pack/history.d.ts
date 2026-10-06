@@ -34,7 +34,8 @@ export interface StagedFile {
     name: string;
     bytes: number;
 }
-export type HistoryKind = 'commits' | 'trees' | 'blobs';
+/** `snapshot`: a streamed clone's one pack, whose decoding continues here (clone.ts cloneStream). */
+export type HistoryKind = 'commits' | 'trees' | 'blobs' | 'snapshot';
 /** One history invocation's outcome: its pack (done or pending), and what it listed. */
 export interface HistoryStepResult {
     kind: HistoryKind;

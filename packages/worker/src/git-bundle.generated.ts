@@ -6,6 +6,6 @@
  * facet imports as `git-bundle.js`. GIT_BUNDLE_SHA256 is verified at fetch time.
  */
 
-export const GIT_BUNDLE_ENTRY: string = "/_assets/runtime/git-1eb4e822aae463fa.js";
-export const GIT_BUNDLE_BUILD_ID: string = "1eb4e822aae463fa";
-export const GIT_BUNDLE_SHA256: string = "1eb4e822aae463fa9994d14ec53d871180809b052d252efecfbff39116728359";
+export const GIT_BUNDLE_ENTRY: string = "/_assets/runtime/git-b477c90019d38553.js";
+export const GIT_BUNDLE_BUILD_ID: string = "b477c90019d38553";
+export const GIT_BUNDLE_SHA256: string = "b477c90019d38553807b8ee4dbe1fd4003d7e093778c22bde7cf0d50cc051379";

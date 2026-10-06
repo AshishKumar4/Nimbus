@@ -24,6 +24,7 @@ import { encodeNode } from '../worktree/cachetree.js';
 import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './format.js';
 import { PackStreamProcessor } from './processor.js';
 import { discover, requestPack } from './upload-pack.js';
+import { PackObjectStore } from './store.js';
 export const STAGE_DIR = '.git/nimbus-clone';
 export const PACK_DIR = '.git/objects/pack';
 /** Blobs per batch, and at most this many batches. */
@@ -41,6 +42,9 @@ const PLAN_TREE_BYTES = 48 * 1024 * 1024;
  * waves) stay well under a few hundred more.
  */
 const MAX_STORE_READS = 400;
+/** A streamed clone's one pack is resolved with this cache, and this many stored bytes kept readable. */
+const STREAM_CACHE_BYTES = 8 * 1024 * 1024;
+const STREAM_RECENT_BYTES = 24 * 1024 * 1024;
 /** Blobs held while a filtered pack's trees are still arriving. */
 const HELD_BLOB_BYTES = 16 * 1024 * 1024;
 const READ_PIECE_BYTES = 4 * 1024 * 1024;
@@ -106,16 +110,21 @@ function resolveRef(advertisement, ref) {
 function shortName(fullRef) {
     return fullRef.replace(/^refs\/(heads|tags)\//, '');
 }
-/** The config `git clone --depth N [--filter=<spec>]` writes. */
-function cloneConfig(url, fullRef, filter) {
+/**
+ * The config `git clone --depth N [--filter=<spec>]` writes. Of an empty
+ * remote git's single-branch clone writes no fetch refspec (`empty`).
+ */
+function cloneConfig(url, fullRef, filter, empty = false) {
     const branch = fullRef.startsWith('refs/heads/') ? shortName(fullRef) : null;
     // A partial clone's repository is format 1 (extensions); git sets it so.
     let config = '[core]\n\trepositoryformatversion = ' + (filter === undefined ? 0 : 1) +
         '\n\tfilemode = true\n\tbare = false\n\tlogallrefupdates = true\n' +
         '[remote "origin"]\n\turl = ' + url + '\n';
-    config += branch === null
-        ? '\tfetch = +' + fullRef + ':' + fullRef + '\n'
-        : '\tfetch = +refs/heads/' + branch + ':refs/remotes/origin/' + branch + '\n';
+    if (!empty) {
+        config += branch === null
+            ? '\tfetch = +' + fullRef + ':' + fullRef + '\n'
+            : '\tfetch = +refs/heads/' + branch + ':refs/remotes/origin/' + branch + '\n';
+    }
     if (filter !== undefined)
         config += '\tpromisor = true\n\tpartialclonefilter = ' + filter + '\n';
     if (branch !== null)
@@ -234,9 +243,29 @@ function treesComplete(trees, root) {
     }
     return true;
 }
+function takesWantsById(advertisement) {
+    return advertisement.capabilities.has('allow-reachable-sha1-in-want') || advertisement.capabilities.has('allow-any-sha1-in-want');
+}
 /**
- * The clone's metadata, its commit and trees, and its plan; or why the
- * server cannot serve the fast path.
+ * The remote's refs and capabilities, before the clone writes anything: a
+ * clone the server cannot serve is refused here. git would ignore a filter
+ * the server does not support and clone everything; and a partial clone
+ * whose server cannot send its missing objects by id is no clone.
+ */
+export async function cloneDiscover(context, request) {
+    const advertisement = await discover({ url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress });
+    if (request.filter !== undefined && advertisement.refs.size > 0) {
+        if (!advertisement.capabilities.has('filter'))
+            throw new Error('fatal: the server does not support --filter: clone without it');
+        if (!takesWantsById(advertisement)) {
+            throw new Error('fatal: the server does not send objects by id, which a partial clone fetches on demand: clone without --filter');
+        }
+    }
+    return advertisement;
+}
+/**
+ * The clone's metadata, its commit and trees, and its plan; or, from a
+ * server without filter or wants by id, its one pack (cloneStream).
  *
  * Without --filter prepare asks for blob:none and every blob comes in the
  * batches. With one, prepare asks for the user's filter: a blob:limit pack
@@ -245,27 +274,20 @@ function treesComplete(trees, root) {
  * which one more blob:none request for the root tree brings, as git's lazy
  * fetch would. Every pack of a partial clone is a promisor pack.
  */
-export async function cloneFast(context, request) {
+export async function cloneFast(context, request, advertisement) {
     const transport = { url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress };
-    const advertisement = await discover(transport);
     const capabilities = advertisement.capabilities;
-    if (!capabilities.has('filter')) {
-        if (request.filter !== undefined)
-            throw new Error('fatal: the server does not support --filter');
-        return { unsupported: 'the server does not offer filter' };
-    }
-    if (!capabilities.has('allow-reachable-sha1-in-want') && !capabilities.has('allow-any-sha1-in-want')) {
-        return { unsupported: 'the server does not take wants by object id' };
-    }
+    // An empty remote's clone is partial as git's is: its config names the promisor.
     if (advertisement.refs.size === 0)
-        return { unsupported: 'the remote is empty' };
+        return await cloneEmpty(context, advertisement, request.filter);
+    if (!capabilities.has('filter') || !takesWantsById(advertisement))
+        return await cloneStream(context, request, advertisement, transport);
     const { fullRef, commit, tagObject } = resolveRef(advertisement, request.ref);
     const partial = request.filter !== undefined;
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
-    for (const dir of ['.git/hooks', '.git/info', '.git/objects/info', PACK_DIR, '.git/refs/heads', '.git/refs/tags', STAGE_DIR]) {
+    for (const dir of CLONE_DIRECTORIES)
         await writer.directory(dir);
-    }
     await writer.flush();
     const response = await requestPack(transport, capabilities, {
         wants: tagObject === null ? [commit] : [tagObject],
@@ -417,7 +439,31 @@ export async function cloneFast(context, request) {
         shares.push({ name: 'index-prepare', bytes: share.byteLength });
         await writer.file(STAGE_DIR + '/index-prepare', 0o644, share);
     }
-    const batches = plan.batches(Math.min(MAX_BATCHES, Math.ceil(plan.count / (request.blobsPerBatch ?? BLOBS_PER_BATCH))), arrived);
+    const staged = await stagePlan(writer, plan, cacheTree, arrived, request.blobsPerBatch);
+    shares.push(...staged.shares);
+    await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows, filter: request.filter });
+    await writer.flush();
+    return {
+        commit,
+        tree,
+        headRef: fullRef.startsWith('refs/heads/') ? fullRef : null,
+        capabilities: [...capabilities],
+        batches: staged.batches,
+        planEntries: plan.count,
+        planBytes: plan.byteLength,
+        shares,
+        cacheTreeBytes: staged.cacheTreeBytes,
+        partial,
+        packs,
+    };
+}
+/**
+ * The checkout's staged files: a batch file per run of blobs not in
+ * `present` (plan.ts encodeBatch), the gitlinks' index entries (each also an
+ * empty directory), and the TREE extension's bytes.
+ */
+async function stagePlan(writer, plan, cacheTree, present, blobsPerBatch) {
+    const batches = plan.batches(Math.min(MAX_BATCHES, Math.ceil(plan.count / (blobsPerBatch ?? BLOBS_PER_BATCH))), present);
     const batchPlans = [];
     for (const batch of batches) {
         // The writer takes the bytes (W7 may detach them): measure first.
@@ -439,12 +485,17 @@ export async function cloneFast(context, request) {
         gitlinks.push(encodeIndexEntry(plan.path(i), MODE_GITLINK, plan.oid(i), null));
     }
     const gitlinkShare = concat(gitlinks);
-    shares.push({ name: 'index-gitlinks', bytes: gitlinkShare.byteLength });
+    const shares = [{ name: 'index-gitlinks', bytes: gitlinkShare.byteLength }];
     await writer.file(STAGE_DIR + '/index-gitlinks', 0o644, gitlinkShare);
     const cacheTreeBytes = cacheTree.byteLength;
     await writer.file(STAGE_DIR + '/cache-tree', 0o644, cacheTree);
+    return { batches: batchPlans, shares, cacheTreeBytes };
+}
+/** config, HEAD, the branch and its remote-tracking refs (or the tag), shallow: as git clone writes them. */
+async function writeCloneMetadata(writer, url, clone) {
+    const { fullRef, commit } = clone;
     const branch = fullRef.startsWith('refs/heads/') ? shortName(fullRef) : null;
-    await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(context.url, fullRef, request.filter)));
+    await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(url, fullRef, clone.filter)));
     await writer.file('.git/HEAD', 0o644, encoder.encode(branch === null ? commit + '\n' : 'ref: ' + fullRef + '\n'));
     if (branch !== null) {
         await writer.file('.git/refs/heads/' + branch, 0o644, encoder.encode(commit + '\n'));
@@ -452,24 +503,131 @@ export async function cloneFast(context, request) {
         await writer.file('.git/refs/remotes/origin/HEAD', 0o644, encoder.encode('ref: refs/remotes/origin/' + branch + '\n'));
     }
     else {
-        await writer.file('.git/' + fullRef, 0o644, encoder.encode(head + '\n'));
+        await writer.file('.git/' + fullRef, 0o644, encoder.encode((clone.tagObject ?? commit) + '\n'));
     }
-    if (response.shallows.length > 0) {
-        await writer.file('.git/shallow', 0o644, encoder.encode(response.shallows.sort().join('\n') + '\n'));
+    if (clone.shallows.length > 0) {
+        await writer.file('.git/shallow', 0o644, encoder.encode([...clone.shallows].sort().join('\n') + '\n'));
     }
+}
+const CLONE_DIRECTORIES = ['.git/hooks', '.git/info', '.git/objects/info', PACK_DIR, '.git/refs/heads', '.git/refs/tags', STAGE_DIR];
+/**
+ * A clone from a server without `filter` or wants by id: its one pack, as
+ * git would fetch it (the commit at `depth`, or all its history), stored and
+ * indexed as it arrives; decoding that runs past the budget continues from
+ * the stored pack (history.ts historyResume, kind 'snapshot'), and the
+ * checkout is then planned from the pack (clonePlanFromStore) and written by
+ * batches that read their blobs from it.
+ */
+async function cloneStream(context, request, advertisement, transport) {
+    const { fullRef, commit, tagObject } = resolveRef(advertisement, request.ref);
+    const writer = context.writer();
+    writer.setPin(context.marker.path, context.marker.text, true);
+    for (const dir of CLONE_DIRECTORIES)
+        await writer.directory(dir);
+    await writer.flush();
+    const response = await requestPack(transport, advertisement.capabilities, {
+        wants: [tagObject ?? commit],
+        depth: request.history ? undefined : request.depth,
+    });
+    if (response.pack === null)
+        throw new PackFormatError('the server sent no pack for the commit');
+    const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_snapshot', {
+        cacheBytes: STREAM_CACHE_BYTES,
+        recentBytes: STREAM_RECENT_BYTES,
+        budgetUnits: request.budgetUnits,
+    });
+    await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows });
     await writer.flush();
     return {
-        commit,
+        stream: {
+            commit,
+            headRef: fullRef.startsWith('refs/heads/') ? fullRef : null,
+            pending: 'pending' in stored ? stored.pending : null,
+            pack: 'pending' in stored ? null : stored.summary,
+        },
+    };
+}
+/** The empty repository git clone makes of an empty remote. */
+async function cloneEmpty(context, advertisement, filter) {
+    const writer = context.writer();
+    writer.setPin(context.marker.path, context.marker.text, true);
+    for (const dir of CLONE_DIRECTORIES)
+        await writer.directory(dir);
+    // Without the remote's HEAD (protocol v0 names no unborn branch) git takes
+    // its init default, as Nimbus's git init does.
+    const fullRef = advertisement.symrefs.get('HEAD') ?? 'refs/heads/master';
+    await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(context.url, fullRef, filter, true)));
+    await writer.file('.git/HEAD', 0o644, encoder.encode('ref: ' + fullRef + '\n'));
+    await writer.flush();
+    return {
+        commit: null,
+        tree: null,
+        headRef: fullRef,
+        capabilities: [...advertisement.capabilities],
+        batches: [],
+        planEntries: 0,
+        planBytes: 0,
+        shares: [],
+        cacheTreeBytes: 0,
+        partial: filter !== undefined,
+        packs: [],
+    };
+}
+/** Every tree under `root`, read from the repository's packs. */
+async function readTrees(store, root) {
+    const trees = new Map();
+    const pending = [root];
+    let bytes = 0;
+    while (pending.length > 0) {
+        const oid = pending.pop();
+        if (trees.has(oid))
+            continue;
+        const object = await store.read(oid);
+        if (object === null || object.type !== 'tree')
+            throw new PackFormatError('the clone lacks tree ' + oid);
+        bytes += object.data.byteLength;
+        if (bytes > PLAN_TREE_BYTES)
+            throw new PackFormatError('the commit\'s trees pass ' + PLAN_TREE_BYTES + ' bytes');
+        trees.set(oid, object.data);
+        for (const entry of parseTree(object.data))
+            if (entry.mode === MODE_TREE)
+                pending.push(oidToHex(object.data, entry.oidAt));
+    }
+    return trees;
+}
+function supervisorStore(context) {
+    return new PackObjectStore({
+        readRange: async (path, offset, length) => (await context.supervisor.fsReadRange(path, offset, length)) ?? new Uint8Array(0),
+        readdir: (dir) => context.supervisor.readdir(dir),
+    }, join(context.dir, '.git'));
+}
+/** A streamed clone's checkout plan, from its stored pack: the batches then read their blobs from it. */
+export async function clonePlanFromStore(context, request) {
+    const store = supervisorStore(context);
+    const commitObject = await store.read(request.commit);
+    if (commitObject === null || commitObject.type !== 'commit')
+        throw new PackFormatError('the clone lacks commit ' + request.commit);
+    const tree = commitTree(commitObject.data, request.commit);
+    const trees = await readTrees(store, tree);
+    const plan = CheckoutPlan.fromTrees(trees.get(tree), (data, at) => trees.get(oidToHex(data, at)));
+    const cacheTree = cacheTreeOf('', tree, trees).built.bytes;
+    trees.clear();
+    const writer = context.writer();
+    writer.setPin(context.marker.path, context.marker.text, true);
+    const staged = await stagePlan(writer, plan, cacheTree, new Set(), request.blobsPerBatch);
+    await writer.flush();
+    return {
+        commit: request.commit,
         tree,
-        headRef: branch === null ? null : fullRef,
-        capabilities: [...capabilities],
-        batches: batchPlans,
+        headRef: null,
+        capabilities: [],
+        batches: staged.batches,
         planEntries: plan.count,
         planBytes: plan.byteLength,
-        shares,
-        cacheTreeBytes,
-        partial,
-        packs,
+        shares: staged.shares,
+        cacheTreeBytes: staged.cacheTreeBytes,
+        partial: false,
+        packs: [],
     };
 }
 export function concat(parts) {
@@ -494,34 +652,48 @@ export async function cloneBatch(context, request) {
             receipts.set(stripSlash(receipt.path), receipt);
     });
     writer.setPin(context.marker.path, context.marker.text, true);
-    const response = await requestPack({ url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress }, new Set(request.capabilities), { wants: [...blobs.keys()] });
-    if (response.pack === null)
-        throw new PackFormatError('the server sent no pack for batch ' + request.index);
     let resolved = 0;
     let files = 0;
     const written = [];
-    const { summary } = await storePack(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_' + request.index, {
-        cacheBytes: BATCH_CACHE_BYTES,
-        promisor: request.partial ? [...blobs.keys()].map((oid) => oid + ' ' + oid + '\n').join('') : undefined,
-        async onObject(object) {
-            if (object.type !== 'blob')
-                return;
-            const paths = blobs.get(oidToHex(object.oid));
-            if (paths === undefined)
-                return;
-            resolved++;
-            // The writer takes what it is given, and the base cache keeps
-            // `object.data`: each path gets its own copy.
-            for (const { mode, path } of paths) {
-                if (mode === MODE_SYMLINK)
-                    await writer.symlink(path, decoder.decode(object.data));
-                else
-                    await writer.file(path, mode, object.data.slice());
-                written.push({ path, mode, oid: object.oid });
-                files++;
-            }
-        },
-    });
+    const emit = async (oid, data) => {
+        const paths = blobs.get(oidToHex(oid));
+        if (paths === undefined)
+            return;
+        resolved++;
+        // The writer takes what it is given, and the base cache keeps `data`:
+        // each path gets its own copy.
+        for (const { mode, path } of paths) {
+            if (mode === MODE_SYMLINK)
+                await writer.symlink(path, decoder.decode(data));
+            else
+                await writer.file(path, mode, data.slice());
+            written.push({ path, mode, oid });
+            files++;
+        }
+    };
+    let summary = null;
+    if (request.local) {
+        const store = supervisorStore(context);
+        for (const oid of blobs.keys()) {
+            const object = await store.read(oid);
+            if (object === null || object.type !== 'blob')
+                throw new PackFormatError('the clone lacks blob ' + oid);
+            await emit(oidFromHex(oid), object.data);
+        }
+    }
+    else {
+        const response = await requestPack({ url: context.url, auth: context.auth, fetch: context.fetch, onProgress: context.onProgress }, new Set(request.capabilities), { wants: [...blobs.keys()] });
+        if (response.pack === null)
+            throw new PackFormatError('the server sent no pack for batch ' + request.index);
+        ({ summary } = await storePack(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_' + request.index, {
+            cacheBytes: BATCH_CACHE_BYTES,
+            promisor: request.partial ? [...blobs.keys()].map((oid) => oid + ' ' + oid + '\n').join('') : undefined,
+            async onObject(object) {
+                if (object.type === 'blob')
+                    await emit(object.oid, object.data);
+            },
+        }));
+    }
     if (resolved !== blobs.size) {
         throw new PackFormatError('batch ' + request.index + ' received ' + resolved + ' of its ' + blobs.size + ' blobs');
     }
