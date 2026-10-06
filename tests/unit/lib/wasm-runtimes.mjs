@@ -1,4 +1,4 @@
-// The in-repo wasm runtimes (bash and CPython, built under packages/worker/wasm),
+// The in-repo wasm runtimes (bash, CPython and git, built under packages/worker/wasm),
 // written into a workspace as an install writes them. For the tests that run
 // them off Cloudflare (core-wasm-runtime-bun, local-facet-realm).
 
@@ -44,6 +44,17 @@ export const RUNTIMES = [
       ['lib/python313.zip', `${WASM_DIR}python/python313.zip`],
       ['etc/ssl/cert.pem', `${WASM_DIR}python/cacert.pem`],
       ['lib/python3.13/os.py', null, '# Nimbus stdlib marker.\n'],
+    ],
+  },
+  {
+    name: 'git',
+    version: '2.53.0',
+    license: 'GPL-2.0-only',
+    entrypoints: [{ binName: 'git', runner: 'git-runner', args: [] }],
+    files: [
+      ['share/git/git.wasm', `${WASM_DIR}git/git.wasm`],
+      ['share/git/gitconfig', `${WASM_DIR}git/gitconfig`],
+      ['bin/git', null, '# Nimbus git-runner launcher marker.\n'],
     ],
   },
 ];

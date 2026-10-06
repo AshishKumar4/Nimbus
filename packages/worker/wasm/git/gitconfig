@@ -1,0 +1,27 @@
+# The system configuration of Nimbus's git (GIT_CONFIG_SYSTEM, set by the
+# git runner): what holds for git in a Nimbus session whatever the user's
+# own configuration says, and why. A user's ~/.gitconfig or a repository's
+# .git/config overrides any of it.
+[core]
+	# A facet has 128 MiB for everything. With mmap emulated by reads, these
+	# bound what git holds of packs: 1 MiB windows, 16 MiB of them, 8 MiB of
+	# delta bases (measured: vscode's full history in 52 MiB, Linux status 35).
+	packedGitWindowSize = 1m
+	packedGitLimit = 16m
+	deltaBaseCacheLimit = 8m
+	# Untracked files are found by directory mtimes, as the session filesystem
+	# keeps them, rather than by reading every directory each time.
+	untrackedCache = true
+	# There is no terminal to page or to edit in yet.
+	pager = cat
+[init]
+	# A repository starts without sample hooks or an info/exclude: git ships
+	# no templates here, and an empty value says so instead of a warning.
+	templateDir =
+[maintenance]
+	# Maintenance runs as a child process, which a session's git cannot start yet.
+	auto = false
+[gc]
+	auto = 0
+[color]
+	ui = auto

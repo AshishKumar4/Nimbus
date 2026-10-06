@@ -181,6 +181,34 @@ export const SPECS = {
     python_packages: ['numpy', 'markupsafe'],
   },
 
+  // Git 2.53.0 cross-built for wasm32-wasi by packages/worker/wasm/git/
+  // build-git.sh. The runner (core runtime/git-runner.ts) runs it with the
+  // session root as its filesystem and gitconfig as its system configuration.
+  'git/2.53.0': {
+    license: 'GPL-2.0-only',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    local_base: '../wasm/git',
+    npm: {
+      name: '@nimbus-sh/runtime-git',
+      summary: 'Git 2.53.0, cross-compiled to wasm32-wasi',
+    },
+    files: [
+      { src: 'git.wasm', vfs: 'share/git/git.wasm' },
+      { src: 'gitconfig', vfs: 'share/git/gitconfig' },
+      { src: 'BIN_MARKER', vfs: 'bin/git', mode: 'exec', runner: 'git-runner', binName: 'git' },
+    ],
+    synthetic_files: {
+      'BIN_MARKER': Buffer.from(
+        '# Nimbus git-runner launcher marker. The git wasm lives in\n' +
+        '# share/git/. The shell registry dispatches `git` to the\n' +
+        '# git-runner factory; this file exists so `which git` and\n' +
+        '# `ls bin/` find a regular, executable file at the expected path.\n',
+        'utf8',
+      ),
+    },
+    license_text: GIT_GPL_2_LICENSE_NOTICE(),
+  },
+
   // CPython 3.13 cross-built for wasm32-wasi by packages/worker/wasm/python/
   // build-python.sh, with the C libraries the published wasm32-wasi artifacts
   // leave out (zlib, bzip2, xz, sqlite, OpenSSL). Unlike the Pyodide entry
@@ -316,6 +344,22 @@ export function npmRuntimeSpecs() {
 }
 
 // ── Bundled LICENSE text generator ────────────────────────────────
+function GIT_GPL_2_LICENSE_NOTICE() {
+  return `Git 2.53.0 — GPL-2.0-only
+Copyright (C) Linus Torvalds, Junio C Hamano and the Git contributors.
+
+This runtime bundles Git cross-compiled to wasm32-wasi. Full license text:
+https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
+Corresponding source: https://www.kernel.org/pub/software/scm/git/git-2.53.0.tar.xz
+plus the Nimbus build overlay (packages/worker/wasm/git/ in the Nimbus
+repository: build-git.sh, config.mak, git-wasi-compat.{h,c}, include/,
+patches/).
+
+zlib 1.3.1 — Zlib
+Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.
+`;
+}
+
 function GPL_3_LICENSE_NOTICE() {
   return `GNU bash 5.2.37 — GPL-3.0-or-later
 Copyright (C) Free Software Foundation, Inc.

@@ -14,6 +14,12 @@ CFLAGS = -O2 -g0 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI
 LDFLAGS = -L$(SYSROOT_EXTRA)/lib -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
   -Wl,-z,stack-size=8388608 -Wl,--initial-memory=12582912 -Wl,--max-memory=2147483648
 COMPAT_OBJS += compat/git-wasi-compat.o
+# Git's default prefix is the builder's $HOME, baked into the binary as the
+# root of its template, exec and documentation paths. /usr is where a
+# session's git claims to live; the system configuration comes from
+# GIT_CONFIG_SYSTEM (the runner sets it) and there are no templates.
+prefix = /usr
+sysconfdir = /etc
 NO_PTHREADS = YesPlease
 NO_MMAP = YesPlease
 NO_CURL = YesPlease
