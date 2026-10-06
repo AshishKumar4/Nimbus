@@ -1070,8 +1070,8 @@ error: the Oxc transform crashed (${reason})`);
       node.body.push(stmt);
     }
     if (this.inModule) {
-      for (var i = 0, list = Object.keys(this.undefinedExports); i < list.length; i += 1) {
-        var name = list[i];
+      for (var i = 0, list2 = Object.keys(this.undefinedExports); i < list2.length; i += 1) {
+        var name = list2[i];
         this.raiseRecoverable(this.undefinedExports[name].start, "Export '" + name + "' is not defined");
       }
     }
@@ -1538,8 +1538,8 @@ error: the Oxc transform crashed (${reason})`);
     return this.finishNode(node, "EmptyStatement");
   };
   pp$8.parseLabeledStatement = function(node, maybeName, expr, context) {
-    for (var i$1 = 0, list = this.labels; i$1 < list.length; i$1 += 1) {
-      var label = list[i$1];
+    for (var i$1 = 0, list2 = this.labels; i$1 < list2.length; i$1 += 1) {
+      var label = list2[i$1];
       if (label.name === maybeName) {
         this.raise(expr.start, "Label '" + maybeName + "' is already declared");
       }
@@ -1963,8 +1963,8 @@ error: the Oxc transform crashed (${reason})`);
           node.attributes = this.parseWithClause();
         }
       } else {
-        for (var i = 0, list = node.specifiers; i < list.length; i += 1) {
-          var spec = list[i];
+        for (var i = 0, list2 = node.specifiers; i < list2.length; i += 1) {
+          var spec = list2[i];
           this.checkUnreserved(spec.local);
           this.checkLocalExport(spec.local);
           if (spec.local.type === "Literal") {
@@ -2018,8 +2018,8 @@ error: the Oxc transform crashed (${reason})`);
     if (type === "Identifier") {
       this.checkExport(exports, pat, pat.start);
     } else if (type === "ObjectPattern") {
-      for (var i = 0, list = pat.properties; i < list.length; i += 1) {
-        var prop = list[i];
+      for (var i = 0, list2 = pat.properties; i < list2.length; i += 1) {
+        var prop = list2[i];
         this.checkPatternExport(exports, prop);
       }
     } else if (type === "ArrayPattern") {
@@ -2041,8 +2041,8 @@ error: the Oxc transform crashed (${reason})`);
     if (!exports) {
       return;
     }
-    for (var i = 0, list = decls; i < list.length; i += 1) {
-      var decl = list[i];
+    for (var i = 0, list2 = decls; i < list2.length; i += 1) {
+      var decl = list2[i];
       this.checkPatternExport(exports, decl.id);
     }
   };
@@ -2219,8 +2219,8 @@ error: the Oxc transform crashed (${reason})`);
           if (refDestructuringErrors) {
             this.checkPatternErrors(refDestructuringErrors, true);
           }
-          for (var i = 0, list = node.properties; i < list.length; i += 1) {
-            var prop = list[i];
+          for (var i = 0, list2 = node.properties; i < list2.length; i += 1) {
+            var prop = list2[i];
             this.toAssignable(prop, isBinding);
             if (prop.type === "RestElement" && (prop.argument.type === "ArrayPattern" || prop.argument.type === "ObjectPattern")) {
               this.raise(prop.argument.start, "Unexpected token");
@@ -2407,8 +2407,8 @@ error: the Oxc transform crashed (${reason})`);
     if (bindingType === void 0) bindingType = BIND_NONE;
     switch (expr.type) {
       case "ObjectPattern":
-        for (var i = 0, list = expr.properties; i < list.length; i += 1) {
-          var prop = list[i];
+        for (var i = 0, list2 = expr.properties; i < list2.length; i += 1) {
+          var prop = list2[i];
           this.checkLValInnerPattern(prop, bindingType, checkClashes);
         }
         break;
@@ -3488,8 +3488,8 @@ error: the Oxc transform crashed (${reason})`);
     this.exitScope();
   };
   pp$5.isSimpleParamList = function(params) {
-    for (var i = 0, list = params; i < list.length; i += 1) {
-      var param = list[i];
+    for (var i = 0, list2 = params; i < list2.length; i += 1) {
+      var param = list2[i];
       if (param.type !== "Identifier") {
         return false;
       }
@@ -3498,8 +3498,8 @@ error: the Oxc transform crashed (${reason})`);
   };
   pp$5.checkParams = function(node, allowDuplicates) {
     var nameHash =   Object.create(null);
-    for (var i = 0, list = node.params; i < list.length; i += 1) {
-      var param = list[i];
+    for (var i = 0, list2 = node.params; i < list2.length; i += 1) {
+      var param = list2[i];
       this.checkLValInnerPattern(param, BIND_VAR, allowDuplicates ? null : nameHash);
     }
   };
@@ -3826,13 +3826,13 @@ error: the Oxc transform crashed (${reason})`);
     d.nonBinary.sc = d.nonBinary.Script;
     d.nonBinary.scx = d.nonBinary.Script_Extensions;
   }
-  for (i = 0, list = [9, 10, 11, 12, 13, 14]; i < list.length; i += 1) {
-    ecmaVersion = list[i];
+  for (i = 0, list2 = [9, 10, 11, 12, 13, 14]; i < list2.length; i += 1) {
+    ecmaVersion = list2[i];
     buildUnicodeData(ecmaVersion);
   }
   var ecmaVersion;
   var i;
-  var list;
+  var list2;
   var pp$1 = Parser.prototype;
   var BranchID = function BranchID2(parent, base) {
     this.parent = parent;
@@ -3940,8 +3940,8 @@ error: the Oxc transform crashed (${reason})`);
   RegExpValidationState.prototype.eatChars = function eatChars(chs, forceU) {
     if (forceU === void 0) forceU = false;
     var pos = this.pos;
-    for (var i = 0, list = chs; i < list.length; i += 1) {
-      var ch = list[i];
+    for (var i = 0, list2 = chs; i < list2.length; i += 1) {
+      var ch = list2[i];
       var current2 = this.at(pos, forceU);
       if (current2 === -1 || current2 !== ch) {
         return false;
@@ -4016,8 +4016,8 @@ error: the Oxc transform crashed (${reason})`);
     if (state.maxBackReference > state.numCapturingParens) {
       state.raise("Invalid escape");
     }
-    for (var i = 0, list = state.backReferenceNames; i < list.length; i += 1) {
-      var name = list[i];
+    for (var i = 0, list2 = state.backReferenceNames; i < list2.length; i += 1) {
+      var name = list2[i];
       if (!state.groupNames[name]) {
         state.raise("Invalid named capture referenced");
       }
@@ -4316,8 +4316,8 @@ error: the Oxc transform crashed (${reason})`);
       var known = state.groupNames[state.lastStringValue];
       if (known) {
         if (trackDisjunction) {
-          for (var i = 0, list = known; i < list.length; i += 1) {
-            var altID = list[i];
+          for (var i = 0, list2 = known; i < list2.length; i += 1) {
+            var altID = list2[i];
             if (!altID.separatedFrom(state.branchID)) {
               state.raise("Duplicate capture group name");
             }
@@ -8950,6 +8950,122 @@ const ${binding} = arguments[2];
     return applySourceEdits(code, edits);
   }
 
+  function isNode(value) {
+    return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && "start" in value && typeof value.start === "number" && "end" in value && typeof value.end === "number";
+  }
+  function child(node, key) {
+    const value = node?.[key];
+    return isNode(value) ? value : null;
+  }
+  function list(node, key) {
+    const value = node?.[key];
+    return Array.isArray(value) ? value.filter(isNode) : [];
+  }
+  function stringOf(node, key) {
+    const value = node?.[key];
+    return typeof value === "string" ? value : null;
+  }
+  function* patternNames(node) {
+    switch (node?.type) {
+      case "Identifier": {
+        const name = stringOf(node, "name");
+        if (name !== null) yield name;
+        return;
+      }
+      case "ObjectPattern":
+        for (const property of list(node, "properties")) yield* patternNames(child(property, property.type === "RestElement" ? "argument" : "value"));
+        return;
+      case "ArrayPattern":
+        for (const element of list(node, "elements")) yield* patternNames(element);
+        return;
+      case "RestElement":
+        yield* patternNames(child(node, "argument"));
+        return;
+      case "AssignmentPattern":
+        yield* patternNames(child(node, "left"));
+        return;
+      case "TSParameterProperty":
+        yield* patternNames(child(node, "parameter"));
+        return;
+      case "TSQualifiedName":
+        yield* patternNames(child(node, "left"));
+        return;
+    }
+  }
+  var FUNCTIONS =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+  function* lexicalNames(statements) {
+    for (const statement of statements) {
+      const node = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? child(statement, "declaration") : statement;
+      if (node?.type === "VariableDeclaration" && node.kind !== "var") {
+        for (const declarator of list(node, "declarations")) yield* patternNames(child(declarator, "id"));
+      }
+      if (node?.type === "FunctionDeclaration" || node?.type === "ClassDeclaration") yield* patternNames(child(node, "id"));
+      if (node?.type === "ImportDeclaration") for (const specifier of list(node, "specifiers")) yield* patternNames(child(specifier, "local"));
+    }
+  }
+  function* varNames(value, sloppy, top = true) {
+    if (Array.isArray(value)) {
+      for (const item of value) yield* varNames(item, sloppy, top);
+      return;
+    }
+    if (!isNode(value)) return;
+    if (value.type === "FunctionDeclaration" && sloppy && !top) yield* patternNames(child(value, "id"));
+    if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return;
+    if (value.type === "VariableDeclaration" && value.kind === "var") {
+      for (const declarator of list(value, "declarations")) yield* patternNames(child(declarator, "id"));
+    }
+    for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* varNames(item, sloppy, false);
+  }
+  function scopeOf(node, scope, sloppy, functionBody) {
+    const within = (names) => ({ names: new Set(names), parent: scope });
+    switch (node.type) {
+      case "Program":
+      case "StaticBlock":
+        return within([...varNames(list(node, "body"), sloppy), ...lexicalNames(list(node, "body"))]);
+      case "FunctionDeclaration":
+      case "FunctionExpression":
+      case "ArrowFunctionExpression":
+        return within([
+          ...node.type === "FunctionExpression" ? patternNames(child(node, "id")) : [],
+          ...list(node, "params").flatMap((parameter) => [...patternNames(parameter)])
+        ]);
+      case "BlockStatement":
+        return within([...functionBody ? varNames(list(node, "body"), sloppy) : [], ...lexicalNames(list(node, "body"))]);
+      case "SwitchStatement":
+        return within(lexicalNames(list(node, "cases").flatMap((c) => list(c, "consequent"))));
+      case "ForStatement":
+      case "ForInStatement":
+      case "ForOfStatement": {
+        const head = child(node, node.type === "ForStatement" ? "init" : "left");
+        return within(head?.type === "VariableDeclaration" && head.kind !== "var" ? list(head, "declarations").flatMap((declarator) => [...patternNames(child(declarator, "id"))]) : []);
+      }
+      case "CatchClause":
+        return within(patternNames(child(node, "param")));
+      case "ClassDeclaration":
+      case "ClassExpression":
+        return within(patternNames(child(node, "id")));
+      default:
+        return scope;
+    }
+  }
+  function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = "") {
+    if (Array.isArray(value)) {
+      for (const item of value) yield* scoped(item, scope, sloppy, false, parent, key);
+      return;
+    }
+    if (!isNode(value)) return;
+    yield [value, scope, parent, key];
+    const inner = scopeOf(value, scope, sloppy, functionBody);
+    const isFunction = FUNCTIONS.has(value.type);
+    for (const [field, item] of Object.entries(value)) {
+      if (field !== "parent") yield* scoped(item, inner, sloppy, isFunction && field === "body", value, field);
+    }
+  }
+  function bindingScope(scope, name) {
+    for (let at2 = scope; at2; at2 = at2.parent) if (at2.names.has(name)) return at2;
+    return null;
+  }
+
   function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
   }
@@ -8957,6 +9073,7 @@ const ${binding} = arguments[2];
     const program = Parser.parse(source, { ecmaVersion: "latest", sourceType: "module", allowHashBang: true });
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
     const records = [];
+    const references = importReferences(program, program.body.flatMap((node) => node.type !== "ImportDeclaration" ? [] : node.specifiers.filter((specifier) => specifier.type !== "ImportNamespaceSpecifier").map((specifier) => specifier.local.name)));
     for (const node of program.body) {
       switch (node.type) {
         case "ImportDeclaration":
@@ -8968,7 +9085,8 @@ const ${binding} = arguments[2];
             bindings: node.specifiers.map((specifier) => specifier.type === "ImportNamespaceSpecifier" ? { kind: "namespace", local: specifier.local.name } : {
               kind: "named",
               local: specifier.local.name,
-              imported: specifier.type === "ImportDefaultSpecifier" ? "default" : nameOf(specifier.imported)
+              imported: specifier.type === "ImportDefaultSpecifier" ? "default" : nameOf(specifier.imported),
+              references: references.get(specifier.local.name) ?? []
             })
           });
           break;
@@ -9030,14 +9148,76 @@ const ${binding} = arguments[2];
     }
     return records;
   }
+  function importReferences(program, names) {
+    const references = new Map(names.map((name) => [name, []]));
+    if (references.size === 0) return references;
+    const outside = { names:   new Set(), parent: null };
+    const patternProperties =   new Set();
+    for (const [node, scope, parent, key] of scoped(program, outside, false)) {
+      if (node.type === "ObjectPattern") for (const property of list(node, "properties")) patternProperties.add(property);
+      const name = node.type === "Identifier" ? stringOf(node, "name") : null;
+      const found = name === null ? void 0 : references.get(name);
+      if (!found || name === null || parent === null || !namesBinding(parent, key)) continue;
+      if (bindingScope(scope, name)?.parent !== outside) continue;
+      found.push({ start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
+    }
+    return references;
+  }
+  function namesBinding(parent, key) {
+    switch (parent.type) {
+      case "MemberExpression":
+        return key !== "property" || parent.computed === true;
+      case "Property":
+      case "MethodDefinition":
+      case "PropertyDefinition":
+        return key !== "key" || parent.computed === true;
+      case "ImportAttribute":
+        return key !== "key";
+      case "LabeledStatement":
+      case "BreakStatement":
+      case "ContinueStatement":
+      case "MetaProperty":
+      case "ImportSpecifier":
+      case "ImportDefaultSpecifier":
+      case "ImportNamespaceSpecifier":
+      case "ExportSpecifier":
+      case "ExportAllDeclaration":
+        return false;
+      default:
+        return true;
+    }
+  }
+  function useOf(parent, key, patternProperties) {
+    switch (parent.type) {
+      case "AssignmentExpression":
+      case "AssignmentPattern":
+      case "ForInStatement":
+      case "ForOfStatement":
+        return key === "left" ? "write" : "read";
+      case "UpdateExpression":
+      case "ArrayPattern":
+      case "RestElement":
+        return "write";
+      case "Property":
+        if (key !== "value") return "read";
+        if (patternProperties.has(parent)) return "write";
+        return parent.shorthand === true ? "shorthand" : "read";
+      case "CallExpression":
+        return key === "callee" ? "call" : "read";
+      case "TaggedTemplateExpression":
+        return key === "tag" ? "call" : "read";
+      default:
+        return "read";
+    }
+  }
   function emitCommonJs(source, records, options) {
     let prefix = "__nimbus_m";
     while (source.includes(prefix)) prefix += "_";
     let temps = 0;
     const temp = () => `${prefix}${temps++}`;
     const key = (name) => `[${JSON.stringify(name)}]`;
-    const requireFunction = options.requireFunction ?? "require";
-    const requireOf = (specifier) => `${requireFunction}(${JSON.stringify(specifier)})`;
+    const requireRef = temp();
+    const requireOf = (specifier) => `${requireRef}(${JSON.stringify(specifier)})`;
     const exportsRef = temp();
     const exportGetter = temp();
     const ownKey = temp();
@@ -9047,6 +9227,25 @@ const ${binding} = arguments[2];
       namespaces = true;
       return `${namespaceOf}(${mod})`;
     };
+    const importModules =   new Map();
+    const reads =   new Map();
+    const uses = [];
+    for (const record of records) {
+      if (record.kind !== "import" || record.bindings.length === 0) continue;
+      const mod = temp();
+      const interop = record.bindings.some((binding) => binding.kind === "named" && binding.imported === "default") ? temp() : null;
+      importModules.set(record, { mod, interop });
+      for (const binding of record.bindings) {
+        if (binding.kind === "namespace") continue;
+        const read = binding.imported === "default" ? `${interop}.default` : `${mod}${key(binding.imported)}`;
+        reads.set(binding.local, read);
+        for (const { start, end, use } of binding.references ?? []) {
+          if (use === "write") continue;
+          uses.push({ start, end, text: use === "call" ? `(0, ${read})` : use === "shorthand" ? `${binding.local}: ${read}` : read });
+        }
+      }
+    }
+    const defaultExpressionUses =   new Set();
     const requires = [];
     const imported = [];
     const getters = [];
@@ -9058,17 +9257,19 @@ const ${binding} = arguments[2];
       switch (record.kind) {
         case "import": {
           edits.push({ start: record.start, end: record.end, text: "" });
-          if (record.bindings.length === 0) {
+          const module = importModules.get(record);
+          if (!module) {
             requires.push(`${requireOf(record.source)};`);
             break;
           }
-          const mod = temp();
+          const { mod, interop } = module;
           requires.push(`const ${mod} = ${requireOf(record.source)};`);
+          if (interop) requires.push(`const ${interop} = ${mod} && ${mod}.__esModule ? ${mod} : { default: ${mod} };`);
           for (const binding of record.bindings) {
             const { local } = binding;
             if (binding.kind === "namespace") imported.push(`const ${local} = ${namespace(mod)};`);
-            else if (binding.imported === "default") imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
-            else imported.push(`const ${local} = ${mod}${key(binding.imported)};`);
+            else if (binding.references === null) imported.push(`const ${local} = ${reads.get(local)};`);
+            else if (binding.references.some(({ use }) => use === "write")) imported.push(`const ${local} = void 0;`);
           }
           break;
         }
@@ -9078,7 +9279,7 @@ const ${binding} = arguments[2];
           if (record.source === null) {
             for (const name of record.names) {
               if (name.kind !== "named") throw new Error(`export of the namespace ${name.exported} without a source module`);
-              getters.push([name.exported, name.local]);
+              getters.push([name.exported, reads.get(name.local) ?? name.local]);
             }
             break;
           }
@@ -9092,10 +9293,14 @@ const ${binding} = arguments[2];
         case "export-default": {
           exportsAnything = true;
           const value = temp();
+          const { start, end } = record.expression;
+          const within = uses.filter((use) => use.start >= start && use.end <= end);
+          for (const use of within) defaultExpressionUses.add(use);
+          const expression = applySourceEdits(source.slice(start, end), within.map((use) => ({ ...use, start: use.start - start, end: use.end - start })));
           edits.push({
             start: record.start,
             end: record.end,
-            text: `var ${value} = ({ default: (${source.slice(record.expression.start, record.expression.end)}) }).default;`
+            text: `var ${value} = ({ default: (${expression}) }).default;`
           });
           getters.push(["default", value]);
           break;
@@ -9122,14 +9327,15 @@ const ${binding} = arguments[2];
         `const ${namespaceOf} = (m) => { if (m && m.__esModule) return m; const O = ({}).constructor; const ns = O.create(m != null ? O.getPrototypeOf(m) : null); O.defineProperty(ns, "default", { value: m, enumerable: true }); if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; };`
       );
     }
+    if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? "require"}(specifier);`);
     const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
-    const prologue = [...imported, ...installed, ...stars].join(" ");
-    const body = applySourceEdits(source, edits);
-    return options.body === "async" ? `${[...header, ...requires].join("\n")}
+    const prologue = [...installed, ...requires, ...imported, ...stars].join(" ");
+    const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
+    return options.body === "async" ? `${header.join("\n")}
 return (async () => { ${prologue}
 ${body}
 })();
-` : `${[...header, ...requires].join("\n")}
+` : `${header.join("\n")}
 ${prologue}
 ${body}
 `;

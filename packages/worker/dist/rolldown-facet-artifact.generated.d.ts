@@ -10,7 +10,7 @@
  * ROLLDOWN_FACET_BUILD_ID is a content-hash prefix, ROLLDOWN_FACET_SHA256 the
  * digest every fetch is verified against.
  *
- * Size: 602.39 KiB
+ * Size: 602.54 KiB
  */
 export declare const ROLLDOWN_FACET_ASSET_PATH: string;
 export declare const ROLLDOWN_FACET_BUILD_ID: string;
