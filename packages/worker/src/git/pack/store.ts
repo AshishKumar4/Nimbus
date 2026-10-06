@@ -197,18 +197,19 @@ export class PackObjectStore {
   }
 
   private async fetch(range: PackRange): Promise<Uint8Array> {
-    if (range.file.endsWith('.pack') && range.length <= PACK_PAGE_BYTES) return await this.fromPackPages(range);
+    if (range.file.endsWith('.pack')) return await this.fromPackPages(range);
     // A read may end early where the file does: page() checks what an idx
     // read uses, and an entry cut short fails to inflate.
     return await this.fs.readRange(range.file, range.offset, range.length);
   }
 
   /**
-   * A short pack range from cached PACK_PAGE_BYTES pages: objects a command
-   * reads together sit together in a pack (a checkout reads in tree order,
-   * which git writes in), so a page serves many of them. Where every read is
-   * an RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
-   * not one per object.
+   * A pack range from cached PACK_PAGE_BYTES pages: objects a command reads
+   * together sit together in a pack (a checkout reads in tree order, which
+   * git writes in), so a page serves many of them. Where every read is an
+   * RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
+   * not one per object; and no read is longer than a page, so an object of
+   * any size crosses an RPC that refuses large reads.
    */
   private async fromPackPages(range: PackRange): Promise<Uint8Array> {
     const first = Math.floor(range.offset / PACK_PAGE_BYTES);

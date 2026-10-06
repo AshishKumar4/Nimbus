@@ -2,8 +2,9 @@
 // object of a repository packed by git (ofs-deltas, then ref-deltas) and of a
 // thin pack completed by the stream processor (ref-deltas to bases appended
 // at its end) reads back with git's type and bytes; prefixes expand as git
-// disambiguates them; nothing is read whole: the largest read is one entry,
-// one idx page or one delta chain link.
+// disambiguates them; nothing is read whole, and no read is longer than a
+// 1 MiB page, however large the object (a facet's reads cross an RPC that
+// refuses large ones).
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -14,7 +15,7 @@ import { join } from 'node:path';
 import { PackObjectStore } from '../../packages/worker/src/git/pack/store.ts';
 import { PackStreamProcessor } from '../../packages/worker/src/git/pack/processor.ts';
 import { encodeIdxV2 } from '../../packages/worker/src/git/pack/idx.ts';
-import { deflateBound, oidToHex } from '../../packages/worker/src/git/pack/format.ts';
+import { oidToHex } from '../../packages/worker/src/git/pack/format.ts';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-pack-store-'));
 const env = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', HOME: work, GIT_AUTHOR_NAME: 't', GIT_AUTHOR_EMAIL: 't@t', GIT_COMMITTER_NAME: 't', GIT_COMMITTER_EMAIL: 't@t' };
@@ -56,6 +57,7 @@ function makeRepo(name) {
     mkdirSync(join(repo, 'd1'), { recursive: true });
     for (let f = 0; f < 20; f++) writeFileSync(join(repo, `d${f % 2}/f${f}.txt`), text(300 + f * 30) + `rev ${commit}\n`);
     writeFileSync(join(repo, 'big.txt'), text(40_000) + `rev ${commit}\n`);
+    if (commit === 2) writeFileSync(join(repo, 'large.bin'), Buffer.from(crypto.getRandomValues(new Uint8Array(3 * 1024 * 1024))));
     git(repo, ['add', '-A']);
     git(repo, ['commit', '-q', '-m', `c${commit}`]);
   }
@@ -82,9 +84,10 @@ async function compareAll(repo, gitdir) {
   const prefix = ids[0].slice(0, 3);
   const expected = ids.map((line) => line.split(' ')[0]).filter((oid) => oid.startsWith(prefix)).sort();
   assert.deepEqual((await store.expand(prefix)).sort(), expected, 'expand ' + prefix);
-  // A pack is read a 1 MiB page at a time, or one large entry's deflate bound: never whole.
+  // A pack is read a 1 MiB page at a time, even for its 3 MiB object: never whole.
   const maxRead = Math.max(...fs.reads);
-  assert.ok(maxRead <= Math.max(1 << 20, deflateBound(largest) + 32), `largest pack read ${maxRead}, largest object ${largest}`);
+  assert.ok(largest >= 3 << 20, 'the fixture holds a large object');
+  assert.ok(maxRead <= 1 << 20, `largest pack read ${maxRead}, largest object ${largest}`);
   return ids.length;
 }
 
