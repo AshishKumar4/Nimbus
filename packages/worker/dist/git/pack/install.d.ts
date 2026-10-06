@@ -4,13 +4,17 @@
  * One implementation for every pack the git facet takes: a clone's, a
  * history piece's, a fetch's, a promisor fetch's.
  *
- * Installing follows git (index-pack's finish_tmp_packfile): the idx and
- * the reverse index (.rev) are written under temporary names, the .promisor
- * beside them, then the pack is named, the .rev, and the idx last, so no
- * reader finds an idx whose pack is not all there. A step that may be run again after its answer was lost (a resumed
- * pack, which cannot be fetched again) asks for a durable record of the
- * outcome, written before anything is named: run again, it finds the
- * record, finishes the naming, and returns it (resumeInstall).
+ * Installing follows git's order (index-pack's finish_tmp_packfile): the
+ * pack is named first and its idx last, so no reader finds an idx whose
+ * pack is not all there. Every session call waits its turn behind the
+ * clone's write waves (measured live: vscode's history ~25% slower with
+ * eight more calls a pack), so an ordinary pack costs one rename and one
+ * write of its .promisor, .rev and idx together, the idx last. A step that
+ * may be run again after its answer was lost (a resumed pack, which cannot
+ * be fetched again) asks for a durable record of the outcome: then the idx
+ * and .rev go under temporary names with the record before anything is
+ * named, and are renamed after the pack; run again, the step finds the
+ * record and finishes the naming (resumeInstall).
  */
 import type { PackProcessResult, PackStore, WorkTally } from './processor.js';
 /** The session's ranged file calls, as a facet makes them. */
@@ -23,6 +27,15 @@ export interface PackFiles {
     readdir(path: string): Promise<string[]>;
     /** Delete a file, durably, under whatever authority the caller writes with. */
     remove(path: string): Promise<unknown>;
+    /**
+     * Write whole files, in this order, in as few session calls as the caller
+     * can (a wave): durable on return when `durable`, else by the time the
+     * caller's step answers (its writer's last flush).
+     */
+    writeFiles(files: readonly {
+        path: string;
+        bytes: Uint8Array;
+    }[], durable: boolean): Promise<unknown>;
 }
 export interface PackSummary {
     packSha: string;

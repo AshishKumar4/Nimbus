@@ -4,13 +4,17 @@
  * One implementation for every pack the git facet takes: a clone's, a
  * history piece's, a fetch's, a promisor fetch's.
  *
- * Installing follows git (index-pack's finish_tmp_packfile): the idx and
- * the reverse index (.rev) are written under temporary names, the .promisor
- * beside them, then the pack is named, the .rev, and the idx last, so no
- * reader finds an idx whose pack is not all there. A step that may be run again after its answer was lost (a resumed
- * pack, which cannot be fetched again) asks for a durable record of the
- * outcome, written before anything is named: run again, it finds the
- * record, finishes the naming, and returns it (resumeInstall).
+ * Installing follows git's order (index-pack's finish_tmp_packfile): the
+ * pack is named first and its idx last, so no reader finds an idx whose
+ * pack is not all there. Every session call waits its turn behind the
+ * clone's write waves (measured live: vscode's history ~25% slower with
+ * eight more calls a pack), so an ordinary pack costs one rename and one
+ * write of its .promisor, .rev and idx together, the idx last. A step that
+ * may be run again after its answer was lost (a resumed pack, which cannot
+ * be fetched again) asks for a durable record of the outcome: then the idx
+ * and .rev go under temporary names with the record before anything is
+ * named, and are renamed after the pack; run again, the step finds the
+ * record and finishes the naming (resumeInstall).
  */
 import { encodeIdxV2, encodeRev } from './idx.js';
 import { oidToHex, PackFormatError } from './format.js';
@@ -81,27 +85,50 @@ export async function installPack(files, request) {
     const packSha = oidToHex(result.packSha);
     const final = dir + '/pack-' + packSha;
     const summary = { packSha, packBytes: result.packBytes, objects: result.objects, work: result.work };
+    const record = request.record === undefined
+        ? []
+        : [{ path: request.record.path, bytes: encoder.encode(JSON.stringify({ summary, extra: request.record.extra })) }];
     if ((await files.readdir(dir)).includes('pack-' + packSha + '.idx')) {
         await files.remove(tmp);
-        if (request.record !== undefined)
-            await writeWhole(files, request.record.path, encoder.encode(JSON.stringify({ summary, extra: request.record.extra })));
+        if (record.length > 0)
+            await files.writeFiles(record, true);
         return summary;
     }
-    const idx = new RangedPackFile(files, tmpFile(dir, tmpName, 'idx'));
     const entries = result.entries;
+    const pieces = [];
     for await (const piece of encodeIdxV2(result.objects, result.packSha, async function* () { yield entries; }))
-        await idx.append(piece);
-    const rev = new RangedPackFile(files, tmpFile(dir, tmpName, 'rev'));
-    await rev.append(encodeRev(entries, result.packSha));
-    if (request.promisor !== undefined)
-        await writeWhole(files, final + '.promisor', encoder.encode(request.promisor));
-    if (request.record !== undefined) {
-        await writeWhole(files, request.record.path, encoder.encode(JSON.stringify({ summary, extra: request.record.extra })));
+        pieces.push(piece);
+    const idx = concat(pieces);
+    const rev = encodeRev(entries, result.packSha);
+    const promisor = request.promisor === undefined ? [] : [{ path: final + '.promisor', bytes: encoder.encode(request.promisor) }];
+    if (record.length === 0) {
+        await files.rename(tmp, final + '.pack');
+        await files.writeFiles([...promisor, { path: final + '.rev', bytes: rev }, { path: final + '.idx', bytes: idx }], false);
+        return summary;
     }
+    // A step that may run again: everything it needs to finish the naming is durable first.
+    await files.writeFiles([
+        ...promisor,
+        { path: tmpFile(dir, tmpName, 'rev'), bytes: rev },
+        { path: tmpFile(dir, tmpName, 'idx'), bytes: idx },
+        ...record,
+    ], true);
     await files.rename(tmp, final + '.pack');
-    await files.rename(rev.path, final + '.rev');
-    await files.rename(idx.path, final + '.idx');
+    await files.rename(tmpFile(dir, tmpName, 'rev'), final + '.rev');
+    await files.rename(tmpFile(dir, tmpName, 'idx'), final + '.idx');
     return summary;
+}
+function concat(parts) {
+    let size = 0;
+    for (const part of parts)
+        size += part.byteLength;
+    const out = new Uint8Array(size);
+    size = 0;
+    for (const part of parts) {
+        out.set(part, size);
+        size += part.byteLength;
+    }
+    return out;
 }
 /**
  * A step run again whose pack was installed, or was being named, when its
@@ -130,9 +157,4 @@ export async function resumeInstall(files, dir, tmpName, recordPath) {
             await files.rename(path, final + '.' + kind);
     }
     return record;
-}
-async function writeWhole(files, path, bytes) {
-    const file = new RangedPackFile(files, path);
-    await files.fsTruncate(path, 0).catch(() => undefined);
-    await file.append(bytes);
 }

@@ -91,9 +91,16 @@ export { readRange };
 export async function settledBefore(context, tmpName, recordName) {
     return await resumeInstall(packFiles(context), join(context.dir, PACK_DIR), tmpName, join(context.dir, STAGE_DIR + '/' + recordName));
 }
-/** The clone's ranged file calls (its lease covers them); a removal is a wave of the clone's writer. */
-function packFiles(context) {
+/**
+ * The clone's ranged file calls (its lease covers them); whole files and
+ * removals are waves of the step's writer (`writer`), or of one made for
+ * them where the step has none.
+ */
+function packFiles(context, writer) {
     const supervisor = context.supervisor;
+    const relative = (path) => path.slice(context.dir.length + 1);
+    let own = null;
+    const waves = () => writer ?? (own ??= context.writer());
     return {
         fsWriteRange: (path, offset, bytes) => supervisor.fsWriteRange(path, offset, bytes),
         fsTruncate: (path, size) => supervisor.fsTruncate(path, size),
@@ -101,9 +108,15 @@ function packFiles(context) {
         rename: (from, to) => supervisor.rename(from, to),
         readdir: (path) => supervisor.readdir(path),
         async remove(path) {
-            const writer = context.writer();
-            await writer.remove(path.slice(context.dir.length + 1));
-            await writer.flush();
+            await waves().remove(relative(path));
+            await waves().flush();
+        },
+        async writeFiles(files, durable) {
+            for (const file of files)
+                await waves().file(relative(file.path), 0o644, file.bytes);
+            // Otherwise the step's last flush carries them, before it answers.
+            if (durable || writer === undefined)
+                await waves().flush();
         },
     };
 }
@@ -216,7 +229,7 @@ async function settlePack(context, writer, tmpName, result, promisor, record) {
     // What the step writes besides is durable before its pack is named.
     const extra = record === undefined ? undefined : await record.publish();
     await writer.flush();
-    const summary = await installPack(packFiles(context), {
+    const summary = await installPack(packFiles(context, writer), {
         dir: join(context.dir, PACK_DIR),
         tmpName,
         result,
