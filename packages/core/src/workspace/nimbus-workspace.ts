@@ -39,7 +39,7 @@ import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
 } from '../constants.js';
-import { BASH_RUNNER, CPYTHON_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
@@ -797,7 +797,7 @@ function registerWasmRuntimes(deps: {
       .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
       .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
-    'git-runner': lazy(async () => (await import('../runtime/git-runner.js'))
+    [GIT_RUNNER]: lazy(async () => (await import('../runtime/git-runner.js'))
       .makeGitRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
   };
   for (const [key, factory] of Object.entries(runners)) {

@@ -2,7 +2,7 @@ import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopComma
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
-import { BASH_RUNNER, CPYTHON_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -116,7 +116,7 @@ export async function registerHostedCommands(self, workspace) {
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
     // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
-    workspace.runtimes.registerRunner('git-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
+    workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
         return await makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(manifest, installRoot, binName, binKind)(ctx);

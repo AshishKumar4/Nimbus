@@ -14,6 +14,8 @@ import {
   runThroughCore,
 } from '../../packages/core/scripts/check-runtime-packages.mjs';
 import { BASH_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts';
+import * as contracts from '../../packages/core/src/runtime/os-contracts.ts';
+import { SPECS, npmRuntimeSpecs } from '../../packages/worker/scripts/runtime-specs.mjs';
 
 const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const NAME = '@nimbus-sh/runtime-toy';
@@ -49,6 +51,23 @@ const fakeRegistry = (versions, latest) => ({
 });
 
 try {
+  // A new import contract must be named by the manifest and by the core
+  // actually installing it. Old deployments keep the old CPython build;
+  // clang's unchanged preview0 images must not acquire a fictitious rebuild.
+  assert.equal(contracts.GIT_RUNNER, 'git-runner');
+  assert.equal(contracts.CPYTHON_RUNNER, 'cpython-runner@2');
+  for (const [spec, runner] of [
+    [SPECS['git/2.53.0'], contracts.GIT_RUNNER],
+    [SPECS['cpython/3.13.14-1'], contracts.CPYTHON_RUNNER],
+  ]) {
+    assert.ok(spec.files.filter((file) => file.runner).every((file) => file.runner === runner));
+    assert.equal(spec.npm.core, '>=0.15.1');
+    await runThroughCore(packageDir(`contract-${runner}`, runner));
+  }
+  assert.ok(SPECS['clang/binji-2020'].files.filter((file) => file.runner)
+    .every((file) => file.runner === 'clang-runner'));
+  assert.equal(npmRuntimeSpecs().find((spec) => spec.runtime === 'clang').npmVersion, '8.0.1');
+
   const good = packageDir('good', BASH_RUNNER);
   const builtSha = sha256(readFileSync(join(good, 'manifest.json')));
   const check = (dir, registry) =>

@@ -666,6 +666,9 @@ export const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>> = 
  */
 export const BASH_RUNNER = 'bash-runner@3';
 
+/** Git's first runtime build imports the shared Nimbus filesystem/process extensions. */
+export const GIT_RUNNER = 'git-runner';
+
 /**
  * The import modules a wasm runtime built in this tree may import: WASI
  * preview1, and the Nimbus extensions this tree's WASI hosts provide —
@@ -677,7 +680,8 @@ export const BASH_RUNNER = 'bash-runner@3';
  * its images against this list (packages/worker/wasm/python/build-python.sh,
  * packages/worker/wasm/git/build-git.sh). An image importing an extension
  * needs a host that provides it, so a runtime whose build first does takes a
- * new runner key ({@link CPYTHON_RUNNER}).
+ * new runner key ({@link CPYTHON_RUNNER}); git's first build already names
+ * {@link GIT_RUNNER}. Unchanged preview0 toolchains keep their existing keys.
  */
 export const WASI_RUNTIME_IMPORT_MODULES: readonly string[] = Object.freeze(['nimbus_fs', 'nimbus_proc', 'wasi_snapshot_preview1']);
 

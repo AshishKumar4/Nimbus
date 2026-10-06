@@ -6,7 +6,7 @@ index 4d95d84..0d43b3d 100644
  	helper->in = -1;
  	helper->out = -1;
  	helper->err = 0;
-+#ifdef NIMBUS_PROC
++#ifdef REMOTE_HELPER_DIRECT
 +	/*
 +	 * The helper is a program of its own, started as itself: not through
 +	 * a second git, which would find it as a dashed external and could
@@ -18,7 +18,7 @@ index 4d95d84..0d43b3d 100644
 +#endif
  	strvec_push(&helper->args, transport->remote->name);
  	strvec_push(&helper->args, remove_ext_force(transport->url));
-+#ifndef NIMBUS_PROC
++#ifndef REMOTE_HELPER_DIRECT
  	helper->git_cmd = 1;
 +#endif
  	helper->silent_exec_failure = 1;

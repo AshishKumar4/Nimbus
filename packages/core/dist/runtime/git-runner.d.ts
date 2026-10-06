@@ -28,8 +28,6 @@ import type { RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import { type NimbusFilesystemAuthority } from './os-contracts.js';
-/** The runner key a git runtime manifest's entrypoint names. */
-export declare const GIT_RUNNER = "git-runner";
 export declare function makeGitRunnerFactory(deps: {
     facets: FacetHost;
     filesystem: NimbusFilesystemAuthority;

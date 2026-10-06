@@ -1,3 +1,25 @@
+diff --git a/Makefile b/Makefile
+index 8aa489f..d7b1b21 100644
+--- a/Makefile
++++ b/Makefile
+@@ -132,6 +132,7 @@ include shared.mak
+ # inet_ntop and inet_pton additionally reside there.
+ #
+ # Define NO_MMAP if you want to avoid mmap.
++# Define NO_MMAP_PAGED with NO_MMAP to page pack indexes via compat/mmap.c.
+ #
+ # Define MMAP_PREVENTS_DELETE if a file that is currently mmapped cannot be
+ # deleted or cannot be replaced using rename().
+@@ -1992,6 +1993,9 @@ endif
+ ifdef NO_MMAP
+ 	COMPAT_CFLAGS += -DNO_MMAP
+ 	COMPAT_OBJS += compat/mmap.o
++ifdef NO_MMAP_PAGED
++	COMPAT_CFLAGS += -DNO_MMAP_PAGED
++endif
+ else
+         ifdef USE_WIN32_MMAP
+ 		COMPAT_CFLAGS += -DUSE_WIN32_MMAP
 diff --git a/builtin/index-pack.c b/builtin/index-pack.c
 index b67fb02..878d1cf 100644
 --- a/builtin/index-pack.c
@@ -46,6 +68,45 @@ index e4ecf77..1703137 100644
  	base += 256 * 4 + ((p->index_version < 2) ? 4 : 8);
  	step = the_hash_algo->rawsz + ((p->index_version < 2) ? 4 : 0);
  	while (off < p->num_objects * step) {
+diff --git a/compat/mmap.c b/compat/mmap.c
+index 1a11871..8918cf9 100644
+--- a/compat/mmap.c
++++ b/compat/mmap.c
+@@ -1,4 +1,7 @@
+ #include "../git-compat-util.h"
++#ifdef NO_MMAP_PAGED
++#include "mmap-paged.c"
++#endif
+ 
+ void *git_mmap(void *start, size_t length, int prot, int flags, int fd, off_t offset)
+ {
+@@ -40,6 +43,9 @@ void *git_mmap(void *start, size_t length, int prot, int flags, int fd, off_t of
+ 
+ int git_munmap(void *start, size_t length UNUSED)
+ {
++#ifdef NO_MMAP_PAGED
++	git_munmap_paged(start);
++#endif
+ 	free(start);
+ 	return 0;
+ }
+diff --git a/compat/posix.h b/compat/posix.h
+index 245386f..3722d8f 100644
+--- a/compat/posix.h
++++ b/compat/posix.h
+@@ -273,6 +273,12 @@ int lstat_cache_aware_rmdir(const char *path);
+ #define munmap git_munmap
+ void *git_mmap(void *start, size_t length, int prot, int flags, int fd, off_t offset);
+ int git_munmap(void *start, size_t length);
++#ifdef NO_MMAP_PAGED
++/* A read-only mapping with explicit range access, for targets without VM. */
++void *git_mmap_paged(int fd, size_t length);
++const unsigned char *git_mmap_read(const void *start, size_t offset, size_t length);
++const unsigned char *git_mmap_whole(const void *start);
++#endif
+ 
+ #else /* NO_MMAP || USE_WIN32_MMAP */
+ 
 diff --git a/pack-check.c b/pack-check.c
 index 67cb2cf..17c8036 100644
 --- a/pack-check.c
@@ -119,166 +180,32 @@ index 8598b94..05f9fca 100644
  
  	/*
 diff --git a/packfile.c b/packfile.c
-index 402c3b5..a5a3649 100644
+index 402c3b5..81100d6 100644
 --- a/packfile.c
 +++ b/packfile.c
-@@ -157,6 +157,104 @@ void pack_report(struct repository *repo)
-  * consistency checks, then record its information to p.  Return 0 on
-  * success.
-  */
-+#ifdef PACK_INDEX_PAGED
-+/* An index's header and fan-out table, the part load_idx() reads. */
-+#define PACK_INDEX_HEAD_SIZE (8 + 4 * 256)
-+#define PACK_INDEX_PAGE_SIZE (64 * 1024)
-+#define PACK_INDEX_PAGES 64
-+
-+/*
-+ * Pages of pack indexes, shared by every pack and evicted least recently used
-+ * first: 4 MiB however many objects the packs hold, where a mapped index of
-+ * two million objects costs 60 MiB. A lookup reads the fan-out's range of the
-+ * object-ID table, which for any pack is a few pages.
-+ */
-+static struct pack_index_page {
-+	const struct packed_git *pack;
-+	size_t page;
-+	size_t len;
-+	unsigned long used;
-+	unsigned char *data;
-+} pack_index_pages[PACK_INDEX_PAGES];
-+static unsigned long pack_index_clock;
-+
-+static const struct pack_index_page *pack_index_page(const struct packed_git *p, size_t page)
-+{
-+	struct pack_index_page *slot = NULL;
-+	size_t start = st_mult(page, PACK_INDEX_PAGE_SIZE);
-+	ssize_t got;
-+	int i;
-+
-+	for (i = 0; i < PACK_INDEX_PAGES; i++) {
-+		struct pack_index_page *at = &pack_index_pages[i];
-+		if (at->pack == p && at->page == page) {
-+			at->used = ++pack_index_clock;
-+			return at;
-+		}
-+		if (!slot || at->used < slot->used)
-+			slot = at;
-+	}
-+	if (!slot->data)
-+		slot->data = xmalloc(PACK_INDEX_PAGE_SIZE);
-+	slot->pack = NULL;
-+	slot->len = p->index_size - start < PACK_INDEX_PAGE_SIZE ?
-+		p->index_size - start : PACK_INDEX_PAGE_SIZE;
-+	got = pread_in_full(p->index_fd, slot->data, slot->len, start);
-+	if (got < 0 || (size_t)got != slot->len)
-+		die_errno(_("unable to read pack index of %s"), p->pack_name);
-+	slot->pack = p;
-+	slot->page = page;
-+	slot->used = ++pack_index_clock;
-+	return slot;
-+}
-+
-+const unsigned char *pack_index_at(const struct packed_git *p, size_t offset, size_t len)
-+{
-+	static unsigned char straddle[64];
-+	size_t page = offset / PACK_INDEX_PAGE_SIZE, within = offset % PACK_INDEX_PAGE_SIZE;
-+	const struct pack_index_page *slot;
-+	size_t first;
-+
-+	if (offset + len > p->index_size)
-+		die(_("offset beyond end of pack index for %s (truncated index?)"),
-+		    p->pack_name);
-+	if (offset + len <= PACK_INDEX_HEAD_SIZE)
-+		return (const unsigned char *)p->index_data + offset;
-+	slot = pack_index_page(p, page);
-+	if (within + len <= slot->len)
-+		return slot->data + within;
-+	/* Across a page boundary: an entry, at most a hash or an offset long. */
-+	if (len > sizeof(straddle))
-+		BUG("pack_index_at: %"PRIuMAX" bytes across a page", (uintmax_t)len);
-+	first = slot->len - within;
-+	memcpy(straddle, slot->data + within, first);
-+	slot = pack_index_page(p, page + 1);
-+	memcpy(straddle + first, slot->data, len - first);
-+	return straddle;
-+}
-+
-+const unsigned char *pack_index_whole(struct packed_git *p)
-+{
-+	if (!p->index_whole) {
-+		unsigned char *whole = xmalloc(p->index_size);
-+		if (pread_in_full(p->index_fd, whole, p->index_size, 0) != (ssize_t)p->index_size)
-+			die_errno(_("unable to read pack index of %s"), p->pack_name);
-+		p->index_whole = whole;
-+	}
-+	return p->index_whole;
-+}
-+
-+static void pack_index_forget(const struct packed_git *p)
-+{
-+	int i;
-+	for (i = 0; i < PACK_INDEX_PAGES; i++)
-+		if (pack_index_pages[i].pack == p) {
-+			pack_index_pages[i].pack = NULL;
-+			pack_index_pages[i].used = 0;
-+		}
-+}
-+#endif
-+
- static int check_packed_git_idx(const char *path, struct packed_git *p)
- {
- 	void *idx_map;
-@@ -176,6 +274,26 @@ static int check_packed_git_idx(const char *path, struct packed_git *p)
+@@ -176,9 +176,20 @@ static int check_packed_git_idx(const char *path, struct packed_git *p)
  		close(fd);
  		return error("index file %s is too small", path);
  	}
-+#ifdef PACK_INDEX_PAGED
++#ifdef NO_MMAP_PAGED
 +	/*
-+	 * The header and fan-out table are all load_idx() reads, and all that
-+	 * stays in memory: the rest is paged in by pack_index_at().
++	 * NO_MMAP's paged mapping owns fd until munmap. load_idx only reads
++	 * the header; lookups use pack_index_at instead of raw dereferences.
 +	 */
-+	idx_map = xmalloc(PACK_INDEX_HEAD_SIZE);
-+	if (pread_in_full(fd, idx_map, PACK_INDEX_HEAD_SIZE, 0) != PACK_INDEX_HEAD_SIZE) {
-+		free(idx_map);
++	idx_map = git_mmap_paged(fd, idx_size);
++	if (idx_map == MAP_FAILED) {
 +		close(fd);
-+		return error_errno("unable to read index file %s", path);
-+	}
-+	ret = load_idx(path, hashsz, idx_map, idx_size, p);
-+	if (ret) {
-+		free(idx_map);
-+		close(fd);
-+	} else {
-+		p->index_fd = fd;
-+		p->index_whole = NULL;
++		return error_errno("unable to map index file %s", path);
 +	}
 +#else
  	idx_map = xmmap(NULL, idx_size, PROT_READ, MAP_PRIVATE, fd, 0);
  	close(fd);
- 
-@@ -183,6 +301,7 @@ static int check_packed_git_idx(const char *path, struct packed_git *p)
+-
++#endif
+ 	ret = load_idx(path, hashsz, idx_map, idx_size, p);
  
  	if (ret)
- 		munmap(idx_map, idx_size);
-+#endif
- 
- 	return ret;
- }
-@@ -411,7 +530,15 @@ int close_pack_fd(struct packed_git *p)
- void close_pack_index(struct packed_git *p)
- {
- 	if (p->index_data) {
-+#ifdef PACK_INDEX_PAGED
-+		pack_index_forget(p);
-+		free((void *)p->index_data);
-+		FREE_AND_NULL(p->index_whole);
-+		close(p->index_fd);
-+		p->index_fd = -1;
-+#else
- 		munmap((void *)p->index_data, p->index_size);
-+#endif
- 		p->index_data = NULL;
- 	}
- }
-@@ -610,7 +737,7 @@ static int open_packed_git_1(struct packed_git *p)
+@@ -610,7 +621,7 @@ static int open_packed_git_1(struct packed_git *p)
  	struct stat st;
  	struct pack_header hdr;
  	unsigned char hash[GIT_MAX_RAWSZ];
@@ -287,7 +214,7 @@ index 402c3b5..a5a3649 100644
  	ssize_t read_result;
  	const unsigned hashsz = p->repo->hash_algo->rawsz;
  
-@@ -668,7 +795,7 @@ static int open_packed_git_1(struct packed_git *p)
+@@ -668,7 +679,7 @@ static int open_packed_git_1(struct packed_git *p)
  		return error_errno("error reading from %s", p->pack_name);
  	if (read_result != hashsz)
  		return error("packfile %s signature is unavailable", p->pack_name);
@@ -296,11 +223,11 @@ index 402c3b5..a5a3649 100644
  	if (!hasheq(hash, idx_hash, p->repo->hash_algo))
  		return error("packfile %s does not match index", p->pack_name);
  	return 0;
-@@ -1980,38 +2107,65 @@ int bsearch_pack(const struct object_id *oid, const struct packed_git *p, uint32
+@@ -1980,38 +1991,60 @@ int bsearch_pack(const struct object_id *oid, const struct packed_git *p, uint32
  		index_lookup += 8;
  	}
  
-+#ifdef PACK_INDEX_PAGED
++#ifdef NO_MMAP_PAGED
 +	{
 +		/* bsearch_hash(), over the table as pack_index_at() reads it. */
 +		const uint32_t *fanout = (const uint32_t *)index_fanout;
@@ -367,16 +294,12 @@ index 402c3b5..a5a3649 100644
  void check_pack_index_ptr(const struct packed_git *p, const void *vptr)
  {
  	const unsigned char *ptr = vptr;
-+#ifdef PACK_INDEX_PAGED
-+	/* A pointer into the index is into all of it: pack_index_whole(). */
-+	const unsigned char *start = p->index_whole;
-+#else
- 	const unsigned char *start = p->index_data;
-+#endif
+-	const unsigned char *start = p->index_data;
++	const unsigned char *start = pack_index_whole(p);
  	const unsigned char *end = start + p->index_size;
  	if (ptr < start)
  		die(_("offset before start of pack index for %s (corrupt index?)"),
-@@ -2024,21 +2178,23 @@ void check_pack_index_ptr(const struct packed_git *p, const void *vptr)
+@@ -2024,21 +2057,23 @@ void check_pack_index_ptr(const struct packed_git *p, const void *vptr)
  
  off_t nth_packed_object_offset(const struct packed_git *p, uint32_t n)
  {
@@ -410,29 +333,10 @@ index 402c3b5..a5a3649 100644
  }
  
 diff --git a/packfile.h b/packfile.h
-index acc5c55..0662df8 100644
+index acc5c55..52613e3 100644
 --- a/packfile.h
 +++ b/packfile.h
-@@ -15,8 +15,18 @@ struct odb_read_stream;
- struct packed_git {
- 	struct pack_window *windows;
- 	off_t pack_size;
-+	/*
-+	 * The pack index. With PACK_INDEX_PAGED, only its header and fan-out
-+	 * table are in memory (index_data), the rest is read in pages from
-+	 * index_fd as it is needed (pack_index_at), and the whole of it only for
-+	 * the few callers that walk all of it (pack_index_whole).
-+	 */
- 	const void *index_data;
- 	size_t index_size;
-+#ifdef PACK_INDEX_PAGED
-+	int index_fd;
-+	unsigned char *index_whole;
-+#endif
- 	uint32_t num_objects;
- 	size_t crc_offset;
- 	struct oidset bad_objects;
-@@ -474,6 +484,26 @@ int is_promisor_object(struct repository *r, const struct object_id *oid);
+@@ -474,6 +474,28 @@ int is_promisor_object(struct repository *r, const struct object_id *oid);
  int load_idx(const char *path, const unsigned int hashsz, void *idx_map,
  	     size_t idx_size, struct packed_git *p);
  
@@ -440,21 +344,23 @@ index acc5c55..0662df8 100644
 + * `len` bytes of the pack index at `offset`. The pointer is valid until the
 + * next call: copy what has to outlive it.
 + */
-+#ifdef PACK_INDEX_PAGED
-+const unsigned char *pack_index_at(const struct packed_git *p, size_t offset, size_t len);
-+/* The whole pack index, read into memory on the first call. */
-+const unsigned char *pack_index_whole(struct packed_git *p);
-+#else
 +static inline const unsigned char *pack_index_at(const struct packed_git *p, size_t offset,
 +						 size_t len UNUSED)
 +{
++#ifdef NO_MMAP_PAGED
++	return git_mmap_read(p->index_data, offset, len);
++#else
 +	return (const unsigned char *)p->index_data + offset;
-+}
-+static inline const unsigned char *pack_index_whole(struct packed_git *p)
-+{
-+	return p->index_data;
-+}
 +#endif
++}
++static inline const unsigned char *pack_index_whole(const struct packed_git *p)
++{
++#ifdef NO_MMAP_PAGED
++	return git_mmap_whole(p->index_data);
++#else
++	return p->index_data;
++#endif
++}
 +
  /*
   * Parse a --pack_header option as accepted by index-pack and unpack-objects,

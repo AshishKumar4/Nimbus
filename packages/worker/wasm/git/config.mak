@@ -5,18 +5,18 @@
 GIT_WASI_COMPAT_H = $(GIT_WASI_DIR)/git-wasi-compat.h
 CC = $(WASI_SDK)/bin/wasm32-wasi-clang
 AR = $(WASI_SDK)/bin/llvm-ar
-# NIMBUS_PROC: patches/0002-spawn-through-the-host.patch. start_command starts
-# a child through the host (nimbus_spawnvpe in git-wasi-compat.c), as
+# NO_FORK: patches/0002-spawn-through-the-host.patch. start_command starts
+# a child through the host (wasm/nimbus-libc/nimbus-proc.c), as
 # Windows does through mingw_spawnvpe: there is no fork.
-# PACK_INDEX_PAGED: patches/0001-pack-index-paged.patch. A pack index is read
+# NO_MMAP_PAGED: patches/0001-pack-index-paged.patch. A pack index is read
 # in pages as lookups need them instead of whole (NO_MMAP would read all of
 # it: 60 MiB for a history of two million objects, in a 128 MiB isolate).
 CFLAGS = -O2 -g0 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
-  -DPACK_INDEX_PAGED -DNIMBUS_PROC \
+  -DREMOTE_HELPER_DIRECT \
   -I$(GIT_WASI_DIR)/include -I$(GIT_WASI_DIR)/../nimbus-libc -I$(SYSROOT_EXTRA)/include -include $(GIT_WASI_COMPAT_H)
 LDFLAGS = -L$(SYSROOT_EXTRA)/lib -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
   -Wl,-z,stack-size=8388608 -Wl,--initial-memory=12582912 -Wl,--max-memory=2147483648
-COMPAT_OBJS += compat/git-wasi-compat.o compat/nimbus-fs.o
+COMPAT_OBJS += compat/git-wasi-compat.o compat/nimbus-fs.o compat/nimbus-proc.o
 # Git's default prefix is the builder's $HOME, baked into the binary as the
 # root of its template, exec and documentation paths. /usr is where a
 # session's git claims to live; the system configuration comes from
@@ -24,7 +24,9 @@ COMPAT_OBJS += compat/git-wasi-compat.o compat/nimbus-fs.o
 prefix = /usr
 sysconfdir = /etc
 NO_PTHREADS = YesPlease
+NO_FORK = YesPlease
 NO_MMAP = YesPlease
+NO_MMAP_PAGED = YesPlease
 NO_CURL = YesPlease
 NO_EXPAT = YesPlease
 NO_PERL = YesPlease

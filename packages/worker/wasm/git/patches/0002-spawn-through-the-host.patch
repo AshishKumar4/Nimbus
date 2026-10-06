@@ -1,29 +1,62 @@
+diff --git a/Makefile b/Makefile
+index d7b1b21..015aa21 100644
+--- a/Makefile
++++ b/Makefile
+@@ -133,6 +133,7 @@ include shared.mak
+ #
+ # Define NO_MMAP if you want to avoid mmap.
+ # Define NO_MMAP_PAGED with NO_MMAP to page pack indexes via compat/mmap.c.
++# Define NO_FORK when the platform supplies git_spawnvpe instead of fork.
+ #
+ # Define MMAP_PREVENTS_DELETE if a file that is currently mmapped cannot be
+ # deleted or cannot be replaced using rename().
+@@ -1990,6 +1991,9 @@ endif
+ ifdef NO_INITGROUPS
+ 	BASIC_CFLAGS += -DNO_INITGROUPS
+ endif
++ifdef NO_FORK
++	COMPAT_CFLAGS += -DNO_FORK
++endif
+ ifdef NO_MMAP
+ 	COMPAT_CFLAGS += -DNO_MMAP
+ 	COMPAT_OBJS += compat/mmap.o
+diff --git a/compat/posix.h b/compat/posix.h
+index 3722d8f..3d69a3f 100644
+--- a/compat/posix.h
++++ b/compat/posix.h
+@@ -261,6 +261,11 @@ int lstat_cache_aware_rmdir(const char *path);
+ #define rmdir lstat_cache_aware_rmdir
+ #endif
+ 
++#ifdef NO_FORK
++pid_t git_spawnvpe(const char *file, const char **argv, char **deltaenv,
++		  const char *dir, int fdin, int fdout, int fderr);
++#endif
++
+ #if defined(NO_MMAP) || defined(USE_WIN32_MMAP)
+ 
+ #ifndef PROT_READ
 diff --git a/run-command.c b/run-command.c
-index e3e0247..4a89547 100644
+index e3e0247..2ad35dd 100644
 --- a/run-command.c
 +++ b/run-command.c
-@@ -745,7 +745,7 @@ int start_command(struct child_process *cmd)
+@@ -745,7 +745,7 @@ fail_pipe:
  	if (cmd->close_object_store)
  		odb_close(the_repository->objects);
  
 -#ifndef GIT_WINDOWS_NATIVE
-+#if !defined(GIT_WINDOWS_NATIVE) && !defined(NIMBUS_PROC)
++#if !defined(GIT_WINDOWS_NATIVE) && !defined(NO_FORK)
  {
  	int notify_pipe[2];
  	int null_fd = -1;
-@@ -932,9 +932,20 @@ int start_command(struct child_process *cmd)
+@@ -932,9 +932,15 @@ end_of_spawn:
  		cmd->args.v = prepare_shell_cmd(&nargv, sargv);
  
  	trace_argv_printf(cmd->args.v, "trace: start_command:");
-+#ifdef NIMBUS_PROC
-+	/*
-+	 * No fork on WASI: the host starts the child, as Windows does, with the
-+	 * descriptors it is to have as 0, 1 and 2 and the environment changes
-+	 * (NAME=value to set, NAME to unset) over the parent's.
-+	 */
-+	cmd->pid = nimbus_spawnvpe(cmd->args.v[0], cmd->args.v,
-+				   (char**) cmd->env.v,
-+				   cmd->dir, fhin, fhout, fherr);
++#ifdef NO_FORK
++	cmd->pid = git_spawnvpe(cmd->args.v[0], cmd->args.v,
++				(char**) cmd->env.v,
++				cmd->dir, fhin, fhout, fherr);
 +#else
  	cmd->pid = mingw_spawnvpe(cmd->args.v[0], cmd->args.v,
  				  (char**) cmd->env.v,

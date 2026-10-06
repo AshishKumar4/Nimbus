@@ -602,20 +602,7 @@ stage_verify() {
 	# its committed dist), and nimbus_fs must be, or modes were not linked.
 	# Both variants, because the sci one links C++ and a second libc, either of
 	# which could drag in an import the base build never had.
-	local variant ns
-	for variant in python.wasm python-sci.wasm; do
-		ns=$(node --input-type=module -e "
-		  import { readFileSync } from 'node:fs';
-		  import { WASI_RUNTIME_IMPORT_MODULES } from '$HERE/../../../core/dist/runtime/os-contracts.js';
-		  const m = new WebAssembly.Module(readFileSync('$HERE/$variant'));
-		  const s = [...new Set(WebAssembly.Module.imports(m).map(i => i.module))].sort();
-		  const stray = s.filter(n => !WASI_RUNTIME_IMPORT_MODULES.includes(n));
-		  if (stray.length || !s.includes('nimbus_fs')) process.exitCode = 1;
-		  process.stdout.write(s.join(','));") || {
-			echo "  $variant import namespaces: $ns" >&2
-			echo "ERROR: $variant imports outside WASI_RUNTIME_IMPORT_MODULES, or not nimbus_fs" >&2; exit 1; }
-		echo "  $variant import namespaces: $ns"
-	done
+	node "$HERE/../nimbus-libc/verify-imports.mjs" "$HERE/python.wasm" "$HERE/python-sci.wasm"
 
 	# The sci variant's extensions have to be registered under the dotted names
 	# the packages import them by. A build that linked the objects but lost the

@@ -6,7 +6,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync } from 'node:fs';
 
 // The source under Bun, the built package under Node.
-const { BASH_RUNNER, CPYTHON_RUNNER } = await import(typeof process.versions.bun === 'string'
+const { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } = await import(typeof process.versions.bun === 'string'
   ? '../../../packages/core/src/runtime/os-contracts.ts'
   : '../../../packages/core/dist/runtime/os-contracts.js');
 
@@ -50,7 +50,7 @@ export const RUNTIMES = [
     name: 'git',
     version: '2.53.0',
     license: 'GPL-2.0-only',
-    entrypoints: [{ binName: 'git', runner: 'git-runner', args: [] }],
+    entrypoints: [{ binName: 'git', runner: GIT_RUNNER, args: [] }],
     files: [
       ['share/git/git.wasm', `${WASM_DIR}git/git.wasm`],
       ['share/git/gitconfig', `${WASM_DIR}git/gitconfig`],

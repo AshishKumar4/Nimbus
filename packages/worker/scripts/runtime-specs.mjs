@@ -7,7 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
-import { BASH_RUNNER, CPYTHON_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, GIT_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Static per-runtime spec. Each entry says where to fetch the upstream
@@ -191,11 +191,12 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-git',
       summary: 'Git 2.53.0, cross-compiled to wasm32-wasi',
+      core: '>=0.15.1',
     },
     files: [
       { src: 'git.wasm', vfs: 'share/git/git.wasm' },
       { src: 'gitconfig', vfs: 'share/git/gitconfig' },
-      { src: 'BIN_MARKER', vfs: 'bin/git', mode: 'exec', runner: 'git-runner', binName: 'git' },
+      { src: 'BIN_MARKER', vfs: 'bin/git', mode: 'exec', runner: GIT_RUNNER, binName: 'git' },
     ],
     synthetic_files: {
       'BIN_MARKER': Buffer.from(
@@ -359,8 +360,8 @@ This runtime bundles Git cross-compiled to wasm32-wasi. Full license text:
 https://www.gnu.org/licenses/old-licenses/gpl-2.0.txt
 Corresponding source: https://www.kernel.org/pub/software/scm/git/git-2.53.0.tar.xz
 plus the Nimbus build overlay (packages/worker/wasm/git/ in the Nimbus
-repository: build-git.sh, config.mak, git-wasi-compat.{h,c}, include/,
-patches/).
+repository: build-git.sh, config.mak, git-wasi-compat.{h,c},
+git-mmap-paged.c, include/, patches/, and the shared wasm/nimbus-libc/).
 
 zlib 1.3.1 — Zlib
 Copyright (C) 1995-2024 Jean-loup Gailly and Mark Adler.

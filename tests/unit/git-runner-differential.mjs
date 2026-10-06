@@ -12,7 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
+import { chmodSync, copyFileSync, existsSync, mkdtempSync, readdirSync, readFileSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostSqlite } from './lib/host-sqlite.mjs';
@@ -149,6 +149,43 @@ try {
     assert.ok(printed.equals(expected), `${label}: the bytes git printed\n  git     ${JSON.stringify(expected.toString('latin1').slice(0, 400))}\n  session ${JSON.stringify(printed.toString('latin1').slice(0, 400))}`);
   }
   steps.push('bytes');
+
+  // The paging backend is below Git's NO_MMAP hooks. Both index formats,
+  // large enough for hashes to straddle 64 KiB pages, must still resolve
+  // every object as host git does. Seed the real host-written packs, without
+  // loose objects to mask a broken pack-index lookup.
+  const packed = join(hostDir, 'packed');
+  execFileSync('git', ['init', '-q', '-b', 'main', packed], { env: hostEnv });
+  const files = Array.from({ length: 6000 }, (_, i) => [`f${i}`, `content ${i}\n`]);
+  const stream = files.map(([name, text], i) => `blob\nmark :${i + 1}\ndata ${Buffer.byteLength(text)}\n${text}\n`).join('')
+    + `commit refs/heads/main\ncommitter Ada <ada@example.com> 1700000000 +0000\ndata 7\npacked\n\n`
+    + files.map(([name], i) => `M 100644 :${i + 1} ${name}\n`).join('') + '\ndone\n';
+  execFileSync('git', ['fast-import', '--quiet'], { cwd: packed, env: hostEnv, input: stream });
+  for (const version of [1, 2]) {
+    const prefix = join(hostDir, `pack-v${version}`);
+    const hash = execFileSync('git', ['pack-objects', '--all', '--threads=1', '--window=0', `--index-version=${version}`, prefix], { cwd: packed, env: hostEnv, encoding: 'utf8' }).trim();
+    const objects = join(packed, '.git/objects');
+    for (const name of readdirSync(objects)) rmSync(join(objects, name), { recursive: true, force: true });
+    execFileSync('mkdir', ['-p', join(objects, 'pack')]);
+    assert.equal((await ws.exec('rm -rf packed/.git/objects && mkdir -p packed/.git/objects/pack packed/.git/refs/heads')).exitCode, 0);
+    for (const suffix of ['pack', 'idx', 'rev']) {
+      const source = `${prefix}-${hash}.${suffix}`;
+      if (!existsSync(source)) continue;
+      const name = `pack-${hash}.${suffix}`;
+      copyFileSync(source, join(objects, 'pack', name));
+      kernelFs.writeFile(`home/user/packed/.git/objects/pack/${name}`, readFileSync(source));
+    }
+    for (const name of ['HEAD', 'config', 'refs/heads/main'])
+      kernelFs.writeFile(`home/user/packed/.git/${name}`, readFileSync(join(packed, '.git', name)));
+    for (const args of [['rev-list', '--objects', '--all'], ['log', '--format=%H %s'], ['show', '--stat', '--format=%H', 'HEAD'], ['show', 'HEAD:f2731'], ['show', 'HEAD:f5999']]) {
+      const expected = execFileSync('git', args, { cwd: packed, env: hostEnv, encoding: 'utf8' });
+      const quoted = args.map((arg) => `'${arg.replaceAll("'", "'\\''")}'`).join(' ');
+      const got = await ws.exec(`cd packed && TZ=UTC git ${quoted}`);
+      assert.equal(got.exitCode, 0, `index v${version}: ${got.stderr}`);
+      assert.equal(got.stdout, expected, `index v${version}: ${args.join(' ')}`);
+    }
+    steps.push(`paged pack index v${version}`);
+  }
 } finally {
   rmSync(hostDir, { recursive: true, force: true });
   await host.dispose?.();
