@@ -40,8 +40,8 @@ try {
     assert.match(hooked.stdout, /hook-saw:second/);
     checks++;
 
-    await run(`cd repo && printf '#!/bin/sh\necho refused by pre-commit >&2\nexit 1\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit; cd ~`);
-    const refused = await run(`cd repo && printf 'c\n' > c.txt && git add c.txt && ${ID} git commit -q -m third; echo "status=$?"; git log --format=%s -1; cd ~`);
+    await run(`cd repo && printf '#!/bin/sh\\necho refused by pre-commit >&2\\nexit 1\\n' > .git/hooks/pre-commit && chmod +x .git/hooks/pre-commit; cd ~`);
+    const refused = await run(`cd repo && printf 'c\\n' > c.txt && git add c.txt && ${ID} git commit -q -m third; echo "status=$?"; git log --format=%s -1; cd ~`);
     assert.match(refused.stdout, /status=1/);
     assert.match(refused.stdout, /^second$/m, 'the commit did not happen');
     checks++;

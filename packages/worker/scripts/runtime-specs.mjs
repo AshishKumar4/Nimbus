@@ -227,8 +227,10 @@ export const SPECS = {
     npm: {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
-      // The first core whose runner is CPYTHON_RUNNER.
-      core: '>=0.16.0',
+      // The core this tree builds, the first whose runner is CPYTHON_RUNNER
+      // once released; a core without the runner refuses the package at
+      // create, by name. The release raises it with core's version.
+      core: '>=0.15.1',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
