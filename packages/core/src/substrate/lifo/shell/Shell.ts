@@ -131,8 +131,7 @@ export class Shell {
   cursorPos: number = 0;
   screenCursorRow: number = 0; // tracks the actual terminal row (relative to prompt start)
 
-  // History (legacy array kept for backward compat with tests)
-  history: string[] = [];
+  /** Where Up/Down stands in the history: -1 is the line being typed. */
   historyIndex: number = -1;
   private savedLine: string = '';
 
@@ -276,6 +275,15 @@ export class Shell {
     view.registerBuiltins();
     this.forkViews.set(state, view);
     return view;
+  }
+
+  /**
+   * The command history, oldest first: the one store (HistoryManager, kept
+   * in ~/.bash_history) that Up/Down, reverse search, Alt+. and the history
+   * builtin all read, each line as it ran (after `!` expansion).
+   */
+  get history(): readonly string[] {
+    return this.historyManager.getAll();
   }
 
   /** The names this shell runs itself, as help and completion list them. */
@@ -560,6 +568,9 @@ export class Shell {
     this.env['$'] = String(pid);
 
     this.terminal.onData(async (data) => (await this.handleInput(data)));
+
+    // The saved history, so Up recalls the last session's commands, as bash's does.
+    await this.historyManager.load();
 
     // Source rc files on startup (like bash/zsh)
     const sourced = this.sourceRcFiles();
@@ -1117,7 +1128,6 @@ export class Shell {
     }
 
     this.pendingLine = null;
-    this.history.push(command);
     (await this.executeLine(command));
   }
 
