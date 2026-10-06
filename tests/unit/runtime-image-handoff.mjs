@@ -60,6 +60,32 @@ function assertHandedOff(raw, images, name) {
   console.log('  ok  python hands its facet the installed image without caching it');
 }
 
+// The facet is opened per invocation, under the invoking process's pid, and
+// disposed after it: the supervisor capability is bound when it opens, so a
+// facet held across calls would hand every later caller the first caller's
+// write credential (cpython-runner.ts).
+{
+  const { filesystem } = installedRuntime({
+    'runtime/python/share/cpython/python.wasm': image,
+    'runtime/python/lib/python313.zip': new Uint8Array([1]),
+  });
+  const manifest = { version: '3.13.14', files: [{ path: 'share/cpython/python.wasm' }, { path: 'lib/python313.zip' }] };
+  const opened = [];
+  let disposed = 0;
+  const host = {
+    open(spec) {
+      opened.push(spec.syscalls?.pid);
+      return { async submit() { return { exitCode: 0, stdout: '', stderr: '' }; }, dispose() { disposed++; } };
+    },
+  };
+  const run = makeCPythonRunnerFactory({ facets: host })(manifest, '/runtime/python', 'python', undefined);
+  assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(1)'], pid: 41 }).ctx), 0);
+  assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(2)'], pid: 42 }).ctx), 0);
+  assert.deepEqual(opened, [41, 42], 'each invocation opens its own facet under its own pid');
+  assert.equal(disposed, 2, 'each invocation disposes the facet it opened');
+  console.log('  ok  python opens a facet per invocation, under the invoker\'s pid');
+}
+
 // A program that keeps serving runs as a resident process, whose host reads
 // the image by path itself: the one-shot path's copy is never taken.
 {
