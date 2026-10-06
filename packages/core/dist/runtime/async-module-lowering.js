@@ -39,7 +39,7 @@
  */
 import { Parser } from 'acorn';
 import { applySourceEdits } from './javascript-ast.js';
-import { bindingScope, list, scoped, stringOf } from './javascript-scope.js';
+import { bindingScope, list, namesBinding, scoped, stringOf } from './javascript-scope.js';
 /** `esm` lowered to the CommonJS function body of an async module. */
 export function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
@@ -142,32 +142,6 @@ function importReferences(program, names) {
         found.push({ start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
     }
     return references;
-}
-/** Whether an identifier under `parent` by `key` names a binding, rather than a property, a key or a label. */
-function namesBinding(parent, key) {
-    switch (parent.type) {
-        case 'MemberExpression':
-            return key !== 'property' || parent.computed === true;
-        case 'Property':
-        case 'MethodDefinition':
-        case 'PropertyDefinition':
-            return key !== 'key' || parent.computed === true;
-        case 'ImportAttribute':
-            return key !== 'key';
-        case 'LabeledStatement':
-        case 'BreakStatement':
-        case 'ContinueStatement':
-        case 'MetaProperty':
-        // A declaration's own names: the emitter replaces the declaration whole.
-        case 'ImportSpecifier':
-        case 'ImportDefaultSpecifier':
-        case 'ImportNamespaceSpecifier':
-        case 'ExportSpecifier':
-        case 'ExportAllDeclaration':
-            return false;
-        default:
-            return true;
-    }
 }
 /** How an identifier under `parent` by `key` uses the binding it names. */
 function useOf(parent, key, patternProperties) {

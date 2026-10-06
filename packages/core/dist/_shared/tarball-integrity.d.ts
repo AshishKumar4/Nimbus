@@ -13,12 +13,12 @@
  *   - the cache addresses only a string that is one entry, whose digest
  *     decodes: it stores nothing it could not verify the same way twice.
  *
- * Self-contained but for SRI_DIGEST_ALGORITHMS, which the functions name:
- * the install facet carries all of them by source (its preamble, worker
- * loaders/npm-install-preamble.ts).
+ * Each function names only the others: the install facet carries them all by
+ * source (its preamble, worker loaders/npm-install-preamble.ts), which keeps
+ * the identifiers the Worker's bundler gives them only for functions.
  */
 /** The SRI algorithms npm emits, weakest first, by their Web Crypto names. */
-export declare const SRI_DIGEST_ALGORITHMS: Readonly<Record<string, string>>;
+export declare function sriDigestAlgorithms(): Readonly<Record<string, string>>;
 /** One entry of an SRI string, of an algorithm npm emits. */
 export interface SriEntry {
     /** Lowercase SRI algorithm name (e.g. 'sha512'). */

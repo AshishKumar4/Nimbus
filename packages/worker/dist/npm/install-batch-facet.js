@@ -24,10 +24,19 @@
  *   - No closure capture other than args + preamble names.
  *   - Preamble symbols (streamPackageEntries, streamTarEntries,
  *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
- *     @ts-ignore; __nimbusWaveWriter and the install preamble's functions
- *     (retryingRegistryFetch, strongestSriEntry, sriDigestOf,
- *     sriDigestsEqual) declared below.
+ *     @ts-ignore; __nimbusWaveWriter declared below.
+ *   - The install preamble's functions (retryingRegistryFetch,
+ *     strongestSriEntry, sriDigestOf, sriDigestsEqual) are imported, never
+ *     declared as globals: the preamble embeds each by its own source, and
+ *     an import makes this function name it by the same identifier, whatever
+ *     the Worker's bundler calls it. A global of that name would make the
+ *     bundler rename the module's function away from it (`retryingRegistryFetch2`),
+ *     and the facet would call a name its preamble never defines.
  */
+import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
+// The registry's retry policy and tarball integrity: in the facet, the
+// preamble's (loaders/npm-install-preamble.ts) by the same identifiers.
+import { retryingRegistryFetch } from './registry-retry.js';
 // ── Facet function ──────────────────────────────────────────────────────
 //
 // Runs inside a IsolatePool isolate. Serialised via fn.toString();

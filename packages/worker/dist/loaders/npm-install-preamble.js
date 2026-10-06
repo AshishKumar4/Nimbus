@@ -6,20 +6,25 @@
  * resolver's semver is (npm-resolve-preamble.ts): a tarball fetch in the
  * facet and a packument fetch in the supervisor retry alike, and an install
  * checks a tarball with the reading the shared cache addresses it by.
+ *
+ * Only functions are embedded, each by its own source, and the facet imports
+ * the ones it calls: the Worker's bundler may rename a declaration (it does,
+ * `retryingRegistryFetch2`, when a module names a global of that name), and
+ * a function's source and every reference to it carry the same identifier,
+ * where a constant declared here by its source name would not.
  * tests/unit/npm-install-preamble.mjs evaluates the embedded functions
- * against the modules'.
+ * against the modules', and bundles the facet as the Worker does.
  */
 import { retryDelayMs, retrying } from '@nimbus-sh/platform/retry.js';
-import { REGISTRY_RETRY_BACKOFF_MS, retryingRegistryFetch } from '../npm/registry-retry.js';
-import { SRI_DIGEST_ALGORITHMS, sriDigestOf, sriDigestsEqual, sriEntries, strongestSriEntry, } from '@nimbus-sh/core/_shared/tarball-integrity.js';
+import { retryingRegistryFetch } from '../npm/registry-retry.js';
+import { sriDigestAlgorithms, sriDigestOf, sriDigestsEqual, sriEntries, strongestSriEntry, } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 export const NPM_INSTALL_PREAMBLE = `
 // ── Retry (embedded from @nimbus-sh/platform retry.ts, npm/registry-retry.ts) ──
-const REGISTRY_RETRY_BACKOFF_MS = ${JSON.stringify(REGISTRY_RETRY_BACKOFF_MS)};
 ${retryDelayMs.toString()}
 ${retrying.toString()}
 ${retryingRegistryFetch.toString()}
 // ── Tarball integrity (embedded from @nimbus-sh/core _shared/tarball-integrity.ts) ──────────────
-const SRI_DIGEST_ALGORITHMS = ${JSON.stringify(SRI_DIGEST_ALGORITHMS)};
+${sriDigestAlgorithms.toString()}
 ${sriEntries.toString()}
 ${strongestSriEntry.toString()}
 ${sriDigestOf.toString()}

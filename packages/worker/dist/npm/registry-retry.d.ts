@@ -8,13 +8,12 @@
  * client waits far longer, but here an install's iteration speed matters
  * more than its last-ditch resilience.
  *
- * Self-contained but for retrying and REGISTRY_RETRY_BACKOFF_MS, which it
- * names: the install facet carries all three by source (its preamble,
- * loaders/npm-install-preamble.ts), so a tarball fetch there and a packument
- * fetch in the supervisor (r2-cache.ts) retry alike.
+ * Self-contained but for retrying, a function too: the install facet
+ * carries both by source (its preamble, loaders/npm-install-preamble.ts), so
+ * a tarball fetch there and a packument fetch in the supervisor (r2-cache.ts)
+ * retry alike. The schedule is a literal here, not a module constant: the
+ * preamble keeps the identifiers the Worker's bundler gives only functions.
  */
-/** The waits before each re-try of a registry request. */
-export declare const REGISTRY_RETRY_BACKOFF_MS: readonly number[];
 /**
  * `fetchOnce(n)` (try n, 0-based) under the registry's retry policy: the last
  * answer, a 5xx included once the re-tries are spent, or the last failure
