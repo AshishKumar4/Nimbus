@@ -3,25 +3,11 @@
 // authenticated remote sandbox API that delegates to NimbusSession RPC.
 
 import { makeAsserter } from '../../_driver.mjs';
-import { createExecStream, encodeExecStream } from '../../../../packages/core/src/runtime/exec-stream.ts';
+import { FakeNamespace, succeededExecStream } from '../_fake-session.mjs';
 
 const a = makeAsserter('sdk/new/remote-sdk-handler');
 const { createNimbusHandler } = await import('../../../../packages/worker/src/router/index.ts');
 const { issueNimbusToken } = await import('../../../../packages/worker/src/auth/token.ts');
-
-class FakeNamespace {
-  constructor(stub) {
-    this.stub = stub;
-    this.names = [];
-  }
-  idFromName(name) {
-    this.names.push(name);
-    return { name };
-  }
-  get(_id) {
-    return this.stub;
-  }
-}
 
 const calls = [];
 const stub = {
@@ -31,10 +17,7 @@ const stub = {
   },
   async _rpcExecStream(command, options) {
     calls.push(['exec', command, options]);
-    const writer = createExecStream(() => {});
-    await writer.write('stdout', new TextEncoder().encode('ok\n'));
-    writer.end({ command, exitCode: 0, success: true, duration: 1, timestamp: 1 });
-    return encodeExecStream(writer.stream);
+    return succeededExecStream(command);
   },
   async _rpcWriteFile(path, content) {
     calls.push(['writeFile', path, content]);

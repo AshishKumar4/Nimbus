@@ -3,29 +3,18 @@
 // Flue's sandbox connector contract without a hard runtime dependency.
 
 import { makeAsserter } from '../../_driver.mjs';
-import { createExecStream, encodeExecStream } from '../../../../packages/core/src/runtime/exec-stream.ts';
+import { FakeNamespace, succeededExecStream } from '../_fake-session.mjs';
 
 const a = makeAsserter('sdk/new/flue-adapter');
 const { Nimbus } = await import('../../../../packages/sdk/src/index.ts');
 const { nimbusFlue, NimbusFlueApi } = await import('../../../../packages/sdk/src/flue.ts');
-
-class FakeNamespace {
-  constructor(stub) {
-    this.stub = stub;
-  }
-  idFromName(name) { return { name }; }
-  get() { return this.stub; }
-}
 
 const calls = [];
 const stub = {
   async _rpcReady(options) { calls.push(['ready', options]); return { ok: true, preinstalled: [] }; },
   async _rpcExecStream(command, options) {
     calls.push(['exec', command, options]);
-    const writer = createExecStream(() => {});
-    await writer.write('stdout', new TextEncoder().encode('ok\n'));
-    writer.end({ command, exitCode: 0, success: true, duration: 1, timestamp: 1 });
-    return encodeExecStream(writer.stream);
+    return succeededExecStream(command);
   },
   async _rpcReadFile(path) { calls.push(['readFile', path]); return 'hello'; },
   async _rpcReadFileBytes(path) { calls.push(['readFileBytes', path]); return new Uint8Array([104, 105]); },
