@@ -9,9 +9,10 @@
 	packedGitWindowSize = 1m
 	packedGitLimit = 16m
 	deltaBaseCacheLimit = 8m
-	# Untracked files are found by directory mtimes, as the session filesystem
-	# keeps them, rather than by reading every directory each time.
-	untrackedCache = true
+	# Off: the untracked cache trusts a directory whose mtime has not changed,
+	# and the session filesystem does not change a directory's mtime when an
+	# entry is created or removed in it, so new files would go unseen.
+	untrackedCache = false
 	# There is no terminal to page or to edit in yet.
 	pager = cat
 [init]
