@@ -35,11 +35,6 @@
 
 import { resolveTsSettings } from './tsconfig-raw.js';
 
-/** Whether `error` is a transform's report that it ran out of native stack. */
-export function isOxcStackExhaustion(error: unknown): boolean {
-  return error instanceof Error && Reflect.get(error, 'stackExhausted') === true;
-}
-
 export interface OxcTransformOptions {
   loader?: string;
   format?: string;

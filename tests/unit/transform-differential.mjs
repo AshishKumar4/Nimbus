@@ -27,7 +27,6 @@ import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-i
 import { lowerAsyncModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { oxcEngine } from './lib/oxc-engine.mjs';
-import { isOxcStackExhaustion } from '../../packages/core/src/runtime/oxc-transform.ts';
 
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 
@@ -207,7 +206,8 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
     try {
       outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, rewriteDynamicImports, lowerAsyncModule);
     } catch (error) {
-      outcome = isOxcStackExhaustion(error) ? { error: String(error.message), stackExhausted: true } : { error: String(error.message) };
+      // The transform facet's own mapping (facets/oxc-transform.ts OXC_FACET_BODY).
+      outcome = error && error.stackExhausted === true ? { error: String(error.message), stackExhausted: true } : { error: String(error.message) };
     }
     return { cell, outcome };
   };
