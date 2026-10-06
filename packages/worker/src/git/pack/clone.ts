@@ -106,6 +106,25 @@ export interface ClonePrepared {
   /** A partial clone (--filter): every pack it stores is a promisor pack. */
   partial: boolean;
   packs: PackSummary[];
+  /** The remote's tags: finish writes those whose objects the clone holds (cloneFinish). */
+  tags: CloneTag[];
+}
+
+/** An advertised tag: its ref, the id it names, and what that peels to. */
+export interface CloneTag {
+  name: string;
+  oid: string;
+  peeled: string;
+}
+
+/** The tags the remote advertises (refs/tags/*, peeled through "<name>^{}"). */
+function advertisedTags(advertisement: Advertisement): CloneTag[] {
+  const tags: CloneTag[] = [];
+  for (const [name, oid] of advertisement.refs) {
+    if (!name.startsWith('refs/tags/') || name.endsWith('^{}')) continue;
+    tags.push({ name, oid, peeled: advertisement.refs.get(name + '^{}') ?? oid });
+  }
+  return tags;
 }
 
 export type { PackSummary };
@@ -127,6 +146,7 @@ export interface CloneStreamed {
     /** Decoding stopped at the budget: continue it (historyResume, kind 'snapshot'). */
     pending: PendingPack | null;
     pack: PackSummary | null;
+    tags: CloneTag[];
   };
 }
 
@@ -594,6 +614,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
     cacheTreeBytes: staged.cacheTreeBytes,
     partial,
     packs,
+    tags: advertisedTags(advertisement),
   };
 }
 
@@ -698,6 +719,7 @@ async function cloneStream(
       headRef: fullRef.startsWith('refs/heads/') ? fullRef : null,
       pending: 'pending' in stored ? stored.pending : null,
       pack: 'pending' in stored ? null : stored.summary,
+      tags: advertisedTags(advertisement),
     },
   };
 }
@@ -725,6 +747,7 @@ async function cloneEmpty(context: CloneContext, advertisement: Advertisement, f
     cacheTreeBytes: 0,
     partial: filter !== undefined,
     packs: [],
+    tags: [],
   };
 }
 
@@ -782,6 +805,7 @@ export async function clonePlanFromStore(
     cacheTreeBytes: staged.cacheTreeBytes,
     partial: false,
     packs: [],
+    tags: [],
   };
 }
 
@@ -877,8 +901,8 @@ export async function cloneBatch(
 /** The index, from the batches' shares; then the staging directory goes. */
 export async function cloneFinish(
   context: CloneContext,
-  request: { shares: { name: string; bytes: number }[]; full?: boolean; cacheTreeBytes?: number },
-): Promise<{ indexEntries: number; indexBytes: number }> {
+  request: { shares: { name: string; bytes: number }[]; full?: boolean; cacheTreeBytes?: number; tags?: readonly CloneTag[] },
+): Promise<{ indexEntries: number; indexBytes: number; tags: number }> {
   const entries: Uint8Array[] = [];
   for (const share of request.shares) {
     if (share.bytes === 0) continue;
@@ -900,6 +924,17 @@ export async function cloneFinish(
   await writer.file('.git/index', 0o644, index);
   // With its history fetched (history.ts) the clone is no longer shallow.
   if (request.full === true) await writer.remove('.git/shallow');
+  // git clone follows tags: a tag whose object it fetched (include-tag sent
+  // the annotated ones with their commits) is written, as a loose ref.
+  let tags = 0;
+  if ((request.tags ?? []).length > 0) {
+    const store = supervisorStore(context);
+    for (const tag of request.tags!) {
+      if (!await store.has(tag.peeled) || (tag.oid !== tag.peeled && !await store.has(tag.oid))) continue;
+      await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
+      tags++;
+    }
+  }
   // The staged files one record each: a write group holds a bounded number
   // of rows, and one recursive delete of a full clone's staging (vscode:
   // ~200 files) passes it ("logicalRows limit: 326 > 256").
@@ -908,7 +943,7 @@ export async function cloneFinish(
   }
   await writer.remove(STAGE_DIR, true);
   await writer.flush();
-  return { indexEntries: entries.length, indexBytes };
+  return { indexEntries: entries.length, indexBytes, tags };
 }
 
 export { oidFromHex };

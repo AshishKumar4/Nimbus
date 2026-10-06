@@ -8,7 +8,8 @@
 // read their blobs from it: the same batches and finish as the fast path's.
 //
 //   - depth 1 and --no-shallow: the same objects, HEAD, config, shallow,
-//     index and worktree as host git's clone, git fsck --full clean;
+//     tags (git follows those of what it fetched), index and worktree as
+//     host git's clone, git fsck --full clean;
 //   - the pack's idx equal to git index-pack's; no temporary pack left;
 //   - no pack read longer than a page: nothing reads the pack whole;
 //   - --filter is refused before anything is written, with the reason.
@@ -45,7 +46,13 @@ try {
     if (commit % 5 === 0) writeFileSync(join(source, 'big.bin'), Buffer.from(crypto.getRandomValues(new Uint8Array(1_500_000))));
     hostGit(source, ['add', '-A']);
     hostGit(source, ['commit', '-q', '-m', `c${commit}`]);
+    if (commit === 4) {
+      hostGit(source, ['tag', 'old-light']);
+      hostGit(source, ['tag', '-a', '-m', 'old', 'old-annotated']);
+    }
   }
+  hostGit(source, ['tag', 'light']);
+  hostGit(source, ['tag', '-a', '-m', 'release', 'annotated']);
   const served = join(work, 'served');
   mkdirSync(served);
   const bare = join(served, 'repo.git');
@@ -83,6 +90,7 @@ try {
       assert.equal(configOf(out), configOf(host), name + ': config');
       const shallowOf = (dir) => statSync(join(dir, '.git/shallow'), { throwIfNoEntry: false }) && readFileSync(join(dir, '.git/shallow'), 'utf8');
       assert.equal(shallowOf(out), shallowOf(host), name + ': shallow');
+      assert.equal(hostGit(out, ['show-ref', '--tags']), hostGit(host, ['show-ref', '--tags']), name + ': tags');
       assert.equal(hostGit(out, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']), name + ': index');
       assert.equal(hostGit(out, ['status', '--porcelain']), '', name + ': status clean');
       for (const path of hostGit(host, ['ls-files']).trim().split('\n')) {

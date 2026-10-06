@@ -49,6 +49,8 @@ try {
     if (commit === 12) hostGit(source, ['mv', 'src/b/f0.txt', 'src/b/renamed.txt']);
     hostGit(source, ['add', '-A']);
     hostGit(source, ['commit', '-q', '-m', `c${commit}`]);
+    if (commit === 3) hostGit(source, ['tag', 'v0-light']);
+    if (commit === 8) hostGit(source, ['tag', '-a', '-m', 'v1', 'v1']);
     if (commit % 10 === 5) {
       // A side branch merged back.
       hostGit(source, ['checkout', '-q', '-b', `side${commit}`]);
@@ -125,6 +127,7 @@ try {
     assert.ok(!readdirSync(join(out, '.git')).includes('nimbus-clone'), 'staging removed');
     assert.equal(hostGit(out, ['rev-parse', 'HEAD', 'origin/main']), hostGit(host, ['rev-parse', 'HEAD', 'origin/main']));
     assert.equal(hostGit(out, ['rev-list', '--count', 'HEAD']), hostGit(host, ['rev-list', '--count', 'HEAD']));
+    assert.equal(hostGit(out, ['show-ref', '--tags']), hostGit(host, ['show-ref', '--tags']), 'tags');
     assert.equal(hostGit(out, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']));
     const configOf = (dir) => readFileSync(join(dir, '.git/config'), 'utf8').replace(/url = .*/, 'url = X');
     assert.equal(configOf(out), configOf(host));

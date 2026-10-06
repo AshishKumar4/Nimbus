@@ -242,7 +242,8 @@ export async function discover(options: UploadPackOptions): Promise<Advertisemen
 
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised: Set<string>, request: PackRequest): string[] {
-  const capabilities = ['side-band-64k', 'ofs-delta'].filter((capability) => advertised.has(capability));
+  // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
+  const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
   if (!advertised.has('side-band-64k')) throw new UploadPackError('the server does not offer side-band-64k');
   if (request.thin && advertised.has('thin-pack')) capabilities.push('thin-pack');
   if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {

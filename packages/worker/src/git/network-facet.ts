@@ -36,7 +36,7 @@ import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
-import type { CloneBatchResult, ClonePrepared, CloneStreamed } from './pack/clone.js';
+import type { CloneBatchResult, ClonePrepared, CloneStreamed, CloneTag } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 
@@ -879,9 +879,10 @@ async function runCloneFinish(
   shares: { name: string; bytes: number }[],
   full: boolean,
   cacheTreeBytes: number,
+  tags: readonly CloneTag[],
   run: CloneBatchRun,
 ): Promise<void> {
-  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes }, run);
+  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags }, run);
   if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
 
@@ -1059,7 +1060,8 @@ export async function execGitNetwork(
           if (full && prepared.fast !== undefined && fast.commit !== null) {
             await runCloneHistory(facetOpts, identity, fast, run);
           }
-          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, run);
+          const tags = prepared.fast?.tags ?? prepared.stream?.tags ?? [];
+          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, run);
           return {
             success: true,
             elapsed: Date.now() - start,
@@ -2329,6 +2331,7 @@ export default {
           shares: opts.shares,
           full: opts.full === true,
           cacheTreeBytes: opts.cacheTreeBytes,
+          tags: opts.tags,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
         const writer = context.writer();
