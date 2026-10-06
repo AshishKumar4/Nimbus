@@ -17,6 +17,12 @@
 //                  NIMBUS_PROBE_JOBS overrides). Each probe mints its own
 //                  session and owns its own browsers, so probes are
 //                  independent. `--jobs 1` runs them one at a time.
+//   --ledger PATH  Keep the run's session ledger (every session a probe
+//                  minted, when, and its DELETE) at PATH, pass or fail
+//                  (NIMBUS_PROBE_LEDGER_KEEP overrides). Without it the
+//                  ledger is a temporary file, kept only when a session
+//                  leaked. Keep it next to the run's log: a session that
+//                  reset is looked up in Workers Logs by its session.
 //
 // Optional env:
 //   NIMBUS_PROBE_ONLY   — comma-separated probe names (e.g.
@@ -87,7 +93,7 @@ import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, join, relative, basename } from 'node:path';
+import { dirname, join, relative, basename, resolve as resolvePath } from 'node:path';
 
 import { RUN_ID, cleanupRunProfiles, reapRunBrowsers } from './_probe-browser.mjs';
 import { sessionOutcomes } from './_ledger.mjs';
@@ -135,8 +141,10 @@ const JOBS = flagValue('--jobs', 'NIMBUS_PROBE_JOBS') !== undefined
 // every browser it launches is identifiable as this run's and as its own.
 
 // _driver.mjs appends each session a probe mints, and each DELETE of it, here.
-const LEDGER_PATH = join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}.jsonl`);
-rmSync(LEDGER_PATH, { force: true }); // a pid-derived RUN_ID can repeat a kept ledger's name
+const KEEP_LEDGER = flagValue('--ledger', 'NIMBUS_PROBE_LEDGER_KEEP');
+const LEDGER_PATH = KEEP_LEDGER ? resolvePath(KEEP_LEDGER) : join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}.jsonl`);
+rmSync(LEDGER_PATH, { force: true }); // a pid-derived RUN_ID can repeat a kept ledger's name; a kept one is this run's
+if (KEEP_LEDGER) writeFileSync(LEDGER_PATH, ''); // kept even when no probe mints
 process.env.NIMBUS_PROBE_LEDGER = LEDGER_PATH;
 
 // ── Run lock ─────────────────────────────────────────────────────────
@@ -462,7 +470,8 @@ for (const [sid, s] of ttlReaped) console.log(`  ttl-reaped: ${s.probe}: ${sid} 
 if (leaks.length > 0) {
   console.log(`SESSION LEAKS: ${leaks.length} minted session${leaks.length === 1 ? '' : 's'} never got a 2xx DELETE (ledger: ${LEDGER_PATH})`);
   for (const [sid, s] of leaks) console.log(`  - ${s.probe}: ${sid} (last DELETE: ${s.last})`);
-} else {
+} else if (!KEEP_LEDGER) {
   rmSync(LEDGER_PATH, { force: true });
 }
+if (KEEP_LEDGER) console.log(`session ledger: ${LEDGER_PATH}`);
 process.exit(fail === 0 && leaks.length === 0 ? 0 : 1);

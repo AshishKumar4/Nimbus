@@ -249,8 +249,11 @@ jobs:
         # The runner's default pool (16 probes at once): each probe mints
         # its own session and owns its own browsers, and most of its time
         # is spent waiting on the target.
+        # --ledger keeps the run's session ledger beside the log: every
+        # session a probe minted, when, and its DELETE, so a session that
+        # reset is looked up in Workers Logs by its session.
         run: |
-          bun tests/behavioral/run-all.mjs \
+          bun tests/behavioral/run-all.mjs --ledger probe-ledger.jsonl \
             ${{ github.event_name == 'push' && ' ' || '--no-retry' }} | tee behavioral.log
 
       - name: Upload run log
@@ -258,7 +261,10 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: behavioral-log-${{ github.event_name }}-${{ github.run_id }}
-          path: behavioral.log
+          path: |
+            behavioral.log
+            probe-ledger.jsonl
+          if-no-files-found: warn
           retention-days: 90
 
       - name: Delete the throwaway target

@@ -54,12 +54,12 @@ async function probe(name, body, { status = 200, token = 'probe-token', shape = 
   const child = Bun.spawn([process.execPath, file], {
     env: { ...process.env, BASE: `http://127.0.0.1:${target.port}`, NIMBUS_PROBE_TOKEN: token, NIMBUS_PROBE_LEDGER: ledger },
     stdout: 'ignore',
-    stderr: 'ignore',
+    stderr: 'pipe',
   });
-  const code = await child.exited;
+  const [code, stderr] = await Promise.all([child.exited, new Response(child.stderr).text()]);
   const text = existsSync(ledger) ? readFileSync(ledger, 'utf8') : '';
   const events = text ? text.trim().split('\n').map((l) => JSON.parse(l)).map((e) => `${e.event} ${e.sid} ${e.status}`) : [];
-  return { code, signal: child.signalCode, deletes, events, outcomes: sessionOutcomes(text), text };
+  return { code, signal: child.signalCode, deletes, events, outcomes: sessionOutcomes(text), text, stderr };
 }
 
 // [1] An early exit without deleteSession: the hook DELETEs with the probe's credential; the exit code stands.
@@ -133,6 +133,26 @@ const historical = [{ event: 'mint', sid: 'historical' }, { event: 'delete', sid
   .map((e) => JSON.stringify(e)).join('\n');
 assert.equal(sessionOutcomes(historical).deleted, 0, 'a bare 200 row without confirmation proves no deletion');
 console.log('  [6] only the destroy result confirms a deletion');
+
+// [7] A failing probe names every session it minted, with its mint time, so
+// a session that reset can be found by its session in Workers Logs; one that
+// passes names none.
+{
+  const before = Date.now();
+  const failed = await probe('names-sessions', "const a = await mintSession();\nawait mintSession();\nawait deleteSession(a);\nthrow new Error('probe failed');");
+  assert.equal(failed.code, 1);
+  const named = [...failed.stderr.matchAll(/^  (fixture-\d+)  minted (\S+)(  \(deleted by the probe\))?$/gm)];
+  assert.deepEqual(named.map((m) => [m[1], Boolean(m[3])]), [['fixture-1', true], ['fixture-2', false]], failed.stderr);
+  for (const m of named) assert.ok(Date.parse(m[2]) >= before - 1000 && Date.parse(m[2]) <= Date.now(), `a mint time: ${m[2]}`);
+  assert.match(failed.stderr, /^sessions this probe minted on http:\/\/127\.0\.0\.1:\d+ \(exit 1\):$/m);
+  // The run's ledger carries the same times, for a run kept with run-all's --ledger.
+  const mints = failed.text.trim().split('\n').map((line) => JSON.parse(line)).filter((e) => e.event === 'mint');
+  assert.deepEqual(mints.map((e) => [e.sid, e.at]), named.map((m) => [m[1], m[2]]));
+  const passed = await probe('names-none', 'await mintSession();');
+  assert.equal(passed.code, 0);
+  assert.doesNotMatch(passed.stderr, /sessions this probe minted/);
+  console.log('  [7] a failing probe names the sessions it minted, with their mint times');
+}
 
 target.stop(true);
 rmSync(SCRATCH, { recursive: true, force: true });
