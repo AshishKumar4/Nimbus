@@ -295,6 +295,8 @@ export class Terminal {
     this.wsOptions = options.wsOptions ?? wsHeaders();
     this.ws = null;
     this.buf = '';
+    /** The `spawn` frames the session sent: one per process it started. */
+    this.spawns = [];
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
@@ -315,6 +317,8 @@ export class Terminal {
         const m = JSON.parse(data.toString('utf8'));
         if (m.type === 'output' && typeof m.data === 'string') {
           this.buf += m.data;
+        } else if (m.type === 'spawn') {
+          this.spawns.push(m);
         }
       } catch { /* non-json control frames ignored */ }
     });
