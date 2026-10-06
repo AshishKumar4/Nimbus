@@ -5,6 +5,13 @@ import { emitCommonJs, readEsmRecords } from '../../../runtime/async-module-lowe
 import { applySourceEdits, forEachNode, hasTopLevelModuleSyntax, parseJavaScriptModule } from '../../../runtime/javascript-ast.js';
 import { fileURLToPath } from './url.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
+import { DEFAULT_CJS_CONDITIONS, parseResolvablePackageJson, resolveExports, } from '../../../_shared/exports-resolver.js';
+/**
+ * The conditions this loader resolves "exports" and "imports" with: require's,
+ * then `import`, since it also requires what a lowered ES module imports (an
+ * ESM-only package declares only `import`).
+ */
+const REQUIRE_CONDITIONS = [...DEFAULT_CJS_CONDITIONS, 'import'];
 /** Node's error for a module `require` cannot find: its message and its code. */
 export function moduleNotFound(name) {
     return Object.assign(new Error(`Cannot find module '${name}'`), { code: 'MODULE_NOT_FOUND' });
@@ -202,25 +209,21 @@ export function createCjsLoader(context, scope) {
         }
         return null;
     }
-    /** A `#` name from the nearest package.json's "imports", as Node reads it (the nearest package.json wins). */
-    function resolvePackageImport(name, fromDir) {
-        for (let current = fromDir;; current = dirname(current)) {
+    /** The nearest package.json at or above `dir`, its directory and its entry fields. */
+    function nearestPackage(dir) {
+        for (let current = dir;; current = dirname(current)) {
             const pkgPath = join(current, 'package.json');
-            if (filesystem().exists(pkgPath)) {
-                try {
-                    const pkg = JSON.parse(filesystem().readFileString(pkgPath));
-                    if (pkg.imports && typeof pkg.imports === 'object' && name in pkg.imports) {
-                        const target = resolveExportsCondition(pkg.imports[name]);
-                        if (target)
-                            return resolveFile(target, current);
-                    }
-                }
-                catch { /* ignore parse errors */ }
-                return null;
-            }
+            if (filesystem().exists(pkgPath))
+                return { dir: current, pkg: parseResolvablePackageJson(filesystem().readFileString(pkgPath)) };
             if (dirname(current) === current)
                 return null;
         }
+    }
+    /** A `#` name from the nearest package.json's "imports", as Node reads it (the nearest package.json wins). */
+    function resolvePackageImport(name, fromDir) {
+        const nearest = nearestPackage(fromDir);
+        const target = nearest?.pkg ? resolveExports(nearest.pkg.imports, name, REQUIRE_CONDITIONS) : null;
+        return target && nearest ? resolveFile(target, nearest.dir) : null;
     }
     function resolveNodeModule(name, fromDir) {
         const parts = name.split('/');
@@ -250,88 +253,25 @@ export function createCjsLoader(context, scope) {
         }
         return null;
     }
-    /** A conditional exports value (string | { require, default, import, ... }): require first, as CommonJS asks. */
-    function resolveExportsCondition(value) {
-        if (typeof value === 'string')
-            return value;
-        if (value && typeof value === 'object' && !Array.isArray(value)) {
-            const cond = value;
-            if (typeof cond.require === 'string')
-                return cond.require;
-            if (typeof cond.default === 'string')
-                return cond.default;
-            if (typeof cond.import === 'string')
-                return cond.import;
-            // Nested conditions (e.g. { node: { require: ... } }); TS declarations are not code.
-            for (const key of Object.keys(cond)) {
-                if (key === 'types')
-                    continue;
-                const nested = resolveExportsCondition(cond[key]);
-                if (nested)
-                    return nested;
-            }
-        }
-        return null;
-    }
+    /**
+     * A package's file for `subpath` (null for its root), as Node's require
+     * finds it: where the package declares "exports", they decide (a subpath
+     * they do not export, or export as null, is not found); else the subpath
+     * as a file, or for the root its "main", then its index.js.
+     */
     function resolvePackageEntry(pkgDir, subpath) {
         const pkgJsonPath = join(pkgDir, 'package.json');
-        let pkgJson = null;
-        if (filesystem().exists(pkgJsonPath)) {
-            try {
-                pkgJson = JSON.parse(filesystem().readFileString(pkgJsonPath));
-            }
-            catch { /* ignore */ }
+        const pkg = filesystem().exists(pkgJsonPath) ? parseResolvablePackageJson(filesystem().readFileString(pkgJsonPath)) : null;
+        const relative = (target) => (target.startsWith('.') || target.startsWith('/') ? target : `./${target}`);
+        if (pkg?.exports !== undefined && pkg.exports !== null) {
+            const target = resolveExports(pkg.exports, subpath ? `./${subpath}` : '.', REQUIRE_CONDITIONS);
+            return target ? resolveFile(relative(target), pkgDir) : null;
         }
-        if (subpath) {
-            // The exports map's `./sub` entry, or a `./dir/*` pattern; else the file itself.
-            if (pkgJson?.exports && typeof pkgJson.exports === 'object') {
-                const exportsMap = pkgJson.exports;
-                const key = `./${subpath}`;
-                if (key in exportsMap) {
-                    const target = resolveExportsCondition(exportsMap[key]);
-                    const resolved = target ? resolveFile(target, pkgDir) : null;
-                    if (resolved)
-                        return resolved;
-                }
-                for (const pattern of Object.keys(exportsMap)) {
-                    if (!pattern.endsWith('/*') || !key.startsWith(pattern.slice(0, -1)))
-                        continue;
-                    const targetPattern = resolveExportsCondition(exportsMap[pattern]);
-                    if (!targetPattern?.endsWith('/*'))
-                        continue;
-                    const resolved = resolveFile(targetPattern.slice(0, -1) + key.slice(pattern.length - 1), pkgDir);
-                    if (resolved)
-                        return resolved;
-                }
-            }
+        if (subpath)
             return resolveFile(`./${subpath}`, pkgDir);
-        }
-        // exports["."] (or an exports that is itself the condition map), then main, then index.js.
-        if (pkgJson?.exports) {
-            const exportsVal = pkgJson.exports;
-            let rootExport = null;
-            if (typeof exportsVal === 'string') {
-                rootExport = exportsVal;
-            }
-            else if (typeof exportsVal === 'object' && !Array.isArray(exportsVal)) {
-                const exportsMap = exportsVal;
-                rootExport = exportsMap['.'] ?? null;
-                if (!rootExport && ('require' in exportsMap || 'import' in exportsMap || 'default' in exportsMap)) {
-                    rootExport = exportsMap;
-                }
-            }
-            const target = rootExport ? resolveExportsCondition(rootExport) : null;
-            const resolved = target ? resolveFile(target, pkgDir) : null;
-            if (resolved)
-                return resolved;
-        }
-        if (typeof pkgJson?.main === 'string') {
-            const resolved = resolveFile(`./${pkgJson.main}`, pkgDir);
-            if (resolved)
-                return resolved;
-        }
+        const main = pkg?.main ? resolveFile(relative(pkg.main), pkgDir) : null;
         const indexPath = join(pkgDir, 'index.js');
-        return filesystem().exists(indexPath) ? indexPath : null;
+        return main ?? (filesystem().exists(indexPath) ? indexPath : null);
     }
     function wrapperArguments(filename, module, moduleScope) {
         const dir = filename === '[eval]' ? context.cwd : dirname(filename);

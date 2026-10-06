@@ -16,7 +16,7 @@
  * such session was unrecoverable after eviction.
  */
 
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
@@ -75,8 +75,8 @@ export function devServerIdentity(entry: ProcessEntry): DevServerIdentity {
 export function persistedIdentity(value: unknown): DevServerIdentity | undefined {
   const identity = value as { cwd?: unknown; argv?: unknown; cred?: unknown; execId?: unknown } | null | undefined;
   if (typeof identity?.cwd !== 'string' || !Array.isArray(identity.argv)) return undefined;
-  const cred = persistedCred(identity.cred);
-  if (cred === undefined) return undefined;
+  const cred = identity.cred;
+  if (!isVfsCred(cred)) return undefined;
   return {
     cwd: identity.cwd,
     argv: identity.argv.map(String),
@@ -85,12 +85,6 @@ export function persistedIdentity(value: unknown): DevServerIdentity | undefined
   };
 }
 
-function persistedCred(value: unknown): VfsCred | undefined {
-  const cred = value as { uid?: unknown; gid?: unknown; groups?: unknown; umask?: unknown } | null | undefined;
-  const id = (n: unknown): n is number => Number.isInteger(n) && Number(n) >= 0;
-  if (!id(cred?.uid) || !id(cred.gid) || !id(cred.umask) || !Array.isArray(cred.groups) || !cred.groups.every(id)) return undefined;
-  return { uid: cred.uid, gid: cred.gid, groups: cred.groups, umask: cred.umask };
-}
 
 export interface StartRealViteResult {
   cirrusReal: CirrusReal;
