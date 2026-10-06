@@ -21,11 +21,11 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { createFacetWorld, createFacetCtx, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processFiles } from './lib/process-bridge.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 

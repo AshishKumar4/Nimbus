@@ -26,7 +26,7 @@ import { LEDGER_ROW_BYTES, StorageLedger } from '../../packages/core/src/runtime
 import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { MAX_TX_BLOB_BYTES } from '../../packages/platform/src/limits.ts';
 import { TurnBudget } from '../../packages/fabric/src/turn-budget.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 
 const HOST = 'test-host/1';

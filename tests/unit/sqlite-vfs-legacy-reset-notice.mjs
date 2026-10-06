@@ -13,7 +13,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { LEGACY_RESET_NOTICE, takeLegacyResetNotice } from '../../packages/worker/src/session/legacy-reset.ts';
 import { ensureSessionStateSchema, loadShellState, persistShellState } from '../../packages/worker/src/session/state-store.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 /** A database as a v1 Nimbus left it: its tables, and a user's file in them. */
 function v1Database() {

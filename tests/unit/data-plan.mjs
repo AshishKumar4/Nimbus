@@ -9,7 +9,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 /** An in-memory namespace: path → { kind, size, text?, target? }. */
 function namespace(files) {

@@ -15,7 +15,7 @@ import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

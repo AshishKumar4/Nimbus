@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 145 s wall, 132 s CPU, 0.5 GiB peak (6 runs, 2026-10-06)
 // git's worktree commands hold memory that does not grow with the
 // repository, beyond the index itself, and read no file whose stat matches
 // the index. A repository of SMALL and then LARGE files (real git builds

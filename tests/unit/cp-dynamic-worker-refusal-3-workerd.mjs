@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 27 s wall, 38 s CPU, 2.4 GiB peak (6 runs, 2026-10-06)
 // The Dynamic Worker ledger never refuses a wait while a shell line has a
 // step still to run (fabric budgets.ts, the interpreter's WorkThread), under
 // workerd. A parent and eight children, each waiting on a grandchild, fill

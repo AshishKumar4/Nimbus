@@ -128,7 +128,7 @@ function exitedProcess(host, text = 'done\n') {
 // ── [2b] a janitor woken in a fresh instance sweeps what only SQL holds ─────
 {
   const { Database } = await import('bun:sqlite');
-  const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+  const { createSqliteVfsTestHarness } = await import('./lib/sqlite-vfs-test-harness.mjs');
   const db = new Database(':memory:');
   const storage = makeStorage();
   const boot = () => {

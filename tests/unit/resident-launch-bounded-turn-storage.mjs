@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';

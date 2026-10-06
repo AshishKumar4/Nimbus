@@ -19,7 +19,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 

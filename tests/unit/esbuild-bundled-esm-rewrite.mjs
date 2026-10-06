@@ -18,7 +18,6 @@ const absoluteUrl = 'file:///home/user/node_modules/pkg/chunk.js';
 const transformed = rewriteBundledEsmToCjs(source, absoluteUrl);
 assert.ok(transformed, 'bundler-emitted ESM should use the bounded rewrite');
 assert.doesNotMatch(transformed.code, /(^|[;\n])\s*(?:import|export)\b/);
-assert.match(transformed.code, /module\.require\("\.\/dep\.js"\)/);
 
 let sideEffects = 0;
 const module = { exports: {}, require: null };

@@ -1,5 +1,7 @@
 node_modules/
 .wrangler/
+# apps/ci-runner/scripts/deploy.mjs stages the container image here.
+apps/ci-runner/.image-context/
 .dev.vars
 
 # Internal workspace notes and generated research scratch.

@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 42 s wall, 45 s CPU, 1.6 GiB peak (6 runs, 2026-10-06)
 // The wasm bash's pipes on the production engine (workerd, JSPI) behave as in
 // real bash: a pipe holds 64 KiB and a writer past that waits, a writer whose
 // readers are gone gets SIGPIPE (141 in $? and PIPESTATUS), and a pipeline

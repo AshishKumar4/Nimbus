@@ -20,7 +20,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { complete } from '../../packages/core/src/substrate/lifo/shell/completer.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });

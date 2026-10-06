@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { readFile } from 'node:fs/promises';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { missingAssets } from './lib/staged-assets.mjs';
 
 const worker = JSON.parse(await readFile(new URL('../../packages/worker/package.json', import.meta.url), 'utf8'));

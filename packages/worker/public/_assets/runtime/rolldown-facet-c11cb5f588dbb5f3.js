@@ -14524,7 +14524,7 @@ function finish(settings) {
   return settings;
 }
 
-// ../core/src/runtime/rolldown-compat.ts
+// ../core/src/runtime/javascript-scope.ts
 function isNode(value) {
   return typeof value === "object" && value !== null && "type" in value && typeof value.type === "string" && "start" in value && typeof value.start === "number" && "end" in value && typeof value.end === "number";
 }
@@ -14540,6 +14540,114 @@ function stringOf(node, key) {
   const value = node?.[key];
   return typeof value === "string" ? value : null;
 }
+function* patternNames(node) {
+  switch (node?.type) {
+    case "Identifier": {
+      const name50 = stringOf(node, "name");
+      if (name50 !== null) yield name50;
+      return;
+    }
+    case "ObjectPattern":
+      for (const property of list(node, "properties")) yield* patternNames(child(property, property.type === "RestElement" ? "argument" : "value"));
+      return;
+    case "ArrayPattern":
+      for (const element of list(node, "elements")) yield* patternNames(element);
+      return;
+    case "RestElement":
+      yield* patternNames(child(node, "argument"));
+      return;
+    case "AssignmentPattern":
+      yield* patternNames(child(node, "left"));
+      return;
+    case "TSParameterProperty":
+      yield* patternNames(child(node, "parameter"));
+      return;
+    // `namespace A.B {}` binds A.
+    case "TSQualifiedName":
+      yield* patternNames(child(node, "left"));
+      return;
+  }
+}
+var FUNCTIONS = /* @__PURE__ */ new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+function* lexicalNames(statements) {
+  for (const statement of statements) {
+    const node = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? child(statement, "declaration") : statement;
+    if (node?.type === "VariableDeclaration" && node.kind !== "var") {
+      for (const declarator of list(node, "declarations")) yield* patternNames(child(declarator, "id"));
+    }
+    if (node?.type === "FunctionDeclaration" || node?.type === "ClassDeclaration") yield* patternNames(child(node, "id"));
+    if (node?.type === "ImportDeclaration") for (const specifier of list(node, "specifiers")) yield* patternNames(child(specifier, "local"));
+  }
+}
+function* varNames(value, sloppy, top = true) {
+  if (Array.isArray(value)) {
+    for (const item of value) yield* varNames(item, sloppy, top);
+    return;
+  }
+  if (!isNode(value)) return;
+  if (value.type === "FunctionDeclaration" && sloppy && !top) yield* patternNames(child(value, "id"));
+  if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return;
+  if (value.type === "VariableDeclaration" && value.kind === "var") {
+    for (const declarator of list(value, "declarations")) yield* patternNames(child(declarator, "id"));
+  }
+  for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* varNames(item, sloppy, false);
+}
+function scopeOf(node, scope, sloppy, functionBody) {
+  const within = (names) => ({ names: new Set(names), parent: scope });
+  switch (node.type) {
+    case "Program":
+    case "StaticBlock":
+      return within([...varNames(list(node, "body"), sloppy), ...lexicalNames(list(node, "body"))]);
+    case "FunctionDeclaration":
+    case "FunctionExpression":
+    case "ArrowFunctionExpression":
+      return within([
+        ...node.type === "FunctionExpression" ? patternNames(child(node, "id")) : [],
+        ...list(node, "params").flatMap((parameter) => [...patternNames(parameter)])
+      ]);
+    case "BlockStatement":
+      return within([...functionBody ? varNames(list(node, "body"), sloppy) : [], ...lexicalNames(list(node, "body"))]);
+    case "SwitchStatement":
+      return within(lexicalNames(list(node, "cases").flatMap((c3) => list(c3, "consequent"))));
+    case "ForStatement":
+    case "ForInStatement":
+    case "ForOfStatement": {
+      const head = child(node, node.type === "ForStatement" ? "init" : "left");
+      return within(head?.type === "VariableDeclaration" && head.kind !== "var" ? list(head, "declarations").flatMap((declarator) => [...patternNames(child(declarator, "id"))]) : []);
+    }
+    case "CatchClause":
+      return within(patternNames(child(node, "param")));
+    // A class's name is its body's too (an expression's, only its body's).
+    case "ClassDeclaration":
+    case "ClassExpression":
+      return within(patternNames(child(node, "id")));
+    default:
+      return scope;
+  }
+}
+function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = "") {
+  if (Array.isArray(value)) {
+    for (const item of value) yield* scoped(item, scope, sloppy, false, parent, key);
+    return;
+  }
+  if (!isNode(value)) return;
+  yield [value, scope, parent, key];
+  const inner = scopeOf(value, scope, sloppy, functionBody);
+  const isFunction = FUNCTIONS.has(value.type);
+  for (const [field, item] of Object.entries(value)) {
+    if (field !== "parent") yield* scoped(item, inner, sloppy, isFunction && field === "body", value, field);
+  }
+}
+function bindingScope(scope, name50) {
+  for (let at = scope; at; at = at.parent) if (at.names.has(name50)) return at;
+  return null;
+}
+function isSloppy(program) {
+  if (program.sourceType === "module") return false;
+  return !list(program, "body").some((statement) => statement.type === "ExpressionStatement" && statement.directive === "use strict");
+}
+
+// ../core/src/runtime/rolldown-compat.ts
 function* nodes(value) {
   if (Array.isArray(value)) {
     for (const item of value) yield* nodes(item);
@@ -14971,34 +15079,6 @@ function decorateInTscOrder(program, code3, map, written) {
   return { code: lines.join("\n"), map: mappings ? Object.assign({}, map, { mappings: encodeMappings(mappings) }) : map };
 }
 var LOWERING_GLOBALS = ["WeakMap", "WeakSet"];
-function* patternNames(node) {
-  switch (node?.type) {
-    case "Identifier": {
-      const name50 = stringOf(node, "name");
-      if (name50 !== null) yield name50;
-      return;
-    }
-    case "ObjectPattern":
-      for (const property of list(node, "properties")) yield* patternNames(child(property, property.type === "RestElement" ? "argument" : "value"));
-      return;
-    case "ArrayPattern":
-      for (const element of list(node, "elements")) yield* patternNames(element);
-      return;
-    case "RestElement":
-      yield* patternNames(child(node, "argument"));
-      return;
-    case "AssignmentPattern":
-      yield* patternNames(child(node, "left"));
-      return;
-    case "TSParameterProperty":
-      yield* patternNames(child(node, "parameter"));
-      return;
-    // `namespace A.B {}` binds A.
-    case "TSQualifiedName":
-      yield* patternNames(child(node, "left"));
-      return;
-  }
-}
 var TYPE_KEYS = /* @__PURE__ */ new Set(["typeAnnotation", "typeParameters", "returnType", "typeArguments", "superTypeArguments", "implements", "parent"]);
 var TYPE_LEVEL = /* @__PURE__ */ new Set(["TSInterfaceDeclaration", "TSTypeAliasDeclaration", "TSDeclareFunction", "TSEmptyBodyFunctionExpression", "TSIndexSignature"]);
 function* boundNames(value) {
@@ -15035,78 +15115,6 @@ function* boundNames(value) {
   }
   for (const [key, item] of Object.entries(value)) if (!TYPE_KEYS.has(key)) yield* boundNames(item);
 }
-var FUNCTIONS = /* @__PURE__ */ new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
-function* lexicalNames(statements) {
-  for (const statement of statements) {
-    const node = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? child(statement, "declaration") : statement;
-    if (node?.type === "VariableDeclaration" && node.kind !== "var") {
-      for (const declarator of list(node, "declarations")) yield* patternNames(child(declarator, "id"));
-    }
-    if (node?.type === "FunctionDeclaration" || node?.type === "ClassDeclaration") yield* patternNames(child(node, "id"));
-    if (node?.type === "ImportDeclaration") for (const specifier of list(node, "specifiers")) yield* patternNames(child(specifier, "local"));
-  }
-}
-function* varNames(value, sloppy, top = true) {
-  if (Array.isArray(value)) {
-    for (const item of value) yield* varNames(item, sloppy, top);
-    return;
-  }
-  if (!isNode(value)) return;
-  if (value.type === "FunctionDeclaration" && sloppy && !top) yield* patternNames(child(value, "id"));
-  if (FUNCTIONS.has(value.type) || value.type === "StaticBlock") return;
-  if (value.type === "VariableDeclaration" && value.kind === "var") {
-    for (const declarator of list(value, "declarations")) yield* patternNames(child(declarator, "id"));
-  }
-  for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* varNames(item, sloppy, false);
-}
-function scopeOf(node, scope, sloppy, functionBody) {
-  const within = (names) => ({ names: new Set(names), parent: scope });
-  switch (node.type) {
-    case "Program":
-    case "StaticBlock":
-      return within([...varNames(list(node, "body"), sloppy), ...lexicalNames(list(node, "body"))]);
-    case "FunctionDeclaration":
-    case "FunctionExpression":
-    case "ArrowFunctionExpression":
-      return within([
-        ...node.type === "FunctionExpression" ? patternNames(child(node, "id")) : [],
-        ...list(node, "params").flatMap((parameter) => [...patternNames(parameter)])
-      ]);
-    case "BlockStatement":
-      return within([...functionBody ? varNames(list(node, "body"), sloppy) : [], ...lexicalNames(list(node, "body"))]);
-    case "SwitchStatement":
-      return within(lexicalNames(list(node, "cases").flatMap((c3) => list(c3, "consequent"))));
-    case "ForStatement":
-    case "ForInStatement":
-    case "ForOfStatement": {
-      const head = child(node, node.type === "ForStatement" ? "init" : "left");
-      return within(head?.type === "VariableDeclaration" && head.kind !== "var" ? list(head, "declarations").flatMap((declarator) => [...patternNames(child(declarator, "id"))]) : []);
-    }
-    case "CatchClause":
-      return within(patternNames(child(node, "param")));
-    // A class's name is its body's too (an expression's, only its body's).
-    case "ClassDeclaration":
-    case "ClassExpression":
-      return within(patternNames(child(node, "id")));
-    default:
-      return scope;
-  }
-}
-function* scoped(value, scope, sloppy, functionBody = false) {
-  if (Array.isArray(value)) {
-    for (const item of value) yield* scoped(item, scope, sloppy);
-    return;
-  }
-  if (!isNode(value)) return;
-  yield [value, scope];
-  const inner = scopeOf(value, scope, sloppy, functionBody);
-  const isFunction = FUNCTIONS.has(value.type);
-  for (const [key, item] of Object.entries(value)) if (key !== "parent") yield* scoped(item, inner, sloppy, isFunction && key === "body");
-}
-function binds(scope, name50) {
-  for (let at = scope; at; at = at.parent) if (at.names.has(name50)) return true;
-  return false;
-}
 function loweringStore(node, sourceNames, outputNames) {
   const [store, value] = node.type === "VariableDeclarator" ? [child(node, "id"), child(node, "init")] : node.type === "AssignmentExpression" && node.operator === "=" ? [child(node, "left"), child(node, "right")] : [null, null];
   const callee = child(value, "callee");
@@ -15114,10 +15122,6 @@ function loweringStore(node, sourceNames, outputNames) {
   const name50 = store?.type === "Identifier" ? stringOf(store, "name") : null;
   if (value?.type !== "NewExpression" || list(value, "arguments").length !== 0 || global2 === null || !LOWERING_GLOBALS.includes(global2)) return null;
   return name50 !== null && !sourceNames.has(name50) && outputNames.has(name50) ? global2 : null;
-}
-function isSloppy(program) {
-  if (program.sourceType === "module") return false;
-  return !list(program, "body").some((statement) => statement.type === "ExpressionStatement" && statement.directive === "use strict");
 }
 function shadowedLowering(module, source, output) {
   const sourceNames = new Set(boundNames(source));
@@ -15128,7 +15132,7 @@ function shadowedLowering(module, source, output) {
     const name50 = loweringStore(node, sourceNames, outputNames);
     if (name50 === null) continue;
     made.set(name50, (made.get(name50) ?? 0) + 1);
-    if (binds(scope, name50)) {
+    if (bindingScope(scope, name50) !== null) {
       throw new Error(`Nimbus's bundler does not support a TypeScript module that declares its own ${name50} where a class with private members sees it and useDefineForClassFields is false (${module.path}): lowering them reads the global ${name50}, which the module's binding shadows there`);
     }
   }
@@ -15957,70 +15961,57 @@ function bundlerConditions(kind) {
 }
 var BUNDLER_IMPORT_CONDITIONS = ["import", "module", "browser", "default"];
 var BUNDLER_REQUIRE_CONDITIONS = ["require", "node", "browser", "default"];
-function* isFile(path3) {
-  return (yield { op: "isFile", path: path3 }) === true;
-}
-function* isDirectory(path3) {
-  return (yield { op: "isDirectory", path: path3 }) === true;
-}
-function* packageJson(path3) {
-  if (!(yield* isFile(path3))) return null;
-  const text = yield { op: "readText", path: path3 };
-  if (typeof text !== "string") return null;
-  try {
-    const parsed = JSON.parse(text);
-    return parsed !== null && typeof parsed === "object" ? parsed : null;
-  } catch {
+function createBundlerResolver(fs) {
+  const packageJson = async (path3) => {
+    if (!await fs.isFile(path3)) return null;
+    const text = await fs.readText(path3);
+    if (text === null) return null;
+    try {
+      const parsed = JSON.parse(text);
+      return parsed !== null && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+  const resolveFile = async (base) => {
+    const path3 = "/" + normalizeVfsPath(base);
+    for (const ext of BUNDLER_EXTENSIONS) if (await fs.isFile(path3 + ext)) return path3 + ext;
+    const named = /\.(js|mjs|cjs|jsx)$/.exec(path3);
+    if (named) {
+      const stem = path3.slice(0, path3.length - named[0].length);
+      for (const ext of TYPESCRIPT_TWINS[named[1]]) if (await fs.isFile(stem + ext)) return stem + ext;
+    }
+    if (await fs.isDirectory(path3)) {
+      for (const index of INDEX_FILES) if (await fs.isFile(path3 + "/" + index)) return path3 + "/" + index;
+    }
     return null;
-  }
-}
-function* fileSteps(base) {
-  const path3 = "/" + normalizeVfsPath(base);
-  for (const ext of BUNDLER_EXTENSIONS) if (yield* isFile(path3 + ext)) return path3 + ext;
-  const named = /\.(js|mjs|cjs|jsx)$/.exec(path3);
-  if (named) {
-    const stem = path3.slice(0, path3.length - named[0].length);
-    for (const ext of TYPESCRIPT_TWINS[named[1]]) if (yield* isFile(stem + ext)) return stem + ext;
-  }
-  if (yield* isDirectory(path3)) {
-    for (const index of INDEX_FILES) if (yield* isFile(path3 + "/" + index)) return path3 + "/" + index;
-  }
-  return null;
-}
-function* ancestors(dir) {
-  for (let at = normalizeVfsPath(dir); at; at = at.slice(0, Math.max(0, at.lastIndexOf("/")))) yield "/" + at;
-}
-function* packageImportSteps(specifier, fromDir) {
-  for (const dir of ancestors(fromDir)) {
-    if (!(yield* isFile(dir + "/package.json"))) continue;
-    const pkg = yield* packageJson(dir + "/package.json");
-    const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
-    return target ? yield* fileSteps(dir + "/" + target.replace(/^\.\//, "")) : null;
-  }
-  return null;
-}
-function* barePackageSteps(specifier, fromDir, conditions) {
-  const { name: name50, subpath } = splitBareSpecifier(specifier);
-  for (const dir of ancestors(fromDir)) {
-    const packageDir = dir + "/node_modules/" + name50;
-    if (!(yield* isDirectory(packageDir))) continue;
-    const pkg = yield* packageJson(packageDir + "/package.json");
-    const entry = pkg ? resolvePackageEntry(pkg, subpath ? "./" + subpath : ".", conditions) : null;
-    const resolved = entry && (yield* fileSteps(packageDir + "/" + entry.replace(/^\.\//, ""))) || subpath && (yield* fileSteps(packageDir + "/" + subpath)) || (yield* fileSteps(packageDir + "/index"));
-    if (resolved) return resolved;
-  }
-  return null;
-}
-function createSyncBundlerResolver(fs) {
-  const run = (steps) => {
-    let step = steps.next();
-    while (!step.done) step = steps.next(fs[step.value.op](step.value.path));
-    return step.value;
+  };
+  const ancestors = function* (dir) {
+    for (let at = normalizeVfsPath(dir); at; at = at.slice(0, Math.max(0, at.lastIndexOf("/")))) yield "/" + at;
   };
   return {
-    resolveFile: (base) => run(fileSteps(base)),
-    resolvePackageImport: (specifier, fromDir) => run(packageImportSteps(specifier, fromDir)),
-    resolveBarePackage: (specifier, fromDir, conditions) => run(barePackageSteps(specifier, fromDir, conditions))
+    resolveFile,
+    async resolvePackageImport(specifier, fromDir) {
+      for (const dir of ancestors(fromDir)) {
+        if (!await fs.isFile(dir + "/package.json")) continue;
+        const pkg = await packageJson(dir + "/package.json");
+        const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
+        return target ? resolveFile(dir + "/" + target.replace(/^\.\//, "")) : null;
+      }
+      return null;
+    },
+    async resolveBarePackage(specifier, fromDir, conditions) {
+      const { name: name50, subpath } = splitBareSpecifier(specifier);
+      for (const dir of ancestors(fromDir)) {
+        const packageDir = dir + "/node_modules/" + name50;
+        if (!await fs.isDirectory(packageDir)) continue;
+        const pkg = await packageJson(packageDir + "/package.json");
+        const entry = pkg ? resolvePackageEntry(pkg, subpath ? "./" + subpath : ".", conditions) : null;
+        const resolved = entry && await resolveFile(packageDir + "/" + entry.replace(/^\.\//, "")) || subpath && await resolveFile(packageDir + "/" + subpath) || await resolveFile(packageDir + "/index");
+        if (resolved) return resolved;
+      }
+      return null;
+    }
   };
 }
 
@@ -16073,7 +16064,7 @@ async function prebundleSlice(spec2, build3) {
   for (const p of files.keys()) {
     for (let slash = p.lastIndexOf("/"); slash > 0; slash = p.lastIndexOf("/", slash - 1)) dirs.add(p.slice(0, slash));
   }
-  const resolver = createSyncBundlerResolver({
+  const resolver = createBundlerResolver({
     isFile: (p) => files.has(norm(p)),
     isDirectory: (p) => dirs.has(norm(p)),
     readText: (p) => {
@@ -16093,22 +16084,22 @@ async function prebundleSlice(spec2, build3) {
     async resolve(args2) {
       const at = (path3) => path3 ? { path: path3, namespace: "nimbus-slice" } : null;
       if (args2.path.startsWith("#") && args2.resolveDir) {
-        const resolved = at(resolver.resolvePackageImport(args2.path, args2.resolveDir));
+        const resolved = at(await resolver.resolvePackageImport(args2.path, args2.resolveDir));
         if (resolved) return resolved;
         warnings.push(`unresolved subpath import "${args2.path}" from ${args2.importer || "?"} (no owning package.json#imports entry); marked external`);
         return { external: true };
       }
       if (bare(args2.path) && isExternal(args2.path)) return { external: true };
       if (args2.path.startsWith("/")) {
-        const resolved = at(resolver.resolveFile(args2.path));
+        const resolved = at(await resolver.resolveFile(args2.path));
         if (resolved) return resolved;
       }
       if (args2.path.startsWith(".") && args2.resolveDir) {
-        const resolved = at(resolver.resolveFile(args2.resolveDir + "/" + args2.path));
+        const resolved = at(await resolver.resolveFile(args2.resolveDir + "/" + args2.path));
         if (resolved) return resolved;
       }
       if (bare(args2.path)) {
-        const resolved = at(resolver.resolveBarePackage(args2.path, args2.resolveDir || "/home/user", bundlerConditions(args2.kind)));
+        const resolved = at(await resolver.resolveBarePackage(args2.path, args2.resolveDir || "/home/user", bundlerConditions(args2.kind)));
         if (resolved) return resolved;
         warnings.push(`unresolved bare import "${args2.path}" from ${args2.importer || "?"} \u2192 marked external`);
       }

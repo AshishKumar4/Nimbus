@@ -8,7 +8,7 @@ import { buildSessionSupervisorOps } from '../../packages/worker/src/session/sup
 import { SupervisorDeliveries, openSupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; }

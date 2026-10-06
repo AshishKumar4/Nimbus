@@ -35,7 +35,7 @@ import {
   supervisorFilesystem,
   vfsSupervisor,
 } from '../../packages/core/src/runtime/vfs-supervisor.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { acrossRpc } from './lib/rpc-error.mjs';
 
 const build = await Bun.build({

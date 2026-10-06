@@ -50,9 +50,17 @@ function serviceWith(transform) {
     format: 'cjs',
   });
   assert.deepEqual(calls.map((call) => call.format), ['cjs', 'esm']);
-  assert.match(output.code, /require\("value"\)/);
-  assert.match(output.code, /return \(async \(\) =>/);
-  assert.doesNotMatch(output.code, /^import\b/m);
+  // The lowered module runs as CommonJS: it requires "value" and awaits its
+  // call in the async body it returns.
+  const required = [];
+  let settled = false;
+  const done = new Function('module', 'exports', 'require', output.code)({ exports: {} }, {}, (name) => {
+    required.push(name);
+    return () => new Promise((resolve) => setTimeout(() => { settled = true; resolve(); }, 1));
+  });
+  assert.deepEqual(required, ['value']);
+  await done;
+  assert.ok(settled, 'the body awaited value()');
 }
 
 // Errors unrelated to top-level await remain the original esbuild error.

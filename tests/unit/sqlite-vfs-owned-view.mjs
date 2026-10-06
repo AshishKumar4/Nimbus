@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 try {
@@ -71,4 +71,24 @@ try {
   assert.equal(raw.at('after-publication').readFileString('streamed'), 'streamed');
   assert.throws(() => publisher.chmod('streamed', 0o600), (e) => e.code === 'ESTALE');
 } finally { harness.db.close(); }
+// mkdir of a directory that is there changes nothing, so a lease refuses it
+// to no one: a session's `mkdir -p` of an ancestor (its home) while a git
+// command holds a repository under it, or of the lease's own root, succeeds.
+{
+  const leased = createSqliteVfsTestHarness();
+  try {
+    const raw = new SqliteVFS(leased.sql, leased.ctx);
+    const kernel = raw.as(CRED_KERNEL);
+    kernel.mkdir('home/user/repo/src', { recursive: true });
+    const lease = raw.acquireExclusiveMutation('home/user/repo');
+    kernel.mkdir('home/user', { recursive: true });
+    kernel.mkdir('home/user/repo', { recursive: true });
+    kernel.mkdir('home/user/repo/src', { recursive: true });
+    // Making what is not there is a mutation, refused as before.
+    assert.throws(() => kernel.mkdir('home/user/repo/new', { recursive: true }), (e) => e.code === 'EBUSY');
+    // The holder's own mkdir -p of an existing ancestor is no write outside its root.
+    raw.as(CRED_KERNEL, { mutationOwner: lease.owner }).mkdir('home/user', { recursive: true });
+    raw.releaseExclusiveMutation(lease.owner);
+  } finally { leased.db.close(); }
+}
 console.log('sqlite-vfs-owned-view: subtree/global authority, stale/foreign refusals, async ownership and quiesce pass');
