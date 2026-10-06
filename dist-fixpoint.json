@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "48ee20fbae0f1af7344398833ef44a4864046c0e8def94b3631388367d528689",
+  "fingerprint": "1cfa6f0a1a405a150a87ea6a20293fb1d69e36369a49b416405722676fb38397",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -243,9 +243,9 @@
     "packages/core/dist/runtime/cirrus-vite-config-rewriter.d.ts": "5039486d7d462117ceb50d4b00bfa74cbb4de101b87a2a5bb5b54e4f8f739865",
     "packages/core/dist/runtime/cirrus-vite-config-rewriter.d.ts.map": "bff73f3b58e3137819aecae62faf8b20cbf3f9efba21b4eed0720055a59d877e",
     "packages/core/dist/runtime/cirrus-vite-config-rewriter.js": "cc3cfc064f240e398a5a7271252010142cab9ec87ad32cc9853541eae10f37b2",
-    "packages/core/dist/runtime/cjs-export-names.d.ts": "f49d52e2831e876a36a47dcc159f9d32fabdf999d081b3701c95f4392faae7d7",
-    "packages/core/dist/runtime/cjs-export-names.d.ts.map": "c434839f89303d49b4c3d16d8f3951de5e275a1fd9245222af306834511e646f",
-    "packages/core/dist/runtime/cjs-export-names.js": "eedceb5c08284bf66fadf83cdd4f92b88227e46d30a17bbe493ce48ad8836499",
+    "packages/core/dist/runtime/cjs-export-names.d.ts": "352b92f7107feddbe7af17153f5fda4a72e4426146b55f312a94511d19e11168",
+    "packages/core/dist/runtime/cjs-export-names.d.ts.map": "36c9d856cd921c0d71743fc826a13ead7738d34a174e9797bc9fc441abce0a27",
+    "packages/core/dist/runtime/cjs-export-names.js": "4df942bb21748f385f9ab4e0c401865fcb5ef9b3dc7e2b4845187ccaf152429f",
     "packages/core/dist/runtime/clang-runner.d.ts": "34ae6dec20d2f7c058175540aa309c46b945f251509776a91eadc4bd0c5f2e3c",
     "packages/core/dist/runtime/clang-runner.d.ts.map": "41059dfa93edf1906a8f70d77896292a8500b9bd5cd1a692d3725427371305e2",
     "packages/core/dist/runtime/clang-runner.js": "df4ea83d2c1bc2b7f1f144ebdf0f0d0762e5201eca13b4b19adaae70e57b5db4",
@@ -1100,7 +1100,7 @@
     "packages/core/src/runtime/bundle-profile.ts": "b0dca375c1de19bcec6a228ed79e8c4675ec047a521158826c15d0ff828516af",
     "packages/core/src/runtime/bundler-resolution.ts": "d71b6ce8393e460c8c4ef09c612ba06575adfc0e593a66d9f2f21dbaebe040a0",
     "packages/core/src/runtime/cirrus-vite-config-rewriter.ts": "27d2e853d32dfcbb6aaf8c6b180ba0421a1612d2e23108166948da7645ef44a7",
-    "packages/core/src/runtime/cjs-export-names.ts": "e1aba1ee75685816fe328666c10de294fe417e6bbf121804ecdfb06af031d0bf",
+    "packages/core/src/runtime/cjs-export-names.ts": "e7ace9fc56539f0c411650f338c351fe568474951f3451b90ab0efa150c4812e",
     "packages/core/src/runtime/clang-runner.ts": "2094800204e13f6fa51011c7c8e463127b89215bca6f29bd2a31f5da41efcd29",
     "packages/core/src/runtime/cli-flags.ts": "23b203c999b01585cb6e4ddc5e6234066f10edb80fa2a4bb7f3f3dc260b8fd80",
     "packages/core/src/runtime/comment-strip.ts": "cbfea67bdc8c7bd618716a71d80bf3be0527386f3128ba64fd51a199f4532c38",

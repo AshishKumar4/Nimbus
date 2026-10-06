@@ -28,20 +28,45 @@ import { tokenizer, tokTypes } from 'acorn';
 function tokenValue(token) {
     return token === undefined ? '' : String(Reflect.get(token, 'value'));
 }
-/** `source`'s exports and reexports by cjs-module-lexer's rules; none for a source that does not tokenize. */
+/** `source`'s exports and reexports by cjs-module-lexer's rules; none for a source that does not tokenize, as the lexer has none. */
 export function scanCjsExports(source) {
-    let tokens;
     try {
-        tokens = [...tokenizer(source, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true, allowReturnOutsideFunction: true })];
+        return scan(source);
     }
     catch {
         return { names: [], reexports: [] };
     }
+}
+function scan(source) {
+    // The tokens stream through a window: a bundle of megabytes would be
+    // millions of tokens at once, and the patterns look back three tokens and
+    // forward only as far as one declaration reaches.
+    const stream = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true, allowReturnOutsideFunction: true });
+    const window = [];
+    let base = 0;
+    let ended = false;
+    const at = (i) => {
+        while (!ended && i >= base + window.length) {
+            const token = stream.getToken();
+            if (token.type === tokTypes.eof)
+                ended = true;
+            else
+                window.push(token);
+        }
+        return i >= base ? window[i - base] : undefined;
+    };
+    /** Drop the tokens more than a few behind `i`. */
+    const slide = (i) => {
+        if (i - base < 256)
+            return;
+        const drop = i - base - 8;
+        window.splice(0, drop);
+        base += drop;
+    };
     const names = new Set();
     const unsafe = new Set();
     let reexports = new Set();
     let depth = 0;
-    const at = (i) => tokens[i];
     const is = (i, type) => at(i)?.type === type;
     const word = (i, value) => {
         const token = at(i);
@@ -292,8 +317,9 @@ export function scanCjsExports(source) {
         }
         return all(punct(tokTypes.braceR), punct(tokTypes.parenR)) ? id : null;
     };
-    for (let i = 0; i < tokens.length; i++) {
-        const token = tokens[i];
+    for (let i = 0; at(i) !== undefined; i++) {
+        slide(i);
+        const token = at(i);
         if (token.type === tokTypes.parenL || token.type === tokTypes.braceL || token.type === tokTypes.dollarBraceL)
             depth++;
         else if (token.type === tokTypes.parenR || token.type === tokTypes.braceR)
