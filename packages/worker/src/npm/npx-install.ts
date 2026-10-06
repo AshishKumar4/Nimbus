@@ -58,17 +58,16 @@ function _vfsKey(p: string): string {
  * Parsed `npx` invocation.
  *   pkgSpec  — the package to install (`<name>[@<version>]`)
  *   pkgName  — the bare name (no version)
- *   binName  — the binary to execute. Defaults to last path segment of
- *              pkgName. Overridable via
- *              `--package=<name>` (where pkgSpec is the BIN name and
- *              the override names the install package).
+ *   command  — under `--package=<pkg> <command>`, the bin to execute;
+ *              null for `npx <pkg>`, whose bin the package's manifest
+ *              decides as libnpmexec's does (npxPackageBin).
  *   binArgs  — args passed through to the binary
  *   yes      — `-y` / `--yes` flag (we always proceed; preserved for log)
  */
 interface ParsedNpx {
   pkgSpec: string;
   pkgName: string;
-  binName: string;
+  command: string | null;
   binArgs: string[];
   yes: boolean;
 }
@@ -128,22 +127,14 @@ function parseNpxArgs(rawArgs: string[]): ParsedNpx | { error: string } {
   if (invocation.self !== null || invocation.command === null) {
     return { error: invocation.self === 'missing' || invocation.self === null ? 'missing-cmd' : `--${invocation.self}` };
   }
-  // With --package=<pkg>, the positional arg is the BIN name and the package
-  // installs `<pkg>`. Without it, the positional arg is `<name>[@<version>]`
-  // and the binary is the last path segment of `<name>`.
+  // With --package=<pkg>, the positional arg is the bin to run and the
+  // package installs `<pkg>`. Without it, the positional arg is
+  // `<name>[@<version>]`, the package, and its manifest decides the bin.
   const first = invocation.command;
-  let pkgSpec: string;
-  let binName: string;
-  if (invocation.packageOverride) {
-    pkgSpec = invocation.packageOverride;
-    binName = first;
-  } else {
-    pkgSpec = first;
-    const namePart = splitSpec(first).name;
-    binName = namePart.split('/').pop() || namePart;
-  }
+  const pkgSpec = invocation.packageOverride ?? first;
+  const command = invocation.packageOverride ? first : null;
   const { name: pkgName } = splitSpec(pkgSpec);
-  return { pkgSpec, pkgName, binName, binArgs: invocation.args, yes: invocation.yes };
+  return { pkgSpec, pkgName, command, binArgs: invocation.args, yes: invocation.yes };
 }
 
 /** Split `name@version` (or scoped `@scope/name@version`) into parts. */
@@ -163,23 +154,23 @@ function splitSpec(spec: string): { name: string; version: string | null } {
  * matching bin name is found, else null.
  */
 /**
- * Locate a binary by name across the standard search paths npx uses: the
- * package in cwd/node_modules, then in the npx cache, its bin chosen and
- * validated as bin-links does (npxPackageBin).
+ * Locate the bin npx runs across the standard search paths: the package in
+ * cwd/node_modules, then in the npx cache, its bin chosen and validated as
+ * npxPackageBin does.
  *
- * Returns the absolute path on hit, null on miss.
+ * Returns the bin's name and absolute path on hit, null on miss.
  */
 async function locateBinary(
   vfs: Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString'>,
   cwd: string,
   pkgName: string,
-  binName: string,
-): Promise<string | null> {
+  command: string | null,
+): Promise<{ name: string; path: string } | null> {
   for (const packageDir of [`${cwd}/node_modules/${pkgName}`, `${NPX_CACHE_NM}/${pkgName}`]) {
-    const bin = await npxPackageBin(vfs, packageDir, binName);
+    const bin = await npxPackageBin(vfs, packageDir, command);
     // npx runs the bin with `node`, which takes a file: a staged-artifact
     // bin (a sentinel, not a path) is not one npx can run.
-    if (bin && !isStagedArtifactTarget(bin.targetPath)) return '/' + bin.targetPath;
+    if (bin && !isStagedArtifactTarget(bin.targetPath)) return { name: bin.name, path: '/' + bin.targetPath };
   }
   return null;
 }
@@ -241,7 +232,7 @@ export interface NpxResolveResult {
 /**
  * Resolve a binary for `npx <args>` by:
  *   1. Parsing args.
- *   2. Checking node_modules/.bin/<binName> in cwd, then NPX cache.
+ *   2. Checking the package in cwd/node_modules, then the NPX cache, for its bin.
  *   3. If absent, installing the package via NpmInstaller into
  *      /tmp/.npx-cache, then re-checking.
  *
@@ -272,14 +263,14 @@ export async function resolveNpxBinary(
   }
 
   // 1. Check project + NPX cache for pre-installed bin.
-  const existing = await locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
+  const existing = await locateBinary(vfs, cwd, parsed.pkgName, parsed.command);
   if (existing) {
     return {
       ok: true,
-      binPath: existing,
+      binPath: existing.path,
       binArgs: parsed.binArgs,
-      bundleProfile: bundleProfileForNpmBin({ name: parsed.binName, packageName: parsed.pkgName }),
-      source: cwd && existing.startsWith(cwd) ? 'project-nm' : 'npx-cache',
+      bundleProfile: bundleProfileForNpmBin({ name: existing.name, packageName: parsed.pkgName }),
+      source: cwd && existing.path.startsWith(cwd) ? 'project-nm' : 'npx-cache',
     };
   }
 
@@ -319,19 +310,21 @@ export async function resolveNpxBinary(
   }
 
   // 3. Re-check NPX cache after install.
-  const installed = await locateBinary(vfs, cwd, parsed.pkgName, parsed.binName);
+  const installed = await locateBinary(vfs, cwd, parsed.pkgName, parsed.command);
   if (installed) {
     return {
       ok: true,
-      binPath: installed,
+      binPath: installed.path,
       binArgs: parsed.binArgs,
-      bundleProfile: bundleProfileForNpmBin({ name: parsed.binName, packageName: parsed.pkgName }),
+      bundleProfile: bundleProfileForNpmBin({ name: installed.name, packageName: parsed.pkgName }),
       source: 'fresh-install',
     };
   }
 
   return {
     ok: false,
-    error: `npx: installed ${parsed.pkgSpec} but could not locate binary '${parsed.binName}' in ${NPX_CACHE_NM}/${parsed.pkgName}`,
+    error: parsed.command === null
+      ? `npx: could not determine executable to run from ${parsed.pkgSpec}`
+      : `npx: installed ${parsed.pkgSpec} but could not locate binary '${parsed.command}' in ${NPX_CACHE_NM}/${parsed.pkgName}`,
   };
 }
