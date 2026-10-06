@@ -3,7 +3,7 @@ import { ProcessView, bindProcessView } from '../../../runtime/process-files.js'
 import { resolveContext, type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream, CommandOutputStream } from '../commands/types.js';
 import type { ChildExit, CommandContext, CommandRunAsHost } from '../commands/types.js';
-import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
+import { isVfsCred, type NimbusFilesystemAuthority, type VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
@@ -2253,11 +2253,3 @@ function replaceSet<T>(target: Set<T>, source: Set<T>): void {
   for (const value of source.values()) target.add(value);
 }
 
-function isVfsCred(value: unknown): value is VfsCred {
-  if (typeof value !== 'object' || value === null) return false;
-  if (!('uid' in value) || typeof value.uid !== 'number') return false;
-  if (!('gid' in value) || typeof value.gid !== 'number') return false;
-  if (!('umask' in value) || typeof value.umask !== 'number') return false;
-  return 'groups' in value && Array.isArray(value.groups)
-    && value.groups.every((group) => typeof group === 'number');
-}
