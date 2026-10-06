@@ -28,7 +28,7 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-import { type VfsDirentType, type VfsWriteEvent } from './vfs.js';
+import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
@@ -115,6 +115,8 @@ export interface VfsNameResolution {
 }
 export interface CredentialedVfs {
     readonly cred: VfsCred;
+    /** Who the view acts as: its credential and actor, the principal its write events name. */
+    readonly principal: Principal;
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
@@ -649,11 +651,16 @@ export declare class SqliteVFS {
     restoreAfterInstall(): void;
     /** Drop every disposable cache entry before retrying a strict batch. */
     evictAll(): void;
+    /**
+     * A description of `path`, opened as `cred`. Its writes are its opener's,
+     * wherever they run: `principal` (else the calling view's, else `cred`'s)
+     * is the one its write events name and its held appends are written as.
+     */
     openDescription(path: string, cred: VfsCred, rights: {
         read: boolean;
         write: boolean;
         sync?: boolean;
-    }): VfsOpenDescription;
+    }, principal?: Principal): VfsOpenDescription;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
      * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
@@ -805,12 +812,6 @@ export declare class SqliteVFS {
      */
     private logicalPath;
     /**
-     * uid 0's view: its writes may use the storage the ledger keeps back from
-     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
-     * Covers each call's synchronous part; the kernel's bookkeeping is that.
-     */
-    private privilegedView;
-    /**
      * Bind credentials and, optionally, the capability of a live mutation
      * lease; `actor` names the principal finer than its uid, in the write
      * events its mutations make (observeWrites).
@@ -822,14 +823,21 @@ export declare class SqliteVFS {
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;
     /**
-     * `view`, each of its calls but LEAF_READS first writing every append
-     * this VFS holds (appendThrough): a view is how a caller changes the
-     * store or reads more of it than one file, and none may do either
-     * without them. A leaf read looks at the one file it names, which path
-     * resolution writes the appends of, so a program reading one file while
-     * appending to another is not made to store each append as it comes.
+     * `view`, each call made as its caller, the one place a view's calls
+     * enter the engine: with the caller's privilege (uid 0 may use the
+     * storage the ledger keeps back from everyone else, N18's kernel reserve,
+     * as ext4 reserves blocks for root), as its principal (the write events
+     * it makes), and, for a synchronous mutation (OWNED_MUTATIONS), within
+     * its mutation lease (spanning work carries the owner per slice). Each
+     * call but a LEAF_READS one first writes every append this VFS holds
+     * (appendThrough): a view is how a caller changes the store or reads more
+     * of it than one file, and none may do either without them. A leaf read
+     * looks at the one file it names, which path resolution writes the
+     * appends of, so a program reading one file while appending to another is
+     * not made to store each append as it comes. Each covers its call's
+     * synchronous part; work it defers re-enters it (asCaller).
      */
-    private settlingView;
+    private callerView;
     private accessInode;
     private accessMode;
     /**
@@ -1059,7 +1067,16 @@ export declare class SqliteVFS {
     /** Where `path` leads, in the caller's names, or null for a loop. */
     private resolveSymlink;
     private readFile;
-    private readInodeBytes;
+    /**
+     * The regular file a pathname read resolved to (live or a snapshot's):
+     * ENOENT when nothing is there, EISDIR for a directory, EINVAL for
+     * anything else that is not a regular file.
+     */
+    private regularFile;
+    /** All of an inode's bytes (a link's text). */
+    private readWhole;
+    /** `length` bytes of an inode's at `offset`, clamped to its size: a read past the end is short. */
+    private readNodeRange;
     /**
      * Read a whole file straight from SQL, bypassing the LRU content cache
      * entirely (neither consulted nor populated). For one-shot bulk reads
@@ -1102,6 +1119,13 @@ export declare class SqliteVFS {
      */
     private manifestRange;
     /** One chunk's bytes, through the LRU when `cached`. */
+    /**
+     * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
+     * statement, by id; a chunk not stored here (cold, pending) is
+     * unreadable. A missing id is absent from the answer: the caller names
+     * what it expected.
+     */
+    private loadChunks;
     private readChunk;
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
@@ -1159,7 +1183,11 @@ export declare class SqliteVFS {
      */
     private rewriteFile;
     /** Publish a rewrite in one transaction when it fits; false when it does not. */
-    private tryPublishRewrite;
+    /**
+     * Publish `node` rewritten to `content` in one transaction. One that would
+     * not fit the transaction bounds is refused (assertTransactionFits), or,
+     * `ifFits`, not made: false, and the caller publishes it another way.
+     */
     private publishRewrite;
     /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
     private rewrittenEntry;
@@ -1177,6 +1205,13 @@ export declare class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     private contentUnshared;
     private newPlan;
+    /**
+     * Pieces staged into `staging` (of the file at `path`) in bounded
+     * transactions: each takes pieces until the next would not fit, then
+     * commits through `commit` (the caller's: its authority, its checkpoint
+     * row with `commitRow`). `flush` commits what is held.
+     */
+    private stagingWriter;
     /** Create a state-0 content in its own transaction and hold it live. */
     private beginStaging;
     /**
@@ -1260,13 +1295,15 @@ export declare class SqliteVFS {
      */
     private removeRecursive;
     /**
-     * The inodes under `root`, then `root` itself, in descending path order, a
-     * bounded page at a time. A path under a directory extends the directory's
-     * path, so it sorts after it: every entry comes before the directory that
-     * holds it. Each page starts below the last path read, so removing what
-     * was already yielded does not disturb the walk.
+     * Every inode strictly under `root`, a bounded page at a time: the live
+     * tree, or the tree as of generation `at` (pageAt, live and history
+     * merged), in path order; or, live, in descending path order (`desc`),
+     * where every entry comes before the directory holding it (a path under a
+     * directory extends the directory's) and each page starts below the last
+     * path read, so removing what was already yielded does not disturb the
+     * walk. `directoriesOnly` takes only directories.
      */
-    private subtreeDescending;
+    private subtree;
     private rename;
     /**
      * Unwind the destination inodes a failed move had already published.
@@ -1320,8 +1357,6 @@ export declare class SqliteVFS {
     private copyTreeNow;
     /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
     private reserveCopy;
-    /** Every entry strictly under `root` as of generation `g`, a page at a time. */
-    private subtreeAt;
     /**
      * Run a copyTree job to completion: the root row and the job row in the
      * first transaction, then one page per transaction, the cursor moving in
@@ -1770,6 +1805,14 @@ export declare class SqliteVFS {
      * observer is done, so a later write cannot change what they read.
      */
     private emitMutation;
+    /**
+     * One commit's mutations, in order. Every write event among them holds its
+     * content before any observer hears of the first: an observer's callback
+     * (or a write or collection it makes) runs between deliveries, and must not
+     * take what a later event of the same commit names. `type` null is heard by
+     * the write observers alone (a copy's entries; the bus has the tree's one).
+     */
+    private emitMutations;
     private deliverMutation;
     /**
      * Every mutation that lands, whoever made it (a view, a stream, a
@@ -1934,7 +1977,7 @@ export declare class SqliteVFS {
      * 19,429-file tree, on the object's only thread.
      *
      * The subtree is held whole, so only callers that commit it whole use this:
-     * a batch's deletions and a rename. A removal pages (subtreeDescending).
+     * a batch's deletions and a rename. A removal pages (subtree, descending).
      */
     private collectSubtreeInodes;
     /**

@@ -1,4 +1,5 @@
 import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
+import { SUPERVISOR_OPS } from './supervisor-ops.js';
 import { z } from 'zod';
 import { traced } from '@nimbus-sh/platform/tracing.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
@@ -108,28 +109,10 @@ function credFor(deps, pid, cred) {
  *
  * An op absent here is not served, on any host. The one other name an
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
- * wrapper around one of these, which the handler unwraps.
+ * wrapper around one of these, which the handler unwraps. The names, and
+ * how a resend of each is met, are SUPERVISOR_OP_TABLE (supervisor-ops.ts).
  */
-export const SUPERVISOR_OPS = [
-    'readFile', 'readFileBytes', 'writeFile', 'writeFileStat', 'stat', 'lstat',
-    'hasLegacySymlinkUnder', 'utimes', 'chmod', 'access', 'chown', 'setUmask',
-    'readdir', 'exists', 'mkdir', 'rmdir', 'rename', 'unlink', 'readlink', 'fsLinkLeadsTo',
-    'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
-    'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
-    'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
-    'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream', 'openWaveWriter',
-    'putRegistryEntries', 'stdout', 'stderr', 'prefetch', 'registerPort', 'allocatePort',
-    'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
-    'reportRuntimeCode',
-    'cpStdinWrite', 'cpStdinEnd', 'cpReadStdin', 'cpReadOutput',
-    'cpDrainOutput', 'cpKill', 'cpWait', 'cpBlocked',
-    'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
-    'innerDoFetch', 'innerDoCall', 'fanoutExecute', 'processHostProbe', 'hostProcess',
-    'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
-    'replayBoundary', 'netTls', 'outbound', 'stdinFileRead', 'stdinPrepared',
-    'getCachedTarball', 'putCachedTarball', 'getPackument',
-    'cacheResult',
-];
+export { SUPERVISOR_OPS };
 /**
  * An asynchronous read that meets bytes still being imported (N17) waits for
  * them and reads again; a synchronous caller would have had EIO.

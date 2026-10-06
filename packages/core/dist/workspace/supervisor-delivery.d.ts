@@ -27,19 +27,8 @@
  * mutation without a receipt for its repeat to find.
  */
 import type { SupervisorOpDispatch } from './supervisor-op.js';
-/**
- * The filesystem mutations a process's supervisor delivers exactly once.
- *
- * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
- * first delivery: its writer re-sends a lost wave re-encoded, under a newer
- * fence in an epoch the host issued — {@link SupervisorDeliveries.admitWave}),
- * the descriptor read `fsRead` (it advances the position and
- * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
- * append ledger's own writer/module/operation identity already makes them
- * repeatable), and the process, socket and storage-grant ops.
- */
-export declare const SUPERVISOR_DELIVERED_OPS: readonly ["writeFile", "writeFileStat", "fsWrite", "fsWriteRange", "fsTruncate", "writeBatch", "mkdir", "rmdir", "unlink", "rename", "symlink", "utimes", "chmod", "chown", "fsOpen", "fsClose", "fsDup", "fsSeek", "fsSetStatus", "fsSync", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation"];
-export type SupervisorDeliveredOpName = (typeof SUPERVISOR_DELIVERED_OPS)[number];
+import { type SupervisorDeliveredOpName, type SupervisorJoinedReadOpName } from './supervisor-ops.js';
+export type { SupervisorDeliveredOpName, SupervisorJoinedReadOpName };
 /**
  * The delivered mutation `op` names, as this module's own string — a receipt
  * holds that one copy, not the one each envelope arrived with — or undefined
@@ -48,19 +37,6 @@ export type SupervisorDeliveredOpName = (typeof SUPERVISOR_DELIVERED_OPS)[number
 export declare function supervisorDeliveredOp(op: string): SupervisorDeliveredOpName | undefined;
 /** The op a delivered mutation travels under; the mutation's own op rides in {@link SupervisorDelivery}. */
 export declare const SUPERVISOR_DELIVER_OP = "deliverOnce";
-/**
- * The filesystem reads a process's supervisor may send more than once — it
- * re-sends a dropped one and hedges an unanswered one — each attempt under
- * the one read id it minted for the read (the envelope's `readId`). A repeat
- * that reaches the host while the read is still being served joins it
- * ({@link SupervisorDeliveries.joinRead}): the host reads once, and every
- * attempt carries that answer. A journaled run also keeps settled replies:
- * a lost response must not turn a resend into another program observation.
- * Ordinary runs keep only reads in flight; a host that joins nothing serves
- * each attempt.
- */
-export declare const SUPERVISOR_JOINED_READ_OPS: readonly ["access", "exists", "stat", "lstat", "readdir", "readlink", "fsLinkLeadsTo", "readFile", "readFileBytes", "fsRealpath", "fsRevision", "fsList", "fsAcquire", "fsAcquired", "fsFstat", "fsReaddirHandle", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "hasLegacySymlinkUnder"];
-export type SupervisorJoinedReadOpName = (typeof SUPERVISOR_JOINED_READ_OPS)[number];
 /** The joined read `op` names, or undefined for any op that is not one. */
 export declare function supervisorJoinedReadOp(op: string): SupervisorJoinedReadOpName | undefined;
 /** Settled read retention is owned by the run's existing replay journal. */
@@ -246,5 +222,4 @@ export declare function openSupervisorDeliveries(ctx: object): SupervisorDeliver
 export declare function supervisorDeliveryProps(ctx: object): {
     hostIncarnation?: string;
 };
-export {};
 //# sourceMappingURL=supervisor-delivery.d.ts.map

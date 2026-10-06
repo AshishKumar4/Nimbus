@@ -159,13 +159,20 @@ interface WriteWatch {
     observer: VfsWriteObserver;
     wants: (path: string, principal: Principal) => boolean;
 }
+/** observeWrites: who is told, the mounts whose backends report their own writes, and the namespace's own reports in flight. */
+interface WriteWatches {
+    watches: Set<WriteWatch>;
+    subscribed: Map<Mount, () => void>;
+    /** Observed mutations on backends that do not report their own, by the paths they touch (reportWrite's turns). */
+    inFlight: Set<{
+        paths: readonly string[];
+        done: Promise<void>;
+    }>;
+}
 interface Table {
     mounts: Map<string, Mount>;
     /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
-    writes?: {
-        watches: Set<WriteWatch>;
-        subscribed: Map<Mount, () => void>;
-    };
+    writes?: WriteWatches;
     /** Directory → names of mount points (or their missing ancestors) directly in it. */
     synthesized: Map<string, Set<string>>;
     /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
@@ -268,22 +275,44 @@ export declare class CompositeVFS implements VFS {
     observeWrites(observer: VfsWriteObserver, options?: {
         wants?: (path: string, principal: Principal) => boolean;
     }): () => void;
-    /** Subscribe to `mount`'s backend when it reports its own writes (a source fixed for every principal). */
+    /**
+     * Subscribe to `mount`'s backend when it reports its own writes (a source
+     * fixed for every principal). An event is the namespace's only where the
+     * principal that made it is shown that path from this mount (routed there,
+     * not covered by another mount or a directory above one, reachable): a
+     * root write beneath a mount point changed nothing the namespace shows
+     * there. A rename half shown is the delete, or the create, its shown half is.
+     */
     private subscribeWrites;
-    /** `event` to every observer of this table; settles once each is done (a backend holds its content until then). */
+    /** This table as `principal` sees it (the embedder's own view for a principal with no credential). */
+    private viewOf;
+    /**
+     * `event` to every observer of this table. Settles once each is done (a
+     * backend holds the event's content until then); `release` lets go of
+     * what the namespace captured itself, then, whatever an observer did.
+     */
     private deliverWrite;
     /**
-     * `run`, a mutation landing at `path` on `route`'s backend, reported once
-     * it landed: by the backend itself when it reports its own writes
-     * (subscribed), else here, with what the path held before and after, read
-     * through the same backend view (content only where an observer wants it).
-     * `oldPath`: a rename's source.
+     * `run`, a mutation landing at `spec.path` on `spec.route`'s backend,
+     * reported once it landed: by the backend itself when it reports its own
+     * writes (subscribed), else here. Here, what the path held before and
+     * after is read through the same backend view, with the operation's own
+     * leaf-follow policy (content only where an observer wants it); mutations
+     * of overlapping paths take turns, capture to capture, so neither reads
+     * the other's; and the guard is asked right before the write, after the
+     * reads it waited on. `landed` says where the mutation actually landed
+     * (default: its path): a compare-and-write that lost, or an rm -r that
+     * kept its operand, did not land there.
      */
     private reportWrite;
+    /** `run` once no observed mutation of a path overlapping `paths` is in flight; others wait for it. */
+    private takeTurn;
     /**
-     * What stands at `rel` on a backend that does not report its own writes:
-     * null when nothing does, its content when `read`, false when what is
-     * there was not read (not wanted, or the backend would not say).
+     * What stands at `rel` on a backend that does not report its own writes,
+     * as the operation sees it (`follow`: through a link at the leaf): null
+     * when nothing does, its content when `read`, false when what is there
+     * was not read (not wanted, or the backend would not say). What it reads
+     * is held in `held`, let go when the observers are done.
      */
     private capture;
     /** The mounts this view's principal has now, root first, in mount order. */

@@ -1,4 +1,5 @@
 import { type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SUPERVISOR_OPS, type SupervisorOpName } from './supervisor-ops.js';
 import { type VfsCred } from '../runtime/os-contracts.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
@@ -143,10 +144,10 @@ export interface SupervisorOpHost {
  *
  * An op absent here is not served, on any host. The one other name an
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
- * wrapper around one of these, which the handler unwraps.
+ * wrapper around one of these, which the handler unwraps. The names, and
+ * how a resend of each is met, are SUPERVISOR_OP_TABLE (supervisor-ops.ts).
  */
-export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "writeFileStat", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "fsLinkLeadsTo", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "openWaveWriter", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpBlocked", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "innerDoCall", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay", "hmrNextEvent", "replayBoundary", "netTls", "outbound", "stdinFileRead", "stdinPrepared", "getCachedTarball", "putCachedTarball", "getPackument", "cacheResult"];
-export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
+export { SUPERVISOR_OPS, type SupervisorOpName };
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
  * the deps it was built with, so an override that wraps a filesystem op
@@ -269,5 +270,4 @@ export declare function createSupervisorBridgeStore(deps: Pick<SupervisorOpDeps,
 /** One envelope in, its result out: what a host forwards `supervisorOp` to. */
 export type SupervisorOpDispatch = (envelope: SupervisorOpEnvelope) => Promise<unknown>;
 export declare function createSupervisorOpHandler(deps: SupervisorOpDeps): SupervisorOpDispatch;
-export {};
 //# sourceMappingURL=supervisor-op.d.ts.map

@@ -71,11 +71,6 @@ export interface VfsHandle {
     truncate(size: number): Awaitable<void>;
     close(): Awaitable<void>;
 }
-export interface VfsEvent {
-    type: 'create' | 'modify' | 'delete' | 'rename';
-    path: string;
-    oldPath?: string;
-}
 /**
  * Who a view acts as. The embedder's own view has no credential. `actor` names
  * a principal finer than its uid: two agents (or a node and its origin) that
@@ -99,7 +94,7 @@ export interface VfsContentRef {
 /** A mutation that landed (VFS.observeWrites): reported once, after it committed. */
 export interface VfsWriteEvent {
     /** 'create' when nothing stood at `path`, 'delete' when nothing does now, 'rename' with `oldPath`. */
-    readonly type: VfsEvent['type'];
+    readonly type: 'create' | 'modify' | 'delete' | 'rename';
     readonly path: string;
     /** A rename's source. */
     readonly oldPath?: string;
@@ -185,7 +180,6 @@ export interface VFS {
      * backend without it is never cached.
      */
     readonly changes?: VfsChanges;
-    watch?(path: string, listener: (event: VfsEvent) => void): () => void;
     describe?(): VfsMountDescription;
     usage?(): Awaitable<VfsUsage | null>;
 }

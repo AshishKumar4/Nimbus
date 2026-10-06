@@ -24,7 +24,7 @@ export declare function fsError(code: string, syscall: string, path: RuntimeFsPa
     detail?: string;
     cause?: unknown;
 }): FsError;
-/** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
+/** POSIX rwx for `cred` on a stat (posixAccess); a stat without a mode allows. An absent owner or group is no one's. */
 export declare function modeAllows(stat: {
     mode?: number;
     uid?: number;
