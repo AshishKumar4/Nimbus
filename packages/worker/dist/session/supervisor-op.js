@@ -43,9 +43,22 @@ export function buildSessionSupervisorOps(host, store, methods) {
             if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
                 throw new Error('filesystem RPC requires a valid process pid');
             }
+            // A fenced wave commits only while no newer attempt of its writer has
+            // been admitted (SupervisorDeliveries.admitWave), and only on the
+            // instance whose binding sent it.
+            const fence = envelope.waveFence;
+            let admit;
+            if (fence !== undefined) {
+                const deliveries = host.supervisorDeliveries;
+                if (deliveries === undefined || fence.hostIncarnation !== deliveries.incarnation || pid === undefined) {
+                    throw Object.assign(new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'), { code: 'ESTALE' });
+                }
+                admit = deliveries.admitWave(pid, fence.writer, fence.wave, fence.attempt).check;
+            }
             return tools.bridge(pid, envelope.cred).writeStream(envelope.stream, {
                 decodeDrainStartedAt: performance.now(),
                 mutationOwner: envelope.mutationOwner,
+                admit,
             });
         },
         // stdout/stderr are session methods, not bridge ops: mirroring,

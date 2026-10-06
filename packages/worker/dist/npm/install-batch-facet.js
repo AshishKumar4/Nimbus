@@ -146,8 +146,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
         onWave(report) {
             lastPublishedWave = report.wave;
         },
-        onResend(resend) {
-            console.warn(`[npm] write wave re-sent (${resend.attempt}/${resend.of}): ${resend.reason}`);
+        onResend(lost) {
+            console.warn('[npm] write wave re-sent', JSON.stringify(lost));
         },
     });
     const writeOwnedFile = async (ownerId, path, data) => {

@@ -31,7 +31,9 @@ import type { SupervisorOpDispatch } from './supervisor-op.js';
  * The filesystem mutations a process's supervisor delivers exactly once.
  *
  * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
- * first delivery), the descriptor read `fsRead` (it advances the position and
+ * first delivery: its writer re-sends a lost wave re-encoded, under a newer
+ * fence the host checks instead — {@link SupervisorDeliveries.admitWave}),
+ * the descriptor read `fsRead` (it advances the position and
  * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
  * append ledger's own writer/module/operation identity already makes them
  * repeatable), and the process, socket and storage-grant ops.
@@ -129,6 +131,10 @@ export declare class SupervisorDeliveries {
     private rotatedAt;
     private readonly running;
     private readonly readsInFlight;
+    /** The newest wave attempt seen from each writer, by `${pid}:${writer}`, in two generations. */
+    private waveFences;
+    private olderWaveFences;
+    private waveFencesSince;
     private tombstones;
     private olderTombstones;
     private tombstonesSince;
@@ -177,6 +183,24 @@ export declare class SupervisorDeliveries {
      * being served rather than reading.
      */
     joinRead(pid: number, id: string, op: SupervisorJoinedReadOpName, admit: () => void, read: () => ReturnType<SupervisorOpDispatch>): JoinedRead;
+    /**
+     * Admit attempt (`wave`, `attempt`) of a write wave from `writer`, a
+     * process's wave writer, and answer whether it may still commit: it may
+     * while no newer attempt from that writer has been admitted. An attempt
+     * older than one already admitted is refused at once, ESTALE: its writer
+     * gave up on it and re-sent the wave (or has moved on), so applying it
+     * now could only put back bytes a newer write replaced. `check` is asked
+     * again before each of the attempt's commits, which is what stops an
+     * attempt overtaken while it runs.
+     *
+     * An attempt is held for at least the tombstone retention after it was
+     * last admitted (a call the platform lost was measured arriving up to
+     * 560 s late), and a writer forgotten by then has re-sent nothing for
+     * that long.
+     */
+    admitWave(pid: number, writer: string, wave: number, attempt: number): {
+        check(): void;
+    };
     /** Reads being served, which repeats of them would join. */
     get readsServing(): number;
     /** A process ended: its receipts answer nothing more, and their ids stay refused. */

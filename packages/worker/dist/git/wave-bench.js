@@ -9,7 +9,7 @@
  * content addressing stores every byte. The answer is the files/s and MB/s
  * the session sustained, and what the producers waited on.
  */
-import { RpcTarget } from 'cloudflare:workers';
+import * as workers from 'cloudflare:workers';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -102,44 +102,50 @@ export class Producer extends WorkerEntrypoint {
 
 export default { fetch() { return new Response('w7-bench producer', { status: 404 }); } };
 `;
-/** The session end of a direct mode, handed to each producer as an RPC stub. */
-class WaveBenchSink extends RpcTarget {
-    session;
-    constructor(session) {
-        super();
-        this.session = session;
-    }
-    async vfs(stream) {
-        return this.session.writeStream(stream);
-    }
-    async vfsBytes(bytes) {
-        return this.session.writeStream(new Response(bytes).body);
-    }
-    async drain(stream) {
-        return this.read(stream, false);
-    }
-    async drainWriting(stream) {
-        return this.read(stream, true);
-    }
-    async read(stream, writing) {
-        const reader = stream.getReader({ mode: 'byob' });
-        let reads = 0;
-        let bytes = 0;
-        let buffer = new ArrayBuffer(64 * 1024);
-        if (writing)
-            this.session.sql.exec('CREATE TABLE IF NOT EXISTS nimbus_bench_drain (id INTEGER PRIMARY KEY, n INTEGER)');
-        for (;;) {
-            const next = await reader.read(new Uint8Array(buffer));
-            if (next.done)
-                break;
-            reads++;
-            bytes += next.value.byteLength;
-            buffer = next.value.buffer;
-            if (writing)
-                this.session.sql.exec('INSERT INTO nimbus_bench_drain (n) VALUES (?)', next.value.byteLength);
+/**
+ * The session end of a direct mode, handed to each producer as an RPC stub.
+ * Made when a bench runs, not when this module loads: a session module is
+ * loaded where cloudflare:workers has no RpcTarget (unit stubs).
+ */
+function waveBenchSink(session) {
+    return new (class WaveBenchSink extends workers.RpcTarget {
+        session;
+        constructor(session) {
+            super();
+            this.session = session;
         }
-        return { ok: true, committedGroupSequence: 0, committedPathCount: 0, inodes: 0, chunks: 0, receipts: [], reads, bytes };
-    }
+        async vfs(stream) {
+            return this.session.writeStream(stream);
+        }
+        async vfsBytes(bytes) {
+            return this.session.writeStream(new Response(bytes).body);
+        }
+        async drain(stream) {
+            return this.read(stream, false);
+        }
+        async drainWriting(stream) {
+            return this.read(stream, true);
+        }
+        async read(stream, writing) {
+            const reader = stream.getReader({ mode: 'byob' });
+            let reads = 0;
+            let bytes = 0;
+            let buffer = new ArrayBuffer(64 * 1024);
+            if (writing)
+                this.session.sql.exec('CREATE TABLE IF NOT EXISTS nimbus_bench_drain (id INTEGER PRIMARY KEY, n INTEGER)');
+            for (;;) {
+                const next = await reader.read(new Uint8Array(buffer));
+                if (next.done)
+                    break;
+                reads++;
+                bytes += next.value.byteLength;
+                buffer = next.value.buffer;
+                if (writing)
+                    this.session.sql.exec('INSERT INTO nimbus_bench_drain (n) VALUES (?)', next.value.byteLength);
+            }
+            return { ok: true, committedGroupSequence: 0, committedPathCount: 0, inodes: 0, chunks: 0, receipts: [], reads, bytes };
+        }
+    })(session);
 }
 function isBenchEnv(env) {
     if (typeof env !== 'object' || env === null || !('LOADER' in env))
@@ -148,7 +154,7 @@ function isBenchEnv(env) {
     return typeof loader === 'object' && loader !== null && 'load' in loader && typeof loader.load === 'function';
 }
 export async function runWaveBench(ctx, env, options, session) {
-    const sink = new WaveBenchSink(session);
+    const sink = waveBenchSink(session);
     if (!isBenchEnv(env))
         throw new Error('w7-bench: env.LOADER.load is not available');
     const exports = getCtxExports();

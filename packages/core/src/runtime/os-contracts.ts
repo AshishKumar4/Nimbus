@@ -439,7 +439,12 @@ export interface RuntimeFsBridge {
   appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): Awaitable<number>;
   acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): Awaitable<void>;
   writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload): Awaitable<{ inodes: number; chunks: number }>;
-  writeStream(stream: ReadableStream<Uint8Array>, options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
+  /**
+   * `admit`, when given, is asked before the stream's first commit and every
+   * later one; it throws to refuse them (a fenced write wave its writer has
+   * since re-sent: SupervisorDeliveries.admitWave).
+   */
+  writeStream(stream: ReadableStream<Uint8Array>, options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number; admit?: () => void }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
   acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): Awaitable<{ root: string; owner: string }>;
   releaseExclusiveMutation(owner: string): Awaitable<void>;
 }

@@ -1528,9 +1528,10 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
     writer(onReceipts) {
       return __nimbusWaveWriter.createWaveWriter({
         supervisor: {
-          writeBatchStream(stream) {
+          // The writer's fence for this attempt goes with it: the session refuses a late original.
+          writeBatchStream(stream, fence) {
             stats.supervisorRpc.writeBatchStream++;
-            return supervisor.writeBatchStream(stream);
+            return supervisor.writeBatchStream(stream, fence);
           },
         },
         root,
@@ -1595,9 +1596,9 @@ function createBufferedFs(
   // overlay's stat agrees with what the wave publishes.
   const writer = __nimbusWaveWriter.createWaveWriter({
     supervisor: {
-      writeBatchStream(stream) {
+      writeBatchStream(stream, fence) {
         stats.supervisorRpc.writeBatchStream++;
-        return supervisor.writeBatchStream(stream);
+        return supervisor.writeBatchStream(stream, fence);
       },
     },
     root: authoritativeRoot,
@@ -1621,8 +1622,8 @@ function createBufferedFs(
       stats.filesWritten += report.files;
       stats.bytesWritten += report.bytes;
     },
-    onResend(resend) {
-      console.warn('[git] write wave re-sent (' + resend.attempt + '/' + resend.of + '): ' + resend.reason);
+    onResend(lost) {
+      console.warn('[git] write wave re-sent', JSON.stringify(lost));
     },
   });
 

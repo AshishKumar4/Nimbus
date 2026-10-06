@@ -381,10 +381,16 @@ export interface RuntimeFsBridge {
         inodes: number;
         chunks: number;
     }>;
+    /**
+     * `admit`, when given, is asked before the stream's first commit and every
+     * later one; it throws to refuse them (a fenced write wave its writer has
+     * since re-sent: SupervisorDeliveries.admitWave).
+     */
     writeStream(stream: ReadableStream<Uint8Array>, options?: {
         signal?: AbortSignal;
         mutationOwner?: string;
         decodeDrainStartedAt?: number;
+        admit?: () => void;
     }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
     acquireExclusiveMutation(path: RuntimeFsPath, options?: {
         includeMissingAncestors?: boolean;
