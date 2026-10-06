@@ -25,7 +25,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
-import { NODE_BUILTINS } from './cirrus-bundle-shared.mjs';
+import { NODE_BUILTINS, withoutStorePaths } from './cirrus-bundle-shared.mjs';
 import { patchRealViteBundle } from './real-vite-bundle-patches.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 
@@ -38,13 +38,6 @@ const OUT = path.join(ROOT, 'src', 'real-vite-bundle.generated.ts');
 const ASSETS_DIR = path.join(ROOT, 'public', '_assets');
 const ASSET_PATH_VITE_BUNDLE = '/_assets/real-vite-bundle.js';
 const ASSET_PATH_ROLLUP_WASM = '/_assets/rollup.wasm';
-// bun hoists vite + @rollup/wasm-node to the workspace root or links them
-// isolated, depending on the release; resolvePackageDir finds either.
-function findPkgDir(pkgName) {
-  try { return resolvePackageDir(pkgName, { start: ROOT }); }
-  catch { return null; }
-}
-
 // LOADER modules the facet supplies at load time (cirrus-real.ts), kept
 // external beside the native builtins:
 //   - real-node-fs*.js: raw node:fs re-exports the fs-shim wraps.
@@ -195,6 +188,20 @@ const stubPlugin = {
       path: 'cirrus-fs-promises.js', external: true,
     }));
 
+    // rollup and its subpaths → @rollup/wasm-node, the worker's pin, as an
+    // esbuild alias would map them. Rollup 4's native.js
+    // loads a platform-specific Rust binding via require(), which workerd
+    // can't load; the wasm-node build is pure JS over a .wasm file. No
+    // esbuild alias: `esbuild` is stubbed above, which saves ~2.3 MB the
+    // facet would hold for code paths it never runs.
+    build.onResolve({ filter: /^rollup(?:\/.*)?$/ }, async (args) => {
+      const resolved = await build.resolve('@rollup/wasm-node' + args.path.slice('rollup'.length), {
+        kind: args.kind, resolveDir: ROOT,
+      });
+      if (resolved.errors.length > 0) return { errors: resolved.errors };
+      return { path: resolved.path, namespace: resolved.namespace, sideEffects: resolved.sideEffects };
+    });
+
     // Phase 2: ws + chokidar shims. Externalize so the facet supplies
     // our WebSocket-server / file-watcher implementations at load time.
     build.onResolve({ filter: /^ws$/ }, () => ({
@@ -218,61 +225,24 @@ const stubPlugin = {
 // Phase 1 e2e testing confirmed Vite 8 dev ALSO depends on these
 // plugins for URL → file path resolution (oxcResolvePlugin).
 const PINNED_VITE_MAJOR = '6';
-const PINNED_VITE_VERSION = '^6.4.0';
-
-async function ensureViteInstalled() {
-  // [sdk-phase-1] node_modules hoisted to workspace root.
-  const viteDir = findPkgDir('vite');
-  const wasmRollupDir = findPkgDir('@rollup/wasm-node');
-  const vitePkg = viteDir ? path.join(viteDir, 'package.json') : null;
-  const wasmRollupPkg = wasmRollupDir ? path.join(wasmRollupDir, 'package.json') : null;
-  let needsInstall = !vitePkg || !wasmRollupPkg;
-  if (!needsInstall) {
-    try {
-      const parsed = JSON.parse(await fs.readFile(vitePkg, 'utf8'));
-      if (!parsed.version || !parsed.version.startsWith(PINNED_VITE_MAJOR + '.')) {
-        console.log(`[bundle-real-vite] found vite@${parsed.version}; reinstalling as ${PINNED_VITE_VERSION}...`);
-        needsInstall = true;
-      }
-    } catch { needsInstall = true; }
-    try {
-      await fs.access(wasmRollupPkg);
-    } catch { needsInstall = true; }
-  }
-  if (!needsInstall) return;
-  const { execSync } = await import('node:child_process');
-  // Install at the workspace root so bun hoists naturally.
-  const installCwd = path.resolve(ROOT, '..', '..');
-  execSync(`bun add --no-save vite@${PINNED_VITE_VERSION} @rollup/wasm-node`, {
-    cwd: installCwd, stdio: 'inherit',
-  });
-}
 
 async function main() {
-  await ensureViteInstalled();
-
-  console.log('[bundle-real-vite] bundling vite/dist/node/index.js...');
-  // [sdk-phase-1] Re-locate hoisted packages.
-  const viteDir = findPkgDir('vite');
-  const wasmRollupDir = findPkgDir('@rollup/wasm-node');
-  if (!viteDir) throw new Error('bundle-real-vite: vite not found in any node_modules ancestor');
-  if (!wasmRollupDir) throw new Error('bundle-real-vite: @rollup/wasm-node not found');
-
-  // Pre-read the rollup-wasm binary and embed it as a base64 string.
-  // The rollup wasm-node binding does `readFileSync(__dirname + '/bindings_wasm_bg.wasm')`;
-  // we answer that via our fs shim by seeding a synthetic entry that
-  // decodes the base64 back to a Uint8Array. This avoids bundling
-  // the wasm as a separate LOADER module (which doesn't accept .wasm).
-  let wasmBase64 = '';
-  try {
-    const wasmBytes = await fs.readFile(
-      path.join(wasmRollupDir, 'dist/wasm-node/bindings_wasm_bg.wasm'),
-    );
-    wasmBase64 = wasmBytes.toString('base64');
-    console.log(`[bundle-real-vite] rollup wasm binary: ${(wasmBytes.length / 1024).toFixed(1)} KB`);
-  } catch (e) {
-    console.warn('[bundle-real-vite] could not read rollup wasm binary:', e?.message);
+  // vite and @rollup/wasm-node are exact devDependencies of @nimbus-sh/worker,
+  // installed from the repo lockfile: `bun run bundle` rebuilds this bundle
+  // byte for byte and dist-integrity checks it.
+  const viteDir = resolvePackageDir('vite', { start: ROOT });
+  const wasmRollupDir = resolvePackageDir('@rollup/wasm-node', { start: ROOT });
+  const viteVersion = JSON.parse(await fs.readFile(path.join(viteDir, 'package.json'), 'utf8')).version;
+  if (!viteVersion.startsWith(PINNED_VITE_MAJOR + '.')) {
+    throw new Error(`bundle-real-vite: vite@${viteVersion} is pinned; only Vite ${PINNED_VITE_MAJOR} has a dev server without rolldown`);
   }
+  console.log(`[bundle-real-vite] bundling vite@${viteVersion} dist/node/index.js...`);
+
+  // The rollup wasm-node binding does `readFileSync(__dirname + '/bindings_wasm_bg.wasm')`;
+  // the facet's fs shim answers that from this binary, staged beside the
+  // bundle (a LOADER module cannot be .wasm).
+  const wasmBytes = await fs.readFile(path.join(wasmRollupDir, 'dist/wasm-node/bindings_wasm_bg.wasm'));
+  console.log(`[bundle-real-vite] rollup wasm binary: ${(wasmBytes.length / 1024).toFixed(1)} KB`);
 
   const result = await esbuild.build({
     entryPoints: [path.join(viteDir, 'dist/node/index.js')],
@@ -288,21 +258,6 @@ async function main() {
     logLevel: 'warning',
     keepNames: true,
     minify: false,
-    // Alias rollup → @rollup/wasm-node. Rollup 4's native.js loads a
-    // platform-specific Rust binding via require(); workerd can't
-    // load .node addons. @rollup/wasm-node ships a pure-WASM binding
-    // that imports via require('./wasm-node/bindings_wasm.js') —
-    // pure JS + a .wasm file, no native code.
-    alias: {
-      'rollup': '@rollup/wasm-node',
-      'rollup/dist/native.js': '@rollup/wasm-node/dist/native.js',
-      'rollup/dist/parseAst.js': '@rollup/wasm-node/dist/parseAst.js',
-      // NOTE: no esbuild alias. `esbuild` is stubbed via the
-      // onResolve filter above. Saves ~2.3 MB of JS + WASM that
-      // the facet would otherwise hold in memory for code paths
-      // we never run (optimizeDeps + build + esbuildPlugin.transform
-      // are all patched or disabled).
-    },
     // When loaded via LOADER.load() with modules:{'vite.bundle.js':...},
     // workerd sets import.meta.url to undefined (or a non-file URL),
     // which breaks createRequire(import.meta.url). Force a synthetic
@@ -320,17 +275,13 @@ async function main() {
     // runtime via the shim.
   });
 
-  let bundle = result.outputFiles[0].text;
+  let bundle = withoutStorePaths(result.outputFiles[0].text);
   console.log(`[bundle-real-vite] pre-patch size: ${(bundle.length / 1024).toFixed(1)} KB`);
 
   // Each seam fails the build if the bundled Vite moved its anchor; see
   // real-vite-bundle-patches.mjs.
   bundle = patchRealViteBundle(bundle);
   console.log(`[bundle-real-vite] post-patch size: ${(bundle.length / 1024).toFixed(1)} KB`);
-
-  const viteVersion = JSON.parse(
-    await fs.readFile(path.join(viteDir, 'package.json'), 'utf8'),
-  ).version;
 
   // Ship the REAL vite client runtime alongside the server bundle.
   // Vite serves these at /@vite/client + /@vite/env at dev time.
@@ -359,9 +310,6 @@ async function main() {
   // (same pattern as esbuild-wasm-bytes.ts). Keeps Worker bundle small.
   await fs.mkdir(ASSETS_DIR, { recursive: true });
   await fs.writeFile(path.join(ASSETS_DIR, 'real-vite-bundle.js'), bundle, 'utf8');
-  // Rollup native bindings: source is already base64 — decode + ship
-  // as a raw .wasm file. Consumer re-encodes if it needs base64.
-  const wasmBytes = Buffer.from(wasmBase64, 'base64');
   await fs.writeFile(path.join(ASSETS_DIR, 'rollup.wasm'), wasmBytes);
 
   const header = `/**

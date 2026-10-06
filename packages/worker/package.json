@@ -128,11 +128,12 @@
     "bundle:tailwind": "node scripts/bundle-tailwind-play.mjs",
     "bundle:opencode": "node scripts/bundle-opencode.mjs",
     "bundle:napi-wasm": "node scripts/bundle-napi-wasm.mjs",
+    "bundle:real-vite": "node scripts/bundle-real-vite.mjs",
     "bundle:plugin-react": "node scripts/bundle-plugin-react.mjs",
     "bundle:npm-cjs": "node scripts/bundle-npm-cjs.mjs",
     "bundle:agent-chat": "node scripts/bundle-agent-chat.mjs",
     "bundle:preview-isolation": "node scripts/bundle-preview-isolation.mjs",
-    "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:oxc && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:napi-wasm && bun run bundle:plugin-react && bun run bundle:npm-cjs && bun run bundle:agent-chat && bun run bundle:preview-isolation",
+    "bundle": "bun run bundle:git && bun run bundle:facets && bun run bundle:esbuild && bun run bundle:oxc && bun run bundle:sqlite && bun run bundle:shims && bun run bundle:tailwind && bun run bundle:opencode && bun run bundle:napi-wasm && bun run bundle:real-vite && bun run bundle:plugin-react && bun run bundle:npm-cjs && bun run bundle:agent-chat && bun run bundle:preview-isolation",
     "clean:dist": "node ../../scripts/clean-dist.mjs",
     "build": "bun run clean:dist && tsc -p tsconfig.json --noCheck --noEmit false --declaration true --declarationMap true --outDir dist --rootDir src",
     "prepublishOnly": "bun ../../scripts/dist-integrity.mjs --publish",
@@ -171,6 +172,7 @@
     "@babel/plugin-transform-typescript": "7.29.9",
     "@babel/types": "7.29.8",
     "@cloudflare/workers-types": "^5.20260928.1",
+    "@rollup/wasm-node": "4.60.4",
     "@vitejs/plugin-react": "4.3.4",
     "acorn": "^8.15.0",
     "cjs-module-lexer": "2.3.0",
@@ -185,7 +187,8 @@
     "react-refresh": "0.14.2",
     "rolldown": "1.2.11",
     "scheduler": "0.23.2",
-    "typescript": "^5.7.0"
+    "typescript": "^5.7.0",
+    "vite": "6.4.2"
   },
   "publishConfig": {
     "access": "public"

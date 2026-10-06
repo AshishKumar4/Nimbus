@@ -45,7 +45,7 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
-import { NODE_BUILTINS, replaceSeam, requirePolyfillSeam } from './cirrus-bundle-shared.mjs';
+import { NODE_BUILTINS, replaceSeam, requirePolyfillSeam, withoutStorePaths } from './cirrus-bundle-shared.mjs';
 import { patchPluginReactIndex } from './plugin-react-bundle-patches.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 
@@ -193,7 +193,7 @@ async function main() {
     process.exit(1);
   }
 
-  let bundle = result.outputFiles[0].text;
+  let bundle = withoutStorePaths(result.outputFiles[0].text);
   console.log(
     `[bundle-plugin-react] pre-patch size: ${(bundle.length / 1024).toFixed(1)} KB`,
   );

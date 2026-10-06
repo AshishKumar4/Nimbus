@@ -39,7 +39,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import esbuild from 'esbuild';
-import { NODE_BUILTINS } from './cirrus-bundle-shared.mjs';
+import { NODE_BUILTINS, withoutStorePaths } from './cirrus-bundle-shared.mjs';
 import { resolvePackageDir } from './resolve-package-dir.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
@@ -221,7 +221,7 @@ export default _default;
       console.error(`[bundle-npm-cjs] ${fullSpec} errors:`, result.errors);
       throw new Error('build failed');
     }
-    let text = result.outputFiles[0].text;
+    let text = withoutStorePaths(result.outputFiles[0].text);
 
     // Post-process: replace every `__require("<peer>")` call with a
     // direct reference to a module-top ESM import. esbuild emits

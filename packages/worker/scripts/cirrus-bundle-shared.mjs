@@ -10,6 +10,8 @@
  *     never silently no-op a patch.
  *   - requirePolyfillSeam: the replacement for esbuild's `__require`
  *     polyfill, which always throws in workerd's ESM context.
+ *   - withoutStorePaths: module paths as `node_modules/<pkg>/…`, whatever
+ *     the install layout.
  */
 
 /**
@@ -123,4 +125,20 @@ export function requirePolyfillSeam({ base, label, stubs = '' }) {
     replace: () => replacement,
     count: 1,
   };
+}
+
+/**
+ * esbuild names every bundled module by its path from the working
+ * directory, in a comment and as its __commonJS / __esm key. Under bun's
+ * isolated linker that path runs through the store
+ * (`../../node_modules/.bun/<pkg>@<version>+<peer hash>/node_modules/<pkg>/…`),
+ * and the peer hash moves whenever an unrelated package changes a peer's
+ * resolution. Naming modules `node_modules/<pkg>/…` keeps a staged bundle a
+ * function of its own inputs. The paths are names only: nothing resolves
+ * them at runtime.
+ *
+ * @param {string} text
+ */
+export function withoutStorePaths(text) {
+  return text.replace(/(?:\.\.\/)*node_modules\/\.bun\/[^/"\s]+\/node_modules\//g, () => 'node_modules/');
 }
