@@ -1752,6 +1752,21 @@ export declare class SqliteVFS {
      * edit manifests; upsert inodes; queue every reference a replaced or
      * removed row held and no row now holds; store the counters.
      */
+    /**
+     * The directories whose entries `plan` changes, which POSIX dates: a name
+     * created in one (a new path, or a path now naming another inode: a
+     * rename's or a link's target) or removed from it. A directory the plan
+     * itself writes or removes is dated by that row; a row moving with its
+     * parent (a moved subtree's) changes no entry; the root has no row.
+     * Rewriting a file in place keeps its name's inode, and dates only the file.
+     */
+    private entryChangedDirectories;
+    /** Before-images, for a snapshot at `pinGen`, of the rows at `paths` that generation `gen` replaces or removes. */
+    private recordBeforeImages;
+    /** Date `directories` at the transaction's commit time, in its generation: one statement per page. */
+    private touchDirectoryRows;
+    /** The cache and the publication learn what touchDirectoryRows committed. */
+    private touchedDirectoriesCommitted;
     private executeTransactionPlan;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
