@@ -7,6 +7,8 @@ import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-con
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
+import { isDecimalInteger, isShellIdentifier } from './names.js';
+import { DEFAULT_HOME } from '../../../constants.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 
 import {
@@ -42,7 +44,7 @@ function shellPromptParts(env: Record<string, string>, cwd: string): {
   user: string;
   host: string;
 } {
-  const home = env['HOME'] ?? '/home/user';
+  const home = env['HOME'] ?? DEFAULT_HOME;
   let displayPath = cwd;
   if (cwd === home) {
     displayPath = '~';
@@ -197,7 +199,7 @@ export class Shell {
   ) {
     this.terminal = terminal;
     this.registry = registry;
-    this.cwd = env['HOME'] ?? '/home/user';
+    this.cwd = env['HOME'] ?? DEFAULT_HOME;
     this.env = { ...env };
     this.env.PWD = this.cwd;
     if (!this.env['0']) this.env['0'] = 'nimbus-sh';
@@ -225,7 +227,7 @@ export class Shell {
     this.processRegistry = processRegistry;
 
     // Initialize history manager
-    this.historyManager = new HistoryManager(() => this.vfs, () => this.env.HOME ?? '/home/user');
+    this.historyManager = new HistoryManager(() => this.vfs, () => this.env.HOME ?? DEFAULT_HOME);
 
     // Initialize interpreter
     this.interpreterConfig = {
@@ -558,7 +560,7 @@ export class Shell {
     // The bash launch is deliberately not part of the returned promise: an
     // interactive bash runs until the user exits it.
     return sourced.then(async () => {
-      const home = this.env['HOME'] ?? '/home/user';
+      const home = this.env['HOME'] ?? DEFAULT_HOME;
       if ((await readDefaultShell(this.vfs, home)) === 'bash') {
         void this.executeLine('bash -i').catch(error => {
           this.writeToTerminal(`${error instanceof Error ? error.message : String(error)}\n`);
@@ -571,7 +573,7 @@ export class Shell {
   }
 
   private async sourceRcFiles(): Promise<void> {
-    const home = this.env['HOME'] ?? '/home/user';
+    const home = this.env['HOME'] ?? DEFAULT_HOME;
 
     // Source system-wide profile first
     await this.sourceFile('/etc/profile');
@@ -1154,13 +1156,13 @@ export class Shell {
   // ─── Builtins (now with stdout/stderr params for pipe support) ───
 
   private async builtinCd(args: string[], stderr: CommandOutputStream): Promise<number> {
-    const target = args[0] ?? this.env['HOME'] ?? '/home/user';
+    const target = args[0] ?? this.env['HOME'] ?? DEFAULT_HOME;
     let newPath: string;
 
     if (target === '-') {
       newPath = this.env['OLDPWD'] ?? this.cwd;
     } else if (target === '~' || target.startsWith('~/')) {
-      const home = this.env['HOME'] ?? '/home/user';
+      const home = this.env['HOME'] ?? DEFAULT_HOME;
       newPath = target === '~' ? home : resolve(home, target.slice(2));
     } else {
       newPath = resolve(this.cwd, target);
@@ -1404,7 +1406,7 @@ export class Shell {
       return;
     }
     for (const key of Object.keys(this.env)) {
-      if (key === '@' || key === '#' || isPositionalKey(key)) delete this.env[key];
+      if (key === '@' || key === '#' || isDecimalInteger(key)) delete this.env[key];
     }
     this.env['#'] = String(args.length);
     this.env['@'] = args.join(' ');
@@ -2000,20 +2002,6 @@ function unquoteWord(token: { value: string; parts?: Array<{ text: string }> }):
   return token.parts === undefined ? token.value : token.parts.map((p) => p.text).join('');
 }
 
-function isShellIdentifier(value: string): boolean {
-  if (value.length === 0) return false;
-  const first = value.charCodeAt(0);
-  if (!isIdentifierStart(first)) return false;
-  for (let i = 1; i < value.length; i++) {
-    if (!isIdentifierPart(value.charCodeAt(i))) return false;
-  }
-  return true;
-}
-
-function isPositionalKey(key: string): boolean {
-  return isDecimalInteger(key);
-}
-
 function isSetOptionCluster(arg: string): boolean {
   if (arg.length < 2) return false;
   if (arg[0] !== '-' && arg[0] !== '+') return false;
@@ -2047,23 +2035,6 @@ function isPlainSetValue(value: string): boolean {
       code === 47 ||
       code === 58;
     if (!ok) return false;
-  }
-  return true;
-}
-
-function isIdentifierStart(code: number): boolean {
-  return code === 95 || (code >= 65 && code <= 90) || (code >= 97 && code <= 122);
-}
-
-function isIdentifierPart(code: number): boolean {
-  return isIdentifierStart(code) || (code >= 48 && code <= 57);
-}
-
-function isDecimalInteger(value: string): boolean {
-  if (value.length === 0) return false;
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code < 48 || code > 57) return false;
   }
   return true;
 }

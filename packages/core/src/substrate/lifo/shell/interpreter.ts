@@ -46,6 +46,7 @@ import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
+import { isDecimalInteger } from './names.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { WorkThread } from './work-thread.js';
@@ -2097,15 +2098,6 @@ export class Interpreter {
 function setMembership(set: Set<number>, value: number, present: boolean): void {
   if (present) set.add(value);
   else set.delete(value);
-}
-
-function isDecimalInteger(value: string): boolean {
-  if (value.length === 0) return false;
-  for (let i = 0; i < value.length; i++) {
-    const code = value.charCodeAt(i);
-    if (code < 48 || code > 57) return false;
-  }
-  return true;
 }
 
 function isFatalSpecialBuiltin(name: string): boolean {

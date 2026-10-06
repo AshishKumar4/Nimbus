@@ -1,3 +1,4 @@
+import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandRegistry } from '../commands/registry.js';
 import { resolve } from '../utils/path.js';
@@ -133,11 +134,11 @@ async function listEntries(word: string, ctx: CompletionContext, dirsOnly: boole
   let expandedWord = word;
   let tildePrefix = '';
   if (word.startsWith('~/')) {
-    const home = ctx.env['HOME'] ?? '/home/user';
+    const home = ctx.env['HOME'] ?? DEFAULT_HOME;
     expandedWord = home + word.slice(1);
     tildePrefix = '~/';
   } else if (word === '~') {
-    const home = ctx.env['HOME'] ?? '/home/user';
+    const home = ctx.env['HOME'] ?? DEFAULT_HOME;
     expandedWord = home;
     tildePrefix = '~';
   }

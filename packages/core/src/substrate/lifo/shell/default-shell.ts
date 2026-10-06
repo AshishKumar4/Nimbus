@@ -1,3 +1,4 @@
+import { DEFAULT_HOME } from '../../../constants.js';
 import type { Command } from '../commands/types.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { exists } from '../../../vfs/vfs.js';
@@ -5,7 +6,7 @@ import { exists } from '../../../vfs/vfs.js';
 export type DefaultShell = 'lifo' | 'bash';
 
 export function defaultShellPath(home: string): string {
-  const normalizedHome = (home || '/home/user').replace(/\/+$/, '');
+  const normalizedHome = (home || DEFAULT_HOME).replace(/\/+$/, '');
   return `${normalizedHome}/.config/nimbus/shell`;
 }
 
@@ -28,7 +29,7 @@ export function makeChshCommand(deps: {
   isBashInstalled(home: string): boolean | Promise<boolean>;
 }): Command {
   return async (ctx) => {
-    const home = ctx.env.HOME || '/home/user';
+    const home = ctx.env.HOME || DEFAULT_HOME;
     if (ctx.args.length === 0) {
       (await ctx.stdout.write(`${(await readDefaultShell(ctx.vfs, home))}\n`));
       return 0;

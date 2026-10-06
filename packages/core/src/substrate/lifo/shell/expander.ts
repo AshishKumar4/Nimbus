@@ -1,4 +1,6 @@
 import type { WordPart } from './types.js';
+import { isShellIdentifier } from './names.js';
+import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { expandGlob, globMatch } from '../utils/glob.js';
 import { readBracedExpansion } from './lexer.js';
@@ -285,7 +287,7 @@ async function expandParts(parts: WordPart[], ctx: ExpandContext): Promise<Piece
 function tildeExpanded(text: string, ctx: ExpandContext, preceding: readonly Piece[]): string {
   const atWordStart = !preceding.some((p) => p.kind === 'break' || p.text !== '');
   if (!atWordStart || !text.startsWith('~')) return text;
-  const home = ctx.env['HOME'] ?? '/home/user';
+  const home = ctx.env['HOME'] ?? DEFAULT_HOME;
   if (text === '~') return home;
   if (text.startsWith('~/')) return home + text.slice(1);
   return text;
@@ -600,7 +602,7 @@ async function applyDefault(
     throw new ExpansionError(`${ref.name}: ${value || 'parameter null or not set'}`);
   }
   if (operator === '=' && ref.subscript === undefined
-    && /^[a-zA-Z_][a-zA-Z0-9_]*$/.test(ref.name)) {
+    && isShellIdentifier(ref.name)) {
     ctx.env[ref.name] = value;
   }
   return [valuePiece(value, quoted)];

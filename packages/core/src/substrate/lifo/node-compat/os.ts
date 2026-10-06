@@ -1,4 +1,4 @@
-import { DEFAULT_HOSTNAME } from '../../../constants.js';
+import { DEFAULT_HOME, DEFAULT_HOSTNAME } from '../../../constants.js';
 import { readHeapMemory, uptimeSeconds } from '../utils/system-info.js';
 
 export function createOs(env: Record<string, string>) {
@@ -8,7 +8,7 @@ export function createOs(env: Record<string, string>) {
     type: () => 'Lifo',
     release: () => '0.1.0',
     hostname: () => DEFAULT_HOSTNAME,
-    homedir: () => env.HOME || '/home/user',
+    homedir: () => env.HOME || DEFAULT_HOME,
     tmpdir: () => '/tmp',
     cpus: () => {
       const count = navigator.hardwareConcurrency || 4;
@@ -30,7 +30,7 @@ export function createOs(env: Record<string, string>) {
       uid: 1000,
       gid: 1000,
       username: env.USER || 'user',
-      homedir: env.HOME || '/home/user',
+      homedir: env.HOME || DEFAULT_HOME,
       shell: env.SHELL || '/bin/sh',
     }),
     EOL: '\n',
