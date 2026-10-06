@@ -391,7 +391,8 @@ async function _whichLookup(
  * file a user sees. A program a search of PATH found is that file
  * (executable or not, as bash reports either); a path is itself; a command
  * that is one of bash's builtins is a shell builtin, whatever PATH holds of
- * its name, as bash classifies builtins before files; any other command the
+ * its name and whether or not the registry has it (cd is the shell's alone),
+ * as bash classifies builtins before files; any other command the
  * workspace knows (external, runtime, npm or gem) is where
  * `_knownCommandPath` puts it, or else a shell builtin (a runtime's install
  * hint with no bin is not found). A resolution that failed is not found.
@@ -402,7 +403,7 @@ async function _describeCommand(
   from: ResolveContext,
 ): Promise<{ kind: 'file'; path: string } | { kind: 'builtin' } | null> {
   const resolved = await _registryResolved(registry, name, from, { includeInstallHints: true });
-  if (resolved === null) return null;
+  if (resolved === null) return !name.includes('/') && BASH_BUILTINS.has(name) ? { kind: 'builtin' } : null;
   const resolution = resolutionOf(resolved);
   if (resolution?.kind === 'failed') return null;
   if (resolution?.kind === 'program') return { kind: 'file', path: resolution.path };
