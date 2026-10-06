@@ -461,46 +461,39 @@ export async function prefetchForRequire(
     // See `comment-strip.ts` header + the wave's verdict.md.
     const stripped = stripCommentsForImports(code);
 
-    // Recursive and concurrently suspended walks each own their cursor.
-    // Mutating a shared RegExp.lastIndex repeats or skips a parent's imports.
-    for (const match of stripped.matchAll(REQUIRE_RE)) {
-      const specifier = match[2];
-      if (isFacetProvided(specifier)) continue;
-      if (closureExceeded || declined) break;
-      const r = await resolveStaticDependency(specifier, fromDir);
-      if (r) (await addFile(r.resolved));
-      if (r && !policy && namesManifest(specifier)) deferBins(r.resolved);
-    }
-    // Immediately-invoked `createRequire(import.meta.url)('./x')` is a
-    // require of './x' from this file's directory (pi-coding-agent's bin).
-    for (const match of stripped.matchAll(CREATE_REQUIRE_CALL_RE)) {
-      const specifier = match[2];
-      if (isFacetProvided(specifier)) continue;
-      if (closureExceeded || declined) break;
-      const r = await resolveStaticDependency(specifier, fromDir);
-      if (r) (await addFile(r.resolved));
-    }
-    // X.5-C Fix #1: also follow ESM `import`/`export … from` statements.
-    // Without this, packages whose `module` entry is ESM (react-remove-
-    // scroll, pathe, ESM nuxt deps, etc.) have their entry file in the
-    // bundle but none of the relative `import './x'` siblings — at
-    // runtime W3.5 Fix B's CJS rewrite calls require('./x') which then
-    // fails because `x` was never added.
-    //
-    // The process runs such a module lowered to CommonJS, and its require
-    // takes a package's "require" branch. A module runner that evaluates the
-    // same source itself (Vite's, under Astro) imports a package with
-    // import(), which takes the "import" branch: phase 2 resolves it (the
-    // same file as the require branch adds nothing), behind every deferral
-    // the code names, tables included (IMPORT_BRANCHES).
-    for (const match of stripped.matchAll(IMPORT_RE)) {
-      const specifier = match[2];
-      if (isFacetProvided(specifier)) continue;
-      if (closureExceeded || declined) break;
-      const r = await resolveStaticDependency(specifier, fromDir);
-      if (r) (await addFile(r.resolved));
+    // Every static dependency is staged the same way: the CommonJS
+    // resolution of its specifier, unless the facet provides it, until the
+    // closure is full. What each grammar adds after is its own:
+    //   - require()/require.resolve(): a manifest it names may carry bins.
+    //   - Immediately-invoked `createRequire(import.meta.url)('./x')` is a
+    //     require of './x' from this file's directory (pi-coding-agent's bin).
+    //   - ESM `import`/`export … from` (X.5-C Fix #1): packages whose
+    //     `module` entry is ESM (react-remove-scroll, pathe, ESM nuxt deps)
+    //     need their relative siblings staged, since the process runs the
+    //     module lowered to CommonJS and its require takes a package's
+    //     "require" branch. A module runner that evaluates the same source
+    //     itself (Vite's, under Astro) imports a package with import(), which
+    //     takes the "import" branch: phase 2 resolves it (the same file as
+    //     the require branch adds nothing), behind every deferral the code
+    //     names, tables included (IMPORT_BRANCHES).
+    const followUps: ReadonlyArray<[RegExp, (specifier: string, staged: ResolveSubpathResult | null) => void]> = [
+      [REQUIRE_RE, (specifier, staged) => { if (staged && !policy && namesManifest(specifier)) deferBins(staged.resolved); }],
+      [CREATE_REQUIRE_CALL_RE, () => {}],
       // Resolved in phase 2, where what it reads is optional too.
-      if (!policy && !/^[./#]|^file:/.test(specifier)) defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES });
+      [IMPORT_RE, (specifier) => { if (!policy && !/^[./#]|^file:/.test(specifier)) defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES }); }],
+    ];
+    // Recursive and concurrently suspended walks each own their cursor
+    // (matchAll): mutating a shared RegExp.lastIndex repeats or skips a
+    // parent's imports.
+    for (const [grammar, followUp] of followUps) {
+      for (const match of stripped.matchAll(grammar)) {
+        const specifier = match[2];
+        if (isFacetProvided(specifier)) continue;
+        if (closureExceeded || declined) break;
+        const staged = await resolveStaticDependency(specifier, fromDir);
+        if (staged) (await addFile(staged.resolved));
+        followUp(specifier, staged);
+      }
     }
     // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
     const deferrals = new Set<string>();
