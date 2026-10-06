@@ -47,27 +47,38 @@ export interface StatusOptions {
     excludes: ScanOptions['excludes'];
     renames: boolean;
 }
-/** wt_status_collect: every changed path, then the untracked ones, each list in git's order. */
-export declare function collectStatus(store: ObjectStore, tree: Worktree, dc: DirCache, head: string, options: StatusOptions): Promise<{
-    changes: StatusChange[];
+/** What status found: the changed paths in git's order, made one at a time; the untracked ones; the read errors. */
+export interface StatusResult {
+    /** How many paths changed. */
+    count: number;
+    changes(): Generator<StatusChange>;
     untracked: string[];
     errors: string[];
-}>;
+}
+/**
+ * wt_status_collect: every changed path, then the untracked ones, each in
+ * git's order. Held as a byte a index entry for the index column, the
+ * worktree walk's DirtySet for the other, and the staged deletions (paths
+ * the index no longer has) in columns; additions and deletions become
+ * objects only to be matched as renames. A line is made as it is printed.
+ */
+export declare function collectStatus(store: ObjectStore, tree: Worktree, dc: DirCache, head: string, options: StatusOptions): Promise<StatusResult>;
 /**
  * path.c relative_path: `path` as seen from `prefix` (which ends in '/'),
  * climbing with '../'; './' for the prefix itself.
  */
 export declare function relativePath(path: string, prefix: string): string;
 /**
- * wt_shortstatus_print as a binary string. `prefix` (the cwd below the top,
- * ending in '/', or '') makes paths relative, as short status does and
- * porcelain does not; `z` ends entries with NUL and prints paths as they are.
+ * wt_shortstatus_print as binary strings, one line at a time. `prefix` (the
+ * cwd below the top, ending in '/', or '') makes paths relative, as short
+ * status does and porcelain does not; `z` ends entries with NUL and prints
+ * paths as they are.
  */
-export declare function formatShortStatus(status: {
-    changes: readonly StatusChange[];
-    untracked: readonly string[];
+export declare function shortStatusLines(status: {
+    changes: Iterable<StatusChange>;
+    untracked: Iterable<string>;
 }, { prefix, z }: {
     prefix: string;
     z: boolean;
-}): string;
+}): Generator<string>;
 //# sourceMappingURL=status.d.ts.map

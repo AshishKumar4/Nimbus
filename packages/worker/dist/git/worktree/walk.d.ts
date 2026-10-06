@@ -68,12 +68,29 @@ export declare function matchStat(dc: DirCache, i: number, st: WorktreeStat, fil
 export interface Dirty {
     /** M: content or exec bit; D: gone (or a directory where a file was); T: a file became a link, or back. */
     change: 'M' | 'D' | 'T';
-    /** The worktree's lstat, absent for D. */
-    stat: WorktreeStat | null;
     /** The worktree blob's id, when the walk hashed it. */
     oid?: string;
     /** D because a directory stands where the file was, not because nothing does. */
     directory?: boolean;
+}
+/**
+ * The entries that differ from the worktree, by entry number: one byte an
+ * index entry, and the ids of the files the walk hashed. With every file of
+ * a 96,000-file tree changed, this is 96 KB and the hashed half's ids, where
+ * an object (and its lstat) per entry held about 30 MiB. A consumer that
+ * needs a changed file's stat takes it again.
+ */
+export declare class DirtySet {
+    private readonly kinds;
+    private readonly oids;
+    size: number;
+    constructor(entries: number);
+    set(i: number, dirty: Dirty): void;
+    has(i: number): boolean;
+    get(i: number): Dirty | undefined;
+    /** The entries in index order. */
+    keys(): Generator<number>;
+    [Symbol.iterator](): Generator<[number, Dirty]>;
 }
 /**
  * refresh_cache_ent for one entry the worktree holds: null when it matches
@@ -108,7 +125,7 @@ export interface Unmerged {
 }
 export interface ScanResult {
     /** Tracked entries that differ from the worktree, by entry number. */
-    dirty: Map<number, Dirty>;
+    dirty: DirtySet;
     /** Untracked paths in walk order; a directory ends in '/'. */
     untracked: string[];
     /** With `unmerged`, the unmerged paths in index order. */
