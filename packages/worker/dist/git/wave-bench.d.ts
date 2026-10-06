@@ -2,7 +2,7 @@
  * git/wave-bench.ts — how fast the session takes a clone's writes, with N producers.
  *
  * NIMBUS_DEBUG only (POST /api/_test/w7-bench). Each producer is a Dynamic
- * Worker running the clone's own wave writer (git/wave-writer.ts) over
+ * Worker running the clone's own wave writer (platform wave-writer.ts) over
  * synthetic files, publishing through SupervisorRPC.writeBatchStream exactly
  * as a clone's facet does, so the measured path is the production one:
  * producer → SupervisorRPC → session → SQLite. Contents are random, so

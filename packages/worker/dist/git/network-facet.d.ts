@@ -24,6 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
+import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 export interface GitNetworkOpts {
     op: GitNetworkOp;
@@ -113,19 +114,7 @@ export interface GitNetworkPhaseDiagnostic {
     /** Whether clone-checkout started without module-local job state. */
     cold?: boolean;
     /** The invocation's wave writer: what it published and how long it waited. */
-    waves?: GitWaveDiagnostic;
-}
-/** The facet's wave writer counters (git/wave-writer.ts WaveStats). */
-export interface GitWaveDiagnostic {
-    waves: number;
-    files: number;
-    bytes: number;
-    rpcWallMs: number;
-    maxRpcWallMs: number;
-    producerWaitMs: number;
-    ownershipVisits: number;
-    maxWavePaths: number;
-    maxWaveBytes: number;
+    waves?: WaveStats;
 }
 export type GitNetworkErrorCode = 'GitCloneBudgetExceeded' | 'FreshCheckoutDirectoryLimitError';
 export interface GitNetworkResult {
