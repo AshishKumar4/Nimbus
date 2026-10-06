@@ -1,7 +1,7 @@
 /*
  * What git needs of POSIX that wasi-libc lacks: declarations here, bodies in
- * git-wasi-compat.c. Spike only: process creation answers ENOSYS, so any git
- * command that spawns (pager, editor, hooks, transports) fails at the spawn.
+ * git-wasi-compat.c. Process creation answers ENOSYS, so a git command that
+ * spawns (pager, editor, hooks, transports) fails at the spawn.
  */
 #ifndef GIT_WASI_COMPAT_H
 #define GIT_WASI_COMPAT_H

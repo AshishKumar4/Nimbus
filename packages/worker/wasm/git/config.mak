@@ -1,19 +1,19 @@
-# Cross build of git for wasm32-wasi (wasi-sdk). Spike: what builds, what runs.
-GIT_WASI_DIR ?= /mnt/local/nimbus/wt/lazy-worktree/spike/git-real
-GIT_WASI_COMPAT_H ?= $(GIT_WASI_DIR)/git-wasi-compat.h
-WASI_SDK ?= $(HOME)/toolchains/wasi-sdk-27.0-x86_64-linux
-SYSROOT_EXTRA ?= /mnt/local/nimbus/tmp/git-real/sysroot
+# git for wasm32-wasi (wasi-sdk), as build-git.sh builds it. build-git.sh
+# passes GIT_WASI_DIR (this directory), WASI_SDK and SYSROOT_EXTRA (where it
+# installed zlib), and the target's uname, which config.mak.uname reads before
+# this file can set it.
+GIT_WASI_COMPAT_H = $(GIT_WASI_DIR)/git-wasi-compat.h
 CC = $(WASI_SDK)/bin/wasm32-wasi-clang
 AR = $(WASI_SDK)/bin/llvm-ar
-uname_S = WASI
-uname_M = wasm32
-uname_O = WASI
-uname_R = 1
-uname_V = 1
+# PACK_INDEX_PAGED: patches/0001-pack-index-paged.patch. A pack index is read
+# in pages as lookups need them instead of whole (NO_MMAP would read all of
+# it: 60 MiB for a history of two million objects, in a 128 MiB isolate).
 CFLAGS = -O2 -g0 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
+  -DPACK_INDEX_PAGED \
   -I$(GIT_WASI_DIR)/include -I$(SYSROOT_EXTRA)/include -include $(GIT_WASI_COMPAT_H)
 LDFLAGS = -L$(SYSROOT_EXTRA)/lib -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
   -Wl,-z,stack-size=8388608 -Wl,--initial-memory=12582912 -Wl,--max-memory=2147483648
+COMPAT_OBJS += compat/git-wasi-compat.o
 NO_PTHREADS = YesPlease
 NO_MMAP = YesPlease
 NO_CURL = YesPlease
@@ -39,6 +39,7 @@ NO_SYS_POLL_H = YesPlease
 NO_GETPAGESIZE =
 NO_FSMONITOR = YesPlease
 NO_TRUSTABLE_FILEMODE = YesPlease
+NO_MKDTEMP =
 NEEDS_LIBRT =
 HAVE_DEV_TTY =
 NO_RUST = YesPlease
@@ -51,6 +52,3 @@ SANE_TOOL_PATH =
 INSTALL_SYMLINKS = YesPlease
 DEFAULT_PAGER = cat
 DEFAULT_EDITOR = vi
-NO_MKDTEMP =
-COMPAT_OBJS += compat/git-wasi-compat.o
-NO_IPV6 = YesPlease
