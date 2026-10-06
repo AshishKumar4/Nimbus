@@ -32,7 +32,7 @@ const DEFAULT_RUNTIME_VERSIONS = {
  * CLOUDFLARE_ACCOUNT_ID=… nimbus runtime sync --bucket my-runtime-cache python
  * ```
  */
-export async function syncRuntimes(args) {
+export async function syncRuntimes(args, options = {}) {
     const parsed = parseFlags(args);
     const bucket = parsed.bucket ?? 'nimbus-runtime-cache-public';
     const runtimes = parsed.runtimes.length > 0
@@ -42,8 +42,8 @@ export async function syncRuntimes(args) {
         process.stderr.write('nimbus runtime sync: CLOUDFLARE_ACCOUNT_ID env var required\n');
         return 78;
     }
-    // Locate the runtime sync helper in `@nimbus-sh/worker`.
-    const scriptPath = resolveBundleRuntimeScript();
+    // Locate the runtime sync helper in `@nimbus-sh/worker` (a test names its own copy).
+    const scriptPath = options.scriptPath ?? resolveBundleRuntimeScript();
     if (!scriptPath) {
         process.stderr.write('nimbus runtime sync: cannot locate Nimbus runtime sync helper\n');
         return 70;
@@ -105,7 +105,7 @@ function resolveBundleRuntimeScript() {
         return null;
     }
 }
-/** The line bundle-runtime.mjs prints for a bucket it is not Nimbus's own: the catalog it left there. */
+/** The line bundle-runtime.mjs prints after every catalog it writes, whatever the bucket: the catalog it left there. */
 const CATALOG_PIN_LINE = /^NIMBUS_RUNTIME_CATALOG_SHA256=([a-f0-9]{64})$/m;
 /**
  * Run the publisher for one runtime, its output passed through as it comes,
