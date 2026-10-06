@@ -7,8 +7,7 @@ import type {
   DoubleBracketNode,
   IfNode,
   ForNode,
-  WhileNode,
-  UntilNode,
+  LoopNode,
   CaseNode,
   FunctionDefNode,
   GroupNode,
@@ -706,9 +705,8 @@ export class Interpreter {
       case 'for':
         return (await this.executeFor(cmd, io));
       case 'while':
-        return (await this.executeWhile(cmd, io));
       case 'until':
-        return (await this.executeUntil(cmd, io));
+        return (await this.executeLoop(cmd, io));
       case 'case':
         return (await this.executeCase(cmd, io));
       case 'group':
@@ -835,7 +833,7 @@ export class Interpreter {
     }));
   }
 
-  private async executeWhile(node: WhileNode, io: ExecutionIo): Promise<number> {
+  private async executeLoop(node: LoopNode, io: ExecutionIo): Promise<number> {
     return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
       let exitCode = 0;
 
@@ -845,39 +843,8 @@ export class Interpreter {
         if (abortCode !== null) return abortCode;
 
         const condCode = await this.withErrexitSuppressed(async () => (await this.executeCompoundList(node.condition, redirIo)));
-        if (condCode !== 0) break;
-
-        try {
-          exitCode = await this.executeCompoundList(node.body, redirIo);
-        } catch (e) {
-          if (e instanceof BreakSignal) {
-            if (e.levels > 1) throw new BreakSignal(e.levels - 1);
-            break;
-          }
-          if (e instanceof ContinueSignal) {
-            if (e.levels > 1) throw new ContinueSignal(e.levels - 1);
-            continue;
-          }
-          throw e;
-        }
-      }
-
-      this.lastExitCode = exitCode;
-      return exitCode;
-    }));
-  }
-
-  private async executeUntil(node: UntilNode, io: ExecutionIo): Promise<number> {
-    return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
-      let exitCode = 0;
-
-      while (true) {
-        await this.loopTick();
-        const abortCode = this.abortExitCode(redirIo);
-        if (abortCode !== null) return abortCode;
-
-        const condCode = await this.withErrexitSuppressed(async () => (await this.executeCompoundList(node.condition, redirIo)));
-        if (condCode === 0) break;
+        // while goes on while its condition succeeds, until while it fails.
+        if ((condCode === 0) !== (node.type === 'while')) break;
 
         try {
           exitCode = await this.executeCompoundList(node.body, redirIo);
