@@ -84,6 +84,7 @@ import {
   type ResolveOneResult,
 } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
+import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
 import {
   buildSliceForSpecifierWithCap,
   type PrebundleSpec,
@@ -1151,7 +1152,7 @@ export class NpmInstaller {
       // W7: tar-stream + W7-frame preambles concatenated. Forwarded
       // to every facet (in-DO and per-peer) so each shard's facet
       // can encode its own write-batch stream.
-      preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE,
+      preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + NPM_INSTALL_PREAMBLE,
       // Authorize each facet's writeBatchStream under the invoking
       // process credential; without a positive pid the supervisor
       // rejects the write (S2a cred enforcement).

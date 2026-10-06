@@ -36,28 +36,8 @@ import {
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
+import './lib/install-facet-scope.mjs';
 
-globalThis.streamPackageEntries = streamPackageEntries;
-globalThis.streamTarEntries = streamTarEntries;
-globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
-globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
-globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
-globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
-globalThis.DecompressionStream = class DecompressionStream {
-  readable;
-  writable;
-
-  constructor(format) {
-    assert.equal(format, 'gzip');
-    const transform = new TransformStream({
-      transform(chunk, controller) {
-        controller.enqueue(gunzipSync(chunk));
-      },
-    });
-    this.readable = transform.readable;
-    this.writable = transform.writable;
-  }
-};
 
 // ── tar fixtures ────────────────────────────────────────────────────────
 
