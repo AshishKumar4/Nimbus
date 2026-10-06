@@ -155,3 +155,19 @@ export function stripCommentsForImports(src: string): string {
   copy(N);
   return parts.join('');
 }
+
+/**
+ * Every specifier `code` names after `from`, `import` or `import(`, as
+ * written, in order: the one grammar the project scan
+ * (barrel-synthesizer scanProjectImports) and a barrel's scoped slice read
+ * module edges with. `code` is the comment-blanked view
+ * (stripCommentsForImports), so an import commented out names nothing;
+ * a caller keeps the bare or relative ones it wants.
+ */
+export function importedSpecifiers(code: string): string[] {
+  const specifiers: string[] = [];
+  for (const match of code.matchAll(IMPORTED_SPECIFIER_RE)) specifiers.push(match[1]);
+  return specifiers;
+}
+
+const IMPORTED_SPECIFIER_RE = /(?:\bfrom\s*|\bimport\s*\(?\s*)["']([^"']+)["']/g;

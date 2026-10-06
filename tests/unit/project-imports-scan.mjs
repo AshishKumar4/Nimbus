@@ -6,6 +6,7 @@
  * the names imported from each package root (for barrel packages). Both come
  * from the same files: six directories deep, without node_modules, .git,
  * dist, build, non-JS files, or the build tools' configs at the project root.
+ * An import inside a comment names nothing.
  */
 
 import assert from 'node:assert/strict';
@@ -13,7 +14,7 @@ import { scanProjectImports } from '../../packages/worker/src/runtime/barrel-syn
 
 const files = {
   'app/src/main.tsx': "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport { Home, Zap as Z, type IconProps } from 'lucide-react';\nimport './style.css';\nimport 'normalize.css?inline';\nconst m = import('lodash-es/debounce');\n",
-  'app/src/util.ts': "export { a } from '@scope/pkg/sub';\nimport D, { b } from '@scope/pkg';\nimport { x } from 'node:fs';\nimport { y } from './local';\n",
+  'app/src/util.ts': "export { a } from '@scope/pkg/sub';\nimport D, { b } from '@scope/pkg';\nimport { x } from 'node:fs';\nimport { y } from './local';\n// import { Gone } from 'commented-out';\n/* import 'also-commented'; */\nexport{c}from\"minified\";\n",
   // Six directories below the project: read.
   'app/src/a/b/c/d/e/deep.js': "import { Deep } from 'lucide-react';\nimport 'deep-pkg';\n",
   // Seven: not read.
@@ -47,7 +48,7 @@ const vfs = {
 
 const { bareSpecifiers, namedImports } = scanProjectImports(vfs, 'app');
 assert.deepEqual([...bareSpecifiers].sort(), [
-  '@scope/pkg', '@scope/pkg/sub', 'deep-pkg', 'lodash-es', 'lodash-es/debounce', 'lucide-react', 'node:fs',
+  '@scope/pkg', '@scope/pkg/sub', 'deep-pkg', 'lodash-es', 'lodash-es/debounce', 'lucide-react', 'minified', 'node:fs',
   'normalize.css', 'react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react/jsx-runtime',
   'site-config-pkg',
 ]);

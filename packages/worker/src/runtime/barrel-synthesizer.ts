@@ -56,6 +56,7 @@
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { importedSpecifiers, stripCommentsForImports } from '@nimbus-sh/core/runtime/comment-strip.js';
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
 import { resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -129,8 +130,6 @@ export function scanProjectImports(vfs: CredentialedVfs, projDir: string): Proje
   const isServerOnlyTopLevel = (name: string): boolean =>
     /^(?:vite|vitest|astro|rollup|tsup|tailwind|postcss|prettier|eslint|stylelint|rolldown)\.config\.[mc]?[jt]s$/.test(name)
     || (/\.config\.[mc]?[jt]s$/.test(name) && name.split('.').length === 3);
-  // `from 'x'`, `import 'x'` and `import('x')` of a bare specifier.
-  const bareImportRe = /(?:from\s+|import\s*\(?\s*)["']([^./][^"']*?)["']/g;
   // `import { ... } from 'spec'` and `import D, { ... } from 'spec'`:
   // 1 is the named-import body, 2 the specifier.
   const namedImportRe = /import\s+(?:[A-Za-z_$][\w$]*\s*,\s*)?\{([^}]+)\}\s*from\s*["']([^"']+)["']/g;
@@ -141,9 +140,11 @@ export function scanProjectImports(vfs: CredentialedVfs, projDir: string): Proje
     set.add(name);
   };
 
-  const scan = (code: string, ext: string): void => {
-    for (const m of code.matchAll(bareImportRe)) {
-      const clean = m[1].split('?')[0];
+  const scan = (source: string, ext: string): void => {
+    const code = stripCommentsForImports(source);
+    for (const specifier of importedSpecifiers(code)) {
+      if (specifier.startsWith('.') || specifier.startsWith('/')) continue;
+      const clean = specifier.split('?')[0];
       bare.add(clean);
       bare.add(packageNameFromSpecifier(clean));
     }
@@ -504,13 +505,9 @@ export function buildScopedSliceForSynthetic(
     if (slash > 0) addDir(filePath.substring(0, slash));
     entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
     totalBytes += bytes.length + filePath.length;
-    // Parse relative imports and queue them. Same regex as
-    // scanNamedImports but with relative-path predicate.
-    const text = new TextDecoder().decode(bytes);
-    const importRe = /(?:from\s+|import\s*\(?\s*)["'](\.\.?\/[^"']+)["']/g;
-    let m: RegExpExecArray | null;
-    while ((m = importRe.exec(text)) !== null) {
-      const rel = m[1];
+    // Queue the relative imports, read by the project scan's grammar.
+    for (const rel of importedSpecifiers(stripCommentsForImports(new TextDecoder().decode(bytes)))) {
+      if (!rel.startsWith('./') && !rel.startsWith('../')) continue;
       const dir = filePath.substring(0, slash > 0 ? slash : 0);
       const candidate = normalizeJoin(dir, rel);
       // Try with extensions (.js, .mjs, no-ext-as-dir/index.js).
