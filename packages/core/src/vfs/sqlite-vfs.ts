@@ -5399,8 +5399,8 @@ export class SqliteVFS {
     // directory inodes of the subtree, and enumerating one needed read
     // permission. Answering from the index would otherwise skip that check.
     // All of them pass before the first group commits.
-    for (const inode of this.subtreeDescending(resolved.path, resolved.inode, true)) {
-      if (!this.accessInode(inode, 0o4, cred)) throw vfsKeyError('EACCES', inode.path);
+    for (const inode of followedBy(this.subtree(resolved.path, { desc: true, directoriesOnly: true }), resolved.inode)) {
+      if (inode.isDir && !this.accessInode(inode, 0o4, cred)) throw vfsKeyError('EACCES', inode.path);
     }
 
     let removed = 0;
@@ -5417,7 +5417,7 @@ export class SqliteVFS {
       this.commitBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
       removed += paths.length;
     };
-    for (const inode of this.subtreeDescending(resolved.path, resolved.inode, false)) {
+    for (const inode of followedBy(this.subtree(resolved.path, { desc: true }), resolved.inode)) {
       // Close the group before the entry that would overflow it. The estimate
       // only picks the boundary — the commit asserts the bound it writes.
       if (budget.wouldExceedDeletion() !== null) flush();
@@ -5430,35 +5430,49 @@ export class SqliteVFS {
   }
 
   /**
-   * The inodes under `root`, then `root` itself, in descending path order, a
-   * bounded page at a time. A path under a directory extends the directory's
-   * path, so it sorts after it: every entry comes before the directory that
-   * holds it. Each page starts below the last path read, so removing what
-   * was already yielded does not disturb the walk.
+   * Every inode strictly under `root`, a bounded page at a time: the live
+   * tree, or the tree as of generation `at` (pageAt, live and history
+   * merged), in path order; or, live, in descending path order (`desc`),
+   * where every entry comes before the directory holding it (a path under a
+   * directory extends the directory's) and each page starts below the last
+   * path read, so removing what was already yielded does not disturb the
+   * walk. `directoriesOnly` takes only directories.
    */
-  private *subtreeDescending(root: string, rootInode: INode, directoriesOnly: boolean): Generator<INode> {
-    const range = subtreeRange(root);
-    const kind = directoriesOnly ? ` AND kind = ${INODE_KIND_DIRECTORY}` : '';
-    let below = range.upper;
-    for (;;) {
-      const rows = [...(below === null
-        ? this.sql.exec(
-          `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?${kind} ORDER BY path DESC LIMIT ?`,
-          range.lower,
+  private *subtree(root: string, options: { desc?: boolean; at?: number; directoriesOnly?: boolean } = {}): Generator<INode> {
+    const kind = options.directoriesOnly ? ` AND kind = ${INODE_KIND_DIRECTORY}` : '';
+    if (options.desc) {
+      let below = subtreeRange(root).upper;
+      for (;;) {
+        const under = subtreeWhere(root, { below })!;
+        const rows = [...this.sql.exec(
+          `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE ${under.sql}${kind} ORDER BY path DESC LIMIT ?`,
+          ...under.params,
           SUBTREE_PAGE_ROWS,
-        )
-        : this.sql.exec(
-          `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ? AND path < ?${kind} ORDER BY path DESC LIMIT ?`,
-          range.lower,
-          below,
-          SUBTREE_PAGE_ROWS,
-        ))];
-      for (const row of rows) yield this.inodes.peek(String(row.path)) ?? this.inodeFromRow(row);
-      if (rows.length < SUBTREE_PAGE_ROWS) break;
-      below = String(rows[rows.length - 1]!.path);
+        )];
+        for (const row of rows) yield this.inodes.peek(String(row.path)) ?? this.inodeFromRow(row);
+        if (rows.length < SUBTREE_PAGE_ROWS) return;
+        below = String(rows[rows.length - 1]!.path);
+      }
     }
-    if (!directoriesOnly || rootInode.isDir) yield rootInode;
+    const range = subtreeRange(root);
+    let after = range.lower;
+    for (;;) {
+      const page = options.at === undefined
+        ? (() => {
+          const under = subtreeWhere(root, { after })!;
+          return [...this.sql.exec(
+            `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE ${under.sql}${kind} ORDER BY path LIMIT ?`,
+            ...under.params,
+            SUBTREE_PAGE_ROWS,
+          )].map((row) => this.inodes.peek(String(row.path)) ?? this.inodeFromRow(row));
+        })()
+        : this.pageAt(options.at, after, SUBTREE_PAGE_ROWS, range.upper);
+      for (const inode of page) if (!options.directoriesOnly || inode.isDir) yield inode;
+      if (page.length < SUBTREE_PAGE_ROWS) return;
+      after = page[page.length - 1]!.path;
+    }
   }
+
 
   private rename(oldPath: string, newPath: string, cred: VfsCred): void {
     // Resolve private /tmp names to storage keys before reading or mutating.
@@ -5849,8 +5863,8 @@ export class SqliteVFS {
     }
     if (cred.uid !== 0 && root.isDir) {
       const entries = atGen === undefined
-        ? this.subtreeDescending(source.path, root, false)
-        : this.subtreeAt(source.path, atGen);
+        ? followedBy(this.subtree(source.path, { desc: true }), root)
+        : this.subtree(source.path, { at: atGen });
       for (const inode of entries) {
         if (!this.accessInode(inode, inode.isDir ? 0o5 : inode.kind === 'symlink' ? 0 : 0o4, cred)) {
           throw vfsKeyError('EACCES', inode.path);
@@ -5863,12 +5877,10 @@ export class SqliteVFS {
     let rows = 1;
     if (root.isDir) {
       if (atGen === undefined) {
-        const range = subtreeRange(source.path);
-        rows += Number([...(range.upper === null
-          ? this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ?', range.lower)
-          : this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ? AND path < ?', range.lower, range.upper))][0]!.n);
+        const under = subtreeWhere(source.path)!;
+        rows += Number([...this.sql.exec(`SELECT COUNT(*) AS n FROM vfs_inodes WHERE ${under.sql}`, ...under.params)][0]!.n);
       } else {
-        for (const _ of this.subtreeAt(source.path, atGen)) rows++;
+        for (const _ of this.subtree(source.path, { at: atGen })) rows++;
       }
     }
     // Each page's transaction also writes the generation and the job's cursor.
@@ -5923,20 +5935,7 @@ export class SqliteVFS {
     return id;
   }
 
-  /** Every entry strictly under `root` as of generation `g`, a page at a time. */
-  private *subtreeAt(root: string, g: number): Generator<INode> {
-    const range = subtreeRange(root);
-    let cursor = range.lower;
-    for (;;) {
-      const page = this.pageAt(g, cursor, SUBTREE_PAGE_ROWS);
-      for (const inode of page) {
-        if (range.upper !== null && inode.path >= range.upper) return;
-        yield inode;
-      }
-      if (page.length < SUBTREE_PAGE_ROWS) return;
-      cursor = page[page.length - 1]!.path;
-    }
-  }
+
 
   /**
    * Run a copyTree job to completion: the root row and the job row in the
@@ -6131,14 +6130,12 @@ export class SqliteVFS {
   /** Rows a copy job has left: the source's rows past its cursor, and each page's two. */
   private remainingCopyRows(id: number, job: CopyTreeJob): number {
     const cursor = String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0]!.cursor);
-    const range = subtreeRange(job.src);
     let rows = 0;
     if (job.atGen === undefined) {
-      rows = Number([...(range.upper === null
-        ? this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ?', cursor)
-        : this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ? AND path < ?', cursor, range.upper))][0]!.n);
+      const under = subtreeWhere(job.src, { after: cursor })!;
+      rows = Number([...this.sql.exec(`SELECT COUNT(*) AS n FROM vfs_inodes WHERE ${under.sql}`, ...under.params)][0]!.n);
     } else {
-      for (const inode of this.subtreeAt(job.src, job.atGen)) if (inode.path > cursor) rows++;
+      for (const inode of this.subtree(job.src, { at: job.atGen })) if (inode.path > cursor) rows++;
     }
     return rows + 2 * (Math.ceil(rows / COPY_PAGE_ROWS) + 1);
   }
@@ -6589,11 +6586,9 @@ export class SqliteVFS {
   private runRestore(id: number, job: RestoreJob, startGen: number, maxPages = Infinity): { restored: number; done: boolean } {
     this.assertSnapshotLocal(job.g, job.subtree, job.name);
     this.revokeSharedDirectories(job.subtree);
-    const range = subtreeRange(job.subtree);
     // Path filter for both tables, as SQL plus its parameters.
-    const within = job.subtree === ''
-      ? { sql: '', params: [] as unknown[] }
-      : { sql: ' AND (path = ? OR (path > ? AND path < ?))', params: [job.subtree, range.lower, range.upper] };
+    const scope = subtreeWhere(job.subtree, { withRoot: true });
+    const within = scope === null ? { sql: '', params: [] as unknown[] } : { sql: ` AND ${scope.sql}`, params: scope.params };
     let restored = 0;
     // Revived paths go in path order, so the next page starts past the last:
     // what it skipped already has a live row, and a write after the restore
@@ -7042,10 +7037,8 @@ export class SqliteVFS {
     }
     // Nothing an unreachable dst holds is an import's progress.
     if (target !== '' && !this.reachable(target)) return null;
-    const range = subtreeRange(target);
-    const last = range.upper === null
-      ? [...this.sql.exec('SELECT MAX(path) AS path FROM vfs_inodes')][0]
-      : [...this.sql.exec('SELECT MAX(path) AS path FROM vfs_inodes WHERE path > ? AND path < ?', range.lower, range.upper)][0];
+    const under = subtreeWhere(target)!;
+    const last = [...this.sql.exec(`SELECT MAX(path) AS path FROM vfs_inodes WHERE ${under.sql}`, ...under.params)][0];
     if (last?.path !== null && last?.path !== undefined) {
       const path = String(last.path);
       return exportCursor(target === '' ? path : path.slice(target.length + 1));
@@ -7859,9 +7852,9 @@ export class SqliteVFS {
 
   /** Hashes of cold chunks the history rows covering `g` under `root` reference. */
   private coldChunksAt(g: number, root: string, limit: number): Uint8Array[] {
-    const range = subtreeRange(root);
-    const within = root === '' ? '' : ' AND (h.path = ? OR (h.path > ? AND h.path < ?))';
-    const bounds = root === '' ? [] : [root, range.lower, range.upper];
+    const scope = subtreeWhere(root, { column: 'h.path', withRoot: true });
+    const within = scope === null ? '' : ` AND ${scope.sql}`;
+    const bounds = scope?.params ?? [];
     return [...this.sql.exec(
       `SELECT c.hash FROM vfs_chunks c WHERE c.state = ${CHUNK_COLD} AND c.id IN (
          SELECT h.chunk_id FROM vfs_inode_history h WHERE h.chunk_id IS NOT NULL AND h.gen_from <= ? AND ? < h.gen_to${within}
@@ -10405,23 +10398,17 @@ export class SqliteVFS {
    * 19,429-file tree, on the object's only thread.
    *
    * The subtree is held whole, so only callers that commit it whole use this:
-   * a batch's deletions and a rename. A removal pages (subtreeDescending).
+   * a batch's deletions and a rename. A removal pages (subtree, descending).
    */
   private collectSubtreeInodes(roots: readonly string[]): INode[] {
     if (roots.length === 0) return [];
     const collected: INode[] = [];
     const visited = new Set<string>();
     for (const root of roots) {
-      const range = subtreeRange(root);
+      const under = subtreeWhere(root)!;
       const rows = [
         ...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path = ?`, root),
-        ...(range.upper === null
-          ? this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?`, range.lower)
-          : this.sql.exec(
-            `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ? AND path < ?`,
-            range.lower,
-            range.upper,
-          )),
+        ...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE ${under.sql}`, ...under.params),
       ];
       for (const row of rows) {
         const path = String(row.path);
@@ -10734,6 +10721,34 @@ function pathsOverlap(left: string, right: string): boolean {
  */
 function subtreeRange(root: string): { lower: string; upper: string | null } {
   return root === '' ? { lower: '', upper: null } : { lower: `${root}/`, upper: `${root}0` };
+}
+
+/** `items`, then `last`. */
+function* followedBy<T>(items: Iterable<T>, last: T): Generator<T> {
+  yield* items;
+  yield last;
+}
+
+/**
+ * subtreeRange as an SQL condition on `column`, with its parameters: the one
+ * spelling of it. The paths strictly under `root`, past `after` (a keyset
+ * cursor) and below `below` (a descending one) when given; `withRoot` takes
+ * `root` too, and under the empty root, which holds every path, is no
+ * condition at all (null).
+ */
+function subtreeWhere(
+  root: string,
+  options: { column?: string; after?: string; below?: string | null; withRoot?: boolean } = {},
+): { sql: string; params: string[] } | null {
+  if (options.withRoot && root === '') return null;
+  const column = options.column ?? 'path';
+  const range = subtreeRange(root);
+  const after = options.after ?? range.lower;
+  const below = options.below === undefined ? range.upper : options.below;
+  const under = below === null
+    ? { sql: `${column} > ?`, params: [after] }
+    : { sql: `${column} > ? AND ${column} < ?`, params: [after, below] };
+  return options.withRoot ? { sql: `(${column} = ? OR (${under.sql}))`, params: [root, ...under.params] } : under;
 }
 
 /**
