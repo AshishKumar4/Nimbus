@@ -242,6 +242,13 @@ export function processHost(opts) {
         return ((exit.exitCode ?? 0) & 0xff) << 8;
     };
     const imports = {
+        /** getuid(2) and getgid(2): the credential the session runs the guest as (uid, gid as u32). */
+        ids(outPtr) {
+            const cred = opts.cred();
+            view().setUint32(outPtr, cred?.uid ?? 0, true);
+            view().setUint32(outPtr + 4, cred?.gid ?? 0, true);
+            return E.SUCCESS;
+        },
         pipe(fdsPtr) {
             const pipe = newPipe();
             const read = opts.allocateFd();

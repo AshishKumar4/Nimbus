@@ -93,6 +93,11 @@ export interface ProcessHostOptions {
     inbound(): void;
     /** The ledger's news protocol, where the session speaks it. */
     news: ChildNews | null;
+    /** The credential the guest runs as; null where it has none (a guest with no session). */
+    cred(): {
+        uid: number;
+        gid: number;
+    } | null;
 }
 /** What a poll of a pipe end finds: bytes waiting (or room), whether the other end is gone; null once it gave up. */
 export interface PipeReadiness {
