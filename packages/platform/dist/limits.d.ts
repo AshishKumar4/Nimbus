@@ -110,6 +110,7 @@ export declare const FACET_OWN_WRITE_MEMORY_BYTES: number;
 export declare const WASI_RESIDENT_STORE_BYTES: number;
 export declare const RESIDENT_PAGE_BYTES: number;
 export declare const RESIDENT_PAGE_CACHE_BYTES: number;
+export declare const RESIDENT_PAGE_CACHE_FREE_SHARE = 0.25;
 export declare const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES: number;
 export declare const SUPERVISOR_READ_RESERVE_BYTES: number;
 export declare const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES: number;

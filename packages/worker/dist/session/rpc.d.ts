@@ -211,6 +211,7 @@ export type FsAcquiredAnswer = {
  */
 export declare function _rpcFsStorageGrant(self: RpcHost, facet: string, bytes: number, databaseSize: number, pid?: number): Promise<{
     granted: number;
+    available?: number;
 }>;
 /** What a process passes to fsAcquire: the cursor its resident set is at. */
 export type FsAcquireArgs = z.infer<typeof FsAcquireArgsSchema>;

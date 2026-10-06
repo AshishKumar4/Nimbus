@@ -180,7 +180,7 @@
  * \`__residentSynchronizeFromSupervisor\`.
  */
 import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYTES, } from '@nimbus-sh/core/constants.js';
-import { FACET_OWN_WRITE_MEMORY_BYTES, RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES } from '@nimbus-sh/platform/limits.js';
+import { FACET_OWN_WRITE_MEMORY_BYTES, RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE, } from '@nimbus-sh/platform/limits.js';
 import { RESIDENT_CHUNK_BYTES } from './facet-resident-limits.js';
 /**
  * Rows written before the materialiser yields.
@@ -360,6 +360,7 @@ function __residentAskGrant(bytes) {
       const answer = await supervisor.fsStorageGrant(__residentFacet, want, __residentDbBytes());
       const granted = Number(answer && answer.granted) || 0;
       __residentCap += granted;
+      if (answer && typeof answer.available === "number") __residentAvailable = answer.available;
       if (answer && typeof answer.cap === "number") __residentCap = Math.max(__residentCap, answer.cap);
     } catch {}
   })().finally(() => { __residentGrantAsk = null; });
@@ -369,17 +370,26 @@ function __residentAskGrant(bytes) {
 /**
  * Pages of a file too big to hold whole, each held at the revision it was
  * read at, so a rewritten file's pages are never another revision's. Bound
- * by RESIDENT_PAGE_CACHE_BYTES and by half the store's own cap, least
+ * by RESIDENT_PAGE_CACHE_BYTES, and by half a heap's budget or a share of
+ * the session's free storage (RESIDENT_PAGE_CACHE_FREE_SHARE), least
  * recently used out first; what does not fit is read through the session.
  */
 const __RESIDENT_PAGE_BYTES = ${RESIDENT_PAGE_BYTES};
 const __RESIDENT_PAGE_CACHE_BYTES = ${RESIDENT_PAGE_CACHE_BYTES};
+const __RESIDENT_PAGE_CACHE_FREE_SHARE = ${RESIDENT_PAGE_CACHE_FREE_SHARE};
 let __residentPageClock = null;
 let __residentPageTotal = null;
+/** What the session's ledger said a user may still write, at its last answer (N18); null before one. */
+let __residentAvailable = null;
 
 function __residentPageBound() {
-  const half = __residentCap === null ? Infinity : Math.floor(__residentCap / 2);
-  return Math.min(__RESIDENT_PAGE_CACHE_BYTES, half);
+  // A one-shot's heap has a fixed budget, which the pages may have half of.
+  // A facet's SQLite grows by grants as it needs, and its pages are held to
+  // a share of what the ledger has left instead.
+  const half = __residentInHeap && __residentCap !== null ? Math.floor(__residentCap / 2) : Infinity;
+  const share = __residentAvailable === null ? Infinity
+    : Math.floor(__RESIDENT_PAGE_CACHE_FREE_SHARE * (__residentPageHeld() + __residentAvailable));
+  return Math.min(__RESIDENT_PAGE_CACHE_BYTES, half, share);
 }
 
 /** The bytes of the pages held, summed once per binding. */
@@ -476,12 +486,16 @@ async function __residentRoomForPushed(result) {
 async function __residentReportSize() {
   const supervisor = __residentSupervisor;
   if (__residentCap === null || __residentFacet === null || !supervisor || typeof supervisor.fsStorageGrant !== "function") return;
-  try { await supervisor.fsStorageGrant(__residentFacet, 0, __residentDbBytes()); } catch {}
+  try {
+    const answer = await supervisor.fsStorageGrant(__residentFacet, 0, __residentDbBytes());
+    if (answer && typeof answer.available === "number") __residentAvailable = answer.available;
+  } catch {}
 }
 
 /** The allowance this launch was admitted for (the fabric's startArgs.storage). */
 function __residentSetStorage(storage, supervisor) {
   __residentSupervisor = supervisor || null;
+  __residentAvailable = storage && typeof storage.available === "number" ? storage.available : null;
   if (!storage || typeof storage.facet !== "string" || typeof storage.grant !== "number") return;
   __residentFacet = storage.facet;
   __residentCap = __residentDbBytes() + storage.grant;

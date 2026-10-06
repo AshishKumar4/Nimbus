@@ -218,6 +218,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     /** N18: `bytes` more for this process's facet store, reporting what it measures. */
     fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{
         granted: number;
+        available?: number;
     }>;
     fsList(after?: string | null, limit?: number | null): Promise<VfsListPage>;
     /**
