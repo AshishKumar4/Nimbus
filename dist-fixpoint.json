@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "2edb1c5e22cdbf2d37339de663321185fb86bccf545d8f8db67374e4285de5e4",
+  "fingerprint": "65fbaa939c85b88b20cf6e367bc15f98007aa0816abba1e38af542a6a3f2becc",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2345,7 +2345,7 @@
     "packages/worker/scripts/resolve-package-dir.mjs": "c4b7f84d185c498e4b9279d1556c4ef6c922856abda8a3a3c5d632bcb2977e95",
     "packages/worker/scripts/rolldown-facet/entry.mjs": "3696ed018a524682b2eb13d0b6244ff662b209073ae2e3b9c094ca3ff4337ac6",
     "packages/worker/scripts/rolldown-facet/shims.mjs": "cc790a0a7af7360f198b301b4f2d8e42848edf1788e9ccbd62335dbd0d41de9e",
-    "packages/worker/scripts/runtime-specs.mjs": "74a899abc1d01bfd79e2863ce8bae0e338534d6dfa1fc2f7c7d62a383ca5118e",
+    "packages/worker/scripts/runtime-specs.mjs": "a2968319a9175253ae60186ee14980c8fcb4be0c900bf352cda8a3d3016b711e",
     "packages/worker/src/_shared/preview-host.ts": "839c43ed65a5e903052df0452a60b0fddf018f2aeb4fac09097c9642632a481d",
     "packages/worker/src/_shared/preview-isolation.ts": "0705d54ac7e95fe006113b097067432fc938cfb2e35ad8c8c0a3a2afbbb2e091",
     "packages/worker/src/_shared/session-id.ts": "878cea1112a7c472081ccdab4889632e20449e334ce4fd295c67bfa4ef88e4f3",
