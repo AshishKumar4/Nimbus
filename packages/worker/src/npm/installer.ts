@@ -38,7 +38,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
-  computeHoistPlan, hoistPlacements,
+  hoistPlacements,
   type ResolvedPackage, type HoistPlan, type FetchFn, type PackagePlacement,
 } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
@@ -409,7 +409,7 @@ export class NpmInstaller {
     // ── Phase 2: Hoist ────────────────────────────────────────────────
     phaseStart = Date.now();
     setInstallPhase('hoist');
-    const hoistPlan = computeHoistPlan(resolved, nested);
+    const hoistPlan: HoistPlan = { root: resolved, nested };
     phases['hoist'] = Date.now() - phaseStart;
 
     // ── Prune ────────────────────────────────────────────────────────

@@ -46,19 +46,6 @@ export interface PackagePlacement {
   pkg: ResolvedPackage;
 }
 
-
-
-/** The walk's placement decisions carried forward: first version per name at root, the rest nested. */
-export function computeHoistPlan(
-  resolved: Map<string, ResolvedPackage>,
-  nested: Map<string, ResolvedPackage> = new Map(),
-): HoistPlan {
-  return {
-    root: new Map(resolved),
-    nested: new Map(nested),
-  };
-}
-
 /** Every placement in the plan, root first. */
 export function hoistPlacements(plan: HoistPlan): PackagePlacement[] {
   const out: PackagePlacement[] = [];
