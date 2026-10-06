@@ -11,7 +11,7 @@
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostSqlite } from './lib/host-sqlite.mjs';
@@ -101,6 +101,27 @@ try {
     git: [['tag', '-a', 'v1', '-m', 'one'], ['describe', '--tags'], ['reset', '-q', '--hard', 'HEAD~1'], ['rev-parse', 'HEAD', 'HEAD^{tree}', 'v1^{commit}'], ['status', '--porcelain'], ['ls-files', '-s']],
   });
   await step('errors', { git: [['show', 'no-such-ref'], ['switch', 'no-such-branch']] });
+
+  // Output that is not UTF-8, byte for byte: a binary blob and a diff of a Latin-1 file.
+  const binary = Uint8Array.from({ length: 4096 }, (_, i) => (i * 37 + 11) & 0xff);
+  const latin1 = Buffer.from('caf\xe9 cr\xe8me\n', 'latin1');
+  // Through the workspace that runs the commands: another instance over the same SQLite keeps its own content cache.
+  const kernelFs = ws.vfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 });
+  writeFileSync(join(hostDir, 'repo/blob.bin'), binary);
+  writeFileSync(join(hostDir, 'repo/latin1.txt'), latin1);
+  kernelFs.writeFile('home/user/repo/blob.bin', binary);
+  kernelFs.writeFile('home/user/repo/latin1.txt', latin1);
+  await step('binary and latin-1', { git: [['add', 'blob.bin', 'latin1.txt'], ['commit', '-q', '-m', 'bytes']] });
+  writeFileSync(join(hostDir, 'repo/latin1.txt'), Buffer.from('caf\xe9 br\xfbl\xe9e\n', 'latin1'));
+  kernelFs.writeFile('home/user/repo/latin1.txt', Buffer.from('caf\xe9 br\xfbl\xe9e\n', 'latin1'));
+  for (const [label, args] of [['cat-file of a binary blob', ['cat-file', 'blob', 'HEAD:blob.bin']], ['diff of a Latin-1 file', ['diff']]]) {
+    const expected = execFileSync('git', args, { cwd: join(hostDir, 'repo'), env: hostEnv });
+    const got = await ws.exec(`cd repo && TZ=UTC git ${args.join(' ')} > /home/user/out.bin`);
+    assert.equal(got.exitCode, 0, got.stderr);
+    const printed = Buffer.from(kernelFs.readFile('home/user/out.bin'));
+    assert.ok(printed.equals(expected), `${label}: the bytes git printed\n  git     ${JSON.stringify(expected.toString('latin1').slice(0, 400))}\n  session ${JSON.stringify(printed.toString('latin1').slice(0, 400))}`);
+  }
+  steps.push('bytes');
 } finally {
   rmSync(hostDir, { recursive: true, force: true });
   await host.dispose?.();

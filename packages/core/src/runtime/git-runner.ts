@@ -12,7 +12,8 @@
  * What git does without a child process works as it does anywhere. What needs
  * one (a pager, an editor, hooks, the transports, `stash`, a real merge) fails
  * at the spawn with ENOSYS until the process ABI lands; git says which.
- * Standard input reads as empty.
+ * Standard input reads as empty. Output is passed on byte for byte (git's
+ * output is not always UTF-8: cat-file, archive, a diff of a Latin-1 file).
  *
  * The image is read once per session, uncached (3.7 MB of runtime blob that
  * would otherwise displace the user's working set); facets are opened per
@@ -22,7 +23,7 @@
 
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView } from './process-files.js';
-import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
+import type { Command, CommandContext, CommandOutputStream } from '../substrate/lifo/commands/types.js';
 import type { FacetBindings, FacetHost } from './facet-host.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, type NimbusFilesystemAuthority } from './os-contracts.js';
 import type { WasiCred } from './wasi/types.js';
@@ -103,8 +104,8 @@ export function makeGitRunnerFactory(deps: {
         ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
         return 1;
       }
-      if (result.stdout) ctx.stdout.write(result.stdout);
-      if (result.stderr) ctx.stderr.write(result.stderr);
+      await writeOut(ctx.stdout, result.stdout);
+      await writeOut(ctx.stderr, result.stderr);
       if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') ctx.stderr.write(`[wasi-fs] git ${JSON.stringify(result.fsStats ?? null)}\n`);
       if (result.error) {
         ctx.stderr.write(`${binName}: ${result.error}\n`);
@@ -126,8 +127,8 @@ interface GitFacetArgs {
 
 interface GitFacetResult {
   exitCode: number;
-  stdout: string;
-  stderr: string;
+  stdout: Uint8Array;
+  stderr: Uint8Array;
   error?: string;
   /** git's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
   fsStats?: ResidentFilesystemStats | null;
@@ -139,9 +140,16 @@ async function gitFacetCall(args: GitFacetArgs, facetEnv: FacetBindings): Promis
   const gitMod = modules?.['git.wasm'];
   const run = Reflect.get(globalThis, '__gitRun') as ((a: unknown) => Promise<GitFacetResult>) | undefined;
   if (!gitMod || typeof run !== 'function') {
-    return { exitCode: 127, stdout: '', stderr: '', error: 'git-runner: the facet has no git image or no __gitRun' };
+    return { exitCode: 127, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git-runner: the facet has no git image or no __gitRun' };
   }
   return await run({ ...args, gitMod, supervisor: facetEnv?.SUPERVISOR });
+}
+
+/** Bytes to a sink that takes them as they are, else as text decoded once, whole. */
+async function writeOut(sink: CommandOutputStream, bytes: Uint8Array): Promise<void> {
+  if (bytes.byteLength === 0) return;
+  if (sink.writeBytes) await sink.writeBytes(bytes);
+  else await sink.write(new TextDecoder().decode(bytes));
 }
 
 function errorMessage(error: unknown): string {
@@ -155,6 +163,12 @@ const GIT_RUNNER_PREAMBLE_TAIL = `
 globalThis.__gitRun = async function __gitRun(args) {
   const stdout = [];
   const stderr = [];
+  const joined = (parts) => {
+    const out = new Uint8Array(parts.reduce((n, p) => n + p.byteLength, 0));
+    let at = 0;
+    for (const p of parts) { out.set(p, at); at += p.byteLength; }
+    return out;
+  };
   // The session root at '/', every path git is given absolute.
   __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: args.cred });
   // After initFS, which drops any supervisor a pooled isolate still held.
@@ -166,22 +180,22 @@ globalThis.__gitRun = async function __gitRun(args) {
     argv: args.argv,
     env: args.env,
     getMemory: () => memory,
-    stdoutWrite: (s) => { stdout.push(s); },
-    stderrWrite: (s) => { stderr.push(s); },
+    stdoutBytes: (b) => { stdout.push(b); },
+    stderrBytes: (b) => { stderr.push(b); },
   });
   let instance;
   try {
     const r = await WebAssembly.instantiate(args.gitMod, { ${WASI_ABI_NAMESPACE.preview1}: wasi.wasiImport });
     instance = r instanceof WebAssembly.Instance ? r : r.instance;
   } catch (e) {
-    return { exitCode: 1, stdout: '', stderr: '', error: 'git.wasm instantiate failed: ' + (e && e.message) };
+    return { exitCode: 1, stdout: new Uint8Array(0), stderr: new Uint8Array(0), error: 'git.wasm instantiate failed: ' + (e && e.message) };
   }
   memory = instance.exports.memory;
   const run = await __wasiRunStartAsync(instance, { memory });
   return {
     exitCode: run.exitCode,
-    stdout: stdout.join(''),
-    stderr: stderr.join(''),
+    stdout: joined(stdout),
+    stderr: joined(stderr),
     error: run.error,
     fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
   };
