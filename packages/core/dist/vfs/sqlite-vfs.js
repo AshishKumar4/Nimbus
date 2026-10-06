@@ -47,7 +47,6 @@ export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
-import { deflateChunk, inflateChunk } from './chunk-codec.js';
 import { CRED_KERNEL, sameCred, } from '../runtime/os-contracts.js';
 /**
  * Schema version of the content store. 3: `/` is inode 1 and the allocator
@@ -160,15 +159,6 @@ const CHUNK_COLD = 1;
  * (pendingChunkError), never bytes.
  */
 const CHUNK_PENDING = 2;
-/**
- * Bytes in `data`, deflated (chunk-codec.ts); `size` is the bytes'. A state
- * of its own rather than a codec beside CHUNK_LOCAL: every release before it
- * reads `data` only at CHUNK_LOCAL and throws at any other state, so code
- * rolled back to one fails on a deflated chunk instead of returning it.
- */
-const CHUNK_DEFLATED = 3;
-/** SQL: the states whose bytes are in `data`. */
-const CHUNK_HELD = `(${CHUNK_LOCAL}, ${CHUNK_DEFLATED})`;
 /** SQL (over vfs_chunks AS c): no live row, live manifest or staging content names c. */
 const LIVE_CHUNK_UNREFERENCED = `
   AND NOT EXISTS (SELECT 1 FROM vfs_inodes WHERE chunk_id = c.id)
@@ -3343,6 +3333,7 @@ export class SqliteVFS {
             out.push({ off: Number(row.off), len: Number(row.len), chunkId: Number(row.chunk_id) });
         return out;
     }
+    /** One chunk's bytes, through the LRU when `cached`. */
     /**
      * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
      * statement, by id; a chunk not stored here (cold, pending) is
@@ -3352,30 +3343,13 @@ export class SqliteVFS {
     loadChunks(ids, path) {
         const out = new Map();
         this._sqlReads++;
-        for (const row of this.sql.exec(`SELECT id, size, data, state FROM vfs_chunks WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)) {
-            if (!chunkHeld(Number(row.state)))
+        for (const row of this.sql.exec(`SELECT id, data, state FROM vfs_chunks WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)) {
+            if (Number(row.state) !== CHUNK_LOCAL)
                 throw unreadableChunkError(Number(row.state), path);
-            out.set(Number(row.id), this.heldChunkBytes(row, path));
+            out.set(Number(row.id), this.blobToUint8Array(row.data));
         }
         return out;
     }
-    /**
-     * The one decode point: the bytes of a chunk row whose state holds them
-     * (chunkHeld), from its `size`, `data` and `state`. EIO for `what` when a
-     * deflated row does not inflate to its size.
-     */
-    heldChunkBytes(row, what) {
-        const data = this.blobToUint8Array(row.data);
-        if (Number(row.state) === CHUNK_LOCAL)
-            return data;
-        try {
-            return inflateChunk(data, Number(row.size));
-        }
-        catch (error) {
-            throw vfsError('EIO', what, `a stored chunk is corrupt: ${error.message}`);
-        }
-    }
-    /** One chunk's bytes, through the LRU when `cached`. */
     readChunk(chunkId, cached, path) {
         if (cached) {
             const hit = this.cacheGet(chunkId);
@@ -6154,7 +6128,7 @@ export class SqliteVFS {
         const present = new Set();
         for (let i = 0; i < hashes.length; i += KEYS_PER_SQL_EXEC) {
             const batch = hashes.slice(i, i + KEYS_PER_SQL_EXEC);
-            for (const row of this.sql.exec(`SELECT hash FROM vfs_chunks WHERE state IN ${CHUNK_HELD} AND hash IN (${batch.map(() => '?').join(',')})`, ...batch.map(unhex)))
+            for (const row of this.sql.exec(`SELECT hash FROM vfs_chunks WHERE state = ${CHUNK_LOCAL} AND hash IN (${batch.map(() => '?').join(',')})`, ...batch.map(unhex)))
                 present.add(hex(this.blobToUint8Array(row.hash)));
         }
         return hashes.filter((hash) => !present.has(hash));
@@ -6175,11 +6149,11 @@ export class SqliteVFS {
             const row = [...this.sql.exec('SELECT size, data, state FROM vfs_chunks WHERE hash = ?', unhex(hash))][0];
             if (!row)
                 throw vfsError('ENOENT', `chunk ${hash}`);
-            if (!chunkHeld(Number(row.state)))
+            if (Number(row.state) !== CHUNK_LOCAL)
                 throw coldChunkError(`chunk ${hash}`);
             if (chunks.length > 0 && bytes + Number(row.size) > maxBytes)
                 break;
-            const data = this.heldChunkBytes(row, `chunk ${hash}`);
+            const data = this.blobToUint8Array(row.data);
             chunks.push({ hash, data });
             bytes += data.byteLength;
             index++;
@@ -6653,8 +6627,7 @@ export class SqliteVFS {
             const rows = group;
             this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
                 for (const row of rows) {
-                    const kept = storedChunk(row.data);
-                    const done = [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ? WHERE hash = ? AND state = ${CHUNK_PENDING} RETURNING 1`, kept.data, kept.state, unhex(row.hash))].length > 0;
+                    const done = [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE hash = ? AND state = ${CHUNK_PENDING} RETURNING 1`, row.data, unhex(row.hash))].length > 0;
                     if (done)
                         stored.push(row.hash);
                 }
@@ -6945,8 +6918,8 @@ export class SqliteVFS {
         // A window of chunk ids after the cursor; candidates in it up to maxChunks.
         const window = [...this.sql.exec('SELECT MAX(id) AS id FROM (SELECT id FROM vfs_chunks WHERE id > ? ORDER BY id LIMIT ?)', this.tierCursor, TIER_SCAN_ROWS)][0];
         const windowEnd = window?.id === null || window?.id === undefined ? null : Number(window.id);
-        const candidates = windowEnd === null ? [] : [...this.sql.exec(`SELECT c.id, c.hash, c.size, c.data, c.state FROM vfs_chunks c
-       WHERE c.id > ? AND c.id <= ? AND c.state IN ${CHUNK_HELD}
+        const candidates = windowEnd === null ? [] : [...this.sql.exec(`SELECT c.id, c.hash, c.data FROM vfs_chunks c
+       WHERE c.id > ? AND c.id <= ? AND c.state = ${CHUNK_LOCAL}
          AND (EXISTS (SELECT 1 FROM vfs_inode_history WHERE chunk_id = c.id)
            OR EXISTS (SELECT 1 FROM vfs_content_chunks cc JOIN vfs_inode_history h ON h.content_id = cc.content_id WHERE cc.chunk_id = c.id))
          ${LIVE_CHUNK_UNREFERENCED}${hotHistory}${pinnedContent}
@@ -6958,8 +6931,7 @@ export class SqliteVFS {
             if (pinned.has(Number(row.id)))
                 continue;
             const hash = this.blobToUint8Array(row.hash);
-            // The cold store holds a chunk's bytes, as its name says.
-            const data = this.heldChunkBytes(row, `chunk ${hex(hash)}`);
+            const data = this.blobToUint8Array(row.data);
             await store.put(hex(hash), data);
             uploaded.push({ id: Number(row.id), hash });
             bytes += data.byteLength;
@@ -6977,7 +6949,7 @@ export class SqliteVFS {
                   OR h.content_id IN (SELECT content_id FROM vfs_content_chunks WHERE chunk_id = c.id))
                 AND (${hotNow.map(() => '(h.gen_from <= ? AND ? < h.gen_to)').join(' OR ')}))`;
                 tiered += [...this.sql.exec(`UPDATE vfs_chunks AS c SET data = x'', state = ${CHUNK_COLD}
-             WHERE id IN (${batch.map(() => '?').join(',')}) AND state IN ${CHUNK_HELD}${LIVE_CHUNK_UNREFERENCED}${hotClause}
+             WHERE id IN (${batch.map(() => '?').join(',')}) AND state = ${CHUNK_LOCAL}${LIVE_CHUNK_UNREFERENCED}${hotClause}
              RETURNING id`, ...batch.map((entry) => entry.id), ...hotNow.flatMap((g) => [g, g]))].length;
             });
             for (const entry of batch)
@@ -7062,8 +7034,7 @@ export class SqliteVFS {
             const rows = group;
             this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: groupBytes, logicalRows: rows.length, sqlExecs: rows.length, affectedPaths: 0 }), { source: 'content-stage', limitMode: 'bounded' }, () => {
                 for (const row of rows) {
-                    const stored = storedChunk(row.data);
-                    hydrated += [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ? WHERE hash = ? AND state = ${CHUNK_COLD} RETURNING 1`, stored.data, stored.state, row.hash)].length;
+                    hydrated += [...this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE hash = ? AND state = ${CHUNK_COLD} RETURNING 1`, row.data, row.hash)].length;
                 }
             });
             for (const row of rows)
@@ -8547,7 +8518,7 @@ export class SqliteVFS {
             for (const row of this.sql.exec(`SELECT id, hash, state FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`, ...batch.map((key) => lookup.get(key)))) {
                 const key = hashKey(this.blobToUint8Array(row.hash));
                 chunkIds.set(key, Number(row.id));
-                if (!chunkHeld(Number(row.state)))
+                if (Number(row.state) !== CHUNK_LOCAL)
                     remote.add(key);
                 if (Number(row.state) === CHUNK_PENDING)
                     pending.add(key);
@@ -8564,8 +8535,7 @@ export class SqliteVFS {
             const piece = wanted.get(key);
             if (piece === undefined)
                 continue;
-            const stored = storedChunk(piece.data);
-            this.sql.exec('UPDATE vfs_chunks SET data = ?, state = ? WHERE id = ?', stored.data, stored.state, chunkIds.get(key));
+            this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, piece.data, chunkIds.get(key));
         }
         // An unshared chunk is rewritten in place unless its new bytes
         // already exist. A piece that deduplicated onto its old bytes must
@@ -8577,8 +8547,7 @@ export class SqliteVFS {
             for (const [other, id] of chunkIds)
                 if (id === rewrite.chunkId)
                     chunkIds.delete(other);
-            const stored = storedChunk(rewrite.piece.data);
-            this.sql.exec('UPDATE vfs_chunks SET hash = ?, size = ?, data = ?, state = ? WHERE id = ?', rewrite.piece.hash, rewrite.piece.data.byteLength, stored.data, stored.state, rewrite.chunkId);
+            this.sql.exec('UPDATE vfs_chunks SET hash = ?, size = ?, data = ? WHERE id = ?', rewrite.piece.hash, rewrite.piece.data.byteLength, rewrite.piece.data, rewrite.chunkId);
             chunkIds.set(key, rewrite.chunkId);
             x.rewritten.push(rewrite.chunkId);
         }
@@ -8588,7 +8557,7 @@ export class SqliteVFS {
                 continue;
             const id = x.next.chunk++;
             chunkIds.set(key, id);
-            inserts.push({ id, piece });
+            inserts.push(id, piece.hash, piece.data);
         }
         this.insertChunkRows(inserts);
         return chunkIds;
@@ -8753,39 +8722,22 @@ export class SqliteVFS {
         this.insertRows('vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)', INODE_ROW_COLUMNS, rows, 'INSERT OR REPLACE');
         this.touchDirectoryRows(touched, x.committedAt, x.gen);
     }
+    /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
-     * New chunk rows, each stored as storedChunk has it. A row stored as its
-     * bytes binds three parameters (size is length(data)), a deflated one
-     * four, its state a literal: 25-33 rows a statement. The statement count
-     * is what an unshared large write pays per transaction (measured in
-     * workerd, where it dominated).
+     * Chunk rows as (id, hash, data) triples; size is length(data), so a row
+     * binds three parameters, not four: 33 rows a statement instead of 25.
+     * The statement count is what an unshared large write pays per
+     * transaction (measured in workerd, where it dominated).
      */
-    insertChunkRows(chunks) {
-        let params = [];
-        let rows = [];
-        const flush = () => {
-            if (rows.length === 0)
-                return;
-            this.sql.exec(`INSERT INTO vfs_chunks (id, hash, size, data, state) VALUES ${rows.join(',')}`, ...params);
-            params = [];
-            rows = [];
-        };
-        for (const { id, piece } of chunks) {
-            const stored = storedChunk(piece.data);
-            const raw = stored.state === CHUNK_LOCAL;
-            if (params.length + (raw ? 3 : 4) > SQL_MAX_BOUND_PARAMETERS)
-                flush();
-            const n = params.length;
-            if (raw) {
-                params.push(id, piece.hash, stored.data);
-                rows.push(`(?${n + 1}, ?${n + 2}, length(?${n + 3}), ?${n + 3}, ${CHUNK_LOCAL})`);
-            }
-            else {
-                params.push(id, piece.hash, piece.data.byteLength, stored.data);
-                rows.push(`(?${n + 1}, ?${n + 2}, ?${n + 3}, ?${n + 4}, ${CHUNK_DEFLATED})`);
-            }
+    insertChunkRows(values) {
+        const perExec = Math.floor(SQL_MAX_BOUND_PARAMETERS / 3) * 3;
+        for (let i = 0; i < values.length; i += perExec) {
+            const batch = values.slice(i, i + perExec);
+            const rows = [];
+            for (let k = 0; k < batch.length; k += 3)
+                rows.push(`(?${k + 1}, ?${k + 2}, length(?${k + 3}), ?${k + 3})`);
+            this.sql.exec(`INSERT INTO vfs_chunks (id, hash, size, data) VALUES ${rows.join(',')}`, ...batch);
         }
-        flush();
     }
     /**
      * Manifest rows as (content_id, off, len, chunk_id) quadruples, a run of
@@ -8820,7 +8772,6 @@ export class SqliteVFS {
         }
         flush();
     }
-    /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     insertRows(target, columns, values, verb = 'INSERT') {
         const perExec = Math.floor(SQL_MAX_BOUND_PARAMETERS / columns) * columns;
         const row = `(${Array.from({ length: columns }, () => '?').join(',')})`;
@@ -9930,15 +9881,6 @@ function planIdReservation(plan) {
 /** Let the host settle storage writes between slices of a long job. */
 function yieldToStorage() {
     return new Promise((resolve) => setTimeout(resolve, 0));
-}
-/** Whether a vfs_chunks state has the chunk's bytes in `data` (CHUNK_HELD). */
-function chunkHeld(state) {
-    return state === CHUNK_LOCAL || state === CHUNK_DEFLATED;
-}
-/** The one encode point: a chunk's bytes as its row stores them, `data` and the state that says how. */
-function storedChunk(raw) {
-    const deflated = deflateChunk(raw);
-    return deflated === null ? { data: raw, state: CHUNK_LOCAL } : { data: deflated, state: CHUNK_DEFLATED };
 }
 /** Why a chunk that is not local cannot be read. */
 function unreadableChunkError(state, path) {
