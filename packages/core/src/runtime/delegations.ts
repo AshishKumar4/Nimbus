@@ -85,8 +85,18 @@ export interface DelegationsOptions {
 
 const NONE: ReadonlySet<string> = new Set();
 
+/** What the session's delegations did since it started (the diag route's). */
+export interface DelegationStats {
+  readonly held: number;
+  readonly grants: number;
+  readonly recalls: { readonly share: number; readonly revoke: number };
+  /** Holders revoked for not answering within the recall timeout. */
+  readonly timedOut: number;
+}
+
 export class Delegations {
   private readonly held = new Map<string, Held>();
+  private readonly counts = { grants: 0, share: 0, revoke: 0, timedOut: 0 };
   /** Each holder's leases. */
   private readonly byPid = new Map<number, Set<string>>();
   private readonly recallTimeoutMs: number;
@@ -123,6 +133,7 @@ export class Delegations {
       },
     };
     const lease = acquire(terms);
+    this.counts.grants++;
     const end = (): void => {
       if (this.held.get(lease.owner) !== held) return;
       this.forget(held!);
@@ -190,7 +201,17 @@ export class Delegations {
     return this.held.size;
   }
 
+  stats(): DelegationStats {
+    return {
+      held: this.held.size,
+      grants: this.counts.grants,
+      recalls: { share: this.counts.share, revoke: this.counts.revoke },
+      timedOut: this.counts.timedOut,
+    };
+  }
+
   private recall(held: Held, kind: RecallKind): Promise<void> {
+    this.counts[kind]++;
     let resolve!: () => void;
     const promise = new Promise<void>((settle) => { resolve = settle; });
     const timer = setTimeout(() => {
@@ -198,6 +219,7 @@ export class Delegations {
       // and the caller that recalled it goes on.
       held.pending = null;
       held.end();
+      this.counts.timedOut++;
       this.options.revoked?.({ pid: held.pid, root: held.root, kind, reason: `no answer to a ${kind} recall within ${this.recallTimeoutMs} ms` });
       resolve();
     }, this.recallTimeoutMs);
