@@ -70,8 +70,16 @@ export class SqliteFiles {
     get credentialed() {
         return this.view;
     }
-    as(cred) {
-        return new SqliteFiles(this.engine, this.engine.as(cred));
+    as(cred, actor) {
+        return new SqliteFiles(this.engine, this.engine.as(cred, actor === undefined ? undefined : { actor }));
+    }
+    /** Every mutation that lands on the database, through any view (SqliteVFS.observeWrites); paths absolute. */
+    observeWrites(observer) {
+        return this.engine.observeWrites((event) => observer({
+            ...event,
+            path: absolute(event.path),
+            ...(event.oldPath !== undefined ? { oldPath: absolute(event.oldPath) } : {}),
+        }));
     }
     /** `op`, its engine errors as Node's for `syscall` on `path` (and `dest`). */
     run(syscall, path, op, dest) {

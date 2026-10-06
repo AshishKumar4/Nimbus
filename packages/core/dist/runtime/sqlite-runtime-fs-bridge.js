@@ -358,7 +358,7 @@ export class SqliteRuntimeFsBridge {
     }
     /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
     owned(owner) {
-        return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner });
+        return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor });
     }
     appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes) {
         return called({ syscall: 'append', path }, () => {
@@ -490,7 +490,7 @@ export class SqliteRuntimeFsBridge {
                 this.vfs.truncate(p, 0);
             }
             const stat = this.vfs.stat(p);
-            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true });
+            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal);
             const handle = {
                 id: this.scope.nextId++,
                 path: p,
