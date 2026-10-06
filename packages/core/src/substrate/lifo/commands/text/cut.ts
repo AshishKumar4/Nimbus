@@ -194,7 +194,8 @@ const command: Command = async (ctx) => {
   for (const file of files.length > 0 ? files : [undefined]) {
     let carry: Uint8Array = new Uint8Array(0);
     try {
-      for await (const chunk of inputChunks(ctx, file)) {
+      // Streamed, a character device too: a pipe's reader can stop it (`cut -z -b1 /dev/zero | head`).
+      for await (const chunk of inputChunks(ctx, file, { slice: true })) {
         const data = carry.length === 0 ? chunk : new Uint8Array(carry.length + chunk.length);
         if (carry.length > 0) { data.set(carry); data.set(chunk, carry.length); }
         const out: Uint8Array[] = [];

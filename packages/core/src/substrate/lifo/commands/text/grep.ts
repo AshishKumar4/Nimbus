@@ -513,7 +513,8 @@ export async function runGrep(ctx: GrepContext): Promise<number> {
     if (!commandLine && !included(display)) return;
     if (commandLine && o.exclude.length > 0 && excluded(display, o.exclude)) return;
     try {
-      await searchSource({ chunks: inputChunks(ctx, path, { fileReadSize: BUFFER }), name: display });
+      // Streamed, a character device too: -q and -m stop reading (`grep -qz '^$' /dev/zero`).
+      await searchSource({ chunks: inputChunks(ctx, path, { fileReadSize: BUFFER, slice: true }), name: display });
     } catch (e) {
       if ((e as { code?: string })?.code === 'EPIPE') throw e;
       await errorMessage(`${display}: ${errorText(e)}`);
