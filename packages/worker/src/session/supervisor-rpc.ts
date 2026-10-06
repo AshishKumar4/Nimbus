@@ -466,7 +466,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * never mistaken for a complete listing.
    */
   /** N18: `bytes` more for this process's facet store, reporting what it measures. */
-  async fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{ granted: number }> {
+  async fsStorageGrant(facet: string, bytes: number, databaseSize: number): Promise<{ granted: number; available?: number }> {
     return this._call(this._fsOp('fsStorageGrant', [facet, bytes, databaseSize]));
   }
 

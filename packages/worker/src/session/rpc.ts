@@ -660,7 +660,7 @@ export async function _rpcFsStorageGrant(
   bytes: number,
   databaseSize: number,
   pid?: number,
-): Promise<{ granted: number }> {
+): Promise<{ granted: number; available?: number }> {
   const args = FsStorageGrantArgsSchema.parse({ facet, bytes, databaseSize });
   const owner = self.ctx !== undefined && pid !== undefined ? residentFacetOf(self.ctx, pid) : undefined;
   if (owner !== undefined && owner !== args.facet) {
@@ -670,12 +670,15 @@ export async function _rpcFsStorageGrant(
   if (ledger === undefined) return { granted: 0 };
   const recorded = ledger.view().facets[args.facet] ?? 0;
   if (args.databaseSize > recorded) ledger.report(args.facet, args.databaseSize);
-  if (args.bytes === 0) return { granted: 0 };
+  // What a user may still write, as df reports it: a store sizes what it
+  // only caches (its pages) by it.
+  const available = (): number => { const view = ledger.view(); return Math.max(0, view.limit - ledger.kernelReserve - view.used); };
+  if (args.bytes === 0) return { granted: 0, available: available() };
   try {
     ledger.fill(args.facet, args.bytes);
-    return { granted: args.bytes };
+    return { granted: args.bytes, available: available() };
   } catch (error) {
-    if (isVfsError(error, 'ENOSPC')) return { granted: 0 };
+    if (isVfsError(error, 'ENOSPC')) return { granted: 0, available: available() };
     throw error;
   }
 }

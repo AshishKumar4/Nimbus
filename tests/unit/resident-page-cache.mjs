@@ -9,8 +9,10 @@
  *     revision they were read at; a second read of them asks nothing;
  *   - a read at a revision the file has left is refused (null), and a page
  *     of another revision is never served for it;
- *   - the pages held never pass RESIDENT_PAGE_CACHE_BYTES nor half the
- *     store's cap, the least recently used out first;
+ *   - the pages held never pass RESIDENT_PAGE_CACHE_BYTES, half the store's
+ *     cap, nor RESIDENT_PAGE_CACHE_FREE_SHARE of what they hold plus what
+ *     the session's ledger says is still free, the least recently used out
+ *     first;
  *   - a store that starts again from nothing (a new lazy boot) holds no page;
  *   - a kept store (SQLite an earlier process left) resumes with its pages
  *     for the same credential in the same epoch, and starts from nothing for
@@ -20,7 +22,7 @@
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
-import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES } from '../../packages/platform/src/limits.ts';
+import { RESIDENT_PAGE_BYTES, RESIDENT_PAGE_CACHE_BYTES, RESIDENT_PAGE_CACHE_FREE_SHARE } from '../../packages/platform/src/limits.ts';
 
 const P = RESIDENT_PAGE_BYTES;
 const API = 'bindInMemory: __residentBindInMemory, bindTables: __residentBindTables, onSql: __residentTablesOnSql, bootLazy: __residentBootLazy, resume: __residentResumeLazy,'
@@ -119,6 +121,24 @@ for (const backing of ['heap', 'sqlite']) {
   assert.ok(store.pageHeld() <= 8 * P, `never past half the cap (${store.pageHeld()} bytes)`);
   assert.equal((await view.pages('home/user/big', 5, size, 0, 0)).fetched, 0, 'the page used last stayed');
   assert.equal((await view.pages('home/user/big', 5, size, 1, 1)).fetched, 1, 'the least recently used went first');
+}
+
+// A session nearly full: the ledger answers each grant with what is still
+// free, and the pages keep to their share of it.
+{
+  const store = freshStore();
+  store.bindTables(store.onSql(sqlShim()));
+  const size = 40 * P;
+  const { s } = session(size);
+  const free = 8 * P;
+  s.fsStorageGrant = async (_facet, want) => ({ granted: want, available: free });
+  store.setStorage({ facet: 'wasi-git-0', grant: 0 }, s);
+  await store.bootLazy(s);
+  const view = store.view(s, 1, USER);
+  for (let part = 0; part < 12; part++) await view.pages('home/user/big', 5, size, part, part);
+  const held = store.pageHeld();
+  assert.ok(held > 0, 'pages are held');
+  assert.ok(held <= RESIDENT_PAGE_CACHE_FREE_SHARE * (held + free), `within their share of what is free (${held} bytes held, ${free} free)`);
 }
 
 // A kept store: the next process resumes with what the last one read.
