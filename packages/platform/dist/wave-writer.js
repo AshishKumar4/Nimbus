@@ -20,9 +20,10 @@
  *
  * Lost transport: a wave whose call failed before the session answered
  * (classifyDoCall: a dropped connection, a replaced isolate, a storage
- * reset, or an object that shed it as overloaded) or stayed unanswered past
- * WAVE_ATTEMPT_DEADLINE_MS is sent again after a backoff, once the
- * abandoned attempt's stream is errored so it reads nothing more.
+ * reset, or an object that shed it as overloaded), or that nothing read or
+ * answered in time (WAVE_LOST_TRANSPORT_POLICY), is sent again after a
+ * backoff, at most WAVE_RETRY_BACKOFF_MS.length times, once the abandoned
+ * attempt's stream is errored so it reads nothing more.
  * Re-sending is safe: a wave is the same paths and bytes, replacing. A shed
  * wave never ran; the platform's advice is not to retry an overloaded
  * object, but these waves are few and backed off, and npm measured the
@@ -57,16 +58,26 @@ export const WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
 /** Buffered content bytes that close a wave. */
 export const WAVE_BYTES = 4 * 1024 * 1024;
 /**
- * An attempt unanswered this long is taken as dropped. Measured on a
- * throwaway (2026-09-28): an install shard held one writeBatchStream
- * unanswered for 160 s.
- */
-export const WAVE_ATTEMPT_DEADLINE_MS = 60_000;
-/**
  * Waits before each re-send of a wave whose transport was lost (±25%
  * jitter): ~42 s in all, to outlast a coordinator queue deep enough to shed.
  */
 export const WAVE_RETRY_BACKOFF_MS = [250, 1_000, 3_000, 6_000, 12_000, 20_000];
+/**
+ * When an attempt is taken as lost. Some SupervisorRPC → session calls
+ * never reach the session (SUPERVISOR_READ_HEDGE_AFTER_MS: 11 of 521 read
+ * batches, pending 110-560 s; a clone wave stopped at the transport's
+ * ~1 MiB window with the session holding no stream, credit or transaction
+ * for it; an install shard held one unanswered for 160 s). A wave read by
+ * nothing for `stallMs` before its stream ended, or unanswered
+ * `answerDeadlineMs` after, is sent again. Healthy, with 8 producers
+ * saturating one session (w7-bench, 2026-10-06): the longest gap between a
+ * wave's reads was 2.5 s and the slowest whole wave 5.3 s.
+ */
+export const WAVE_LOST_TRANSPORT_POLICY = {
+    backoffMs: WAVE_RETRY_BACKOFF_MS,
+    stallMs: 10_000,
+    answerDeadlineMs: 20_000,
+};
 export class WaveFailure extends Error {
     wave;
     constructor(wave, cause) {
@@ -569,36 +580,28 @@ export class WaveWriter {
      * comment), and answer with what the session answered.
      */
     async send(payload) {
-        const { backoffMs, attemptDeadlineMs } = this.options.retry
-            ?? { backoffMs: WAVE_RETRY_BACKOFF_MS, attemptDeadlineMs: WAVE_ATTEMPT_DEADLINE_MS };
+        const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry ?? WAVE_LOST_TRANSPORT_POLICY;
         for (let attempt = 0;; attempt++) {
-            const attemptStream = abortable(encodeWriteBatchStream(payload));
+            const attemptStream = abortable(encodeWriteBatchStream(payload), stallMs, answerDeadlineMs);
             const answer = this.options.supervisor.writeBatchStream(attemptStream.stream);
-            let deadline = null;
             try {
-                return await Promise.race([
-                    answer,
-                    new Promise((_, reject) => {
-                        deadline = setTimeout(() => reject(new Error(`writeBatchStream unanswered after ${attemptDeadlineMs} ms`)), attemptDeadlineMs);
-                    }),
-                ]);
+                return await Promise.race([answer, attemptStream.lost]);
             }
             catch (error) {
-                const unanswered = error instanceof Error && error.message.startsWith('writeBatchStream unanswered');
                 const kind = classifyDoCall(error);
-                const lost = unanswered || isRetryableDoCall(kind) || kind === 'overloaded';
+                const lost = error instanceof WaveLost || isRetryableDoCall(kind) || kind === 'overloaded';
                 if (!lost || (payload.streams?.length ?? 0) > 0 || attempt >= backoffMs.length)
                     throw error;
-                // The abandoned attempt can commit nothing more, and its late answer is dropped.
+                // The abandoned attempt can read nothing more, and its late answer is dropped.
                 attemptStream.abort(error);
                 answer.then(disposeRpcResource, () => { });
                 this.counters.retries++;
+                this.options.onResend?.({ attempt: attempt + 1, of: backoffMs.length, reason: error instanceof Error ? error.message : String(error) });
                 const base = backoffMs[attempt];
                 await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(base * (0.75 + Math.random() * 0.5)))));
             }
             finally {
-                if (deadline !== null)
-                    clearTimeout(deadline);
+                attemptStream.settle();
             }
         }
     }
@@ -642,10 +645,32 @@ export class WaveWriter {
         this.buffer(pin.path, { kind: 'file', mode: 0o644, bytes: pin.bytes.slice(), meta: undefined });
     }
 }
-/** A stream the writer can fail from its side: an abandoned attempt reads nothing more. */
-function abortable(stream) {
+/** An attempt the session never read or never answered: its call did not arrive, or its answer was lost. */
+class WaveLost extends Error {
+    constructor(message) {
+        super(message);
+        this.name = 'WaveLost';
+    }
+}
+/**
+ * One attempt's stream, watched from the writer's side: `lost` rejects when
+ * nothing has read it for `stallMs` before it ended, or no answer came
+ * `answerDeadlineMs` after it ended; `abort` errors it so the attempt reads
+ * nothing more.
+ */
+function abortable(stream, stallMs, answerDeadlineMs) {
     const reader = stream.getReader();
     let target = null;
+    let timer = null;
+    let declareLost = () => { };
+    const lost = new Promise((_, reject) => { declareLost = reject; });
+    lost.catch(() => { });
+    const watch = (ms, message) => {
+        if (timer !== null)
+            clearTimeout(timer);
+        timer = setTimeout(() => declareLost(new WaveLost(message)), ms);
+    };
+    watch(stallMs, `writeBatchStream stalled: nothing read it for ${stallMs} ms`);
     const source = {
         type: 'bytes',
         start(controller) {
@@ -653,10 +678,13 @@ function abortable(stream) {
         },
         async pull(controller) {
             const next = await reader.read();
-            if (next.done)
+            if (next.done) {
+                watch(answerDeadlineMs, `writeBatchStream unanswered ${answerDeadlineMs} ms after its stream ended`);
                 controller.close();
-            else
-                controller.enqueue(next.value);
+                return;
+            }
+            watch(stallMs, `writeBatchStream stalled: nothing read it for ${stallMs} ms`);
+            controller.enqueue(next.value);
         },
         cancel(reason) {
             return reader.cancel(reason);
@@ -664,12 +692,18 @@ function abortable(stream) {
     };
     return {
         stream: new ReadableStream(source, { highWaterMark: 0 }),
+        lost,
         abort(reason) {
             try {
                 target?.error(reason);
             }
             catch { /* already closed */ }
             reader.cancel(reason).catch(() => { });
+        },
+        settle() {
+            if (timer !== null)
+                clearTimeout(timer);
+            timer = null;
         },
     };
 }

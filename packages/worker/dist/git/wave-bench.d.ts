@@ -49,6 +49,8 @@ export interface WaveBenchWave {
     pulls: number;
     bytes: number;
     answeredAt: number;
+    /** The longest the transport went without pulling from this wave's stream. */
+    maxGapMs: number;
 }
 export interface WaveBenchProducer {
     /** Mean wall of a one-file wave, sent and published alone. */

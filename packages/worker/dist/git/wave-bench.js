@@ -24,16 +24,17 @@ const PRODUCER_SOURCE = WAVE_WRITER_PREAMBLE + `
 function observed(send, waves) {
   return {
     writeBatchStream(stream) {
-      const wave = { sentAt: Date.now(), firstPullAt: 0, lastPullAt: 0, pulls: 0, bytes: 0, answeredAt: 0 };
+      const wave = { sentAt: Date.now(), firstPullAt: 0, lastPullAt: 0, pulls: 0, bytes: 0, answeredAt: 0, maxGapMs: 0 };
       const reader = stream.getReader();
       const tapped = new ReadableStream({
         type: 'bytes',
         async pull(controller) {
           const pulledAt = Date.now();
           if (wave.firstPullAt === 0) wave.firstPullAt = pulledAt;
+          else wave.maxGapMs = Math.max(wave.maxGapMs, pulledAt - wave.lastPullAt);
+          wave.lastPullAt = pulledAt;
           const next = await reader.read();
           if (next.done) {
-            wave.lastPullAt = Date.now();
             controller.close();
             return;
           }

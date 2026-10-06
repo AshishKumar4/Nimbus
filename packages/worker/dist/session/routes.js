@@ -994,6 +994,51 @@ async function routeFetch(self, request) {
                 }
             });
             sql.exec('DROP TABLE nimbus_bench_tmp');
+            // The VFS's two row shapes for a new small file, alone, to price each
+            // B-tree a write touches: the chunk row with and without its unique
+            // hash index (a random key), and the inode row with and without its
+            // four secondary indexes (parent, gen, chunk, ino).
+            const chunkTable = (indexed) => {
+                sql.exec('DROP TABLE IF EXISTS nimbus_bench_chunks');
+                sql.exec('CREATE TABLE nimbus_bench_chunks (id INTEGER PRIMARY KEY, hash BLOB NOT NULL, size INTEGER NOT NULL, data BLOB NOT NULL)');
+                if (indexed)
+                    sql.exec('CREATE UNIQUE INDEX nimbus_bench_chunks_hash ON nimbus_bench_chunks(hash)');
+                for (let i = 0; i < body.files; i += body.perWave) {
+                    self.ctx.storage.transactionSync(() => {
+                        for (let j = i; j < Math.min(body.files, i + body.perWave); j++) {
+                            const hash = new Uint8Array(32);
+                            crypto.getRandomValues(hash);
+                            sql.exec('INSERT INTO nimbus_bench_chunks (id, hash, size, data) VALUES (?, ?, ?, ?)', j + 1, hash, body.size, new Uint8Array(body.size));
+                        }
+                    });
+                }
+                sql.exec('DROP TABLE nimbus_bench_chunks');
+            };
+            const inodeTable = (indexed) => {
+                sql.exec('DROP TABLE IF EXISTS nimbus_bench_inodes');
+                sql.exec(`CREATE TABLE nimbus_bench_inodes (path TEXT PRIMARY KEY, parent_path TEXT NOT NULL, kind INTEGER NOT NULL,
+            size INTEGER NOT NULL, atime INTEGER NOT NULL, mtime INTEGER NOT NULL, ctime INTEGER NOT NULL, mode INTEGER NOT NULL,
+            uid INTEGER NOT NULL, gid INTEGER NOT NULL, ino INTEGER NOT NULL, gen INTEGER NOT NULL, chunk_id INTEGER NULL) WITHOUT ROWID`);
+                if (indexed) {
+                    sql.exec('CREATE INDEX nimbus_bench_inodes_parent ON nimbus_bench_inodes(parent_path, kind)');
+                    sql.exec('CREATE INDEX nimbus_bench_inodes_gen ON nimbus_bench_inodes(gen)');
+                    sql.exec('CREATE INDEX nimbus_bench_inodes_chunk ON nimbus_bench_inodes(chunk_id) WHERE chunk_id IS NOT NULL');
+                    sql.exec('CREATE INDEX nimbus_bench_inodes_ino ON nimbus_bench_inodes(ino)');
+                }
+                for (let i = 0; i < body.files; i += body.perWave) {
+                    self.ctx.storage.transactionSync(() => {
+                        for (let j = i; j < Math.min(body.files, i + body.perWave); j++) {
+                            const parent = `home/user/repo/src/d${j % 64}`;
+                            sql.exec('INSERT INTO nimbus_bench_inodes VALUES (?, ?, 1, ?, 1, 1, 1, 420, 1000, 1000, ?, ?, ?)', `${parent}/file-${j}.ts`, parent, body.size, j + 2, 7, j + 1);
+                        }
+                    });
+                }
+                sql.exec('DROP TABLE nimbus_bench_inodes');
+            };
+            await phase('chunkRows', () => chunkTable(false));
+            await phase('chunkRowsHashIndexed', () => chunkTable(true));
+            await phase('inodeRows', () => inodeTable(false));
+            await phase('inodeRowsIndexed', () => inodeTable(true));
             const vfs = self.ensureSqliteFs().as(CRED_KERNEL);
             const root = `tmp/sql-bench-${Date.now()}`;
             vfs.mkdir(root, { recursive: true });
