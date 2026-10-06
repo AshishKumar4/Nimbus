@@ -85,7 +85,8 @@ export class PackObjectStore {
   async read(oid: string): Promise<StoredObject | null> {
     const found = await this.locate(oid);
     if (found === null) return null;
-    const object = await runAsync(found.pack.resolver!.objectAt(found.offset), (range) => this.fetch(range));
+    // The object is the command's, read once: only the bases it is built on are cached.
+    const object = await runAsync(found.pack.resolver!.objectAt(found.offset, false), (range) => this.fetch(range));
     return { ...object, source: 'objects/pack/' + found.pack.name + '.pack' };
   }
 

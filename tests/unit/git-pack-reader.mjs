@@ -7,8 +7,11 @@
 // cached before the next is read, so a long chain of large deltas never
 // holds more than one of them.
 //
+// A one-shot read (rememberTarget false, the store's) caches the chain's
+// bases but not the object asked for, as git's delta_base_cache does.
+//
 // Red before: every delta of the chain was inflated on the way down, and
-// all were applied on the way back up.
+// all were applied on the way back up; and every target was cached.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -79,6 +82,18 @@ try {
     if ('set' in event) inflatedUnapplied.clear();
   }
   assert.equal(most, 1, 'deltas inflated before the one before them was applied: ' + most);
+
+  // A one-shot read (the store's, for a command) caches the bases it is built on, not itself.
+  cache.clear();
+  events.length = 0;
+  const again = runSync(resolver.objectAt(Number(offset), false), (range) => pack.subarray(range.offset, range.offset + range.length));
+  assert.deepEqual(Buffer.from(again.data), expected);
+  assert.equal(events.filter((e) => 'set' in e).length, Number(depth), 'the requested object was cached');
+  assert.equal(cache.has(Number(offset)), false);
+  const plain = verify.split('\n').map((line) => line.split(/\s+/)).find((f) => f.length === 5 && f[1] === 'blob');
+  events.length = 0;
+  runSync(resolver.objectAt(Number(plain[4]), false), (range) => pack.subarray(range.offset, range.offset + range.length));
+  assert.equal(events.filter((e) => 'set' in e).length, 0, 'a non-delta one-shot read was cached');
   console.log('git-pack-reader: ok (chain depth ' + depth + ')');
 } finally {
   rmSync(work, { recursive: true, force: true });
