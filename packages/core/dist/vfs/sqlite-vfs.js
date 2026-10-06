@@ -4875,6 +4875,7 @@ export class SqliteVFS {
             const last = page.length > 0 ? String(page[page.length - 1].path) : null;
             const done = cursor !== null && page.length < COPY_PAGE_ROWS;
             let gen = 0;
+            const inserted = new Set();
             // The slice that publishes the copy's root adds a name to the
             // destination's directory, which is dated with it (and its before-image
             // kept for a snapshot).
@@ -4902,7 +4903,9 @@ export class SqliteVFS {
                     const copiedMode = shared
                         ? '((mode & ~' + job.clearBits + ' & ~56) | ((mode & ~' + job.clearBits + ' & 448) >> 3) | CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN 1024 ELSE 0 END)'
                         : '(mode & ~' + job.clearBits + ')';
-                    this.sql.exec(`INSERT OR IGNORE INTO vfs_inodes
+                    // A path another writer made first keeps its row (OR IGNORE): what
+                    // this page inserted is what RETURNING names, and only that is its.
+                    for (const row of this.sql.exec(`INSERT OR IGNORE INTO vfs_inodes
                  (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)
                SELECT ? || substr(path, ?),
                       CASE WHEN path = ? THEN ? ELSE ? || substr(parent_path, ?) END,
@@ -4913,7 +4916,9 @@ export class SqliteVFS {
                       ${shared ? 'CASE WHEN kind = ' + INODE_KIND_SYMLINK + ' THEN CASE WHEN ? THEN gid ELSE ? END ELSE ' + shared.gid + ' END' : 'CASE WHEN ? THEN gid ELSE ? END'},
                       ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id,
                       ${shared ? 'CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN ' + shared.acl + ' ELSE dacl END' : 'dacl'}
-               FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path`, job.dst, tail, job.src, this.parentPath(job.dst), job.dst, tail, job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now, job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid, firstIno, gen, lower, last);
+               FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path
+               RETURNING path`, job.dst, tail, job.src, this.parentPath(job.dst), job.dst, tail, job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now, job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid, firstIno, gen, lower, last))
+                        inserted.add(String(row.path));
                     this.sql.exec('UPDATE vfs_state SET next_ino = ? WHERE slot = 1', firstIno + page.length);
                 }
                 if (jobId === null) {
@@ -4931,6 +4936,8 @@ export class SqliteVFS {
             const published = [];
             for (const row of page) {
                 const path = job.dst + String(row.path).slice(job.src.length);
+                if (!inserted.has(path))
+                    continue;
                 published.push(path);
                 this.committedRows.set(path, { gen, file: Number(row.kind) !== INODE_KIND_DIRECTORY });
                 if (!this._countersLoaded)
@@ -4942,7 +4949,7 @@ export class SqliteVFS {
                     this._usedBytes += Number(row.size);
                 }
             }
-            copied += page.length;
+            copied += published.length;
             if (published.length > 0)
                 this.bumpRevision(published);
             // One event for the tree, as rename emits: events queue until the
@@ -4953,7 +4960,7 @@ export class SqliteVFS {
             const observed = this.writeObservers.size > 0;
             const copiedEntry = (path) => ({ before: null, after: this.inodes.get(path) ?? null });
             this.emitMutations([
-                ...(cursor === null
+                ...(cursor === null && inserted.has(job.dst)
                     ? [{ type: Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' : 'add', path: job.dst, change: copiedEntry(job.dst) }]
                     : []),
                 ...(observed ? published.filter((path) => path !== job.dst).map((path) => ({ type: null, path, change: copiedEntry(path) })) : []),
