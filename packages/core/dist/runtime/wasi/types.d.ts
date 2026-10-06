@@ -145,6 +145,14 @@ export interface WasiMakeImportsOptions {
     threads?: boolean;
     stdoutWrite?: (s: string) => void;
     stderrWrite?: (s: string) => void;
+    /**
+     * The guest's output exactly as it wrote it, each write's bytes: for a
+     * program whose output need not be UTF-8 (git's cat-file, archive or a diff
+     * of a Latin-1 file) or splits a character across writes. Given, it takes
+     * the stream's place in stdoutWrite/stderrWrite and the readable buffer.
+     */
+    stdoutBytes?: (bytes: Uint8Array) => void;
+    stderrBytes?: (bytes: Uint8Array) => void;
 }
 /**
  * The WASI import table, exhaustively.

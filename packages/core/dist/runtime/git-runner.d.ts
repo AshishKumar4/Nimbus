@@ -12,7 +12,8 @@
  * What git does without a child process works as it does anywhere. What needs
  * one (a pager, an editor, hooks, the transports, `stash`, a real merge) fails
  * at the spawn with ENOSYS until the process ABI lands; git says which.
- * Standard input reads as empty.
+ * Standard input reads as empty. Output is passed on byte for byte (git's
+ * output is not always UTF-8: cat-file, archive, a diff of a Latin-1 file).
  *
  * The image is read once per session, uncached (3.7 MB of runtime blob that
  * would otherwise displace the user's working set); facets are opened per

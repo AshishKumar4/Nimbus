@@ -640,6 +640,12 @@ export function __wasiMakeImports(opts) {
     // it too would grow stdoutBuf/stderrBuf without bound inside the facet. Absent
     // a sink the buffer stays readable via getStdout()/getStderr().
     function appendStream(kind, bytes) {
+        const raw = kind === 'stdout' ? opts.stdoutBytes : opts.stderrBytes;
+        // fd_write hands over a copy of the guest's buffer: it is the sink's to keep.
+        if (raw) {
+            raw(bytes);
+            return;
+        }
         const s = utf8dec.decode(bytes);
         if (kind === 'stdout') {
             if (opts.stdoutWrite)

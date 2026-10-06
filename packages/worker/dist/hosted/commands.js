@@ -115,6 +115,12 @@ export async function registerHostedCommands(self, workspace) {
     // 2. Register the `nimbus` shell verb (install/uninstall/list/available).
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
+    // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
+    workspace.runtimes.registerRunner('git-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
+        const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+        return await makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(manifest, installRoot, binName, binKind)(ctx);
+    });
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');
         const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
