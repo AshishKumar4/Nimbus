@@ -72,8 +72,9 @@ async function readRequestLine(readable: ReadableStream<Uint8Array>): Promise<st
 
 /**
  * A recording egress for tests (NIMBUS_TEST_EGRESS=1): it answers
- * EGRESS_TEST_HOST itself (HTTP, WebSocket upgrades, plain TCP on port 7,
- * plain HTTP over TCP on port 80) and PyPI's metadata for its canary project
+ * EGRESS_TEST_HOST itself (HTTP, WebSocket upgrades and an echo server at
+ * /ws-echo, a refused upgrade at /ws-refused, plain TCP on port 7, plain
+ * HTTP over TCP on port 80) and PyPI's metadata for its canary project
  * (egress-canary.ts), and sends everything else on to the network, so a
  * session under it can still install packages. What an embedder supplies is
  * the same shape: a Fetcher, minted per session with its identity in props.
@@ -85,9 +86,25 @@ export class TestEgress extends WorkerEntrypoint {
       return Response.json(canaryPypiJson(`http://${EGRESS_TEST_HOST}/${CANARY_WHEEL}`));
     }
     if (url.hostname !== EGRESS_TEST_HOST) return fetch(request);
+    if (url.pathname === '/ws-refused') {
+      return Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer' } });
+    }
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const pair = new WebSocketPair();
       pair[1].accept();
+      pair[1].binaryType = 'arraybuffer';
+      if (url.pathname === '/ws-echo') {
+        // An echo server, as a test's host-side twin answers: a message back
+        // as it came; 'headers' answers with the upgrade's Authorization and
+        // Origin; 'close' closes 4001 'bye'; the first subprotocol offered.
+        pair[1].addEventListener('message', (event) => {
+          if (event.data === 'headers') pair[1].send(JSON.stringify({ authorization: request.headers.get('authorization'), origin: request.headers.get('origin') }));
+          else if (event.data === 'close') pair[1].close(4001, 'bye');
+          else pair[1].send(event.data);
+        });
+        const protocol = request.headers.get('sec-websocket-protocol')?.split(',')[0]?.trim();
+        return new Response(null, { status: 101, webSocket: pair[0], headers: protocol ? { 'sec-websocket-protocol': protocol } : {} });
+      }
       pair[1].addEventListener('message', (event) => pair[1].send(`via-egress:${String(event.data)}`));
       return new Response(null, { status: 101, webSocket: pair[0] });
     }

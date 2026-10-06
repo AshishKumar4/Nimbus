@@ -3,13 +3,11 @@
 // (apps/probe's TestEgress, NIMBUS_TEST_EGRESS=1): every common HTTPS client
 // reaches the egress, which alone answers egress-test.invalid: https.get,
 // http.get, global fetch, axios (its http adapter, and its fetch adapter),
-// node-fetch 3, undici (fetch and request), the global WebSocket over wss and
-// the shell's curl. A TLS socket (tls.connect) is refused by name. The `ws`
-// package fails in a node child before any request, exactly as it does
-// without an egress (ws needs https's createConnection, which workerd does
-// not implement), and the test holds it to that. (node-fetch 3's body reads
-// empty in a child with or without an egress: its request is checked by its
-// status, from a host only the egress answers.)
+// node-fetch 3, undici (fetch and request), the `ws` package and the global
+// WebSocket over wss, and the shell's curl. A TLS socket (tls.connect) is
+// refused by name. (node-fetch 3's body reads empty in a child with or
+// without an egress: its request is checked by its status, from a host only
+// the egress answers.)
 //
 // And, against host Node (the same programs, the same package versions):
 //   - the child's process is tagged as Node's: Object.prototype.toString
@@ -17,7 +15,12 @@
 //     Node's (axios picks its http adapter by it);
 //   - axios against an HTTP server in another process (in the session a
 //     resident; on the host, a server of host Node's): GET with params, POST
-//     JSON, a 404 and the fetch adapter give the same results.
+//     JSON, a 404 and the fetch adapter give the same results;
+//   - the ws package against an echo server (in the session the egress's
+//     /ws-echo; on the host its twin, a ws server answering alike): the
+//     subprotocol, text, binary and a 70000-byte message echoed, the
+//     upgrade's own headers, a ping's pong, a server close and a client
+//     close, and a refused upgrade, give the same transcript.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change. Needs the npm registry
@@ -27,6 +30,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { createServer } from 'node:http';
+import { createRequire } from 'node:module';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
@@ -77,6 +81,47 @@ const base = process.argv[2];
 })();
 `;
 
+/** The ws package against the echo server at `base` (ws: or wss:), as a transcript. */
+const WS = String.raw`
+const WebSocket = require('ws');
+const base = process.argv[2];
+const transcript = [];
+const say = (line) => transcript.push(line);
+const echo = () => new Promise((resolve) => {
+  const ws = new WebSocket(base + '/ws-echo', ['chat', 'superchat'], { headers: { Authorization: 'Bearer t' }, origin: 'https://app.example' });
+  let step = 0;
+  ws.on('open', () => { say('open ' + ws.protocol); ws.send('hello'); });
+  ws.on('message', (data, isBinary) => {
+    say(isBinary ? 'binary ' + [...data].join(',') : (data.length > 100 ? 'text length ' + data.length : 'text ' + String(data)));
+    step++;
+    if (step === 1) ws.send(Buffer.from([1, 2, 3]));
+    else if (step === 2) ws.send('x'.repeat(70000));
+    else if (step === 3) ws.send('headers');
+    else if (step === 4) ws.ping('p');
+  });
+  ws.on('pong', (data) => { say('pong ' + String(data)); ws.send('close'); });
+  ws.on('close', (code, reason) => { say('close ' + code + ' ' + String(reason)); resolve(); });
+  ws.on('error', (error) => say('error ' + error.message));
+});
+const clientClose = () => new Promise((resolve) => {
+  const ws = new WebSocket(base + '/ws-echo');
+  ws.on('open', () => ws.close(4000, 'done'));
+  ws.on('close', (code, reason) => { say('client close ' + code + ' ' + String(reason)); resolve(); });
+  ws.on('error', (error) => say('error ' + error.message));
+});
+const refused = () => new Promise((resolve) => {
+  const ws = new WebSocket(base + '/ws-refused');
+  ws.on('error', (error) => say('refused ' + error.message));
+  ws.on('close', (code) => { say('refused close ' + code); resolve(); });
+});
+(async () => {
+  await echo();
+  await clientClose();
+  await refused();
+  console.log('WS ' + JSON.stringify(transcript));
+})();
+`;
+
 const CLIENTS = String.raw`
 const results = {};
 const t = async (name, run) => {
@@ -122,11 +167,29 @@ const get = (mod, url) => new Promise((resolve, reject) => {
 })();
 `;
 
-/** Host Node's side: the clients installed at PACKAGES. */
+/** Host Node's side: the clients installed at PACKAGES, and an echo server answering as the egress's /ws-echo does. */
 async function hostSide() {
   const dir = mkdtempSync(join(tmpdir(), 'node-clients-'));
   const installed = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--prefix', dir, ...PACKAGES], { encoding: 'utf8', timeout: 300_000 });
   assert.equal(installed.status, 0, 'host npm install:\n' + installed.stderr.slice(-1200));
+  const { WebSocketServer } = createRequire(join(dir, 'package.json'))('ws');
+  const server = createServer();
+  const wss = new WebSocketServer({ noServer: true, handleProtocols: (protocols) => [...protocols][0] ?? false });
+  server.on('upgrade', (req, socket, head) => {
+    if (req.url === '/ws-refused') {
+      const body = JSON.stringify({ error: 'unauthorized' });
+      socket.end(`HTTP/1.1 401 Unauthorized\r\ncontent-type: application/json\r\nwww-authenticate: Bearer\r\ncontent-length: ${body.length}\r\nconnection: close\r\n\r\n${body}`);
+      return;
+    }
+    wss.handleUpgrade(req, socket, head, (ws) => {
+      ws.on('message', (data, isBinary) => {
+        if (!isBinary && String(data) === 'headers') ws.send(JSON.stringify({ authorization: req.headers.authorization ?? null, origin: req.headers.origin ?? null }));
+        else if (!isBinary && String(data) === 'close') ws.close(4001, 'bye');
+        else ws.send(data, { binary: isBinary });
+      });
+    });
+  });
+  await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
   /** `source` under host Node, from the clients' directory, with `args`. */
   const children = [];
   const run = (name, source, args = []) => {
@@ -151,8 +214,11 @@ async function hostSide() {
   return {
     run,
     serve,
+    echoBase: `ws://127.0.0.1:${server.address().port}`,
     close: () => {
       for (const child of children) child.kill();
+      wss.close();
+      server.close();
       rmSync(dir, { recursive: true, force: true });
     },
   };
@@ -202,7 +268,7 @@ try {
       'axios.fetch': /^via-egress GET \/axios-fetch$/,
       // A 200 from a host only the egress answers (its headers and body read empty in a child either way).
       'node-fetch': /^200 /,
-      ws: /^FAILED ERR_OPTION_NOT_IMPLEMENTED The options\.createConnection option is not implemented$/,
+      ws: /^via-egress:hi$/,
       'undici.fetch': /^via-egress GET \/undici-fetch$/,
       'undici.request': /^via-egress GET \/undici-request$/,
       WebSocket: /^via-egress:hi$/,
@@ -214,7 +280,7 @@ try {
     if (egressed === '1') {
       const host = await hostSide();
       try {
-        for (const [name, source] of [['tag.js', PROCESS_TAG], ['echo-server.js', ECHO_SERVER(4555)], ['axios.js', AXIOS]]) {
+        for (const [name, source] of [['tag.js', PROCESS_TAG], ['echo-server.js', ECHO_SERVER(4555)], ['axios.js', AXIOS], ['ws-echo.js', WS]]) {
           const encoded = Buffer.from(source).toString('base64');
           const wrote = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/clients/${name}', Buffer.from('${encoded}', 'base64'))"`);
           assert.equal(wrote.status, 0, wrote.stdout);
@@ -241,6 +307,10 @@ try {
         console.log('  axios: ' + JSON.stringify(axios[0]).slice(0, 300));
         assert.deepEqual(axios[0], axios[1], 'axios against a server of its own gives what host Node gives');
 
+        const ws = [labelled((await terminal.run('cd /home/user/clients && node ws-echo.js wss://egress-test.invalid', 120_000)).stdout, 'WS'),
+          labelled((await host.run('ws-echo.js', WS, [host.echoBase])).stdout, 'WS')];
+        console.log('  ws: ' + JSON.stringify(ws[0]));
+        assert.deepEqual(ws[0], ws[1], 'the ws package against an echo server gives the transcript host Node gives');
       } finally {
         host.close();
       }
@@ -251,4 +321,4 @@ try {
 } finally {
   await probe.stop();
 }
-console.log('ok - workspace-egress-node-clients-workerd (every common HTTPS client, axios included, goes out through the egress; a TLS socket is refused by name; process tag and axios as host Node)');
+console.log('ok - workspace-egress-node-clients-workerd (every common HTTPS client, axios and ws included, goes out through the egress; a TLS socket is refused by name; process tag, axios and ws as host Node)');

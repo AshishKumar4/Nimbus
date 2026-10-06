@@ -317,7 +317,7 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   fsAcquired: { method: '_rpcFsAcquired', args: [0,1,2,'pid'] },
   fsList: { method: '_rpcFsList', args: [0,1,'pid'] },
   fsStorageGrant: { method: '_rpcFsStorageGrant', args: [0,1,2,'pid'] },
-  wsOpen: { method: '_rpcWsOpen', args: [0,1,'pid'] },
+  wsOpen: { method: '_rpcWsOpen', args: [0,1,2,'pid'] },
   wsPoll: { method: '_rpcWsPoll', args: [0,1,'pid'] },
   wsSend: { method: '_rpcWsSend', args: [0,1,2,'pid'] },
   wsClose: { method: '_rpcWsClose', args: [0,1,2,'pid'] },

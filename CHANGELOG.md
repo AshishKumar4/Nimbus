@@ -12,6 +12,18 @@ published independently in the `@nimbus-sh` npm scope.
   Node accepts and workerd refuses (`default`, `reload`, `force-cache`);
   and the child's stream classes are callable as Node's are
   (`Writable.call(this)`, as follow-redirects inherits).
+- The `ws` package works in a node child, for ws:// and wss://, through the
+  workspace's egress when it has one: an `http(s).request` with
+  `Upgrade: websocket` is answered over the supervisor's relayed socket
+  (the one the global WebSocket uses), which now sends the request's own
+  headers (Authorization, Origin, Cookie; never the handshake's or
+  hop-by-hop ones) and answers a refused upgrade with its status, headers
+  and up to 64 KiB of its body. The global WebSocket takes Node's
+  `{ protocols, headers }` init. A WebSocket server inside the session is
+  not available (docs/sandbox-sdk.md).
+- A binary WebSocket frame reached a node child empty: the supervisor's
+  relayed socket read workerd's default Blob as bytes. It reads
+  ArrayBuffers now.
 - A workspace's network can go through its host's egress
   (`NimbusWorkspaceOptions.egress`; for the session Durable Object a
   `NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint

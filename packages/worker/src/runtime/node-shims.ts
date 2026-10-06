@@ -63,6 +63,7 @@ import {
 } from '@nimbus-sh/core/constants.js';
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
+import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -5553,10 +5554,30 @@ const __fsMod = (() => {
 // purpose: it dispatches plain event-shaped objects, which is what a
 // relayed frame can carry across RPC, and it keeps \`onmessage\` and
 // \`addEventListener\` served by one path instead of two.
+//
+// The second argument is Node's: subprotocols, or a WebSocketInit
+// \`{ protocols, headers }\` (undici's), whose headers the supervisor sends
+// with the upgrade. What the handshake answered (the upgrade's response
+// headers, or a refusal's status, headers and body) is kept on the socket
+// under __NIMBUS_WS_HANDSHAKE, for the \`ws\` package's upgrade path
+// (runtime/node-ws-upgrade.ts).
+const __NIMBUS_WS_HANDSHAKE = Symbol.for("nimbus.websocket.handshake");
 const __NimbusRelayedWebSocket = (() => {
   const CONNECTING = 0, OPEN = 1, CLOSING = 2, CLOSED = 3;
+  /** A header list as the relay takes it: [name, value] pairs. */
+  const headerPairs = (headers) => {
+    if (headers === undefined || headers === null) return [];
+    if (typeof headers.forEach === "function" && !Array.isArray(headers)) {
+      const pairs = [];
+      headers.forEach((value, name) => { pairs.push([String(name), String(value)]); });
+      return pairs;
+    }
+    if (Array.isArray(headers)) return headers.map(([name, value]) => [String(name), String(value)]);
+    return Object.entries(headers).flatMap(([name, value]) =>
+      value === undefined ? [] : (Array.isArray(value) ? value : [value]).map((one) => [name, String(one)]));
+  };
   class NimbusWebSocket {
-    constructor(url, protocols) {
+    constructor(url, protocolsOrInit) {
       const supervisor = _nimbusSupervisor();
       if (!supervisor || typeof supervisor.wsOpen !== "function") {
         // Not a fallback to the platform socket, deliberately. An
@@ -5581,21 +5602,31 @@ const __NimbusRelayedWebSocket = (() => {
       this._id = null;
       this._done = false;
       this._sends = Promise.resolve();
+      const init = protocolsOrInit !== null && typeof protocolsOrInit === "object" && !Array.isArray(protocolsOrInit)
+        ? protocolsOrInit : { protocols: protocolsOrInit };
+      const protocols = init.protocols;
       const requested = protocols === undefined ? []
         : (Array.isArray(protocols) ? protocols.map(String) : [String(protocols)]);
+      const headers = headerPairs(init.headers);
+      this[__NIMBUS_WS_HANDSHAKE] = null;
       // Open, or opening, until its close: a handle, as Node's WebSocket is.
       // Taken only once the socket exists, past every throw in this
       // constructor: a caught constructor failure holds nothing.
       this._hold = __nimbusHoldSocket();
-      this._ready = this._connect(supervisor, requested);
+      this._ready = this._connect(supervisor, requested, headers);
     }
 
-    async _connect(supervisor, protocols) {
+    async _connect(supervisor, protocols, headers) {
       try {
         const opened = await __nimbusUseRpcResultUnref(
-          supervisor.wsOpen(this.url, protocols),
+          supervisor.wsOpen(this.url, protocols, headers),
           (result) => result,
         );
+        if (opened.refused) {
+          this[__NIMBUS_WS_HANDSHAKE] = opened.refused;
+          throw new Error("websocket relay: " + this.url + " did not upgrade (HTTP " + opened.refused.status + ")");
+        }
+        this[__NIMBUS_WS_HANDSHAKE] = { status: 101, statusText: "Switching Protocols", headers: opened.headers || [] };
         this._id = opened.id;
         this.protocol = opened.protocol || "";
         this._pump(supervisor);
@@ -8892,6 +8923,7 @@ builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
+${NODE_WS_UPGRADE_SOURCE}
 ${NATIVE_HTTP_SOURCE}
 // W3 — net.Socket honest-error mode.
 //

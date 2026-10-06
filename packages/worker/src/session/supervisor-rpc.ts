@@ -45,6 +45,7 @@
  */
 
 import { EGRESS_TLS_REFUSAL, ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
 import { traced } from '@nimbus-sh/platform/tracing.js';
@@ -544,8 +545,8 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * it a third party wakes the facet at a time of its own choosing and the
    * facet's next synchronous read serves bytes the authority has replaced.
    */
-  async wsOpen(url: string, protocols: string[]): Promise<{ id: number; protocol: string }> {
-    return this._call(this._fsOp('wsOpen', [url, protocols]));
+  async wsOpen(url: string, protocols: string[], headers?: WsRelayHeaders): Promise<WsRelayOpened> {
+    return this._call(this._fsOp('wsOpen', [url, protocols, headers ?? []]));
   }
 
   async wsPoll(id: number, waitMs: number): Promise<unknown[]> {
