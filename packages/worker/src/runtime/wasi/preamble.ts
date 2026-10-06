@@ -60,7 +60,12 @@ import {
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
-import { processHost, type PipeReadiness } from '@nimbus-sh/core/runtime/wasi/processes.js';
+import { processHost, type ChildNews, type PipeReadiness } from '@nimbus-sh/core/runtime/wasi/processes.js';
+
+// The guest half of the Dynamic Worker ledger's news protocol (runtime/child-news.ts
+// CHILD_NEWS_SOURCE), spliced ahead of this body by scripts/bundle-facet-workers.mjs,
+// as node's shims splice it: one source for both.
+declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontier: number; seq: number }) => void) => ChildNews;
 
 // The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
 // an instance of its own spliced ahead of this body by scripts/bundle-facet-workers.mjs:
@@ -630,6 +635,64 @@ const __WASI_PARK_CEILING_MS  = 15000;  // measured; deadline must stay under
 const __WASI_PARK_DEADLINE_MS = 10000;
 void __WASI_PARK_CEILING_MS;
 
+/** Bytes a process's live output may have on their way to the session before a writer waits. */
+const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
+/** The longest a writer waits for the session to take its output: under the watchdog's 10 s. */
+const __WASI_OUTPUT_WAIT_MS = 5000;
+
+/**
+ * A process's stdout and stderr live, through the session's stdout and
+ * stderr calls, as a node process's go: in order, byte for byte, and without
+ * a round trip per write. Past __WASI_OUTPUT_IN_FLIGHT_BYTES in flight a
+ * write waits for the session to take some (its bytes are queued either way,
+ * so the wait is bounded and never repeats a write). `drain` settles once
+ * everything was taken, with the error of a call the session refused, whose
+ * output is lost.
+ */
+function __wasiSupervisorOutput(sup: unknown): {
+  stdoutBytes(bytes: Uint8Array): void | Promise<void>;
+  stderrBytes(bytes: Uint8Array): void | Promise<void>;
+  drain(): Promise<string | null>;
+} {
+  const target = sup as { stdout(data: Uint8Array): Promise<void>; stderr(data: Uint8Array): Promise<void> };
+  let chain: Promise<void> = Promise.resolve();
+  let inFlight = 0;
+  let lost: string | null = null;
+  const send = (fd: 1 | 2, bytes: Uint8Array): void | Promise<void> => {
+    if (bytes.byteLength === 0) return;
+    inFlight += bytes.byteLength;
+    chain = chain
+      .then(() => (fd === 1 ? target.stdout(bytes) : target.stderr(bytes)))
+      .catch((error: unknown) => { lost ??= error instanceof Error ? error.message : String(error); })
+      .finally(() => { inFlight -= bytes.byteLength; });
+    if (inFlight <= __WASI_OUTPUT_IN_FLIGHT_BYTES) return;
+    return new Promise<void>((resolve) => {
+      const timer = setTimeout(resolve, __WASI_OUTPUT_WAIT_MS);
+      void chain.then(() => { clearTimeout(timer); resolve(); });
+    });
+  };
+  return {
+    stdoutBytes: (bytes) => send(1, bytes),
+    stderrBytes: (bytes) => send(2, bytes),
+    drain: () => chain.then(() => lost),
+  };
+}
+
+/**
+ * This process's news tracker. Its reports reach the session in order, and
+ * one the session cannot take is dropped: it says the process is not work,
+ * and must not make it fail.
+ */
+function __wasiChildNews(): ChildNews {
+  let chain = Promise.resolve();
+  return __wasiCreateChildNews((report) => {
+    chain = chain.then(async () => {
+      const sup = __wasiSup as { cpBlocked?(r: typeof report): Promise<void> } | null;
+      if (typeof sup?.cpBlocked === 'function') await sup.cpBlocked(report);
+    }).catch(() => {});
+  });
+}
+
 function withParkDeadline(fn: WasiSyscallFn): WasiSyscallFn {
   return function parkGuarded(this: unknown, ...args: never[]) {
     const r = fn.apply(this, args);
@@ -701,10 +764,10 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   // output is forwarded live (the resident TUI runs for hours), so accumulating
   // it too would grow stdoutBuf/stderrBuf without bound inside the facet. Absent
   // a sink the buffer stays readable via getStdout()/getStderr().
-  function appendStream(kind: 'stdout' | 'stderr', bytes: Uint8Array): void {
+  function appendStream(kind: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void> {
     const raw = kind === 'stdout' ? opts.stdoutBytes : opts.stderrBytes;
     // fd_write hands over a copy of the guest's buffer: it is the sink's to keep.
-    if (raw) { raw(bytes); return; }
+    if (raw) return raw(bytes);
     const s = utf8dec.decode(bytes);
     if (kind === 'stdout') {
       if (opts.stdoutWrite) opts.stdoutWrite(s);
@@ -730,6 +793,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     output: (fd, bytes) => appendStream(fd === 1 ? 'stdout' : 'stderr', bytes),
     release: async () => { if (__wasiResident?.fs.holding()) await __wasiResident.fs.flush(); },
     inbound: () => { __wasiResident?.fs.inbound(); },
+    news: __wasiChildNews(),
   });
 
   const imports: WasiImports = {
@@ -817,7 +881,11 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       if (sockEntry && sockEntry.kind === 'socket') {
         return __rawSockSend(fd, iovsPtr, iovsLen, 0, nwrittenPtr);
       }
-      if (fd !== 1 && fd !== 2) return __WASI_EBADF;
+      // The guest's stdout or stderr, under whatever number it dup'd it to.
+      const stream = sockEntry?.kind === 'stdout' || sockEntry?.kind === 'stderr'
+        ? sockEntry.kind
+        : fd === 1 ? 'stdout' : fd === 2 ? 'stderr' : null;
+      if (stream === null) return __WASI_EBADF;
       const dv = view();
       const memU8 = u8();
       // Gather all iov bytes
@@ -838,9 +906,10 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         let off = 0;
         for (const p of parts) { combined.set(p, off); off += p.length; }
       }
-      appendStream(fd === 1 ? 'stdout' : 'stderr', combined);
+      const taken = appendStream(stream, combined);
       writeU32LE(nwrittenPtr, total);
-      return __WASI_ESUCCESS;
+      // A sink that pushes back hands a promise; any other value it returns is no answer.
+      return taken instanceof Promise ? taken.then(() => __WASI_ESUCCESS) : __WASI_ESUCCESS;
     },
 
     fd_seek(fd, _offsetArg, _whence, _newOffsetPtr) {
@@ -1208,6 +1277,8 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
       // readerLocks[i] holds a {reader, fd} pair so we can releaseLock
       // after the race.
       const timerIds = new Array(subs.length).fill(null);
+      // Waits on pipes, cancelled once the poll returns without them.
+      const pipeWaits: Array<(() => void) | undefined> = new Array(subs.length);
       const readerLocks = [];
       const monoNowNs = () => {
         const ms = (typeof performance !== 'undefined' && performance.now)
@@ -1263,8 +1334,10 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
           const toEvent = (r: PipeReadiness | null): WasiPollEvent => r === null
             ? { idx: s.idx, error: __WASI_EINTR, type: s.tag, nbytes: 0n, flags: 0 }
             : { idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes: BigInt(r.nbytes), flags: r.hangup ? 1 : 0 };
-          const ready = proc.readiness(s.fd as number, s.tag === __WASI_EVENTTYPE_FD_READ ? 'read' : 'write');
-          return ready instanceof Promise ? ready.then(toEvent) : Promise.resolve(toEvent(ready));
+          const found = proc.readiness(s.fd as number, s.tag === __WASI_EVENTTYPE_FD_READ ? 'read' : 'write');
+          if (!('ready' in found)) return Promise.resolve(toEvent(found));
+          pipeWaits[s.idx] = found.cancel;
+          return found.ready.then(toEvent);
         }
         // Regular files, dirs, stdio: always ready (POSIX: regular files
         // never block — read returns immediately even if at EOF). Files and
@@ -1398,6 +1471,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
             try { clearTimeout(timerIds[i]); } catch {}
             timerIds[i] = null;
           }
+          pipeWaits[i]?.();
         }
       }
       // Only a pipe's wait that gave up wins with EINTR: nothing else was ready.
@@ -1826,6 +1900,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
   return {
     wasiImport: imports,
     procImport,
+    procDispose: () => proc.dispose(),
     getStdout: () => stdoutBuf,
     getStderr: () => stderrBuf,
   };

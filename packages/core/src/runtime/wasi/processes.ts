@@ -57,28 +57,6 @@ const WNOHANG = 1;
  */
 export const PROCESS_PARK_MS = 8_000;
 
-/**
- * A wait the guest gives up at PROCESS_PARK_MS. `attempt` answers, or gives
- * null while there is nothing to answer yet; `subscribe` asks for a wake when
- * that may have changed. Once the wait is answered or has given up, `attempt`
- * is never asked again, so a wait that gave up consumed nothing: the guest's
- * retry finds it all still there.
- */
-function parkedWait<T, G>(subscribe: (wake: () => void) => void, attempt: () => T | null, gaveUp: G): Promise<T | G> {
-  return new Promise<T | G>((resolve) => {
-    let over = false;
-    const timer = setTimeout(() => { over = true; resolve(gaveUp); }, PROCESS_PARK_MS);
-    const wake = (): void => {
-      if (over) return;
-      const answer = attempt();
-      if (answer === null) { subscribe(wake); return; }
-      over = true;
-      clearTimeout(timer);
-      resolve(answer);
-    };
-    subscribe(wake);
-  });
-}
 
 /**
  * A pipe: bytes in order, and how many descriptors hold each end. A pipe
@@ -116,10 +94,32 @@ interface ChildProcessSupervisor {
   cpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }>;
   cpStdinEnd(childPid: number): Promise<void>;
   cpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number): Promise<{
-    chunks: Array<{ seq: number; data: Uint8Array }>; closed: boolean; maxSeq: number;
+    chunks: Array<{ seq: number; data: Uint8Array }>; closed: boolean; maxSeq: number; news?: number[];
   }>;
-  cpWait(childPid: number, waitMs: number): Promise<{ done: boolean; exitCode?: number | null; signal?: string | null }>;
+  /** With `knownStarted` false it answers at the child's start too (`started`); a refused spawn ends with `spawnError`, its errno's code. */
+  cpWait(childPid: number, waitMs: number, acquire?: undefined, knownStarted?: boolean): Promise<ChildWait>;
   cpKill(childPid: number, signal: string): Promise<boolean>;
+}
+
+interface ChildWait {
+  done: boolean;
+  exitCode?: number | null;
+  signal?: string | null;
+  spawnError?: string;
+  started?: boolean;
+  news?: number[];
+}
+
+/**
+ * The guest's half of the session's Dynamic Worker ledger (worker
+ * runtime/child-news.ts, which node's child_process speaks too): the news of
+ * its children it has applied, and whether its only remaining work is
+ * waiting on them. The session refuses a spawn no release could ever make
+ * room for (EAGAIN) only when every holder says so.
+ */
+export interface ChildNews {
+  apply(numbers: number[] | undefined): void;
+  say(blocked: boolean): void;
 }
 
 export interface ProcessHostOptions {
@@ -136,16 +136,20 @@ export interface ProcessHostOptions {
   release(): Promise<void>;
   /** After input: the guest's next filesystem answer takes the barrier. */
   inbound(): void;
+  /** The ledger's news protocol, where the session speaks it. */
+  news: ChildNews | null;
 }
 
 interface Child {
   pid: number;
+  /** 0 once it started, the errno its spawn failed with, or null while neither is known. */
+  start: Errno | null;
   /** Its wait(2) status, once it ended and everything it printed has arrived. */
   status: number | null;
   /** The session could not say how it ended. */
   failed: boolean;
-  /** Settles when `status` or `failed` is set. */
-  settled: Promise<void>;
+  /** Who waits to hear of its start or its end. */
+  waiters: Array<() => void>;
 }
 
 /** What a poll of a pipe end finds: bytes waiting (or room), whether the other end is gone; null once it gave up. */
@@ -163,10 +167,13 @@ export interface ProcessHost {
   isPipe(fd: number): boolean;
   /**
    * When pipe descriptor `fd` (isPipe) is ready for `want`, for poll_oneoff:
-   * at once when it is, else when it becomes so, or null once the wait gave
-   * up at PROCESS_PARK_MS.
+   * at once when it is, else a wait that answers when it becomes so, or null
+   * once it gave up at PROCESS_PARK_MS. A poll that returns cancels the waits
+   * it no longer needs.
    */
-  readiness(fd: number, want: 'read' | 'write'): PipeReadiness | null | Promise<PipeReadiness | null>;
+  readiness(fd: number, want: 'read' | 'write'): PipeReadiness | { ready: Promise<PipeReadiness | null>; cancel(): void };
+  /** The guest exited: its children's output and ends are no longer followed. */
+  dispose(): void;
 }
 
 function newPipe(): Pipe {
@@ -182,6 +189,51 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   const view = () => new DataView(opts.memory().buffer);
   const bytesAt = () => new Uint8Array(opts.memory().buffer);
   const decoder = new TextDecoder();
+
+  /**
+   * The guest's waits on its children and their pipes in progress. While
+   * there are any, all it does is wait on its children (it is one thread), and
+   * it says so; an answer says it runs again. A wait that gave up leaves that
+   * standing: the guest asks again at once (git loops on EINTR).
+   */
+  let parks = 0;
+  /** The guest is gone: nothing follows its children any more. */
+  let disposed = false;
+
+  /**
+   * A wait the guest gives up at PROCESS_PARK_MS. `attempt` answers, or gives
+   * null while there is nothing to answer yet; `subscribe` asks for a wake
+   * when that may have changed. Once the wait is answered, has given up or is
+   * cancelled, `attempt` is never asked again, so a wait that did not answer
+   * consumed nothing: the guest's retry finds it all still there.
+   */
+  const parkedWait = <T>(subscribe: (wake: () => void) => void, attempt: () => T | null): { ready: Promise<T | null>; cancel(): void } => {
+    let finish: (answer: T | null, ran: boolean) => void = () => {};
+    const ready = new Promise<T | null>((resolve) => {
+      let over = false;
+      if (parks++ === 0) opts.news?.say(true);
+      const timer = setTimeout(() => finish(null, false), PROCESS_PARK_MS);
+      finish = (answer, ran) => {
+        if (over) return;
+        over = true;
+        clearTimeout(timer);
+        if (--parks === 0 && ran) opts.news?.say(false);
+        resolve(answer);
+      };
+      const wake = (): void => {
+        if (over) return;
+        const answer = attempt();
+        if (answer === null) subscribe(wake);
+        else finish(answer, true);
+      };
+      subscribe(wake);
+    });
+    return { ready, cancel: () => finish(null, true) };
+  };
+
+  const notify = (child: Child): void => {
+    for (const waiter of child.waiters.splice(0)) waiter();
+  };
 
   const supervisor = (): ChildProcessSupervisor | null => {
     const sup = opts.supervisor() as unknown as Partial<ChildProcessSupervisor> | null;
@@ -272,7 +324,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   const pump = async (sup: ChildProcessSupervisor, child: number, fd: 1 | 2, target: PipeFdEntry | 1 | 2 | null): Promise<void> => {
     let since = 0;
     try {
-      for (;;) {
+      while (!disposed) {
         const out = await sup.cpReadOutput(child, fd, since, LONG_POLL_MS);
         for (const chunk of out.chunks) {
           since = Math.max(since, chunk.seq);
@@ -280,6 +332,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
           if (typeof target === 'number') opts.output(target, chunk.data);
           else if (target.pipe.readers > 0) { target.pipe.chunks.push(chunk.data); wake(target.pipe); }
         }
+        // Applied once delivered: the bytes are where the guest reads them.
+        opts.news?.apply(out.news);
         if (out.closed) break;
       }
     } catch {
@@ -390,25 +444,56 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
         } else {
           await sup.cpStdinEnd(childPid).catch(() => {});
         }
+        const child: Child = { pid: childPid, start: null, status: null, failed: false, waiters: [] };
+        children.set(childPid, child);
         const pumps = [pump(sup, childPid, 1, stdout), pump(sup, childPid, 2, stderr)];
-        const child: Child = { pid: childPid, status: null, failed: false, settled: Promise.resolve() };
-        child.settled = (async () => {
+        // Its start (or the refusal of it), then its end, each applied before its news.
+        void (async () => {
           try {
-            let exit = await sup.cpWait(childPid, LONG_POLL_MS);
-            while (!exit.done) exit = await sup.cpWait(childPid, LONG_POLL_MS);
+            let r = await sup.cpWait(childPid, LONG_POLL_MS, undefined, false);
+            while (!r.done && !r.started && !disposed) r = await sup.cpWait(childPid, LONG_POLL_MS, undefined, false);
+            if (disposed) return;
+            if (r.done && r.spawnError) {
+              child.start = filesystemErrno({ code: r.spawnError });
+              if (stdin) await drop(stdin.pipe, 'read');
+              opts.news?.apply(r.news);
+              return;
+            }
+            child.start = E.SUCCESS;
+            notify(child);
+            if (!r.done) opts.news?.apply(r.news);
+            while (!r.done && !disposed) r = await sup.cpWait(childPid, LONG_POLL_MS);
+            if (disposed) return;
             // Its stdin's reader is gone: a writer now gets EPIPE.
             if (stdin) await drop(stdin.pipe, 'read');
             // Everything it printed has arrived before its end is reported.
             await Promise.all(pumps);
-            child.status = statusOf(exit);
+            child.status = statusOf(r);
+            opts.news?.apply(r.news);
           } catch {
+            child.start ??= E.IO;
             child.failed = true;
+          } finally {
+            notify(child);
           }
         })();
-        children.set(childPid, child);
         view().setInt32(pidPtr, childPid, true);
         return E.SUCCESS;
       })();
+    },
+
+    start(pid) {
+      const child = children.get(pid);
+      if (!child) return E.SRCH;
+      /** Its start, or the errno of a spawn that failed, which forgets it. */
+      const answer = (): Errno | null => {
+        if (child.start === null) return null;
+        if (child.start !== E.SUCCESS) children.delete(pid);
+        return child.start;
+      };
+      const now = answer();
+      if (now !== null) return now;
+      return parkedWait((wake) => child.waiters.push(wake), answer).ready.then((started) => started ?? E.INTR);
     },
 
     wait(pid, options, statusPtr, waitedPtr) {
@@ -430,7 +515,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       const now = reap();
       if (now !== null) return now;
       if (options & WNOHANG) { view().setInt32(waitedPtr, 0, true); return E.SUCCESS; }
-      return parkedWait((wake) => { for (const child of candidates) void child.settled.then(wake); }, reap, E.INTR);
+      return parkedWait((wake) => { for (const child of candidates) child.waiters.push(wake); }, reap).ready.then((reaped) => reaped ?? E.INTR);
     },
 
     kill(pid, signal) {
@@ -464,7 +549,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     const now = answer();
     if (now !== null) return now;
     if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0) return E.AGAIN;
-    return parkedWait((wake) => pipe.waiters.push(wake), answer, E.INTR);
+    return parkedWait((wake) => pipe.waiters.push(wake), answer).ready.then((read) => read ?? E.INTR);
   };
 
   const write: ProcessHost['write'] = (fd, iovs, iovsLen, nwritten) => {
@@ -506,8 +591,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       return pipe.writers === 0 || pipe.failed ? { nbytes: 0, hangup: true } : null;
     };
     // A write end always has room: what is written to a child goes to the session.
-    return check() ?? parkedWait((wake) => pipe.waiters.push(wake), check, null);
+    return check() ?? parkedWait((wake) => pipe.waiters.push(wake), check);
   };
 
-  return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, readiness };
+  return { imports, read, write, close, isPipe: (fd) => pipeEntry(fd) !== null, readiness, dispose: () => { disposed = true; } };
 }

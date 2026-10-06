@@ -12,8 +12,16 @@
  *   - a child: its argv, env, cwd and parent; its stdin from a pipe (ended
  *     when the last writer closes); its output into a pipe or the guest's own
  *     stdout; its exit status and signal; waitpid only after its output;
- *   - a spawn the session refuses fails as execvp does (ENOENT), and what the
- *     session cannot deliver is EIO, not a short read.
+ *   - a spawn the session refuses fails as execvp does (ENOENT), whether
+ *     cpSpawn throws it or the child's start reports it (spawnError), and
+ *     what the session cannot deliver is EIO, not a short read;
+ *   - the ledger's news: the guest says it is blocked while it only waits on
+ *     its children, and running once answered, at the frontier of the news
+ *     it applied (worker runtime/child-news.ts);
+ *   - a process's own output relayed live (__wasiSupervisorOutput): in
+ *     order, byte for byte, a writer held past 1 MiB in flight, and output
+ *     the session refused reported;
+ *   - a dup of stdout writes to stdout.
  */
 
 import assert from 'node:assert/strict';
@@ -31,10 +39,15 @@ const E = { SUCCESS: 0, ACCES: 2, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, IO: 29
 const NONBLOCK = 4;
 const GUEST_PID = 7;
 
-/** The session's side: children whose output, exit and stdin the test drives. */
+/**
+ * The session's side, as facets/process.ts answers it: children whose start,
+ * output, exit and stdin the test drives, each event numbered as news.
+ */
 function session() {
   const children = new Map();
   let nextPid = 100;
+  let newsCount = 0;
+  const news = () => ++newsCount;
   let waiters = [];
   const notify = () => { const now = waiters; waiters = []; for (const w of now) w(); };
   const until = (ready, ms) => new Promise((resolve) => {
@@ -48,8 +61,12 @@ function session() {
     async cpSpawn(req) {
       if (sup.refuse) throw acrossRpc(Object.assign(new Error(`${sup.refuse}: ${req.command}`), { code: sup.refuse }));
       const pid = nextPid++;
-      children.set(pid, { stdin: [], stdinEnded: false, out: { 1: [], 2: [] }, closed: { 1: false, 2: false }, exit: null, seq: 0 });
+      children.set(pid, {
+        stdin: [], stdinEnded: false, out: { 1: [], 2: [] }, closed: { 1: false, 2: false }, exit: null, seq: 0,
+        started: false, startNews: 0, exitNews: 0, closedNews: { 1: 0, 2: 0 }, spawnError: null,
+      });
       sup.spawned.push({ pid, ...req });
+      if (!sup.holdStart) control.start(pid);
       return { childPid: pid };
     },
     async cpStdinWrite(pid, data) {
@@ -64,14 +81,25 @@ function session() {
       const child = children.get(pid);
       await until(() => child.lost || child.closed[fd] || child.out[fd].some((c) => c.seq > since), waitMs);
       if (child.lost) throw acrossRpc(new Error('session reset'));
-      return { chunks: child.out[fd].filter((c) => c.seq > since), closed: child.closed[fd], maxSeq: child.seq };
+      const fresh = child.out[fd].filter((c) => c.seq > since);
+      const numbers = fresh.map((c) => c.news);
+      if (fresh.length > 0) numbers.push(child.startNews);
+      if (child.closed[fd]) numbers.push(child.closedNews[fd]);
+      return { chunks: fresh.map(({ seq, data }) => ({ seq, data })), closed: child.closed[fd], maxSeq: child.seq, news: numbers.filter((n) => n > 0) };
     },
-    async cpWait(pid, waitMs) {
+    async cpWait(pid, waitMs, acquire, knownStarted = true) {
       const child = children.get(pid);
-      await until(() => child.lost || child.exit !== null, waitMs);
+      await until(() => child.lost || child.exit !== null || (!knownStarted && child.started), waitMs);
       if (child.lost) throw acrossRpc(new Error('session reset'));
-      return child.exit ? { done: true, ...child.exit } : { done: false };
+      const numbers = [child.startNews, child.exitNews].filter((n) => n > 0);
+      if (child.exit) return child.spawnError
+        ? { done: true, exitCode: child.exit.exitCode, signal: null, spawnError: child.spawnError, news: numbers }
+        : { done: true, ...child.exit, news: numbers };
+      if (!knownStarted && child.started) return { done: false, exitCode: null, signal: null, started: true, news: numbers };
+      return { done: false, exitCode: null, signal: null };
     },
+    blocked: [],
+    async cpBlocked(report) { sup.blocked.push(report); },
     async cpKill(pid, signal) {
       const child = children.get(pid);
       if (!child || child.exit) return false;
@@ -81,13 +109,32 @@ function session() {
   };
   const control = {
     child: (pid) => children.get(pid),
+    issued: () => newsCount,
+    start(pid) {
+      const child = children.get(pid);
+      child.started = true;
+      child.startNews = news();
+      notify();
+    },
+    /** Its spawn failed with `code` (as the session's preflight or ledger refuses one): it never ran. */
+    refuse(pid, code, errno) {
+      const child = children.get(pid);
+      child.spawnError = code;
+      child.exit = { exitCode: errno, signal: null };
+      child.exitNews = news();
+      child.closed[1] = child.closed[2] = true;
+      notify();
+    },
     print(pid, fd, text) {
       const child = children.get(pid);
-      child.out[fd].push({ seq: ++child.seq, data: enc.encode(text) });
+      child.out[fd].push({ seq: ++child.seq, data: enc.encode(text), news: news() });
       notify();
     },
     end(pid, exit) {
       const child = children.get(pid);
+      child.exitNews = news();
+      child.closedNews[1] = news();
+      child.closedNews[2] = news();
       child.closed[1] = child.closed[2] = true;
       child.exit = exit;
       notify();
@@ -100,7 +147,7 @@ function session() {
 
 async function guest() {
   const modulePath = path.join(os.tmpdir(), `wasi-processes-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiSupervisorOutput };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
   const { sup, control } = session();
@@ -125,7 +172,7 @@ async function guest() {
     return b.length;
   };
   return {
-    sup, control, stdout,
+    P, sup, control, stdout,
     pipe() {
       const at = scratch();
       assert.equal(proc.pipe(at), E.SUCCESS);
@@ -159,13 +206,24 @@ async function guest() {
       assert.equal(await wasi.fd_fdstat_get(fd, at), E.SUCCESS);
       return view().getUint16(at + 2, true);
     },
-    /** posix_spawn as git's nimbus_spawnvpe makes it: { errno, pid }. */
+    /** posix_spawn as git's nimbus_spawnvpe makes it, the spawn and then its start: { errno, pid }. */
     async spawn(argv, { env = [], dir = '/home/user', fdin = -1, fdout = -1, fderr = -1 } = {}) {
       const at = scratch();
       const argvLen = strings(at, argv);
       const envLen = strings(at + 1024, env);
       const dirLen = enc.encodeInto(dir, bytesAt().subarray(at + 2048)).written;
-      const errno = await proc.spawn(at, argvLen, at + 1024, envLen, at + 2048, dirLen, fdin, fdout, fderr, at + 4000);
+      let errno = await proc.spawn(at, argvLen, at + 1024, envLen, at + 2048, dirLen, fdin, fdout, fderr, at + 4000);
+      if (errno !== E.SUCCESS) return { errno, pid: null };
+      const pid = view().getInt32(at + 4000, true);
+      do errno = await proc.start(pid); while (errno === E.INTR);
+      return { errno, pid: errno === E.SUCCESS ? pid : null };
+    },
+    start: (pid) => proc.start(pid),
+    /** The spawn alone, as nimbus_spawnvpe's first call: { errno, pid }. */
+    async spawnOnly(argv) {
+      const at = scratch();
+      const argvLen = strings(at, argv);
+      const errno = await proc.spawn(at, argvLen, at + 1024, 0, at + 2048, 0, -1, -1, -1, at + 4000);
       return { errno, pid: errno === E.SUCCESS ? view().getInt32(at + 4000, true) : null };
     },
     /** waitpid: { errno, status, waited }. */
@@ -177,6 +235,8 @@ async function guest() {
       return { errno, status: view().getInt32(at, true), waited: view().getInt32(at + 4, true) };
     },
     kill: (pid, signal) => proc.kill(pid, signal),
+    /** The guest exited: its host stops following its children. */
+    dispose: () => bundle.procDispose(),
     /** poll_oneoff on one descriptor: { errno, events: [{ error, nbytes, hangup }] }. */
     async poll(fd, want = 'read') {
       const at = scratch();
@@ -207,12 +267,19 @@ let checks = 0;
   assert.equal(errno, E.SUCCESS);
   assert.equal(await g.close(w), E.SUCCESS);
   const [idleR, idleW] = g.pipe();
+  g.sup.holdStart = true;
+  const queued = await g.spawnOnly(['queued']);
+  assert.equal(queued.errno, E.SUCCESS);
   const started = Date.now();
-  const [waited, read, polled] = await Promise.all([g.wait(pid), g.read(r), g.poll(idleR)]);
+  const [waited, read, polled, start] = await Promise.all([g.wait(pid), g.read(r), g.poll(idleR), g.start(queued.pid)]);
   const took = Date.now() - started;
   assert.equal(waited.errno, E.INTR, 'a wait on a child that runs on gives up');
   assert.equal(read.errno, E.INTR, 'so does a read of its output');
   assert.equal(polled.errno, E.INTR, 'and a poll of an idle pipe, before the watchdog');
+  assert.equal(start, E.INTR, 'and a start the session has not let in yet');
+  g.control.start(queued.pid);
+  await settle();
+  assert.equal(await g.start(queued.pid), E.SUCCESS, 'the retried start finds it started');
   assert.ok(took < 9_500, `gave up before the watchdog's 10 s (${took} ms)`);
   g.control.print(pid, 1, 'late');
   g.control.exit(pid, 3);
@@ -225,6 +292,7 @@ let checks = 0;
   assert.deepEqual(await g.read(r), { errno: E.SUCCESS, text: '' });
   assert.equal((await g.wait(pid)).errno, E.CHILD, 'reaped once');
   await g.close(idleW);
+  g.dispose();
   checks++;
 }
 
@@ -260,6 +328,7 @@ let checks = 0;
   await g.close(r3);
   assert.equal(await g.write(w3, 'x'), E.PIPE, 'EPIPE once every reader is gone');
   assert.equal(await g.write(r, 'x'), E.BADF, 'a read end is not written');
+  g.dispose();
   checks++;
 }
 
@@ -314,6 +383,7 @@ let checks = 0;
   assert.deepEqual(await g.wait(-1), { errno: E.SUCCESS, status: 4 << 8, waited: fifth.pid });
   g.control.exit(fourth.pid, 0);
   assert.deepEqual(await g.wait(-1), { errno: E.SUCCESS, status: 0, waited: fourth.pid });
+  g.dispose();
   checks++;
 }
 
@@ -341,6 +411,88 @@ let checks = 0;
   assert.equal(await g.write(lostInW, 'more'), E.PIPE, 'input it cannot take is EPIPE');
   assert.equal(await g.close(lostInW), E.SUCCESS);
   assert.equal((await g.wait(lost.pid)).errno, E.IO, 'and an end it cannot report is EIO');
+  g.dispose();
+  checks++;
+}
+
+// ── a spawn refused once the session looked (spawnError) ────────────────
+{
+  const g = await guest();
+  g.sup.holdStart = true;
+  const [outR, outW] = g.pipe();
+  const at = await g.spawnOnly(['git-hi']);
+  assert.equal(at.errno, E.SUCCESS, 'the spawn itself is taken');
+  g.control.refuse(at.pid, 'ENOENT', -2);
+  assert.equal(await g.start(at.pid), E.NOENT, 'its start reports the refusal, as execvp would have');
+  assert.equal((await g.wait(at.pid)).errno, E.CHILD, 'and it is no child of the guest');
+  g.control.refuse((await g.spawnOnly(['busy'])).pid, 'EAGAIN', -11);
+  await g.close(outW);
+  assert.deepEqual(await g.read(outR), { errno: E.SUCCESS, text: '' });
+  g.dispose();
+  checks++;
+}
+
+// ── the ledger's news ───────────────────────────────────────────────────
+{
+  const g = await guest();
+  const [r, w] = g.pipe();
+  const { pid } = await g.spawn(['child'], { fdout: w });
+  await g.close(w);
+  const waiting = g.wait(pid);
+  await settle();
+  // (Its start was a wait on the child too: blocked, then running.)
+  assert.deepEqual(g.sup.blocked.map((b) => b.blocked), [true, false, true], 'waiting on its child, the guest says it is blocked');
+  g.control.print(pid, 1, 'out');
+  g.control.exit(pid, 0);
+  assert.equal((await waiting).errno, E.SUCCESS);
+  assert.equal((await g.read(r)).text, 'out');
+  await settle();
+  const last = g.sup.blocked.at(-1);
+  assert.equal(last.blocked, false, 'answered, it runs again');
+  assert.equal(last.frontier, g.control.issued(), 'having applied every piece of news the session issued');
+  assert.deepEqual(g.sup.blocked.map((b) => b.seq), g.sup.blocked.map((_, i) => i + 1), 'numbered in order');
+  g.dispose();
+  checks++;
+}
+
+// ── a process's own output, live ────────────────────────────────────────
+{
+  const g = await guest();
+  const got = [];
+  let hold = null;
+  const target = {
+    async stdout(d) { if (hold) await hold.promise; got.push(`1:${dec.decode(d)}`); },
+    async stderr(d) { got.push(`2:${dec.decode(d)}`); },
+  };
+  const out = g.P.__wasiSupervisorOutput(target);
+  assert.equal(out.stdoutBytes(enc.encode('a')), undefined, 'a write within the window does not wait');
+  out.stderrBytes(enc.encode('b'));
+  out.stdoutBytes(enc.encode('c'));
+  assert.equal(await out.drain(), null);
+  assert.deepEqual(got, ['1:a', '2:b', '1:c'], 'in the order written, across both streams');
+
+  let release;
+  hold = { promise: new Promise((resolve) => { release = resolve; }) };
+  assert.equal(out.stdoutBytes(new Uint8Array(600 * 1024)), undefined);
+  const held = out.stdoutBytes(new Uint8Array(600 * 1024));
+  assert.ok(held instanceof Promise, 'past 1 MiB in flight a writer waits');
+  let settled = false;
+  void held.then(() => { settled = true; });
+  await settle();
+  assert.equal(settled, false);
+  release();
+  await held;
+  hold = null;
+  assert.equal(await out.drain(), null);
+
+  const refused = g.P.__wasiSupervisorOutput({ async stdout() { throw new Error('session reset'); }, async stderr() {} });
+  refused.stdoutBytes(enc.encode('lost'));
+  assert.equal(await refused.drain(), 'session reset', 'output the session refused is reported');
+
+  const d = g.dup(1);
+  assert.equal(await g.write(d, 'via a dup'), E.SUCCESS);
+  assert.deepEqual(g.stdout, ['via a dup'], 'a dup of stdout writes to stdout');
+  g.dispose();
   checks++;
 }
 
