@@ -23,6 +23,12 @@ export interface BatchInodeEntry {
     uid?: number;
     gid?: number;
     chunkCount: number;
+    /**
+     * The inode number a delegation's holder gave a file or directory it made
+     * (v4): one of the numbers its grant reserved, so the name keeps the
+     * number the holder already showed. Absent: the session numbers it.
+     */
+    ino?: number;
 }
 /** Entry for bulk chunk creation via writeBatch(). */
 export interface BatchChunkEntry {

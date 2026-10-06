@@ -35,6 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
+import { type HolderSession } from './delegation-holder.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -156,5 +157,14 @@ export interface ResidentFilesystemStats {
     pinnedBytes: number;
     pins: number;
 }
-export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem;
+/**
+ * What makes the process a delegation's holder (delegation-holder.ts): the
+ * session calls it takes and answers recalls with, and which keys are home
+ * directories (never held themselves).
+ */
+export interface ResidentDelegation {
+    readonly session: HolderSession;
+    readonly isHomeRoot?: (key: string) => boolean;
+}
+export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map

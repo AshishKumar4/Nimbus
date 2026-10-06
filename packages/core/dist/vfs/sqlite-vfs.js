@@ -119,6 +119,8 @@ const PAGE_DIGEST_MEMO_ENTRIES = 8_192;
  * 1M-row copyTree in one turn was reset).
  */
 const JOB_SLICE_PAGES = 200;
+/** The most inode numbers one delegation reserves at once: a holder that uses them asks again (a new grant). */
+const MAX_DELEGATED_INOS = 1 << 20;
 /** Chunks one tier pass moves, and chunk ids it examines. */
 const TIER_PAGE_CHUNKS = 64;
 const TIER_SCAN_ROWS = 4_096;
@@ -1426,7 +1428,8 @@ export class SqliteVFS {
      */
     openDescription(path, cred, rights, principal, holds) {
         const origin = principal ?? this.activeOrigin ?? Object.freeze({ cred });
-        const asOpener = (call) => (...args) => this.asOrigin(origin, () => call(...args));
+        // Its calls are its opener's: as its principal, and as the delegations its process holds then.
+        const asOpener = (call) => (...args) => this.asOrigin(origin, () => (holds === undefined ? call(...args) : this.withHolds(holds(), () => call(...args))));
         // Opened to write, it revokes a delegation it meets, rather than sharing
         // it; opened by a holder, it recalls none of the holder's own.
         const priorWrite = this.activeWrite;
@@ -2044,8 +2047,8 @@ export class SqliteVFS {
             storageKey: (path) => this.storageKey(path, bound),
             acquireExclusiveMutation: (path, options) => {
                 const lease = this.acquireExclusiveMutationAt(this.storageKey(path, bound), options);
-                // Never null: the key came from a name this caller has.
-                return { root: this.logicalPath(lease.root, bound) ?? lease.root, owner: lease.owner };
+                // Never null: the key came from a name this caller has. A delegation's reservations travel with it.
+                return { ...lease, root: this.logicalPath(lease.root, bound) ?? lease.root };
             },
             subscribe: (path, listener) => this.subscribe(path, bound, listener),
             // Live: a view outlives rotateIncarnation.
@@ -2085,7 +2088,8 @@ export class SqliteVFS {
         const holds = leased !== null ? () => leased : caller.holds ?? null;
         for (const key of Object.keys(view)) {
             const method = Reflect.get(view, key);
-            if (typeof method !== 'function')
+            // `holds` answers who the caller is; it is no call on the filesystem.
+            if (typeof method !== 'function' || key === 'holds')
                 continue;
             const settles = !LEAF_READS.has(key);
             const writes = OWNED_MUTATIONS.has(key) || SPANNING_MUTATIONS.has(key);
@@ -2741,6 +2745,12 @@ export class SqliteVFS {
         }
         // A subtree the delegation's maker will not have delegated is refused before anything is recalled for it.
         options.delegation?.admit?.(root);
+        // A holder decides creates as a plain directory makes them: a subtree
+        // whose directories inherit a default ACL, or a shared directory's, is
+        // the session's to decide (EPERM: its holder writes through).
+        if (options.delegation !== undefined && this.inheritsPermissions(root)) {
+            throw vfsError('EPERM', root, 'a subtree with a default ACL or a shared directory is not delegated');
+        }
         for (const [held, lease] of this.exclusiveMutationLeases) {
             if (!pathsOverlap(root, lease.root))
                 continue;
@@ -2750,8 +2760,22 @@ export class SqliteVFS {
             throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
         }
         const owner = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(owner, { root, delegation: options.delegation ?? null, shared: false, recalling: null });
-        return { root, owner };
+        // The holder's storage first: a grant the ledger cannot back is refused (ENOSPC) before it numbers anything.
+        const bytes = options.delegation?.bytes ?? 0;
+        if (bytes > 0)
+            this.ledger.reserve(owner, bytes, this.privileged);
+        let inos;
+        try {
+            inos = this.reserveInos(options.delegation?.inos ?? 0);
+        }
+        catch (error) {
+            this.ledger.release(owner);
+            throw error;
+        }
+        this.exclusiveMutationLeases.set(owner, {
+            root, delegation: options.delegation ?? null, inos, reservation: bytes > 0 ? owner : null, shared: false, recalling: null,
+        });
+        return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
     }
     acquireGlobalExclusiveMutation() {
         this.settleAppends();
@@ -2759,11 +2783,20 @@ export class SqliteVFS {
             throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
         }
         const owner = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, shared: false, recalling: null });
+        this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, inos: null, reservation: null, shared: false, recalling: null });
         return { root: '', owner };
     }
     releaseExclusiveMutation(owner) {
+        this.endLease(owner);
+    }
+    /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
+    endLease(owner) {
+        const lease = this.exclusiveMutationLeases.get(owner);
+        if (lease === undefined)
+            return;
         this.exclusiveMutationLeases.delete(owner);
+        if (lease.reservation !== null)
+            this.ledger.release(lease.reservation);
     }
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
@@ -2795,6 +2828,47 @@ export class SqliteVFS {
             if (root === '' || key === root || key.startsWith(`${root}/`))
                 throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
         }
+    }
+    /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
+    inheritsPermissions(root) {
+        if (this.sharedDirectory(root + '/x') !== undefined)
+            return true;
+        for (const shared of this.sharedDirectories.keys())
+            if (pathsOverlap(shared, root))
+                return true;
+        const under = subtreeWhere(root, { withRoot: true });
+        return [...this.sql.exec(`SELECT 1 AS found FROM vfs_inodes WHERE dacl IS NOT NULL${under === null ? '' : ` AND ${under.sql}`} LIMIT 1`, ...(under?.params ?? []))].length > 0;
+    }
+    /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
+    reserveInos(count) {
+        if (count <= 0)
+            return null;
+        if (!Number.isSafeInteger(count) || count > MAX_DELEGATED_INOS)
+            throw vfsError('EINVAL', `cannot reserve ${count} inode numbers`);
+        const end = this.withTransaction(() => Number([...this.sql.exec('UPDATE vfs_state SET next_ino = next_ino + ? WHERE slot = 1 RETURNING next_ino', count)][0].next_ino));
+        return { first: end - count, end };
+    }
+    /**
+     * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
+     * be numbered here. Only the holder of a delegation numbers its own
+     * entries, from its lease's reserved range, and a number already used by
+     * another name is refused (there are no hard links).
+     */
+    askedIno(entry) {
+        if (entry.ino === undefined)
+            return undefined;
+        const lease = this.activeMutationOwner === null ? undefined : this.exclusiveMutationLeases.get(this.activeMutationOwner);
+        const range = lease?.inos;
+        if (range == null || entry.ino < range.first || entry.ino >= range.end) {
+            throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is not one this writer's delegation reserved`);
+        }
+        const holder = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', entry.ino)][0];
+        if (holder !== undefined && String(holder.path) !== entry.path) {
+            const moved = this.inodes.peek(entry.path);
+            if (moved?.ino !== entry.ino)
+                throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is ${String(holder.path)}'s`);
+        }
+        return entry.ino;
     }
     /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
     isHolder(owner) {
@@ -2830,7 +2904,7 @@ export class SqliteVFS {
                 if (kind === 'share')
                     lease.shared = true;
                 else if (this.exclusiveMutationLeases.get(owner) === lease)
-                    this.exclusiveMutationLeases.delete(owner);
+                    this.endLease(owner);
             })().finally(() => {
                 if (lease.recalling?.done === done)
                     lease.recalling = null;
@@ -2846,22 +2920,27 @@ export class SqliteVFS {
     withMutationOwner(owner, callback) {
         if (owner === undefined)
             return callback();
-        if (!this.exclusiveMutationLeases.has(owner))
+        const lease = this.exclusiveMutationLeases.get(owner);
+        if (lease === undefined)
             throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
         if (this.activeMutationOwner !== null) {
             throw new Error('[sqlite-vfs] nested mutation owner scope is not supported');
         }
         this.activeMutationOwner = owner;
         try {
-            return callback();
+            // A delegation's writes draw on the storage its grant reserved.
+            return lease.reservation === null || this.activeReservation !== null ? callback() : this.withReservation(lease.reservation, callback);
         }
         finally {
             this.activeMutationOwner = null;
         }
     }
-    /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
-    assertMutationAllowed(path, owner) {
-        this.withMutationOwner(owner, () => this.assertMutationsAllowed([path]));
+    /**
+     * Refuse a mutation at `path` another lease covers; `owner` presents the
+     * caller's own lease, `holds` the delegations the caller's process holds.
+     */
+    assertMutationAllowed(path, owner, holds) {
+        this.withHolds(holds === undefined ? this.activeHolds : holds(), () => this.withMutationOwner(owner, () => this.assertMutationsAllowed([path])));
     }
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
@@ -2888,9 +2967,10 @@ export class SqliteVFS {
             if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
                 continue;
             if (lease.delegation !== null) {
-                // Its holder writes there under the delegation (its lease), in the order it decided.
+                // Its holder decides there: a call it makes itself rather than sends
+                // in a wave follows what it sent before (it sends first), in order.
                 if (this.isHolder(owner))
-                    return { code: 'EBUSY', detail: `delegated to this process at /${root}: write under its lease` };
+                    continue;
                 // Another's holder may have decided what this would change: it gives the subtree up first.
                 throw this.recallRequired(owner, lease, 'revoke', normalized);
             }
@@ -4951,7 +5031,11 @@ export class SqliteVFS {
             let copied = slice.copied;
             while (!slice.done) {
                 await yieldToStorage();
-                slice = run(slice.id);
+                // A delegation granted over the destination since the last slice is
+                // recalled, and the slice (one transaction, refused before it wrote)
+                // runs again: the copy waits for it rather than failing.
+                const id = slice.id;
+                slice = await withRecall(() => run(id));
                 copied += slice.copied;
             }
             return copied;
@@ -7194,6 +7278,7 @@ export class SqliteVFS {
             uid: inode.uid ?? prior?.uid ?? 1000,
             gid: inode.gid ?? prior?.gid ?? 1000,
             content,
+            ...(inode.ino !== undefined ? { ino: this.askedIno(inode) } : {}),
             ...(knownPrior && knownPrior.gen === this._gen ? { knownPrior } : {}),
         };
     }
@@ -7313,6 +7398,8 @@ export class SqliteVFS {
         }
     }
     async consumeStream(stream, options, cred, origin, holds) {
+        // A delegation's holder's wave: the names it made are owned as the caller's.
+        const delegatedWave = options.mutationOwner !== undefined && (this.exclusiveMutationLeases.get(options.mutationOwner)?.delegation ?? null) !== null;
         // Each group commits in its own turn, as the stream's caller (its lease, its principal).
         const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, fn));
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
@@ -7568,6 +7655,13 @@ export class SqliteVFS {
                 if (this.exclusiveMutationLeases.size > 0) {
                     for (const lands of recordPaths(record))
                         await this.recallDelegationsAt(lands, options.mutationOwner);
+                }
+                // A name a delegation's holder made is the caller's, as a create of
+                // its own would make it (creationAttrs): its owner, and a setgid
+                // directory's group. The holder made it so; this keeps it so.
+                if ((record.type === 'directory' || record.type === 'file-begin') && delegatedWave && !this.inodes.get(record.inode.path)) {
+                    const attrs = this.creationAttrs(record.inode.path, record.inode.mode, cred, record.type === 'directory');
+                    Object.assign(record.inode, { uid: cred.uid, gid: attrs.gid, mode: attrs.mode });
                 }
                 // Each record is applied in one synchronous turn, by the stream's
                 // caller: as the delegations it holds, whose lookups recall none of them.
@@ -9191,6 +9285,7 @@ export class SqliteVFS {
                 gid: entry.gid,
                 content,
                 defaultAcl: entry.defaultAcl,
+                ...(entry.ino !== undefined ? { ino: this.askedIno(entry) } : {}),
             });
         }
         return { plan: builder.build(), deletedInodes };

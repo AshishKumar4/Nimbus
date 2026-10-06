@@ -824,7 +824,8 @@ export class SqliteRuntimeFsBridge {
             const parent = parentVfsPath(p);
             if (parent && !(options?.includeMissingAncestors && !this.vfs.exists(parent)))
                 this.vfs.access(parent, 0o3);
-            return this.vfs.acquireExclusiveMutation(p, { includeMissingAncestors: options?.includeMissingAncestors, delegation: terms });
+            const lease = this.vfs.acquireExclusiveMutation(p, { includeMissingAncestors: options?.includeMissingAncestors, delegation: terms });
+            return terms === undefined ? lease : { ...lease, umask: this.vfs.cred.umask };
         });
     }
     releaseExclusiveMutation(owner) { this.rawVfs.releaseExclusiveMutation(owner); }
@@ -982,7 +983,7 @@ export class SqliteRuntimeFsBridge {
      * confined caller's /tmp/x is its private file, not the shared tmp/x.
      */
     leaseAllows(path, owner) {
-        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner);
+        this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner, this.vfs.holds);
     }
     /** Operations with SQLite-only semantics (journals, atomic renames, mutation leases) refuse kernel mounts. */
     sqlitePath(path, followSymlinks, call) {

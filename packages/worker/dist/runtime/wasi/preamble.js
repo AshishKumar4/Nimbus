@@ -173,7 +173,22 @@ function __wasiStartResident(sup, cred) {
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },
     };
-    return residentFilesystem(authority, booting);
+    // The process holds the subtrees it writes (delegation-holder.ts): its
+    // creates, writes, mkdirs, unlinks and renames there are decided here and
+    // sent as one ordered wave under the delegation's lease.
+    const waves = sup;
+    const holderSession = {
+        acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+        release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+        awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+        recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+        sendWave: (stream, owner) => waves.writeBatchStream(stream, undefined, owner),
+    };
+    return residentFilesystem(authority, booting, { session: holderSession, isHomeRoot: isHomeDirectory });
+}
+/** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
+function isHomeDirectory(key) {
+    return key.startsWith('home/') && key.length > 'home/'.length && !key.slice('home/'.length).includes('/');
 }
 /** The filesystem the codec answers from: the process's resident one over the adopted supervisor, else the session's. */
 function __wasiFilesystem(parking) {

@@ -248,7 +248,11 @@ const NATIVE_OPS = {
     fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
     fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({
         includeMissingAncestors: z.boolean().optional(),
-        delegate: z.object({ reads: z.boolean() }).optional(),
+        delegate: z.object({
+            reads: z.boolean(),
+            inos: z.number().int().nonnegative().optional(),
+            bytes: z.number().int().nonnegative().optional(),
+        }).optional(),
     }).optional().parse(e.args?.[1])),
     fsReleaseExclusiveMutation: (e, t) => fsFor(e, t).releaseExclusiveMutation(stringArg(e, 0)),
     // A delegation's holder: its next recall (a long poll), and its answer to one.

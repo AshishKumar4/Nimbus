@@ -58,9 +58,21 @@ export interface DelegationsOptions {
     readonly revoked?: (event: DelegationRevoked) => void;
     readonly recallTimeoutMs?: number;
 }
+/** What the session's delegations did since it started (the diag route's). */
+export interface DelegationStats {
+    readonly held: number;
+    readonly grants: number;
+    readonly recalls: {
+        readonly share: number;
+        readonly revoke: number;
+    };
+    /** Holders revoked for not answering within the recall timeout. */
+    readonly timedOut: number;
+}
 export declare class Delegations {
     private readonly options;
     private readonly held;
+    private readonly counts;
     /** Each holder's leases. */
     private readonly byPid;
     private readonly recallTimeoutMs;
@@ -70,10 +82,11 @@ export declare class Delegations {
      * makes (the process's own bridge, so its path and permission are checked
      * as any lease's). `scope` disposes of it when the process ends.
      */
-    grant(pid: number, reads: boolean, acquire: (terms: DelegationTerms) => {
-        root: string;
-        owner: string;
-    }, scope: {
+    grant(pid: number, asked: {
+        readonly reads: boolean;
+        readonly inos?: number;
+        readonly bytes?: number;
+    }, acquire: (terms: DelegationTerms) => ExclusiveMutationGrant, scope: {
         readonly subscriptions: Set<() => void>;
     }): ExclusiveMutationGrant;
     /** The next recall of `owner`'s delegation, as soon as one is asked; null after `waitMs` with none, or once it has ended. */
@@ -87,6 +100,7 @@ export declare class Delegations {
     /** The leases of every delegation `pid` holds: what its own calls are made by. */
     heldBy(pid: number): ReadonlySet<string>;
     get size(): number;
+    stats(): DelegationStats;
     private recall;
     private forget;
     private holderOf;

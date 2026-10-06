@@ -420,16 +420,34 @@ export interface RuntimeFsBridge {
 /** What a lease is asked for (RuntimeFsBridge.acquireExclusiveMutation). */
 export interface ExclusiveMutationRequest {
     readonly includeMissingAncestors?: boolean;
-    /** Delegate the subtree to the process; `reads`: another caller's reads recall it too, not only its writes. */
+    /**
+     * Delegate the subtree to the process. `reads`: another caller's reads
+     * recall it too, not only its writes. `inos`: inode numbers to reserve for
+     * what it makes (it numbers them itself); `bytes`: storage to reserve for
+     * what it writes.
+     */
     readonly delegate?: {
         readonly reads: boolean;
+        readonly inos?: number;
+        readonly bytes?: number;
     };
 }
-/** A lease granted: its root and owner, and for a delegation, how long a recall waits for the holder. */
+/**
+ * A lease granted: its root and owner, and for a delegation, how long a
+ * recall waits for the holder, the inode numbers reserved for it [first,
+ * end), and the storage bytes reserved for it.
+ */
 export interface ExclusiveMutationGrant {
     readonly root: string;
     readonly owner: string;
     readonly recallTimeoutMs?: number;
+    readonly inos?: {
+        readonly first: number;
+        readonly end: number;
+    };
+    readonly bytes?: number;
+    /** The umask the session applies to what the holder creates (its process's): the holder decides creates with it. */
+    readonly umask?: number;
 }
 /** What a recall asks of a delegation's holder: keep sending each operation ('share'), or give the subtree up ('revoke'). */
 export type RecallKind = 'share' | 'revoke';

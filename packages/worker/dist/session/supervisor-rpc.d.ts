@@ -354,7 +354,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * and that host instance refuses an attempt older than one it has seen
      * from the same writer; any other instance refuses it outright.
      */
-    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence): Promise<WriteBatchStreamResult>;
+    /**
+     * `owner`: the lease the wave is written under, when it is not the one this
+     * binding was made with: a delegation the process took at run time.
+     */
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<WriteBatchStreamResult>;
     /**
      * Bulk-write npm registry cache entries (resolved packument metadata)
      * in ONE RPC. Used by the resolver-facet to flush a wave of resolved

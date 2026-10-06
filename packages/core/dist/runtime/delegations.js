@@ -47,6 +47,7 @@ const NONE = new Set();
 export class Delegations {
     options;
     held = new Map();
+    counts = { grants: 0, share: 0, revoke: 0, timedOut: 0 };
     /** Each holder's leases. */
     byPid = new Map();
     recallTimeoutMs;
@@ -59,10 +60,12 @@ export class Delegations {
      * makes (the process's own bridge, so its path and permission are checked
      * as any lease's). `scope` disposes of it when the process ends.
      */
-    grant(pid, reads, acquire, scope) {
+    grant(pid, asked, acquire, scope) {
         let held = null;
         const terms = {
-            reads,
+            reads: asked.reads,
+            ...(asked.inos === undefined ? {} : { inos: asked.inos }),
+            ...(asked.bytes === undefined ? {} : { bytes: asked.bytes }),
             admit: (root) => {
                 const kernelRoot = SESSION_KERNEL_ROOTS.find((store) => pathsOverlap(root, store));
                 if (kernelRoot !== undefined) {
@@ -76,6 +79,7 @@ export class Delegations {
             },
         };
         const lease = acquire(terms);
+        this.counts.grants++;
         const end = () => {
             if (this.held.get(lease.owner) !== held)
                 return;
@@ -93,7 +97,7 @@ export class Delegations {
             this.byPid.set(pid, owned = new Set());
         owned.add(lease.owner);
         scope.subscriptions.add(end);
-        return { root: lease.root, owner: lease.owner, recallTimeoutMs: this.recallTimeoutMs };
+        return { ...lease, recallTimeoutMs: this.recallTimeoutMs };
     }
     /** The next recall of `owner`'s delegation, as soon as one is asked; null after `waitMs` with none, or once it has ended. */
     awaitRecall(pid, owner, waitMs = DELEGATION_RECALL_POLL_MS) {
@@ -142,7 +146,16 @@ export class Delegations {
     get size() {
         return this.held.size;
     }
+    stats() {
+        return {
+            held: this.held.size,
+            grants: this.counts.grants,
+            recalls: { share: this.counts.share, revoke: this.counts.revoke },
+            timedOut: this.counts.timedOut,
+        };
+    }
     recall(held, kind) {
+        this.counts[kind]++;
         let resolve;
         const promise = new Promise((settle) => { resolve = settle; });
         const timer = setTimeout(() => {
@@ -150,6 +163,7 @@ export class Delegations {
             // and the caller that recalled it goes on.
             held.pending = null;
             held.end();
+            this.counts.timedOut++;
             this.options.revoked?.({ pid: held.pid, root: held.root, kind, reason: `no answer to a ${kind} recall within ${this.recallTimeoutMs} ms` });
             resolve();
         }, this.recallTimeoutMs);

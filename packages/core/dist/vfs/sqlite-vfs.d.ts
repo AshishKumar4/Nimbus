@@ -40,6 +40,15 @@ export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind,
 export interface ExclusiveMutationLease {
     readonly root: string;
     readonly owner: string;
+    /** A delegation's inode numbers, reserved for what its holder makes: [first, end). */
+    readonly inos?: InodeRange;
+    /** A delegation's storage bytes, reserved for what its holder writes. */
+    readonly bytes?: number;
+}
+/** Inode numbers reserved for a delegation's holder: [first, end). */
+export interface InodeRange {
+    readonly first: number;
+    readonly end: number;
 }
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
@@ -67,6 +76,18 @@ export interface DelegationTerms {
     recall(kind: 'share' | 'revoke'): Promise<void>;
     /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
     admit?(root: string): void;
+    /**
+     * How many inode numbers to reserve for what the holder makes: it numbers
+     * them itself (a stat shows the number before the session has the file)
+     * and sends each with its file (W7 v4 `ino`).
+     */
+    readonly inos?: number;
+    /**
+     * Storage bytes to reserve for what the holder writes (N18): the holder
+     * decides a write fits locally against them, and its waves draw on them.
+     * Past them, its waves are admitted as anyone's (ENOSPC when full).
+     */
+    readonly bytes?: number;
 }
 export interface VfsOpenDescription {
     /** Inode number the description currently resolves; 0 is never issued. */
@@ -1069,6 +1090,8 @@ export declare class SqliteVFS {
     private acquireExclusiveMutationAt;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
+    /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
+    private endLease;
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
      * now on a write that presents `owner` is ESTALE, while the new owner's go
@@ -1082,6 +1105,17 @@ export declare class SqliteVFS {
      * holder (the lease a mutation scope or a view presents).
      */
     private recallReads;
+    /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
+    private inheritsPermissions;
+    /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
+    private reserveInos;
+    /**
+     * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
+     * be numbered here. Only the holder of a delegation numbers its own
+     * entries, from its lease's reserved range, and a number already used by
+     * another name is refused (there are no hard links).
+     */
+    private askedIno;
     /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
     private isHolder;
     /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
@@ -1094,8 +1128,11 @@ export declare class SqliteVFS {
      */
     private recallRequired;
     private withMutationOwner;
-    /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
-    assertMutationAllowed(path: string, owner?: string): void;
+    /**
+     * Refuse a mutation at `path` another lease covers; `owner` presents the
+     * caller's own lease, `holds` the delegations the caller's process holds.
+     */
+    assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>): void;
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
      * is its own file), is refused: another owner's exclusive-mutation lease

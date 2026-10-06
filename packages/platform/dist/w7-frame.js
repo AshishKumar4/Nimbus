@@ -278,7 +278,7 @@ v3) {
                     break;
                 }
                 case RecordTag.Directory: {
-                    const metadata = parseDirectory(payload);
+                    const metadata = parseDirectory(payload, v3);
                     ownedPaths.claim(metadata.path);
                     summary.pathCount++;
                     summary.directoryCount++;
@@ -286,7 +286,7 @@ v3) {
                     break;
                 }
                 case RecordTag.FileBegin: {
-                    const metadata = parseFileBegin(payload);
+                    const metadata = parseFileBegin(payload, v3);
                     ownedPaths.claim(metadata.path);
                     if (contentIds.has(metadata.contentId)) {
                         throw new Error(`w7-frame: duplicate stream content id ${metadata.contentId}`);
@@ -666,15 +666,19 @@ function parseDelete(bytes) {
     const value = parseObject(bytes, 'delete', ['path']);
     return { path: canonicalPath(value.path, 'delete path') };
 }
-function parseDirectory(bytes) {
-    const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], ['atime']);
+/** A v3 record names no inode number; a v4 one may. */
+function inodeOptional(v3) {
+    return v3 ? ['atime'] : ['atime', 'ino'];
+}
+function parseDirectory(bytes, v3) {
+    const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], inodeOptional(v3));
     if (value.kind !== 'directory') {
         throw new Error(`w7-frame: unsupported directory kind ${String(value.kind)}`);
     }
     return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
-function parseFileBegin(bytes) {
-    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], ['atime']);
+function parseFileBegin(bytes, v3) {
+    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], inodeOptional(v3));
     const base = parseInodeMetadata(value, 'file-begin');
     if (value.kind !== 'file' && value.kind !== 'symlink') {
         throw new Error(`w7-frame: unsupported file-begin kind ${String(value.kind)}`);
@@ -724,7 +728,15 @@ function parseInodeMetadata(value, label) {
         ...(value.atime === undefined ? {} : { atime: safeInteger(value.atime, `${label} atime`) }),
         mtime: safeInteger(value.mtime, `${label} mtime`),
         mode: u32(value.mode, `${label} mode`),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, `${label} ino`) }),
     };
+}
+/** An inode number: an integer from 2 (1 is the root's). */
+function inodeNumber(value, label) {
+    const ino = safeInteger(value, label);
+    if (ino < 2)
+        throw new Error(`w7-frame: ${label} must be at least 2`);
+    return ino;
 }
 function parseObject(bytes, label, required, optional = []) {
     let value;
@@ -759,6 +771,8 @@ function normalizeInode(inode) {
     safeInteger(inode.mtime, `${inode.path} mtime`);
     if (inode.atime !== undefined)
         safeInteger(inode.atime, `${inode.path} atime`);
+    if (inode.ino !== undefined)
+        inodeNumber(inode.ino, `${inode.path} ino`);
     u32(inode.mode, `${inode.path} mode`);
     const rawKind = inode.kind ?? (inode.isDir ? 'directory' : 'file');
     if (rawKind !== 'file' && rawKind !== 'directory' && rawKind !== 'symlink') {
@@ -810,6 +824,7 @@ function directoryInode(metadata) {
         mtime: metadata.mtime,
         mode: metadata.mode,
         chunkCount: 0,
+        ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
     };
 }
 function fileInode(metadata) {
@@ -823,6 +838,7 @@ function fileInode(metadata) {
         mtime: metadata.mtime,
         mode: metadata.mode,
         chunkCount: metadata.chunkCount,
+        ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
     };
 }
 function inodeMetadata(inode) {
@@ -831,6 +847,7 @@ function inodeMetadata(inode) {
         ...(inode.atime === undefined ? {} : { atime: inode.atime }),
         mtime: inode.mtime,
         mode: inode.mode,
+        ...(inode.ino === undefined ? {} : { ino: inode.ino }),
     };
 }
 function canonicalPath(value, label) {

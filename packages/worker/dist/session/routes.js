@@ -743,6 +743,8 @@ async function routeFetch(self, request) {
             ts: Date.now(),
             // ── v2 / W5 additions (preserved) ─────────────────────────
             lastFailures,
+            // Subtrees processes hold, and the recalls asked of them (runtime/delegations.ts).
+            delegations: self.processFiles?.delegations.stats() ?? null,
             vfsDetail: {
                 lruBytes: cacheStats.hotBytes ?? 0,
                 lruMaxEntries: cacheStats.maxEntries ?? LRU_MAX_ENTRIES,
