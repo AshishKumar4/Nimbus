@@ -85,6 +85,7 @@ import {
 } from './content-chunking.js';
 import {
   CRED_KERNEL,
+  sameCred,
   type VfsAcquireOptions,
   type VfsAcquireResult,
   type VfsCred,
@@ -262,6 +263,8 @@ export interface VfsNameResolution {
 
 export interface CredentialedVfs {
   readonly cred: VfsCred;
+  /** Who the view acts as: its credential and actor, the principal its write events name. */
+  readonly principal: Principal;
   exists(path: string): boolean;
   isDirectory(path: string): boolean;
   isFile(path: string): boolean;
@@ -1178,9 +1181,9 @@ interface PendingWrite {
   release(): void;
 }
 
-/** A committed mutation, as the event bus and the write observers hear of it. */
+/** A committed mutation, as the event bus (unless `type` is null) and the write observers hear of it. */
 interface Mutation {
-  type: VfsEventType;
+  type: VfsEventType | null;
   path: string;
   oldPath?: string;
   write: PendingWrite | undefined;
@@ -1189,8 +1192,12 @@ interface Mutation {
 /** The principal of a mutation no view made (the engine's own work). */
 const KERNEL_ORIGIN: Principal = Object.freeze({ cred: null });
 
-/** A description's calls that write: each runs as its opener (openDescription). */
-const DESCRIPTION_WRITES = ['write', 'truncate', 'chmod', 'chown', 'utimes', 'close'] as const;
+/** Whether two calls are the same principal's: one credential (sameCred) and one actor. */
+function samePrincipal(a: Principal | null, b: Principal | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a.actor !== b.actor) return false;
+  return a.cred === null || b.cred === null ? a.cred === b.cred : sameCred(a.cred, b.cred);
+}
 
 /**
  * Bytes appended to one file through its open descriptions and not yet
@@ -2205,7 +2212,19 @@ export class SqliteVFS {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
-  openDescription(path: string, cred: VfsCred, rights: { read: boolean; write: boolean; sync?: boolean }): VfsOpenDescription {
+  /**
+   * A description of `path`, opened as `cred`. Its writes are its opener's,
+   * wherever they run: `principal` (else the calling view's, else `cred`'s)
+   * is the one its write events name and its held appends are written as.
+   */
+  openDescription(
+    path: string,
+    cred: VfsCred,
+    rights: { read: boolean; write: boolean; sync?: boolean },
+    principal?: Principal,
+  ): VfsOpenDescription {
+    const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    const asOpener = <A extends unknown[], R>(call: (...args: A) => R) => (...args: A): R => this.asOrigin(origin, () => call(...args));
     const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
     if (!resolved.inode) throw vfsKeyError('ENOENT', path);
     // Descriptions share the canonical inode object: a second descriptor
@@ -2256,7 +2275,7 @@ export class SqliteVFS {
         const run = this.appendRuns.get(node.ino);
         return run === undefined ? node.size : run.base + run.bytes;
       },
-      write: (offset, bytes) => {
+      write: asOpener((offset: number, bytes: Uint8Array): number => {
         if (!rights.write) throw vfsKeyError('EBADF', path);
         if (live().isDir) throw vfsKeyError('EISDIR', path);
         const start = clampNonNegativeInt(offset);
@@ -2266,7 +2285,7 @@ export class SqliteVFS {
         if (opened.path !== null) this.writeRange(opened.path, start, bytes, CRED_KERNEL);
         else if (bytes.length) this.rewriteFile(node, null, Math.max(node.size, start + bytes.length), { start, bytes });
         return bytes.length;
-      },
+      }),
       // fsync: the file's held appends are stored, whoever made them, so a
       // read-only descriptor's fsync is as durable as a writer's. What storing
       // them failed with is told to the descriptions that wrote them.
@@ -2274,31 +2293,31 @@ export class SqliteVFS {
         current();
         if (rights.write) this.raiseAppendFailure(opened);
       },
-      truncate: size => {
+      truncate: asOpener((size: number): void => {
         if (!rights.write) throw vfsKeyError('EBADF', path);
         const node = writable();
         if (node.isDir) throw vfsKeyError('EISDIR', path);
         if (!Number.isSafeInteger(size) || size < 0) throw vfsKeyError('EINVAL', path);
         if (opened.path !== null) this.truncate(opened.path, size, CRED_KERNEL);
         else if (size !== node.size) this.rewriteFile(node, null, size, null);
-      },
+      }),
       readdir: () => {
         if (!current().isDir) throw vfsKeyError('ENOTDIR', path);
         if (!rights.read) throw vfsKeyError('EBADF', path);
         return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
       },
-      chmod: mode => this.chmodInode(current(), mode, cred, opened.path),
-      chown: (uid, gid) => {
+      chmod: asOpener((mode: number): void => this.chmodInode(current(), mode, cred, opened.path)),
+      chown: asOpener((uid: number, gid: number): void => {
         if (cred.uid !== 0) throw vfsKeyError('EPERM', path);
         if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL, true);
         else { current().uid = uid; current().gid = gid; current().ctime = this.now(); }
-      },
-      utimes: (atime, mtime) => {
+      }),
+      utimes: asOpener((atime: number, mtime: number): void => {
         if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write) throw vfsKeyError('EPERM', path);
         if (opened.path !== null) this.utimes(opened.path, atime, mtime, CRED_KERNEL);
         else { current().atime = atime; current().mtime = mtime; current().ctime = this.now(); }
-      },
-      close: () => {
+      }),
+      close: asOpener((): void => {
         try {
           // The last of what it appended is written as it closes, and a failure is close's.
           if (rights.write && !opened.closed) writable();
@@ -2310,16 +2329,8 @@ export class SqliteVFS {
           // and stepped over while pinned; it is collectable now.
           if (opened.path === null) this.maintenancePending = true;
         }
-      },
+      }),
     };
-    // Its writes are its opener's, wherever they run: the principal a write
-    // event names (observeWrites), and the one an append it holds is
-    // written as.
-    const origin = this.activeOrigin ?? Object.freeze({ cred });
-    for (const key of DESCRIPTION_WRITES) {
-      const method = description[key] as (...args: unknown[]) => unknown;
-      (description as unknown as Record<string, unknown>)[key] = (...args: unknown[]) => this.asOrigin(origin, () => method(...args));
-    }
     return description;
   }
 
@@ -2353,7 +2364,8 @@ export class SqliteVFS {
     if (path === null || node.kind !== 'file' || bytes.byteLength === 0 || this.appendFailures.has(opened)) return false;
     if (this.transactionDepth > 0 || this.transactionPublication !== null || this.activeMutationOwner !== null || this.activeWork.size > 0) return false;
     let run = this.appendRuns.get(node.ino);
-    if (run !== undefined && run.privileged !== this.privileged) return false;
+    // A run is one caller's: another's write stores it first (writable), as its own.
+    if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin))) return false;
     if (offset !== (run === undefined ? node.size : run.base + run.bytes)) return false;
     if (run === undefined) {
       if (this.refusalAt(path) !== null) return false;
@@ -2717,6 +2729,7 @@ export class SqliteVFS {
     const origin: Principal = Object.freeze(options?.actor === undefined ? { cred: bound } : { cred: bound, actor: options.actor });
     const view: CredentialedVfs = {
       cred: bound,
+      principal: origin,
       exists: (path) => this.exists(path, bound),
       isDirectory: (path) => this.isDirectory(path, bound),
       isFile: (path) => this.isFile(path, bound),
@@ -6057,11 +6070,17 @@ export class SqliteVFS {
       if (published.length > 0) this.bumpRevision(published);
       // One event for the tree, as rename emits: events queue until the
       // turn ends, and one per copied row would hold the whole tree.
-      // Nothing stood at the target (planCopyTree refuses EEXIST); its event names the tree's root.
-      if (cursor === null) {
-        this.emitMutation(Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' : 'add', job.dst, undefined,
-          { before: null, after: this.inodes.get(job.dst) ?? null });
-      }
+      // Nothing stood at any path it copies to (planCopyTree refuses an
+      // existing target). The bus hears of the tree once, at its root; a
+      // write observer of every entry, a page as it commits.
+      const observed = this.writeObservers.size > 0;
+      const copiedEntry = (path: string) => ({ before: null, after: this.inodes.get(path) ?? null });
+      this.emitMutations([
+        ...(cursor === null
+          ? [{ type: Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' as const : 'add' as const, path: job.dst, change: copiedEntry(job.dst) }]
+          : []),
+        ...(observed ? published.filter((path) => path !== job.dst).map((path) => ({ type: null, path, change: copiedEntry(path) })) : []),
+      ]);
       if (cursor === null) {
         cursor = job.src === '' ? '' : `${job.src}/`;
         if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
@@ -6383,6 +6402,7 @@ export class SqliteVFS {
     };
     return {
       cred: bound,
+      principal: Object.freeze({ cred: bound }),
       exists: (path) => probe(path) !== undefined,
       isDirectory: (path) => probe(path)?.kind === 'directory',
       isFile: (path) => probe(path)?.kind === 'file',
@@ -8935,10 +8955,28 @@ export class SqliteVFS {
    * observer is done, so a later write cannot change what they read.
    */
   private emitMutation(type: VfsEventType, path: string, oldPath?: string, change?: { before: INode | null; after: INode | null }): void {
-    const write = change !== undefined && this.writeObservers.size > 0 ? this.writeEvent(path, oldPath, change) : undefined;
-    const event: Mutation = { type, path, oldPath, write };
-    if (this.transactionPublication) this.transactionPublication.events.push(event);
-    else this.deliverMutation(event);
+    this.emitMutations([{ type, path, oldPath, change }]);
+  }
+
+  /**
+   * One commit's mutations, in order. Every write event among them holds its
+   * content before any observer hears of the first: an observer's callback
+   * (or a write or collection it makes) runs between deliveries, and must not
+   * take what a later event of the same commit names. `type` null is heard by
+   * the write observers alone (a copy's entries; the bus has the tree's one).
+   */
+  private emitMutations(
+    mutations: readonly { type: VfsEventType | null; path: string; oldPath?: string; change?: { before: INode | null; after: INode | null } }[],
+  ): void {
+    const observed = this.writeObservers.size > 0;
+    const events: Mutation[] = mutations.map(({ type, path, oldPath, change }) => ({
+      type,
+      path,
+      oldPath,
+      write: observed && change !== undefined ? this.writeEvent(path, oldPath, change) : undefined,
+    }));
+    if (this.transactionPublication) this.transactionPublication.events.push(...events);
+    else for (const event of events) this.deliverMutation(event);
   }
 
   private deliverMutation({ type, path, oldPath, write }: Mutation): void {
@@ -8946,7 +8984,7 @@ export class SqliteVFS {
     const owner = this.activeMutationOwner;
     this.activeMutationOwner = null;
     try {
-      this.events.emit(type, path, oldPath);
+      if (type !== null) this.events.emit(type, path, oldPath);
       if (write !== undefined) write.deliver([...this.writeObservers]);
     } finally {
       this.activeMutationOwner = owner;
@@ -10352,15 +10390,16 @@ export class SqliteVFS {
     }
 
     // 5. Events observe the already-published metadata and revision.
-    this.deliverEvents(removed, () => {
-      for (const inode of deletedInodes) {
-        this.emitMutation(inode.isDir ? 'unlinkDir' : 'unlink', inode.path, undefined, { before: inode, after: null });
-      }
-      for (let index = 0; index < plan.inodes.length; index++) {
-        const entry = plan.inodes[index]!;
-        this.emitMutation(entry.isDir ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add', entry.path, undefined, changes[index]);
-      }
-    });
+    this.deliverEvents(removed, () => this.emitMutations([
+      ...deletedInodes.map((inode) => ({
+        type: inode.isDir ? 'unlinkDir' as const : 'unlink' as const, path: inode.path, change: { before: inode, after: null },
+      })),
+      ...plan.inodes.map((entry, index) => ({
+        type: entry.isDir ? 'addDir' as const : replacedPaths.has(entry.path) ? 'change' as const : 'add' as const,
+        path: entry.path,
+        change: changes[index],
+      })),
+    ]));
 
     this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
 

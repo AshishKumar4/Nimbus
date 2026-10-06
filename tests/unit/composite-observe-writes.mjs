@@ -161,4 +161,155 @@ function record(vfs, options) {
   assert.deepEqual(events.map((event) => event.path), ['/later/x']);
 }
 
+/** `files`, asynchronous: each call answers after a timer turn, as a remote backend does. */
+function remote(files, delayMs = 2) {
+  return new Proxy(files, {
+    get(target, key) {
+      if (key === 'sync' || key === 'as' || key === 'observeWrites') return undefined;
+      const value = Reflect.get(target, key);
+      if (typeof value !== 'function') return value;
+      return async (...args) => {
+        await new Promise((resolve) => setTimeout(resolve, delayMs));
+        return value.apply(target, args);
+      };
+    },
+  });
+}
+
+// ── A write through a link is captured as the write sees it: the file the
+//    link leads to, not the link's text ──
+{
+  const { vfs, pc } = namespace();
+  pc.writeFile('/docs/real.txt', enc.encode('old'));
+  pc.symlink('/docs/real.txt', '/docs/link');
+  const { events } = record(vfs);
+  await vfs.writeFile('/pc/docs/link', enc.encode('new'));
+  await vfs.truncate('/pc/docs/link', 1);
+  assert.deepEqual(events.map(({ type, path, before, after }) => [type, path, before, after]), [
+    ['modify', '/pc/docs/link', 'old', 'new'],
+    ['modify', '/pc/docs/link', 'new', 'n'],
+  ]);
+}
+
+// ── The guard is asked right before the write, after the reads the report
+//    waited on: a holder closed during them writes nothing ──
+{
+  const { vfs } = namespace();
+  const backing = new MemoryVFS({ uid: 1000, gid: 1000 });
+  backing.writeFile('/f', enc.encode('kept'));
+  vfs.mount('/dev-remote', remote(backing), { resolvesPaths: true });
+  record(vfs);
+  let live = true;
+  const holder = vfs.as(user).scoped(() => { if (!live) throw Object.assign(new Error('EBADF: the process is gone'), { code: 'EBADF' }); });
+  const write = holder.writeFile('/dev-remote/f', enc.encode('late'));
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  live = false;
+  await assert.rejects(write, /the process is gone/);
+  assert.equal(dec.decode(backing.readFile('/f')), 'kept', 'a write landed after its holder was closed');
+}
+
+// ── Observed writes of one path on an asynchronous backend take turns: each
+//    reads what the one before it wrote ──
+{
+  const { vfs } = namespace();
+  const backing = new MemoryVFS();
+  backing.writeFile('/shared', enc.encode('old'));
+  vfs.mount('/r', remote(backing), { resolvesPaths: true });
+  const { events } = record(vfs);
+  await Promise.all(['a', 'b', 'c'].map((text) => vfs.writeFile('/r/shared', enc.encode(text))));
+  const chain = events.map(({ before, after }) => [before, after]);
+  assert.equal(chain.length, 3);
+  assert.equal(chain[0][0], 'old');
+  for (let index = 1; index < chain.length; index++) {
+    assert.equal(chain[index][0], chain[index - 1][1], `concurrent writes read each other's content: ${JSON.stringify(chain)}`);
+  }
+}
+
+// ── A root write the namespace does not show (beneath a mount point) is not
+//    the namespace's; a rename half shown is the delete it is there ──
+{
+  const { engine, kernel, vfs } = namespace();
+  kernel.mkdir('home/user/mnt');
+  kernel.chown('home/user/mnt', 1000, 1000);
+  vfs.mount('/home/user/mnt', new MemoryVFS());
+  const { events } = record(vfs);
+  const proc = engine.as(user);
+  proc.writeFile('home/user/mnt/hidden', 'under the mount');
+  proc.writeFile('home/user/out', 'shown');
+  proc.rename('home/user/out', 'home/user/mnt/in');
+  assert.deepEqual(events.map(({ type, path, before, after }) => [type, path, before, after]), [
+    ['create', '/home/user/out', null, 'shown'],
+    ['delete', '/home/user/out', 'shown', null],
+  ]);
+}
+
+// ── Content the namespace read itself is let go once the observer is done,
+//    however it finished ──
+{
+  const { vfs, pc } = namespace();
+  pc.writeFile('/docs/r.txt', enc.encode('before'));
+  let kept;
+  const stopSync = vfs.observeWrites((event) => { kept = event; });
+  await vfs.writeFile('/pc/docs/r.txt', enc.encode('after'));
+  stopSync();
+  assert.throws(() => kept.before.read(), /EBADF/, 'a synchronous observer kept the content after it returned');
+  let resolveLater;
+  const stopAsync = vfs.observeWrites((event) => { kept = event; return new Promise((resolve) => { resolveLater = resolve; }); });
+  await vfs.writeFile('/pc/docs/r.txt', enc.encode('again'));
+  assert.equal(dec.decode(kept.before.read()), 'after', 'content was let go before the observer was done');
+  resolveLater();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.throws(() => kept.after.read(), /EBADF/);
+  stopAsync();
+  const stopThrowing = vfs.observeWrites((event) => { kept = event; throw new Error('observer failed'); });
+  await vfs.writeFile('/pc/docs/r.txt', enc.encode('third'));
+  stopThrowing();
+  assert.throws(() => kept.after.read(), /EBADF/, 'a failed observer kept the content');
+}
+
+// ── Only what actually landed is reported ──
+{
+  const { vfs, pc } = namespace();
+  const { events } = record(vfs);
+  // rm -r that keeps its operand: only what it removed.
+  const keeping = new MemoryVFS();
+  keeping.mkdir('/d');
+  keeping.writeFile('/d/a', enc.encode('a'));
+  keeping.writeFile('/d/b', enc.encode('b'));
+  keeping.removeRecursive = (path) => {
+    keeping.unlink(`${path}/a`);
+    return { removed: [`${path}/a`], kept: [path, `${path}/b`], failures: [{ path: `${path}/b`, error: { code: 'EACCES', syscall: 'unlink' } }] };
+  };
+  vfs.mount('/keep', keeping);
+  await vfs.removeRecursive('/keep/d');
+  // A name renamed onto itself, and mkdir -p of a directory that is there.
+  pc.writeFile('/docs/same', enc.encode('same'));
+  await vfs.rename('/pc/docs/same', '/pc/docs/same');
+  await vfs.mkdir('/pc/docs', { recursive: true });
+  assert.deepEqual(events.map(({ type, path, after }) => [type, path, after]), [
+    ['delete', '/keep/d/a', null],
+  ], `a mutation that did not land was reported: ${JSON.stringify(events)}`);
+}
+
+// ── A compare-and-write is reported when it wins, on a backend reported at
+//    the namespace (a factory-rooted SqliteFiles), and never when it loses ──
+{
+  const { vfs } = namespace();
+  const harness = createSqliteVfsTestHarness();
+  const other = new SqliteVFS(harness.sql, harness.ctx);
+  other.as(CRED_KERNEL).writeFile('cas.txt', 'one');
+  vfs.mount('/db', () => sqliteFiles(other, CRED_KERNEL));
+  const { events } = record(vfs);
+  const { revision } = await vfs.stat('/db/cas.txt');
+  assert.equal((await vfs.writeFileIfRevision('/db/cas.txt', enc.encode('two'), revision)).ok, true);
+  assert.equal((await vfs.writeFileIfRevision('/db/cas.txt', enc.encode('three'), revision)).ok, false);
+  assert.equal(vfs.sync.writeFileIfRevision('/db/cas.txt', enc.encode('four'), revision).ok, false);
+  const current = vfs.sync.stat('/db/cas.txt').revision;
+  assert.equal(vfs.sync.writeFileIfRevision('/db/cas.txt', enc.encode('five'), current).ok, true);
+  assert.deepEqual(events.map(({ type, path, before, after }) => [type, path, before, after]), [
+    ['modify', '/db/cas.txt', 'one', 'two'],
+    ['modify', '/db/cas.txt', 'two', 'five'],
+  ]);
+}
+
 console.log('composite observeWrites: ok');

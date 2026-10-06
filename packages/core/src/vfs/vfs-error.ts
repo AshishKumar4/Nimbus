@@ -24,13 +24,14 @@ export type VfsErrorCode =
   | 'ENAMETOOLONG'
   | 'ENOTEMPTY'
   | 'ENOTSUP'
-  | 'ESTALE';
+  | 'ESTALE'
+  | 'EBADF';
 
 /** Linux errno numbers, negative as libuv reports them. */
 export const VFS_ERRNO: Readonly<Record<VfsErrorCode, number>> = {
   E2BIG: -7, EPERM: -1, ENOENT: -2, EIO: -5, ENXIO: -6, EAGAIN: -11, EACCES: -13, EBUSY: -16, EEXIST: -17,
   EXDEV: -18, ENOTDIR: -20, EISDIR: -21, EINVAL: -22, ENOSPC: -28, EROFS: -30, ELOOP: -40,
-  ENAMETOOLONG: -36, ENOTEMPTY: -39, ENOTSUP: -95, ESTALE: -116,
+  ENAMETOOLONG: -36, ENOTEMPTY: -39, ENOTSUP: -95, ESTALE: -116, EBADF: -9,
 };
 
 /** What a VfsError carries besides its cause: Node's `err.syscall` and `err.dest`. */
@@ -174,7 +175,7 @@ export const VFS_STRERROR: Readonly<Record<VfsErrorCode, string>> = {
   ENOTDIR: 'Not a directory', EISDIR: 'Is a directory', EINVAL: 'Invalid argument',
   ENOSPC: 'No space left on device', EROFS: 'Read-only file system', ELOOP: 'Too many levels of symbolic links',
   E2BIG: 'Argument list too long', ENAMETOOLONG: 'File name too long', ENOTEMPTY: 'Directory not empty', ENOTSUP: 'Operation not supported',
-  ESTALE: 'Stale file handle',
+  ESTALE: 'Stale file handle', EBADF: 'Bad file descriptor',
 };
 
 /**
@@ -189,7 +190,7 @@ export const VFS_DESCRIPTION: Readonly<Record<VfsErrorCode, string>> = {
   EXDEV: 'cross-device link not permitted', ENOTDIR: 'not a directory', EISDIR: 'illegal operation on a directory',
   EINVAL: 'invalid argument', ENOSPC: 'no space left on device', EROFS: 'read-only file system',
   ELOOP: 'too many symbolic links encountered', ENAMETOOLONG: 'name too long', ENOTEMPTY: 'directory not empty',
-  ENOTSUP: 'operation not supported on socket', ESTALE: 'stale file handle',
+  ENOTSUP: 'operation not supported on socket', ESTALE: 'stale file handle', EBADF: 'bad file descriptor',
 };
 
 /**
