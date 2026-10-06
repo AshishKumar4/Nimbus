@@ -28,6 +28,11 @@ export interface InputChunkOptions {
    */
   readSize?: number;
   /**
+   * How much one read of a file asks: what a reader that judges each read
+   * as a whole (grep's binary test, GNU's 96 KiB) needs it to be.
+   */
+  fileReadSize?: number;
+  /**
    * The reader takes a leading slice and stops on its own (head with a
    * count), or writes to a pipe whose reader can stop it (cat). Only then is
    * a character device streamed for as long as it is asked. Any other reader
@@ -41,7 +46,7 @@ export interface InputChunkOptions {
 export async function* inputChunks(
   ctx: ByteInputContext,
   operand: string | undefined,
-  { readSize = CHUNK, slice = false }: InputChunkOptions = {},
+  { readSize = CHUNK, fileReadSize = CHUNK, slice = false }: InputChunkOptions = {},
 ): AsyncGenerator<Uint8Array> {
   if (operand === undefined || operand === '-') {
     const stdin = ctx.stdin;
@@ -73,7 +78,7 @@ export async function* inputChunks(
   // A regular file to its end; a character device (/dev/zero) for as long
   // as its slice reader keeps asking, which is why this is a generator.
   for (let offset = 0; ; ) {
-    const chunk = await ctx.vfs.readRange(path, offset, CHUNK);
+    const chunk = await ctx.vfs.readRange(path, offset, fileReadSize);
     if (chunk.length === 0) return;
     yield chunk;
     offset += chunk.length;

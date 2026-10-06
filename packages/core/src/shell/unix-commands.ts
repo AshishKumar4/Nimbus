@@ -27,7 +27,7 @@ import sortCommand from '../substrate/lifo/commands/text/sort.js';
 import uniqCommand from '../substrate/lifo/commands/text/uniq.js';
 import catCommand from '../substrate/lifo/commands/fs/cat.js';
 import * as checksum from '../substrate/lifo/commands/system/checksum.js';
-import { isBrokenPipe } from '../substrate/lifo/utils/bytes-io.js';
+import { isBrokenPipe, readAllInput, writeBytes } from '../substrate/lifo/utils/bytes-io.js';
 import headCommand from '../substrate/lifo/commands/text/head.js';
 import tacCommand from '../substrate/lifo/commands/text/tac.js';
 import teeCommand from '../substrate/lifo/commands/io/tee.js';
@@ -2723,33 +2723,33 @@ function mkBase64(vfs: UnixVfs): CmdFn {
 
     const file = positional[0];
     let bytes: Uint8Array;
-    if (file !== undefined && file !== '-') {
-      try { bytes = (await vfs.readFile(resolvePath(ctx.cwd, file))); }
-      catch (error) { (await ctx.stderr.write(`base64: ${file}: ${strerror(error)}\n`)); return 1; }
-    } else {
-      bytes = enc.encode((await stdinText(ctx)) ?? '');
-    }
+    // The operand's bytes, or stdin's as the pipe carries them.
+    try { bytes = await readAllInput({ cwd: ctx.cwd, vfs, stdin: ctx.stdin }, file); }
+    catch (error) { (await ctx.stderr.write(`base64: ${file ?? '-'}: ${strerror(error)}\n`)); return 1; }
 
     if (flags.decode) {
+      // As GNU's: what decodes before the first byte that is not base64 is
+      // written, and that byte is an error.
       const source = dec.decode(bytes).replace(/\s+/g, '');
+      const bad = source.search(/[^A-Za-z0-9+/=]/);
+      const valid = bad === -1 ? source : source.slice(0, bad - (bad % 4));
       let decoded: Uint8Array;
       try {
-        const binary = atob(source);
-        decoded = Uint8Array.from(binary, (c) => c.charCodeAt(0));
+        decoded = Uint8Array.from(atob(valid), (c) => c.charCodeAt(0));
       } catch { (await ctx.stderr.write('base64: invalid input\n')); return 1; }
-      if (ctx.stdout.writeBytes) (await ctx.stdout.writeBytes(decoded));
-      else (await ctx.stdout.write(dec.decode(decoded)));
-      return 0;
+      await writeBytes(ctx.stdout, decoded);
+      if (bad === -1) return 0;
+      (await ctx.stderr.write('base64: invalid input\n'));
+      return 1;
     }
 
     let binary = '';
     for (const byte of bytes) binary += String.fromCharCode(byte);
     const encoded = btoa(binary);
     if (encoded === '') return 0;
-    const lines = wrap > 0
-      ? (encoded.match(new RegExp(`.{1,${wrap}}`, 'g')) ?? [encoded])
-      : [encoded];
-    (await ctx.stdout.write(lines.join('\n') + '\n'));
+    // -w 0 writes one line with no newline, as GNU's.
+    if (wrap === 0) { (await ctx.stdout.write(encoded)); return 0; }
+    (await ctx.stdout.write(`${(encoded.match(new RegExp(`.{1,${wrap}}`, 'g')) ?? [encoded]).join('\n')}\n`));
     return 0;
   };
 }
