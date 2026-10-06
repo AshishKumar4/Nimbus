@@ -9,6 +9,7 @@ import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import {
 	RegistryPackumentSchema,
 	RegistrySearchResponseSchema,
+	renderSearchTable,
 	RegistryVersionInfoSchema,
 	type RegistryVersionInfo,
 } from './registry-schemas.js';
@@ -896,16 +897,7 @@ async function npmSearch(ctx: CommandContext): Promise<number> {
 			return 0;
 		}
 
-		// Header
-		await ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
-		await ctx.stdout.write('-'.repeat(70) + '\n');
-
-		for (const r of results) {
-			const p = r.package;
-			const name = p.name.length > 28 ? p.name.slice(0, 28) + '..' : p.name;
-			const desc = (p.description || '').slice(0, 40);
-			await ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
-		}
+		await ctx.stdout.write(renderSearchTable(results.map((r) => r.package)));
 	} catch (e) {
 		await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
 		return 1;

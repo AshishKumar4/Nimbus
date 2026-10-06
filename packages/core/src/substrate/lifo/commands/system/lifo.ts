@@ -17,7 +17,7 @@ import { ProcessView } from '../../../../runtime/process-files.js';
 import type { Kernel } from '../../kernel/index.js';
 import type { ShellExecuteFn } from './npm.js';
 import { npmInstallGlobal, getBinEntries, registerBinCommand } from './npm.js';
-import { RegistrySearchResponseSchema } from './registry-schemas.js';
+import { RegistrySearchResponseSchema, renderSearchTable } from './registry-schemas.js';
 import { resolve, join } from '../../utils/path.js';
 import {
   linkPackage,
@@ -233,16 +233,7 @@ async function lifoSearch(ctx: CommandContext): Promise<number> {
       return 0;
     }
 
-    await ctx.stdout.write('NAME'.padEnd(30) + 'VERSION'.padEnd(12) + 'DESCRIPTION\n');
-    await ctx.stdout.write('-'.repeat(70) + '\n');
-
-    for (const r of lifoResults) {
-      const p = r.package;
-      const displayName = p.name.replace(/^lifo-pkg-/, '');
-      const name = displayName.length > 28 ? displayName.slice(0, 28) + '..' : displayName;
-      const desc = (p.description || '').slice(0, 40);
-      await ctx.stdout.write(`${name.padEnd(30)}${p.version.padEnd(12)}${desc}\n`);
-    }
+    await ctx.stdout.write(renderSearchTable(lifoResults.map((r) => ({ ...r.package, name: r.package.name.replace(/^lifo-pkg-/, '') }))));
   } catch (e) {
     await ctx.stderr.write(`lifo search: ${e instanceof Error ? e.message : String(e)}\n`);
     return 1;
