@@ -98,8 +98,9 @@ export interface ClonePrepared {
     /** A partial clone (--filter): every pack it stores is a promisor pack. */
     partial: boolean;
     packs: PackSummary[];
-    /** The remote's tags: finish writes those whose objects the clone holds (cloneFinish). */
+    /** The remote's tags, and which of their ids prepare's pack held (TagWatch). */
     tags: CloneTag[];
+    tagsFound: string[];
 }
 /** An advertised tag: its ref, the id it names, and what that peels to. */
 export interface CloneTag {
@@ -107,6 +108,20 @@ export interface CloneTag {
     oid: string;
     peeled: string;
 }
+/**
+ * Which of the remote's tags a clone fetched, seen as its packs are
+ * decoded: the commit and tag objects a tag names or peels to. git clone
+ * writes a tag whose object it has; finish writes these, reading nothing.
+ */
+export declare class TagWatch {
+    private readonly interest;
+    readonly found: Set<string>;
+    constructor(interest: Iterable<string>);
+    static of(tags: readonly CloneTag[]): TagWatch;
+    see(type: string, oid: Uint8Array): void;
+}
+/** The tags whose objects the clone holds: those finish writes. */
+export declare function tagsHeld(tags: readonly CloneTag[], found: ReadonlySet<string>): CloneTag[];
 export type { PackSummary };
 export interface CloneBatchResult {
     index: number;
@@ -125,6 +140,7 @@ export interface CloneStreamed {
         pending: PendingPack | null;
         pack: PackSummary | null;
         tags: CloneTag[];
+        tagsFound: string[];
     };
 }
 export declare const STAGE_DIR = ".git/nimbus-clone";

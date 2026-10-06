@@ -43,6 +43,8 @@ export interface HistoryStepResult {
     pending: PendingPack | null;
     /** Lists written (STAGE_DIR files): root trees for commits, blobs for trees. */
     lists: StagedFile[];
+    /** Ids of the clone's tag interest this step's pack held (clone.ts TagWatch). */
+    tagsFound?: string[];
 }
 /** One piece of history: its request, its pack, its list. */
 export declare function historyStep(context: CloneContext, request: {
@@ -60,6 +62,8 @@ export declare function historyStep(context: CloneContext, request: {
     capabilities: readonly string[];
     /** Work units to decode before stopping (processor.ts WORK_BUDGET_UNITS by default). */
     budgetUnits?: number;
+    /** The ids the clone's tags name or peel to (clone.ts TagWatch). */
+    tagInterest?: readonly string[];
 }): Promise<HistoryStepResult>;
 /** A piece whose decoding stopped at the budget, continued from its stored pack. */
 export declare function historyResume(context: CloneContext, request: {
@@ -68,6 +72,7 @@ export declare function historyResume(context: CloneContext, request: {
     part: number;
     pending: PendingPack;
     budgetUnits?: number;
+    tagInterest?: readonly string[];
 }): Promise<HistoryStepResult>;
 /**
  * The blobs batches: every listed blob not already present, once, sorted by

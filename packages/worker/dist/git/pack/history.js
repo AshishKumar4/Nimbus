@@ -22,7 +22,7 @@
  */
 import { decodeBatch, parseTree, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
-import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, settledBefore, storePackResumable, } from './clone.js';
+import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, settledBefore, TagWatch, storePackResumable, } from './clone.js';
 import { requestPack } from './upload-pack.js';
 /** Root trees per trees request. */
 export const COMMITS_PER_CHUNK = 5_000;
@@ -96,12 +96,21 @@ function hexBytes(hex) {
         out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
     return out;
 }
-async function settle(writer, kind, stored, list, listName) {
+async function settle(writer, kind, stored, list, listName, watch) {
     const lists = await list.write(writer, listName);
     await writer.flush();
+    const tagsFound = [...watch.found];
     if ('pending' in stored)
-        return { kind, pack: null, pending: stored.pending, lists };
-    return { kind, pack: stored.summary, pending: null, lists };
+        return { kind, pack: null, pending: stored.pending, lists, tagsFound };
+    return { kind, pack: stored.summary, pending: null, lists, tagsFound };
+}
+/** What a piece records as its objects resolve, and which of the clone's tags' ids it meets. */
+function watcher(kind, list, watch) {
+    const listed = lister(kind, list);
+    return (object) => {
+        watch.see(object.type, object.oid);
+        return listed?.(object);
+    };
 }
 /** One piece of history: its request, its pack, its list. */
 export async function historyStep(context, request) {
@@ -130,13 +139,14 @@ export async function historyStep(context, request) {
     if (response.pack === null)
         throw new PackFormatError('the server sent no pack for history piece ' + request.piece);
     const list = new ListWriter();
+    const watch = new TagWatch(request.tagInterest ?? []);
     const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_' + request.piece, {
         cacheBytes: HISTORY_CACHE_BYTES,
         recentBytes: HISTORY_RECENT_BYTES,
         budgetUnits: request.budgetUnits,
-        onObject: lister(request.kind, list),
+        onObject: watcher(request.kind, list, watch),
     });
-    return await settle(writer, request.kind, stored, list, 'list-' + request.piece + '-0');
+    return await settle(writer, request.kind, stored, list, 'list-' + request.piece + '-0', watch);
 }
 /** A piece whose decoding stopped at the budget, continued from its stored pack. */
 export async function historyResume(context, request) {
@@ -144,23 +154,29 @@ export async function historyResume(context, request) {
     // answer was lost finds the outcome it recorded before naming its pack.
     const recordName = 'settled-' + request.pending.tmpName;
     const settled = await settledBefore(context, request.pending.tmpName, recordName);
-    if (settled !== null)
-        return { kind: request.kind, pack: settled.summary, pending: null, lists: settled.extra };
+    if (settled !== null) {
+        const extra = settled.extra;
+        return { kind: request.kind, pack: settled.summary, pending: null, lists: extra.lists, tagsFound: extra.tagsFound };
+    }
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
     const list = new ListWriter();
+    const watch = new TagWatch(request.tagInterest ?? []);
     const listName = 'list-' + request.piece + '-' + request.part;
     let lists = [];
     const stored = await resumePack(context, writer, request.pending, {
         cacheBytes: HISTORY_CACHE_BYTES,
         recentBytes: HISTORY_RECENT_BYTES,
         budgetUnits: request.budgetUnits,
-        onObject: lister(request.kind, list),
-        record: { name: recordName, publish: async () => (lists = await list.write(writer, listName)) },
+        onObject: watcher(request.kind, list, watch),
+        record: {
+            name: recordName,
+            publish: async () => ({ lists: (lists = await list.write(writer, listName)), tagsFound: [...watch.found] }),
+        },
     });
     if ('pending' in stored)
-        return await settle(writer, request.kind, stored, list, listName);
-    return { kind: request.kind, pack: stored.summary, pending: null, lists };
+        return await settle(writer, request.kind, stored, list, listName, watch);
+    return { kind: request.kind, pack: stored.summary, pending: null, lists, tagsFound: [...watch.found] };
 }
 /** An open-addressing set of 20-byte ids, each with a basename: the plan's only large structure. */
 class BlobTable {
