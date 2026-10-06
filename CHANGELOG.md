@@ -29,6 +29,27 @@ published independently in the `@nimbus-sh` npm scope.
   `IsolatePoolOptions.network`, `FanoutOptions.network`; Nimbus's own work
   states `ISOLATE_NETWORK`, exported with `workspaceNetwork` from
   `@nimbus-sh/core`. See docs/sandbox-sdk.md.
+- npm: a malformed integrity value for a known algorithm (`sha512-` with an
+  empty, non-base64 or wrong-length digest) now refuses the tarball instead
+  of skipping the check. A packument whose body breaks mid-read is retried
+  with its fetch. `npx --package=p tool` runs only `tool`, and plain
+  `npx <pkg>` picks its bin by npm 10's rule. The shell's fallback npm reads
+  specs, picks versions and checks integrity as the worker's installer does,
+  and saves `npm:` aliases as written. One retry policy now serves npm, the
+  install facet and git's HTTP transport.
+- Shell: `diff` is a port of GNU diffutils 3.12's search, in linear memory
+  (two 10,000-line files no longer exhaust the session), with GNU's output
+  and exit status 2 for unreadable operands. `dirname`, `basename`, `seq`,
+  `printf %b`, `df -h`, `readlink` and `sort -R` match GNU; `grep` and `cut`
+  stream character devices; `type` and `command -v` report only builtins
+  that run. The simulated `ip`, `ifconfig`, `route` and `netstat`, which
+  were never registered, are deleted. 16 duplicate coreutils, two shell
+  histories and two job tables are merged into one each.
+- Node: `import()` of a CommonJS module or built-in returns one namespace
+  per module, with `default` and the named exports Node detects. The Vite
+  dev server again exposes every key of a CommonJS `module.exports = {...}`
+  literal as a named export (for example `color-name`'s `red`), checked
+  against Vite 7.3.6.
 
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
