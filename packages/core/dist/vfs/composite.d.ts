@@ -20,7 +20,7 @@
  * removeRecursive, which is walked. Nothing is emulated where the emulation
  * would change what the operation means.
  */
-import type { SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage } from './vfs.js';
+import type { Principal, SyncVFS, VFS, VfsCasResult, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRevision, VfsStat, VfsUsage, VfsWriteObserver } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { type VfsErrorCode } from './vfs-error.js';
 /**
@@ -86,15 +86,7 @@ export declare function comparePaths(a: string, b: string): number;
  * SQLite revision.
  */
 export declare function runtimeStatOf(stat: VfsStat): RuntimeVfsStat;
-/**
- * Who a view acts as. The embedder's own view has no credential. `actor` names
- * a principal finer than its uid: two agents (or a node and its origin) that
- * share a credential but see different mounts.
- */
-export interface Principal {
-    readonly cred: VfsCred | null;
-    readonly actor?: string;
-}
+export type { Principal } from './vfs.js';
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
 export type VfsSource = VFS | ((principal: Principal) => VFS | null);
 export interface MountOptions {
@@ -130,6 +122,17 @@ export interface MountOptions {
      */
     resolvesPaths?: boolean;
 }
+/** Where a path lands in a principal's namespace (CompositeVFS.route). */
+export interface VfsRoute {
+    /** The mount point ('/' for the root). */
+    readonly point: string;
+    /** The backend as the view's principal sees it; null while it is absent for that principal. */
+    readonly source: VFS | null;
+    /** The path the backend is handed: '/'-rooted, '/' at the mount point. */
+    readonly path: string;
+    /** Why the source is absent (MountOptions.absentReason), when it is. */
+    readonly absentReason?: string;
+}
 export interface MountInfo {
     readonly point: string;
     readonly source: VfsSource;
@@ -151,8 +154,18 @@ interface Mount {
     /** Inode numbers for a backend that has none, by path, stable while mounted. */
     inos: Map<string, number>;
 }
+/** One observeWrites registration: its observer, and where it wants content read. */
+interface WriteWatch {
+    observer: VfsWriteObserver;
+    wants: (path: string, principal: Principal) => boolean;
+}
 interface Table {
     mounts: Map<string, Mount>;
+    /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
+    writes?: {
+        watches: Set<WriteWatch>;
+        subscribed: Map<Mount, () => void>;
+    };
     /** Directory → names of mount points (or their missing ancestors) directly in it. */
     synthesized: Map<string, Set<string>>;
     /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
@@ -237,10 +250,59 @@ export declare class CompositeVFS implements VFS {
     private walkUnfed;
     mount(point: string, source: VfsSource, options?: MountOptions): void;
     unmount(point: string): void;
+    /**
+     * Every mutation that lands in this namespace, on any mount, reported
+     * once it landed (never a refused or failed one) with what stood at its
+     * path before, what stands there after, and the principal it was made as
+     * (VfsWriteEvent, paths in this namespace). For every view of this table;
+     * the returned function stops it.
+     *
+     * A backend that reports its own writes (VFS.observeWrites: SQLite) is
+     * subscribed per mount, so its every mutation is reported, whoever made
+     * it (a process's, a W7 stream's), its content held until the observer is
+     * done. Any other backend's mutations are reported as they are made
+     * through this namespace: each costs a stat of its path before, and,
+     * where `wants` says (by default, everywhere), a read of its content
+     * before and after.
+     */
+    observeWrites(observer: VfsWriteObserver, options?: {
+        wants?: (path: string, principal: Principal) => boolean;
+    }): () => void;
+    /** Subscribe to `mount`'s backend when it reports its own writes (a source fixed for every principal). */
+    private subscribeWrites;
+    /** `event` to every observer of this table; settles once each is done (a backend holds its content until then). */
+    private deliverWrite;
+    /**
+     * `run`, a mutation landing at `path` on `route`'s backend, reported once
+     * it landed: by the backend itself when it reports its own writes
+     * (subscribed), else here, with what the path held before and after, read
+     * through the same backend view (content only where an observer wants it).
+     * `oldPath`: a rename's source.
+     */
+    private reportWrite;
+    /**
+     * What stands at `rel` on a backend that does not report its own writes:
+     * null when nothing does, its content when `read`, false when what is
+     * there was not read (not wanted, or the backend would not say).
+     */
+    private capture;
     /** The mounts this view's principal has now, root first, in mount order. */
     mounts(): readonly MountInfo[];
     /** The mount point `path` is on ('/' for the root), whether or not its source is present. */
     mountOf(path: string): string;
+    /**
+     * Where an operation on `path` lands for this view's principal: the mount
+     * it is on, that backend as this principal sees it, and the path the
+     * backend is handed, so an embedder can call a backend's own extras. The
+     * lookup is every operation's: root links on the way are followed (the
+     * last only with `follow`), and `..` inside a mount whose backend resolves
+     * its own paths is lexical. A mount absent for this principal (any mount
+     * on the path, rule 1) answers a null source, with its absentReason.
+     * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
+     */
+    route(path: string, options?: {
+        follow?: boolean;
+    }): Promise<VfsRoute>;
     /**
      * Whether the namespace answers `path` itself rather than the root
      * backend alone: a path on another mount, a directory above a mount point
@@ -318,11 +380,13 @@ export declare class CompositeVFS implements VFS {
     private resynthesize;
     /** Whether the backend `path` routes to can write a range in place (a descriptor needs no buffer). */
     writesInPlace(path: string): boolean;
-    private route;
+    /** The mount `path` (resolved, normalized) is on: the longest point at or above it. */
+    private locate;
     private backend;
     /** The shortest mount on `path` whose source answers null for this view (rule 1), or null. */
     private absentOn;
     private absent;
+    private absentReason;
     /** ENXIO when `path` is absent for this view. */
     private present;
     /** Whether `point` is a mount this view reaches (rule 1). */
@@ -509,5 +573,4 @@ export declare class CompositeVFS implements VFS {
     describe(): VfsMountDescription;
     private makeSync;
 }
-export {};
 //# sourceMappingURL=composite.d.ts.map

@@ -28,7 +28,7 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-import { type VfsDirentType } from './vfs.js';
+import { type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
 /** The root directory has no row; this is what it is. */
@@ -422,6 +422,15 @@ export interface VfsColdStore {
 export declare class SqliteVFS {
     private readonly openNodes;
     /**
+     * observeWrites: who is told of each landed mutation, and the content
+     * its events name (before and after), held as a detached description
+     * holds what it opened (pinningNodes) until each observer is done.
+     */
+    private readonly writeObservers;
+    private readonly observedRefs;
+    /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
+    private activeOrigin;
+    /**
      * Appends held in memory, one run per file by inode number (appendThrough).
      * Invisible: anything that looks at the store first writes them
      * (settleAppends), and none is begun inside a transaction.
@@ -801,10 +810,17 @@ export declare class SqliteVFS {
      * Covers each call's synchronous part; the kernel's bookkeeping is that.
      */
     private privilegedView;
-    /** Bind credentials and, optionally, the capability of a live mutation lease. */
+    /**
+     * Bind credentials and, optionally, the capability of a live mutation
+     * lease; `actor` names the principal finer than its uid, in the write
+     * events its mutations make (observeWrites).
+     */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
+        actor?: string;
     }): CredentialedVfs;
+    /** `run` as `origin`'s call: the principal its write events name. */
+    private asOrigin;
     /**
      * `view`, each of its calls but LEAF_READS first writing every append
      * this VFS holds (appendThrough): a view is how a caller changes the
@@ -1154,7 +1170,8 @@ export declare class SqliteVFS {
      * True when nothing but the live row at `path` can observe `node`'s chunk,
      * so the chunk may be rewritten in place: no other inode, manifest or
      * history row names it, no snapshot can see the row (the write would
-     * preserve it), and no detached description holds it.
+     * preserve it), no detached description holds it, and no write observer
+     * is to be handed what the write replaces.
      */
     private chunkUnshared;
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
@@ -1745,7 +1762,27 @@ export declare class SqliteVFS {
      * events wait for its publication, and so do the directories.
      */
     private deliverEvents;
+    /**
+     * A mutation that committed, to the event bus and the write observers;
+     * inside an embedder transaction, once it publishes. `change` is what
+     * stood at `path` before it and what stands there now, read at commit:
+     * the observers' event holds both (observedRefs) from now until each
+     * observer is done, so a later write cannot change what they read.
+     */
     private emitMutation;
+    private deliverMutation;
+    /**
+     * Every mutation that lands, whoever made it (a view, a stream, a
+     * descriptor), reported once it committed with what stood at its path
+     * before and what stands there now. While anyone observes, no write
+     * rewrites a chunk or manifest in place (chunkUnshared): what it replaced
+     * survives the commit, held for the observers until each is done.
+     */
+    observeWrites(observer: (event: VfsWriteEvent) => void | Promise<void>): () => void;
+    /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
+    private writeEvent;
+    /** Every description holding content: the open ones, and the write events observers have not let go of. */
+    private pinningNodes;
     private transactionSync;
     /**
      * Commit one plan as one transaction and one generation.
