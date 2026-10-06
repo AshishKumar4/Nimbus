@@ -2,22 +2,80 @@
 // A node program in a session whose workspace goes out through an egress
 // (apps/probe's TestEgress, NIMBUS_TEST_EGRESS=1): every common HTTPS client
 // reaches the egress, which alone answers egress-test.invalid: https.get,
-// http.get, global fetch, node-fetch 3, undici (fetch and request), the
-// global WebSocket over wss and the shell's curl. A TLS socket (tls.connect)
-// is refused by name. No common client ends on tls.connect: axios and the
-// `ws` package fail in a node child before any request, exactly as they do
-// without an egress (measured on main: axios asks workerd for a cache mode it
-// refuses; ws needs https's createConnection, which workerd does not
-// implement), and the test holds them to that, so the egress breaks none of
-// them. (node-fetch 3's body reads empty in a child with or without an
-// egress: its request is checked by its status, from a host only the egress
-// answers.)
+// http.get, global fetch, axios (its http adapter, and its fetch adapter),
+// node-fetch 3, undici (fetch and request), the global WebSocket over wss and
+// the shell's curl. A TLS socket (tls.connect) is refused by name. The `ws`
+// package fails in a node child before any request, exactly as it does
+// without an egress (ws needs https's createConnection, which workerd does
+// not implement), and the test holds it to that. (node-fetch 3's body reads
+// empty in a child with or without an egress: its request is checked by its
+// status, from a host only the egress answers.)
+//
+// And, against host Node (the same programs, the same package versions):
+//   - the child's process is tagged as Node's: Object.prototype.toString
+//     gives "[object process]" and the Symbol.toStringTag descriptor is
+//     Node's (axios picks its http adapter by it);
+//   - axios against an HTTP server in another process (in the session a
+//     resident; on the host, a server of host Node's): GET with params, POST
+//     JSON, a 404 and the fetch adapter give the same results.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change. Needs the npm registry
-// (the session installs the clients, through the egress, which passes it on).
+// (the session installs the clients, through the egress, which passes it on;
+// the host installs the same versions for its side).
 import assert from 'node:assert/strict';
+import { spawn, spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { createServer } from 'node:http';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+
+/** The clients, at the same versions on both sides of the differentials. */
+const PACKAGES = ['axios@1.20.0', 'node-fetch@3.3.2', 'undici@6.29.0', 'ws@8.22.0'];
+
+const PROCESS_TAG = String.raw`
+console.log('TAG ' + JSON.stringify([Object.prototype.toString.call(process), Object.getOwnPropertyDescriptor(process, Symbol.toStringTag)]));
+`;
+
+/** An HTTP server answering with what it was asked, on `port`: its own process, as a session's servers are. */
+const ECHO_SERVER = (port) => String.raw`
+require('http').createServer((req, res) => {
+  let body = '';
+  req.on('data', (chunk) => { body += chunk; });
+  req.on('end', () => {
+    if (req.url.startsWith('/missing')) {
+      res.writeHead(404, { 'content-type': 'application/json' });
+      res.end(JSON.stringify({ missing: true }));
+      return;
+    }
+    res.writeHead(200, { 'content-type': 'application/json', 'x-echo': 'yes' });
+    res.end(JSON.stringify({ method: req.method, url: req.url, type: req.headers['content-type'] || null, body }));
+  });
+}).listen(${port}, () => console.log('LISTENING'));
+`;
+
+/** axios against the echo server at `base`. */
+const AXIOS = String.raw`
+const axios = require('axios');
+const base = process.argv[2];
+(async () => {
+  const out = {};
+  try {
+    const got = await axios.get(base + '/get', { params: { a: 1, b: 'x y' } });
+    out.get = [got.status, got.headers['x-echo'], got.data];
+    const posted = await axios.post(base + '/post', { hello: 'world' });
+    out.post = [posted.status, posted.data];
+    try { await axios.get(base + '/missing'); out.missing = 'resolved'; }
+    catch (error) { out.missing = [error.response && error.response.status, error.response && error.response.data, error.message]; }
+    const fetched = await axios.get(base + '/fetch-adapter', { adapter: 'fetch' });
+    out.fetchAdapter = [fetched.status, fetched.data];
+  } catch (error) {
+    out.failed = String(error && error.message);
+  }
+  console.log('AXIOS ' + JSON.stringify(out));
+})();
+`;
 
 const CLIENTS = String.raw`
 const results = {};
@@ -34,6 +92,7 @@ const get = (mod, url) => new Promise((resolve, reject) => {
   await t('http.get', () => get(require('http'), 'http://' + host + '/http-get'));
   await t('fetch', async () => (await fetch('https://' + host + '/fetch')).text());
   await t('axios', async () => (await require('axios').get('https://' + host + '/axios')).data);
+  await t('axios.fetch', async () => (await require('axios').get('https://' + host + '/axios-fetch', { adapter: 'fetch' })).data);
   await t('node-fetch', async () => {
     const res = await (await import('node-fetch')).default('https://' + host + '/node-fetch');
     return res.status + ' ' + res.headers.get('x-nimbus-test-egress');
@@ -63,13 +122,64 @@ const get = (mod, url) => new Promise((resolve, reject) => {
 })();
 `;
 
+/** Host Node's side: the clients installed at PACKAGES. */
+async function hostSide() {
+  const dir = mkdtempSync(join(tmpdir(), 'node-clients-'));
+  const installed = spawnSync('npm', ['install', '--no-audit', '--no-fund', '--prefix', dir, ...PACKAGES], { encoding: 'utf8', timeout: 300_000 });
+  assert.equal(installed.status, 0, 'host npm install:\n' + installed.stderr.slice(-1200));
+  /** `source` under host Node, from the clients' directory, with `args`. */
+  const children = [];
+  const run = (name, source, args = []) => {
+    writeFileSync(join(dir, name), source);
+    return new Promise((resolve, reject) => {
+      const child = spawn('node', [join(dir, name), ...args], { cwd: dir, stdio: ['ignore', 'pipe', 'pipe'] });
+      let stdout = '', stderr = '';
+      child.stdout.on('data', (d) => { stdout += d; });
+      child.stderr.on('data', (d) => { stderr += d; });
+      const timer = setTimeout(() => child.kill(), 60_000);
+      child.on('error', reject);
+      child.on('close', (status) => { clearTimeout(timer); resolve({ status, stdout, stderr }); });
+    });
+  };
+  /** `source` under host Node as a server: resolved once it prints LISTENING. */
+  const serve = (name, source) => {
+    writeFileSync(join(dir, name), source);
+    const child = spawn('node', [join(dir, name)], { cwd: dir, stdio: ['ignore', 'pipe', 'inherit'] });
+    children.push(child);
+    return new Promise((resolve) => child.stdout.on('data', (d) => { if (String(d).includes('LISTENING')) resolve(); }));
+  };
+  return {
+    run,
+    serve,
+    close: () => {
+      for (const child of children) child.kill();
+      rmSync(dir, { recursive: true, force: true });
+    },
+  };
+}
+
+/** A port free on this host now. */
+function freePort() {
+  return new Promise((resolve) => {
+    const probe = createServer();
+    probe.listen(0, '127.0.0.1', () => { const { port } = probe.address(); probe.close(() => resolve(port)); });
+  });
+}
+
+/** The line of `output` that starts with `label `, parsed. */
+function labelled(output, label) {
+  const line = output.split('\n').find((l) => l.startsWith(label + ' '));
+  assert.ok(line, `no ${label} line:\n${output.slice(-1500)}`);
+  return JSON.parse(line.slice(label.length + 1));
+}
+
 const egressed = process.env.NIMBUS_TEST_EGRESS ?? '1';
 console.log(`workspace-egress-node-clients-workerd: starting local workerd (NIMBUS_TEST_EGRESS=${egressed})`);
 const probe = await startLocalProbe({ runtimes: [], vars: { NIMBUS_TEST_EGRESS: egressed } });
 try {
   const terminal = await localTerminal(probe, { install: [] });
   try {
-    const setup = await terminal.run('mkdir -p /home/user/clients && cd /home/user/clients && npm init -y >/dev/null && npm install axios@1 node-fetch@3 undici@6 ws@8', 600_000);
+    const setup = await terminal.run(`mkdir -p /home/user/clients && cd /home/user/clients && npm init -y >/dev/null && npm install ${PACKAGES.join(' ')}`, 600_000);
     assert.equal(setup.status, 0, 'npm install through the egress:\n' + setup.stdout.slice(-1200));
 
     const curl = await terminal.run('curl -s https://egress-test.invalid/curl');
@@ -88,8 +198,8 @@ try {
       'https.get': /^via-egress GET \/https-get$/,
       'http.get': /^via-egress GET \/http-get$/,
       fetch: /^via-egress GET \/fetch$/,
-      // As without an egress: refused before any request, never at a TLS socket.
-      axios: /^FAILED .*Unsupported cache mode: default$/,
+      axios: /^via-egress GET \/axios$/,
+      'axios.fetch': /^via-egress GET \/axios-fetch$/,
       // A 200 from a host only the egress answers (its headers and body read empty in a child either way).
       'node-fetch': /^200 /,
       ws: /^FAILED ERR_OPTION_NOT_IMPLEMENTED The options\.createConnection option is not implemented$/,
@@ -99,10 +209,46 @@ try {
       'tls.connect': /^FAILED ERR_NIMBUS_EGRESS_TLS Nimbus: TLS sockets are not available when the workspace's network goes through an egress/,
     };
     for (const [name, pattern] of Object.entries(expected)) assert.match(results[name] ?? '(missing)', pattern, name);
+
+    // ── The differentials, against host Node ────────────────────────────────
+    if (egressed === '1') {
+      const host = await hostSide();
+      try {
+        for (const [name, source] of [['tag.js', PROCESS_TAG], ['echo-server.js', ECHO_SERVER(4555)], ['axios.js', AXIOS]]) {
+          const encoded = Buffer.from(source).toString('base64');
+          const wrote = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/clients/${name}', Buffer.from('${encoded}', 'base64'))"`);
+          assert.equal(wrote.status, 0, wrote.stdout);
+        }
+        const tag = [labelled((await terminal.run('cd /home/user/clients && node tag.js')).stdout, 'TAG'),
+          labelled((await host.run('tag.js', PROCESS_TAG)).stdout, 'TAG')];
+        console.log('  process tag: ' + JSON.stringify(tag[0]));
+        assert.deepEqual(tag[0], tag[1], "the child's process is tagged as host Node's");
+        assert.equal(tag[0][0], '[object process]');
+
+        // The server is a resident of the session; its launch returns to the prompt.
+        const served = await terminal.run('cd /home/user/clients && node echo-server.js', 120_000);
+        assert.equal(served.status, 0, served.stdout);
+        let ready = '';
+        for (let i = 0; i < 60 && ready !== '200'; i++) {
+          ready = (await terminal.run('curl -s -o /dev/null -w "%{http_code}" http://127.0.0.1:4555/ready')).stdout.trim();
+          if (ready !== '200') await Bun.sleep(250);
+        }
+        assert.equal(ready, '200', 'the echo server serves in the session');
+        const hostPort = await freePort();
+        await host.serve('echo-server.js', ECHO_SERVER(hostPort));
+        const axios = [labelled((await terminal.run('cd /home/user/clients && node axios.js http://127.0.0.1:4555', 120_000)).stdout, 'AXIOS'),
+          labelled((await host.run('axios.js', AXIOS, [`http://127.0.0.1:${hostPort}`])).stdout, 'AXIOS')];
+        console.log('  axios: ' + JSON.stringify(axios[0]).slice(0, 300));
+        assert.deepEqual(axios[0], axios[1], 'axios against a server of its own gives what host Node gives');
+
+      } finally {
+        host.close();
+      }
+    }
   } finally {
     await terminal.close();
   }
 } finally {
   await probe.stop();
 }
-console.log('ok - workspace-egress-node-clients-workerd (every common HTTPS client goes out through the egress; a TLS socket is refused by name)');
+console.log('ok - workspace-egress-node-clients-workerd (every common HTTPS client, axios included, goes out through the egress; a TLS socket is refused by name; process tag and axios as host Node)');

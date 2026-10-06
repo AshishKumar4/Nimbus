@@ -222,6 +222,27 @@ const FILES = {
   'srv.js': 'if (process.argv[2]) require("fs").readFileSync(0); require("http").createServer((q, s) => s.end("SRV")).listen(8931, () => console.log("SRV LISTENING"));',
   // node:url's legacy API, compared with the host's real node below
   // (http-server reads `url.parse(req.url).pathname`).
+  // follow-redirects (axios's http adapter) and pre-class stream modules inherit
+  // by calling the constructor: Node's stream classes are functions.
+  'legacy-streams.js': [
+    'const { Writable, Readable, Duplex, Transform, PassThrough } = require("stream");',
+    'const out = {};',
+    'function W(o) { Writable.call(this, o); } W.prototype = Object.create(Writable.prototype);',
+    'new W({ write(c, e, cb) { out.w = String(c); cb(); } }).end("w1");',
+    'function R(o) { Readable.call(this, o); } R.prototype = Object.create(Readable.prototype);',
+    'const r = new R({ read() {} }); r.on("data", (d) => { out.r = String(d); }); r.push("r1"); r.push(null);',
+    'function T(o) { Transform.call(this, o); } T.prototype = Object.create(Transform.prototype);',
+    'const t = new T({ transform(c, e, cb) { cb(null, String(c).toUpperCase()); } }); t.on("data", (d) => { out.t = String(d); }); t.end("t1");',
+    'function D(o) { Duplex.call(this, o); } D.prototype = Object.create(Duplex.prototype);',
+    'const d = new D({ read() {}, write(c, e, cb) { out.d = String(c); cb(); } }); d.end("d1");',
+    'function P(o) { PassThrough.call(this, o); } P.prototype = Object.create(PassThrough.prototype);',
+    'const p = new P(); p.on("data", (c) => { out.p = String(c); }); p.end("p1");',
+    'out.instances = [new W() instanceof Writable, r instanceof Readable, t instanceof Transform, d instanceof Duplex, p instanceof PassThrough];',
+    'out.unconstructed = [Writable() instanceof Writable, Readable() instanceof Readable, Duplex() instanceof Duplex, Transform() instanceof Transform];',
+    'out.names = [Writable.name, Readable.name, Duplex.name, Transform.name, PassThrough.name];',
+    'const keys = ["w", "r", "t", "d", "p", "instances", "unconstructed", "names"];',
+    'setTimeout(() => console.log("LEGACYSTREAMS " + JSON.stringify(Object.fromEntries(keys.map((k) => [k, out[k]])))), 50);',
+  ].join('\n'),
   'url.js': [
     'const url = require("url");',
     'const pick = (u) => ({ protocol: u.protocol, auth: u.auth, host: u.host, port: u.port, hostname: u.hostname, hash: u.hash, search: u.search, query: u.query, pathname: u.pathname, path: u.path, href: u.href });',
@@ -469,6 +490,13 @@ try {
     const hostFrom = spawnSync('node', ['-e', FILES['from.js']], { encoding: 'utf8' });
     assert.equal(hostFrom.status, 0, hostFrom.stderr);
     assert.equal(/^FROM .*$/m.exec(fromRun.stdout)?.[0], /^FROM .*$/m.exec(hostFrom.stdout)?.[0], 'Readable.from answers as node does');
+
+    const legacyRun = await terminal.run(`cd ${W} && node legacy-streams.js`);
+    const hostLegacy = spawnSync('node', ['-e', FILES['legacy-streams.js']], { encoding: 'utf8' });
+    assert.equal(hostLegacy.status, 0, hostLegacy.stderr);
+    assert.match(hostLegacy.stdout, /^LEGACYSTREAMS \{"w":"w1","r":"r1","t":"T1","d":"d1","p":"p1"/m, hostLegacy.stdout);
+    assert.equal(/^LEGACYSTREAMS .*$/m.exec(legacyRun.stdout)?.[0], /^LEGACYSTREAMS .*$/m.exec(hostLegacy.stdout)?.[0],
+      `a stream constructor called on its subclass's instance answers as node does: ${legacyRun.stdout}`);
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);
     const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });

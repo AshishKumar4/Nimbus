@@ -150,7 +150,7 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | npm install (registry and tarballs, every install facet and peer) | yes; the shared packument cache is not used, but an integrity-checked tarball may come from Nimbus's shared tarball cache |
 | curl, wget, dig, ping, `npm view`/`search`, gem/bundle | yes |
 | pip: PyPI metadata, and the wheel and source downloads (made inside CPython) | yes |
-| a node or bun program's fetch, `http`/`https` and clients over them (node-fetch, undici), WebSocket | yes |
+| a node or bun program's fetch, `http`/`https` and clients over them (axios, node-fetch, undici), WebSocket | yes |
 | one-shot Python, Ruby, Bash, Clang and WASI programs, and the Node, Bun, Python and Ruby REPLs | yes: every facet a session or a `loaderFacetHost` opens goes out through it |
 | a plain TCP socket a program opens | yes, to the egress's `connect()` |
 | TLS a runtime makes itself over a plain socket (CPython's `ssl`: pip's downloads, `urllib` over https) | yes: the egress's `connect()` carries the encrypted stream |

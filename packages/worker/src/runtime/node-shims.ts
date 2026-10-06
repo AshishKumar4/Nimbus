@@ -378,6 +378,33 @@ function __nimbusWasmDigest(bytes) {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
+// ──  RequestInit.cache, as Node takes it ─────────────────────────────
+// Node's fetch keeps no HTTP cache, so the modes it accepts all go to the
+// network. workerd accepts only "no-store" and "no-cache" (measured:
+// "default", "reload" and "force-cache" throw "Unsupported cache mode"), and
+// axios's fetch adapter passes cache: "default" on every request. A Request
+// or fetch drops those three: the request goes to the network, as Node's
+// would. What Node refuses ("only-if-cached" outside same-origin mode, an
+// unknown mode) workerd refuses too, and is left to it.
+const __nodeCacheInit = (init) => {
+  if (!init || typeof init !== "object") return init;
+  const mode = init.cache;
+  if (mode !== "default" && mode !== "reload" && mode !== "force-cache") return init;
+  const { cache, ...rest } = init;
+  return rest;
+};
+if (typeof globalThis.Request === "function" && !globalThis.__nimbusNodeRequestInstalled) {
+  globalThis.__nimbusNodeRequestInstalled = true;
+  // A Proxy, not a subclass: every Request stays the platform's, so
+  // instanceof holds for the ones the runtime itself makes.
+  globalThis.Request = new Proxy(globalThis.Request, {
+    construct(target, args, newTarget) {
+      return Reflect.construct(target, [args[0], __nodeCacheInit(args[1])], newTarget);
+    },
+  });
+}
+
+// ═══════════════════════════════════════════════════════════════════════
 // ──  fetch default User-Agent ───────────────────────────────────────
 // workerd's global fetch sends no User-Agent by default, but Node's
 // undici fetch adds \`User-Agent: node\`. Servers that require a UA
@@ -553,7 +580,7 @@ function __nimbusWasmDigest(bytes) {
     return response;
   };
   globalThis.fetch = function fetch(input, init) {
-    return __nimbusTrackOp(__barriered(input, init));
+    return __nimbusTrackOp(__barriered(input, __nodeCacheInit(init)));
   };
   // A fetch settles once the headers arrive; reading the body is a SECOND
   // in-flight operation on the same connection, and \`const r = await
@@ -8772,6 +8799,11 @@ const __processMod = {
     throw err;
   },
 };
+// Node's process reads as one: Object.prototype.toString gives "[object
+// process]", which axios (utils.kindOf) and others test to pick their Node
+// paths (axios: its http adapter rather than its fetch one). As Node defines
+// it: an own property, writable, not enumerable, not configurable.
+Object.defineProperty(__processMod, Symbol.toStringTag, { value: "process", writable: true, enumerable: false, configurable: false });
 
 function __nimbusRuntimeErrorTrace(error) {
   if (error && typeof error === "object") {

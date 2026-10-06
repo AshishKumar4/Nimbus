@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- axios works in a node child, with its http adapter (its Node default)
+  and its fetch adapter: the child's `process` is tagged as Node's
+  (`[object process]`, the same `Symbol.toStringTag` descriptor), which is
+  how axios picks its Node path; `fetch`/`Request` drop the cache modes
+  Node accepts and workerd refuses (`default`, `reload`, `force-cache`);
+  and the child's stream classes are callable as Node's are
+  (`Writable.call(this)`, as follow-redirects inherits).
 - A workspace's network can go through its host's egress
   (`NimbusWorkspaceOptions.egress`; for the session Durable Object a
   `NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint
