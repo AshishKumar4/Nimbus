@@ -17,7 +17,7 @@
 // or packages/worker/scripts/bundle-facet-workers.mjs).
 
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
+import { createHash, randomBytes } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
 import { createServer } from 'node:net';
 import { tmpdir } from 'node:os';
@@ -132,7 +132,10 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     for (const { name, version, entry } of staged) catalog.runtimes[name] = { default: version, versions: { [version]: entry } };
     const catalogPath = join(work, 'catalog.json');
     await Bun.write(catalogPath, JSON.stringify(catalog, null, 2));
-    await putObjects([...staged.flatMap((s) => s.puts), { key: 'catalog/v1.json', file: catalogPath, contentType: 'application/json' }], persist, work);
+    // The worker reads the catalog its NIMBUS_RUNTIME_CATALOG_SHA256 var
+    // names, by that digest: this one, staged under it and passed below.
+    const catalogSha256 = createHash('sha256').update(readFileSync(catalogPath)).digest('hex');
+    await putObjects([...staged.flatMap((s) => s.puts), { key: `catalog/sha256/${catalogSha256}.json`, file: catalogPath, contentType: 'application/json' }], persist, work);
 
     const secret = randomBytes(24).toString('hex');
     const deadline = Date.now() + bootTimeoutMs;
@@ -149,10 +152,24 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       child = spawn(WRANGLER, [
         'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
+        '--var', `NIMBUS_RUNTIME_CATALOG_SHA256:${catalogSha256}`,
         ...Object.entries(vars).flatMap(([key, value]) => ['--var', `${key}:${value}`]),
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
-      child.stdout.on('data', (d) => { log += d; });
-      child.stderr.on('data', (d) => { log += d; });
+      // wrangler dev rebuilds and reloads the worker when a file it bundles
+      // changes, which resets every session it serves: a test running then
+      // fails on a socket closed with 1006 and nothing else to say why
+      // (measured: touching one file under packages/worker/dist mid-test).
+      // So the reload is named where the failing test prints.
+      const watchReload = (d) => {
+        log += d;
+        if (base !== null && /Reloading local server/.test(String(d))) {
+          console.error('workerd-probe: wrangler dev reloaded the worker because a file it bundles changed '
+            + '(this tree was rebuilt while the probe ran); every session it served was reset, so a '
+            + 'command running now fails with a 1006 close');
+        }
+      };
+      child.stdout.on('data', watchReload);
+      child.stderr.on('data', watchReload);
       for (;;) {
         if (child.exitCode !== null) {
           if (attempt < 3 && /Address already in use/.test(log)) break;

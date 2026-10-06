@@ -110,6 +110,15 @@ export interface WasiFsState {
   root: string;
   /** Largest regular file the authority codec answers from a resident copy. */
   residentFileCap: number;
+  /** The credential the process's files are read as; null keeps every call on the authority. */
+  cred: WasiCred | null;
+}
+
+/** A process credential, as the session bound the facet's supervisor to it. */
+export interface WasiCred {
+  uid: number;
+  gid: number;
+  groups: readonly number[];
 }
 
 /** What `__wasiInitFS` installs. */
@@ -117,6 +126,13 @@ export interface WasiInitOptions {
   root?: string;
   preopens?: Array<{ wasiPath: string; vfsPath: string }>;
   residentFileCap?: number;
+  /**
+   * The credential the session runs this process as. With it, the process
+   * answers its lookups, stats and reads from its own copy of the namespace
+   * (runtime/wasi/resident-filesystem.ts) under the walk and permission
+   * rules the session applies; without it, every call goes to the session.
+   */
+  cred?: WasiCred;
 }
 
 /** What a live stat answers with. */
@@ -352,5 +368,7 @@ declare global {
 
   var __nimbusWasiLastSocketError: string;
   var __wasiAdoptSupervisor: ((sup: WasiSupervisorStub | null) => void) | undefined;
+  /** Send the process's held writes to the session at the end of a run: null, or what to report (wasi/preamble.ts). */
+  var __wasiSettleWrites: (() => Promise<string | null>) | undefined;
   var __nimbusVirtualSockets: VirtualSocketKernel | undefined;
 }

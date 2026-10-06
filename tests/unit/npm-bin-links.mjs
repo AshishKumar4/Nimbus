@@ -229,4 +229,28 @@ const manifestPath = npmBinManifestPath(nm);
   assert.equal((await resolveNpmBin(vfs, '/home/user/project', 'tool299'))?.targetPath, `${nm}/tool299/cli.js`);
 }
 
+// Commands with long names link whole: the shim waves close on owned path
+// bytes, not on a count alone. Red before: waves of W7_MAX_PATHS_PER_BATCH - 8
+// shims of ~270-byte paths passed W7's 256 KiB owned-path bound, and the
+// link failed "batch exceeds 262144 owned path bytes".
+{
+  const { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH } = await import('../../packages/platform/src/w7-frame.ts');
+  const harness = createSqliteVfsTestHarness();
+  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
+  const vfs = rawVfs.as(CRED_KERNEL);
+  const installer = new NpmInstaller(new ProcessFiles(rawVfs), harness.sql);
+  const resolved = new Map();
+  const count = W7_MAX_PATHS_PER_BATCH + 50;
+  const name = (i) => `${'long-command-name-'.repeat(13)}${i}`;
+  assert.ok((W7_MAX_PATHS_PER_BATCH - 8) * `${nm}/.bin/${name(0)}`.length > W7_MAX_OWNED_PATH_BYTES, 'the fixture must pass the byte bound at the count bound');
+  for (let i = 0; i < count; i++) {
+    vfs.mkdir(`${nm}/pkg${i}`, { recursive: true });
+    vfs.writeFile(`${nm}/pkg${i}/cli.js`, '');
+    resolved.set(`pkg${i}`, { name: `pkg${i}`, version: '1.0.0', bin: { [name(i)]: 'cli.js' } });
+  }
+  await installer.linkBins(resolved, { engine: vfs, nmDir: nm });
+  const shims = vfs.readdir(`${nm}/.bin`).map((entry) => entry.name).filter((entry) => entry.startsWith('long-command'));
+  assert.equal(shims.length, count, 'every long-named command is linked');
+}
+
 console.log('npm-bin-links: ok');

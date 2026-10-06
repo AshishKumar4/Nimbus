@@ -24,7 +24,14 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
-export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
+import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
+/**
+ * The clone's job marker, in its git directory from prepare until the clone
+ * is whole: the proof an abort needs that the destination is the clone's,
+ * and what tells every other git command the repository is not yet one.
+ */
+export declare const GIT_CLONE_JOB_MARKER = "nimbus-clone-job";
 export interface GitNetworkOpts {
     op: GitNetworkOp;
     /** Invoking process identity used to bind every supervisor filesystem RPC. */
@@ -67,12 +74,34 @@ export interface GitNetworkOpts {
     exclusiveMutationRoot?: string;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;
-    /** Clone-only bounded checkout entries per fresh facet invocation. */
-    checkoutChunkMaxEntries?: number;
-    /** Clone-only decoded blob bytes per fresh facet invocation. */
-    checkoutChunkMaxDecodedBytes?: number;
-    /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
-    checkoutChunkMaxWallMs?: number;
+    /**
+     * Trusted supervisor-only: hand the clone's lease to a new owner and return
+     * it (SqliteVFS.rotateExclusiveMutation), so every write the old owner's
+     * facets may still make is refused. Never sent to the dynamic worker.
+     */
+    rotateMutationOwner?: () => string;
+    /** fetch: `depth` counts from the current shallow boundary (git fetch --deepen). */
+    relative?: boolean;
+    /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
+    filter?: string;
+    /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
+    historyBlobsPerBatch?: number;
+    /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
+    historyCommitsPerChunk?: number;
+    /** Fast clone, full history: pieces in flight at once (tuning; CLONE_HISTORY_CONCURRENCY). */
+    historyConcurrency?: number;
+    /** Fast clone, full history: work units one invocation decodes (tuning; processor.ts by default). */
+    historyBudgetUnits?: number;
+    /** Fast clone: which attempt at a batch or history piece this is (its temporary pack's name). */
+    attempt?: number;
+    /** Fast clone: how long a batch or history piece may run before it is retried (tuning; CLONE_PIECE_TIMEOUT_MS). */
+    pieceTimeoutMs?: number;
+    /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
+    oids?: string[];
+    /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
+    blobsPerBatch?: number;
+    /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
+    batchConcurrency?: number;
 }
 export interface GitSupervisorRpcCounters {
     stat: number;
@@ -80,6 +109,9 @@ export interface GitSupervisorRpcCounters {
     readdir: number;
     readFile: number;
     fsReadRange: number;
+    /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
+    fsWriteRange: number;
+    rename: number;
     writeBatchStream: number;
     readlink: number;
     symlink: number;
@@ -92,7 +124,7 @@ export interface GitMetadataOverlayStats {
     maxEntries: number;
     maxAccountedBytes: number;
 }
-export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-checkout' | 'clone-abort';
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish' | 'clone-abort';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
     invocationId: string;
@@ -110,10 +142,10 @@ export interface GitNetworkPhaseDiagnostic {
     };
     w7Waves: number;
     supervisorRpc: GitSupervisorRpcCounters;
-    /** Whether clone-checkout started without module-local job state. */
-    cold?: boolean;
+    /** The invocation's wave writer: what it published and how long it waited. */
+    waves?: WaveStats;
 }
-export type GitNetworkErrorCode = 'GitCloneBudgetExceeded' | 'FreshCheckoutDirectoryLimitError';
+export type GitNetworkErrorCode = 'GitCloneBudgetExceeded';
 export interface GitNetworkResult {
     success: boolean;
     error?: string;
@@ -127,40 +159,21 @@ export interface GitNetworkResult {
     errorCode?: GitNetworkErrorCode;
     budget?: GitCloneBudgetDiagnostic;
     cleanupError?: string;
+    /** fetch-objects: objects the promisor pack holds. */
+    fetchedObjects?: number;
 }
 export interface GitCloneBudgetDiagnostic {
     phase: GitCloneInvocationPhase;
-    chunksCompleted: number;
-    processedEntries: number;
-    decodedBytes: number;
+    /** Checkout batches finished, and the files they wrote. */
+    batchesCompleted: number;
+    filesWritten: number;
     elapsedMs: number;
     limitMs: number;
-}
-interface GitHttpRequest {
-    url: unknown;
-    method?: string;
-    body?: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null;
-    [key: string]: unknown;
-}
-interface GitHttpResponse {
-    statusCode: number;
-    body?: {
-        cancel?: () => unknown;
-    } | null;
-    [key: string]: unknown;
-}
-interface GitHttp {
-    request(req: GitHttpRequest): Promise<GitHttpResponse>;
-}
-interface GitHttpRetryOptions {
-    maxAttempts?: number;
-    backoffMs?: readonly number[];
 }
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
 export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: GitNetworkOpts): Promise<GitNetworkResult>;
-export declare function createRetryingGitHttp(baseHttp: GitHttp, opts?: GitHttpRetryOptions): GitHttp;
 /**
  * Generate the dynamic worker code for the git network facet.
  *
@@ -169,5 +182,4 @@ export declare function createRetryingGitHttp(baseHttp: GitHttp, opts?: GitHttpR
  * fs adapter, and flushes writes through W7 v3.
  */
 export declare function assembleGitNetworkFacetSource(): string;
-export {};
 //# sourceMappingURL=network-facet.d.ts.map

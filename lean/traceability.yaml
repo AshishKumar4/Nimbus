@@ -998,7 +998,7 @@ requirements:
       - Nimbus.Vfs.CompositeBeneath.beneath_root_searched
     tsRefs:
       - packages/core/src/vfs/composite.ts#CompositeVFS
-      - packages/core/src/runtime/sqlite-runtime-fs-bridge.ts#walkBeneath
+      - packages/core/src/runtime/beneath-walk.ts#walkBeneath
     refinement:
       - lean/fixtures/beneath.json :: tests/unit/beneath-refinement.mjs
     remainingEvidence:

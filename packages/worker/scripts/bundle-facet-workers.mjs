@@ -177,6 +177,80 @@ async function bundleVirtualSocketKernel() {
 }
 
 /**
+ * The wave writer (@nimbus-sh/platform src/wave-writer.ts) as an IIFE bound
+ * to the module-local `__nimbusWaveWriter`: the facets that write W7 waves
+ * (git's network facet, npm's install facet) splice it ahead of their own
+ * body and publish every write through it. Scoped, so its W7 encoder never
+ * meets the W7 preamble's names.
+ */
+async function bundleWaveWriter() {
+  const result = await build({
+    entryPoints: [join(platformRoot, 'src', 'wave-writer.ts')],
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusWaveWriter',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/wave-writer] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/^var __nimbusWaveWriter = /m.test(src)) {
+    throw new Error('[bundle-facet-workers/wave-writer] the bundle no longer binds __nimbusWaveWriter');
+  }
+  return src;
+}
+
+/**
+ * The git pack layer (src/git/pack/facet.ts) as an IIFE bound to the
+ * module-local `__nimbusGitPack`, spliced into the git network facet beside
+ * the wave writer. Its node:crypto and node:zlib imports resolve to the
+ * facet module's own namespace imports of them (GIT_PACK_NODE_IMPORTS),
+ * which an IIFE cannot make itself.
+ */
+async function bundleGitPack() {
+  const builtins = {
+    'node:crypto': ['__nimbusNodeCrypto', ['createHash']],
+    'node:zlib': ['__nimbusNodeZlib', ['inflateSync', 'deflateSync', 'crc32']],
+  };
+  const result = await build({
+    entryPoints: [join(root, 'src', 'git', 'pack', 'facet.ts')],
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusGitPack',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+    plugins: [{
+      name: 'facet-node-builtins',
+      setup(pluginBuild) {
+        pluginBuild.onResolve({ filter: /^node:(crypto|zlib)$/ }, (args) => ({ path: args.path, namespace: 'facet-node-builtin' }));
+        pluginBuild.onLoad({ filter: /.*/, namespace: 'facet-node-builtin' }, (args) => {
+          const [binding, names] = builtins[args.path];
+          return { contents: names.map((name) => `export const ${name} = ${binding}.${name};`).join('\n'), loader: 'js' };
+        });
+      },
+    }],
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/git-pack] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/^var __nimbusGitPack = /m.test(src)) {
+    throw new Error('[bundle-facet-workers/git-pack] the bundle no longer binds __nimbusGitPack');
+  }
+  return src;
+}
+
+/**
  * The answering supervisor client as a self-contained IIFE that installs
  * globalThis.__nimbusAnsweringSupervisor, so a facet body that is generated
  * text runs the one implementation the bundled facets import.
@@ -212,6 +286,14 @@ async function bundleAnsweringSupervisor() {
  * same scope, so any of these that esbuild renamed or scoped would be a
  * ReferenceError inside the facet — visible only as a dead guest.
  */
+/** The resident store's functions the WASI shim calls (wasi/preamble.ts declares them). */
+const WASI_RESIDENT_STORE_TOP_LEVEL = [
+  '__residentBindInMemory',
+  '__residentSetStorage',
+  '__residentBootLazy',
+  '__residentNamespaceView',
+];
+
 const WASI_REQUIRED_TOP_LEVEL = [
   '__wasiInitFS',
   '__wasiMakeImports',
@@ -261,6 +343,20 @@ async function bundleWasiInstance() {
   // syntax error, and callers append their own `export { … }`.
   src = src.replace(/^export\s+(async\s+function|function|const|let|var|class)\b/gm, '$1');
   src = src.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
+  // The resident store a WASI process answers its lookups from: the same
+  // source a node process splices (FACET_RESIDENT_STORE_SOURCE), evaluated in
+  // a scope of its own. A module may hold a node process's store too (the
+  // opencode runner carries both), and the two are different processes' state:
+  // one instance each, and no top-level name of one can meet the other's.
+  const { FACET_RESIDENT_STORE_SOURCE } = await import(pathToFileURL(join(root, 'dist', 'vfs', 'facet-resident-store.js')).href);
+  const storeMissing = WASI_RESIDENT_STORE_TOP_LEVEL.filter(
+    (name) => !new RegExp(`^(?:async\\s+)?function\\s+${name}\\b`, 'm').test(FACET_RESIDENT_STORE_SOURCE),
+  );
+  if (storeMissing.length > 0) {
+    throw new Error(`[bundle-facet-workers/wasi-instance] the resident store no longer declares ${storeMissing.join(', ')}, which the WASI shim calls`);
+  }
+  src = `const __wasiResidentStore = (function wasiResidentStore() {\n${FACET_RESIDENT_STORE_SOURCE}\n`
+    + `return { ${WASI_RESIDENT_STORE_TOP_LEVEL.join(', ')} };\n})();\n${src}`;
 
   const missing = WASI_REQUIRED_TOP_LEVEL.filter(
     (name) => !new RegExp(`^(?:async\\s+)?(?:function|const|let|var|class)\\s+${name}\\b`, 'm').test(src)
@@ -610,6 +706,8 @@ async function main() {
     throw new Error('[bundle-facet-workers/http2-module] the bundle no longer declares function createHttp2Module');
   }
 
+  const waveWriter = await bundleWaveWriter();
+
   const tarEncoded = JSON.stringify(tarStripped);
   const w7Encoded = JSON.stringify(w7Stripped);
   const outPath = join(root, 'src', 'loaders', 'generated-workers.ts');
@@ -621,6 +719,7 @@ async function main() {
     ' * Produced by scripts/bundle-facet-workers.mjs from:',
     ' *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)',
     ' *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)',
+    ' *   - @nimbus-sh/platform src/wave-writer.ts (the W7 wave writer, as an IIFE)',
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
     ' *',
@@ -641,6 +740,9 @@ async function main() {
     `export const TAR_STREAM_PREAMBLE: string = ${tarEncoded};`,
     '',
     `export const W7_FRAME_PREAMBLE: string = ${w7Encoded};`,
+    '',
+    '/** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */',
+    `export const WAVE_WRITER_PREAMBLE: string = ${JSON.stringify(waveWriter)};`,
     '',
     '/** Declares `function createEsmResolver(host)`; the node shims call it. */',
     `export const ESM_RESOLVER_PREAMBLE: string = ${JSON.stringify(esmResolver)};`,
@@ -719,6 +821,27 @@ async function main() {
     '',
   ].join('\n'));
 
+  const gitPackSrc = await bundleGitPack();
+  const gitPackOutPath = join(root, 'src', 'git', 'pack', 'facet.generated.ts');
+  writeFileSync(gitPackOutPath, [
+    '/**',
+    ' * facet.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs from:',
+    ' *   - src/git/pack/facet.ts',
+    ' *',
+    ' * An IIFE binding `__nimbusGitPack` in the module that splices it, the git',
+    ' * network facet, after GIT_PACK_NODE_IMPORTS.',
+    ' *',
+    ` * Size: ${(gitPackSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    "export const GIT_PACK_NODE_IMPORTS: string = \"import * as __nimbusNodeCrypto from 'node:crypto';\\nimport * as __nimbusNodeZlib from 'node:zlib';\";",
+    '',
+    `export const GIT_PACK_SRC: string = ${JSON.stringify(gitPackSrc)};`,
+    '',
+  ].join('\n'));
+
   const bashSrc = await bundleBashRunner();
   const bashOutPath = join(coreRoot, 'src', 'runtime', 'bash-runner.generated.ts');
   writeFileSync(bashOutPath, [
@@ -776,7 +899,7 @@ async function main() {
 // generated files from source and compare, rather than restating the esbuild
 // settings — a second copy of those settings is exactly the drift such a test
 // exists to catch. main() therefore runs only when this file is the entry point.
-export { bundleWasiInstance, bundleBashRunner, bundleEsbuildCli, bundleOxcFacet, bundleAnsweringSupervisor };
+export { bundleWasiInstance, bundleBashRunner, bundleEsbuildCli, bundleOxcFacet, bundleAnsweringSupervisor, bundleWaveWriter };
 
 if (process.argv[1] && pathToFileURL(process.argv[1]).href === import.meta.url) {
   main().catch((e) => {

@@ -36,7 +36,10 @@ export class ProcessInputStore {
             return { ok: false };
         return this.enqueue(state, { data: text, ended: false }, text.length);
     }
-    /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+    /**
+     * Queue bytes exactly as given: a pipe or redirect, which need not be text.
+     * Refused for room, it says \`full\`: its writer waits and writes again.
+     */
     writeBytes(pid, data) {
         if (!isValidPid(pid))
             return { ok: false };
@@ -46,7 +49,7 @@ export class ProcessInputStore {
         if (state.closed)
             return { ok: false };
         if (state.bytes + data.byteLength > this.maxQueuedBytes)
-            return { ok: false };
+            return { ok: false, full: true };
         return this.enqueue(state, { data, ended: false }, data.byteLength);
     }
     resize(pid, columns, rows) {
@@ -101,6 +104,28 @@ export class ProcessInputStore {
         if (!state || state.closed)
             return Promise.resolve(false);
         return new Promise((resolve) => state.drained.push(() => resolve(!state.closed && this.pids.get(pid) === state)));
+    }
+    /**
+     * Put input a reader took back in front of the queue, as it was: a process
+     * that stopped before using it, run again (worker runtime/stop-replay.ts).
+     * Past the queue's bound if need be, and after the channel ended too: the
+     * writer wrote it within both.
+     */
+    unread(pid, packets) {
+        const state = this.pids.get(pid);
+        if (!state || packets.length === 0)
+            return;
+        state.packets = packets.concat(state.packets);
+        for (const packet of packets)
+            state.bytes += packet.data.length;
+        // A reader already waiting takes what came back.
+        const waiter = state.waiters.shift();
+        if (waiter) {
+            clearTimeout(waiter.timer);
+            const next = state.packets.shift();
+            state.bytes -= next.data.length;
+            waiter.resolve(next);
+        }
     }
     end(pid) {
         const state = this.pids.get(pid);

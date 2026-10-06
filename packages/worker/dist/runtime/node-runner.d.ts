@@ -67,8 +67,6 @@ export interface RunFreshOpts {
         read(): Promise<string | null>;
         readBytes?(maxLength: number): Promise<Uint8Array | null>;
     };
-    /** Its code reads stdin synchronously (RuntimeRunOpts.stdinReadsSync). */
-    stdinReadsSync?: boolean;
     /** A `< file` redirect: fd 0 is this file (RuntimeRunOpts.stdinFile). */
     stdinFile?: {
         path: string;
@@ -93,6 +91,8 @@ export interface RunFreshOpts {
     invokerPid?: number;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
+    /** Its launcher writes and ends its stdin (RuntimeRunOpts.stdinWriter). */
+    stdinWriter?: boolean;
     bundleProfile?: FacetBundleProfile;
     /** Shell abort (Ctrl+C): aborting this kills the run through the
      *  terminator exec registers on the pid. */

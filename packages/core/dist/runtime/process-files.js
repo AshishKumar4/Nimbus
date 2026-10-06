@@ -160,7 +160,7 @@ class GuardedProcessBridge {
     mkdir(path, options) { this.guard(); return this.target.mkdir(path, options); }
     unlink(path) { this.guard(); return this.target.unlink(path); }
     rmdir(path) { this.guard(); return this.target.rmdir(path); }
-    rename(from, to) { this.guard(); return this.target.rename(from, to); }
+    rename(from, to, options) { this.guard(); return this.target.rename(from, to, options); }
     readlink(path) { this.guard(); return this.target.readlink(path); }
     linkLeadsTo(path, link) { this.guard(); return this.target.linkLeadsTo(path, link); }
     symlink(target, path) { this.guard(); return this.target.symlink(target, path); }
@@ -384,6 +384,20 @@ export class ProcessFiles {
         finally {
             this.processes.delete(pid);
             this.engine.revokeAppendWriters(pid);
+        }
+    }
+    /** See NimbusFilesystemAuthority.rewindProcess. */
+    async rewindProcess(pid) {
+        if (this.retired.has(pid))
+            return;
+        this.listings.delete(pid);
+        const scope = this.processes.get(pid);
+        try {
+            if (scope)
+                this.closeScope(scope);
+        }
+        finally {
+            this.processes.delete(pid);
         }
     }
     /**
@@ -790,8 +804,8 @@ class AwaitingProcessBridge {
     rmdir(path) {
         return this.either([path], () => this.bridge.rmdir(path), async () => this.namespace.rmdir((await this.path(path, false))));
     }
-    rename(from, to) {
-        return this.either([from, to], () => this.bridge.rename(from, to), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
+    rename(from, to, options) {
+        return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
     }
     realpath(path) {
         return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));

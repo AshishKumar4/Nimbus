@@ -50,8 +50,11 @@ export function buildCPythonSocketProcessWorker(preamble: string): string {
     '  const ports = await globalThis.__cpythonListeningPorts();',
     '  const registrations = globalThis.__nimbusVirtualPortRegistrationPromises || [];',
     '  if (registrations.length > 0) await Promise.allSettled(registrations.splice(0));',
+    // The run's result rides along either way: an error in it (a write the
+    // session refused while the run settled) ends the process before any port
+    // is advertised, which only the router can do (startResidentCPython).
     '  if (ports.length > 0) {',
-    '    return { state: "listening", port: ports[0], stdout: result.stdout, stderr: result.stderr };',
+    '    return { state: "listening", port: ports[0], result, stdout: result.stdout, stderr: result.stderr };',
     '  }',
     '  return { state: "exited", result, stdout: result.stdout, stderr: result.stderr };',
     '}',
@@ -80,7 +83,7 @@ const CPythonBootSchema = z.object({
   port: z.number().optional(),
   stdout: z.string().optional(),
   stderr: z.string().optional(),
-  result: z.object({ exitCode: z.number().optional() }).passthrough().optional(),
+  result: z.object({ exitCode: z.number().optional(), error: z.string().optional() }).passthrough().optional(),
 }).passthrough();
 
 interface CPythonSpawnResult extends CPythonFacetResult {
@@ -113,6 +116,16 @@ export function cpythonResidentStart(facetMgr: FacetManager): CPythonResidentSta
       return { exitCode: 1, stdout: '', stderr: 'python process boot failed\n' };
     }
     const data = boot.data;
+
+    // A start that failed, a refused write included, is a failed process
+    // whether or not it left a server listening: it is ended and reported,
+    // naming what failed, and no port of it is advertised.
+    const failure = data.result?.error;
+    if (failure !== undefined) {
+      const exitCode = data.result?.exitCode || 1;
+      facetMgr.finishProcess(spawned.pid, exitCode, failure);
+      return { exitCode, stdout: data.stdout || '', stderr: `${data.stderr || ''}python: ${failure}\n` };
+    }
 
     if (data.state === 'listening' && typeof data.port === 'number' && data.port > 0) {
       await facetMgr.registerPort(spawned.pid, data.port);

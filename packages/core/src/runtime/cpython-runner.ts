@@ -347,8 +347,9 @@ export function makeCPythonRunnerFactory(deps: {
         progName = parsed.scriptPath;
         pyArgv = [parsed.scriptPath, ...parsed.scriptArgs];
       } else {
-        const stdinReader = ctx.stdin;
-        userCode = (stdinReader && typeof stdinReader.read === 'function' ? await stdinReader.read() : '') ?? '';
+        // The program is all of stdin, to its end, as CPython reads `-`: a
+        // pipe delivers it in pieces, as its writer writes them.
+        userCode = ctx.stdin ? await ctx.stdin.readAll() : '';
         pyArgv = ['-', ...parsed.scriptArgs];
       }
 
@@ -388,6 +389,8 @@ export function makeCPythonRunnerFactory(deps: {
         cwd,
         pythonHome: `/${installRoot.replace(/^\/+/, '')}`,
         supervisorPid: ctx.pid,
+        // What the interpreter's own copy of the namespace is read as (wasi/resident-filesystem.ts).
+        cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] },
       };
 
       // A script or `-m` can bind a port and keep serving, and such a program

@@ -7,6 +7,7 @@ import { buildSessionSupervisorOps } from '../../packages/worker/src/session/sup
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
 import { rpcDestroy } from '../../packages/worker/src/session/programmatic.ts';
 
@@ -24,7 +25,7 @@ const { SupervisorRPC } = await import('../../packages/worker/src/session/superv
     const processes = new SessionProcessSupervisor();
     const process = processes.spawn('node', [], '/', { cred: CRED_KERNEL });
     const ops = buildSessionSupervisorOps({ sqliteFs, processes, ensureSqliteFs() {} });
-    const rpc = new SupervisorRPC({ props: { doId: 'session', pid: process.pid } }, {
+    const rpc = new SupervisorRPC({ props: { doId: 'session', pid: process.pid, writerId: 'exclusive-run' } }, {
       NIMBUS_SESSION: {
         idFromName: (id) => ({ toString: () => id }),
         idFromString: (id) => ({ toString: () => id }),
@@ -37,6 +38,54 @@ const { SupervisorRPC } = await import('../../packages/worker/src/session/superv
     sqliteFs.releaseExclusiveMutation(lease.owner);
     await rpc.unlink('/repo/file');
     assert.equal(files.exists('repo/file'), false);
+  } finally { harness.db.close(); }
+}
+
+// A binding minted under the lease (props.mutationOwner, as git clone's facet
+// binding is) presents it on its ranged writes, truncations and renames, sent
+// once or delivered exactly once; a binding without it is refused, EBUSY.
+for (const delivered of [false, true]) {
+  const harness = createSqliteVfsTestHarness();
+  try {
+    const sqliteFs = new SqliteVFS(harness.sql, harness.ctx);
+    const files = sqliteFs.as(CRED_KERNEL);
+    files.mkdir('repo');
+    const processes = new SessionProcessSupervisor();
+    const process = processes.spawn('node', [], '/', { cred: CRED_KERNEL });
+    const supervisorDeliveries = delivered ? new SupervisorDeliveries() : undefined;
+    const ops = buildSessionSupervisorOps({ sqliteFs, processes, supervisorDeliveries, ensureSqliteFs() {} });
+    const binding = (props) => new SupervisorRPC({
+      props: {
+        doId: 'session',
+        pid: process.pid,
+        writerId: 'leased-run',
+        ...(supervisorDeliveries ? { hostIncarnation: supervisorDeliveries.incarnation } : {}),
+        ...props,
+      },
+    }, {
+      NIMBUS_SESSION: {
+        idFromName: (id) => ({ toString: () => id }),
+        idFromString: (id) => ({ toString: () => id }),
+        get: () => ({ supervisorOp: (envelope) => ops.dispatch(envelope) }),
+      },
+    });
+    const lease = sqliteFs.acquireExclusiveMutation('repo');
+    const owner = binding({ mutationOwner: lease.owner });
+    const other = binding({});
+    await owner.fsWriteRange('/repo/pack', 0, new TextEncoder().encode('PACK'));
+    await owner.fsWriteRange('/repo/pack', 4, new TextEncoder().encode('-data'));
+    assert.equal(files.readFileString('repo/pack'), 'PACK-data');
+    await assert.rejects(other.fsWriteRange('/repo/pack', 9, new TextEncoder().encode('!')), (error) => error.code === 'EBUSY');
+    await assert.rejects(other.fsTruncate('/repo/pack', 4), (error) => error.code === 'EBUSY');
+    await assert.rejects(other.rename('/repo/pack', '/repo/named.pack'), (error) => error.code === 'EBUSY');
+    assert.equal(files.readFileString('repo/pack'), 'PACK-data');
+    await owner.fsTruncate('/repo/pack', 4);
+    await owner.rename('/repo/pack', '/repo/named.pack');
+    assert.equal(files.readFileString('repo/named.pack'), 'PACK');
+    assert.equal(files.exists('repo/pack'), false);
+    sqliteFs.releaseExclusiveMutation(lease.owner);
+    await other.fsWriteRange('/repo/named.pack', 4, new TextEncoder().encode('!'));
+    assert.equal(files.readFileString('repo/named.pack'), 'PACK!');
   } finally { harness.db.close(); }
 }
 

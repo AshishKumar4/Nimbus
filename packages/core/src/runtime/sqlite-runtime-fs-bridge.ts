@@ -3,7 +3,10 @@ import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
-import { errnoDescription } from '../vfs/vfs-error.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { fsError, MAX_LINK_HOPS, modeAllows, walkBeneath, type FsError } from './beneath-walk.js';
+
+export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
 import type {
   RuntimeFileHandle,
   RuntimeFsPath,
@@ -17,6 +20,7 @@ import type {
   VfsAcquireResult,
   VfsListPage,
   VfsMutationReceipt,
+  RuntimeMutationOwner,
 } from './os-contracts.js';
 
 interface OpenDescription {
@@ -206,7 +210,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           ino: 0,
           nlink: 1,
           type: 'symlink',
-          size: new TextEncoder().encode(target).byteLength,
+          size: utf8Length(target),
           ctime: now,
           atime: now,
           mtime: now,
@@ -358,10 +362,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     path: RuntimeFsPath,
     offset: number,
     bytes: Uint8Array,
-    options: { createParents?: boolean; expectedRevision?: number } = {},
+    options: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner = {},
   ): VfsMutationReceipt {
     return called({ syscall: 'write', path }, () => {
-      const located = this.locateMutation(path, true, 'write');
+      const located = this.locateMutation(path, true, 'write', options.mutationOwner);
       if (located.mount) {
         if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
         if (!located.mount.writeRange) throw fsError('ENOTSUP', 'write', path);
@@ -373,8 +377,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       this.assertExpectedRevision(p, options.expectedRevision);
       if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'write', path);
       if (options.createParents === true) this.ensureParent(p);
-      return this.receipted(p, () => this.vfs.writeRange(p, offset, bytes));
+      return this.receipted(p, () => this.owned(options.mutationOwner).writeRange(p, offset, bytes));
     });
+  }
+
+  /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
+  private owned(owner: string | undefined): CredentialedVfs {
+    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner });
   }
 
   appendOnce(
@@ -403,15 +412,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   truncate(
     path: RuntimeFsPath,
     size: number,
-    options: { followSymlinks?: boolean } = {},
+    options: { followSymlinks?: boolean } & RuntimeMutationOwner = {},
   ): VfsMutationReceipt {
     return called({ syscall: 'truncate', path }, () => {
-      const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate');
+      const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate', options.mutationOwner);
       if (located.mount) { mountOp(located.mount.truncate, 'truncate', path)(located.path, size); return this.mountReceipt(); }
       const p = located.path;
       if (!this.vfs.exists(p)) throw fsError('ENOENT', 'truncate', path);
       if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'truncate', path);
-      return this.receipted(p, () => this.vfs.truncate(p, size));
+      return this.receipted(p, () => this.owned(options.mutationOwner).truncate(p, size));
     });
   }
 
@@ -634,12 +643,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  rename(from: RuntimeFsPath, to: RuntimeFsPath): void {
+  rename(from: RuntimeFsPath, to: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
     // Every refusal names the call's own two paths, whichever lookup met it.
     const call: FsCall = { syscall: 'rename', path: from, dest: to };
     return called(call, () => {
-      const source = this.locateMutation(from, false, call);
-      const target = this.locateMutation(to, false, call);
+      const source = this.locateMutation(from, false, call, options.mutationOwner);
+      const target = this.locateMutation(to, false, call, options.mutationOwner);
       // A name on a mount is renamed by the namespace: within one mount by that
       // mount, and otherwise refused in the namespace's order (EBUSY for a
       // mount point, then EXDEV between two filesystems and on a backend with
@@ -658,7 +667,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         const staleDestination = this.legacySymlinks.isSymlink(newKey);
         if (staleDestination) this.legacySymlinks.assertMutable(newKey);
         this.assertParentDirectory(newPath, call);
-        this.vfs.rename(oldPath, newPath);
+        this.owned(options.mutationOwner).rename(oldPath, newPath);
         if (staleDestination) this.legacySymlinks.delete(newKey);
         return;
       }
@@ -929,14 +938,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
-  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): Located {
+  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall, owner?: string): Located {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
-    this.leaseAllows(this.pathArgument(path));
+    this.leaseAllows(this.pathArgument(path), owner);
     const located = this.locate(path, followSymlinks);
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
     // And the name it reaches, on a mount as on SQLite.
-    this.leaseAllows(located.path);
+    this.leaseAllows(located.path, owner);
     return located;
   }
 
@@ -946,8 +955,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * caller's own lease root (EPERM). Leases are held on storage keys: a
    * confined caller's /tmp/x is its private file, not the shared tmp/x.
    */
-  private leaseAllows(path: string): void {
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)));
+  private leaseAllows(path: string, owner?: string): void {
+    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner);
   }
 
 
@@ -1149,89 +1158,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   futimes(handleId: number, atime: number, mtime: number): void { this.description(handleId).node.utimes(atime, mtime); }
 }
 
-/** Links followed before ELOOP (Linux MAXSYMLINKS). */
-const MAX_LINK_HOPS = 40;
-
 /** A `..` component in a path's spelling. */
 const DOT_DOT_SEGMENT = /(?:^|\/)\.\.(?:\/|$)/;
-
-/** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
-export type BeneathLookup = { readonly stat: string } | { readonly readlink: string };
-type BeneathAnswer = { type: string; mode?: number; uid?: number; gid?: number } | string | null;
-
-/**
- * A lookup beneath `root` (RESOLVE_BENEATH, a WASI preopen), as the
- * namespace walk does it (VFS-COMP-006): the root must be reachable (every
- * directory above it searchable); an absolute path and `..` at the root are
- * ENOTCAPABLE; each component needs the directory it leaves to be a
- * searchable directory; a missing component is ENOENT unless it is the last.
- * Links resolve (the last only when `follow`), 40 hops, then null (ELOOP):
- * a relative one from its directory, an absolute one from the namespace's
- * `/`, as the unrestricted walk resolves them, and what the walk reaches
- * must lie at or under the root, else ENOTCAPABLE. A path the namespace
- * hands to its backend whole beneath this root (`handedOver`, asked with
- * where the lookup goes on to lexically: CompositeVFS.resolvedByBackend
- * within the root, a resolvesPaths mount whose point lies at or under it, so
- * the backend's own links stay beneath it) is neither looked up nor searched
- * here, nor are its links read: its components are taken lexically, `..`
- * included, and that backend answers for them. The one walk for every face: it yields
- * its lookups, which the synchronous bridge answers at once and a face over
- * asynchronous mounts awaits. `root` is normalized; the answer is the
- * resolved path, normalized.
- */
-export function* walkBeneath(
-  root: string, path: RuntimeFsPath, follow: boolean, cred: { uid: number; gid: number; groups: readonly number[] },
-  handedOver: (path: string, to: string) => boolean,
-): Generator<BeneathLookup, string | null, BeneathAnswer> {
-  const name = typeof path === 'string' ? path : path.path;
-  if (root !== '') yield { stat: '/' + root };
-  if (name.startsWith('/')) throw fsError('ENOTCAPABLE', 'path', path);
-  const pending = name.split('/').filter(Boolean);
-  const resolved = root === '' ? [] : root.split('/');
-  let hops = 0;
-  while (pending.length > 0) {
-    const segment = pending.shift()!;
-    const dir = resolved.join('/');
-    const candidate = dir === '' ? segment : `${dir}/${segment}`;
-    const to = '/' + [dir, segment, ...pending].filter(Boolean).join('/');
-    const handed = handedOver('/' + dir, to) || (segment !== '.' && segment !== '..' && handedOver('/' + candidate, to));
-    if (!handed) {
-      const searched = (yield { stat: '/' + dir }) as Exclude<BeneathAnswer, string>;
-      if (searched === null) throw fsError('ENOENT', 'path', path);
-      if (searched.type !== 'directory') throw fsError('ENOTDIR', 'path', path);
-      if (!modeAllows(searched, 1, cred)) throw fsError('EACCES', 'path', path);
-    }
-    if (segment === '.') continue;
-    if (segment === '..') {
-      if (dir === root) throw fsError('ENOTCAPABLE', 'path', path);
-      resolved.pop();
-      continue;
-    }
-    if (handed) {
-      resolved.push(segment);
-      continue;
-    }
-    // Every component already walked is a directory, not a link, so a
-    // lookup by its literal name is the walk's own.
-    const isFinal = pending.length === 0;
-    const stat = (yield { stat: '/' + candidate }) as Exclude<BeneathAnswer, string>;
-    if (stat === null && !isFinal) throw fsError('ENOENT', 'path', path);
-    if (stat === null || stat.type !== 'symlink' || (isFinal && !follow)) {
-      resolved.push(segment);
-      continue;
-    }
-    if (++hops > MAX_LINK_HOPS) return null;
-    const target = (yield { readlink: '/' + candidate }) as string | null;
-    // A link whose target the namespace has no name for (a mount nested in
-    // its backend covers it) cannot be followed beneath the root.
-    if (target === null) throw fsError('ENOTCAPABLE', 'path', path);
-    if (target.startsWith('/')) resolved.length = 0;
-    pending.unshift(...target.split('/').filter(Boolean));
-  }
-  const reached = resolved.join('/');
-  if (root !== '' && reached !== root && !reached.startsWith(root + '/')) throw fsError('ENOTCAPABLE', 'path', path);
-  return reached;
-}
 
 /** A confined path, and whether a mount other than the SQLite root owns it. */
 type Located =
@@ -1260,15 +1188,6 @@ function removeTree(mount: SyncVFS, path: string): void {
   }
 }
 
-/** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
-export function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
-  const requested = want & 7;
-  if (requested === 0 || stat.mode === undefined) return true;
-  const perms = stat.mode & 0o777;
-  if (cred.uid === 0) return (requested & 1) === 0 || (perms & 0o111) !== 0;
-  const shift = cred.uid === stat.uid ? 6 : cred.gid === stat.gid || cred.groups.includes(stat.gid ?? -1) ? 3 : 0;
-  return ((perms >> shift) & requested) === requested;
-}
 
 function normalizeOpenFlags(flags: RuntimeOpenFlags): RuntimeFileHandle['flags'] {
   return {
@@ -1291,14 +1210,6 @@ interface FsCall {
   dest?: RuntimeFsPath;
 }
 
-/** An error carrying the fields Node's `fs` puts on a failed syscall. */
-interface FsError extends Error {
-  code: string;
-  syscall: string;
-  path: string;
-  /** The second path of a call that names two (rename, symlink's link). */
-  dest?: string;
-}
 
 /** mkdir -p of a mounted path's parent. */
 function mountParents(mount: SyncVFS, path: string): void {
@@ -1306,22 +1217,6 @@ function mountParents(mount: SyncVFS, path: string): void {
   if (parent !== '') mount.mkdir(parent, { recursive: true });
 }
 
-/**
- * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
- * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
- */
-export function fsError(
-  code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath, options: { detail?: string; cause?: unknown } = {},
-): FsError {
-  const name = typeof path === 'string' ? path : path.path;
-  const second = dest === undefined ? undefined : typeof dest === 'string' ? dest : dest.path;
-  const words = options.detail ?? errnoDescription(code);
-  const message = `${code}: ${words === undefined ? '' : `${words}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
-  const error = new Error(message, options.cause === undefined ? undefined : { cause: options.cause });
-  return Object.assign(error, {
-    code, syscall, path: name, ...(second === undefined ? {} : { dest: second }), ...(options.detail === undefined ? {} : { detail: options.detail }),
-  });
-}
 
 /** Node's error for `call` failing with `code`, built from the call's own arguments. */
 function callError(code: string, call: FsCall, options?: { detail?: string; cause?: unknown }): FsError {

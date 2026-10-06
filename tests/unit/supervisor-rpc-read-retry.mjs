@@ -20,7 +20,8 @@ mock.module('cloudflare:workers', () => ({
     constructor(ctx, env) { this.ctx = ctx; this.env = env; }
   },
 }));
-const { SupervisorRPC, SUPERVISOR_READ_HEDGE_AFTER_MS } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+const { SupervisorRPC } = await import('../../packages/worker/src/session/supervisor-rpc.ts');
+const { LOST_CALL_HEDGE_AFTER_MS: SUPERVISOR_READ_HEDGE_AFTER_MS } = await import('../../packages/platform/src/lost-call.ts');
 
 const dropped = (extra = {}) => Object.assign(new Error('Network connection lost.'), { retryable: true }, extra);
 
@@ -105,7 +106,7 @@ for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
 // A read whose first attempt never answers is hedged; a mutation is not.
 // Measured: under concurrent sessions some reads left SupervisorRPC and were
 // never delivered to the session, and the program waiting on them hung. A
-// read still unanswered after SUPERVISOR_READ_HEDGE_AFTER_MS is sent again
+// read still unanswered after LOST_CALL_HEDGE_AFTER_MS is sent again
 // on a fresh stub; a mutation keeps only its delivery retries. Real time:
 // the deadline is the production one.
 {
@@ -131,10 +132,10 @@ for (const [op, args] of [['fsFstat', [3]], ['fsReaddirHandle', [4]]]) {
     return { env, calls, readIds };
   };
   const read = hanging([{ bytes: new Uint8Array([7]) }]);
-  const reader = new SupervisorRPC({ props: { doId: 'session', pid: 7 } }, read.env);
+  const reader = new SupervisorRPC({ props: { doId: 'session', pid: 7, writerId: 'read-run' } }, read.env);
   const write = hanging(3);
   const writer = new SupervisorRPC({
-    props: { doId: 'session', pid: 7, hostIncarnation: crypto.randomUUID() },
+    props: { doId: 'session', pid: 7, hostIncarnation: crypto.randomUUID(), writerId: 'write-run' },
   }, write.env);
   const startedAt = Date.now();
   const writing = writer.writeFile('/home/user/x', 'y');

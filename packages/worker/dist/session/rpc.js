@@ -26,9 +26,11 @@ import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
 import { NpmCache } from '../npm/cache.js';
+import { failureOf as errorFromCacheFailure } from '../runtime/stop-replay-body.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { notifyTerminalEvent } from '../runtime/process-logs-api.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom, setProcessBlocked } from '@nimbus-sh/fabric/budgets.js';
 import { residentBootSpecSchema, } from '@nimbus-sh/fabric/process-fabric.js';
 import { processes, } from '@nimbus-sh/fabric/workerd-facet-host.js';
@@ -48,6 +50,20 @@ import { FS_LIST_PAGE_LIMIT, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUEST_BYT
 import { registerServingPort } from './serving-port.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
+// Cache I/O stays in SupervisorRPC's realm, at its original subrequest depth.
+// A recording run's begin/result ticket is owned by the session journal.
+export async function _rpcGetCachedTarball(_self, _integrity, _pid, _run) { return { readOnly: false }; }
+export async function _rpcGetPackument(_self, _name, _options, _pid, _run) { return { readOnly: false }; }
+export async function _rpcPutCachedTarball(_self, _integrity, _bytes) { }
+export async function _rpcCacheResult(self, ticket, result, pid, run) {
+    if (result.failed && result.failure)
+        result = { ...result, failure: errorFromCacheFailure(result.failure) };
+    await self.facetManager?.cacheResult(pid, run, ticket, result);
+}
+export async function _rpcStdinPrepared(self, pid, run) {
+    if (pid !== undefined)
+        self.facetManager?.stdinPrepared(pid, run);
+}
 const WriteBatchInodeSchema = z.object({
     path: z.string(),
     parentPath: z.string(),
@@ -566,6 +582,18 @@ export async function _rpcFsList(self, after, limit, pid) {
 export async function _rpcFsReadRange(self, path, offset, length, pid, cred) {
     return self.supervisorOp({ op: 'fsReadRange', args: [path, offset, length], pid, cred });
 }
+/** A bounded range used only to prepare fd 0, never an ordinary file read. */
+export async function _rpcStdinFileRead(self, path, offset, length, pid) {
+    if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 65536)
+        throw new RangeError('invalid stdin preparation range');
+    const stat = await self.supervisorBridge(pid).stat(path);
+    if (!stat)
+        throw Object.assign(new Error(`ENOENT: no such stdin file '${path}'`), { code: 'ENOENT' });
+    const data = await _rpcFsReadRange(self, path, offset, Math.min(length, Math.max(0, stat.size - offset)), pid);
+    if (data === null)
+        throw Object.assign(new Error(`ENOENT: stdin file disappeared '${path}'`), { code: 'ENOENT' });
+    return { data, size: stat.size };
+}
 /**
  * Read many ranges, and lstat many paths, in ONE round trip.
  *
@@ -684,6 +712,23 @@ export async function _rpcHmrNextEvent(self, timeoutMs = 25_000) {
     if (!self.cirrusReal)
         return [];
     return self.cirrusReal.hmr.nextEvents(Math.min(30_000, Math.max(1_000, timeoutMs)));
+}
+// A process that can stop at a read of stdin (worker runtime/stop-replay.ts):
+// its run after a stop reached the read the run before stopped at; a TLS
+// connection it opens through the session; and its outbound's calls.
+export async function _rpcReplayBoundary(self, pid, run) {
+    if (typeof pid === 'number')
+        await self.facetManager?.replayBoundary(pid, run);
+}
+export async function _rpcNetTls(self, action, token, payload, pid, run) {
+    if (typeof pid !== 'number' || !self.facetManager)
+        throw new Error('netTls: no such process');
+    return self.facetManager.netTls(pid, run, String(action), String(token), payload);
+}
+export async function _rpcOutbound(self, action, payload, pid, run) {
+    if (typeof pid !== 'number' || !self.facetManager)
+        throw new Error('outbound: no such process');
+    return self.facetManager.outboundCall(pid, run, String(action), payload);
 }
 /**
  * Bulk-write files and directories via one transactionSync().
@@ -810,10 +855,16 @@ const _terminalTeeDecoders = new StreamTextDecoders();
 function decodeForTerminal(pid, stream, data) {
     return _terminalTeeDecoders.decode(`${pid}:${stream}`, data);
 }
-export async function _rpcStdout(self, pid, data) {
+export async function _rpcStdout(self, pid, data, at, run) {
     // Prior-generation straggler (facet outlived a DO instance reset): drop —
     // its output must not merge into this generation's logs or shell.
     if (isPriorGenerationPid(self, pid))
+        return;
+    // A chunk a run that stopped already delivered, or that its stop carried
+    // (runtime/stop-replay.ts), is not delivered twice.
+    if (at !== undefined && run !== undefined)
+        data = self.facetManager?.gateOutput(pid, 'stdout', data, at, run) ?? data;
+    if (data.byteLength === 0)
         return;
     if (self.facetProcessManager?.routeOutput(pid, 1, data))
         return;
@@ -844,8 +895,12 @@ export async function _rpcStdout(self, pid, data) {
         }
     }
 }
-export async function _rpcStderr(self, pid, data) {
+export async function _rpcStderr(self, pid, data, at, run) {
     if (isPriorGenerationPid(self, pid))
+        return;
+    if (at !== undefined && run !== undefined)
+        data = self.facetManager?.gateOutput(pid, 'stderr', data, at, run) ?? data;
+    if (data.byteLength === 0)
         return;
     if (self.facetProcessManager?.routeOutput(pid, 2, data))
         return;
@@ -1218,27 +1273,19 @@ export async function _rpcCpSpawn(self, req) {
 }
 /**
  * A child's stdin is bytes: esbuild's service protocol is binary packets,
- * and so is any pipe carrying an image or an archive. The facet queue and
- * this contract carry Uint8Array; the interactive input store is a text
- * channel fed by a terminal, so it decodes at its own edge with a streaming
- * decoder held per child, which keeps a multibyte character split across two
- * writes correct.
+ * and so is any pipe carrying an image or an archive. The facet queue, this
+ * contract and a long-running child's input store all carry them as bytes;
+ * the store used to take text, decoded here, which turned a byte that is not
+ * UTF-8 into U+FFFD.
  */
-const _cpStdinDecoders = new Map();
 export async function _rpcCpStdinWrite(self, childPid, data) {
     if (self.processes.hasInput(childPid)) {
-        let decoder = _cpStdinDecoders.get(childPid);
-        if (!decoder) {
-            decoder = new TextDecoder('utf-8');
-            _cpStdinDecoders.set(childPid, decoder);
-        }
-        return self.processes.writeInput(childPid, decoder.decode(data, { stream: true }));
+        return self.processes.writeInputBytes(childPid, data);
     }
     const fpm = self._ensureFacetProcessManager();
     return fpm.stdinWrite(childPid, data);
 }
 export async function _rpcCpStdinEnd(self, childPid) {
-    _cpStdinDecoders.delete(childPid);
     if (self.processes.hasInput(childPid)) {
         self.processes.endInput(childPid);
         return;
@@ -1256,7 +1303,7 @@ async function withDeliveredAcquire(self, reply, delivers, acquire, pid) {
     const acquired = await _acquireOnDelivery(self, acquire, pid);
     return acquired ? { ...reply, acquired } : reply;
 }
-export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid) {
+export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid, writerId) {
     // Prior-generation straggler: its ProcessInputStore died with the old
     // instance. Deliver a kill so the facet's stdin pump unwinds immediately
     // with explicit semantics (__ProcessExit(137) → reportExit → the honest
@@ -1264,6 +1311,12 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid) {
     if (isPriorGenerationPid(self, childPid)) {
         return { signal: 'SIGKILL', ended: true };
     }
+    // A process that can stop at a read of stdin: only its current run takes
+    // from the channel, and the session keeps what that run took
+    // (worker runtime/stop-replay.ts StdinTaken).
+    const taken = self.facetManager?.stdinTakenBy?.(childPid);
+    if (taken && !taken.admits(writerId))
+        return { data: new Uint8Array(0), ended: false };
     let packet;
     if (self.processes.hasInput(childPid)) {
         // The input store holds typed text and piped bytes; the child's stdin
@@ -1275,6 +1328,20 @@ export async function _rpcCpReadStdin(self, childPid, waitMs, acquire, pid) {
     else {
         const fpm = self._ensureFacetProcessManager();
         packet = await fpm.cpReadStdin(childPid, waitMs);
+    }
+    if (taken) {
+        // The run stopped while this read waited: what it would have taken goes
+        // back in front of the channel for the run after it.
+        if (!taken.admits(writerId)) {
+            if (packet.data.byteLength > 0) {
+                if (self.processes.hasInput(childPid))
+                    self.processes.unreadInput(childPid, [{ data: packet.data, ended: false }]);
+                else
+                    self._ensureFacetProcessManager().unreadStdin(childPid, [packet.data]);
+            }
+            return { data: new Uint8Array(0), ended: false };
+        }
+        taken.note(packet.data);
     }
     const delivers = packet.ended || packet.signal !== undefined || packet.resize !== undefined
         || packet.data.byteLength > 0;
@@ -1613,10 +1680,7 @@ export async function _rpcHostProcess(self, boot, opts) {
     const spec = ResidentBootSpecSchema.parse(boot);
     const { workerKey } = hostOpts;
     const supervisor = {
-        doId: hostOpts.coordinatorDoId,
-        pid: hostOpts.pid,
-        writerId: hostOpts.writerId,
-        route: hostOpts.route,
+        ...supervisorBindingProps(self.ctx, hostOpts.pid, { writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route }),
         ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
     };
     let cancel = () => { };

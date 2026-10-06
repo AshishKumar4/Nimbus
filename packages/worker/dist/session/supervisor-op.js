@@ -24,6 +24,12 @@ function outputBytesArg(value) {
         return value;
     throw new Error(`supervisor op stdout/stderr: expected bytes, got ${typeof value}`);
 }
+/** A chunk's offset in what its run printed, and the run, when the guest sent them. */
+function outputPlace(args) {
+    const at = args?.[1];
+    const run = args?.[2];
+    return typeof at === 'number' && typeof run === 'number' ? [at, run] : [];
+}
 export function buildSessionSupervisorOps(host, store, methods) {
     host.ensureSqliteFs();
     const vfs = host.sqliteFs;
@@ -31,27 +37,10 @@ export function buildSessionSupervisorOps(host, store, methods) {
         throw new Error('Supervisor filesystem is not initialized');
     store ??= createSupervisorBridgeStore({ vfs, processes: host.processes, filesystem: host.getFilesystemAuthority?.() ?? host.runtimeWorkspace?.filesystem });
     const extend = {
-        // The write stream's decode-drain timestamp starts when the envelope
-        // arrives, not when the DO first reads it — the same contract
-        // _rpcWriteBatchStream has always had.
-        writeBatchStream: (envelope, tools) => {
-            if (!envelope.stream)
-                throw new Error('supervisor op writeBatchStream: no stream');
-            // Same contract _rpcWriteBatchStream had: a supplied pid must be a
-            // real process pid; only an absent pid is a host call.
-            const pid = envelope.pid;
-            if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
-                throw new Error('filesystem RPC requires a valid process pid');
-            }
-            return tools.bridge(pid, envelope.cred).writeStream(envelope.stream, {
-                decodeDrainStartedAt: performance.now(),
-                mutationOwner: envelope.mutationOwner,
-            });
-        },
         // stdout/stderr are session methods, not bridge ops: mirroring,
         // log-append and prior-generation filtering all live in _rpcStdout.
-        stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
-        stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
+        stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
+        stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
     };
     const dispatch = createSupervisorOpHandler({
         vfs: host.sqliteFs,
@@ -72,12 +61,20 @@ export function buildSessionSupervisorOps(host, store, methods) {
         readLease: withReadAllocation,
         extend,
         deliveries: host.supervisorDeliveries,
+        // Joining is part of the canonical handler, BEFORE this logical-answer
+        // seam. A transport hedge must not consume another journal occurrence.
+        observe: (envelope, dispatch) => host.facetManager
+            ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
+            : dispatch(),
     });
     const forget = (pid) => {
         host.supervisorDeliveries?.forget(pid);
         return store.forget(pid);
     };
-    return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
+    return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => {
+            host.supervisorDeliveries?.endReadRun(pid);
+            await store.rewind?.(pid);
+        }, dispose: store.dispose };
 }
 /**
  * Answer `envelope` to a caller outside the session (NimbusSession's

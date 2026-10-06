@@ -36,27 +36,36 @@ const NativeMemory = WebAssembly.Memory;
 let copy = 0;
 /** Every evaluation's directory, removed by releaseBuildFacetHarness. */
 const made = [];
-/** A fresh evaluation of the facet module: its own binding, created by its first build. */
+/**
+ * A fresh evaluation of the facet module: its own binding, created by its
+ * first build. Each is an isolate of its own in workerd, but here they share
+ * one realm, so the global the facet hands its binding to rolldown's
+ * JavaScript through is renamed per copy: shared, a copy loading while
+ * another did read the other's binding, and was left on it when it died.
+ */
 export async function freshFacetClass() {
+  const n = ++copy;
+  const ownBinding = (text) => text.replaceAll('globalThis.__nimbusRolldownBinding', `globalThis.__nimbusRolldownBinding${n}`);
   const code = buildFacetWorkerCode(parts);
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'build-facet-'));
   made.push(dir);
   const loaderFile = join(dir, 'napi-wasm-loader.mjs');
   const runtimeFile = join(dir, 'rolldown-runtime.mjs');
   writeFileSync(loaderFile, code.modules['napi-wasm-loader.js']);
-  writeFileSync(runtimeFile, code.modules['rolldown-runtime.js']);
+  if (!code.modules['rolldown-runtime.js'].includes('globalThis.__nimbusRolldownBinding')) throw new Error('build-facet-harness: rolldown no longer reads its binding from globalThis.__nimbusRolldownBinding');
+  writeFileSync(runtimeFile, ownBinding(code.modules['rolldown-runtime.js']));
   globalThis.__buildFacetImports = {
     DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
     rolldownWasm: await WebAssembly.compile(code.modules['rolldown.wasm'].wasm),
     trampolineWasm: await WebAssembly.compile(code.modules['trampoline.wasm'].wasm),
   };
-  const source = code.modules['worker.js']
+  const source = ownBinding(code.modules['worker.js'])
     .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject, rolldownWasm, trampolineWasm } = globalThis.__buildFacetImports;')
     .replace(/import \{ ([\w, ]+) \} from "napi-wasm-loader\.js";/, (_, names) => `import { ${names} } from ${JSON.stringify(loaderFile)};`)
     .replace('import rolldownWasm from "rolldown.wasm";', '')
     .replace('import trampolineWasm from "trampoline.wasm";', '')
     .replace('import("rolldown-runtime.js")', `import(${JSON.stringify(runtimeFile)})`)
-    .concat(`\n// copy ${++copy}`);
+    .concat(`\n// copy ${n}`);
   if (/^import .* from "(cloudflare:|napi|rolldown|trampoline)/m.test(source)) throw new Error('build-facet-harness: a module-map import is still unbound');
   const facetFile = join(dir, 'worker.mjs');
   writeFileSync(facetFile, source);
@@ -70,7 +79,9 @@ export async function freshFacetClass() {
 
 /**
  * A Durable Object as build-facet.ts sees it; `counts` says what it was asked
- * for. `classFor(id)` is the facet class the loader hands out for a worker
+ * for, and `busy()` whether anything of its is under way: a facet class being
+ * evaluated for the loader, or a facet call not yet answered (its delivery
+ * included). `classFor(id)` is the facet class the loader hands out for a worker
  * id (a fresh evaluation per id is a fresh isolate); by default, `BuildFacet`.
  * As in workerd, aborting a facet cancels every call to it still in flight,
  * its answer's delivery included: `deliveryDelayMs(call, argument)` holds the
@@ -81,6 +92,8 @@ export function durableObject(BuildFacet, classFor = async () => BuildFacet, { d
   const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], aborted: [], prebundling: 0, mostPrebundling: 0, calls: 0 };
   const facets = new Map();
   const inFlight = new Map();
+  let evaluating = 0;
+  const busy = () => evaluating > 0 || [...inFlight.values()].some((calls) => calls.size > 0);
   // One call to facet `name`: run inside it (its memories counted), answered after its delivery delay unless aborted first.
   const call = (name, argument, run) => new Promise((resolve, reject) => {
     const calls = inFlight.get(name) ?? new Set();
@@ -129,12 +142,17 @@ export function durableObject(BuildFacet, classFor = async () => BuildFacet, { d
       async get(id) {
         counts.loaderGets++;
         counts.loaderIds.push(id);
-        const FacetClass = await classFor(id);
-        return { getDurableObjectClass: () => FacetClass };
+        evaluating++;
+        try {
+          const FacetClass = await classFor(id);
+          return { getDurableObjectClass: () => FacetClass };
+        } finally {
+          evaluating--;
+        }
       },
     },
   };
-  return { ctx, env, counts };
+  return { ctx, env, counts, busy };
 }
 
 export function releaseBuildFacetHarness() {

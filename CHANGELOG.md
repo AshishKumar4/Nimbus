@@ -23,6 +23,245 @@ published independently in the `@nimbus-sh` npm scope.
   lanes, and the WASI filesystem codec as it stands in core now (the staged
   one predated core's later filesystem changes).
 
+## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
+
+core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
+published; they ship with this release and carry the 2026-10-05 entries
+too. platform, config and cli move because their sources changed since
+their last published versions; core, fabric and worker require platform
+^0.7.2, and cli config ^0.2.4.
+
+### Git at scale
+
+- `git clone` no longer holds a pack in memory, and every clone checks
+  out one way: prepare, batches, finish. A server without `filter` or wants
+  by id sends one pack, as git would fetch it; it is stored and indexed as
+  it arrives, its decoding continues from the stored bytes, and the
+  checkout is planned from it and written by batches that read their blobs
+  from it (cf-git's clone and its chunked checkout are gone). A server
+  that offers
+  `filter` and wants by object id (GitHub, GitLab) gets the fast path
+  (`git/pack/`): prepare fetches the commit and its trees (`filter
+  blob:none`), plans the checkout from them and writes the repository's
+  metadata; batches of ~2,500-6,000 blobs, two at a time, are fetched by id
+  and each blob is written at its paths as it resolves; finish writes the
+  index (with git's TREE extension) from the stat the session reported for
+  each file, so `git status` is clean without reading them. A clone follows
+  tags as git's does (`include-tag`; the tags of what it fetched are
+  written). Every pack is
+  decoded as it arrives (native zlib, SHA-1 and CRC, a byte-bounded
+  delta-base cache, evicted bases re-read by range), stored by ranged
+  appends and indexed in the same pass; its `.idx` is byte-identical to
+  `git index-pack`'s. A delta chain is applied one delta at a time. Packs
+  are installed one way (`git/pack/install.ts`, git's order: idx under a
+  temporary name, .promisor, pack, idx last); a resumed pack records its
+  outcome before it is named, so a step run again after its answer was
+  lost finishes the naming. A decoding pass stops at a work budget (a third of
+  the facet's measured 30 s CPU limit) or 400 store reads and continues in
+  another invocation from the stored pack. Live, depth 1 (before → after):
+  express 4.4 → 3.1 s; vscode 88.6 → 60.9 s (one batch at a time);
+  next.js 147 → 73.5 s;
+  TypeScript failed (CPU limit in prepare; a reset in checkout) → 86-102 s,
+  3 of 3; Linux failed ("exceeded memory limit" in prepare) → 224-251 s,
+  99,648 files, 1.65 GB, session peak 80 MiB.
+- `git clone --filter=blob:none | blob:limit=<n>[kmg] | tree:<depth>`: a
+  partial clone, recorded as git records one (repositoryformatversion 1,
+  `remote.origin.promisor`, `partialclonefilter`, a `.promisor` file beside
+  every pack). Missing objects are fetched on demand from the promisor
+  remote (`git/promisor.ts` `fetchMissingObjects`, one request, resolved
+  once the pack and its idx are durable): `checkout`, `reset --hard` and
+  `merge` prefetch the commits' trees and then blobs, `diff` its pairs'
+  blobs, each in one request; any other read that misses fetches lazily.
+  Other filters are refused by name, and so is `--filter` against a server
+  that cannot serve it (no `filter`, or no wants by id), before anything is
+  written. Staged and committed objects are local (loose): a prefetch never
+  asks the promisor for them.
+- `git clone --no-shallow` takes the fast path for its worktree and then
+  fetches the history in self-contained pieces: every commit (`filter
+  tree:0`), the trees of 5,000 commits at a time (`filter blob:none`), and
+  the blobs met there, deduplicated and sorted by basename, 10,000 by id
+  per request. Live: react in ~130 s (git clone: 17 s), ~137.8 MB (git's
+  pack: 137.2 MB, +0.4%) in 22 requests (git: 3); vscode in 635 s
+  (git: 169 s), 1.31 GB of history in 89 requests, session peak 82 MiB.
+- `git fetch` and `git pull` store the pack as it arrives (cf-git's
+  side-band demux now waits while 64 packets sit unread, and `_fetch` hands
+  the stream to the filesystem's `packs.ingest`), complete a thin pack as
+  `index-pack --fix-thin` does, and read packed objects by range. Refs and
+  `.git/shallow` move only after the pack and its idx are durable; a fetch
+  whose pack fails leaves no temporary file. `git
+  fetch --depth <n> | --deepen <n> | --unshallow` deepen a shallow clone
+  (one request, decoded in one invocation).
+- Packed objects are read by range everywhere (`git/pack/store.ts`: an
+  idx a 64 KiB page at a time, packs in 1 MiB pages, an object of any size
+  included), in the session and in the facet, never a whole pack; the
+  facet's reads skip the session's content cache.
+- `status`, `diff`, `add`, `commit`, `ls-files`, `reset` and `checkout` read
+  the index as its own bytes and walk the worktree a directory at a time
+  (`git/worktree/`), at Linux's scale; see the runtime spec.
+- The session ingests a clone's waves wider (up to 1,024 paths and 256 KiB
+  of path bytes per W7 batch, a 64 KiB decoder read-ahead): one writer
+  338 → ~780 files/s.
+- Retries: one lost-transport policy (`git/pack/transport.ts`), three
+  tries 1 s and 3 s apart (jittered), for an idempotent request to the git
+  server (a connection failure, HTTP 502, 503, 504 or 522-525 before its
+  body, no headers in 45 s; cf-git's fetch, pull and push included) and for
+  a clone's batch or history piece (its request failed so, its write wave
+  to the session lost its connection, "Network connection lost", or it ran
+  past 150 s), each failure written to the terminal. A piece that hung
+  loses its write authority first: the clone's lease passes to a new owner
+  (`SqliteVFS.rotateExclusiveMutation`) and its late writes are refused;
+  an abort does the same. Finish, budget overruns and other errors are not
+  retried.
+- A git command run in a repository whose clone is still running refuses
+  (`fatal: '<dir>' is still being cloned`). A failed clone's abort deletes
+  `.git` file by file (one recursive delete passed a write group's row
+  limit).
+- Every pack the git facet installs gets its reverse index (`.rev`), byte
+  for byte what `git index-pack --rev-index` writes. A clone writes
+  `packed-refs` as git clone does (the remote-tracking branch, or a cloned
+  tag and its peeled id), and the local branch, `origin/HEAD` and followed
+  tags loose: `tests/unit/git-clone-matches-git-workerd.mjs` compares HEAD,
+  config, packed-refs, shallow, every ref and the index with git 2.53's
+  depth-1 clone. A command's one-shot pack read caches only the bases its
+  delta chain is built on, as git's delta_base_cache does.
+- Live, on a throwaway (2026-10-06, release head): next.js depth 1 in
+  32-50 s, 20 of 20 with no piece retried; TypeScript depth 1 in 37-62 s;
+  Linux depth 1 in 170-191 s; react `--no-shallow` in 107-123 s; vscode
+  `--no-shallow` in 548-587 s (the previous release candidate: 714 s and a
+  hang). A clone piece may run 300 s before it is taken as hung.
+
+### Session ingest and write waves
+
+- One wave writer for every W7 producer (`@nimbus-sh/platform/wave-writer.js`:
+  git, npm's install facet, the installer bins and the clang sysroot), with
+  one lost-call policy (`lost-call.ts`): a wave nothing reads for 10 s, or
+  unanswered 20 s after it ends, is sent again on a fresh call, up to six
+  times with backoff. Each attempt carries a fence: the session admits a
+  wave only under a writer epoch it issued and holds open
+  (`openWaveWriter`), and refuses an attempt older than one it has seen, so
+  a re-sent wave's late original never applies.
+- Fixed: two concurrent write streams could wait forever on the 1 MiB
+  small-request reserve, each holding its own group and file; a stream now
+  gives back every lease it holds before it waits for credit.
+- A write stream authorises a group of files at once, in the turn that
+  commits them; W7 decode makes no encoder per record. A directory's mtime
+  and ctime move when its entries change, and a stream's directory records
+  commit in batches its plan can hold.
+
+### Resident WASI filesystem
+
+- A WASI guest whose engine can park answers from a resident store of its
+  own, with one copy of a file's bytes; a change by path settles held
+  writes first, a held file's pinned copy is one version's, and a CPython
+  start that failed is ended and named before any port is advertised.
+
+### Known: rollout right after a deploy
+
+- A clone started within about a minute of a fresh deploy may meet
+  Cloudflare's version rollout: seen once as a clone batch that hung until
+  its 300 s timeout (retried behind its fence; the clone completed) and
+  once as a session reset (WebSocket 1006). Neither recurred in 20 clones
+  in steady state.
+
+### Breaking changes for embedders
+
+- `nimbus install` reads the runtime catalog by its SHA-256 and nothing
+  else. The Worker that binds `NIMBUS_RUNTIME_CACHE` must carry the var
+  `NIMBUS_RUNTIME_CATALOG_SHA256`, which `nimbus runtime sync` prints after
+  filling the bucket (`buildNimbusWranglerConfig({ runtimeCatalogSha256 })`
+  carries it). The catalog is read from `catalog/sha256/<digest>.json` and
+  served only if its bytes hash to the var. A missing var, a missing object
+  or other bytes fail the install with a message that names which. Before,
+  every deployment read `catalog/v1.json`, so a publish for one deployment
+  changed what all of them installed. `catalog/v1.json` is still written,
+  for deployments built before this change. Re-run `nimbus runtime sync`
+  once to write the catalog under its digest and get the value.
+
+### Synchronous stdin, sockets and TLS
+
+- Fixed: a child stopped at a synchronous stdin read releases its Dynamic
+  Worker launch admission while it waits. A replay queues fairly to regain
+  admission before preparation, so stopped children cannot prevent a
+  sibling from running; killing a wait or a queued replay leaves no hold.
+  Post-read supervisor calls and outbound requests wait for the replay
+  boundary acknowledgement, so they cannot be mistaken for pre-read work.
+  If the ledger refuses a replay, a child that already started reports the
+  refusal on stderr and exits; only an initial admission can fail its spawn.
+  Native sockets and TLS carriers also wait for the replay boundary; a
+  refused notice destroys the socket with the original error before connecting.
+  Immediate TLS writes and ends remain buffered until the carrier is adopted;
+  destroying its returned socket cancels the pending carrier and registration.
+  Repeated in-flight read attempts join before journaling, so a transport
+  hedge cannot be mistaken for an extra pre-read observation.
+  A journaled run also keeps bounded settled read replies until its writer
+  ends: a lost response resent after settlement cannot consume a second
+  observation. Exceeding the retention bound forbids a later replay by name.
+
+- Fixed: synchronous-stdin replay is fail-closed at the session boundary.
+  Every supervisor operation has an explicit observation, effect, or
+  input/output-protocol classification; unknown operations forbid a later
+  replay. Caller pids are stamped from their bindings, acquired filesystem
+  bytes and namespace metadata are checked, and fd-0 preparation no longer
+  exempts ordinary reads of the same file. Reaching fd 0 before a previously
+  completed observation is delivered fails loudly without consuming new
+  input. Recorded GETs deliver headers immediately and record their streamed
+  bodies and errors; a still-unfinished body forbids a later replay.
+
+- Fixed: a synchronous read of stdin waits for its input, as Node's does,
+  and only a read that runs waits. `fs.readFileSync(0)` (and `/dev/stdin`)
+  waits for the end of stdin and `fs.readSync(0, …)` for any of it, so a
+  child can print READY and have its parent write only then, a parent can
+  write in delayed pieces, and a readSync prompt answers each line as it
+  comes. A Nimbus process cannot block, so the run stops at such a read
+  (`ctx.abort`, which the program cannot catch), the session waits for the
+  input, and the program runs again from its start with it: the second run
+  replays what the first drew (its random numbers, clock readings, random
+  bytes and stdin reads) and the output it already printed is checked and
+  not shown twice. What the session told the first run is journaled there,
+  out of the program's reach, and the second run must be told the same in
+  the same order: a file that changed while the program waited ends the
+  second run loudly instead of letting it go on with the new bytes, as
+  does any other way the second run strays before the read. Such a
+  program's network goes through the session too: a GET (`fetch`,
+  `https.get`) is recorded with its status, headers and bytes, and the
+  second run is handed the same response however it reads it; a request
+  still on its way at the stop is answered only past the read; and
+  `tls.connect`'s TLS session is made by the session, which sends the
+  server name the program gives (workerd's own node:tls sends the host). A
+  client certificate (`cert`, `key`, `pfx`) or a TLS session over a socket
+  the program opened (a STARTTLS) fails by name; a CA the program names
+  (`ca`) is not used, as workerd's own node:tls does not use it, and a
+  session that fails says so. Once such a program has done something
+  outside itself, nothing more it reads is recorded and its network goes
+  straight out. Only Nimbus can stop a run this way: a program that forges
+  a stop is not believed. A program that never makes such a read, or finds
+  its input there when it does, runs once and is never held: the guess
+  about which programs read stdin, made from their code before they ran,
+  is gone, and with it the read ahead of their pipe. So `sleep 30 | node
+  -e "function u(){fs.readFileSync(0)} console.log(1)"` prints at once,
+  and a child whose code merely mentions such a read no longer waits for a
+  stdin its parent leaves open. A program that changed something outside
+  itself before the read (a file write that reached the session, a spawn,
+  a request other than GET) cannot be run again, and the read fails with
+  `ERR_NIMBUS_SYNC_STDIN` naming that change, as does one that read
+  `process.stdin` as it arrived first; opening a connection counts as such
+  a change, however it was opened (node:net, node:tls, or workerd's own
+  socket class). What arrives on stdin while the program runs reaches a
+  later synchronous read, its end too, so a program its parent finishes
+  writing to before it reads never has to stop. Ctrl-C during the wait
+  ends the program with 130; a pipe that passes 16 MiB without ending
+  fails the read naming the bound, and output a piped program printed
+  before such a failure is still handed on, as is what it printed before a
+  second run that strays. A server the SDK starts with its stdin open
+  waits for what its caller writes the same way; one started from the
+  terminal answers such a read with `ERR_NIMBUS_SYNC_STDIN`, as nothing
+  can write its stdin while the shell waits for its boot.
+- Fixed: bytes a parent wrote to a child's stdin faster than the child
+  read them were dropped past the child's 256 KiB queue, all of them when
+  written before the child had started. A write waits for room now, as a
+  full pipe holds its writer, and goes in pieces no larger than the queue,
+  so one write larger than the queue gets through instead of never fitting.
+
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 loom moves only its fabric range.
@@ -711,6 +950,29 @@ below.
   enter (`python3: can't enter working directory '/x': [Errno 44] No such
   file or directory`). It started in `/`, so `open("hello.txt")` at the
   prompt looked in the root.
+- Fixed: a shell script that `child_process.spawn` starts (`spawn('./s.sh')`,
+  by absolute path, by its name on PATH, or `spawn('sh', ['s.sh'])`) got
+  no stdin. The broker ran it on an empty fixed stdin and never said its
+  descriptors were pipes, so `sh` took its stdin for a terminal and handed
+  its commands none, and a script of `cat` printed nothing. A child's stdin
+  is now a pipe its command reads as the parent writes it, for every kind
+  of child the broker runs: a registry command, a shell, or a program found
+  by name or path. It used to be what had been written once the parent
+  ended stdin or half a second had passed. So such a child answers each
+  line before its parent ends, as under Node, and a child that reads its
+  stdin waits for its parent to end it rather than giving up after half a
+  second. `sh` hands its stdin on to its program's commands as a stream,
+  where it read all of it first. A node run by a child's script reads the
+  script's stdin, not the child's queue, whose pid it inherits in its
+  environment. A runtime whose stdout is a pipe still hands its output
+  back when it exits. A command that does not read its stdin no longer
+  waits on it: the shell's builtins (`printf`, `true`, `echo`, `test` and
+  others) used to read their stdin to its end before running, so `sleep 5 |
+  true` took 5 seconds. `head -n 0` and `head -c 0` read nothing, as GNU
+  head does, where they waited on their stdin.
+- Fixed: bytes a parent wrote to a long-running child's stdin (a server it
+  started with `child_process.spawn`) were decoded as UTF-8 on the way, so
+  a byte that is not UTF-8 arrived as U+FFFD. They arrive as written.
 
 - Fixed: a filesystem refusal kept its reason only in its `cause`. A
   confined principal's widening `chmod` reached the caller as "EPERM:

@@ -73,7 +73,9 @@ assert.ok(initFsAt > 0 && adoptAt > initFsAt,
   // 3. The interpreter sees the whole session at '/': there is nothing to
   //    seed, and a preamble that still carried a seed would be carrying a
   //    filesystem nobody reads.
-  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\]\s*\}\)/.test(preamble),
+  //    The credential rides along: it is what the interpreter's own copy of
+  //    the namespace is read as (wasi/resident-filesystem.ts), not a mount.
+  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\],\s*cred:\s*args\.cred\s*\}\)/.test(preamble),
     'the boot must init the session root as the only preopen, and nothing else');
   assert.ok(!/fsSnapshot|__wasiDrainPersist|__wasiRevalidateFS/.test(preamble),
     'the boot must not carry a seed or a persist queue');
@@ -161,6 +163,34 @@ const wrote = await run({ ...base, pyArgv: ['-c'], userCode: "open('/home/user/o
 assert.equal(wrote.exitCode, 0, wrote.stderr);
 assert.equal(session.user.readFileString('home/user/out.txt'), 'from python');
 console.log('  ok  a write is in the session filesystem when __cpythonRun returns');
+
+// With the process's credential the interpreter answers its filesystem from
+// its own store and holds what it writes to a new file (wasi/resident-
+// filesystem.ts). However the run ends (here os._exit, which skips Python's
+// own shutdown), what it wrote is in the session when the call returns.
+const credentialed = { ...base, cred: { uid: session.cred.uid, gid: session.cred.gid, groups: [...session.cred.groups] } };
+const exited = await run({
+  ...credentialed, pyArgv: ['-c'],
+  userCode: "import os\nf = open('/home/user/exited.txt', 'w')\nf.write('kept by the host')\nf.flush()\nos._exit(3)",
+});
+assert.equal(session.user.readFileString('home/user/exited.txt'), 'kept by the host', `${exited.error ?? ''} ${exited.stderr}`);
+console.log('  ok  a run ended by os._exit leaves what it wrote in the session');
+// os.abort() traps the guest: the VM may not even flush, and the host settles anyway.
+const aborted = await run({
+  ...credentialed, pyArgv: ['-c'],
+  userCode: "import os\nf = open('/home/user/aborted.txt', 'w')\nf.write('kept through a trap')\nf.flush()\nos.abort()",
+});
+assert.notEqual(aborted.exitCode, 0);
+assert.equal(session.user.readFileString('home/user/aborted.txt'), 'kept through a trap', `${aborted.error ?? ''} ${aborted.stderr}`);
+console.log('  ok  a run ended by a trap leaves what it wrote in the session');
+// A flush that traps (here the program's own stdout.flush aborts): the host still settles.
+const flushTrap = await run({
+  ...credentialed, pyArgv: ['-c'],
+  userCode: "import os, sys\nf = open('/home/user/flushtrap.txt', 'w')\nf.write('kept through a trapping flush')\nf.flush()\n"
+    + "class Trap:\n  def write(self, s): return len(s)\n  def flush(self): os.abort()\nsys.stdout = Trap()",
+});
+assert.equal(session.user.readFileString('home/user/flushtrap.txt'), 'kept through a trapping flush', `${flushTrap.error ?? ''} ${flushTrap.stderr}`);
+console.log('  ok  a run whose flush traps leaves what it wrote in the session');
 
 await session.dispose();
 console.log('cpython-runner-preamble: all cases passed');

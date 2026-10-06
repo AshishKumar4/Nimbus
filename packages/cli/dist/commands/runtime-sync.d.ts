@@ -22,7 +22,9 @@
  * CLOUDFLARE_ACCOUNT_ID=… nimbus runtime sync --bucket my-runtime-cache python
  * ```
  */
-export declare function syncRuntimes(args: string[]): Promise<number>;
+export declare function syncRuntimes(args: string[], options?: {
+    scriptPath?: string;
+}): Promise<number>;
 /** `nimbus runtime list` — print the catalog the SDK ships against. */
 export declare function listRuntimes(_args: string[]): Promise<number>;
 //# sourceMappingURL=runtime-sync.d.ts.map

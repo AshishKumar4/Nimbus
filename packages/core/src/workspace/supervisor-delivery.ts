@@ -38,7 +38,9 @@ import type { SupervisorOpDispatch, SupervisorOpName } from './supervisor-op.js'
  * The filesystem mutations a process's supervisor delivers exactly once.
  *
  * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
- * first delivery), the descriptor read `fsRead` (it advances the position and
+ * first delivery: its writer re-sends a lost wave re-encoded, under a newer
+ * fence in an epoch the host issued — {@link SupervisorDeliveries.admitWave}),
+ * the descriptor read `fsRead` (it advances the position and
  * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
  * append ledger's own writer/module/operation identity already makes them
  * repeatable), and the process, socket and storage-grant ops.
@@ -75,8 +77,10 @@ export const SUPERVISOR_DELIVER_OP = 'deliverOnce';
  * the one read id it minted for the read (the envelope's `readId`). A repeat
  * that reaches the host while the read is still being served joins it
  * ({@link SupervisorDeliveries.joinRead}): the host reads once, and every
- * attempt carries that answer. A read is not a mutation, so nothing is kept
- * once it settles, and a host that joins nothing serves each attempt.
+ * attempt carries that answer. A journaled run also keeps settled replies:
+ * a lost response must not turn a resend into another program observation.
+ * Ordinary runs keep only reads in flight; a host that joins nothing serves
+ * each attempt.
  */
 export const SUPERVISOR_JOINED_READ_OPS = [
   'access', 'exists', 'stat', 'lstat', 'readdir', 'readlink', 'fsLinkLeadsTo', 'readFile', 'readFileBytes',
@@ -93,10 +97,71 @@ export function supervisorJoinedReadOp(op: string): SupervisorJoinedReadOpName |
   return JOINED_READ_OP_NAMES.get(op);
 }
 
+/** One attempt of one write wave. */
+interface WaveAttempt {
+  readonly wave: number;
+  readonly attempt: number;
+}
+
+/** An open write-wave epoch: the newest attempt admitted under it, and when it closes. */
+interface WaveEpoch extends WaveAttempt {
+  readonly expiresAt: number;
+}
+
+/** Whether `a` came after `b` from the same writer. */
+function newerAttempt(a: WaveAttempt, b: WaveAttempt): boolean {
+  return a.wave > b.wave || (a.wave === b.wave && a.attempt > b.attempt);
+}
+
 /** A read being served, by `${pid}:${readId}`: what a repeat of it joins. */
 interface InFlightRead {
   readonly op: SupervisorJoinedReadOpName;
   readonly answer: ReturnType<SupervisorOpDispatch>;
+  readonly run: string | undefined;
+  pending: boolean;
+}
+
+/** Settled read retention is owned by the run's existing replay journal. */
+export interface ReadRunRetention {
+  readonly maxEntries: number;
+  readonly maxBytes: number;
+  readonly recording: () => boolean;
+  /** Called before an over-bound reply is handed to its caller. */
+  readonly disqualify: (why: string) => void;
+}
+
+interface ReadScope {
+  readonly run?: { id: string; retention: ReadRunRetention };
+  readonly replies: Map<string, InFlightRead>;
+  bytes: number;
+}
+
+/** A conservative retained-size charge, including backing buffers and metadata. */
+function readReplyBytes(value: unknown, limit: number): number {
+  const seen = new Set<object>();
+  let bytes = 256; // The receipt, its identity, and map entry.
+  const visit = (v: unknown): void => {
+    if (bytes > limit) return;
+    if (typeof v === 'string') { bytes += 16 + 2 * v.length; return; }
+    if (!v || typeof v !== 'object') { bytes += 16; return; }
+    if (seen.has(v)) return;
+    seen.add(v);
+    bytes += 64;
+    if (ArrayBuffer.isView(v)) {
+      // A small view may still hold a larger allocation alive.
+      visit(v.buffer);
+    } else if (v instanceof ArrayBuffer || typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer) {
+      bytes += v.byteLength;
+    } else {
+      for (const key of Object.getOwnPropertyNames(v)) {
+        bytes += 16 + 2 * key.length;
+        visit(Reflect.get(v, key));
+        if (bytes > limit) break;
+      }
+    }
+  };
+  visit(value);
+  return bytes;
 }
 
 /** Which mutation, under which id, for which host instance. The envelope's args are the mutation's. */
@@ -242,7 +307,10 @@ export class SupervisorDeliveries {
   private previous: Generation = new Map();
   private rotatedAt = Number.NEGATIVE_INFINITY;
   private readonly running = new Map<string, Receipt>();
-  private readonly readsInFlight = new Map<string, InFlightRead>();
+  /** One joined-read index: pending reads, plus bounded replies of journaled runs. */
+  private readonly reads = new Map<number, ReadScope>();
+  /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
+  private readonly waveEpochs = new Map<string, WaveEpoch>();
   private tombstones = new Set<number>();
   private olderTombstones = new Set<number>();
   private tombstonesSince = Number.NEGATIVE_INFINITY;
@@ -267,6 +335,17 @@ export class SupervisorDeliveries {
   /** Tombstones held, both generations: what their bound is stated against. */
   get tombstoneCount(): number {
     return this.tombstones.size + this.olderTombstones.size;
+  }
+
+  /** Writer activation starts a fresh run; no preceding run's reply can answer it. */
+  startReadRun(pid: number, run: string, retention: ReadRunRetention): void {
+    if (this.reads.get(pid)?.run?.id === run) return;
+    this.reads.set(pid, { run: { id: run, retention }, replies: new Map(), bytes: 0 });
+  }
+
+  /** Rewind/exit releases replies, without an old completion resurrecting them. */
+  endReadRun(pid: number, run?: string): void {
+    if (run === undefined || this.reads.get(pid)?.run?.id === run) this.reads.delete(pid);
   }
 
   /**
@@ -340,9 +419,12 @@ export class SupervisorDeliveries {
    * is who it says) and answered with the same promise, reading nothing. A
    * read queued here behind the session's read budget, a lazy import or a
    * busy input gate is exactly what the sender's hedge fires on, and joining
-   * is what keeps that hedge from reading the same bytes again. Nothing is
-   * kept once the read settles: an attempt after that reads afresh, which a
-   * read may. The map holds only reads in flight.
+   * is what keeps that hedge from reading the same bytes again. A journaled
+   * run also retains settled replies until its writer ends: a response lost
+   * AFTER the session answered must not consume a second journal occurrence.
+   * Non-journaled reads keep their in-flight-only behavior. Exceeding a run's
+   * retention bound forbids replay before handing out the reply; it never
+   * silently evicts a reply while that run remains replayable.
    *
    * Returns the answer, and whether this attempt joined a read already
    * being served rather than reading.
@@ -353,32 +435,128 @@ export class SupervisorDeliveries {
     op: SupervisorJoinedReadOpName,
     admit: () => void,
     read: () => ReturnType<SupervisorOpDispatch>,
+    run?: string,
   ): JoinedRead {
-    const key = `${pid}:${id}`;
-    const running = this.readsInFlight.get(key);
+    let scope = this.reads.get(pid);
+    if (scope?.run && scope.run.id !== run) {
+      throw Object.assign(new Error(`ESTALE: read ${id} belongs to a different run`), { code: 'ESTALE' });
+    }
+    if (!scope) {
+      scope = { replies: new Map(), bytes: 0 };
+      this.reads.set(pid, scope);
+    }
+    const running = scope.replies.get(id);
     if (running) {
-      if (running.op !== op) {
+      if (running.op !== op || running.run !== run) {
         throw Object.assign(new Error(`EINVAL: read ${id} is ${running.op}, not ${op}`), { code: 'EINVAL' });
       }
       admit();
       return { joined: true, answer: running.answer };
     }
+    const owner = scope.run?.retention;
+    if (owner?.recording() && scope.replies.size >= owner.maxEntries) {
+      owner.disqualify(`needed more than ${owner.maxEntries} retained filesystem read receipts before stdin`);
+    }
     const answer = read();
-    this.readsInFlight.set(key, { op, answer });
-    const settled = (): void => {
-      if (this.readsInFlight.get(key)?.answer === answer) this.readsInFlight.delete(key);
+    const entry: InFlightRead = { op, answer, run, pending: true };
+    scope.replies.set(id, entry);
+    const current = scope;
+    const settled = (value: unknown): void => {
+      entry.pending = false;
+      if (this.reads.get(pid) !== current) return;
+      if (owner?.recording()) {
+        let charged: number;
+        try { charged = readReplyBytes(value, owner.maxBytes - current.bytes); }
+        catch (error) {
+          owner.disqualify(`could not bound a retained filesystem read receipt (${String(error)})`);
+          charged = Infinity;
+        }
+        if (charged <= owner.maxBytes - current.bytes) {
+          current.bytes += charged;
+          return;
+        }
+        owner.disqualify(`needed more than ${owner.maxBytes} bytes of retained filesystem read receipts before stdin`);
+      }
+      current.replies.delete(id);
+      if (!current.run && current.replies.size === 0) this.reads.delete(pid);
     };
     answer.then(settled, settled);
     return { joined: false, answer };
   }
 
-  /** Reads being served, which repeats of them would join. */
-  get readsServing(): number {
-    return this.readsInFlight.size;
+  /**
+   * Open a write-wave epoch for process `pid`: the only writer identity
+   * {@link admitWave} admits, for `ttlMs` from now. Its waves are refused
+   * once it expires or its process is forgotten, whatever arrives then.
+   */
+  openWaveWriter(pid: number, ttlMs: number): string {
+    const now = Date.now();
+    for (const [key, epoch] of this.waveEpochs) if (epoch.expiresAt <= now) this.waveEpochs.delete(key);
+    const writer = crypto.randomUUID();
+    this.waveEpochs.set(`${pid}:${writer}`, { wave: 0, attempt: 0, expiresAt: now + ttlMs });
+    return writer;
   }
 
-  /** A process ended: its receipts answer nothing more, and their ids stay refused. */
+  /**
+   * Admit attempt (`wave`, `attempt`) of a write wave from epoch `writer`,
+   * and answer whether it may still commit: it may while the epoch is open
+   * and no newer attempt under it has been admitted. Refused, ESTALE, by
+   * default: an epoch this instance did not open, or opened and has since
+   * expired or forgotten, admits nothing; and an attempt older than one
+   * already admitted is one its writer gave up on and re-sent, so applying
+   * it could only put back bytes a newer write replaced. `check` is asked
+   * again before each of the attempt's commits, which is what stops an
+   * attempt overtaken, or outlived by its epoch, while it runs.
+   */
+  admitWave(pid: number, writer: string, wave: number, attempt: number): { check(): void } {
+    const key = `${pid}:${writer}`;
+    const mine: WaveAttempt = { wave, attempt };
+    const check = (): WaveEpoch => {
+      const epoch = this.waveEpochs.get(key);
+      if (epoch === undefined || epoch.expiresAt <= Date.now()) {
+        throw Object.assign(
+          new Error(`ESTALE: write wave ${wave} attempt ${attempt} names a writer epoch this session does not hold open`),
+          { code: 'ESTALE' },
+        );
+      }
+      if (newerAttempt(epoch, mine)) {
+        throw Object.assign(
+          new Error(`ESTALE: write wave ${wave} attempt ${attempt} was overtaken by wave ${epoch.wave} attempt ${epoch.attempt}`),
+          { code: 'ESTALE' },
+        );
+      }
+      return epoch;
+    };
+    const epoch = check();
+    this.waveEpochs.set(key, { wave, attempt, expiresAt: epoch.expiresAt });
+    return { check: () => { check(); } };
+  }
+
+  /** Reads being served, which repeats of them would join. */
+  get readsServing(): number {
+    let count = 0;
+    for (const scope of this.reads.values()) for (const reply of scope.replies.values()) if (reply.pending) count++;
+    return count;
+  }
+
+  /** Settled receipts kept by active journaled runs, for lifecycle/bound checks. */
+  get readReceipts(): number {
+    let count = 0;
+    for (const scope of this.reads.values()) for (const reply of scope.replies.values()) if (!reply.pending) count++;
+    return count;
+  }
+
+  get readReceiptBytes(): number {
+    let bytes = 0;
+    for (const scope of this.reads.values()) bytes += scope.bytes;
+    return bytes;
+  }
+
+  /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
   forget(pid: number): void {
+    const prefix = `${pid}:`;
+    for (const key of this.waveEpochs.keys()) if (key.startsWith(prefix)) this.waveEpochs.delete(key);
+    this.endReadRun(pid);
     const now = Date.now();
     for (const generation of [this.current, this.previous]) {
       const receipts = generation.get(pid);

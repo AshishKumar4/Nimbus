@@ -4,6 +4,7 @@
  * Produced by scripts/bundle-facet-workers.mjs from:
  *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)
  *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)
+ *   - @nimbus-sh/platform src/wave-writer.ts (the W7 wave writer, as an IIFE)
  *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
  *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *
@@ -18,10 +19,12 @@
  *   W7_MAGIC, W7_MAX_RECORD_BYTES.
  *
  * Tar size: 4.58 KiB
- * W7 size:  30.14 KiB
+ * W7 size:  34.69 KiB
  */
 export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
+/** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */
+export declare const WAVE_WRITER_PREAMBLE: string;
 /** Declares `function createEsmResolver(host)`; the node shims call it. */
 export declare const ESM_RESOLVER_PREAMBLE: string;
 /** Declares `function createHttp2Module(host)`; the node shims call it. */

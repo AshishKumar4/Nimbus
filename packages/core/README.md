@@ -147,6 +147,30 @@ through it a program can reach your files, processes and network around the
 workspace. Under Node there is no such namespace. To run code you do not
 trust, run the host in an OS sandbox (a container or VM).
 
+### When a program sees a change
+
+A program reads the workspace as it was when input last reached it. Before
+it runs, and again before its next filesystem call after anything enters it
+from outside, it brings what it holds up to date with the workspace. Input
+is a socket's bytes, an accepted connection, and a timer or `poll` that woke
+it; for `node` also stdin, a signal, a port's request and a child's output
+or exit. A call of the program's own that changes the filesystem counts too.
+So whatever tells a program that something happened elsewhere (a reply, a
+request, the passing of time) comes before what it reads next, and the
+change is in it. There is no time bound and no polling: a program that takes
+no input sees no change, as if it ran alone. `node`, `python3` and `clang`
+keep this rule.
+
+`python3` and `clang` answer their lookups, stats, listings and reads from
+what they hold, filled as they ask, so a call costs microseconds, not a round
+trip to the workspace. A file such a program creates or truncates is held in
+the program until it closes or fsyncs the file, sends anything on a socket,
+or its run ends, so the workspace has the bytes before anyone can hear from
+the program that it wrote them. Until then another program sees the file
+empty, as it was created. A write the workspace refuses is the error of that
+close or fsync, or fails the run, naming the file. Other writes go to the
+workspace as they are made.
+
 ## Files
 
 Files written through `.fs` are owned by the session user (uid 1000), not
@@ -231,8 +255,10 @@ returned fsync (on any descriptor of the file, a read-only one included)
 or close means what was written is in the store. A descriptor opened
 `sync` (O_SYNC) holds nothing: each write is in the store when it returns,
 on SQLite and on a mount that cannot write in place. The supervisor opens
-a facet process's descriptors that way, so each of its writes is answered
-with what the store did. A host whose isolate dies while appends are held
+a facet process's descriptors that way, so each of its writes that reaches
+the store is answered with what the store did (a `python3` or `clang`
+program first holds the writes to a file it created or truncated; see When a
+program sees a change). A host whose isolate dies while appends are held
 loses them, as a machine loses what it had not synced.
 
 ## The user's home

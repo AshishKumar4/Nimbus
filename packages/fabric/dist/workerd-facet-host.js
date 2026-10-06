@@ -17,7 +17,7 @@ import { StorageLedger, forgetFacetStorage } from '@nimbus-sh/core/runtime/stora
 import { getCtxExports, stagedBootAssembler, supervisorEntrypoint, supervisorEntrypointName, } from './composition.js';
 import { assertModuleMapWithinCodeLimit, beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, facetNameCount, facetNameCountDurable, recordFacetNameMinted, withDynamicWorkerCapNamed, withFacetBudgetNamed, } from './budgets.js';
 import { RESIDENT_PROCESS_CLASS, residentLoaderConfig, } from './process-fabric.js';
-import { supervisorLoaderKey } from './supervisor-props.js';
+import { supervisorLoaderKey, mintProcessSupervisor } from './supervisor-props.js';
 export function getNimbusCtxExports() {
     const ctxExports = getCtxExports();
     if (!ctxExports || typeof ctxExports !== 'object') {
@@ -453,7 +453,7 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
         assertModuleMapWithinCodeLimit(spec.modules);
         if (supervisorRpc) {
             params.onWriterActivated(params.writerId);
-            supervisorBinding = supervisorRpc({ props: supervisor });
+            supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
         }
         worker = loader.load({
             compatibilityDate: spec.compatibilityDate,
@@ -461,6 +461,8 @@ async function runOneShot(ctx, env, supervisor, params, consume) {
             mainModule: spec.mainModule,
             modules: spec.modules,
             ...(supervisorBinding ? { env: { SUPERVISOR: supervisorBinding } } : {}),
+            // The same binding answers its network (SupervisorRPC.fetch/connect).
+            ...(supervisorBinding && params.outbound ? { globalOutbound: supervisorBinding } : {}),
         });
         // The loader has taken the map; holding it here would keep a second full
         // copy of the program alive for as long as the program runs.
@@ -525,7 +527,7 @@ export async function residentWorkerConfig(env, disk, supervisor, boot) {
     if (!supervisorRpc) {
         throw new Error(`Nimbus: ctx.exports.${supervisor.route?.supervisorEntrypoint ?? supervisorEntrypointName() ?? '<supervisor entrypoint>'} unavailable`);
     }
-    return { ...config, env: { SUPERVISOR: supervisorRpc({ props: supervisor }) } };
+    return { ...config, env: { SUPERVISOR: mintProcessSupervisor(supervisorRpc, supervisor) } };
 }
 /** The module map a loader config assembled, or empty when it named none. */
 function configModules(config) {

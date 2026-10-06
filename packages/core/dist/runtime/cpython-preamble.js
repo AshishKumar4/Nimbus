@@ -47,7 +47,7 @@ function __nimbusPyModule() {
 async function __nimbusPyBoot(args) {
   // The interpreter sees the whole session tree at '/': its stdlib, site
   // packages and the user's cwd are absolute paths under it.
-  __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
+  __wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: args.cred });
   // AFTER initFS, never before. See constraint (2). The stub is read back off
   // globalThis rather than passed in, because the facet entry point published
   // it there before initFS wiped the adoption.
@@ -161,9 +161,34 @@ globalThis.__nimbusVirtualSocketRouteLoopback = globalThis.__nimbusVirtualSocket
     return Promise.resolve(supervisor.routeLoopback(Number(port), request));
   };
 
+// ── Settling what a run wrote ──────────────────────────────────────────────
+// Every entry ends here, whatever ended it (an exit, os._exit, an abort, a
+// trap, a flush that trapped): what the process wrote and still holds
+// (wasi/resident-filesystem.ts) goes to the session before the result says
+// the run happened, and a file the session refused fails the run, named.
+async function __nimbusPySettled(result) {
+  let failed = null;
+  try {
+    failed = typeof globalThis.__wasiSettleWrites === 'function' ? await globalThis.__wasiSettleWrites() : null;
+  } catch (e) {
+    failed = (e && e.message) || String(e);
+  }
+  if (failed === null) return result;
+  return { ...result, exitCode: result.exitCode || 1, error: result.error ? result.error + '; ' + failed : failed };
+}
+
 // ── One-shot entry point ───────────────────────────────────────────────────
 // A fresh interpreter per call. See constraint (3).
 globalThis.__cpythonRun = async function __cpythonRun(args) {
+  let result;
+  try {
+    result = await __cpythonRunOnce(args);
+  } catch (e) {
+    result = { exitCode: 1, stdout: '', stderr: '', error: (e && e.message) || String(e) };
+  }
+  return __nimbusPySettled(result);
+};
+async function __cpythonRunOnce(args) {
   const stdoutStart = globalThis.__nimbusPyStdout.length;
   const stderrStart = globalThis.__nimbusPyStderr.length;
   const drain = () => ({
@@ -184,7 +209,7 @@ globalThis.__cpythonRun = async function __cpythonRun(args) {
     try { await boot.flush(); } catch (ignored) { /* the VM is already gone */ }
     return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
   }
-};
+}
 
 // ── REPL ───────────────────────────────────────────────────────────────────
 // One interpreter for the whole session, unlike __cpythonRun's fresh instance
@@ -193,6 +218,15 @@ globalThis.__cpythonRun = async function __cpythonRun(args) {
 // of these per session and no interleaving to guard against.
 globalThis.__cpythonReplBoot = globalThis.__cpythonReplBoot || null;
 globalThis.__cpythonReplRun = async function __cpythonReplRun(args) {
+  let result;
+  try {
+    result = await __cpythonReplLine(args);
+  } catch (e) {
+    result = { exitCode: 1, stdout: '', stderr: '', error: (e && e.message) || String(e) };
+  }
+  return __nimbusPySettled(result);
+};
+async function __cpythonReplLine(args) {
   const stdoutStart = globalThis.__nimbusPyStdout.length;
   const stderrStart = globalThis.__nimbusPyStderr.length;
   const drain = () => ({
@@ -222,7 +256,7 @@ globalThis.__cpythonReplRun = async function __cpythonReplRun(args) {
   } catch (e) {
     return { exitCode: 1, ...drain(), error: (e && e.message) || String(e) };
   }
-};
+}
 
 // ── Resident process ───────────────────────────────────────────────────────
 // The program is not suspended between requests — it has already finished.
@@ -239,13 +273,20 @@ globalThis.__cpythonStartProcess = async function __cpythonStartProcess(args) {
   const stdoutStart = globalThis.__nimbusPyStdout.length;
   const stderrStart = globalThis.__nimbusPyStderr.length;
   const boot = await __nimbusPyBoot(args);
-  const exitCode = await boot.run(args.userCode || '');
-  await boot.flush();
-  const result = {
+  let exitCode = 1;
+  let error;
+  try {
+    exitCode = await boot.run(args.userCode || '');
+    await boot.flush();
+  } catch (e) {
+    error = (e && e.message) || String(e);
+  }
+  const result = await __nimbusPySettled({
     exitCode,
     stdout: globalThis.__nimbusPyStdout.slice(stdoutStart).join(''),
     stderr: globalThis.__nimbusPyStderr.slice(stderrStart).join(''),
-  };
+    ...(error === undefined ? {} : { error }),
+  });
   globalThis.__cpythonProcess = { boot, result };
   return result;
 };
@@ -277,11 +318,20 @@ globalThis.__nimbusVirtualSocketRequestQueued = globalThis.__nimbusVirtualSocket
     const run = async () => {
       const proc = globalThis.__cpythonProcess;
       if (!proc) return false;
-      const rc = await proc.boot.run(
-        'import sys\n'
-        + '_nimbus_ok = _nimbus_serve_one(' + Number(port) + ')\n'
-        + 'if not _nimbus_ok: sys.stderr.write("nimbus: no server registered on port ' + Number(port) + '\\n")');
-      await proc.boot.flush();
+      let rc = 1;
+      try {
+        rc = await proc.boot.run(
+          'import sys\n'
+          + '_nimbus_ok = _nimbus_serve_one(' + Number(port) + ')\n'
+          + 'if not _nimbus_ok: sys.stderr.write("nimbus: no server registered on port ' + Number(port) + '\\n")');
+        await proc.boot.flush();
+      } finally {
+        // A request the server handled leaves what it wrote in the session; a
+        // refusal goes to the process's stderr, naming the file.
+        const settled = await __nimbusPySettled({ exitCode: rc });
+        if (settled.error) globalThis.__nimbusPyStderr.push('nimbus: ' + settled.error + '\n');
+        rc = settled.exitCode;
+      }
       return rc === 0;
     };
     const task = globalThis.__cpythonServeQueue.then(run, run);

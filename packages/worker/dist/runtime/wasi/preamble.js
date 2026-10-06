@@ -1,6 +1,8 @@
 import { installAuthorityFilesystem, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH_PREFIX, WASI_TCP_PATH_PREFIX, } from '@nimbus-sh/core/runtime/wasi/filesystem.js';
-import { supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
+import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
+import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
+import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
 const __WASI_EAGAIN = 6;
@@ -109,7 +111,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS() {
-    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES };
+    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null };
 }
 let __wasiFS = __wasiEmptyFS();
 let __wasiPreopens = [];
@@ -129,6 +131,102 @@ let __wasiThreads = null;
 // compute-only instances) the guest has stdio, sockets and clocks but no
 // files, and a file syscall answers EBADF.
 let __wasiSup = null;
+// ── The process's own copy of the namespace ──────────────────────────────
+//
+// A filesystem syscall is a round trip to the session (5.9-12.7 ms for one
+// os.stat from Python, throwaway 2026-10-05). A process that knows its
+// credential answers lookups, stats, listings and read-only opens from the
+// resident store instead (runtime/wasi/resident-filesystem.ts); the session
+// still answers every change. Its namespace is listed on demand, so a short
+// run pays for the directories it looks in, not for the session's tree.
+// `inbound()` is called wherever input from outside enters the guest (a
+// socket's bytes, an accepted connection, a poll wakeup): the next answer then
+// takes the ACQUIRE barrier first, the causal rule a node process keeps.
+let __wasiResident = null;
+/** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
+function __wasiStartResident(sup, cred) {
+    const supervisor = answeringSupervisor(sup);
+    const authority = supervisorFilesystem(sup);
+    const store = __wasiResidentStore;
+    store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+    store.__residentSetStorage(undefined, supervisor);
+    let view = null;
+    void (async () => {
+        // The session's own filesystem is the one the store answers for: its root reports its device.
+        const root = await authority.stat('/');
+        if (root === null || !(await store.__residentBootLazy(supervisor)))
+            return;
+        view = store.__residentNamespaceView(supervisor, root.dev, cred);
+    })().catch(() => { view = null; });
+    const booting = {
+        get device() { return view === null ? -1 : view.device; },
+        cred,
+        ready: () => view !== null && view.ready(),
+        entry: (key) => (view === null ? undefined : view.entry(key)),
+        children: (key) => (view === null ? undefined : view.children(key)),
+        list: (key) => (view === null ? Promise.resolve(false) : view.list(key)),
+        lookup: (keys, content) => (view === null ? Promise.resolve(false) : view.lookup(keys, content)),
+        listTree: (key) => (view === null ? Promise.resolve(false) : view.listTree(key)),
+        content: (key) => (view === null ? undefined : view.content(key)),
+        fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
+        barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+        reserve: (bytes) => view !== null && view.reserve(bytes),
+        release: (bytes) => { view?.release(bytes); },
+    };
+    return residentFilesystem(authority, booting);
+}
+/** The filesystem the codec answers from: the process's resident one over the adopted supervisor, else the session's. */
+function __wasiFilesystem(parking) {
+    const sup = __wasiSup;
+    if (!sup)
+        return null;
+    // A guest that cannot park cannot wait for a listing or a fill: it reads the session's synchronous view.
+    if (parking === 'none')
+        return supervisorFilesystem(sup, sup.synchronous);
+    const cred = __wasiFS.cred;
+    // Nor can one whose engine has no JSPI (Node 22 without the flag): there a
+    // same-isolate supervisor answers synchronously and is used as it is.
+    const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
+    if (cred === null || !canPark)
+        return supervisorFilesystem(sup);
+    if (__wasiResident === null || __wasiResident.sup !== sup)
+        __wasiResident = { sup, fs: __wasiStartResident(sup, cred) };
+    return __wasiResident.fs;
+}
+/** This process's filesystem calls so far and who answered them (ResidentFilesystemStats), or null when the session answered them all. */
+export function __wasiFsStats() {
+    return __wasiResident === null ? null : __wasiResident.fs.stats();
+}
+/**
+ * Send what the process holds to the session, at the end of a run: null, or
+ * what to report, naming each file whose bytes did not all arrive. A run that
+ * reports one did not do what it said it did, and exits non-zero.
+ */
+export async function __wasiSettleWrites() {
+    if (__wasiResident === null)
+        return null;
+    const failures = await __wasiResident.fs.settle();
+    if (failures.length === 0)
+        return null;
+    return failures
+        .map((f) => `${f.path}: not written (${f.error instanceof Error ? f.error.message : String(f.error)})`)
+        .join('; ');
+}
+/** Anything about to leave the process waits until what it wrote is in the session. */
+function __wasiSettleFirst(body) {
+    const resident = __wasiResident;
+    if (resident === null || !resident.fs.holding())
+        return body();
+    return resident.fs.flush().then(() => body());
+}
+/** Input from outside entered the guest: its next filesystem answer takes the barrier first. */
+function __wasiInbound(result) {
+    if (result instanceof Promise) {
+        return result.then((value) => { __wasiResident?.fs.inbound(); return value; });
+    }
+    __wasiResident?.fs.inbound();
+    return result;
+}
 // Adopting is idempotent and never downgrades. A resident process re-enters
 // through routed fetch/handleHttpRequest hops that resolve the entrypoint
 // WITHOUT a supervisor in env; clearing the live stub on those hops would
@@ -165,7 +263,14 @@ export function __wasiInitFS(opts) {
         root: __wasiCanonicalize(opts.root || ''),
         // Largest regular file the codec answers from a resident copy.
         residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
+        cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
     };
+    // A new process holds nothing of the last one's filesystem. Its run settled
+    // what it held (__wasiSettleWrites); anything still held goes to the session
+    // it belongs to rather than nowhere.
+    if (__wasiResident !== null && __wasiResident.fs.holding())
+        void __wasiResident.fs.settle();
+    __wasiResident = null;
     // Reset fd table baseline; install preopens as fd 3, 4, 5, ...
     // Emptied rather than replaced: the authority codec and the socket helpers
     // are handed this Map, and a swap would leave half of them writing into a
@@ -1520,7 +1625,7 @@ export function __wasiMakeImports(opts) {
         },
     };
     installAuthorityFilesystem(imports, {
-        fs: () => __wasiSup ? supervisorFilesystem(__wasiSup, opts.parking === 'none' ? __wasiSup.synchronous : undefined) : null,
+        fs: () => __wasiFilesystem(opts.parking),
         memory: opts.getMemory,
         fds: fdTable,
         allocateFd: __wasiAllocateFd,
@@ -1528,6 +1633,15 @@ export function __wasiMakeImports(opts) {
         synchronous: opts.parking === 'none',
         residentBytes: __wasiFS.residentFileCap,
     });
+    // Where something leaves the guest: a socket's bytes (fd_write on a socket
+    // comes here too, through the raw capture below). A peer that hears from
+    // the guest then finds what the guest wrote before it spoke.
+    const send = imports.sock_send;
+    if (typeof send === 'function') {
+        imports.sock_send = function outbound(...args) {
+            return __wasiSettleFirst(() => send.apply(this, args));
+        };
+    }
     // Raw async socket bodies, captured BEFORE JSPI-wrapping so fd_read /
     // fd_write can route socket fds through them (wasi-libc maps read(2)/
     // write(2) to fd_read/fd_write for every fd kind, sockets included).
@@ -1555,6 +1669,27 @@ export function __wasiMakeImports(opts) {
     for (const name of parkable) {
         if (typeof imports[name] === 'function')
             imports[name] = withParkDeadline(imports[name]);
+    }
+    // Where input from outside enters the guest: a socket's bytes, an accepted
+    // connection, a poll that woke, and the watchdog's wake from any of them
+    // (time passed). What the guest reads after one may follow from a change it
+    // caused elsewhere, so its next filesystem answer takes the barrier first
+    // (__wasiInbound). Marked on what the guest is handed, so a deadline's
+    // EAGAIN counts as surely as an answer.
+    for (const name of ['poll_oneoff', 'sock_recv', 'sock_accept']) {
+        const body = imports[name];
+        if (typeof body !== 'function')
+            continue;
+        imports[name] = function inbound(...args) { return __wasiInbound(body.apply(this, args)); };
+    }
+    // A read of a socket or a listener through fd_read is the same entry.
+    const readAny = imports.fd_read;
+    if (typeof readAny === 'function') {
+        imports.fd_read = function inboundRead(...args) {
+            const kind = fdTable.get(args[0])?.kind;
+            const result = readAny.apply(this, args);
+            return kind === 'socket' || kind === 'listener' ? __wasiInbound(result) : result;
+        };
     }
     // How this instance is allowed to block — a parameter, because it is a
     // property of the CALLER, not of WASI.
@@ -1685,18 +1820,32 @@ export async function __wasiRunStartAsync(instance, ctx) {
         else {
             start();
         }
-        return { exitCode: 0 };
+        return await __wasiSettled({ exitCode: 0 });
     }
     catch (e) {
         if (e && e.constructor && e.constructor.name === '__WasiExit') {
-            return { exitCode: e.code };
+            return await __wasiSettled({ exitCode: e.code });
         }
-        return { exitCode: 1, error: (e && e.message) ? e.message : String(e) };
+        return await __wasiSettled({ exitCode: 1, error: (e && e.message) ? e.message : String(e) });
     }
+}
+/** A run's result once what it wrote is in the session: a write the session refused fails the run. */
+async function __wasiSettled(result) {
+    let failed;
+    try {
+        failed = await __wasiSettleWrites();
+    }
+    catch (e) {
+        failed = e?.message ?? String(e);
+    }
+    if (failed === null)
+        return result;
+    return { exitCode: result.exitCode || 1, error: result.error ? `${result.error}; ${failed}` : failed };
 }
 // A serialized facet body is evaluated in this module's scope, but runners
 // reach helpers through globalThis (the convention __rubyRun and __clangRun
 // already follow) because a direct reference to a preamble-only symbol will
 // not typecheck in the supervisor bundle the body is authored in.
 globalThis.__wasiAdoptSupervisor = __wasiAdoptSupervisor;
+globalThis.__wasiSettleWrites = __wasiSettleWrites;
 // ── END: wasi-instance preamble ─────────────────────────────────────────

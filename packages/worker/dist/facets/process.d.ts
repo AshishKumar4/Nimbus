@@ -22,7 +22,10 @@
  * stdin / stdout / stderr stream through per-child queues maintained on
  * this manager instance. cpReadOutput long-polls for incremental delivery
  * to the parent; cpDrainOutput is a one-shot full-flush invoked from the
- * parent's exit path so unawaited children don't lose output.
+ * parent's exit path so unawaited children don't lose output. A child's
+ * stdin is a pipe: what runs it here reads the queue as a stream, as the
+ * parent writes it (`_stdinOf`), and a runtime's facet reads the same queue
+ * through cpReadStdin.
  *
  * Children run concurrently, as Node's do: each is dispatched on its own,
  * and nothing here waits for one child before starting the next. What a
@@ -39,6 +42,7 @@
  */
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import type { CommandInputStream } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
  * FacetExecResult but with the streaming hooks already invoked, so this
@@ -184,10 +188,13 @@ export type CommandKind = 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'un
  * the real FacetManager; tests pass a mock with execStream.
  */
 export interface FacetManagerLike {
+    /** `opts.stdin` is the command's stdin, a pipe it reads as it arrives. */
     execStream(code: string, opts: {
+        facetName?: string;
         cwd?: string;
         env?: Record<string, string>;
         argv?: string[];
+        stdin?: CommandInputStream;
     }, hooks: OutputHooks): Promise<number>;
     /**
      * The session's kill of `pid` by `signal` (a name without SIG): the work
@@ -211,10 +218,10 @@ export interface CommandRegistryLike {
     resolve(name: string, from: ChildOrigin): Promise<{
         kind: CommandKind;
     } | null>;
-    runPureBuiltin(pid: number, name: string, args: string[], env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
+    runPureBuiltin(pid: number, name: string, args: string[], env: Record<string, string>, cwd: string, stdin: CommandInputStream, hooks: OutputHooks): Promise<number>;
 }
 export interface ShellExecutorLike {
-    execute(pid: number, commandLine: string, env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): Promise<number>;
+    execute(pid: number, commandLine: string, env: Record<string, string>, cwd: string, stdin: CommandInputStream, hooks: OutputHooks): Promise<number>;
 }
 /**
  * Constructor deps bundle. Keeping it as a single object simplifies
@@ -266,20 +273,27 @@ export declare class FacetProcessManager {
      */
     private _dispatch;
     /**
-     * Synchronously drain the stdin queue for a pure-builtin. Waits up to
-     * 50ms for stdinClosed if data is still flowing. Pure-builtins block
-     * on full stdin so we have to commit upfront — the parent should have
-     * called stdinEnd() before the wait ticks expire.
+     * The child's stdin as a stream over its queue: each read takes what the
+     * parent has written, waiting for it, and ends when the parent ends stdin
+     * or the child exits. Nothing is read ahead of the command's own reads.
      */
-    private _waitForStdinEvent;
-    private _drainStdinForBuiltin;
+    private _stdinOf;
     private _shellPlanFor;
+    private _dispatchShell;
+    /** The shell's program: its `-c` text, its script, or (`sh` alone) its stdin, which it then has none left of. */
     private _shellCommandLineForPlan;
     private _runShellLine;
     stdinWrite(childPid: number, data: Uint8Array): {
         ok: boolean;
+        full?: boolean;
     };
     stdinEnd(childPid: number): void;
+    /**
+     * Put stdin the child took back in front of its queue, as it was, past the
+     * queue's cap and after its end too: a run of the child that stopped
+     * before using it, run again (runtime/stop-replay.ts).
+     */
+    unreadStdin(childPid: number, chunks: readonly Uint8Array[]): void;
     /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
     private _takeStdin;
     /**

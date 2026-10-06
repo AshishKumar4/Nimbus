@@ -173,6 +173,13 @@ export const SUPERVISOR_HEAP_CEILING_BYTES = 64 * 1024 * 1024;
 // works: at most this many bytes, least recently used out first. An eighth
 // of a facet's measured ~208-256 MiB, the rest left to the program.
 export const FACET_OWN_WRITE_MEMORY_BYTES = 32 * 1024 * 1024;
+// A WASI process's copy of the namespace and of the files it reads
+// (core runtime/wasi/resident-filesystem.ts): held in its facet's heap beside
+// the guest's linear memory, and never past this. Names are listed and bytes
+// fetched only as the program asks for them, so the cap bounds a tree walker
+// or a program that reads much, not what a short run holds. Past it the store
+// holds nothing more and the session answers.
+export const WASI_RESIDENT_STORE_BYTES = 32 * 1024 * 1024;
 // Shared allowance for transient allocations in the supervisor DO. With the
 // VFS LRU shrunk to 8 MiB during an active reservation, 40 MiB of admitted
 // payload plus the 9 MiB bundle baseline stays below the 64 MiB soft ceiling

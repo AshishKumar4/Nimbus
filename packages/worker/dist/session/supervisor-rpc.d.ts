@@ -36,7 +36,7 @@
  * Delivery: every call reaches the session over a Durable Object stub the
  * platform can drop ("Network connection lost.", `retryable`). Reads are
  * re-sent on a fresh stub, and hedged: one unanswered after
- * SUPERVISOR_READ_HEDGE_AFTER_MS is sent again while it stays in flight.
+ * LOST_CALL_HEDGE_AFTER_MS is sent again while it stays in flight.
  * Filesystem mutations, on a binding that names its
  * host's incarnation, are re-sent under one delivery id that host applies at
  * most once (`_fsMutation`); on any other binding they are sent once.
@@ -50,6 +50,7 @@ import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationRecei
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 /**
  * Per-call cache-stat event surfaced from supervisor R2CacheClient to
@@ -69,7 +70,6 @@ export type SupervisorCacheStatEvent = {
     tier: CacheTier;
     cacheKind: CacheKind;
 };
-export declare const SUPERVISOR_READ_HEDGE_AFTER_MS = 5000;
 export declare class SupervisorRPC extends WorkerEntrypoint {
     /**
      * A fresh stub for the host, by the route the binding carries, per call.
@@ -79,6 +79,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _host;
     private _route;
     private _op;
+    /** Every path (including resent reads/mutations) uses the bound caller. */
+    private _caller;
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     private _fsOp;
     /**
@@ -91,7 +93,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * from one facet left some attempts pending for minutes without reaching
      * the host, and the program waiting on them never exited
      * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
-     * after SUPERVISOR_READ_HEDGE_AFTER_MS is hedged: sent again on a fresh
+     * after LOST_CALL_HEDGE_AFTER_MS is hedged: sent again on a fresh
      * stub, the first attempt left running, the first answer taken.
      *
      * A read can equally be slow at the session — queued behind the read
@@ -136,10 +138,15 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * span, under the RPC span of the attempt that reached it.
      */
     private _resent;
+    private _mutationOwner;
     private _hostIncarnation;
     private _reportingPid;
     private _call;
+    private _cacheRead;
+    private _infrastructureCache;
     private _pid;
+    /** The run of the process this binding was minted for, when it has one. */
+    private _runId;
     private _writerId;
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
@@ -328,7 +335,22 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * is unknown up-front (-1 sentinel); it is the supervisor's
      * decoder that observes the actual byte count.
      */
-    writeBatchStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
+    /**
+     * A write-wave epoch from the host instance this binding names, or null
+     * when that host fences nothing (it names no incarnation) and waves are
+     * sent unfenced. Minting is harmless to repeat, so a lost call is hedged
+     * like a read (lost-call.ts).
+     */
+    openWaveWriter(): Promise<string | null>;
+    /**
+     * A write wave, sent once: its stream is consumed by the attempt that
+     * carries it, so the writer that minted it re-sends a lost wave itself,
+     * re-encoded under a newer fence (platform wave-writer.ts, lost-call.ts).
+     * On a binding whose host names its incarnation the fence rides with it,
+     * and that host instance refuses an attempt older than one it has seen
+     * from the same writer; any other instance refuses it outright.
+     */
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence): Promise<WriteBatchStreamResult>;
     /**
      * Bulk-write npm registry cache entries (resolved packument metadata)
      * in ONE RPC. Used by the resolver-facet to flush a wave of resolved
@@ -346,13 +368,6 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         written: number;
         failed: number;
     }>;
-    /**
-     * Build a fresh R2CacheClient bound to this request's env. Cheap to
-     * instantiate; does no async work. Called from each R2 RPC method to
-     * avoid keeping the client in instance state (the WorkerEntrypoint
-     * lifecycle is per-invocation and we want a clean closure each time).
-     */
-    private _r2;
     /**
      * Look up a tarball in the R2 cross-tenant cache by its content
      * address (the resolved npm integrity string). Returns
@@ -402,8 +417,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }): Promise<PackumentReadThrough & {
         events: SupervisorCacheStatEvent[];
     }>;
-    stdout(data: Uint8Array): Promise<void>;
-    stderr(data: Uint8Array): Promise<void>;
+    stdout(data: Uint8Array, at?: number, run?: number): Promise<void>;
+    stderr(data: Uint8Array, at?: number, run?: number): Promise<void>;
     /**
      * Report process exit to the supervisor. Called from the facet's own
      * `finally` block after I/O has drained. The supervisor uses this to
@@ -449,6 +464,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
+        full?: boolean;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     /**
@@ -458,6 +474,30 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
      * asking. The caller's pid names whose credential answers it.
      */
+    replayBoundary(): Promise<void>;
+    /** fd-0 preparation, not a program's ordinary read of this pathname. */
+    stdinFileRead(path: string, offset: number, length: number): Promise<{
+        data: Uint8Array;
+        size: number;
+    }>;
+    stdinPrepared(): Promise<void>;
+    netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown>;
+    /**
+     * The program's network, when this binding is its globalOutbound (a run
+     * that can stop): a read is recorded with its bytes and answered again to a
+     * run after a stop; anything else is something done outside the process.
+     */
+    fetch(request: Request): Promise<Response>;
+    /**
+     * A connection the program opens. One its TLS shim opened is named
+     * `<token>.nimbus-net.invalid`: the session says where it goes, and this
+     * side makes the TLS session with the server when the program asks for it
+     * (netTls 'upgrade'), then carries the plaintext both ways. workerd's
+     * outbound connect cannot carry TLS itself ("Incoming CONNECT with TLS not
+     * supported", worker-entrypoint.c++), which is why TLS ends here. Any
+     * other connection is proxied as it is.
+     */
+    connect(socket: Socket): Promise<void>;
     cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
         data: Uint8Array;
         ended: boolean;

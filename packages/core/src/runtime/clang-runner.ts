@@ -31,17 +31,13 @@ import type { RuntimeManifest } from './runtime-manifest.js';
 import { type ProcessView, withHostView } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { Facet, FacetBindings, FacetHost } from './facet-host.js';
-import { CRED_KERNEL, gateSyncLaunch, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
+import { CRED_KERNEL, gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
+import type { WasiCred } from './wasi/types.js';
+import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { hasLeadingCliFlag } from './cli-flags.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
-import { CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import {
-  encodeWriteBatchStream,
-  W7_MAX_PATHS_PER_BATCH,
-  type BatchChunkEntry,
-  type BatchInodeEntry,
-} from '@nimbus-sh/platform/w7-frame.js';
+import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { exists, isFile, statOrThrow } from '../vfs/vfs.js';
 
 const CLANG_VERSION_FLAGS = new Set(['--version', '-v']);
@@ -78,6 +74,8 @@ export function makeClangRunnerFactory(deps: {
       const cwd: string = ctx.cwd || '/home/user';
       const notHydrated = await gateSyncLaunch(vfs.process, cwd, null, argv);
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
+      const { uid, gid, groups } = requireVfsCred(ctx.cred, binName);
+      const processCred: WasiCred = { uid, gid, groups: [...groups] };
 
       // Fast paths — no wasm boot.
       if (hasLeadingCliFlag(argv, CLANG_VERSION_FLAGS)) {
@@ -238,7 +236,10 @@ export function makeClangRunnerFactory(deps: {
             '-x', isCpp ? 'c++' : 'c',
             src,
           ];
-          const compileResult = await dispatchClangFacet(compile, { argv: compileArgv }, ctx.signal);
+          const compileStarted = Date.now();
+          const compileResult = await dispatchClangFacet(compile, { argv: compileArgv, cred: processCred }, ctx.signal);
+          const compileMs = Date.now() - compileStarted;
+          if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') ctx.stderr.write(`[wasi-fs] clang wallMs=${compileMs} ${JSON.stringify(compileResult.fsStats ?? null)}\n`);
           if (compileResult.stdout) ctx.stdout.write(compileResult.stdout);
           if (compileResult.stderr) ctx.stderr.write(compileResult.stderr);
           if (compileResult.error) {
@@ -285,7 +286,10 @@ export function makeClangRunnerFactory(deps: {
           '-lclang_rt.builtins-wasm32',
           '-o', outputGuest,
         ];
-        const linkResult = await dispatchClangFacet(link, { argv: linkArgv }, ctx.signal);
+        const linkStarted = Date.now();
+        const linkResult = await dispatchClangFacet(link, { argv: linkArgv, cred: processCred }, ctx.signal);
+        const linkMs = Date.now() - linkStarted;
+        if (ctx.env?.NIMBUS_WASI_FS_STATS === '1') ctx.stderr.write(`[wasi-fs] wasm-ld wallMs=${linkMs} ${JSON.stringify(linkResult.fsStats ?? null)}\n`);
         if (linkResult.stdout) ctx.stdout.write(linkResult.stdout);
         if (linkResult.stderr) ctx.stderr.write(linkResult.stderr);
         if (linkResult.error) {
@@ -504,8 +508,6 @@ const SYSROOT_REQUIRED = [
   'lib/wasm32-wasi/libc.imports',
   'lib/clang/8.0.1/lib/wasi/libclang_rt.builtins-wasm32.a',
 ];
-/** One write wave: the W7 frame owns at most this many paths. */
-const SYSROOT_WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 
 interface SysrootStamp { tarSize: number; files: number }
 
@@ -527,9 +529,9 @@ function parseSysrootStamp(text: string): SysrootStamp | null {
  * unpacked from an archive of this size. The tree is world-readable, like
  * the rest of the install root: every session user compiles against it.
  *
- * Waves of directories (shallowest first), then waves of files, each one
- * W7 stream; the stamp goes last, so a tree without one is re-unpacked from
- * scratch on the next invocation rather than trusted.
+ * The files go in W7 waves through the wave writer; the stamp goes last, so
+ * a tree without one is re-unpacked from scratch on the next invocation
+ * rather than trusted.
  */
 async function ensureSysrootUnpacked(vfs: ProcessView, tarVfsPath: string, sysrootDir: string): Promise<void> {
   const dir = sysrootDir.replace(/^\/+/, '');
@@ -545,41 +547,22 @@ async function ensureSysrootUnpacked(vfs: ProcessView, tarVfsPath: string, sysro
   }
   await vfs.remove(dir, { recursive: true, force: true });
 
-  const mtime = Date.now();
-  const dirSet = new Set<string>([dir]);
-  const files: BatchInodeEntry[] = [];
-  const chunksByPath = new Map<string, BatchChunkEntry[]>();
-  for (const [rel, data] of entries) {
-    const path = `${dir}/${rel}`;
-    const slash = path.lastIndexOf('/');
-    for (let cut = slash; cut > dir.length; cut = path.lastIndexOf('/', cut - 1)) dirSet.add(path.slice(0, cut));
-    const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
-    files.push({ path, parentPath: path.slice(0, slash), isDir: false, size: data.length, mtime, mode: 0o644, chunkCount });
-    // Each chunk owns its bytes. The W7 encoder hands a chunk's buffer
-    // straight to a byte stream and workerd TRANSFERS it on enqueue, so a
-    // second chunk that was a view into the same buffer is detached by the
-    // time it is read. A copy per chunk costs one pass over the archive.
-    const chunks: BatchChunkEntry[] = [];
-    for (let i = 0; i < chunkCount; i++) {
-      chunks.push({ path, chunkId: i, data: data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE) });
-    }
-    chunksByPath.set(path, chunks);
+  // Files in waves the writer cuts at W7's path and byte bounds, each
+  // wave carrying the directories its files need, from `dir` down.
+  const writer = createWaveWriter({
+    supervisor: { writeBatchStream: (stream) => vfs.process.writeStream(stream) },
+    root: dir,
+    base: dir,
+    mtimeMs: Date.now(),
+  });
+  try {
+    for (const [rel, data] of entries) await writer.file(rel, 0o644, data);
+    await writer.flush();
+  } catch (error) {
+    throw new Error(`sysroot unpack failed: ${error instanceof Error ? error.message : String(error)}`, { cause: error });
   }
-  const directories: BatchInodeEntry[] = Array.from(dirSet)
-    .sort((a, b) => a.split('/').length - b.split('/').length || a.localeCompare(b))
-    .map((path) => ({
-      path, parentPath: path.slice(0, path.lastIndexOf('/')), isDir: true, size: 0, mtime, mode: 0o755, chunkCount: 0,
-    }));
 
-  const write = async (inodes: BatchInodeEntry[]): Promise<void> => {
-    const chunks = inodes.flatMap((inode) => chunksByPath.get(inode.path) ?? []);
-    const result = await vfs.process.writeStream(encodeWriteBatchStream({ inodes, chunks }));
-    if (!result.ok) throw new Error(`sysroot unpack failed at ${inodes[0].path}: ${result.error.message}`);
-  };
-  for (let i = 0; i < directories.length; i += SYSROOT_WAVE_PATHS) await write(directories.slice(i, i + SYSROOT_WAVE_PATHS));
-  for (let i = 0; i < files.length; i += SYSROOT_WAVE_PATHS) await write(files.slice(i, i + SYSROOT_WAVE_PATHS));
-
-  const stamp: SysrootStamp = { tarSize, files: files.length };
+  const stamp: SysrootStamp = { tarSize, files: entries.size };
   await vfs.writeFile(stampPath, JSON.stringify(stamp));
 }
 
@@ -588,6 +571,8 @@ async function ensureSysrootUnpacked(vfs: ProcessView, tarVfsPath: string, sysro
 /** The facet contract: argv in, exit status and output text back. */
 interface ClangFacetArgs {
   argv: string[];
+  /** The credential the session runs the toolchain as: what its own copy of the namespace is read as. */
+  cred: WasiCred;
 }
 
 interface ClangFacetTarget {
@@ -606,6 +591,8 @@ interface ClangFacetResult {
   stdout: string;
   stderr: string;
   error?: string;
+  /** The toolchain's filesystem calls and who answered them (wasi/resident-filesystem.ts). */
+  fsStats?: ResidentFilesystemStats | null;
 }
 
 async function loadClangToolchain(
@@ -636,7 +623,7 @@ async function dispatchClangFacet(
   signal: AbortSignal,
 ): Promise<ClangFacetResult> {
   const facetFn = async function clangFacetCall(
-    inArgs: { primaryName: string; argv: string[] },
+    inArgs: { primaryName: string; argv: string[]; cred: WasiCred },
     facetEnv: FacetBindings,
   ): Promise<ClangFacetResult> {
     const wasm = Reflect.get(globalThis, '__NIMBUS_WASM') as Record<string, unknown> | undefined;
@@ -658,6 +645,7 @@ async function dispatchClangFacet(
     return await fn({
       primaryName: inArgs.primaryName,
       argv: inArgs.argv,
+      cred: inArgs.cred,
       primaryMod,
       supervisor: facetEnv?.SUPERVISOR,
     });
@@ -667,6 +655,7 @@ async function dispatchClangFacet(
     const result = await target.facet.submit(facetFn, {
       primaryName: target.primaryName,
       argv: args.argv,
+      cred: args.cred,
     }, {
       timeoutMs: 300_000,
       // A kill or Ctrl-C ends the facet too, where the host can.
@@ -677,6 +666,7 @@ async function dispatchClangFacet(
       stdout: result.stdout || '',
       stderr: result.stderr || '',
       error: result.error,
+      fsStats: result.fsStats ?? null,
     };
   } catch (e: unknown) {
     // Killed: the tool ends as an interrupted one does.
@@ -714,6 +704,7 @@ globalThis.__clangRun = async function __clangRun(args) {
   __wasiInitFS({
     root: '',
     preopens: [{ wasiPath: '/', vfsPath: '' }],
+    cred: args.cred,
   });
   // AFTER initFS, never before: initFS drops the adopted supervisor so a
   // pooled isolate cannot serve the previous tenant's filesystem.
@@ -752,6 +743,7 @@ globalThis.__clangRun = async function __clangRun(args) {
     exitCode: run.exitCode,
     stdout: stdout.join(''),
     stderr: stderr.join(''),
+    fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
   };
 };
 

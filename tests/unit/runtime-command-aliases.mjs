@@ -7,6 +7,7 @@
 // command hints end-to-end against a fake runtime catalog.
 
 import assert from 'node:assert/strict';
+import { createHash } from 'node:crypto';
 import {
   createRuntimeCommandHintResolver,
   installRuntimeProgrammatic,
@@ -90,11 +91,15 @@ const catalog = {
   },
 };
 
+// The deployment names its catalog by digest; the bucket holds it under that digest.
+const catalogText = JSON.stringify(catalog);
+const catalogSha256 = createHash('sha256').update(catalogText).digest('hex');
 const fakeEnv = {
+  NIMBUS_RUNTIME_CATALOG_SHA256: catalogSha256,
   NIMBUS_RUNTIME_CACHE: {
     async get(key) {
       let body = null;
-      if (key === 'catalog/v1.json') body = JSON.stringify(catalog);
+      if (key === `catalog/sha256/${catalogSha256}.json`) body = catalogText;
       else if (manifests[key]) body = JSON.stringify(manifests[key]);
       else if (key.startsWith('blobs/')) body = blobBytes;
       if (body === null) return null;

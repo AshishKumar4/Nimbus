@@ -54,6 +54,9 @@ assert.equal(result.success, true, result.error);
 // This harness adopts ctx.exports without composing, so the binding carries
 // no route and the answering entrypoint falls back to its isolate's
 // composition, the pre-route contract.
-assert.deepEqual(boundProps, [{ doId: 'git-identity-test', pid: 42, mutationOwner: undefined, route: undefined }]);
+assert.equal(boundProps[0].bindingKind, 'process');
+assert.equal(typeof boundProps[0].writerId, 'string');
+assert.ok(boundProps[0].writerId.length > 0);
+assert.deepEqual(boundProps, [{ doId: 'git-identity-test', pid: 42, mutationOwner: undefined, route: undefined, bindingKind: 'process', writerId: boundProps[0].writerId }]);
 
 console.log('git network facet process identity: ok');
