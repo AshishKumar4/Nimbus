@@ -106,4 +106,21 @@ vfs.mount('/gone/inner', new MemoryVFS());
 await assert.rejects(vfs.route('/home/missing/x'), (error) => error.code === 'ENOENT' && /route '\/home\/missing\/x'/.test(error.message));
 await assert.rejects(vfs.route('/home/user/notes.txt/x'), (error) => error.code === 'ENOTDIR');
 
+// A path the namespace does not show answers no route: with a root link
+// /covered -> /real and a mount at /covered/inner, /covered is the
+// namespace's directory above the mount, so /covered/x is ENOENT to an
+// operation, and a route that handed the root /covered/x would write
+// through the link to /real/x.
+{
+  const base = new MemoryVFS();
+  base.mkdir('/real');
+  base.symlink('/real', '/covered');
+  const ns = new CompositeVFS(base);
+  ns.mount('/covered/inner', new MemoryVFS());
+  await assert.rejects(ns.writeFile('/covered/x', enc.encode('x')), (error) => error.code === 'ENOENT');
+  await assert.rejects(ns.route('/covered/x'), (error) => error.code === 'ENOENT', 'a route was answered for a path the namespace does not show');
+  const inner = await ns.route('/covered/inner/y');
+  assert.deepEqual({ point: inner.point, path: inner.path }, { point: '/covered/inner', path: '/y' });
+}
+
 console.log('composite route: ok');

@@ -383,7 +383,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
   private owned(owner: string | undefined): CredentialedVfs {
-    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner });
+    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor });
   }
 
   appendOnce(
@@ -525,7 +525,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
 
       const stat = this.vfs.stat(p);
-      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true });
+      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal);
       const handle: RuntimeFileHandle = {
         id: this.scope.nextId++,
         path: p,
