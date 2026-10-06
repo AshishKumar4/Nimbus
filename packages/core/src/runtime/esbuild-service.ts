@@ -18,6 +18,7 @@ import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
+import { packageNameFromSpecifier } from './barrel-detect.js';
 import { lowerAsyncModule } from './async-module-lowering.js';
 import {
   literalStringValue,
@@ -133,9 +134,7 @@ export function getSharedRuntimeExternals(specifier: string): string[] {
   ];
   // Determine the package name for the spec being bundled (handles
   // scoped packages and subpaths: 'react-dom/client' → 'react-dom').
-  const specPkg = specifier.startsWith('@')
-    ? specifier.split('/').slice(0, 2).join('/')
-    : specifier.split('/')[0];
+  const specPkg = packageNameFromSpecifier(specifier);
 
   return all.filter((pat) => {
     if (pat === specifier) return false;
@@ -1210,14 +1209,9 @@ export class EsbuildService {
     code: string,
     options?: EsbuildTransformOptions,
   ): Promise<TransformResult> {
-    if (this.transformHost) {
-      const [outcome] = await this.transformMany([{ code, options }]);
-      if ('error' in outcome) throw new Error(outcome.error);
-      return outcome;
-    }
-    if (!options?.rewriteOnly) await this.ensureInit();
-    const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
-    return runTransformRequest(this._esbuild, prepared, options, rewriteDynamicImports, lowerAsyncModule);
+    const [outcome] = await this.transformMany([{ code, options }]);
+    if ('error' in outcome) throw new Error(outcome.error);
+    return outcome;
   }
 
   /**
