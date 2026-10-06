@@ -91,6 +91,11 @@ try {
       const shallowOf = (dir) => statSync(join(dir, '.git/shallow'), { throwIfNoEntry: false }) && readFileSync(join(dir, '.git/shallow'), 'utf8');
       assert.equal(shallowOf(out), shallowOf(host), name + ': shallow');
       assert.equal(hostGit(out, ['show-ref', '--tags']), hostGit(host, ['show-ref', '--tags']), name + ': tags');
+      // Refs where git puts them: packed-refs byte for byte, the same loose refs.
+      assert.deepEqual(readFileSync(join(out, '.git/packed-refs')), readFileSync(join(host, '.git/packed-refs')), name + ': packed-refs');
+      const looseRefs = (dir) => hostGit(dir, ['for-each-ref', '--format=%(refname)']).trim().split('\n')
+        .filter((ref) => statSync(join(dir, '.git', ref), { throwIfNoEntry: false }) !== undefined);
+      assert.deepEqual(looseRefs(out), looseRefs(host), name + ': loose refs');
       assert.equal(hostGit(out, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']), name + ': index');
       assert.equal(hostGit(out, ['status', '--porcelain']), '', name + ': status clean');
       for (const path of hostGit(host, ['ls-files']).trim().split('\n')) {

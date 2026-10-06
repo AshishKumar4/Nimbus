@@ -234,6 +234,9 @@ try {
     assert.equal(vfsConfig(dir), diskConfig(disk), `clone of ${label}: .git/config`);
     assert.equal(new TextDecoder().decode(user.readFile(`${dir.slice(1)}/.git/HEAD`)),
       readFileSync(join(disk, '.git/HEAD'), 'utf8'), `clone of ${label}: HEAD`);
+    const packed = (read) => { try { return read(); } catch { return null; } };
+    assert.equal(packed(() => new TextDecoder().decode(user.readFile(`${dir.slice(1)}/.git/packed-refs`))),
+      packed(() => readFileSync(join(disk, '.git/packed-refs'), 'utf8')), `clone of ${label}: packed-refs`);
   }
 
   // ── chmod +x in a repository Nimbus made, beside real git ──

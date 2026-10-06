@@ -529,7 +529,8 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
   };
   const head = tagObject ?? commit;
   const promisorRefs = head + ' HEAD\n' + head + ' ' + fullRef + '\n';
-  const tags = advertisedTags(advertisement);
+  // The tag cloned is in packed-refs; the others the clone holds are followed.
+  const tags = advertisedTags(advertisement).filter((tag) => tag.name !== fullRef);
   const watch = TagWatch.of(tags);
   // A blob that arrives before the checkout's trees are all in (git's write
   // order puts trees first, but a filtered pack need not) is held, to a
@@ -693,7 +694,12 @@ async function stagePlan(
   return { batches: batchPlans, shares, cacheTreeBytes };
 }
 
-/** config, HEAD, the branch and its remote-tracking refs (or the tag), shallow: as git clone writes them. */
+/**
+ * config, HEAD, the branch and its remote-tracking refs (or the tag),
+ * shallow: as git clone writes them. git packs the refs it fetched into
+ * packed-refs (the remote-tracking branch, or the tag with its peeled id);
+ * the local branch and origin/HEAD are loose.
+ */
 async function writeCloneMetadata(
   writer: CloneWriter,
   url: string,
@@ -703,12 +709,14 @@ async function writeCloneMetadata(
   const branch = fullRef.startsWith('refs/heads/') ? shortName(fullRef) : null;
   await writer.file('.git/config', 0o644, encoder.encode(cloneConfig(url, fullRef, clone.filter)));
   await writer.file('.git/HEAD', 0o644, encoder.encode(branch === null ? commit + '\n' : 'ref: ' + fullRef + '\n'));
+  const packed = '# pack-refs with: peeled fully-peeled sorted \n';
   if (branch !== null) {
     await writer.file('.git/refs/heads/' + branch, 0o644, encoder.encode(commit + '\n'));
-    await writer.file('.git/refs/remotes/origin/' + branch, 0o644, encoder.encode(commit + '\n'));
+    await writer.file('.git/packed-refs', 0o644, encoder.encode(packed + commit + ' refs/remotes/origin/' + branch + '\n'));
     await writer.file('.git/refs/remotes/origin/HEAD', 0o644, encoder.encode('ref: refs/remotes/origin/' + branch + '\n'));
   } else {
-    await writer.file('.git/' + fullRef, 0o644, encoder.encode((clone.tagObject ?? commit) + '\n'));
+    const peeled = clone.tagObject === null ? '' : '^' + commit + '\n';
+    await writer.file('.git/packed-refs', 0o644, encoder.encode(packed + (clone.tagObject ?? commit) + ' ' + fullRef + '\n' + peeled));
   }
   if (clone.shallows.length > 0) {
     await writer.file('.git/shallow', 0o644, encoder.encode([...clone.shallows].sort().join('\n') + '\n'));
@@ -741,7 +749,8 @@ async function cloneStream(
     depth: request.history ? undefined : request.depth,
   });
   if (response.pack === null) throw new PackFormatError('the server sent no pack for the commit');
-  const tags = advertisedTags(advertisement);
+  // The tag cloned is in packed-refs; the others the clone holds are followed.
+  const tags = advertisedTags(advertisement).filter((tag) => tag.name !== fullRef);
   const watch = TagWatch.of(tags);
   const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_snapshot', {
     cacheBytes: STREAM_CACHE_BYTES,
