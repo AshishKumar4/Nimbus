@@ -13,9 +13,10 @@ import { z } from 'zod/v4';
  *      into the facet's runtime) import the typed functions too, so a
  *      pre-bundle resolves exactly as the supervisor does.
  *
- *   3. User-shell `node` runtime (JS string) — `src/node-shims.ts` embeds
- *      the same JS source so `require()` from inside a user's `node` script
- *      sees the same exports map as the install pipeline.
+ *   3. User-shell `node` runtime (JS string) — the node shims embed this
+ *      code, compiled once from node-shim-resolution.ts, so `require()`
+ *      from inside a user's `node` script sees the same exports map as the
+ *      install pipeline.
  *
  *
  * Spec features supported:
@@ -286,31 +287,4 @@ export function packageSelfReferenceSubpath(
   if (specifier === pkg.name) return '.';
   if (!specifier.startsWith(`${pkg.name}/`)) return null;
   return `.${specifier.slice(pkg.name.length)}`;
-}
-
-// ─── JS-source emission for embedding into facet preambles ───────────────
-
-/**
- * The resolver as plain JavaScript, for the node facet's shim string, which
- * cannot import: the functions above by their own `toString()`, so the shim
- * resolves by this module's code and no second copy exists. It declares, at
- * top level, DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, resolveExports,
- * resolveConditionValue (their helper), resolvePackageEntry and
- * packageSelfReferenceSubpath. Each function calls only the others by name.
- *
- * Read when the shim string is generated (bundle-node-shims.mjs, from dist,
- * and tests, from source), never in a minified bundle, where a renamed
- * declaration would break those names. package-self-reference.mjs and
- * typescript-specifier-resolution.mjs evaluate the emitted source.
- */
-export function getExportsResolverJS(): string {
-  return [
-    '// ── exports-resolver (generated from src/_shared/exports-resolver.ts) ──',
-    `const DEFAULT_ESM_CONDITIONS = ${JSON.stringify(DEFAULT_ESM_CONDITIONS)};`,
-    `const DEFAULT_CJS_CONDITIONS = ${JSON.stringify(DEFAULT_CJS_CONDITIONS)};`,
-    resolveExports.toString(),
-    resolveConditionValue.toString(),
-    resolvePackageEntry.toString(),
-    packageSelfReferenceSubpath.toString(),
-  ].join('\n');
 }

@@ -706,6 +706,24 @@ async function main() {
     throw new Error('[bundle-facet-workers/http2-module] the bundle no longer declares function createHttp2Module');
   }
 
+  // 5. Exports/imports resolution, the TypeScript specifier fallbacks and
+  //    the AI credential rule, which the node shims embed as source: one
+  //    compile of the core code, so the shims carry no copy of it.
+  const shimResolution = await bundleAsPreamble(
+    join(coreRoot, 'src', '_shared', 'node-shim-resolution.ts'),
+    'node-shim-resolution',
+  );
+  for (const name of ['resolveExports', 'resolvePackageEntry', 'packageSelfReferenceSubpath', 'typescriptFallbackCandidates', 'presentedCredential']) {
+    if (!new RegExp(`^function ${name}\\(`, 'm').test(shimResolution)) {
+      throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares function ${name}`);
+    }
+  }
+  for (const name of ['DEFAULT_ESM_CONDITIONS', 'DEFAULT_CJS_CONDITIONS', 'TYPESCRIPT_INDEX_CANDIDATES']) {
+    if (!new RegExp(`^(?:var|const|let) ${name}\\b`, 'm').test(shimResolution)) {
+      throw new Error(`[bundle-facet-workers/node-shim-resolution] the bundle no longer declares ${name}`);
+    }
+  }
+
   const waveWriter = await bundleWaveWriter();
 
   const tarEncoded = JSON.stringify(tarStripped);
@@ -722,6 +740,7 @@ async function main() {
     ' *   - @nimbus-sh/platform src/wave-writer.ts (the W7 wave writer, as an IIFE)',
     ' *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node\'s ESM resolver, for the node shims)',
     ' *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)',
+    ' *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution and credential rules, for the node shims)',
     ' *',
     ' * Consumed by fabric/isolate-pool.ts callers via the `preamble`',
     ' * option. The preamble is injected at the top of every generated',
@@ -749,6 +768,13 @@ async function main() {
     '',
     '/** Declares `function createHttp2Module(host)`; the node shims call it. */',
     `export const HTTP2_MODULE_PREAMBLE: string = ${JSON.stringify(http2Module)};`,
+    '',
+    '/**',
+    ' * Declares resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,',
+    ' * DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,',
+    ' * TYPESCRIPT_INDEX_CANDIDATES and presentedCredential; the node shims call them.',
+    ' */',
+    `export const NODE_SHIM_RESOLUTION_PREAMBLE: string = ${JSON.stringify(shimResolution)};`,
     '',
   ].join('\n');
 

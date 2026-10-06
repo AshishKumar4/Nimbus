@@ -44,10 +44,8 @@ import { generateSqliteShimCode } from './sqlite-shim.js';
 import { DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE } from './javascript-string-literal.js';
 import { CHILD_NEWS_SOURCE } from './child-news.js';
 import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
-import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE } from '../loaders/generated-workers.js';
-import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
-import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV, presentedCredential } from '@nimbus-sh/core/_shared/ai-egress.js';
+import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE, NODE_SHIM_RESOLUTION_PREAMBLE } from '../loaders/generated-workers.js';
+import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
 import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
@@ -69,8 +67,6 @@ const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
 const FACET_PROVIDED_PACKAGES_LITERAL = JSON.stringify(FACET_PROVIDED_PACKAGES);
-const EXPORTS_RESOLVER_JS = getExportsResolverJS();
-const TYPESCRIPT_SPECIFIERS_JS = getTypescriptSpecifiersJS();
 
 // Node version fingerprint. Single source of truth in constants.ts.
 // Interpolated as JS literals into the emitted process shim. See
@@ -84,7 +80,6 @@ const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
 // being written twice.
 const AI_TOKEN_ENV_LITERAL = JSON.stringify(NIMBUS_AI_TOKEN_ENV);
 const AI_CREDENTIAL_HEADERS_LITERAL = JSON.stringify(NIMBUS_AI_CREDENTIAL_HEADERS);
-const PRESENTED_CREDENTIAL_SOURCE = presentedCredential.toString();
 const LOOPBACK_HOSTNAMES_LITERAL = JSON.stringify(LOOPBACK_HOSTNAMES);
 const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map(
   (r) => [r.from, r.suggest ? `${r.reason} … try: ${r.suggest}` : r.reason],
@@ -466,7 +461,6 @@ function __nimbusWasmDigest(bytes) {
   // carrying anything else (the user's own real provider key) is not ours, is
   // left alone, and goes to that provider. See _shared/ai-egress.ts.
   const __aiCredentialHeaders = ${AI_CREDENTIAL_HEADERS_LITERAL};
-  const __presentedCredential = ${PRESENTED_CREDENTIAL_SOURCE};
   const __maybeRouteAiEgress = (url, input, init) => {
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     let token = "";
@@ -475,7 +469,7 @@ function __nimbusWasmDigest(bytes) {
     for (const name of __aiCredentialHeaders) {
       const raw = __headerOf(input, init, name);
       if (!raw) continue;
-      if (__presentedCredential(String(raw)) !== token) continue;
+      if (presentedCredential(String(raw)) !== token) continue;
       return Promise.resolve(__supervisor.routeLoopback(${NIMBUS_AI_GATEWAY_PORT}, __supervisorRequest(url, input, init)));
     }
     return null;
@@ -9864,26 +9858,23 @@ function __resolveFile(base) {
   // that this cannot find; both come from src/_shared/typescript-specifiers.ts
   // and tests/unit/typescript-specifier-resolution.mjs compares them.
   const baseTrim = base.replace(/\\/+$/, "");
-  for (const cand of __typescriptFallbackCandidates(baseTrim)) {
+  for (const cand of typescriptFallbackCandidates(baseTrim)) {
     if (__pathIsFile(cand)) return cand;
   }
-  for (const ext of __TYPESCRIPT_INDEX_CANDIDATES) {
+  for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
     const cand = baseTrim + ext;
     if (__pathIsFile(cand)) return cand;
   }
   return null;
 }
 
-// ── Single-source-of-truth exports/imports resolver (W2) ───────────────
-// Emitted from src/_shared/exports-resolver.ts via getExportsResolverJS().
-// Declares: resolveExports, resolveConditionValue, resolvePackageEntry,
-//           DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS.
-${EXPORTS_RESOLVER_JS}
-
-// ── TypeScript specifier fallbacks ────────────────────────────────────────
-// Emitted from src/_shared/typescript-specifiers.ts. Declares:
-// __typescriptFallbackCandidates, __TYPESCRIPT_INDEX_CANDIDATES.
-${TYPESCRIPT_SPECIFIERS_JS}
+// ── Resolution and credential rules, compiled from @nimbus-sh/core ──────
+// _shared/node-shim-resolution.ts (NODE_SHIM_RESOLUTION_PREAMBLE). Declares
+// resolveExports, resolvePackageEntry, packageSelfReferenceSubpath,
+// DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, typescriptFallbackCandidates,
+// TYPESCRIPT_INDEX_CANDIDATES and presentedCredential (a function declaration,
+// so the fetch patch above can call it).
+${NODE_SHIM_RESOLUTION_PREAMBLE}
 
 /** Conditions for runtime CJS resolution (user-shell node). */
 const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default"];

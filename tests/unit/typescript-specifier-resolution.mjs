@@ -29,6 +29,7 @@
 import assert from 'node:assert/strict';
 import { prefetchForRequire } from '../../packages/core/src/runtime/require-resolver.ts';
 import { typescriptFallbackCandidates } from '../../packages/core/src/_shared/typescript-specifiers.ts';
+import { NODE_SHIM_RESOLUTION_PREAMBLE } from '../../packages/worker/src/loaders/generated-workers.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import {
   bundleTypescriptLoader,
@@ -163,16 +164,9 @@ for (const [base, expected] of TABLE) {
 // "keep in sync" comment has never caught a drift.
 {
   const shim = generateShimsCode();
-  assert.ok(
-    shim.includes('__typescriptFallbackCandidates'),
-    'the emitted shim carries the TypeScript fallback mapping',
-  );
-  const start = shim.indexOf('const __TYPESCRIPT_INDEX_CANDIDATES');
-  const source = shim.slice(start);
-  const end = source.indexOf('\n})();\n');
-  assert.ok(start > 0 && end > 0, 'the emitted mapping is a complete block');
+  assert.ok(shim.includes(NODE_SHIM_RESOLUTION_PREAMBLE), 'the emitted shim carries the compiled resolution preamble');
   // eslint-disable-next-line no-new-func
-  const emitted = new Function(`${source.slice(0, end + 6)}\nreturn __typescriptFallbackCandidates;`)();
+  const emitted = new Function(`${NODE_SHIM_RESOLUTION_PREAMBLE}\nreturn typescriptFallbackCandidates;`)();
   for (const [base, expected] of TABLE) {
     assert.deepEqual(emitted(base), expected, `the emitted mapping agrees for ${base}`);
   }
