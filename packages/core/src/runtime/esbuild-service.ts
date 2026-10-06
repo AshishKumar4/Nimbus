@@ -21,11 +21,14 @@ import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { lowerAsyncModule } from './async-module-lowering.js';
 import {
+  applySourceEdits,
   literalStringValue,
   nodeList,
   nodeName,
   nodeProp,
   parseJavaScriptModule,
+  walkTopLevelModuleTokens,
+  type SourceEdit,
 } from './javascript-ast.js';
 import {
   VITE_ASSET_QUERY_SUFFIXES,
@@ -159,67 +162,23 @@ interface ModuleDeclarationRange {
   kind: 'import' | 'export';
 }
 
+/** The top-level import and export declarations, each through its `;`; null when one is unterminated or the source does not tokenize. */
 function topLevelModuleDeclarationRanges(source: string): ModuleDeclarationRange[] | null {
-  try {
-    const tokens = tokenizer(source, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      allowHashBang: true,
-    });
-    const ranges: ModuleDeclarationRange[] = [];
-    let active: Omit<ModuleDeclarationRange, 'end'> | null = null;
-    let braces = 0;
-    let parens = 0;
-    let brackets = 0;
-    // `exports.import = …` is a member, not a declaration.
-    let previous = tokTypes.eof;
-
-    const updateDepth = (type: typeof tokTypes.eof): void => {
-      if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
-      else if (type === tokTypes.braceR) braces = Math.max(0, braces - 1);
-      else if (type === tokTypes.parenL) parens++;
-      else if (type === tokTypes.parenR) parens = Math.max(0, parens - 1);
-      else if (type === tokTypes.bracketL) brackets++;
-      else if (type === tokTypes.bracketR) brackets = Math.max(0, brackets - 1);
-    };
-
-    while (true) {
-      const token = tokens.getToken();
-      const type = token.type;
-      if (type === tokTypes.eof) return active ? null : ranges;
-      const member = previous === tokTypes.dot || previous === tokTypes.questionDot;
-      previous = type;
-
-      if (active) {
-        updateDepth(type);
-        if (type === tokTypes.semi && braces === 0 && parens === 0 && brackets === 0) {
-          ranges.push({ ...active, end: token.end });
-          active = null;
-        }
-        continue;
+  const ranges: ModuleDeclarationRange[] = [];
+  let active: Omit<ModuleDeclarationRange, 'end'> | null = null;
+  const walked = walkTopLevelModuleTokens(source, (token, declaration, topLevel) => {
+    if (active) {
+      if (token.type === tokTypes.semi && topLevel) {
+        ranges.push({ ...active, end: token.end });
+        active = null;
       }
-
-      const topLevel = braces === 0 && parens === 0 && brackets === 0;
-      if (topLevel && type === tokTypes._import && !member) {
-        const next = tokens.getToken();
-        previous = next.type;
-        if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot) {
-          active = { start: token.start, kind: 'import' };
-        }
-        updateDepth(next.type);
-        continue;
-      }
-      if (topLevel && type === tokTypes._export && !member) {
-        active = { start: token.start, kind: 'export' };
-        continue;
-      }
-      updateDepth(type);
+    } else if (declaration) {
+      active = { start: token.start, kind: declaration };
     }
-  } catch {
-    return null;
-  }
+    return false;
+  });
+  return walked === null || active ? null : ranges;
 }
-
 
 function hasUnscopedAwait(source: string): boolean {
   try {
@@ -443,11 +402,6 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
 
   return { imports: imports.join('\n'), exports: exports.join('\n') };
 }
-interface SourceEdit {
-  start: number;
-  end: number;
-  text: string;
-}
 
 function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boolean): SourceEdit[] | null {
   // A module factory's import.meta is the module's metadata object, bound by
@@ -567,15 +521,7 @@ export function rewriteProvidedCommonJsModules(source: string): string {
     previous = a.type;
     a = b; b = c; c = d; d = e; e = tokens.getToken();
   }
-  if (edits.length === 0) return source;
-  const parts: string[] = [];
-  let cursor = 0;
-  for (const edit of edits) {
-    parts.push(source.slice(cursor, edit.start), edit.text);
-    cursor = edit.end;
-  }
-  parts.push(source.slice(cursor));
-  return parts.join('');
+  return edits.length === 0 ? source : applySourceEdits(source, edits);
 }
 
 export function rewriteBundledEsmToCjs(
@@ -596,22 +542,14 @@ export function rewriteBundledEsmToCjs(
   const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
   if (!metaEdits) return null;
 
-  const edits: SourceEdit[] = [
+  // An import.meta is one token run, so it is inside a declaration or outside
+  // every one: the edits never overlap.
+  const body = applySourceEdits(source, [
     ...declarations.map(({ start, end }) => ({ start, end, text: '' })),
     ...metaEdits.filter((edit) =>
       !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)
     ),
-  ].sort((a, b) => a.start - b.start);
-
-  const bodyParts: string[] = [];
-  let cursor = 0;
-  for (const edit of edits) {
-    if (edit.start < cursor) return null;
-    bodyParts.push(source.slice(cursor, edit.start), edit.text);
-    cursor = edit.end;
-  }
-  bodyParts.push(source.slice(cursor));
-  const body = bodyParts.join('');
+  ]);
 
   return {
     code: (moduleFactory ? '"use strict";\n' : '') + converted.imports + '\n' + body + '\n' + converted.exports,

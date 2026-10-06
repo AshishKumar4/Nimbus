@@ -19,8 +19,8 @@
  * in-process transforms, in esbuild-service.ts.
  */
 import { Parser, type Pattern } from 'acorn';
+import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
 
-interface Edit { start: number; end: number; text: string }
 
 export function lowerAsyncModule(esm: string): string {
   const program = Parser.parse(esm, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
@@ -47,7 +47,7 @@ export function lowerAsyncModule(esm: string): string {
   // namespace's), whichever order the transform printed.
   const imported: string[] = [];
   const getters: [string, string][] = [];
-  const edits: Edit[] = [];
+  const edits: SourceEdit[] = [];
   let exportsAnything = false;
   // A hashbang is only valid as the first line of a script; the body moves
   // into a function. Kept as a comment so line numbers stay put.
@@ -117,13 +117,6 @@ export function lowerAsyncModule(esm: string): string {
     }
   }
 
-  const parts: string[] = [];
-  let at = 0;
-  for (const { start, end, text } of edits.sort((a, b) => a.start - b.start)) {
-    parts.push(esm.slice(at, start), text);
-    at = end;
-  }
-  parts.push(esm.slice(at));
   const header = exportsAnything
     ? [
       `const ${exportsRef} = module.exports; ${exportsRef}.__esModule = true; const ${defineProperty} = Object.defineProperty;`,
@@ -133,7 +126,7 @@ export function lowerAsyncModule(esm: string): string {
   const installed = getters
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([exported, value]) => live(exported, value));
-  return `${[...header, ...requires].join('\n')}\nreturn (async () => { ${[...imported, ...installed].join(' ')}\n${parts.join('')}\n})();\n`;
+  return `${[...header, ...requires].join('\n')}\nreturn (async () => { ${[...imported, ...installed].join(' ')}\n${applySourceEdits(esm, edits)}\n})();\n`;
 }
 
 /** The bindings an exported declaration introduces. */

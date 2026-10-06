@@ -1,4 +1,4 @@
-import { parse, tokenizer, tokTypes, type AnyNode, type Program, type TokenType } from 'acorn';
+import { parse, tokenizer, tokTypes, type AnyNode, type Program, type Token, type TokenType } from 'acorn';
 
 export type AstNode = AnyNode & Record<string, unknown>;
 
@@ -36,50 +36,89 @@ export function parseJavaScriptProgram(source: string): Program | null {
   }
 }
 
+/** Whether `source` holds a top-level `import` or `export` declaration. */
 export function hasTopLevelModuleSyntax(source: string): boolean {
+  return walkTopLevelModuleTokens(source, (_token, declaration) => declaration !== null) === true;
+}
+
+/**
+ * Walk `source`'s tokens tracking brace, paren and bracket depth, without
+ * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
+ * sees each token with whether it sits at top level and, for a top-level
+ * `import` or `export` keyword, which declaration it opens: not `import(`,
+ * not `import.meta`, and not a member named so (after `.` or `?.`). The token
+ * after an `import` keyword is read to decide that and not visited. `visit`
+ * returns true to stop the walk.
+ *
+ * Returns true when `visit` stopped it, false at the end of the source, and
+ * null when the source does not tokenize.
+ */
+export function walkTopLevelModuleTokens(
+  source: string,
+  visit: (token: Token, declaration: 'import' | 'export' | null, topLevel: boolean) => boolean,
+): boolean | null {
   try {
-    const tokens = tokenizer(source, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      allowHashBang: true,
-    });
-    let braceDepth = 0;
-    let parenDepth = 0;
-    let bracketDepth = 0;
-    let previous: TokenType | undefined;
-
+    const tokens = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
+    let braces = 0;
+    let parens = 0;
+    let brackets = 0;
+    let previous: TokenType = tokTypes.eof;
     const updateDepth = (type: TokenType): void => {
-      if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braceDepth++;
-      else if (type === tokTypes.braceR) braceDepth = Math.max(0, braceDepth - 1);
-      else if (type === tokTypes.parenL) parenDepth++;
-      else if (type === tokTypes.parenR) parenDepth = Math.max(0, parenDepth - 1);
-      else if (type === tokTypes.bracketL) bracketDepth++;
-      else if (type === tokTypes.bracketR) bracketDepth = Math.max(0, bracketDepth - 1);
+      if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
+      else if (type === tokTypes.braceR) braces = Math.max(0, braces - 1);
+      else if (type === tokTypes.parenL) parens++;
+      else if (type === tokTypes.parenR) parens = Math.max(0, parens - 1);
+      else if (type === tokTypes.bracketL) brackets++;
+      else if (type === tokTypes.bracketR) brackets = Math.max(0, brackets - 1);
     };
-
-    while (true) {
+    for (;;) {
       const token = tokens.getToken();
       const type = token.type;
       if (type === tokTypes.eof) return false;
-      const topLevel = braceDepth === 0 && parenDepth === 0 && bracketDepth === 0;
-
-      if (topLevel && previous !== tokTypes.dot) {
-        if (type === tokTypes._export) return true;
-        if (type === tokTypes._import) {
-          const next = tokens.getToken();
-          if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot) return true;
-          updateDepth(next.type);
-          previous = next.type;
-          continue;
-        }
-      }
-
-      updateDepth(type);
+      const topLevel = braces === 0 && parens === 0 && brackets === 0;
+      const keyword = topLevel && previous !== tokTypes.dot && previous !== tokTypes.questionDot;
       previous = type;
+      let declaration: 'import' | 'export' | null = null;
+      if (keyword && type === tokTypes._export) {
+        declaration = 'export';
+      } else if (keyword && type === tokTypes._import) {
+        const next = tokens.getToken();
+        previous = next.type;
+        updateDepth(next.type);
+        if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot) declaration = 'import';
+      } else {
+        updateDepth(type);
+      }
+      if (visit(token, declaration, topLevel)) return true;
     }
   } catch {
-    return false;
+    return null;
   }
+}
+
+/** A replacement of source text `[start, end)` by `text`. */
+export interface SourceEdit {
+  start: number;
+  end: number;
+  text: string;
+}
+
+/**
+ * `source` with `edits` applied, in source order. Edits may come in any
+ * order and may insert (start === end), but never overlap: an overlap is a
+ * rewrite that lost track of what it replaced, and throws.
+ */
+export function applySourceEdits(source: string, edits: readonly SourceEdit[]): string {
+  const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
+  const parts: string[] = [];
+  let at = 0;
+  for (const { start, end, text } of ordered) {
+    if (start < at) throw new Error(`overlapping source edits at ${start}`);
+    parts.push(source.slice(at, start), text);
+    at = end;
+  }
+  parts.push(source.slice(at));
+  return parts.join('');
 }
 
 export function nodeList(node: AstNode, key: string): AstNode[] {

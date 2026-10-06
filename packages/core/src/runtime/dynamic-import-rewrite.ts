@@ -24,7 +24,7 @@
  * capture's name.
  */
 import { Parser, parseExpressionAt, tokenizer, tokTypes, type AnyNode, type Node, type Options, type Program } from 'acorn';
-import { isAstNode } from './javascript-ast.js';
+import { applySourceEdits, isAstNode, type SourceEdit } from './javascript-ast.js';
 import { createModuleLexer, type LexedImport, type ModuleLexer } from './module-lexer.js';
 import { ambiguousSlashes, htmlComments, lineEnd, Lines, parenthesisEnd, skipTrivia } from './import-lexer-hazards.js';
 
@@ -34,7 +34,6 @@ export function mayHaveDynamicImport(code: string): boolean {
   return /\bimport\s*(?:\(|\/[/*])/.test(code);
 }
 
-interface Edit { start: number; end: number; text: string }
 interface Span { start: number; end: number }
 
 /** es-module-lexer's `t` for an import() call and for import.meta. */
@@ -114,7 +113,7 @@ function rewriteFromLexer(code: string, parentUrl: string, metadata: boolean, im
   calls.sort((a, b) => a.ss - b.ss);
 
   const call = DYNAMIC_IMPORT_HELPER + '(' + JSON.stringify(parentUrl) + ', ';
-  const edits: Edit[] = [];
+  const edits: SourceEdit[] = [];
   let validatedEnd = -1;
   for (const site of calls) {
     // Inside arguments Acorn has already accepted: an import() there is one.
@@ -336,7 +335,7 @@ function afterDirectives(code: string): number {
 /** What the grammar's reading collects, as its parser recognizes it. */
 interface Collected {
   call: string;
-  edits: Edit[];
+  edits: SourceEdit[];
   metas: Span[];
   /** Every identifier, which the metadata capture's name must not shadow. */
   names: Set<string> | null;
@@ -419,20 +418,12 @@ function rewriteWithGrammar(code: string, parentUrl: string, metadata: boolean, 
   return code;
 }
 
-function applyEdits(code: string, edits: Edit[], metas: Span[], names: Set<string> | null, insertion: number): string {
+function applyEdits(code: string, edits: SourceEdit[], metas: Span[], names: Set<string> | null, insertion: number): string {
   if (metas.length) {
     let binding = METADATA_BINDING;
     while (code.includes(binding) || names?.has(binding)) binding += '_';
     for (const meta of metas) edits.push({ ...meta, text: `${binding}.__nimbusImportMeta` });
     edits.push({ start: insertion, end: insertion, text: `\n"use strict";\nconst ${binding} = arguments[2];\n` });
   }
-  edits.sort((a, b) => a.start - b.start || a.end - b.end);
-  const parts: string[] = [];
-  let at = 0;
-  for (const { start, end, text } of edits) {
-    parts.push(code.slice(at, start), text);
-    at = end;
-  }
-  parts.push(code.slice(at));
-  return parts.join('');
+  return applySourceEdits(code, edits);
 }
