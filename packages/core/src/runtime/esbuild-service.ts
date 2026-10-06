@@ -1046,6 +1046,11 @@ async function remotePlugin(plugin: esbuild.Plugin, initialOptions: esbuild.Buil
   };
 }
 
+/** What a transform request hands the engine: its source after the provided-module pre-pass, unless it asks only for the rewrite. */
+function preparedTransformSource(code: string, options: EsbuildTransformOptions | undefined): string {
+  return options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
+}
+
 /** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
 function withProvidedModuleRewrite(code: string, options?: EsbuildTransformOptions): string {
   return options?.format === 'cjs' && (!options.loader || options.loader === 'js' || options.loader === 'jsx')
@@ -1147,9 +1152,19 @@ export class EsbuildService {
     code: string,
     options?: EsbuildTransformOptions,
   ): Promise<TransformResult> {
-    const [outcome] = await this.transformMany([{ code, options }]);
-    if ('error' in outcome) throw new Error(outcome.error);
-    return outcome;
+    if (this.transformHost) {
+      const [outcome] = await this.transformMany([{ code, options }]);
+      if ('error' in outcome) throw new Error(outcome.error);
+      return outcome;
+    }
+    // In the isolate the engine's own error propagates, diagnostics and all.
+    return this.transformInIsolate(preparedTransformSource(code, options), options);
+  }
+
+  /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
+  private async transformInIsolate(code: string, options: EsbuildTransformOptions | undefined): Promise<TransformResult> {
+    if (!options?.rewriteOnly) await this.ensureInit();
+    return runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
   }
 
   /**
@@ -1165,7 +1180,7 @@ export class EsbuildService {
     const positions: number[] = [];
     requests.forEach(({ code, options }, i) => {
       try {
-        prepared.push({ code: options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options), options });
+        prepared.push({ code: preparedTransformSource(code, options), options });
         positions.push(i);
       } catch (e) {
         outcomes[i] = { error: errorText(e) };
@@ -1180,11 +1195,10 @@ export class EsbuildService {
       hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
       return outcomes;
     }
-    if (prepared.some(({ options }) => !options?.rewriteOnly)) await this.ensureInit();
     for (let j = 0; j < prepared.length; j++) {
       const { code, options } = prepared[j];
       try {
-        outcomes[positions[j]] = await runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
+        outcomes[positions[j]] = await this.transformInIsolate(code, options);
       } catch (e) {
         outcomes[positions[j]] = { error: errorText(e) };
       }
