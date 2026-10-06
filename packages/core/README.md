@@ -171,6 +171,38 @@ empty, as it was created. A write the workspace refuses is the error of that
 close or fsync, or fails the run, naming the file. Other writes go to the
 workspace as they are made.
 
+### A subtree a program holds
+
+A program may hold a subtree of the workspace (a delegation): it decides
+the subtree's operations itself, without a round trip each, and sends them
+to the workspace later, in the order it made them. Anyone else who reads
+or writes there first has the program send what it decided: a read waits
+until the program has sent it (and from then on the program writes as it
+goes), a write waits until the program has sent it and given the subtree
+up. Your calls on the workspace's asynchronous face, the session's routes,
+and every other program's calls wait the same way; they never fail for it.
+The session's own stores (`/.nimbus`, `/var/lib/nimbus`) are never held.
+
+Two limits follow from a program deciding by itself:
+
+- A caller that cannot wait (the workspace's synchronous face, `vfs.sync`
+  and a credentialed view of the engine) is refused with `EAGAIN` while the
+  program sends, and the sending has started: the same call made again a
+  moment later finds the subtree current.
+- A program that makes no filesystem call for a long time (a long
+  computation) cannot send what it decided when asked. It has
+  `DELEGATION_RECALL_TIMEOUT_MS` (5 s) to answer; after that it loses the
+  subtree, is stopped (SIGKILL), and what it had not sent is lost, as a
+  process's unflushed writes are when it dies. The caller that asked goes on
+  at once. Five seconds is several times the slowest answer measured: a
+  one-file wave published alone takes 34–66 ms at the median and at most
+  627 ms (live, six sessions), and a full wave (1,016 files, 4 MiB) under a
+  second at the measured ingest rate.
+
+What a program sends goes to the workspace as one ordered log of
+operations: a stream that stops leaves the operations before the stop, in
+the order they were made, never a later one without an earlier one.
+
 ## Files
 
 Files written through `.fs` are owned by the session user (uid 1000), not
