@@ -152,12 +152,58 @@ export function matchStat(dc: DirCache, i: number, st: WorktreeStat, filemode: b
 export interface Dirty {
   /** M: content or exec bit; D: gone (or a directory where a file was); T: a file became a link, or back. */
   change: 'M' | 'D' | 'T';
-  /** The worktree's lstat, absent for D. */
-  stat: WorktreeStat | null;
   /** The worktree blob's id, when the walk hashed it. */
   oid?: string;
   /** D because a directory stands where the file was, not because nothing does. */
   directory?: boolean;
+}
+
+const KIND_M = 1;
+const KIND_D = 2;
+const KIND_T = 3;
+const KIND_D_DIRECTORY = 4;
+
+/**
+ * The entries that differ from the worktree, by entry number: one byte an
+ * index entry, and the ids of the files the walk hashed. With every file of
+ * a 96,000-file tree changed, this is 96 KB and the hashed half's ids, where
+ * an object (and its lstat) per entry held about 30 MiB. A consumer that
+ * needs a changed file's stat takes it again.
+ */
+export class DirtySet {
+  private readonly kinds: Uint8Array;
+  private readonly oids = new Map<number, string>();
+  size = 0;
+
+  constructor(entries: number) {
+    this.kinds = new Uint8Array(entries);
+  }
+
+  set(i: number, dirty: Dirty): void {
+    if (this.kinds[i] === 0) this.size++;
+    this.kinds[i] = dirty.change === 'M' ? KIND_M : dirty.change === 'T' ? KIND_T : dirty.directory ? KIND_D_DIRECTORY : KIND_D;
+    if (dirty.oid) this.oids.set(i, dirty.oid);
+  }
+
+  has(i: number): boolean {
+    return i >= 0 && i < this.kinds.length && this.kinds[i] !== 0;
+  }
+
+  get(i: number): Dirty | undefined {
+    const kind = this.has(i) ? this.kinds[i] : 0;
+    if (kind === 0) return undefined;
+    const change = kind === KIND_M ? 'M' : kind === KIND_T ? 'T' : 'D';
+    return { change, oid: this.oids.get(i), directory: kind === KIND_D_DIRECTORY || undefined };
+  }
+
+  /** The entries in index order. */
+  *keys(): Generator<number> {
+    for (let i = 0; i < this.kinds.length; i++) if (this.kinds[i] !== 0) yield i;
+  }
+
+  *[Symbol.iterator](): Generator<[number, Dirty]> {
+    for (const i of this.keys()) yield [i, this.get(i)!];
+  }
 }
 
 /**
@@ -169,8 +215,8 @@ export async function compareEntry(
   tree: Worktree, dc: DirCache, i: number, path: string, st: WorktreeStat, uncleanIsDirty = false,
 ): Promise<Dirty | null> {
   const changed = matchStat(dc, i, st, tree.filemode);
-  if (changed & TYPE) return { change: 'T', stat: st };
-  if (changed & MODE) return { change: 'M', stat: st };
+  if (changed & TYPE) return { change: 'T' };
+  if (changed & MODE) return { change: 'M' };
   if ((dc.mode(i) & S_IFMT) === S_IFGITLINK) {
     dc.markUptodate(i);
     return null;
@@ -187,9 +233,9 @@ export async function compareEntry(
   }
   // The size moved on an entry that recorded one: modified, with nothing read. And, for git add,
   // any entry whose stat does not prove it clean: add_files_to_cache (DIFF_RACY_IS_MODIFIED) adds it again.
-  if (((changed & DATA) && dc.size(i) !== 0) || uncleanIsDirty) return { change: 'M', stat: st };
+  if (((changed & DATA) && dc.size(i) !== 0) || uncleanIsDirty) return { change: 'M' };
   const oid = await worktreeBlobId(tree, path, st);
-  if (oid !== dc.oid(i)) return { change: 'M', stat: st, oid: oid || undefined };
+  if (oid !== dc.oid(i)) return { change: 'M', oid: oid || undefined };
   dc.refresh(i, st);
   return null;
 }
@@ -223,7 +269,7 @@ export interface Unmerged {
 
 export interface ScanResult {
   /** Tracked entries that differ from the worktree, by entry number. */
-  dirty: Map<number, Dirty>;
+  dirty: DirtySet;
   /** Untracked paths in walk order; a directory ends in '/'. */
   untracked: string[];
   /** With `unmerged`, the unmerged paths in index order. */
@@ -252,7 +298,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
   const specs = (options.specs ?? []).includes('') ? [] : options.specs ?? [];
   const inScope = (path: string) => specs.length === 0 || specs.some((spec) => path === spec || path.startsWith(`${spec}/`));
   const onTheWay = (dir: string) => specs.some((spec) => spec.startsWith(`${dir}/`));
-  const result: ScanResult = { dirty: new Map(), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
+  const result: ScanResult = { dirty: new DirtySet(dc.count), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
   const join = (dir: string, name: string) => (dir ? `${dir}/${name}` : name);
 
   const list = async (dir: string) => {
@@ -331,7 +377,7 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
   const deleted = (lo: number, hi: number) => {
     for (let i = lo; i < hi; i++) {
       if (dc.stage(i) !== 0 || dc.skipWorktree(i) || dc.assumeValid(i)) continue;
-      if (inScope(dc.path(i))) result.dirty.set(i, { change: 'D', stat: null });
+      if (inScope(dc.path(i))) result.dirty.set(i, { change: 'D' });
     }
   };
 
@@ -394,12 +440,12 @@ export async function scanWorktree(tree: Worktree, dc: DirCache, options: ScanOp
       } else if (!dc.skipWorktree(i) && !dc.assumeValid(i) && inScope(path)) {
         const type = listing === null ? undefined : listing.get(name);
         if (listing !== null && (type === undefined || (type === 'directory' && !gitlink))) {
-          result.dirty.set(i, type === undefined ? { change: 'D', stat: null } : { change: 'D', stat: null, directory: true });
+          result.dirty.set(i, type === undefined ? { change: 'D' } : { change: 'D', directory: true });
         } else {
           const st = await lstat(path);
           if (st !== undefined) {
-            const dirty = st === null ? { change: 'D' as const, stat: null }
-              : st.type === 'directory' && !gitlink ? { change: 'D' as const, stat: null, directory: true }
+            const dirty = st === null ? { change: 'D' as const }
+              : st.type === 'directory' && !gitlink ? { change: 'D' as const, directory: true }
               : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
             if (dirty) result.dirty.set(i, dirty);
           }
