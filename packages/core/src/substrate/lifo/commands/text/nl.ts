@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { asciiBytes, concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { translate } from '../../utils/posix-regex.js';
 
 // GNU nl (coreutils 9.7) on bytes. Logical pages of header, body and footer
 // sections, delimited by lines that are exactly `\:\:\:`, `\:\:` and `\:`
@@ -17,27 +18,12 @@ function style(value: string, which: string): Style {
   if (value === 'a' || value === 't' || value === 'n') return { kind: value };
   if (value.startsWith('p')) {
     try {
-      return { kind: 'p', re: new RegExp(basicToJs(value.slice(1)), 'u') };
+      return { kind: 'p', re: new RegExp(translate(value.slice(1), { extended: false }), 'u') };
     } catch {
       throw new NlUsage(`invalid ${which} numbering style: \u2018${value}\u2019`);
     }
   }
   throw new NlUsage(`invalid ${which} numbering style: \u2018${value}\u2019`);
-}
-
-/** Enough of a BRE for -bpRE: `\(\)\|\{\}\+\?` become operators, bare ones literal. */
-function basicToJs(re: string): string {
-  let out = '';
-  for (let i = 0; i < re.length; i++) {
-    const c = re[i];
-    if (c === '\\' && i + 1 < re.length) {
-      const n = re[++i];
-      out += '(){}|+?'.includes(n) ? n : `\\${n}`;
-    } else if ('(){}|+?'.includes(c)) {
-      out += `\\${c}`;
-    } else out += c;
-  }
-  return out;
 }
 
 const command: Command = async (ctx) => {
