@@ -7,6 +7,7 @@ import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-con
 import type { TerminalInputStream } from '../commands/types.js';
 import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
+import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
@@ -2017,9 +2018,7 @@ function normalizeTrapSignal(raw: string): string | null {
 }
 
 function quoteSetValue(value: string): string {
-  if (value.length === 0) return "''";
-  if (isPlainSetValue(value)) return value;
-  return `'${value.replace(/'/g, "'\\''")}'`;
+  return value.length > 0 && isPlainSetValue(value) ? value : singleQuote(value);
 }
 
 function isPlainSetValue(value: string): boolean {

@@ -37,9 +37,6 @@ import type { SessionInternal } from './internal.js';
 type InitHost = SessionInternal & { readonly ctx: any; readonly env: any };
 
 
-function quoteShellArgument(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 
 /**

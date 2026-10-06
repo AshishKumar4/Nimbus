@@ -12,6 +12,7 @@ import type { ProcessView } from '../runtime/process-files.js';
 import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
+import { shellEscape } from '../_shared/shell-quote.js';
 import { NIMBUS_VERSION } from '../constants.js';
 import type { VfsFileType as FileType } from '../vfs/vfs.js';
 import type { ChildExit, Command, CommandInputStream, RunAsOptions } from '../substrate/lifo/commands/types.js';
@@ -3131,13 +3132,10 @@ function formatOneArg(spec: string, arg: string | undefined): string {
       else body = String(arg ?? '').charAt(0);
       break;
     }
-    case 'q': {
-      // bash printf %q: shell-quote
-      const s = String(arg ?? '');
-      if (/^[A-Za-z0-9_/.,:=+@%-]+$/.test(s)) body = s;
-      else body = "'" + s.replace(/'/g, `'\\''`) + "'";
+    case 'q':
+      // coreutils printf %q: the argument as quotearg's shell-escape style writes it.
+      body = shellEscape(String(arg ?? ''));
       break;
-    }
     default: body = '%' + conv;
   }
   // Apply width padding.
