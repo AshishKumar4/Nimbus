@@ -139,8 +139,8 @@ export function createLifoCommand(
       return executeEsmCommand(source, ctx, lifo);
     }
 
-    // ── CJS path: wrap in new Function() ──
-    return executeCjsCommand(entryPath, ctx, lifo);
+    // ── CJS path: the source read above, run by the shared loader ──
+    return executeCjsCommand(entryPath, source, ctx, lifo);
   };
 }
 
@@ -176,14 +176,16 @@ async function executeEsmCommand(
 }
 
 /**
- * A CommonJS entry, run with the node command's loader (cjs-loader.ts): its
- * requires resolve and cache as a node program's do. It exports the
- * command's function, `module.exports = async function(ctx, lifo) { ... }`
+ * A CommonJS entry, run with the node command's loader (cjs-loader.ts) from
+ * the source already read: its requires resolve and cache as a node
+ * program's do. It exports the command's function,
+ * `module.exports = async function(ctx, lifo) { ... }`
  * (or as `default`), which runs here in the shell's realm, since ctx and
  * lifo are the shell's own objects.
  */
 async function executeCjsCommand(
   entryPath: string,
+  source: string,
   ctx: CommandContext,
   lifo: LifoAPI,
 ): Promise<number> {
@@ -204,7 +206,8 @@ async function executeCjsCommand(
   }));
 
   try {
-    const exported = loader.load(entryPath);
+    // Its own source, already read: an entry with no dependencies needs no synchronous read at all.
+    const exported = loader.load(entryPath, { source, esm: false });
     const handler = typeof exported === 'function'
       ? exported
       : (exported as Record<string, unknown> | null)?.default;

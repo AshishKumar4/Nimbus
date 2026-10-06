@@ -91,8 +91,12 @@ export interface CjsLoader {
 	readonly moduleMap: Record<string, () => unknown>;
 	/** `require` as a module in `dir` has it. */
 	requireFrom(dir: string): RequireFunction;
-	/** The module at `filename`, run once and cached. */
-	load(filename: string): unknown;
+	/**
+	 * The module at `filename`, run once and cached. `preread` is its source,
+	 * and whether it is an ES module, when the caller has read it already (a
+	 * lifo entry, read through the async view a mount may require).
+	 */
+	load(filename: string, preread?: { readonly source: string; readonly esm: boolean }): unknown;
 	/** The arguments a module's wrapper is called with, `require` its own. */
 	wrapperArguments(filename: string, module: { exports: unknown }, scope: ModuleScope): unknown[];
 }
@@ -311,9 +315,9 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		];
 	}
 
-	function load(filename: string): unknown {
+	function load(filename: string, preread?: { readonly source: string; readonly esm: boolean }): unknown {
 		if (filename in cache) return cache[filename];
-		const source = filesystem().readFileString(filename);
+		const source = preread?.source ?? filesystem().readFileString(filename);
 		if (filename.endsWith('.json')) {
 			cache[filename] = JSON.parse(source);
 			return cache[filename];
@@ -325,7 +329,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		cache[filename] = initialExports;
 
 		const clean = stripShebang(source);
-		const wrapped = moduleWrapper(clean, treatAsEsm(clean, filename, () => packageType(filename, filesystem())));
+		const wrapped = moduleWrapper(clean, preread?.esm ?? treatAsEsm(clean, filename, () => packageType(filename, filesystem())));
 		let fn: (...args: unknown[]) => void;
 		try {
 			fn = new Function(`return ${wrapped}`)();

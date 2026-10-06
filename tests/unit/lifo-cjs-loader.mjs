@@ -5,10 +5,14 @@
 // code, ran no cycle (nothing was cached before it ran), and cached a
 // relative require by the name as written, so `./util` from two
 // directories was one module. node's `createRequire(filename)` resolves
-// from that file's directory.
+// from that file's directory. A lifo command's entry runs from the source the runtime already read,
+// as it did before the loaders were one: a dependency-free entry on a
+// mount that has no synchronous reads (an async-only backend) runs, where
+// a second, synchronous read of it is EAGAIN.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createLifoCommand } from '../../packages/core/src/substrate/lifo/pkg/lifo-runtime.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
@@ -53,6 +57,23 @@ try {
   const node = await ws.exec(`cd /home/user && node -e "console.log(require('module').createRequire('/home/user/pkg/bin/x.js')('./util'), require('/home/user/pkg/lib/req.js'))"`);
   assert.equal(node.stderr, '');
   assert.equal(node.stdout, 'bin-util lib-util\n');
+
+  // An entry on a mount with no synchronous reads: it runs from the source the runtime read.
+  const backing = new MemoryVFS({ uid: 0, gid: 0 });
+  backing.writeFile('/cmd.js', new TextEncoder().encode('module.exports = async (ctx) => { await ctx.stdout.write("from an async mount\\n"); return 4; };'));
+  const asyncOnly = new Proxy(backing, {
+    get(target, key) {
+      if (key === 'sync') return undefined;
+      const value = Reflect.get(target, key);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+    has(target, key) { return key !== 'sync' && key in target; },
+  });
+  ws.filesystem.vfs.mount('/async', asyncOnly);
+  ws.registry.register('asynccmd', createLifoCommand('/async/cmd.js', ws.filesystem.view({ pid: 900, cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 } })));
+  const fromAsync = await ws.exec('asynccmd');
+  assert.equal(fromAsync.stderr, '');
+  assert.deepEqual([fromAsync.stdout, fromAsync.exitCode], ['from an async mount\n', 4]);
 } finally {
   await ws.close();
 }
