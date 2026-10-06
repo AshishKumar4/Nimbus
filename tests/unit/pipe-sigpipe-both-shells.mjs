@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 66 s wall, 66 s CPU, 1.0 GiB peak (6 runs, 2026-10-06)
 // SIGPIPE ends only the command that writes to a pipe nobody reads, in both
 // shells (the JS workspace shell and the wasm bash): a brace group or loop
 // goes on after it, with that command's status 141; a builtin writing there

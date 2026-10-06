@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 25 s wall, 38 s CPU, 2.5 GiB peak (6 runs, 2026-10-06)
 // The Dynamic Worker ledger's refusal of a wait no release can satisfy
 // (fabric budgets.ts), under workerd: children of one session that fill the
 // Durable Object's limit, each doing nothing but wait on a grandchild of its

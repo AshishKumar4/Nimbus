@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 30 s wall, 0 s CPU, 0.0 GiB peak (6 runs, 2026-10-06)
 // N17 end to end. A lazy import commits its rows at once and leaves the
 // chunks it did not carry pending; the embedder's fetch hydrates them in the
 // background.

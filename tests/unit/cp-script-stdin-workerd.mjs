@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 26 s wall, 28 s CPU, 1.0 GiB peak (6 runs, 2026-10-06)
 // A shell script child_process.spawn starts reads the stdin its parent
 // writes, live, as under Node (TestyIguana, resolve-path).
 //

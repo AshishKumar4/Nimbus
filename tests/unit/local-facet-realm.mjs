@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 38 s wall, 18 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // A facet of the local facet host is a realm of its own (Kinu ask 17,
 // local-facet-host.ts:183).
 //

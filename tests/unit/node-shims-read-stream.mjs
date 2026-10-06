@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 30 s wall, 0 s CPU, 0.1 GiB peak (6 runs, 2026-10-06)
 // Behavior tests for fs.createReadStream / fs.ReadStream inside a node facet.
 //
 // A static file server is the canonical consumer:
