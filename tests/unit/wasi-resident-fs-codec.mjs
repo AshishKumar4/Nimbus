@@ -98,5 +98,41 @@ await check('a held file\'s fstat is the session\'s live one, with the held size
   await guest.dispose();
 });
 
+await check('a reader of a file held again after its writer closed reads the new bytes, the old reader still open', async () => {
+  const guest = await residentGuest();
+  const first = await guest.open('home/user/again.txt', { create: true, truncate: true, write: true });
+  assert.equal(await guest.write(first, 'old'), 0);
+  const oldReader = await guest.open('home/user/again.txt');
+  assert.equal(await guest.pread(oldReader, 16), 'old');
+  assert.equal(await guest.close(first), 0);
+  // The same inode, held again from empty.
+  const second = await guest.open('home/user/again.txt', { truncate: true, write: true });
+  assert.equal(await guest.write(second, 'new'), 0);
+  const newReader = await guest.open('home/user/again.txt');
+  assert.equal(await guest.pread(newReader, 16), 'new', 'the new reader reads what the second writer wrote');
+  assert.equal(await guest.pread(oldReader, 16), 'old', 'the old reader keeps what it opened');
+  for (const fd of [oldReader, newReader, second]) assert.equal(await guest.close(fd), 0);
+  await guest.dispose();
+});
+
+await check('closing the last reader of a held file frees its copy while the writer goes on', async () => {
+  const { heapStats } = await import('bun:jsc');
+  const external = () => { Bun.gc(true); return heapStats().extraMemorySize; };
+  const guest = await residentGuest();
+  const writer = await guest.open('home/user/big-held.bin', { create: true, truncate: true, write: true });
+  assert.equal(await guest.writeBytes(writer, new Uint8Array(6 * MiB).fill(9)), 0);
+  const before = external();
+  const reader = await guest.open('home/user/big-held.bin');
+  assert.equal(guest.stats().pinnedBytes, 6 * MiB);
+  const during = external();
+  assert.ok(during - before > 5 * MiB, `the reader's copy is ${during - before} bytes`);
+  assert.equal(await guest.close(reader), 0);
+  assert.equal(guest.stats().pinnedBytes, 0);
+  const after = external();
+  assert.ok(after - before < 1 * MiB, `after the last reader closed, ${after - before} bytes stay beyond the held file`);
+  assert.equal(await guest.close(writer), 0);
+  await guest.dispose();
+});
+
 console.log(`wasi-resident-fs-codec: ${passed} checks passed`);
 process.exit(0);

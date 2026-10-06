@@ -204,12 +204,16 @@ interface HeldWrite {
   bytes: Uint8Array;
   length: number;
   position: number;
-  /** Bumped by every change, so a reader's copy is shared until the next one. */
-  generation: number;
-  snapshot: Uint8Array | null;
+  /**
+   * Which content this is: a value no other held write, before or after,
+   * of any file, ever had, changed by every write. Readers pinned to one
+   * version share its copy; a later version, or a later writer of the same
+   * file, is never mistaken for it.
+   */
+  version: number;
 }
 
-/** Bytes pinned for descriptors: one buffer per file revision (or held generation), and how many hold it. */
+/** Bytes pinned for descriptors: one buffer per file revision (or held version), and how many hold it. The pin is the only owner of the buffer. */
 interface Pin {
   bytes: Uint8Array;
   holders: number;
@@ -343,10 +347,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     return true;
   };
 
+  /** Held versions are numbered across every held write of this process. */
+  let versions = 0;
+
   /** A held file changed: a reader's copy of the old content is no longer the file's. */
   const changed = (held: HeldWrite): void => {
-    held.generation++;
-    held.snapshot = null;
+    held.version = ++versions;
   };
 
   /**
@@ -484,13 +490,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   /**
-   * A file's bytes: what this process is writing to it (one copy per held
-   * generation), else the store's, fetched into it. Undefined when only the
-   * authority can read them.
+   * A file's bytes: a copy of what this process is writing to it, else the
+   * store's, fetched into it. Undefined when only the authority can read
+   * them. A copy of a held file belongs to the caller (pinContent keeps it
+   * in its pin, charged, for as long as a descriptor holds it).
    */
   const contentOf = (key: string, entry: ResidentEntry): Uint8Array | undefined | Promise<Uint8Array | undefined> => {
     const writing = heldFor(entry.dev, entry.ino);
-    if (writing !== undefined) return (writing.snapshot ??= writing.bytes.slice(0, writing.length));
+    if (writing !== undefined) return writing.bytes.slice(0, writing.length);
     const keep = (bytes: Uint8Array | null | undefined): Uint8Array | undefined =>
       (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
     const held = store.content(key);
@@ -610,7 +617,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (!modeAllows(entry, 4, store.cred)) return null;
     const writing = heldFor(entry.dev, entry.ino);
     if (writing === undefined && entry.revision !== stat.revision) return null;
-    const pinKey = writing === undefined ? `${identity(entry.dev, entry.ino)}:${entry.revision}` : `${identity(entry.dev, entry.ino)}:held:${writing.generation}`;
+    const pinKey = writing === undefined ? `${identity(entry.dev, entry.ino)}:${entry.revision}` : `held:${writing.version}`;
     const pinned = (pin: Pin): PinnedContent => {
       pin.holders++;
       let released = false;
@@ -708,7 +715,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
         if (stat.type === 'file' && stat.dev === store.device) {
           writes.set(handle.id, {
             id: handle.id, path: handle.path, dev: stat.dev, ino: stat.ino, readable: !!flags.read,
-            bytes: new Uint8Array(0), length: 0, position: 0, generation: 0, snapshot: null,
+            bytes: new Uint8Array(0), length: 0, position: 0, version: ++versions,
           });
         }
         return handle;

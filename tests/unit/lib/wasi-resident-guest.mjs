@@ -108,6 +108,23 @@ export async function residentGuest({ refuse = () => false } = {}) {
       return wasiImport.fd_write(fd, IOV, 1, OUT);
     },
     close: (fd) => wasiImport.fd_close(fd),
+    /** fd_pread of up to `n` bytes at `offset`, as text, or a thrown errno. */
+    async pread(fd, n, offset = 0) {
+      view().setUint32(IOV, DATA, true);
+      view().setUint32(IOV + 4, n, true);
+      const errno = await wasiImport.fd_pread(fd, IOV, 1, BigInt(offset), OUT);
+      if (errno !== 0) throw Object.assign(new Error(`fd_pread: errno ${errno}`), { errno });
+      return new TextDecoder().decode(bytesAt().slice(DATA, DATA + view().getUint32(OUT, true)));
+    },
+    /** fd_write of `bytes` (a Uint8Array) in one call. */
+    async writeBytes(fd, bytes) {
+      const at = 1 << 20;
+      while (memory.buffer.byteLength < at + bytes.byteLength) memory.grow(Math.ceil((at + bytes.byteLength - memory.buffer.byteLength) / 65536));
+      bytesAt().set(bytes, at);
+      view().setUint32(IOV, at, true);
+      view().setUint32(IOV + 4, bytes.byteLength, true);
+      return wasiImport.fd_write(fd, IOV, 1, OUT);
+    },
     /** path_filestat_get: the size the guest sees, or a thrown errno. */
     async statSize(name) {
       const n = putPath(name);
