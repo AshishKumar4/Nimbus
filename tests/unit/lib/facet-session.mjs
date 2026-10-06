@@ -54,45 +54,60 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(vfs);
-  let owner;
   const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
-  const lease = () => (owner === undefined ? {} : { mutationOwner: owner });
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
-  const requests = { fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0, failWaveAt: 0, hangPhaseAt: null };
-  const supervisor = {
-    async stat(path) { try { return bridge.stat(path); } catch { return null; } },
-    async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
-    async hasLegacySymlinkUnder() { return false; },
-    async readdir(path) { return bridge.readdir(path); },
-    async readFileBytes(path) { try { return bridge.readFile(path); } catch { return null; } },
-    async fsReadRange(path, offset, length) {
-      requests.rangeReads.push({ path, offset, length });
-      return bridge.readRange(path, offset, length);
-    },
-    async fsReadRangeUncached(path, offset, length) {
-      requests.rangeReads.push({ path, offset, length });
-      return bridge.readRange(path, offset, length, { cached: false });
-    },
-    async fsWriteRange(path, offset, bytes) {
-      requests.rangeWrites.push({ path, offset, bytes: bytes.byteLength });
-      requests.onRangeWrite?.(path, offset);
-      return bridge.writeRange(path, offset, bytes, { createParents: true, ...lease() });
-    },
-    async fsTruncate(path, size) { return bridge.truncate(path, size, lease()); },
-    async rename(from, to) { return bridge.rename(from, to, lease()); },
-    async unlink(path) { return bridge.unlink(path); },
-    async writeBatchStream(stream) {
-      if (++requests.waves === requests.failWaveAt) {
-        await stream.cancel();
-        throw new Error('Network connection lost.');
-      }
-      return kernel.writeStream(stream, lease());
-    },
-    async stdout() {},
+  // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
+  // refusals: the facets' mutations the session refused, with why.
+  const requests = {
+    fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0,
+    failWaveAt: 0, hangPhaseAt: null, stallPhaseAt: null, stalled: [], refusals: [], loads: 0,
   };
-  // Each execGitNetwork mints its binding with the lease it holds (a clone's), as SupervisorRPC props carry it.
-  adoptCtxExports({ SupervisorRPC: ({ props }) => { owner = props.mutationOwner; return supervisor; } });
+  const refused = (call) => call().catch((error) => {
+    requests.refusals.push(String(error?.code ?? error?.message ?? error));
+    throw error;
+  });
+  // Each binding writes with the lease it was minted with (SupervisorRPC props), as the session's does.
+  const supervisorFor = (owner) => {
+    const lease = owner === undefined ? {} : { mutationOwner: owner };
+    return {
+      async stat(path) { try { return bridge.stat(path); } catch { return null; } },
+      async lstat(path) { try { return bridge.stat(path, { followSymlinks: false }); } catch { return null; } },
+      async hasLegacySymlinkUnder() { return false; },
+      async readdir(path) { return bridge.readdir(path); },
+      async readFileBytes(path) { try { return bridge.readFile(path); } catch { return null; } },
+      async fsReadRange(path, offset, length) {
+        requests.rangeReads.push({ path, offset, length });
+        return bridge.readRange(path, offset, length);
+      },
+      async fsReadRangeUncached(path, offset, length) {
+        requests.rangeReads.push({ path, offset, length });
+        return bridge.readRange(path, offset, length, { cached: false });
+      },
+      async fsWriteRange(path, offset, bytes) {
+        requests.rangeWrites.push({ path, offset, bytes: bytes.byteLength });
+        await requests.onRangeWrite?.(path, offset);
+        return refused(async () => bridge.writeRange(path, offset, bytes, { createParents: true, ...lease }));
+      },
+      async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
+      async rename(from, to) { return refused(async () => bridge.rename(from, to, lease)); },
+      async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
+      async writeBatchStream(stream) {
+        if (++requests.waves === requests.failWaveAt) {
+          await stream.cancel();
+          throw new Error('Network connection lost.');
+        }
+        return refused(async () => {
+          const result = await kernel.writeStream(stream, lease);
+          if (result.ok === false) requests.refusals.push(String(result.error?.code ?? result.error?.message));
+          return result;
+        });
+      },
+      async stdout() {},
+    };
+  };
+  const supervisor = supervisorFor(undefined);
+  adoptCtxExports({ SupervisorRPC: ({ props }) => supervisorFor(props.mutationOwner) });
 
   const tempDir = mkdtempSync(join(work, 'facet-'));
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
@@ -102,7 +117,9 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   const doEnv = {
     ASSETS: stagedAssets,
     LOADER: {
-      load() {
+      load(code) {
+        requests.loads++;
+        const binding = code.env.SUPERVISOR;
         return {
           getEntrypoint() {
             return {
@@ -111,9 +128,16 @@ export async function createFacetSession(work, { realGit = false } = {}) {
                 if (body.op === 'fetch-objects') requests.fetchObjects++;
                 requests.phases.push(body.phase === 'clone-history' ? 'clone-history:' + body.history?.step : body.phase ?? body.op);
                 if (body.attempt !== undefined) requests.attempts.push(body.attempt);
+                await requests.onPhase?.(body);
                 const hang = requests.hangPhaseAt;
                 if (hang !== null && body.phase === hang.phase && ++hang.seen === hang.at) return new Promise(() => {});
-                return facet.default.fetch(request, { SUPERVISOR: supervisor });
+                const stall = requests.stallPhaseAt;
+                if (stall !== null && body.phase === stall.phase && ++stall.seen === stall.at) {
+                  // Runs on; whoever waits for its answer times out.
+                  requests.stalled.push(facet.default.fetch(request, { SUPERVISOR: binding }).then((response) => response.json()));
+                  return new Promise(() => {});
+                }
+                return facet.default.fetch(request, { SUPERVISOR: binding });
               },
             };
           },

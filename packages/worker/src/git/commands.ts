@@ -2424,6 +2424,9 @@ export async function runGitCommand(
         const mutationLease = vfs.as(ctx.cred).acquireExclusiveMutation(target, {
           includeMissingAncestors: true,
         });
+        // A piece of the clone that hung may still write: the facet runner
+        // hands the lease to a new owner before it runs the piece again.
+        let mutationOwner = mutationLease.owner;
 
         // Delegate to git-network-facet: heavy packfile processing runs in
         // a dynamic worker with its own CPU budget, not the supervisor DO.
@@ -2440,7 +2443,8 @@ export async function runGitCommand(
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
-              mutationOwner: mutationLease.owner,
+              mutationOwner,
+              rotateMutationOwner: () => (mutationOwner = vfs.rotateExclusiveMutation(mutationOwner)),
               // Verification/tuning knobs: smaller pieces make ordinary repos
               // exercise many batches, history pieces and continuations.
               blobsPerBatch: Number(ctx.env.NIMBUS_GIT_BLOBS_PER_BATCH) || undefined,
@@ -2465,7 +2469,7 @@ export async function runGitCommand(
             }
             return result.success;
           } finally {
-            vfs.releaseExclusiveMutation(mutationLease.owner);
+            vfs.releaseExclusiveMutation(mutationOwner);
           }
         };
 
