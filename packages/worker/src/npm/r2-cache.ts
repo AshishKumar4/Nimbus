@@ -661,6 +661,8 @@ export class R2CacheClient {
     const timeoutMs = options?.timeoutMs ?? 15_000;
     let resp: Response;
     try {
+      // One try is the request and, for a 2xx, reading its body: a body
+      // that breaks off mid-read is tried again like a request that failed.
       resp = await retryingRegistryFetch(async () => {
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), timeoutMs);
@@ -671,10 +673,11 @@ export class R2CacheClient {
           // libc). It omits `exports`; that is read from the tarball's
           // package.json in the VFS at require time, where the resolver's
           // packument copy is `?? null` anyway.
-          return await fetch(url, {
+          const answer = await fetch(url, {
             headers: { Accept: 'application/vnd.npm.install-v1+json' },
             signal: ctl.signal,
           });
+          return answer.ok ? new Response(await answer.text(), { status: answer.status }) : answer;
         } finally {
           clearTimeout(timer);
         }

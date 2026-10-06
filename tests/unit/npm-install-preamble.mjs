@@ -5,9 +5,11 @@
  * as the facet evaluates it, each embedded function answers as the module's:
  *   - retryingRegistryFetch retries a 5xx and a request that never answered,
  *     returns a 4xx at once, and gives up after three re-tries, and the
- *     supervisor's packument fetch (r2-cache.ts) answers by the same policy;
+ *     supervisor's packument fetch (r2-cache.ts) answers by the same policy,
+ *     a body that breaks off mid-read included (a failure, never a throw);
  *   - an install checks the strongest entry of a multi-hash SRI string, as
- *     npm's ssri does, and refuses a digest that does not decode;
+ *     npm's ssri does, and refuses an entry of an algorithm it checks whose
+ *     digest is not that algorithm's (empty, not base64, the wrong length);
  *   - the shared cache addresses only a one-entry string.
  * And bundled as the Worker bundles it (esbuild), the module the install
  * facet's loader worker parses reads no name it leaves undefined: the
@@ -85,6 +87,14 @@ try {
       calls++;
       const status = queue.length > 1 ? queue.shift() : queue[0];
       if (status === 'throw') throw new Error('socket hang up');
+      if (status === 'broken') {
+        return new Response(new ReadableStream({
+          start(controller) {
+            controller.enqueue(new TextEncoder().encode('{"na'));
+            controller.error(new TypeError('connection reset'));
+          },
+        }), { status: 200 });
+      }
       return new Response(status === 200 ? '{"name":"p"}' : 'x', { status });
     };
     const empty = { async get() { return null; }, async put() {}, async delete() {} };
@@ -96,6 +106,10 @@ try {
     assert.deepEqual(await read(404), { calls: 1, json: null, status: 404, failure: undefined });
     assert.deepEqual(await read(503), { calls: 4, json: null, status: undefined, failure: 'HTTP 503' });
     assert.deepEqual(await read('throw'), { calls: 4, json: null, status: undefined, failure: 'socket hang up' });
+    assert.deepEqual(await read('broken', 200), { calls: 2, json: '{"name":"p"}', status: undefined, failure: undefined },
+      'a 200 whose body breaks off is tried again');
+    assert.deepEqual(await read('broken'), { calls: 4, json: null, status: undefined, failure: 'connection reset' },
+      'and fails, never throws, once the re-tries are spent');
   } finally {
     globalThis.fetch = originalFetch;
   }
