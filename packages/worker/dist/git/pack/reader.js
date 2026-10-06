@@ -65,12 +65,14 @@ export class PackObjectResolver {
         };
     }
     /**
-     * The object at `offset`, its delta chain applied, cached at every link.
-     * The walk to the base reads only headers; the deltas are then applied
-     * outward, each inflated as it is applied, so a long chain of large
-     * deltas holds one of them, never all.
+     * The object at `offset`, its delta chain applied, each base it is built
+     * on cached. The walk to the base reads only headers; the deltas are then
+     * applied outward, each inflated as it is applied, so a long chain of
+     * large deltas holds one of them, never all. The object itself is cached
+     * only when `rememberTarget` (a base the caller asked for): a command's
+     * one-shot read keeps the cache for bases, as git's delta_base_cache does.
      */
-    *objectAt(offset) {
+    *objectAt(offset, rememberTarget = true) {
         const chain = [];
         let base = null;
         let at = offset;
@@ -96,7 +98,8 @@ export class PackObjectResolver {
             else {
                 const entry = yield* this.entryAt(at);
                 base = { type: typeName(entry.header.type), data: entry.payload };
-                this.remember(at, base);
+                if (rememberTarget || chain.length > 0)
+                    this.remember(at, base);
             }
             if (chain.length > 10_000)
                 throw new PackFormatError('delta chain at ' + offset + ' is longer than 10000');
@@ -104,7 +107,8 @@ export class PackObjectResolver {
         for (let i = chain.length - 1; i >= 0; i--) {
             const delta = yield* this.entryAt(chain[i]);
             base = { type: base.type, data: applyDelta(base.data, delta.payload) };
-            this.remember(chain[i], base);
+            if (rememberTarget || i > 0)
+                this.remember(chain[i], base);
         }
         return base;
     }

@@ -70,12 +70,14 @@ export declare class PackObjectResolver {
     /** The entry at `offset`: one probe, and one more read only when its stream is longer. */
     entryAt(offset: number): PackRead<PackEntry>;
     /**
-     * The object at `offset`, its delta chain applied, cached at every link.
-     * The walk to the base reads only headers; the deltas are then applied
-     * outward, each inflated as it is applied, so a long chain of large
-     * deltas holds one of them, never all.
+     * The object at `offset`, its delta chain applied, each base it is built
+     * on cached. The walk to the base reads only headers; the deltas are then
+     * applied outward, each inflated as it is applied, so a long chain of
+     * large deltas holds one of them, never all. The object itself is cached
+     * only when `rememberTarget` (a base the caller asked for): a command's
+     * one-shot read keeps the cache for bases, as git's delta_base_cache does.
      */
-    objectAt(offset: number): PackRead<ResolvedObject>;
+    objectAt(offset: number, rememberTarget?: boolean): PackRead<ResolvedObject>;
     /** The header of the entry at `offset`, its payload unread. */
     private headerOf;
     /** An object's type and size, inflating no more than each delta's leading sizes. */
