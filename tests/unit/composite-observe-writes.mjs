@@ -283,6 +283,31 @@ function remote(files, delayMs = 2) {
   assert.deepEqual(events.map(({ before, after }) => [before, after]), [['old', 'async'], ['async', 'sync']]);
 }
 
+// ── A factory that answers a fresh adapter on every lookup is still one
+//    backend: its writes take one turn queue, and a synchronous call meets
+//    its busy section ──
+{
+  const { vfs } = namespace();
+  const backing = new MemoryVFS();
+  backing.writeFile('/f', enc.encode('old'));
+  vfs.mount('/fresh', () => remote(backing), { resolvesPaths: true });
+  const dualBacking = new MemoryVFS();
+  dualBacking.writeFile('/f', enc.encode('old'));
+  vfs.mount('/fresh-dual', () => new Proxy(remote(dualBacking, 5), { get: (target, key) => (key === 'sync' ? dualBacking : Reflect.get(target, key)) }), { resolvesPaths: true });
+  const { events } = record(vfs);
+  await Promise.all(['a', 'b', 'c'].map((text) => vfs.writeFile('/fresh/f', enc.encode(text))));
+  const chain = events.map(({ before, after }) => [before, after]);
+  assert.equal(chain[0][0], 'old');
+  for (let index = 1; index < chain.length; index++) {
+    assert.equal(chain[index][0], chain[index - 1][1], `a factory's writes took separate turns: ${JSON.stringify(chain)}`);
+  }
+  const pending = vfs.writeFile('/fresh-dual/f', enc.encode('async'));
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.throws(() => vfs.sync.writeFile('/fresh-dual/f', enc.encode('sync')), (error) => error.code === 'EAGAIN' && error.asyncMount === true,
+    "a synchronous write ran inside a factory backend's busy section");
+  await pending;
+}
+
 // ── A root write the namespace does not show (beneath a mount point) is not
 //    the namespace's; a rename half shown is the delete it is there ──
 {
