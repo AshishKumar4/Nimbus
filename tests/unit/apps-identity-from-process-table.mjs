@@ -28,10 +28,6 @@
 //      dead pid nothing can expose (the live failure).
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -49,31 +45,19 @@ import { PUBLIC_BEARER_HEADER, PREVIEW_CAPABILITY_HEADER } from '../../packages/
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-apps-identity-'));
-const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/session/port-capability.ts', './packages/worker/src/session/programmatic.ts', './packages/worker/src/facets/compose.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cloudflare-workers-test-stub',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'test' }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-        loader: 'js',
-      }));
-    },
-  }],
+const {
+  handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer, routeToSessionPort,
+  rpcExposeApp, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess, composeFacetManager,
+} = await importWorkerBundle({
+  'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'],
+  'packages/worker/src/session/port-capability.ts': ['routeToSessionPort'],
+  'packages/worker/src/session/programmatic.ts': ['rpcExposeApp', 'rpcListApps', 'rpcRotateLink', 'rpcRemoveApp', 'rpcStartProcess'],
+  'packages/worker/src/facets/compose.ts': ['composeFacetManager'],
 });
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/routes.js')).path).href);
-const { routeToSessionPort } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/port-capability.js')).path).href);
-const { rpcExposeApp, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/programmatic.js')).path).href);
-const { composeFacetManager } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/compose.js')).path).href);
 
 const SID = 'nimble-otter-4271';
 const SUFFIX = 'nimbus-os.dev';
@@ -364,4 +348,3 @@ async function serve(t, { command, argv, cwd, port, tag }) {
 }
 
 console.log('ok - apps identity from the process table (dev-server expose/list/rotate/restart/refuse/remove, bin resident journalled, hibernation keeps identity, dead pid refused, startProcess wrapper pid stays running)');
-await rm(outputDir, { recursive: true, force: true });

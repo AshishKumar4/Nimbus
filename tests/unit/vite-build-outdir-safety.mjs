@@ -16,49 +16,17 @@
 // faked: bundling correctness is esbuild-vite-assets.mjs's job; this
 // file exists to pin the filesystem safety around it.
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 // vite-command.ts transitively imports `cloudflare:workers` (ViteDevServer
 // → real-vite-hmr); bundle it with the same stub the route tests use.
-// The bundle is needed only until it is imported; the finally removes it even when the build fails.
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-vite-outdir-test-'));
-let createViteCommand;
-try {
-const bundle = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/vite-command.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cloudflare-workers-test-stub',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
-        path: 'cloudflare-workers',
-        namespace: 'test',
-      }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-        loader: 'js',
-      }));
-    },
-  }],
-});
-assert.equal(bundle.success, true, bundle.logs.map(String).join('\n'));
-const entry = bundle.outputs.find((output) => output.path.endsWith('/vite-command.js'));
-assert.ok(entry, 'the vite-command bundle was emitted');
-({ createViteCommand } = await import(pathToFileURL(entry.path).href));
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+const { createViteCommand } = await importWorkerBundle({ 'packages/worker/src/session/vite-command.ts': ['createViteCommand'] });
 
 const CWD = '/home/user';
 

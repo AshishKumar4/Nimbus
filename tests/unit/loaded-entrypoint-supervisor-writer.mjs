@@ -1,46 +1,15 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-loaded-entrypoint-writer-'));
-try {
-  // Two entries with splitting, so the bundled bindings and the composition
-  // module the test registers the supervisor name through share ONE module
-  // instance via the common chunk.
-  const build = await Bun.build({
-    entrypoints: [
-      './packages/fabric/src/bindings.ts',
-      './packages/fabric/src/composition.ts',
-    ],
-    splitting: true,
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
-          path: 'cloudflare-workers',
-          namespace: 'test',
-        }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class WorkerEntrypoint {};',
-          loader: 'js',
-        }));
-      },
-    }],
+{
+  // One graph, so the bundled bindings and the composition module the test
+  // registers the supervisor name through share ONE module instance.
+  const { NimbusLoadedEntrypoint, composeFabric } = await importWorkerBundle({
+    'packages/fabric/src/bindings.ts': ['NimbusLoadedEntrypoint'],
+    'packages/fabric/src/composition.ts': ['composeFabric'],
   });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  const entry = build.outputs.find((output) => output.path.endsWith('/bindings.js'));
-  assert.ok(entry);
-  const compositionEntry = build.outputs.find((output) => output.path.endsWith('/composition.js'));
-  assert.ok(compositionEntry);
-  const { NimbusLoadedEntrypoint } = await import(pathToFileURL(entry.path).href);
-  const { composeFabric } = await import(pathToFileURL(compositionEntry.path).href);
   composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
 
   const writerId = '11111111-1111-4111-8111-111111111111';
@@ -95,6 +64,4 @@ try {
   );
 
   console.log('loaded-entrypoint-supervisor-writer: all assertions passed');
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
 }

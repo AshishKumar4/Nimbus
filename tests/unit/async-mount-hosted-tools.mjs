@@ -22,55 +22,27 @@
 //     a mounted project by name, judged by the root they serve, not the cwd.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { writeFile } from 'node:fs/promises';
 
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const root = new URL('../../', import.meta.url).pathname;
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-async-mount-tools-'));
-let bundle;
-try {
-  const entryPath = join(outputDir, 'entry.ts');
-  // The mount's errors must be the bundle's VfsError, so it is bundled with the runtime.
-  await writeFile(entryPath, [
-    `export { composeHostedRuntime } from '${root}packages/worker/src/workspace-host.ts';`,
-    `export { NimbusWorkspace } from '${root}packages/core/src/workspace/nimbus-workspace.ts';`,
-    `export { SessionProcessSupervisor } from '${root}packages/core/src/runtime/session-process-supervisor.ts';`,
-    `export { PortRegistry } from '${root}packages/core/src/runtime/port-registry.ts';`,
-    `export { SqliteVFS } from '${root}packages/core/src/vfs/sqlite-vfs.ts';`,
-    `export { VfsError } from '${root}packages/core/src/vfs/vfs-error.ts';`,
-    `export { PID_GEN_STRIDE } from '${root}packages/core/src/runtime/process-table.ts';`,
-    `export { CRED_KERNEL } from '${root}packages/core/src/runtime/os-contracts.ts';`,
-    `export { composeFabric } from '${root}packages/fabric/src/composition.ts';`,
-    `export { asyncMemoryVfs } from '${root}tests/unit/lib/async-memory-vfs.mjs';`,
-    '',
-  ].join('\n'));
-  const build = await Bun.build({
-    entrypoints: [entryPath],
-    outdir: join(outputDir, 'out'),
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  bundle = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/entry.js')).path).href);
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+// The mount's errors must be the bundle's VfsError, so it is bundled with the runtime.
+const bundle = await importWorkerBundle({
+  'packages/worker/src/workspace-host.ts': ['composeHostedRuntime'],
+  'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
+  'packages/core/src/runtime/session-process-supervisor.ts': ['SessionProcessSupervisor'],
+  'packages/core/src/runtime/port-registry.ts': ['PortRegistry'],
+  'packages/core/src/vfs/sqlite-vfs.ts': ['SqliteVFS'],
+  'packages/core/src/vfs/vfs-error.ts': ['VfsError'],
+  'packages/core/src/runtime/process-table.ts': ['PID_GEN_STRIDE'],
+  'packages/core/src/runtime/os-contracts.ts': ['CRED_KERNEL'],
+  'packages/fabric/src/composition.ts': ['composeFabric'],
+  'tests/unit/lib/async-memory-vfs.mjs': ['asyncMemoryVfs'],
+});
 
 bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', hostDispatchMethod: 'supervisorOp' });
 

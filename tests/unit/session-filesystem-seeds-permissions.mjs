@@ -1,10 +1,7 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { rm } from 'node:fs/promises';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
@@ -14,38 +11,15 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-session-seed-test-'));
 
-try {
-  const build = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/nimbus-session.ts', './packages/worker/src/hosted/services.ts'],
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
-          path: 'cloudflare-workers',
-          namespace: 'test',
-        }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-          loader: 'js',
-        }));
-      },
-    }],
+{
+  const { NimbusSession, ensureGlobalPrefixDirs } = await importWorkerBundle({
+    'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+    'packages/worker/src/hosted/services.ts': ['ensureGlobalPrefixDirs'],
   });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-
-  const entry = build.outputs.find((output) => output.path.endsWith('/nimbus-session.js'));
-  assert.ok(entry, 'the session entry bundle was emitted');
-  const { NimbusSession } = await import(pathToFileURL(entry.path).href);
-  const servicesEntry = build.outputs.find((output) => output.path.endsWith('/services.js'));
-  assert.ok(servicesEntry, 'the services entry bundle was emitted');
-  const { ensureGlobalPrefixDirs } = await import(pathToFileURL(servicesEntry.path).href);
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -223,8 +197,6 @@ try {
     });
     return { exitCode, stdout, stderr };
   }
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
 }
 
 console.log('session filesystem seed permissions: ok');
