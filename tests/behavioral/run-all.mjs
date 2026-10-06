@@ -89,6 +89,7 @@
 //   anyway, for the deliberate case.
 
 import { Database } from 'bun:sqlite';
+import { randomUUID } from 'node:crypto';
 import { spawn } from 'node:child_process';
 import { readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -143,8 +144,10 @@ const JOBS = flagValue('--jobs', 'NIMBUS_PROBE_JOBS') !== undefined
 // _driver.mjs appends each session a probe mints, and each DELETE of it, here.
 // It is made only once this run holds the run lock and the ledger's own
 // (below): a run refused either never touches a ledger another run writes.
+// Without --ledger it is a file of this run's own, named so no other run's
+// can be (RUN_ID is pid-derived, and runs in PID namespaces share pids).
 const KEEP_LEDGER = flagValue('--ledger', 'NIMBUS_PROBE_LEDGER_KEEP');
-const LEDGER_PATH = KEEP_LEDGER ? resolvePath(KEEP_LEDGER) : join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}.jsonl`);
+const LEDGER_PATH = KEEP_LEDGER ? resolvePath(KEEP_LEDGER) : join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}-${randomUUID()}.jsonl`);
 
 // ── Run lock ─────────────────────────────────────────────────────────
 
@@ -243,26 +246,26 @@ if (ALLOW_CONCURRENT) {
 
 // ── Session ledger ───────────────────────────────────────────────────
 
-// A ledger is one run's. Its lock is an exclusive SQLite lock beside it,
-// held for the run's life whatever the run lock (--allow-concurrent runs
-// alongside another): a second run given the same --ledger path refuses
-// before it touches the file, where it would have emptied the leaks the
-// first run recorded.
-const LEDGER_HOLD_PATH = `${LEDGER_PATH}.lock`;
-const ledgerHeld = tryHold(LEDGER_HOLD_PATH);
-if (ledgerHeld === null) {
-  console.error(
-    `FATAL: another behavioral run is writing its session ledger at ${LEDGER_PATH}.\n`
-    + `Give this run a --ledger path of its own.`,
-  );
-  process.exit(3);
+// A kept ledger is one run's. Its lock is an exclusive SQLite lock in a
+// file beside it, held for the run's life whatever the run lock
+// (--allow-concurrent runs alongside another): a second run given the same
+// --ledger path refuses before it touches the file, where it would have
+// emptied the leaks the first run recorded. The lock file stays when the
+// run ends, as HOLD_PATH does. Removed, a run waiting on it would lock the
+// removed file while the next run made and locked a new one at the path:
+// two runs writing one ledger.
+if (KEEP_LEDGER) {
+  const ledgerHeld = tryHold(`${LEDGER_PATH}.lock`);
+  if (ledgerHeld === null) {
+    console.error(
+      `FATAL: another behavioral run is writing its session ledger at ${LEDGER_PATH}.\n`
+      + `Give this run a --ledger path of its own.`,
+    );
+    process.exit(3);
+  }
+  process.on('exit', () => ledgerHeld.close());
+  writeFileSync(LEDGER_PATH, ''); // this run's, kept even when no probe mints
 }
-process.on('exit', () => {
-  ledgerHeld.close();
-  rmSync(LEDGER_HOLD_PATH, { force: true });
-});
-rmSync(LEDGER_PATH, { force: true }); // a pid-derived RUN_ID can repeat a kept ledger's name; a kept one is this run's
-if (KEEP_LEDGER) writeFileSync(LEDGER_PATH, ''); // kept even when no probe mints
 process.env.NIMBUS_PROBE_LEDGER = LEDGER_PATH;
 
 /**
