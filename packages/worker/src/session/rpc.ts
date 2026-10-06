@@ -1835,7 +1835,7 @@ const HostProcessOptsSchema = z.object({
   /** The coordinator workspace's egress (a stub, crossed by RPC) and its id: the process's network. */
   network: z.object({
     egress: z.custom<WorkspaceEgress>((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
-      && typeof (value as { fetch?: unknown }).fetch === 'function'),
+      && typeof (value as { fetch?: unknown }).fetch === 'function' && typeof (value as { connect?: unknown }).connect === 'function'),
     id: z.string().min(1),
   }).optional(),
   /** Keyed dynamic-worker identity on THIS peer's loader. */

@@ -18,15 +18,15 @@
  */
 
 /**
- * What a host supplies: a `fetch` for HTTP (WebSocket upgrades included) and,
- * for programs that open TCP sockets, a `connect` (a Fetcher's own; its
- * sockets carry plain TCP only, so a program's TLS socket is refused under an
- * egress, see `EGRESS_TLS_REFUSAL`).
+ * What a host supplies: a Fetcher (a service binding, a `ctx.exports`
+ * entrypoint), or on a host without one an object with the same two methods.
+ * `fetch` carries HTTP (WebSocket upgrades included); `connect` carries the
+ * plain TCP sockets programs open. A Fetcher's `connect()` carries plain TCP
+ * only, so a program's TLS socket is refused under an egress
+ * (`EGRESS_TLS_REFUSAL`); an egress that carries no TCP at all refuses in its
+ * `connect`.
  */
-export interface WorkspaceEgress {
-  fetch(request: Request): Promise<Response>;
-  connect?(address: string | { hostname: string; port: number }, options?: unknown): unknown;
-}
+export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'>;
 
 export interface WorkspaceNetwork {
   /** The host's egress, or undefined for the isolate's own network. */
