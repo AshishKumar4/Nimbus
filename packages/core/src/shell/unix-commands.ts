@@ -224,22 +224,6 @@ async function readSymlinkTarget(vfs: UnixVfs, path: string): Promise<string | n
   return await vfs.isSymlink(path) ? (await vfs.readlink(path)) : null;
 }
 
-async function resolveSymlinkPath(vfs: UnixVfs, startPath: string): Promise<string | null> {
-  let current = resolvePath('/', startPath);
-  for (let hops = 0; hops < 40; hops++) {
-    const text = (await readSymlinkTarget(vfs, current));
-    if (text === null) return current;
-    // Where the link leads in this namespace (a mount may read it from its
-    // own root); one whose target it has no name for is named by itself.
-    const target = await vfs.linkLeadsTo(current, text);
-    if (target === null) return current;
-    current = target.startsWith('/')
-      ? resolvePath('/', target)
-      : resolvePath(dirname(current), target);
-  }
-  return null;
-}
-
 // ── Command implementations ─────────────────────────────────────────────
 
 /**
@@ -3407,48 +3391,62 @@ function mkFalse(): CmdFn { return () => 1; }
  * Flags: -f (canonicalize — follow chain to final target), default
  * (one-hop). -e variant (verify) deferred.
  */
+/**
+ * readlink, as GNU coreutils 9.7: a link's text, or under -f (all but the
+ * last component must exist), -e (every one) or -m (none need) the name
+ * canonicalized by canonicalizePath, as realpath's. Quiet unless -v: a name
+ * it cannot answer for exits 1 and says nothing. -n drops the newline after
+ * a lone name; -z ends each with NUL.
+ */
 function mkReadlink(vfs: UnixVfs): CmdFn {
+  const USAGE = "Try 'readlink --help' for more information.\n";
+  const LONG: Record<string, string> = {
+    canonicalize: 'f', 'canonicalize-existing': 'e', 'canonicalize-missing': 'm', 'no-newline': 'n',
+    quiet: 'q', silent: 's', verbose: 'v', zero: 'z',
+  };
   return async (ctx) => {
-    const args = [...ctx.args];
-    let canonicalize = false;
+    let mode: 'e' | 'E' | 'm' | null = null;
+    let noNewline = false;
+    let verbose = false;
+    let zero = false;
     const targets: string[] = [];
-    for (const a of args) {
-      if (a === '-f' || a === '--canonicalize') { canonicalize = true; continue; }
-      if (a.startsWith('-') && a !== '-') {
-        for (const ch of a.slice(1)) if (ch === 'f') canonicalize = true;
-        continue;
-      }
-      targets.push(a);
-    }
-    if (targets.length === 0) {
-      (await ctx.stderr.write('readlink: missing operand\n'));
+    const refuse = async (message: string): Promise<number> => {
+      (await ctx.stderr.write(`readlink: ${message}\n${USAGE}`));
       return 1;
+    };
+    for (let i = 0; i < ctx.args.length; i++) {
+      const arg = ctx.args[i]!;
+      if (arg === '--') { targets.push(...ctx.args.slice(i + 1)); break; }
+      const flags = arg.startsWith('--') ? LONG[arg.slice(2)] : arg.length > 1 && arg.startsWith('-') ? arg.slice(1) : null;
+      if (flags === null) { targets.push(arg); continue; }
+      if (flags === undefined) return refuse(`unrecognized option '${arg}'`);
+      for (const flag of flags) {
+        if (flag === 'f') mode = 'E';
+        else if (flag === 'e' || flag === 'm') mode = flag;
+        else if (flag === 'n') noNewline = true;
+        else if (flag === 'q' || flag === 's') verbose = false;
+        else if (flag === 'v') verbose = true;
+        else if (flag === 'z') zero = true;
+        else return refuse(`invalid option -- '${flag}'`);
+      }
     }
+    if (targets.length === 0) return refuse('missing operand');
+    const end = zero ? '\0' : noNewline && targets.length === 1 ? '' : '\n';
     let exit = 0;
     for (const t of targets) {
       const fp = resolvePath(ctx.cwd, t);
-      if (canonicalize) {
-        // -f: follow chain; succeed even if target doesn't exist YET
-        // (matches `readlink -f` which canonicalizes anyway).
-        const resolved = (await resolveSymlinkPath(vfs, fp));
-        if (resolved !== null) {
-          (await ctx.stdout.write(resolved + '\n'));
-          continue;
-        }
-        (await ctx.stderr.write(`readlink: ${t}: Too many levels of symbolic links\n`));
-        exit = 1;
-        continue;
-      }
-      // Default: one-hop. Print target verbatim (preserves relative/absolute).
-      const direct = (await readSymlinkTarget(vfs, fp));
-      if (direct !== null) {
-        (await ctx.stdout.write(direct + '\n'));
-        continue;
-      }
-      // Not a symlink. GNU readlink exits 1 silently for regular
-      // files / dirs; emits stderr for missing.
-      if (!(await vfs.exists(fp))) {
-        (await ctx.stderr.write(`readlink: ${t}: No such file or directory\n`));
+      try {
+        const answer = mode === null
+          ? await readSymlinkTarget(vfs, fp)
+          // The name as given, so a trailing slash still asks for a directory.
+          : await canonicalizePath(ctx.vfs, t.startsWith('/') ? t : `${resolvePath(ctx.cwd, '.')}/${t}`, { mode, logical: false, noSymlinks: false });
+        if (answer !== null) { (await ctx.stdout.write(answer + end)); continue; }
+        // Not a link: EINVAL, as readlink(2) says, once the name is known to exist.
+        await statOrThrow(vfs, fp);
+        if (verbose) (await ctx.stderr.write(`readlink: ${t}: Invalid argument\n`));
+      } catch (error) {
+        if (!isVfsError(error)) throw error;
+        if (verbose) (await ctx.stderr.write(`readlink: ${t}: ${VFS_STRERROR[error.code]}\n`));
       }
       exit = 1;
     }
