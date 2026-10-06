@@ -6,7 +6,7 @@
  * the names imported from each package root (for barrel packages). Both come
  * from the same files: six directories deep, without node_modules, .git,
  * dist, build, non-JS files, or the build tools' configs at the project root.
- * An import inside a comment names nothing.
+ * An import inside a comment names nothing; one after JSX is still read.
  */
 
 import assert from 'node:assert/strict';
@@ -14,6 +14,10 @@ import { scanProjectImports } from '../../packages/worker/src/runtime/barrel-syn
 
 const files = {
   'app/src/main.tsx': "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport { Home, Zap as Z, type IconProps } from 'lucide-react';\nimport './style.css';\nimport 'normalize.css?inline';\nconst m = import('lodash-es/debounce');\n",
+  // JSX before an import: a closing tag's slash is not a regex, JSX text is
+  // not code (an apostrophe opens no string, a URL opens no comment), and an
+  // expression inside JSX is code again.
+  'app/src/view.tsx': "const view = <div></div>; import { Icon } from '@scope/icons';\nconst page = (\n  <p>See http://example.com <Icon /> {cond && <b>x</b>} {import('lazy-pkg')}</p>\n);\nconst note = <p>Don't</p>; import Quoted from 'after-apostrophe';\nfunction render() { return <a href=\"/x\">open</a>; }\nimport Tail from 'tail-pkg';\n// A generic arrow and a type argument are not JSX.\nconst id = <T,>(x: T) => x; const n = useState<number>(0);\nimport { After } from 'after-generics';\n",
   'app/src/util.ts': "export { a } from '@scope/pkg/sub';\nimport D, { b } from '@scope/pkg';\nimport { x } from 'node:fs';\nimport { y } from './local';\n// import { Gone } from 'commented-out';\n/* import 'also-commented'; */\nexport{c}from\"minified\";\n",
   // Six directories below the project: read.
   'app/src/a/b/c/d/e/deep.js': "import { Deep } from 'lucide-react';\nimport 'deep-pkg';\n",
@@ -48,13 +52,16 @@ const vfs = {
 
 const { bareSpecifiers, namedImports } = scanProjectImports(vfs, 'app');
 assert.deepEqual([...bareSpecifiers].sort(), [
-  '@scope/pkg', '@scope/pkg/sub', 'deep-pkg', 'lodash-es', 'lodash-es/debounce', 'lucide-react', 'minified', 'node:fs',
-  'normalize.css', 'react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime', 'react/jsx-runtime',
-  'site-config-pkg',
+  '@scope/icons', '@scope/pkg', '@scope/pkg/sub', 'after-apostrophe', 'after-generics', 'deep-pkg', 'lazy-pkg', 'lodash-es', 'lodash-es/debounce',
+  'lucide-react', 'minified', 'node:fs', 'normalize.css', 'react', 'react-dom', 'react-dom/client', 'react/jsx-dev-runtime',
+  'react/jsx-runtime', 'site-config-pkg', 'tail-pkg',
 ]);
 assert.deepEqual(
   Object.fromEntries([...namedImports].map(([pkg, names]) => [pkg, [...names].sort()])),
-  { '@scope/pkg': ['b'], 'lucide-react': ['Deep', 'Home', 'IconProps', 'Zap'], 'site-config-pkg': ['Site'] },
+  {
+    '@scope/icons': ['Icon'], '@scope/pkg': ['b'], 'after-generics': ['After'],
+    'lucide-react': ['Deep', 'Home', 'IconProps', 'Zap'], 'site-config-pkg': ['Site'],
+  },
 );
 
 console.log('project-imports-scan: ok');

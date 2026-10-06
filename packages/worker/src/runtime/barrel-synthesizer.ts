@@ -56,7 +56,7 @@
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { importedSpecifiers, stripCommentsForImports } from '@nimbus-sh/core/runtime/comment-strip.js';
+import { importedSpecifiers, maskSourceForImports } from '@nimbus-sh/core/runtime/comment-strip.js';
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
 import { resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -114,10 +114,13 @@ export interface ProjectImports {
  * `const { A } = require('pkg')`, and named imports from a subpath, which
  * esbuild resolves file by file.
  *
- * The scanner is intentionally conservative-text-based: the supervisor
- * ships no parser for this. The regexes cover the >99% case for browser
- * source in TS/JS/JSX/TSX. Costs: O(files × content_length); for Mossaic
- * (199 source files, ~150 KiB total source) this is single-digit ms.
+ * Each file is read through core's import lexer (comment-strip.ts
+ * maskSourceForImports: comments, strings, regexes and JSX told apart, as
+ * TypeScript's parser reads them; import-scan-differential.mjs holds it to
+ * the parser over this repository's sources), then the grammars above. The
+ * supervisor and the dev server call this synchronously and load no parser:
+ * the lexer reads ~77 MB/s where Oxc's transform, in-process, reads ~26 MB/s
+ * and would cost a transform-facet hop besides.
  */
 export function scanProjectImports(vfs: CredentialedVfs, projDir: string): ProjectImports {
   const bare = new Set<string>();
@@ -140,8 +143,8 @@ export function scanProjectImports(vfs: CredentialedVfs, projDir: string): Proje
     set.add(name);
   };
 
-  const scan = (source: string, ext: string): void => {
-    const code = stripCommentsForImports(source);
+  const scan = (source: string, path: string, ext: string): void => {
+    const code = maskSourceForImports(source, path);
     for (const specifier of importedSpecifiers(code)) {
       if (specifier.startsWith('.') || specifier.startsWith('/')) continue;
       const clean = specifier.split('?')[0];
@@ -188,7 +191,7 @@ export function scanProjectImports(vfs: CredentialedVfs, projDir: string): Proje
       if (!scanExts.has(ext)) continue;
       let code: string;
       try { code = vfs.readFileString(path); } catch { continue; }
-      scan(code, ext);
+      scan(code, path, ext);
     }
   };
 
@@ -506,7 +509,7 @@ export function buildScopedSliceForSynthetic(
     entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
     totalBytes += bytes.length + filePath.length;
     // Queue the relative imports, read by the project scan's grammar.
-    for (const rel of importedSpecifiers(stripCommentsForImports(new TextDecoder().decode(bytes)))) {
+    for (const rel of importedSpecifiers(maskSourceForImports(new TextDecoder().decode(bytes), filePath))) {
       if (!rel.startsWith('./') && !rel.startsWith('../')) continue;
       const dir = filePath.substring(0, slash > 0 ? slash : 0);
       const candidate = normalizeJoin(dir, rel);
