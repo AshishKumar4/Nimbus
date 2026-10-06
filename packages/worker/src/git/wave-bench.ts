@@ -10,7 +10,7 @@
  * the session sustained, and what the producers waited on.
  */
 
-import { RpcTarget } from 'cloudflare:workers';
+import * as workers from 'cloudflare:workers';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -98,7 +98,7 @@ interface BenchProducerParams {
 }
 
 interface BenchEntrypoint {
-  run(params: BenchProducerParams, sink: WaveBenchSink): Promise<WaveBenchProducer>;
+  run(params: BenchProducerParams, sink: WaveBenchSinkTarget): Promise<WaveBenchProducer>;
 }
 
 interface BenchWorker {
@@ -196,44 +196,58 @@ export class Producer extends WorkerEntrypoint {
 export default { fetch() { return new Response('w7-bench producer', { status: 404 }); } };
 `;
 
-/** The session end of a direct mode, handed to each producer as an RPC stub. */
-class WaveBenchSink extends RpcTarget {
-  constructor(private readonly session: WaveBenchSession) {
-    super();
-  }
+/** The session end of a direct mode, as a producer calls it. */
+interface WaveBenchSinkTarget {
+  vfs(stream: ReadableStream<Uint8Array>): Promise<unknown>;
+  vfsBytes(bytes: Uint8Array): Promise<unknown>;
+  drain(stream: ReadableStream<Uint8Array>): Promise<unknown>;
+  drainWriting(stream: ReadableStream<Uint8Array>): Promise<unknown>;
+}
 
-  async vfs(stream: ReadableStream<Uint8Array>): Promise<unknown> {
-    return this.session.writeStream(stream);
-  }
-
-  async vfsBytes(bytes: Uint8Array): Promise<unknown> {
-    return this.session.writeStream(new Response(bytes).body!);
-  }
-
-  async drain(stream: ReadableStream<Uint8Array>): Promise<unknown> {
-    return this.read(stream, false);
-  }
-
-  async drainWriting(stream: ReadableStream<Uint8Array>): Promise<unknown> {
-    return this.read(stream, true);
-  }
-
-  private async read(stream: ReadableStream<Uint8Array>, writing: boolean): Promise<unknown> {
-    const reader = stream.getReader({ mode: 'byob' });
-    let reads = 0;
-    let bytes = 0;
-    let buffer = new ArrayBuffer(64 * 1024);
-    if (writing) this.session.sql.exec('CREATE TABLE IF NOT EXISTS nimbus_bench_drain (id INTEGER PRIMARY KEY, n INTEGER)');
-    for (;;) {
-      const next = await reader.read(new Uint8Array(buffer));
-      if (next.done) break;
-      reads++;
-      bytes += next.value.byteLength;
-      buffer = next.value.buffer;
-      if (writing) this.session.sql.exec('INSERT INTO nimbus_bench_drain (n) VALUES (?)', next.value.byteLength);
+/**
+ * The session end of a direct mode, handed to each producer as an RPC stub.
+ * Made when a bench runs, not when this module loads: a session module is
+ * loaded where cloudflare:workers has no RpcTarget (unit stubs).
+ */
+function waveBenchSink(session: WaveBenchSession): WaveBenchSinkTarget {
+  return new (class WaveBenchSink extends workers.RpcTarget {
+    constructor(private readonly session: WaveBenchSession) {
+      super();
     }
-    return { ok: true, committedGroupSequence: 0, committedPathCount: 0, inodes: 0, chunks: 0, receipts: [], reads, bytes };
-  }
+
+    async vfs(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+      return this.session.writeStream(stream);
+    }
+
+    async vfsBytes(bytes: Uint8Array): Promise<unknown> {
+      return this.session.writeStream(new Response(bytes).body!);
+    }
+
+    async drain(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+      return this.read(stream, false);
+    }
+
+    async drainWriting(stream: ReadableStream<Uint8Array>): Promise<unknown> {
+      return this.read(stream, true);
+    }
+
+    private async read(stream: ReadableStream<Uint8Array>, writing: boolean): Promise<unknown> {
+      const reader = stream.getReader({ mode: 'byob' });
+      let reads = 0;
+      let bytes = 0;
+      let buffer = new ArrayBuffer(64 * 1024);
+      if (writing) this.session.sql.exec('CREATE TABLE IF NOT EXISTS nimbus_bench_drain (id INTEGER PRIMARY KEY, n INTEGER)');
+      for (;;) {
+        const next = await reader.read(new Uint8Array(buffer));
+        if (next.done) break;
+        reads++;
+        bytes += next.value.byteLength;
+        buffer = next.value.buffer;
+        if (writing) this.session.sql.exec('INSERT INTO nimbus_bench_drain (n) VALUES (?)', next.value.byteLength);
+      }
+      return { ok: true, committedGroupSequence: 0, committedPathCount: 0, inodes: 0, chunks: 0, receipts: [], reads, bytes };
+    }
+  })(session);
 }
 
 function isBenchEnv(env: unknown): env is BenchEnv {
@@ -248,7 +262,7 @@ export async function runWaveBench(
   options: WaveBenchOptions,
   session: WaveBenchSession,
 ): Promise<WaveBenchResult> {
-  const sink = new WaveBenchSink(session);
+  const sink = waveBenchSink(session);
   if (!isBenchEnv(env)) throw new Error('w7-bench: env.LOADER.load is not available');
   const exports = getCtxExports();
   if (!exports?.SupervisorRPC) throw new Error('w7-bench: SupervisorRPC binding is not available');
