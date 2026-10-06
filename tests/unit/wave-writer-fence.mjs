@@ -136,7 +136,7 @@ const byteStream = (bytes) => new ReadableStream({
     },
   };
   const pid = processes.spawn('git', ['git'], '/home/user').pid;
-  const rpc = new SupervisorRPC({ props: { doId: 'session', pid, ...supervisorDeliveryProps(ctx) } }, env);
+  const rpc = new SupervisorRPC({ props: { doId: 'session', pid, writerId: 'fence-run', ...supervisorDeliveryProps(ctx) } }, env);
   const writer = createWaveWriter({
     supervisor: {
       writeBatchStream: (stream, fence) => rpc.writeBatchStream(stream, fence),

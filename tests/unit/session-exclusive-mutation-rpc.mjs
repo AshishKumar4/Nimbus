@@ -58,6 +58,7 @@ for (const delivered of [false, true]) {
       props: {
         doId: 'session',
         pid: process.pid,
+        writerId: 'leased-run',
         ...(supervisorDeliveries ? { hostIncarnation: supervisorDeliveries.incarnation } : {}),
         ...props,
       },
