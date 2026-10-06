@@ -31,6 +31,8 @@
  * with `"use strict"`.
  */
 
+import { jsoncToJson } from './jsonc.js';
+
 /** The esbuild options this module reads. */
 export interface TsconfigInputs {
   jsx?: string;
@@ -140,45 +142,6 @@ function memberExpression(text: string, warnings: string[]): string | null {
   return null;
 }
 
-/** What ends a `//` comment, as esbuild's lexer reads one: any line terminator. */
-const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
-
-/**
- * JSON as esbuild reads a tsconfig: comments and trailing commas allowed.
- * Strings are walked so neither is looked for inside one. A block comment
- * left open is esbuild's error, in its words.
- */
-function parseJsonc(text: string): unknown {
-  let out = '';
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    if (c === '"') {
-      const start = i;
-      for (i++; i < text.length && text[i] !== '"'; i++) if (text[i] === '\\') i++;
-      out += text.slice(start, i + 1);
-    } else if (c === '/' && text[i + 1] === '/') {
-      while (i < text.length && !LINE_TERMINATOR.test(text[i])) i++;
-      out += '\n';
-    } else if (c === '/' && text[i + 1] === '*') {
-      const end = text.indexOf('*/', i + 2);
-      if (end < 0) throw new Error('Expected "*/" to terminate multi-line comment');
-      i = end + 1;
-      out += ' ';
-    } else {
-      out += c;
-    }
-  }
-  // A comma before a closing bracket, outside strings: rewrite the text with
-  // strings blanked to find them, then drop them from the real text.
-  const blanked = out.replace(/"(?:[^"\\]|\\.)*"/g, (s) => '"' + ' '.repeat(s.length - 2) + '"');
-  let result = '';
-  for (let i = 0; i < out.length; i++) {
-    if (blanked[i] === ',' && /^\s*[}\]]/.test(blanked.slice(i + 1))) continue;
-    result += out[i];
-  }
-  return JSON.parse(result);
-}
-
 const isObject = (value: unknown): value is Record<string, unknown> =>
   typeof value === 'object' && value !== null && !Array.isArray(value);
 
@@ -230,7 +193,7 @@ export function resolveTsSettings(inputs: TsconfigInputs, call: Call): TsSetting
   let config: unknown;
   if (typeof raw === 'string') {
     try {
-      config = parseJsonc(raw);
+      config = JSON.parse(jsoncToJson(raw, 'esbuild'));
     } catch (error) {
       throw new Error(`tsconfigRaw is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
     }
