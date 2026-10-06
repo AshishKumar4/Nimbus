@@ -1,5 +1,8 @@
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError } from './vfs-error.js';
 import { normalizeVfsPath } from './path.js';
+import { withRecall } from './recall.js';
+import { DIRENT_TYPES } from './dirent-type.js';
+import { S_IFMT } from './vfs.js';
 /** Path order as SQLite's index keeps it: by UTF-8 bytes, which is code point order. */
 export function comparePaths(a, b) {
     const n = Math.min(a.length, b.length);
@@ -57,8 +60,8 @@ const SYNTH_RUNTIME_STAT = {
  * SQLite revision.
  */
 export function runtimeStatOf(stat) {
-    const typeBits = stat.type === 'directory' ? 0o040000 : stat.type === 'symlink' ? 0o120000 : 0o100000;
-    const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & 0o170000 ? stat.mode : typeBits | stat.mode);
+    const typeBits = DIRENT_TYPES[stat.type].format;
+    const mode = stat.mode === undefined ? typeBits | (stat.type === 'directory' ? 0o755 : 0o644) : (stat.mode & S_IFMT ? stat.mode : typeBits | stat.mode);
     return {
         dev: stat.dev ?? 0, ino: stat.ino ?? 0, nlink: stat.nlink ?? 1, type: stat.type, size: stat.size,
         ctime: stat.ctimeMs ?? stat.mtimeMs, atime: stat.atimeMs ?? stat.mtimeMs, mtime: stat.mtimeMs,
@@ -117,6 +120,13 @@ function isRemoval(value) {
 /** A compare-and-write that won (VfsCasResult ok). */
 function casWon(value) {
     return typeof value === 'object' && value !== null && value.ok === true;
+}
+/**
+ * An asynchronous call of the namespace: `run` reported as `call`, and run
+ * again once a delegation it meets is recalled (withRecall).
+ */
+function awaited(call, run) {
+    return withRecall(() => reported(call, run));
 }
 /** `run`'s value, or `fallback`'s when it throws or rejects. */
 function attempt(run, fallback) {
@@ -776,7 +786,7 @@ export class CompositeVFS {
      * Rejects as the operation's lookup would: ENOENT, ENOTDIR, EACCES, ELOOP.
      */
     async route(path, options) {
-        return reported({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
+        return awaited({ syscall: 'route', path }, () => then(this.resolve(path, options?.follow === true, false), (at) => {
             const gone = this.absentOn(at);
             if (gone !== null)
                 return { point: gone.point, source: null, path: relativeTo(gone.point, at), absentReason: this.absentReason(gone) };
@@ -848,7 +858,7 @@ export class CompositeVFS {
     }
     /** `realpath` for a caller that can wait: links on an asynchronous mount are awaited. */
     async realpathAsync(path) {
-        return reported({ syscall: 'realpath', path }, () => this.realpathAt(path, false));
+        return awaited({ syscall: 'realpath', path }, () => this.realpathAt(path, false));
     }
     /**
      * Where the link at `path`, reading `link` (readlink's text), leads in
@@ -1911,28 +1921,28 @@ export class CompositeVFS {
     // Asynchronous throughout: a refusal is a rejected promise, never a throw
     // from the call itself, whatever the backend. \`sync\` is the synchronous face.
     async stat(path, options) {
-        return reported({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, false));
+        return awaited({ syscall: options?.follow === false ? 'lstat' : 'stat', path }, () => this.statAt(path, options?.follow !== false, false));
     }
     async readFile(path) {
-        return reported({ syscall: 'open', path }, () => this.onFile(path, true, false, (ops, rel) => ops.readFile(rel)));
+        return awaited({ syscall: 'open', path }, () => this.onFile(path, true, false, (ops, rel) => ops.readFile(rel)));
     }
     async readRange(path, offset, length) {
-        return reported({ syscall: 'open', path }, () => this.onCapability(path, false, 'readRange', false, (fn, rel) => fn(rel, offset, length)));
+        return awaited({ syscall: 'open', path }, () => this.onCapability(path, false, 'readRange', false, (fn, rel) => fn(rel, offset, length)));
     }
     /** `parents`: make the missing directories above where the write lands first (mkdir -p), as the write's own lookup resolves it. */
     async writeFile(path, data, options) {
         const mode = options?.mode === undefined ? undefined : { mode: options.mode };
-        return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, mode), options?.parents === true));
+        return awaited({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel) => ops.writeFile(rel, data, mode), options?.parents === true));
     }
     /** `parents`: as writeFile's. */
     async writeRange(path, offset, bytes, options) {
-        return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes), options?.parents === true));
+        return awaited({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'written', (ops, rel, at) => this.method(ops, 'writeRange', at)(rel, offset, bytes), options?.parents === true));
     }
     async truncate(path, size) {
-        return reported({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)));
+        return awaited({ syscall: 'open', path }, () => this.onMutation(path, true, false, 'truncated', (ops, rel, at) => this.method(ops, 'truncate', at)(rel, size)));
     }
     async readdir(path) {
-        return reported({ syscall: 'scandir', path }, () => this.readdirAt(path, false));
+        return awaited({ syscall: 'scandir', path }, () => this.readdirAt(path, false));
     }
     /**
      * `readdir` with each entry's own stat (links not followed), identified as
@@ -1941,7 +1951,7 @@ export class CompositeVFS {
      * is left out.
      */
     async readdirStat(path) {
-        return reported({ syscall: 'scandir', path }, async () => this.statEntries(await this.resolve(path, true, false)));
+        return awaited({ syscall: 'scandir', path }, async () => this.statEntries(await this.resolve(path, true, false)));
     }
     /**
      * readdirStat of a directory already resolved in this namespace: the
@@ -1975,43 +1985,43 @@ export class CompositeVFS {
         return out.filter((entry) => entry !== null);
     }
     async mkdir(path, options) {
-        return reported({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, false));
+        return awaited({ syscall: 'mkdir', path }, () => this.mkdirAt(path, options, false));
     }
     async unlink(path) {
-        return reported({ syscall: 'unlink', path }, () => this.onMutation(path, false, false, 'unlinked', (ops, rel) => ops.unlink(rel)));
+        return awaited({ syscall: 'unlink', path }, () => this.onMutation(path, false, false, 'unlinked', (ops, rel) => ops.unlink(rel)));
     }
     async rmdir(path) {
-        return reported({ syscall: 'rmdir', path }, () => this.rmdirAt(path, false));
+        return awaited({ syscall: 'rmdir', path }, () => this.rmdirAt(path, false));
     }
     async rename(from, to) {
-        return reported({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, false));
+        return awaited({ syscall: 'rename', path: from, dest: to }, () => this.renameAt(from, to, false));
     }
     async removeRecursive(path) {
-        return reported({ syscall: 'rm', path }, () => this.removeAt(path, false));
+        return awaited({ syscall: 'rm', path }, () => this.removeAt(path, false));
     }
     async symlink(target, path) {
-        return reported({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, false, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)));
+        return awaited({ syscall: 'symlink', path: target, dest: path }, () => this.onMutation(path, false, false, 'replaced', (ops, rel, at) => this.method(ops, 'symlink', at)(target, rel)));
     }
     async readlink(path) {
-        return reported({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)));
+        return awaited({ syscall: 'readlink', path }, () => this.onFile(path, false, false, (ops, rel, at) => this.method(ops, 'readlink', at)(rel)));
     }
     async chmod(path, mode) {
-        return reported({ syscall: 'chmod', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)));
+        return awaited({ syscall: 'chmod', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chmod', at)(rel, mode)));
     }
     async chown(path, uid, gid) {
-        return reported({ syscall: 'chown', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)));
+        return awaited({ syscall: 'chown', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'chown', at)(rel, uid, gid)));
     }
     async utimes(path, atimeMs, mtimeMs) {
-        return reported({ syscall: 'utime', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atimeMs, mtimeMs)));
+        return awaited({ syscall: 'utime', path }, () => this.onMutation(path, true, false, 'changed', (ops, rel, at) => this.method(ops, 'utimes', at)(rel, atimeMs, mtimeMs)));
     }
     async writeFileIfRevision(path, data, expected) {
-        return reported({ syscall: 'open', path }, () => this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)));
+        return awaited({ syscall: 'open', path }, () => this.onCapability(path, false, 'writeFileIfRevision', true, (fn, rel) => fn(rel, data, expected)));
     }
     async copy(from, to, options) {
-        return reported({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, false));
+        return awaited({ syscall: options?.recursive ? 'cp' : 'copyfile', path: from, dest: to }, () => this.copyAt(from, to, options, false));
     }
     async readFileAtRevision(path, revision, range) {
-        return reported({ syscall: 'open', path }, () => this.onCapability(path, false, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)));
+        return awaited({ syscall: 'open', path }, () => this.onCapability(path, false, 'readFileAtRevision', false, (fn, rel) => fn(rel, revision, range)));
     }
     describe() {
         const root = this.backend(this.table.mounts.get(ROOT_POINT));
