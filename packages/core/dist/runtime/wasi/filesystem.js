@@ -313,6 +313,20 @@ export function installAuthorityFilesystem(imports, options) {
             // A hit needs no permission check of its own: the copy was read under
             // this credential, and a chmod or chown since would have moved the
             // revision along with any rewrite.
+            // A filesystem that holds file bytes itself (wasi/resident-filesystem.ts)
+            // is the copy: it pins them for the descriptor under its own budget, and
+            // past that budget the descriptor is the session's.
+            const pinContent = Reflect.get(fs, 'pinContent');
+            if (typeof pinContent === 'function') {
+                return after(Reflect.apply(pinContent, fs, [target, st]), (pinned) => {
+                    if (pinned === null)
+                        return open();
+                    const id = options.allocateFd();
+                    fds.set(id, { kind: 'resident', stat: st, bytes: pinned.bytes, release: pinned.release, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
+                    u32(out, id);
+                    return 0;
+                });
+            }
             return after(residentContent(fs, target, st), bytes => {
                 const id = options.allocateFd();
                 fds.set(id, { kind: 'resident', stat: st, bytes, position: 0, rights: requested, rightsInheriting: childRights, fdflags: status });
@@ -334,6 +348,7 @@ export function installAuthorityFilesystem(imports, options) {
             return 0;
         const e = entry(fd);
         if (e.kind === 'resident') {
+            e.release?.();
             fds.delete(fd);
             return 0;
         }
@@ -350,6 +365,8 @@ export function installAuthorityFilesystem(imports, options) {
             fail('ENOTCAPABLE');
         // dup2 closes what it lands on, and only the owner of that fd knows how:
         // a socket's stream and a pipe's writer count are the host's to release.
+        if (target?.kind === 'resident')
+            target.release?.();
         const released = !target || target.kind === 'resident' ? undefined
             : target.kind === 'authority' ? fs.close(target.handle.id)
                 : hostClose?.(to);
@@ -412,8 +429,17 @@ export function installAuthorityFilesystem(imports, options) {
         return 0;
     }, owns);
     imports.fd_filestat_set_size = guard(imports.fd_filestat_set_size, (fs, fd, size) => { right(fd, 22); return after(fs.ftruncate(handle(fd).handle.id, num(size)), () => 0); }, owns);
-    imports.fd_sync = guard(imports.fd_sync, (fs, fd) => { const e = right(fd, 4); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
-    imports.fd_datasync = guard(imports.fd_datasync, (fs, fd) => { const e = right(fd, 0); return e.kind === 'resident' ? 0 : after(fs.fsync(e.handle.id), () => 0); }, owns);
+    // fsync(2) through this codec's own copy of a file: the copy has nothing
+    // to sync, but writes this process holds for the file elsewhere do (a
+    // filesystem that holds them answers syncInode; any other has none).
+    const syncResident = (fs, st) => {
+        const syncInode = Reflect.get(fs, 'syncInode');
+        if (typeof syncInode !== 'function')
+            return 0;
+        return after(Reflect.apply(syncInode, fs, [st.dev, st.ino]), () => 0);
+    };
+    imports.fd_sync = guard(imports.fd_sync, (fs, fd) => { const e = right(fd, 4); return e.kind === 'resident' ? syncResident(fs, e.stat) : after(fs.fsync(e.handle.id), () => 0); }, owns);
+    imports.fd_datasync = guard(imports.fd_datasync, (fs, fd) => { const e = right(fd, 0); return e.kind === 'resident' ? syncResident(fs, e.stat) : after(fs.fsync(e.handle.id), () => 0); }, owns);
     // posix_fallocate(3): the file holds at least [offset, offset + len).
     imports.fd_allocate = guard(imports.fd_allocate, (fs, fd, offset, len) => {
         right(fd, 8);

@@ -286,6 +286,14 @@ async function bundleAnsweringSupervisor() {
  * same scope, so any of these that esbuild renamed or scoped would be a
  * ReferenceError inside the facet — visible only as a dead guest.
  */
+/** The resident store's functions the WASI shim calls (wasi/preamble.ts declares them). */
+const WASI_RESIDENT_STORE_TOP_LEVEL = [
+  '__residentBindInMemory',
+  '__residentSetStorage',
+  '__residentBootLazy',
+  '__residentNamespaceView',
+];
+
 const WASI_REQUIRED_TOP_LEVEL = [
   '__wasiInitFS',
   '__wasiMakeImports',
@@ -335,6 +343,20 @@ async function bundleWasiInstance() {
   // syntax error, and callers append their own `export { … }`.
   src = src.replace(/^export\s+(async\s+function|function|const|let|var|class)\b/gm, '$1');
   src = src.replace(/\n?export\s*\{[^}]*\}\s*;\s*$/g, '');
+  // The resident store a WASI process answers its lookups from: the same
+  // source a node process splices (FACET_RESIDENT_STORE_SOURCE), evaluated in
+  // a scope of its own. A module may hold a node process's store too (the
+  // opencode runner carries both), and the two are different processes' state:
+  // one instance each, and no top-level name of one can meet the other's.
+  const { FACET_RESIDENT_STORE_SOURCE } = await import(pathToFileURL(join(root, 'dist', 'vfs', 'facet-resident-store.js')).href);
+  const storeMissing = WASI_RESIDENT_STORE_TOP_LEVEL.filter(
+    (name) => !new RegExp(`^(?:async\\s+)?function\\s+${name}\\b`, 'm').test(FACET_RESIDENT_STORE_SOURCE),
+  );
+  if (storeMissing.length > 0) {
+    throw new Error(`[bundle-facet-workers/wasi-instance] the resident store no longer declares ${storeMissing.join(', ')}, which the WASI shim calls`);
+  }
+  src = `const __wasiResidentStore = (function wasiResidentStore() {\n${FACET_RESIDENT_STORE_SOURCE}\n`
+    + `return { ${WASI_RESIDENT_STORE_TOP_LEVEL.join(', ')} };\n})();\n${src}`;
 
   const missing = WASI_REQUIRED_TOP_LEVEL.filter(
     (name) => !new RegExp(`^(?:async\\s+)?(?:function|const|let|var|class)\\s+${name}\\b`, 'm').test(src)

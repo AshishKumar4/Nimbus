@@ -22,6 +22,8 @@ export interface ResidentFd {
     kind: 'resident';
     stat: RuntimeVfsStat;
     bytes: Uint8Array;
+    /** Given back when the descriptor goes, when the filesystem pinned the bytes for it (pinContent). */
+    release?: () => void;
     position: number;
     rights: bigint;
     rightsInheriting: bigint;

@@ -107,6 +107,7 @@ export declare const MAX_RPC_SAFE_PAYLOAD_BYTES: number;
 export declare const ONE_SHOT_MODULE_MAP_MAX_BYTES: number;
 export declare const SUPERVISOR_HEAP_CEILING_BYTES: number;
 export declare const FACET_OWN_WRITE_MEMORY_BYTES: number;
+export declare const WASI_RESIDENT_STORE_BYTES: number;
 export declare const SUPERVISOR_IN_FLIGHT_ALLOCATION_BUDGET_BYTES: number;
 export declare const SUPERVISOR_READ_RESERVE_BYTES: number;
 export declare const MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES: number;
