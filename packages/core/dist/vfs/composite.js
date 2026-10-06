@@ -541,7 +541,7 @@ export class CompositeVFS {
      * before and after.
      */
     observeWrites(observer, options) {
-        const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), inFlight: new Set() };
+        const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), domains: new Map() };
         const watch = { observer, wants: options?.wants ?? (() => true) };
         writes.watches.add(watch);
         if (writes.watches.size === 1)
@@ -634,10 +634,10 @@ export class CompositeVFS {
      * reported once it landed: by the backend itself when it reports its own
      * writes (subscribed), else here. Here, what the path held before and
      * after is read through the same backend view, with the operation's own
-     * leaf-follow policy (content only where an observer wants it); mutations
-     * of overlapping paths take turns, capture to capture, so neither reads
-     * the other's; and the guard is asked right before the write, after the
-     * reads it waited on. `landed` says where the mutation actually landed
+     * leaf-follow policy (content only where an observer wants it); the
+     * backend's observed mutations take turns, capture to capture, so none
+     * reads another's (writeDomain); and the guard is asked right before the
+     * write, after the reads it waited on. `landed` says where the mutation actually landed
      * (default: its path): a compare-and-write that lost, or an rm -r that
      * kept its operand, did not land there.
      */
@@ -692,28 +692,41 @@ export class CompositeVFS {
                 });
             });
         };
-        if (sync)
+        const domain = this.writeDomain(route.mount);
+        if (sync) {
+            // A caller that cannot wait cannot take a turn: while another's
+            // section holds this backend, it is refused as an asynchronous mount
+            // refuses it (a caller that can wait retries on the asynchronous face).
+            if (writes.domains.get(domain)?.busy === true) {
+                throw Object.assign(new Refusal('EAGAIN', path, `${route.mount.point}: an observed write to this filesystem is in flight; this caller cannot wait for it`), { asyncMount: true });
+            }
             return report();
-        // An asynchronous backend's mutations of overlapping paths take turns.
-        return this.takeTurn(writes, oldPath === undefined ? [path] : [path, oldPath], report);
-    }
-    /** `run` once no observed mutation of a path overlapping `paths` is in flight; others wait for it. */
-    async takeTurn(writes, paths, run) {
-        const overlaps = (a, b) => a === b || a.startsWith(`${b === '/' ? '' : b}/`) || b.startsWith(`${a === '/' ? '' : a}/`);
-        for (;;) {
-            const waiting = [...writes.inFlight].filter((turn) => turn.paths.some((a) => paths.some((b) => overlaps(a, b))));
-            if (waiting.length === 0)
-                break;
-            await Promise.all(waiting.map((turn) => turn.done));
         }
+        return this.takeTurn(writes, domain, report);
+    }
+    /** The backend `mount` holds for this view, as itself (before `as`): what an observed mutation takes its turn on. */
+    writeDomain(mount) {
+        const source = mount.source;
+        return (typeof source === 'function' ? source(this.viewer) : source) ?? source;
+    }
+    /** `run` once every observed mutation of `domain` queued before it is done; those after it wait for it. */
+    async takeTurn(writes, domain, run) {
+        let state = writes.domains.get(domain);
+        if (state === undefined)
+            writes.domains.set(domain, state = { tail: Promise.resolve(), waiting: 0, busy: false });
+        const prior = state.tail;
         let done;
-        const turn = { paths, done: new Promise((resolve) => { done = resolve; }) };
-        writes.inFlight.add(turn);
+        state.tail = new Promise((resolve) => { done = resolve; });
+        state.waiting++;
         try {
+            await prior;
+            state.busy = true;
             return await run();
         }
         finally {
-            writes.inFlight.delete(turn);
+            state.busy = false;
+            if (--state.waiting === 0)
+                writes.domains.delete(domain);
             done();
         }
     }
@@ -1708,14 +1721,17 @@ export class CompositeVFS {
                         const route = this.locate(at);
                         if (route.mount.options.readOnly)
                             throw new Refusal('EROFS', at, `${route.mount.point} is mounted read-only`);
+                        // A regular file is written through a link at its destination, as
+                        // cp opens it; a copied link or tree is made at the name.
+                        const follow = stat.type === 'file';
                         if (source.mount === route.mount && typeof sourceOps.copy === 'function') {
-                            return this.reportWrite({ path: at, route, ops: sourceOps, follow: false, kind: 'write' }, () => {
+                            return this.reportWrite({ path: at, route, ops: sourceOps, follow, kind: 'write' }, () => {
                                 this.guardMutation([toInput, at]);
                                 return sourceOps.copy(source.rel, route.rel, options);
                             }, sync);
                         }
                         const targetOps = this.ops(route, sync);
-                        return this.reportWrite({ path: at, route, ops: targetOps, follow: false, kind: 'write' }, () => {
+                        return this.reportWrite({ path: at, route, ops: targetOps, follow, kind: 'write' }, () => {
                             this.guardMutation([toInput]);
                             return this.copyBytes(sourceOps, source.rel, stat, targetOps, route.rel, at);
                         }, sync);

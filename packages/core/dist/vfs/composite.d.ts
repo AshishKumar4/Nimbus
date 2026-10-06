@@ -163,10 +163,16 @@ interface WriteWatch {
 interface WriteWatches {
     watches: Set<WriteWatch>;
     subscribed: Map<Mount, () => void>;
-    /** Observed mutations on backends that do not report their own, by the paths they touch (reportWrite's turns). */
-    inFlight: Set<{
-        paths: readonly string[];
-        done: Promise<void>;
+    /**
+     * Observed mutations on backends that do not report their own take turns
+     * per backend (reportWrite): a backend's own links, or the backend mounted
+     * twice, give one file several namespace paths, so no path decides what
+     * conflicts. Keyed by the backend itself; a turn's section is `busy`.
+     */
+    domains: Map<object, {
+        tail: Promise<void>;
+        waiting: number;
+        busy: boolean;
     }>;
 }
 interface Table {
@@ -297,15 +303,17 @@ export declare class CompositeVFS implements VFS {
      * reported once it landed: by the backend itself when it reports its own
      * writes (subscribed), else here. Here, what the path held before and
      * after is read through the same backend view, with the operation's own
-     * leaf-follow policy (content only where an observer wants it); mutations
-     * of overlapping paths take turns, capture to capture, so neither reads
-     * the other's; and the guard is asked right before the write, after the
-     * reads it waited on. `landed` says where the mutation actually landed
+     * leaf-follow policy (content only where an observer wants it); the
+     * backend's observed mutations take turns, capture to capture, so none
+     * reads another's (writeDomain); and the guard is asked right before the
+     * write, after the reads it waited on. `landed` says where the mutation actually landed
      * (default: its path): a compare-and-write that lost, or an rm -r that
      * kept its operand, did not land there.
      */
     private reportWrite;
-    /** `run` once no observed mutation of a path overlapping `paths` is in flight; others wait for it. */
+    /** The backend `mount` holds for this view, as itself (before `as`): what an observed mutation takes its turn on. */
+    private writeDomain;
+    /** `run` once every observed mutation of `domain` queued before it is done; those after it wait for it. */
     private takeTurn;
     /**
      * What stands at `rel` on a backend that does not report its own writes,
