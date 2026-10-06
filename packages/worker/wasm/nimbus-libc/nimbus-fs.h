@@ -23,6 +23,9 @@ int nimbus_chmod(const char *path, mode_t mode);
 int nimbus_fchmod(int fd, mode_t mode);
 /* AT_SYMLINK_NOFOLLOW is ENOTSUP, as Linux has no lchmod. */
 int nimbus_fchmodat(int dirfd, const char *path, mode_t mode, int flags);
+/* access(2) as the session's credential may; AT_SYMLINK_NOFOLLOW is ignored, as on Linux. */
+int nimbus_faccessat(int dirfd, const char *path, int mode, int flags);
+int nimbus_access(const char *path, int mode);
 /*
  * open(2): a file it creates (O_CREAT with O_EXCL, so certainly new) with
  * execute bits in `mode` gets them, which preview1's create cannot carry:

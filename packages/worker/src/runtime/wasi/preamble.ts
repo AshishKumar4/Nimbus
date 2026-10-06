@@ -1757,7 +1757,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         : kind === 'socket' || kind === 'listener' ? 0o140777
         : null;
       if (format === null) return __WASI_EBADF;
-      const answered = imports.fd_filestat_get(fd, out);
+      const answered = filestatGet(fd, out);
       const finish = (errno: Errno): Errno => {
         if (errno !== __WASI_ESUCCESS) return errno;
         const dv = view();
@@ -1780,6 +1780,9 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     residentBytes: __wasiFS.residentFileCap,
     extension: fsImport,
   });
+  // fd_filestat_get as answered, before the guest's table is made Suspending:
+  // a Suspending function called from JS is not a wasm call, and traps.
+  const filestatGet = imports.fd_filestat_get;
 
   // Where something leaves the guest: a socket's bytes (fd_write on a socket
   // comes here too, through the raw capture below). A peer that hears from

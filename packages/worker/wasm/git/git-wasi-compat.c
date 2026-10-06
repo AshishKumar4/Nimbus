@@ -18,6 +18,7 @@
 #undef chmod
 #undef fchmod
 #undef open
+#undef access
 
 pid_t getppid(void) { return 1; }
 pid_t getpgid(pid_t p) { (void)p; return 1; }

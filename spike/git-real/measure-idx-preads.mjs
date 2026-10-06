@@ -65,7 +65,7 @@ const proc = Object.fromEntries(['pipe', 'dup', 'dup2', 'spawn', 'start', 'wait'
 proc.ids = (out) => { view().setUint32(out, process.getuid(), true); view().setUint32(out + 4, process.getgid(), true); return 0; };
 // The Nimbus filesystem extension over the host's files: preview1's filestat, then mode, uid, gid.
 const preopenDirs = { 3: repo, 4: '/dev', 5: '/tmp' };
-const { lstatSync, statSync: hostStat, chmodSync } = await import('node:fs');
+const { accessSync, lstatSync, statSync: hostStat, chmodSync } = await import('node:fs');
 const writeStat = (out, st) => {
   const v = view();
   const type = st.isDirectory() ? 3 : st.isSymbolicLink() ? 7 : st.isCharacterDevice() ? 2 : st.isFile() ? 4 : 0;
@@ -95,6 +95,10 @@ const fsExt = {
     try { chmodSync(hostPath(fd, p, len), mode & 0o7777); return 0; } catch (e) { return errnoOf(e); }
   },
   fd_chmod() { return 0; },
+  path_access(fd, flags, p, len, mode) {
+    if (!(fd in preopenDirs)) return 8;
+    try { accessSync(hostPath(fd, p, len), mode); return 0; } catch (e) { return errnoOf(e); }
+  },
 };
 const instance = new WebAssembly.Instance(module, { wasi_snapshot_preview1: imports, nimbus_proc: proc, nimbus_fs: fsExt });
 memory = instance.exports.memory;

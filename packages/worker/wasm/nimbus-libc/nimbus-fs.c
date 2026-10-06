@@ -12,10 +12,11 @@
 #undef fchmod
 #undef fchmodat
 #undef open
+#undef access
+#undef faccessat
 
 #include <errno.h>
 #include <fcntl.h>
-#include <limits.h>
 #include <stdarg.h>
 #include <stdint.h>
 #include <stdlib.h>
@@ -39,6 +40,7 @@ NIMBUS_FS_IMPORT("path_stat") int __nimbus_path_stat(int fd, int lookupflags, co
 NIMBUS_FS_IMPORT("fd_stat") int __nimbus_fd_stat(int fd, struct nimbus_stat_record *out);
 NIMBUS_FS_IMPORT("path_chmod") int __nimbus_path_chmod(int fd, int lookupflags, const char *path, size_t len, uint32_t mode);
 NIMBUS_FS_IMPORT("fd_chmod") int __nimbus_fd_chmod(int fd, uint32_t mode);
+NIMBUS_FS_IMPORT("path_access") int __nimbus_path_access(int fd, int lookupflags, const char *path, size_t len, uint32_t mode);
 NIMBUS_PROC_IMPORT("ids") int __nimbus_ids(uint32_t *ids);
 
 /* The imports answer 0 or a positive errno, as WASI calls do; wasi-libc's errno values are WASI's. */
@@ -46,6 +48,9 @@ static int answered(int error) {
   if (error) { errno = error; return -1; }
   return 0;
 }
+
+/* Room for a path relative to its preopen, where the program never changes directory. */
+#define NIMBUS_RELPATH_BYTES 4096
 
 /* Present when the program changes directory (git does, for -C). */
 int __wasilibc_find_relpath_alloc(const char *path, const char **abs, char **relative, size_t *relative_len, int can_realloc) __attribute__((__weak__));
@@ -61,9 +66,9 @@ static int beneath(const char *path, char **relative) {
     return fd;
   }
   if (!buf) {
-    buf = malloc(PATH_MAX);
+    buf = malloc(NIMBUS_RELPATH_BYTES);
     if (!buf) { errno = ENOMEM; return -1; }
-    len = PATH_MAX;
+    len = NIMBUS_RELPATH_BYTES;
   }
   *relative = buf;
   return __wasilibc_find_relpath(path, &abs, relative, len);
@@ -126,6 +131,18 @@ int nimbus_fchmodat(int dirfd, const char *path, mode_t mode, int flags) {
 
 int nimbus_chmod(const char *path, mode_t mode) { return nimbus_fchmodat(AT_FDCWD, path, mode, 0); }
 int nimbus_fchmod(int fd, mode_t mode) { return answered(__nimbus_fd_chmod(fd, mode)); }
+
+int nimbus_faccessat(int dirfd, const char *path, int mode, int flags) {
+  (void)flags;
+  if (path[0] == '\0') { errno = ENOENT; return -1; }
+  if (mode & ~(R_OK | W_OK | X_OK)) { errno = EINVAL; return -1; }
+  char *relative;
+  int fd = at(dirfd, path, &relative);
+  if (fd < 0) return -1;
+  return answered(__nimbus_path_access(fd, __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW, relative, strlen(relative), (uint32_t)mode));
+}
+
+int nimbus_access(const char *path, int mode) { return nimbus_faccessat(AT_FDCWD, path, mode, 0); }
 
 int nimbus_open(const char *path, int flags, ...) {
   mode_t mode = 0;

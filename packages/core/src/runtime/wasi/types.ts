@@ -365,6 +365,13 @@ export interface NimbusFsImports {
   path_chmod(fd: number, lookupflags: number, path: number, pathLen: number, mode: number): SyscallResult;
   /** fchmod(2). */
   fd_chmod(fd: number, mode: number): SyscallResult;
+  /**
+   * access(2) of `path` beneath `fd` for `mode` (R_OK 4, W_OK 2, X_OK 1;
+   * F_OK 0) as the session's credential for this process may: EACCES when
+   * it may not. preview1 has no call for it, and wasi-libc's answers from a
+   * filestat with no permission bits (every file executable).
+   */
+  path_access(fd: number, lookupflags: number, path: number, pathLen: number, mode: number): SyscallResult;
 }
 
 /** What `__wasiMakeImports` hands back. */

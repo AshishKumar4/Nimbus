@@ -78,4 +78,5 @@ int setsockopt(int, int, int, const void *, unsigned int);
 #define chmod nimbus_chmod
 #define fchmod nimbus_fchmod
 #define open(...) nimbus_open(__VA_ARGS__)
+#define access nimbus_access
 #endif

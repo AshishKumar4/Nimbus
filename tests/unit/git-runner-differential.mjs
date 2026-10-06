@@ -125,6 +125,8 @@ try {
   assert.equal((await ws.exec('rm repo/tool.sh')).exitCode, 0);
   await step('checkout creates it executable', { git: [['checkout', '--', 'tool.sh'], ['status', '--porcelain']] });
   assert.deepEqual(await executable('tool.sh'), { host: true, session: true }, 'checkout: created executable');
+  // A hook that is not executable is not run: git says so (advice.ignoredHook).
+  await step('a hook that is not executable', { files: { '.git/hooks/post-commit': '#!/bin/sh\necho ran > hook-ran\n' }, git: [['commit', '-q', '--allow-empty', '-m', 'hooked'], ['status', '--porcelain']] });
   steps.push('modes');
 
   // Output that is not UTF-8, byte for byte: a binary blob and a diff of a Latin-1 file.
