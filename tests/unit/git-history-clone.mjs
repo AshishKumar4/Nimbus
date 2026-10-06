@@ -11,11 +11,11 @@
 //   - the same objects as host git's clone, and git fsck --full clean;
 //   - not shallow; HEAD, config, index and worktree as git's;
 //   - every pack's idx equal to git index-pack's for it;
-//   - one blobs request broken off mid-pack, one batch whose write to the
-//     session is lost, and one trees piece that never answers, are each
-//     retried as a fresh piece; a resumed piece whose pack was named but
-//     whose answer was lost is run again from the outcome it recorded (its
-//     pack cannot be fetched again).
+//   - one blobs request broken off mid-pack and one trees piece that never
+//     answers are each retried as a fresh piece; a resumed piece whose pack
+//     was named but whose answer never came is run again from the outcome
+//     it recorded (its pack cannot be fetched again); one batch's write wave
+//     whose answer is lost is re-sent by the wave writer, not by its piece.
 
 import assert from 'node:assert/strict';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
@@ -87,11 +87,11 @@ try {
       },
     }), { status: response.status, headers: response.headers });
   };
-  // A wave of the first batch (prepare publishes three) loses its connection.
+  // A wave of the first batch (prepare publishes three) loses its connection: the writer re-sends it.
   session.requests.failWaveAt = 5;
   // The second history invocation hangs; after the piece timeout it runs again.
   session.requests.hangPhaseAt = { phase: 'clone-history', at: 2, seen: 0 };
-  // The first resumed history pack's naming lands, its answer does not.
+  // The first resumed history pack's naming lands; its step never answers.
   let lostRename = null;
   session.requests.loseRename = (from, to) => {
     if (lostRename !== null || !/\/tmp_pack_[^/]*_(commits|trees|blobs)-[^/]*$/.test(from) || !to.endsWith('.pack')) return false;
@@ -116,9 +116,10 @@ try {
     assert.equal(posts > 4, true);
     const attempts = session.requests.attempts;
     assert.ok(lostRename !== null, 'no resumed pack was named');
-    assert.ok(attempts.filter((attempt) => attempt >= 2).length >= 4, 'each of the four faults was followed by another attempt: ' + attempts);
-    assert.ok(session.requests.phases.indexOf('clone-batch') !== session.requests.phases.lastIndexOf('clone-batch'),
-      'the batch whose wave was lost ran again');
+    assert.ok(attempts.filter((attempt) => attempt >= 2).length >= 3, 'each of the three piece faults was followed by another attempt: ' + attempts);
+    assert.ok(session.requests.waves > 5, 'the lost wave was sent');
+    assert.ok(!session.requests.calls.some((call) => call.phase === 'clone-batch' && call.attempt > 1),
+      'a batch ran again for a lost wave the writer re-sends');
 
     const out = session.materialize('home/user/repo', join(work, 'out'));
     assert.deepEqual(hostObjects(out), hostObjects(host), 'the objects git clone holds');

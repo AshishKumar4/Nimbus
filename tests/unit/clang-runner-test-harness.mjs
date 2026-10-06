@@ -49,7 +49,14 @@ export function buildUstar(files) {
     const data = encoder.encode(text);
     const header = new Uint8Array(512);
     const put = (offset, value) => header.set(encoder.encode(value), offset);
-    put(0, path);
+    // A path past ustar's 100-byte name goes in the 155-byte prefix too.
+    const split = path.length > 100 ? path.lastIndexOf('/', path.length - 1) : -1;
+    if (split > 0) {
+      put(345, path.slice(0, split));
+      put(0, path.slice(split + 1));
+    } else {
+      put(0, path);
+    }
     put(100, '0000644\0');
     put(108, '0000000\0');
     put(116, '0000000\0');

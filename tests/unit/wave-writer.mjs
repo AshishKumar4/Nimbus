@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createWaveWriter, WAVE_PATHS } from '../../packages/worker/src/git/wave-writer.ts';
+import { createWaveWriter, WAVE_PATHS } from '../../packages/platform/src/wave-writer.ts';
 
 function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
   const files = new Map();
@@ -136,7 +136,7 @@ function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
   const short = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r' });
   await assert.rejects(
     short.fileChunks('short.bin', 0o644, 100, (async function* () { yield new Uint8Array(40); })()),
-    /git write wave 1 failed: .*ended at 40 of 100 bytes/,
+    /write wave 1 failed: .*ended at 40 of 100 bytes/,
   );
 }
 
@@ -179,11 +179,11 @@ function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
     error = caught;
   }
   assert.ok(error, 'a failed wave went unreported');
-  assert.match(error.message, /^git write wave 2 failed: writeBatchStream failed .*injected/);
+  assert.match(error.message, /^write wave 2 failed: writeBatchStream failed .*injected/);
   assert.equal(error.wave, 2);
   assert.equal(target.waves.length, 2, `${target.waves.length} waves sent; nothing may follow a failed one`);
-  await assert.rejects(writer.file('late', 0o644, new Uint8Array(1)), /git write wave 2 failed/);
-  await assert.rejects(writer.flush(), /git write wave 2 failed/);
+  await assert.rejects(writer.file('late', 0o644, new Uint8Array(1)), /write wave 2 failed/);
+  await assert.rejects(writer.flush(), /write wave 2 failed/);
   assert.equal(target.waves.length, 2);
 }
 
@@ -196,4 +196,182 @@ function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
   assert.equal(target.waves.length, 0);
 }
 
-console.log('git wave writer: ok');
+
+
+// ── Lost transport: a wave is sent again; an answered one never is ─────
+const quick = { backoffMs: [1, 1, 1], attemptDeadlineMs: 200 };
+const payloadOf = (index) => new TextEncoder().encode(`record ${index}\n`.padEnd(20_000, '.'));
+
+/** A session whose first `losses` calls fail as `loss` does, after reading part of the stream. */
+function lossy(loss, losses = 1) {
+  const target = session();
+  let calls = 0;
+  const abandoned = [];
+  const supervisor = {
+    async writeBatchStream(stream) {
+      calls++;
+      if (calls <= losses) {
+        const reader = stream.getReader();
+        await reader.read();
+        if (loss === 'unanswered') {
+          // Stuck past the deadline, then reads on: the writer has errored its stream.
+          abandoned.push(new Promise((resolve) => setTimeout(resolve, 3 * quick.attemptDeadlineMs))
+            .then(() => reader.read())
+            .then((next) => (next.done ? 'ended' : 'read'), (error) => `errored: ${error?.message ?? error}`));
+          return new Promise(() => {});
+        }
+        throw loss;
+      }
+      return target.supervisor.writeBatchStream(stream);
+    },
+  };
+  return { target, supervisor, get calls() { return calls; }, abandoned };
+}
+
+{
+  const lost = lossy(new Error('Network connection lost.'));
+  const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
+  for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+  await writer.flush();
+  assert.equal(lost.calls, 2, 'a wave whose connection was lost was not sent again');
+  assert.equal(writer.stats().retries, 1);
+  for (let index = 0; index < 50; index++) assert.deepEqual(new Uint8Array(lost.target.files.get(`r/f${index}`).bytes), payloadOf(index));
+}
+
+{
+  const lost = lossy('unanswered');
+  const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
+  for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+  await writer.flush();
+  assert.equal(lost.calls, 2, 'an unanswered wave was not sent again');
+  assert.match(await lost.abandoned[0], /^errored: writeBatchStream unanswered/,
+    'the abandoned attempt could still read its stream');
+  assert.deepEqual(new Uint8Array(lost.target.files.get('r/f49').bytes), payloadOf(49));
+}
+
+{
+  // The session's verdict is final.
+  let calls = 0;
+  const supervisor = {
+    async writeBatchStream(stream) {
+      calls++;
+      await new Response(stream).arrayBuffer();
+      return { ok: false, committedGroupSequence: 0, committedPathCount: 0, error: { message: 'EACCES' } };
+    },
+  };
+  const writer = createWaveWriter({ supervisor, root: 'r', base: 'r', retry: quick });
+  await writer.file('x', 0o644, payloadOf(1));
+  await assert.rejects(writer.flush(), /write wave 1 failed: .*EACCES/);
+  assert.equal(calls, 1, 'a wave the session answered was sent again');
+}
+
+{
+  // A shed wave never ran: it is sent again, within a bounded budget.
+  const shed = lossy(Object.assign(new Error('Durable Object is overloaded.'), { overloaded: true }), 10);
+  const writer = createWaveWriter({ supervisor: shed.supervisor, root: 'r', base: 'r', retry: quick });
+  await writer.file('x', 0o644, payloadOf(1));
+  await assert.rejects(writer.flush(), /write wave 1 failed: Durable Object is overloaded/);
+  assert.equal(shed.calls, quick.backoffMs.length + 1, `a persistently shed wave took ${shed.calls} attempts`);
+}
+
+// ── Fault domains: a refused wave fails the owners it carried ─────────
+{
+  const target = session();
+  let calls = 0;
+  const supervisor = {
+    async writeBatchStream(stream) {
+      calls++;
+      if (calls === 1) {
+        await new Response(stream).arrayBuffer();
+        return { ok: false, committedGroupSequence: 0, committedPathCount: 0, error: { message: 'EACCES' } };
+      }
+      return target.supervisor.writeBatchStream(stream);
+    },
+  };
+  const writer = createWaveWriter({ supervisor, root: 'r', base: 'r', retry: quick, failPerOwner: true });
+  // Owner 'a' fills the first wave and spills into the second; 'b' follows.
+  for (let index = 0; index < WAVE_PATHS + 50; index++) await writer.file(`a/f${index}`, 0o644, payloadOf(index), 'a').catch(() => {});
+  await assert.rejects(writer.file('a/late', 0o644, payloadOf(0), 'a'), /write wave 1 failed: .*EACCES/);
+  await writer.file('b/f0', 0o644, payloadOf(0), 'b');
+  await writer.flush();
+  assert.match(writer.failureOf('a')?.message ?? '', /write wave 1 failed/);
+  assert.equal(writer.failureOf('b'), undefined);
+  assert.ok(target.files.has('r/b/f0'), "an unrelated owner's record was not published");
+  assert.ok(![...target.files.keys()].some((path) => path.startsWith('r/a/')),
+    "a failed owner's later records were published");
+}
+
+{
+  // A wave carrying a streamed source cannot be sent again: its source is spent.
+  const lost = lossy(new Error('Network connection lost.'));
+  const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
+  const size = 2 * CHUNK_SIZE;
+  await assert.rejects(
+    writer.fileChunks('big', 0o644, size, (async function* () { yield new Uint8Array(size); })()),
+    /write wave 1 failed: Network connection lost/,
+  );
+  assert.equal(lost.calls, 1);
+}
+
+// An abandoned attempt commits nothing after its re-send: the writer errors
+// its stream, so a receiver that only gets to it late reads no record of it.
+// Same path, different bytes in a later wave: the later bytes stay.
+{
+  const { SqliteVFS } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
+  const { CRED_KERNEL } = await import('../../packages/core/src/runtime/os-contracts.ts');
+  const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+  const harness = createSqliteVfsTestHarness();
+  const vfs = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
+  let calls = 0;
+  let zombie = null;
+  const supervisor = {
+    writeBatchStream(stream) {
+      calls++;
+      if (calls === 1) {
+        // Delivered only after the writer gave up on it and moved on.
+        zombie = new Promise((resolve) => setTimeout(resolve, 3 * quick.attemptDeadlineMs))
+          .then(() => vfs.writeStream(stream));
+        return new Promise(() => {});
+      }
+      return vfs.writeStream(stream);
+    },
+  };
+  const writer = createWaveWriter({ supervisor, root: 'z', base: 'z', retry: quick });
+  await writer.file('p', 0o644, new TextEncoder().encode('first'));
+  await writer.flush();
+  await writer.file('p', 0o644, new TextEncoder().encode('second'));
+  await writer.flush();
+  assert.equal(vfs.readFileString('z/p'), 'second');
+  const late = await zombie;
+  assert.equal(late.ok, false, 'the abandoned attempt published after its re-send');
+  assert.equal(vfs.readFileString('z/p'), 'second', "the abandoned attempt's bytes replaced a later wave's");
+}
+
+// ── Concurrent writers: admission holds the bounds ─────────────────────
+{
+  const target = session();
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r' });
+  await Promise.all(Array.from({ length: 6 }, async (_, owner) => {
+    for (let index = 0; index < 700; index++) {
+      await writer.file(`o${owner}/d${index % 9}/f${index}`, 0o644, new Uint8Array(3_000 + (index % 7) * 1_000));
+    }
+  }));
+  await writer.flush();
+  const stats = writer.stats();
+  assert.equal(stats.files, 6 * 700);
+  for (const paths of target.waves) assert.ok(paths.length <= WAVE_PATHS, `a wave owned ${paths.length} paths`);
+  assert.ok(stats.maxWaveBytes <= 4 * 1024 * 1024, `a wave carried ${stats.maxWaveBytes} bytes`);
+}
+
+// ── Long paths: a wave closes on owned path bytes, not count alone ─────
+{
+  const target = session();
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r' });
+  const long = 'x'.repeat(280);
+  for (let index = 0; index < 1_016; index++) await writer.file(`${long}-${index}`, 0o755, payloadOf(index));
+  await writer.flush();
+  assert.equal(writer.stats().files, 1_016);
+  assert.ok(target.waves.length >= 2, 'a thousand 300-byte paths were sent as one wave');
+}
+
+console.log('wave writer: ok');

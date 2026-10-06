@@ -62,6 +62,8 @@ export async function createFacetSession(work, { realGit = false } = {}) {
   const requests = {
     fetchObjects: 0, phases: [], attempts: [], rangeReads: [], rangeWrites: [], waves: 0,
     failWaveAt: 0, hangPhaseAt: null, stallPhaseAt: null, stalled: [], refusals: [], loads: 0,
+    // calls: every facet call's phase, attempt and batch; withhold: resumed packs whose step's answer is lost.
+    calls: [], withhold: new Set(),
   };
   const refused = (call) => call().catch((error) => {
     requests.refusals.push(String(error?.code ?? error?.message ?? error));
@@ -92,8 +94,8 @@ export async function createFacetSession(work, { realGit = false } = {}) {
       async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
       async rename(from, to) {
         const result = await refused(async () => bridge.rename(from, to, lease));
-        // loseRename: a rename that is applied but whose answer is lost, once.
-        if (requests.loseRename?.(from, to)) throw new Error('Network connection lost.');
+        // loseRename: the step that made this rename never answers (its tmp pack's name goes to withhold).
+        if (requests.loseRename?.(from, to)) requests.withhold.add(from.slice(from.lastIndexOf('/') + 1));
         return result;
       },
       async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
@@ -133,6 +135,7 @@ export async function createFacetSession(work, { realGit = false } = {}) {
                 if (body.op === 'fetch-objects') requests.fetchObjects++;
                 requests.phases.push(body.phase === 'clone-history' ? 'clone-history:' + body.history?.step : body.phase ?? body.op);
                 if (body.attempt !== undefined) requests.attempts.push(body.attempt);
+                requests.calls.push({ phase: body.phase ?? body.op, attempt: body.attempt, batch: body.batch?.index });
                 await requests.onPhase?.(body);
                 const hang = requests.hangPhaseAt;
                 if (hang !== null && body.phase === hang.phase && ++hang.seen === hang.at) return new Promise(() => {});
@@ -142,7 +145,11 @@ export async function createFacetSession(work, { realGit = false } = {}) {
                   requests.stalled.push(facet.default.fetch(request, { SUPERVISOR: binding }).then((response) => response.json()));
                   return new Promise(() => {});
                 }
-                return facet.default.fetch(request, { SUPERVISOR: binding });
+                const answer = await facet.default.fetch(request, { SUPERVISOR: binding });
+                // A resumed step whose answer is lost after its pack was named (loseRename marked it).
+                const pending = body.history?.pending?.tmpName;
+                if (pending !== undefined && requests.withhold.delete(pending)) return new Promise(() => {});
+                return answer;
               },
             };
           },

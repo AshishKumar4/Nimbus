@@ -224,6 +224,10 @@ export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStre
             bytes += part.byteLength;
           }
         }
+        // Every chunk enqueued is one the encoder built: a lone part is the
+        // magic or a metadata record, and a file chunk's record is always
+        // two parts, so its bytes are copied here. A caller's buffers are
+        // never transferred, and a payload may be encoded again.
         if (bytes > 0) controller.enqueue(parts.length === 1 ? parts[0]! : concatBytes(...parts));
         if (closed) controller.close();
       } catch (error) {

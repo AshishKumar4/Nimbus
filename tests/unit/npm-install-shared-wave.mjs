@@ -17,6 +17,8 @@ globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
 globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
+globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
+const { WAVE_PATHS } = globalThis.__nimbusWaveWriter;
 globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 globalThis.DecompressionStream = class DecompressionStream {
   readable;
@@ -125,17 +127,21 @@ const packages = ['a', 'b'].map((name) => ({
   pkgDir: `node_modules/${name}`,
   installRoot: 'node_modules',
   mtime: 1,
-  chunkSize: 65_536,
 }));
 
 const result = await installPackagesInFacet({ packages, concurrency: 2 }, env);
 assert.equal(result.perPackage.length, 2);
 assert.ok(result.perPackage.every((pkg) => pkg.errorText?.includes('injected wave failure')));
-assert.equal(
-  inodePaths.flat().some((path) => path.endsWith('/package.json')),
-  false,
-  'a failed content wave must prevent every participating owner marker from publishing',
-);
+// A marker may share a wave with its package's files, but always follows
+// them: a wave commits its records in order, so a refused wave that left
+// the files unpublished left the marker unpublished too.
+assert.equal(inodePaths.length, 1, 'a wave was sent after one the session refused');
+for (const name of ['a', 'b']) {
+  const order = inodePaths.flat();
+  const marker = order.indexOf(`node_modules/${name}/package.json`);
+  assert.ok(marker === -1 || marker > order.indexOf(`node_modules/${name}/index.js`),
+    `${name}'s completion marker was sent ahead of its files`);
+}
 
 const successfulWaves = [];
 const success = await installPackagesInFacet({ packages, concurrency: 2 }, {
@@ -180,10 +186,10 @@ for (const name of ['a', 'b']) {
   );
 }
 
-// Producer preflushes before 128 paths and never overlaps W7 RPCs even when
-// many package pipelines reach the shared wave concurrently.
+// The producer cuts waves at the W7 bound and never overlaps W7 RPCs even
+// when many package pipelines write concurrently.
 {
-  const manyPackages = Array.from({ length: 130 }, (_, index) => ({
+  const manyPackages = Array.from({ length: 700 }, (_, index) => ({
     name: `pkg-${index}`,
     version: '1.0.0',
     tarballUrl: `https://unused.invalid/pkg-${index}`,
@@ -191,8 +197,7 @@ for (const name of ['a', 'b']) {
     pkgDir: `node_modules/pkg-${index}`,
     installRoot: 'node_modules',
     mtime: 1,
-    chunkSize: 65_536,
-  }));
+    }));
   let active = 0;
   let peakActive = 0;
   const pathCounts = [];
@@ -224,7 +229,7 @@ for (const name of ['a', 'b']) {
   assert.ok(result.perPackage.every((pkg) => !pkg.errorText));
   assert.equal(peakActive, 1, 'npm producer started overlapping flush RPCs');
   assert.ok(pathCounts.length > 1, 'path-limit fixture did not produce multiple waves');
-  assert.ok(pathCounts.every((count) => count <= 128), `oversize wave paths: ${pathCounts}`);
+  assert.ok(pathCounts.every((count) => count <= WAVE_PATHS), `oversize wave paths: ${pathCounts}`);
 }
 
 console.log('npm shared write wave ownership: ok');
