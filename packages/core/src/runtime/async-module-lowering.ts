@@ -13,10 +13,13 @@
  *     call with `this` undefined, and a namespace of a module not marked
  *     `__esModule` with that module as its `default`;
  *   - `__esModule` is a non-enumerable `true`, and each export is a live,
- *     enumerable getter installed before the body runs, in name order, so a
+ *     enumerable getter installed in name order before the body runs, so a
  *     binding the body assigns later (`export let db; db = await connect()`)
- *     reads as assigned; `export default <expression>` evaluates where it
- *     stands, into a binding its getter reads;
+ *     reads as assigned; and before the modules it requests are required, as
+ *     esbuild installs them, so a module in a cycle with it finds them (a
+ *     function it declares is there while the cycle evaluates, as Node
+ *     hoists it); `export default <expression>` evaluates where it stands,
+ *     into a binding its getter reads;
  *   - `export *` copies the source module's names after the module's own,
  *     skipping `default` and any name already exported: the module's own
  *     names, and an earlier `export *`'s, win.
@@ -261,12 +264,13 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
   let temps = 0;
   const temp = () => `${prefix}${temps++}`;
   const key = (name: string) => `[${JSON.stringify(name)}]`;
-  const requireFunction = options.requireFunction ?? 'require';
-  const requireOf = (specifier: string) => `${requireFunction}(${JSON.stringify(specifier)})`;
-  // The wrapper's top level holds only generated names (its records and
-  // these): in an async body the module's own bindings, its imports'
-  // included, are inside the IIFE, so nothing it declares (`import Object
-  // from "dep"`) reaches what these read.
+  // The wrapper's top level holds only generated names (these helpers, and
+  // the require every record calls): in an async body the module's own
+  // bindings, its imports' included, are inside the IIFE, so nothing it
+  // declares (`import Object from "dep"`, `const require = createRequire(...)`)
+  // reaches what these read.
+  const requireRef = temp();
+  const requireOf = (specifier: string) => `${requireRef}(${JSON.stringify(specifier)})`;
   const exportsRef = temp();
   const exportGetter = temp();
   const ownKey = temp();
@@ -302,13 +306,12 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
   }
   const defaultExpressionUses = new Set<SourceEdit>();
 
-  // In source order, before the body: each requested module.
+  // In the body's scope, before it: a getter per export name in name order;
+  // then, in source order, each requested module; then the bindings an
+  // import declares (a namespace; a binding read once, where the reader saw
+  // no scopes; a const a write to the import throws on, as the language's
+  // assignment to an import does); then each `export *`'s names.
   const requires: string[] = [];
-  // After them, in the body's scope: the bindings an import declares (a
-  // namespace; a binding read once, where the reader saw no scopes; a const
-  // a write to the import throws on, as the language's assignment to an
-  // import does), then a getter per export name in name order (a module
-  // namespace's), then each `export *`'s names.
   const imported: string[] = [];
   const getters: [string, string][] = [];
   const stars: string[] = [];
@@ -403,14 +406,15 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
       `if (m != null) for (const k of O.getOwnPropertyNames(m)) if (k !== "default") O.defineProperty(ns, k, { get: () => m[k], enumerable: O.getOwnPropertyDescriptor(m, k).enumerable }); return ns; };`,
     );
   }
+  if (requires.length > 0) header.push(`const ${requireRef} = (specifier) => ${options.requireFunction ?? 'require'}(specifier);`);
   const installed = getters
     .sort(([a], [b]) => (a < b ? -1 : a > b ? 1 : 0))
     .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
-  const prologue = [...imported, ...installed, ...stars].join(' ');
+  const prologue = [...installed, ...requires, ...imported, ...stars].join(' ');
   const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
   return options.body === 'async'
-    ? `${[...header, ...requires].join('\n')}\nreturn (async () => { ${prologue}\n${body}\n})();\n`
-    : `${[...header, ...requires].join('\n')}\n${prologue}\n${body}\n`;
+    ? `${header.join('\n')}\nreturn (async () => { ${prologue}\n${body}\n})();\n`
+    : `${header.join('\n')}\n${prologue}\n${body}\n`;
 }
 
 /** The bindings an exported declaration introduces. */
