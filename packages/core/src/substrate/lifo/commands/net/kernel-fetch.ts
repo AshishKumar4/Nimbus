@@ -23,12 +23,14 @@ export type WorkspaceRequestResult =
   | { kind: 'aborted' }
   | { kind: 'timeout' };
 
-/** The loopback port a URL asks for, or null when it is not loopback. */
-export function workspaceRequestPort(kernel: Kernel, url: URL): number | null {
+/**
+ * The loopback port a URL asks for, or null when it is not loopback. A name
+ * is resolved through the kernel's /etc/hosts; a caller that holds no
+ * resolver (a curl bound to a bare port registry) knows loopback by name only.
+ */
+export function workspaceRequestPort(kernel: Partial<Pick<Kernel, 'dns'>>, url: URL): number | null {
   let host = url.hostname;
-  if (kernel.networkStack && !isLoopbackHost(host)) {
-    host = kernel.networkStack.getDNS().lookup(host)?.value ?? host;
-  }
+  if (!isLoopbackHost(host)) host = kernel.dns?.lookup(host)?.value ?? host;
   if (!isLoopbackHost(host)) return null;
   return url.port ? Number(url.port) : (url.protocol === 'http:' ? 80 : 443);
 }

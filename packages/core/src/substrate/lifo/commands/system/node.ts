@@ -8,6 +8,7 @@ import { createProcess } from '../../node-compat/process.js';
 import { createConsole } from '../../node-compat/console.js';
 import { Buffer } from '../../node-compat/buffer.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
+import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
 import { runNodeInRealm } from './node-realm.js';
 import { exists } from '../../../../vfs/vfs.js';
@@ -648,6 +649,7 @@ export interface NodeProgramHost {
 	readonly stdin: () => Uint8Array;
 	readonly portRegistry?: Map<number, VirtualRequestHandler>;
 	readonly routeLoopback?: LoopbackRouter;
+	readonly dns?: DNSResolver;
 }
 
 /**
@@ -684,6 +686,7 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 			signal: new AbortController().signal,
 			portRegistry: host.portRegistry,
 			routeLoopback: host.routeLoopback,
+			dns: host.dns,
 			stdin: host.stdin,
 		};
 

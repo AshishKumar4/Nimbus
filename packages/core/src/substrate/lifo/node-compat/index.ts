@@ -9,6 +9,7 @@ import { Buffer } from './buffer.js';
 import * as utilModule from './util.js';
 import { createHttp } from './http.js';
 import type { LoopbackRouter, VirtualRequestHandler } from '../kernel/index.js';
+import type { DNSResolver } from '../kernel/dns-resolver.js';
 import { createChildProcess } from './child_process.js';
 import * as streamModule from './stream.js';
 import * as urlModule from './url.js';
@@ -17,7 +18,7 @@ import * as cryptoModule from './crypto.js';
 import * as zlibModule from './zlib.js';
 import * as stringDecoderModule from './string_decoder.js';
 import * as ttyModule from './tty.js';
-import * as dnsModule from './dns.js';
+import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
@@ -40,6 +41,8 @@ export interface NodeContext {
   stdin?: () => Uint8Array;
   portRegistry?: Map<number, VirtualRequestHandler>;
   routeLoopback?: LoopbackRouter;
+  /** The kernel's resolver, which dns.lookup answers from as curl and wget do. */
+  dns?: DNSResolver;
 }
 
 export function createModuleMap(ctx: NodeContext): Record<string, () => unknown> {
@@ -92,8 +95,8 @@ export function createModuleMap(ctx: NodeContext): Record<string, () => unknown>
     zlib: () => zlibModule,
     string_decoder: () => stringDecoderModule,
     tty: () => ttyModule,
-    dns: () => dnsModule,
-    'dns/promises': () => dnsModule.promises,
+    dns: () => createDns(ctx.dns),
+    'dns/promises': () => createDns(ctx.dns).promises,
     readline: () => readlineModule,
     'readline/promises': () => readlineModule.promises,
     constants: () => {

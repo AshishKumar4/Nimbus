@@ -35,7 +35,7 @@ import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import type { NodeProgram } from './node.js';
 
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns'>>;
 
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
@@ -68,9 +68,10 @@ export type HostEvent =
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
   | { readonly type: 'changed' };
 
-/** What the realm starts with: the program. */
+/** What the realm starts with: the program, and the kernel's /etc/hosts its dns.lookup answers from. */
 export interface NodeRealmPayload {
   readonly program: NodeProgram;
+  readonly hosts?: string;
 }
 
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
@@ -107,7 +108,8 @@ export function isHostEvent(value: unknown): value is HostEvent {
 }
 
 export function isNodeRealmPayload(value: unknown): value is NodeRealmPayload {
-  return record(value) && record(value.program) && typeof value.program.source === 'string';
+  return record(value) && record(value.program) && typeof value.program.source === 'string'
+    && (value.hosts === undefined || typeof value.hosts === 'string');
 }
 
 export function isStat(value: unknown): value is RuntimeVfsStat {
@@ -279,7 +281,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   };
 
   let code: number | null = null;
-  const payload: NodeRealmPayload = { program };
+  const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile() };
   const realm = await startRealm({
     entry: new URL('./node-guest.js', import.meta.url),
     payload,

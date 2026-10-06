@@ -1,17 +1,19 @@
-import type { DNSRecord, DNSRecordType } from './types.js';
+export type DNSRecordType = 'A' | 'AAAA' | 'CNAME' | 'MX' | 'TXT';
+
+export interface DNSRecord {
+  type: DNSRecordType;
+  name: string;
+  value: string;
+  ttl: number;
+}
 
 /**
- * DNS resolver for static hosts and explicitly cached records.
+ * DNS resolver for static hosts and explicitly cached records. It knows no
+ * name until one is added: the kernel loads its /etc/hosts.
  */
 export class DNSResolver {
   private cache = new Map<string, DNSRecord[]>();
   private hosts = new Map<string, string>(); // hostname -> IP mapping
-
-  constructor() {
-    // Initialize with localhost
-    this.addHost('localhost', '127.0.0.1');
-    this.addHost('ip6-localhost', '::1');
-  }
 
   /**
    * Add static host entry
@@ -131,6 +133,11 @@ export class DNSResolver {
       all.push(...records);
     }
     return all;
+  }
+
+  /** The static records as /etc/hosts lines, in the order lookups find them, which loadHostsFile reads back. */
+  hostsFile(): string {
+    return this.getCachedRecords().filter((record) => record.ttl === -1).map((record) => `${record.value}\t${record.name}\n`).join('');
   }
 
   /**
