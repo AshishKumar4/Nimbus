@@ -15,6 +15,15 @@
 	untrackedCache = false
 	# There is no terminal to page or to edit in yet.
 	pager = cat
+[fetch]
+	# Each fetch adds a commit-graph layer for what it brought, with its
+	# changed-path filters. Without a graph a deep history is out of reach in
+	# a facet: on vscode's full history, blame read the pack index 1,085,781
+	# times (30,645 with one) and log --graph held 173 MiB (34 with one). The
+	# base graph is clone's, written by the engine as it indexes the pack.
+	writeCommitGraph = true
+[commitGraph]
+	changedPathsVersion = 2
 [init]
 	# A repository starts without sample hooks or an info/exclude: git ships
 	# no templates here, and an empty value says so instead of a warning.
