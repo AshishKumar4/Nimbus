@@ -10,7 +10,7 @@
 import assert from 'node:assert/strict';
 import { processes, deleteFacetStorage, residentFacetOf } from '../../packages/fabric/src/workerd-facet-host.ts';
 import { StorageLedger } from '../../packages/core/src/runtime/storage-ledger.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const LIMIT = 10_000_000_000;
 

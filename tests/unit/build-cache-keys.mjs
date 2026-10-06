@@ -21,7 +21,7 @@ import { OXC_WASM_BUILD_ID } from '../../packages/worker/src/oxc-wasm-artifact.g
 import { OXC_FACET_BUILD_ID } from '../../packages/worker/src/oxc-facet-artifact.generated.ts';
 import { ROLLDOWN_FACET_BUILD_ID } from '../../packages/worker/src/rolldown-facet-artifact.generated.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // ── Each key follows each identity it stands for ────────────────────────
 {

@@ -43,7 +43,7 @@ if (process.env.CASE === undefined) {
 }
 
 const { NimbusWorkspace } = await import('../../packages/core/src/workspace/nimbus-workspace.ts');
-const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+const { createSqliteVfsTestHarness } = await import('./lib/sqlite-vfs-test-harness.mjs');
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1 });
 const run = async (command, options = {}) => {

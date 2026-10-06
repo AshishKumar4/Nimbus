@@ -29,7 +29,7 @@ import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
 const GIT_BUNDLE_CODE = readFileSync(new URL(`../../packages/worker/public${GIT_BUNDLE_ENTRY}`, import.meta.url), 'utf8');

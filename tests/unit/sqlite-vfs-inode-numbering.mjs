@@ -9,7 +9,7 @@ import assert from 'node:assert/strict';
 import { SqliteVFS, ROOT_INODE } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processBridge } from './lib/process-bridge.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const inodes = (harness) => [...harness.sql.exec('SELECT path, ino FROM vfs_inodes')].map((row) => [row.path, Number(row.ino)]);
 

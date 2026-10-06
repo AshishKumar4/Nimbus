@@ -16,7 +16,7 @@ import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { readText, writeText } from '../../packages/core/src/vfs/vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const OTHER = { uid: 1001, gid: 1001, groups: [1001], umask: 0o022 };

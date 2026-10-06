@@ -51,7 +51,9 @@ function asCommonJs(esm) {
       }
       edits.push({ start: node.start, end: node.end, text: `const ${node.specifiers[0].local.name} = require(${JSON.stringify(`./${PRIMORDIALS_FILE}`)});` });
     } else if (node.type === 'ExportNamedDeclaration' && !node.declaration && !node.source) {
-      const fields = node.specifiers.map((s) => `${JSON.stringify(s.exported.name)}: ${s.local.name}`);
+      // `export { x as "y" }` names the export with a string; the local is an identifier.
+      const exportName = (s) => (s.exported.type === 'Identifier' ? s.exported.name : String(s.exported.value));
+      const fields = node.specifiers.map((s) => `${JSON.stringify(exportName(s))}: ${/** @type {import('acorn').Identifier} */ (s.local).name}`);
       edits.push({ start: node.start, end: node.end, text: `module.exports = { ${fields.join(', ')} };` });
     } else if (node.type.startsWith('Export')) {
       throw new Error(`[interpreter-bundle] the interpreter bundle has an unexpected ${node.type}`);
@@ -69,6 +71,7 @@ function asCommonJs(esm) {
  */
 export async function bundleInterpreter({ start }) {
   const src = join(resolvePackageDir('@nimbus-sh/core', { start }), 'src/interpreter');
+  /** @type {import('esbuild').BuildOptions} */
   const common = { bundle: true, platform: 'neutral', target: 'esnext', mainFields: ['module', 'main'], minify: true, legalComments: 'none', write: false, metafile: true };
   // esbuild states strict mode in the CommonJS it makes of an ES module.
   const primordials = await build({ ...common, entryPoints: [join(src, 'primordials.ts')], format: 'cjs' });

@@ -14,40 +14,19 @@
 //
 // External dep: tcpbin.com:4242 (same as B7 socket probes).
 
-import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeStreamBFixtureCmd } from './_fixtures-stream-b.mjs';
+import { openWasiProbe, tailLines, trimmedLines } from './_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi/poll-socket-read-ready] sid=${sid} BASE=${BASE}`);
-
-const t = new Terminal(sid);
-let exitCode = 1;
+const probe = await openWasiProbe('wasi/poll-socket-read-ready', { dir: '/home/user/sb', fixture: 'poll-socket-read-ready', as: 'ps.wasm' });
+const { t } = probe;
 try {
-  await t.connect();
-  await sleep(2_000);
-  await t.waitForPrompt(60_000);
-
-  await t.run('mkdir -p /home/user/sb && cd /home/user/sb', 10_000);
-  await t.run(writeStreamBFixtureCmd('poll-socket-read-ready', 'ps.wasm'), 30_000);
-
   // Socket needs handshake + round-trip; 90s budget like the B7 probes.
   const r = await t.run('wasm-runner ps.wasm', 90_000);
-  const out = stripAnsi(r.output);
-  const tail = out.split(/\r?\n/).slice(-6).join('\n');
-  const lines = tail.split(/\r?\n/).map(s => s.trim());
+  const tail = tailLines(r.output, 6);
+  const lines = trimmedLines(tail);
   const ok = lines.some(s => s === '1');
 
-  console.log(JSON.stringify({ probe: 'wasi/poll-socket-read-ready', sid, base: BASE, tail, ok }, null, 2));
-
-  const checks = [['poll_oneoff(FD_READ on socket) fires when echo arrives', ok]];
-  let pass = 0;
-  for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-  const verdict = pass === checks.length ? 'passing' : 'failing';
-  console.log(`[wasi/poll-socket-read-ready] ${verdict} — ${pass}/${checks.length}`);
-  exitCode = verdict === 'passing' ? 0 : 1;
+  probe.report([['poll_oneoff(FD_READ on socket) fires when echo arrives', ok]], { tail, ok });
 } finally {
-  await t.close().catch(() => {});
-  const del = await deleteSession(sid, 'wasi/poll-socket-read-ready');
-  console.log(`deleteSession: ${del.status}`);
+  await probe.close();
 }
-process.exit(exitCode);
+process.exit(probe.exitCode());

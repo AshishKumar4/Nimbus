@@ -18,7 +18,7 @@ import {
 } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness, inodeTableScans } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness, inodeTableScans } from './lib/sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);

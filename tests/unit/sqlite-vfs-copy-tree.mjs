@@ -9,7 +9,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 function open(harness = createSqliteVfsTestHarness()) {
   const raw = new SqliteVFS(harness.sql, harness.ctx);

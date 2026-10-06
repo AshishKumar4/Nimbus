@@ -16,7 +16,7 @@ import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { normalizeVfsPath, resolveVfsPath } from '../../packages/core/src/vfs/path.ts';
 import { normalizePath } from '../../packages/core/src/vfs/composite.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // ── A refusal's reason survives the rewording ───────────────────────────
 {
