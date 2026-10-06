@@ -62,12 +62,14 @@ function tarFile(name, text) {
   return [header, padded];
 }
 
-function makeTarball() {
-  // package.json deliberately arrives first; the facet must hold it back as
-  // the owner's final completion mutation.
+// package.json deliberately arrives first; the facet must hold it back as
+// the owner's final completion mutation.
+function makeTarball(entries = [
+  ['package/package.json', '{"name":"fixture","version":"1.0.0"}'],
+  ['package/index.js', 'export default 1;'],
+]) {
   const parts = [
-    ...tarFile('package/package.json', '{"name":"fixture","version":"1.0.0"}'),
-    ...tarFile('package/index.js', 'export default 1;'),
+    ...entries.flatMap(([name, text]) => tarFile(name, text)),
     new Uint8Array(1024),
   ];
   const tar = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -230,6 +232,40 @@ for (const name of ['a', 'b']) {
   assert.equal(peakActive, 1, 'npm producer started overlapping flush RPCs');
   assert.ok(pathCounts.length > 1, 'path-limit fixture did not produce multiple waves');
   assert.ok(pathCounts.every((count) => count <= WAVE_PATHS), `oversize wave paths: ${pathCounts}`);
+}
+
+// A tarball may name one file twice: agent-base@7.1.4 and
+// https-proxy-agent@7.0.6 ship both `package/./dist/index.js` and
+// `package/dist/index.js`, one path once canonical. The second write
+// supersedes the first in the buffered wave, and the package is published
+// with it (it was reported unpublished: two writes, one record cut).
+{
+  const duplicated = makeTarball([
+    ['package/./index.js', 'export default 0;'],
+    ['package/index.js', 'export default 1;'],
+    ['package/package.json', '{"name":"fixture","version":"1.0.0"}'],
+  ]);
+  const waves = [];
+  const result = await installPackagesInFacet({ packages: packages.slice(0, 1), concurrency: 1 }, {
+    SUPERVISOR: {
+      async getCachedTarball() {
+        return { bytes: duplicated.slice(), events: [] };
+      },
+      async writeBatchStream(stream) {
+        const decoded = await decodeWave(stream);
+        waves.push(decoded.paths);
+        return {
+          ok: true,
+          committedGroupSequence: decoded.paths.length,
+          committedPathCount: decoded.paths.length,
+          inodes: decoded.paths.length,
+          chunks: decoded.chunks,
+        };
+      },
+    },
+  });
+  assert.equal(result.perPackage[0].errorText, undefined, 'a duplicated tarball entry left its package unpublished');
+  assert.equal(waves.flat().filter((path) => path === 'node_modules/a/index.js').length, 1);
 }
 
 console.log('npm shared write wave ownership: ok');

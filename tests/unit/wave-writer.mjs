@@ -301,6 +301,51 @@ function lossy(loss, losses = 1) {
     "a failed owner's later records were published");
 }
 
+// ── An owner is published when every record it wrote is ───────────────
+{
+  // A record written twice before a cut is one record in the wave: the
+  // second write supersedes the first, and the owner publishes with it.
+  const target = session();
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r', retry: quick, failPerOwner: true });
+  await writer.file('a/x', 0o644, payloadOf(0), 'a');
+  await writer.file('a/x', 0o644, payloadOf(1), 'a');
+  assert.equal(writer.published('a'), false, 'a buffered owner counted as published');
+  await writer.flush();
+  assert.equal(writer.published('a'), true, 'an owner whose path was written twice was not published');
+  assert.equal(target.waves.flat().filter((path) => path === 'r/a/x').length, 1);
+  assert.deepEqual(target.files.get('r/a/x').bytes, Buffer.from(payloadOf(1)));
+}
+
+{
+  // Another owner's write superseding a buffered record settles it: the
+  // superseded owner fails with the wave that carried the write over it.
+  const target = session({ failWave: 1 });
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r', retry: quick, failPerOwner: true });
+  await writer.file('shared', 0o644, payloadOf(0), 'a');
+  await writer.file('shared', 0o644, payloadOf(1), 'b');
+  await writer.flush();
+  assert.match(writer.failureOf('a')?.message ?? '', /write wave 1 failed/, 'a superseded owner escaped its wave\'s failure');
+  assert.match(writer.failureOf('b')?.message ?? '', /write wave 1 failed/);
+  assert.equal(writer.published('a'), false);
+  assert.equal(writer.published('b'), false);
+}
+
+{
+  // A wave that stops the writer leaves the owners it carried, and every
+  // owner after it, unpublished; owners whose waves published before it
+  // are published.
+  const target = session({ failWave: 2 });
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r', retry: quick, failPerOwner: true });
+  await writer.file('a/x', 0o644, payloadOf(0), 'a');
+  await writer.flush();
+  await writer.file('b/x', 0o644, payloadOf(0), 'b');
+  await writer.remove('stale');
+  await assert.rejects(writer.flush(), /write wave 2 failed/);
+  await assert.rejects(writer.file('c/x', 0o644, payloadOf(0), 'c'), /write wave 2 failed/);
+  assert.equal(writer.published('a'), true, 'an owner published before the writer stopped was not counted');
+  assert.equal(writer.published('b'), false, 'an owner the stopping wave carried counted as published');
+}
+
 {
   // A wave carrying a streamed source cannot be sent again: its source is spent.
   const lost = lossy(new Error('Network connection lost.'));

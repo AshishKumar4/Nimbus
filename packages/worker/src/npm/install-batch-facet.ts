@@ -239,36 +239,18 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       throw new Error('installPackagesInFacet: a batch has one install root and one mtime');
     }
   }
-  // Which wave carried each package's records last, and how many it has
-  // written that no wave has carried yet. Records carry their package
-  // (meta): a wave the session refused fails the packages it carried, and
-  // the writer goes on for the rest.
-  const lastWaveOf = new Map<number, number>();
-  const uncut = new Map<number, number>();
-  let lastPublishedWave = 0;
+  // Records carry their package (meta, its index in the batch): a wave the
+  // session refused fails the packages it carried, the writer goes on for
+  // the rest, and it answers whether each package's writes all published.
   const writer = __nimbusWaveWriter.createWaveWriter<number>({
     supervisor: env.SUPERVISOR,
     root: installRoot,
     mtimeMs: batch.packages[0]?.mtime,
     failPerOwner: true,
-    onCut(cut) {
-      for (const file of cut.files) {
-        if (file.meta === undefined) continue;
-        lastWaveOf.set(file.meta, cut.wave);
-        uncut.set(file.meta, (uncut.get(file.meta) ?? 1) - 1);
-      }
-    },
-    onWave(report) {
-      lastPublishedWave = report.wave;
-    },
     onResend(lost) {
       console.warn('[npm] write wave re-sent', JSON.stringify(lost));
     },
   });
-  const writeOwnedFile = async (ownerId: number, path: string, data: Uint8Array): Promise<void> => {
-    uncut.set(ownerId, (uncut.get(ownerId) ?? 0) + 1);
-    await writer.file(path, 0o644, data, ownerId);
-  };
 
   // A tarball placed twice in this shard is acquired once: the first owner
   // publishes its bytes here, later owners of the URL wait for them. `null`
@@ -585,7 +567,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       let completionMarker: { path: string; data: Uint8Array } | null = null;
 
       const enqueueFile = async (filePath: string, data: Uint8Array): Promise<void> => {
-        await writeOwnedFile(ownerId, filePath, data);
+        await writer.file(filePath, 0o644, data, ownerId);
         totalFileInodes += 1;
         totalBytesWritten += data.length;
       };
@@ -624,7 +606,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       if (!completionMarker) {
         throw new Error(`package tarball missing root package.json: ${spec.name}@${spec.version}`);
       }
-      await writeOwnedFile(ownerId, completionMarker.path, completionMarker.data);
+      await writer.file(completionMarker.path, 0o644, completionMarker.data, ownerId);
       totalFileInodes += 1;
       totalBytesWritten += completionMarker.data.length;
 
@@ -683,21 +665,18 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
   // Everything written is published, or the writer stopped at a refused
   // wave. A package succeeded only if every record it wrote was carried by
-  // a wave that published.
+  // a wave that published (a tarball naming one file twice wrote it twice:
+  // the second write superseded the first).
   let flushError: string | null = null;
   try { await writer.flush(); } catch (error) { flushError = error instanceof Error ? error.message : String(error); }
   const reconciledPerPackage = perPackage.map((result, ownerId) => {
-    if (result.errorText) return result;
-    const failure = writer.failureOf(ownerId)?.message ?? flushError;
-    const published = failure === null
-      && (uncut.get(ownerId) ?? 0) === 0
-      && (lastWaveOf.get(ownerId) ?? 0) <= lastPublishedWave;
-    if (published) return result;
+    if (result.errorText || writer.published(ownerId)) return result;
     return {
       ...result,
       fileCount: 0,
       bytesWritten: 0,
-      errorText: failure ?? `package files were not published: ${result.name}@${result.version}`,
+      errorText: writer.failureOf(ownerId)?.message ?? flushError
+        ?? `package files were not published: ${result.name}@${result.version}`,
     };
   });
   const waveStats = writer.stats();
