@@ -208,6 +208,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     getMemory: () => memory,
     stdoutBytes: live ? live.stdoutBytes : (b) => { stdout.push(b); },
     stderrBytes: live ? live.stderrBytes : (b) => { stderr.push(b); },
+    stdinRead: args.supervisor ? (maxBytes) => args.supervisor.cpReadStdin(args.pid, 8000, undefined, maxBytes) : undefined,
   });
   let instance;
   try {

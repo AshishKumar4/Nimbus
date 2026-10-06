@@ -308,6 +308,7 @@ export function processHost(opts) {
             // What each of the child's streams connects to, taken now: the guest
             // closes its copies as soon as this returns.
             const stdin = pipeEntry(fdin);
+            const inheritedInput = opts.fds.get(fdin)?.kind === 'stdin';
             const outputTo = (fd) => {
                 const entry = opts.fds.get(fd);
                 if (!entry)
@@ -333,7 +334,7 @@ export function processHost(opts) {
                 let childPid;
                 try {
                     ({ childPid } = await sup.cpSpawn({
-                        command: argv[0], args: argv.slice(1), env, cwd, stdio: ['pipe', 'pipe', 'pipe'], parentPid: opts.pid,
+                        command: argv[0], args: argv.slice(1), env, cwd, stdio: [inheritedInput ? 'inherit' : 'pipe', 'pipe', 'pipe'], parentPid: opts.pid,
                     }));
                 }
                 catch (error) {
@@ -363,7 +364,7 @@ export function processHost(opts) {
                         await pipe.end().catch(() => { });
                     }
                 }
-                else {
+                else if (!inheritedInput) {
                     await sup.cpStdinEnd(childPid).catch(() => { });
                 }
                 const child = { pid: childPid, start: null, status: null, failed: false, waiters: [] };

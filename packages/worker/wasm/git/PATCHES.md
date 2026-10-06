@@ -1,13 +1,14 @@
 # Git 2.53.0 WASI source-patch audit
 
-There are three source patches before and after this audit. They are not a
+The first audit retained three source patches; fd-0 inheritance now removes
+the direct-helper patch, leaving two (three before, two after). They are not a
 second Git implementation: upstream Git still owns every command and object
 format. The mmap patch has shrunk from a packfile-owned paging implementation
 to accessors over Git's own `NO_MMAP` hooks; the process implementation now
 lives once in `wasm/nimbus-libc/nimbus-proc.c`, outside Git's sources. The
 no-fork and direct-helper switches no longer use a Nimbus-specific macro.
 
-All three apply to the pinned upstream tarball in `build-git.sh`. Git proper
+Both remaining patches apply to the pinned upstream tarball in `build-git.sh`. Git proper
 contains no Nimbus imports or process-fabric dependencies. Build options are
 opt-in; ordinary native builds keep their existing mmap and fork backends.
 
@@ -71,7 +72,7 @@ The source selection cannot move into libc because Git itself chooses the
 fork backend. Existing WASI child/process tests and Git's child-hook probes
 hold environment, descriptors, errors, output and wait semantics to account.
 
-## 0003-remote-helper-started-directly.patch — REMOTE_HELPER_DIRECT
+## Removed: 0003-remote-helper-started-directly.patch — REMOTE_HELPER_DIRECT
 
 Reason: stock Git starts `git remote-http`, which starts `git-remote-http`.
 That second child must inherit the first child's live fd 0 channel, including
@@ -83,8 +84,10 @@ stdin handoff; it does not implement transport inside Git.
 No shell special case or Git-specific spawn rewrite is appropriate. The
 generic fix belongs in the shared process input channel and WASI adapter.
 RealFlea has accepted inherited-fd-0 ownership/pumping as part of that work.
-Once it lands and the stock two-child helper passes differential fetch,
-pull and push probes, delete this patch and its build flag together.
+The WASI spawn adapter now passes `stdio[0]='inherit'` for stdin descriptors
+and does not synthesize EOF or create a second pump. The patch and build flag
+are removed together with that adapter change. Integration against the shared
+broker channel holds the stock two-child helper to the transport probes.
 
 Upstream path: none intended; this is temporary, explicitly gated by
 `REMOTE_HELPER_DIRECT` in the build overlay. Git's transport stays stock

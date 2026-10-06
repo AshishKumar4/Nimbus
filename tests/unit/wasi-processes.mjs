@@ -286,6 +286,12 @@ let checks = 0;
   assert.deepEqual(await g.read(0, 4), { errno: E.SUCCESS, text: '' });
   assert.deepEqual(await g.read(0, 0), { errno: E.SUCCESS, text: '' });
   assert.deepEqual(requested, [3, 2, 4, 4], 'zero-length reads take nothing');
+  const child = await g.spawn(['reader'], { fdin: 0 });
+  assert.equal(child.errno, E.SUCCESS);
+  assert.equal(g.sup.spawned.at(-1).stdio[0], 'inherit', 'the broker attaches the same channel');
+  assert.equal(g.control.child(child.pid).stdinEnded, false, 'inherited fd0 does not synthesize EOF');
+  g.control.exit(child.pid, 0);
+  await g.wait(child.pid);
   g.dispose();
   checks++;
 }
