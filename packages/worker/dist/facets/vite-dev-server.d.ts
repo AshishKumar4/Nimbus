@@ -137,10 +137,10 @@ export declare function rewriteExternalRequires(code: string, basePath: string):
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * The names are those Node's ESM loader detects for a CJS module
- * (cjs-module-lexer's rules: `exports.NAME =`, `exports["NAME"] =`, the safe
- * `Object.defineProperty(exports, "NAME", ...)` forms, `module.exports.NAME =`,
- * a `module.exports = { NAME, ... }` literal), over the entire bundled text.
+ * The names are the CJS scan's Vite policy over the entire bundled text:
+ * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
+ * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
+ * `module.exports = { ... }` literal whatever its value.
  *
  * Input  (esbuild output):
  *   var require_X = __commonJS({ "...": function(exports) { exports.jsx = ...; exports.jsxs = ...; } });

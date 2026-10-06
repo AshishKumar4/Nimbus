@@ -217,10 +217,10 @@ export function rewriteExternalRequires(code, basePath) {
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * The names are those Node's ESM loader detects for a CJS module
- * (cjs-module-lexer's rules: `exports.NAME =`, `exports["NAME"] =`, the safe
- * `Object.defineProperty(exports, "NAME", ...)` forms, `module.exports.NAME =`,
- * a `module.exports = { NAME, ... }` literal), over the entire bundled text.
+ * The names are the CJS scan's Vite policy over the entire bundled text:
+ * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
+ * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
+ * `module.exports = { ... }` literal whatever its value.
  *
  * Input  (esbuild output):
  *   var require_X = __commonJS({ "...": function(exports) { exports.jsx = ...; exports.jsxs = ...; } });
@@ -270,13 +270,15 @@ export function synthesizeCjsNamedExports(code) {
 }
 /**
  * The names a CJS bundle source exports that can be ES named exports:
- * runtime/cjs-export-names.ts's scan (cjs-module-lexer's rules, as Node
- * detects them, anywhere in the text: CJS exports appear throughout
- * __commonJS wrappers), less `default` (already the default export),
- * reserved words and anything that is not an ES identifier.
+ * runtime/cjs-export-names.ts's scan under its Vite policy (every key a
+ * module may put on module.exports, anywhere in the text: CJS exports appear
+ * throughout __commonJS wrappers; real Vite reads any named import off the
+ * default, so a name missed here is an import that fails), less `default`
+ * (already the default export), reserved words and anything that is not an
+ * ES identifier.
  */
 function extractCjsExportNames(code) {
-    return scanCjsExports(code).names.filter(n => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
+    return scanCjsExports(code, 'vite').names.filter(n => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
         n !== 'default' &&
         !RESERVED_ES_KEYWORDS.has(n));
 }
