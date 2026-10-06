@@ -44,6 +44,7 @@ import { isVfsError, syscallError, VFS_STRERROR, strerror } from '../vfs/vfs-err
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
 import { globMatch } from '../substrate/lifo/utils/glob.js';
 import { humanReadable, parseSuffixedCount } from '../substrate/lifo/utils/size-units.js';
+import { formatUptime, uptimeSeconds } from '../substrate/lifo/utils/system-info.js';
 import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
 
@@ -849,13 +850,11 @@ function strftime(d: Date, fmt: string, utc: boolean): string {
   return out;
 }
 
+/** uptime as procps prints it, counting from the shell's start (the registration below starts the clock). */
 function mkUptime(): CmdFn {
-  const start = Date.now();
+  uptimeSeconds();
   return async (ctx) => {
-    const secs = Math.floor((Date.now() - start) / 1000);
-    const h = Math.floor(secs / 3600);
-    const m = Math.floor((secs % 3600) / 60);
-    (await ctx.stdout.write(` ${new Date().toTimeString().split(' ')[0]} up ${h}:${String(m).padStart(2, '0')}, 1 user\n`));
+    (await ctx.stdout.write(` ${new Date().toTimeString().split(' ')[0]} up ${formatUptime(uptimeSeconds())},  1 user\n`));
     return 0;
   };
 }

@@ -1,10 +1,13 @@
+import { DEFAULT_HOSTNAME } from '../../../constants.js';
+import { readHeapMemory, uptimeSeconds } from '../utils/system-info.js';
+
 export function createOs(env: Record<string, string>) {
   return {
     arch: () => 'wasm',
     platform: () => 'lifo',
     type: () => 'Lifo',
     release: () => '0.1.0',
-    hostname: () => env.HOSTNAME || 'lifo',
+    hostname: () => DEFAULT_HOSTNAME,
     homedir: () => env.HOME || '/home/user',
     tmpdir: () => '/tmp',
     cpus: () => {
@@ -15,16 +18,12 @@ export function createOs(env: Record<string, string>) {
         times: { user: 0, nice: 0, sys: 0, idle: 0, irq: 0 },
       }));
     },
-    totalmem: () => {
-      const m = (performance as unknown as { memory?: { jsHeapSizeLimit: number } }).memory;
-      return m?.jsHeapSizeLimit ?? 4 * 1024 * 1024 * 1024;
-    },
+    totalmem: () => readHeapMemory()?.total ?? 4 * 1024 * 1024 * 1024,
     freemem: () => {
-      const m = (performance as unknown as { memory?: { jsHeapSizeLimit: number; usedJSHeapSize: number } }).memory;
-      if (m) return m.jsHeapSizeLimit - m.usedJSHeapSize;
-      return 2 * 1024 * 1024 * 1024;
+      const memory = readHeapMemory();
+      return memory ? memory.total - memory.used : 2 * 1024 * 1024 * 1024;
     },
-    uptime: () => Math.floor(performance.now() / 1000),
+    uptime: () => uptimeSeconds(),
     loadavg: () => [0, 0, 0],
     networkInterfaces: () => ({}),
     userInfo: () => ({
