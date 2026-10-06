@@ -8,7 +8,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
-import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { SupervisorDeliveries, supervisorDeliveredOp, supervisorJoinedReadOp } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { SUPERVISOR_OP_TABLE } from '../../packages/core/src/workspace/supervisor-ops.ts';
 
 const build = await Bun.build({
   // A virtual entry re-exports the real entrypoint AND composeFabric, so the
@@ -236,6 +237,14 @@ assert.deepEqual(Object.keys(INPUTS).sort(), [...SUPERVISOR_OPS].sort(),
 // an _rpc* method, never both and never neither.
 assert.deepEqual([...SUPERVISOR_NATIVE_OPS, ...Object.keys(SUPERVISOR_OP_ROUTES)].sort(), [...SUPERVISOR_OPS].sort(),
   'the native table and the route table partition SUPERVISOR_OPS');
+
+// How a resend of each op is met is its entry in the one op table: the
+// delivery store applies exactly the 'once' ops once, and joins exactly the
+// 'joined' reads, so no op can be added without saying which it is.
+for (const op of SUPERVISOR_OPS) {
+  assert.equal(supervisorDeliveredOp(op) !== undefined, SUPERVISOR_OP_TABLE[op] === 'once', `${op}: delivered once disagrees with the op table`);
+  assert.equal(supervisorJoinedReadOp(op) !== undefined, SUPERVISOR_OP_TABLE[op] === 'joined', `${op}: joined read disagrees with the op table`);
+}
 
 // The session's supervisor handler, on the session's real filesystem. The
 // host delegates — _rpcStdout/_rpcStderr and every routed non-fs op — are
