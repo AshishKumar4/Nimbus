@@ -114,14 +114,6 @@ export class VfsEventEmitter {
     }
   }
 
-  /** Remove all listeners. */
-  removeAll(): void {
-    this._globalListeners = [];
-    this._pathListeners.clear();
-    this._pending = [];
-    this._flushScheduled = false;
-  }
-
   get stats() {
     return {
       totalEmitted: this._totalEmitted,
