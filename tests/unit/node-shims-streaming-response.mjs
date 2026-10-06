@@ -14,46 +14,14 @@
 // never-ending SSE returned a dead 5s-capped body.
 
 import assert from 'node:assert/strict';
-import { generateShimsCode } from './lib/node-http-platform.mjs';
-
-function makeFacet() {
-  // Each facet isolate owns a fresh port registry; the shim re-creates it on
-  // load. (globalThis is shared across new-Function sandboxes in this process,
-  // so drop the prior map to mirror an isolated facet.)
-  delete globalThis.__portRegistry;
-  const supervisor = { registerPort: () => {}, unregisterPort: () => {} };
-  const code = generateShimsCode();
-  const factory = new Function(
-    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-    '"use strict";' + code + '\n;return { http: builtins.http, portRegistry: globalThis.__portRegistry, serveHttp: globalThis.__nimbusServeHttp };',
-  );
-  const sandbox = factory(
-    {},
-    {},
-    {},
-    supervisor,
-    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-    '/home/user',
-    [],
-    {},
-    '/home/user/main.mjs',
-    '/home/user',
-  );
-  return sandbox;
-}
+import { routedRequest, shimHttpFacet } from './lib/node-http-platform.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-function routedRequest(port, path, init = {}) {
-  const headers = new Headers(init.headers || {});
-  headers.set('X-Nimbus-Port', String(port));
-  return new Request(`http://127.0.0.1:${port}${path}`, { ...init, headers });
-}
-
 // ── streaming: multiple writes arrive as SEPARATE chunks BEFORE end() ────────
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   assert.equal(typeof serveHttp, 'function', 'globalThis.__nimbusServeHttp is installed by the http shim');
 
   // A gated handler: writes chunk 1, then chunk 2 only when the test releases a
@@ -101,7 +69,7 @@ function routedRequest(port, path, init = {}) {
 
 // ── a buffered handler (single end(body)) still works as a one-shot ──────────
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   const server = http.createServer((_req, res) => {
     res.statusCode = 201;
     res.setHeader('x-kind', 'buffered');
@@ -116,7 +84,7 @@ function routedRequest(port, path, init = {}) {
 
 // ── binary safety: raw bytes stream through unchanged (no String() corruption)
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   const payload = new Uint8Array([0x00, 0xff, 0x10, 0x80, 0x7f, 0xc3, 0x28]);
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'application/octet-stream' });
@@ -130,7 +98,7 @@ function routedRequest(port, path, init = {}) {
 
 // ── header timeout: a handler that never sends headers is bounded (504) ──────
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   globalThis.__nimbusHttpHeaderTimeoutMs = 150; // pin low for the test
   let handlerRes;
   const server = http.createServer((_req, res) => { handlerRes = res; /* never writes headers */ });
@@ -153,7 +121,7 @@ function routedRequest(port, path, init = {}) {
 
 // ── header timeout does NOT truncate a live stream that never "finishes" ─────
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   globalThis.__nimbusHttpHeaderTimeoutMs = 150;
   const server = http.createServer((_req, res) => {
     res.writeHead(200, { 'content-type': 'text/event-stream' });
@@ -177,7 +145,7 @@ function routedRequest(port, path, init = {}) {
 
 // Downstream cancellation closes the native response.
 {
-  const { http, serveHttp } = makeFacet();
+  const { http, serveHttp } = shimHttpFacet();
   let closed = false;
   const server = http.createServer((_req, res) => {
     res.on('close', () => { closed = true; });
@@ -195,7 +163,7 @@ function routedRequest(port, path, init = {}) {
 
 // ── no server on the port → honest 502 ───────────────────────────────────────
 {
-  const { serveHttp } = makeFacet();
+  const { serveHttp } = shimHttpFacet();
   const res = await serveHttp(routedRequest(9999, '/'));
   assert.equal(res.status, 502, 'no listening server yields 502');
 }

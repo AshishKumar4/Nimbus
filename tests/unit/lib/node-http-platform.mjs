@@ -99,3 +99,32 @@ export function adaptHttpImports(source) {
     .replace("import * as __real_net from 'node:net';", '')
     .replace("import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';", '');
 }
+
+/**
+ * The node shims evaluated as one facet would load them, for driving its
+ * http module in-process: `http`, the shim's `Buffer`, the facet's port
+ * registry and its `serveHttp` dispatcher. Each facet isolate owns a fresh
+ * port registry, and globalThis is shared across these sandboxes in one
+ * process, so the previous one is dropped first.
+ */
+export function shimHttpFacet() {
+  delete globalThis.__portRegistry;
+  const supervisor = { registerPort: () => {}, unregisterPort: () => {} };
+  const factory = new Function(
+    '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
+    '"use strict";' + generateShimsCode()
+      + '\n;return { http: builtins.http, Buffer: __BufferMod, portRegistry: globalThis.__portRegistry, serveHttp: globalThis.__nimbusServeHttp };',
+  );
+  return factory(
+    {}, {}, {}, supervisor,
+    { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
+    '/home/user', [], {}, '/home/user/main.mjs', '/home/user',
+  );
+}
+
+/** A request the session routes to the facet's `port` listener. */
+export function routedRequest(port, path, init = {}) {
+  const headers = new Headers(init.headers || {});
+  headers.set('X-Nimbus-Port', String(port));
+  return new Request(`http://127.0.0.1:${port}${path}`, { ...init, headers });
+}
