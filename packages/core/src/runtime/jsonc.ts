@@ -62,3 +62,8 @@ export function jsoncToJson(text: string, dialect: JsoncDialect): string {
   }
   return result;
 }
+
+/** A JSON object: not null, not an array. */
+export function isJsonRecord(value: unknown): value is Record<string, unknown> {
+  return value !== null && typeof value === 'object' && !Array.isArray(value);
+}

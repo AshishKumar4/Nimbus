@@ -31,7 +31,7 @@
  * with `"use strict"`.
  */
 
-import { jsoncToJson } from './jsonc.js';
+import { isJsonRecord, jsoncToJson } from './jsonc.js';
 
 /** The esbuild options this module reads. */
 export interface TsconfigInputs {
@@ -142,8 +142,6 @@ function memberExpression(text: string, warnings: string[]): string | null {
   return null;
 }
 
-const isObject = (value: unknown): value is Record<string, unknown> =>
-  typeof value === 'object' && value !== null && !Array.isArray(value);
 
 /** The keys esbuild warns about when they sit beside, not inside, compilerOptions. */
 const COMPILER_OPTION_KEYS = [
@@ -200,7 +198,7 @@ export function resolveTsSettings(inputs: TsconfigInputs, call: Call): TsSetting
   } else {
     config = raw;
   }
-  if (!isObject(config)) return finish(settings);
+  if (!isJsonRecord(config)) return finish(settings);
 
   for (const key of Object.keys(config)) {
     if (COMPILER_OPTION_KEYS.includes(key)) {
@@ -217,7 +215,7 @@ export function resolveTsSettings(inputs: TsconfigInputs, call: Call): TsSetting
   }
 
   const options = config.compilerOptions;
-  if (!isObject(options)) return finish(settings);
+  if (!isJsonRecord(options)) return finish(settings);
   const string = (key: string) => (typeof options[key] === 'string' ? options[key] as string : undefined);
   const boolean = (key: string) => (typeof options[key] === 'boolean' ? options[key] as boolean : undefined);
 
