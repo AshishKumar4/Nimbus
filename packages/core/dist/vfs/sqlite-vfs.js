@@ -34,6 +34,7 @@ import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES, FS_REA
 import { CHUNK_SIZE, MAX_TX_BLOB_BYTES, MAX_TX_LOGICAL_ROWS, MAX_TX_SQL_EXECS, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES, SQL_MAX_BOUND_PARAMETERS, DO_STORAGE_LIMIT_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
 import { decodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
@@ -9334,11 +9335,6 @@ export function pendingChunkError(path) {
  * under another path costs only that path's encoding.
  */
 const entryBytesBesidePath = new WeakMap();
-const ASCII = /^[\x00-\x7f]*$/;
-/** The UTF-8 length of `text`: its length when it is ASCII, as a listing's JSON almost always is. */
-function utf8Length(text) {
-    return ASCII.test(text) ? text.length : enc.encode(text).byteLength;
-}
 /**
  * The byte bound of one listing page (VfsListPage): the page's frame, each
  * entry's actual encoding (escaping included) and a comma, and the cursor
