@@ -312,7 +312,7 @@ try {
   Date.now = originalNow;
 }
 assert.equal(defaultBudgetCalls[1].phase, 'clone-batch');
-assert.equal(defaultBudgetCalls[1].phaseDeadline, 290_000 + 150_000,
+assert.equal(defaultBudgetCalls[1].phaseDeadline, 290_000 + 300_000,
   'default clone budget starved a later batch');
 
 let throwingWorkerDisposed = 0;

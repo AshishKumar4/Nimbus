@@ -100,6 +100,10 @@ try {
     lostRename = from;
     return true;
   };
+  // Finish reads only its staged files: no pack or idx (on vscode, ~90 packs, tag lookups there
+  // passed the facet's subrequest limit).
+  let readsAtFinish = null;
+  session.requests.onPhase = (body) => { if (body.phase === 'clone-finish') readsAtFinish = session.requests.rangeReads.length; };
   try {
     const cloned = await session.git('/home/user', ['clone', '--no-shallow', server.url + '/repo.git', 'repo'], {
       NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK: '7',
@@ -129,6 +133,8 @@ try {
     assert.equal(hostGit(out, ['rev-parse', 'HEAD', 'origin/main']), hostGit(host, ['rev-parse', 'HEAD', 'origin/main']));
     assert.equal(hostGit(out, ['rev-list', '--count', 'HEAD']), hostGit(host, ['rev-list', '--count', 'HEAD']));
     assert.equal(hostGit(out, ['show-ref', '--tags']), hostGit(host, ['show-ref', '--tags']), 'tags');
+    const finishReads = session.requests.rangeReads.slice(readsAtFinish).filter((read) => read.path.includes('/objects/pack/'));
+    assert.deepEqual(finishReads.map((read) => read.path), [], 'finish read packs');
     assert.equal(hostGit(out, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']));
     const configOf = (dir) => readFileSync(join(dir, '.git/config'), 'utf8').replace(/url = .*/, 'url = X');
     assert.equal(configOf(out), configOf(host));

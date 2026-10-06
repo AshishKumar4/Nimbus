@@ -31,6 +31,7 @@ import {
   readRange,
   resumePack,
   settledBefore,
+  TagWatch,
   storePackResumable,
   type CloneContext,
   type CloneWriter,
@@ -69,6 +70,8 @@ export interface HistoryStepResult {
   pending: PendingPack | null;
   /** Lists written (STAGE_DIR files): root trees for commits, blobs for trees. */
   lists: StagedFile[];
+  /** Ids of the clone's tag interest this step's pack held (clone.ts TagWatch). */
+  tagsFound?: string[];
 }
 
 const encoder = new TextEncoder();
@@ -138,11 +141,22 @@ async function settle(
   stored: StoredPack,
   list: ListWriter,
   listName: string,
+  watch: TagWatch,
 ): Promise<HistoryStepResult> {
   const lists = await list.write(writer, listName);
   await writer.flush();
-  if ('pending' in stored) return { kind, pack: null, pending: stored.pending, lists };
-  return { kind, pack: stored.summary, pending: null, lists };
+  const tagsFound = [...watch.found];
+  if ('pending' in stored) return { kind, pack: null, pending: stored.pending, lists, tagsFound };
+  return { kind, pack: stored.summary, pending: null, lists, tagsFound };
+}
+
+/** What a piece records as its objects resolve, and which of the clone's tags' ids it meets. */
+function watcher(kind: HistoryKind, list: ListWriter, watch: TagWatch): StorePackOptions['onObject'] {
+  const listed = lister(kind, list);
+  return (object) => {
+    watch.see(object.type, object.oid);
+    return listed?.(object);
+  };
 }
 
 /** One piece of history: its request, its pack, its list. */
@@ -160,6 +174,8 @@ export async function historyStep(
     capabilities: readonly string[];
     /** Work units to decode before stopping (processor.ts WORK_BUDGET_UNITS by default). */
     budgetUnits?: number;
+    /** The ids the clone's tags name or peel to (clone.ts TagWatch). */
+    tagInterest?: readonly string[];
   },
 ): Promise<HistoryStepResult> {
   const writer = context.writer();
@@ -182,39 +198,47 @@ export async function historyStep(
   const response = await requestPack(transport(context), new Set(request.capabilities), { wants, filter });
   if (response.pack === null) throw new PackFormatError('the server sent no pack for history piece ' + request.piece);
   const list = new ListWriter();
+  const watch = new TagWatch(request.tagInterest ?? []);
   const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_' + request.piece, {
     cacheBytes: HISTORY_CACHE_BYTES,
     recentBytes: HISTORY_RECENT_BYTES,
     budgetUnits: request.budgetUnits,
-    onObject: lister(request.kind, list),
+    onObject: watcher(request.kind, list, watch),
   });
-  return await settle(writer, request.kind, stored, list, 'list-' + request.piece + '-0');
+  return await settle(writer, request.kind, stored, list, 'list-' + request.piece + '-0', watch);
 }
 
 /** A piece whose decoding stopped at the budget, continued from its stored pack. */
 export async function historyResume(
   context: CloneContext,
-  request: { kind: HistoryKind; piece: string; part: number; pending: PendingPack; budgetUnits?: number },
+  request: { kind: HistoryKind; piece: string; part: number; pending: PendingPack; budgetUnits?: number; tagInterest?: readonly string[] },
 ): Promise<HistoryStepResult> {
   // A resumed pack cannot be fetched again: a step run again after its
   // answer was lost finds the outcome it recorded before naming its pack.
   const recordName = 'settled-' + request.pending.tmpName;
   const settled = await settledBefore(context, request.pending.tmpName, recordName);
-  if (settled !== null) return { kind: request.kind, pack: settled.summary, pending: null, lists: settled.extra as StagedFile[] };
+  if (settled !== null) {
+    const extra = settled.extra as { lists: StagedFile[]; tagsFound: string[] };
+    return { kind: request.kind, pack: settled.summary, pending: null, lists: extra.lists, tagsFound: extra.tagsFound };
+  }
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);
   const list = new ListWriter();
+  const watch = new TagWatch(request.tagInterest ?? []);
   const listName = 'list-' + request.piece + '-' + request.part;
   let lists: StagedFile[] = [];
   const stored = await resumePack(context, writer, request.pending, {
     cacheBytes: HISTORY_CACHE_BYTES,
     recentBytes: HISTORY_RECENT_BYTES,
     budgetUnits: request.budgetUnits,
-    onObject: lister(request.kind, list),
-    record: { name: recordName, publish: async () => (lists = await list.write(writer, listName)) },
+    onObject: watcher(request.kind, list, watch),
+    record: {
+      name: recordName,
+      publish: async () => ({ lists: (lists = await list.write(writer, listName)), tagsFound: [...watch.found] }),
+    },
   });
-  if ('pending' in stored) return await settle(writer, request.kind, stored, list, listName);
-  return { kind: request.kind, pack: stored.summary, pending: null, lists };
+  if ('pending' in stored) return await settle(writer, request.kind, stored, list, listName, watch);
+  return { kind: request.kind, pack: stored.summary, pending: null, lists, tagsFound: [...watch.found] };
 }
 
 /** An open-addressing set of 20-byte ids, each with a basename: the plan's only large structure. */

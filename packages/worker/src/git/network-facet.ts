@@ -36,7 +36,7 @@ import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
-import type { CloneBatchResult, ClonePrepared, CloneStreamed, CloneTag } from './pack/clone.js';
+import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed, type CloneTag } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 
@@ -668,8 +668,13 @@ async function runPool<T>(items: readonly T[], concurrency: number, run: (item: 
  * temporary pack is discarded.
  */
 const CLONE_PIECE_ATTEMPTS = RETRY_ATTEMPTS;
-/** A piece takes seconds (Linux's batches ~17 s, react's largest history piece 51 s): one hung this long is retried. */
-const CLONE_PIECE_TIMEOUT_MS = 150_000;
+/**
+ * A piece takes seconds to minutes: react's largest history piece 51 s,
+ * Linux's batches 21-41 s, its heaviest (46 MB of large files, 133 waves)
+ * 132 s live, which a 150 s bound cut off twice. One that has run this long
+ * is taken as hung and retried; a lost wave is the writer's to re-send.
+ */
+const CLONE_PIECE_TIMEOUT_MS = 300_000;
 
 function transientPieceFailure(diagnostic: GitNetworkPhaseDiagnostic, error: string): boolean {
   return diagnostic.outcome === 'timeout' || isLostTransport(error);
@@ -783,6 +788,7 @@ async function runCloneHistory(
   identity: { jobId: string; optionsHash: string },
   fast: ClonePrepared,
   run: CloneBatchRun,
+  tagsFound: Set<string>,
 ): Promise<void> {
   const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
   let pieces = 0;
@@ -794,12 +800,17 @@ async function runCloneHistory(
     return { step, elapsed: invocation.diagnostic.elapsed };
   };
   /** A piece, and its continuations while its decoding runs past a budget. */
+  // The commits piece meets every commit and annotated tag of the history: it watches for the tags'.
+  const tagInterest = [...new Set(fast.tags.flatMap((tag) => [tag.oid, tag.peeled]))];
   const piece = async (kind: HistoryKind, name: string, request: Record<string, unknown>): Promise<StagedFile[]> => {
-    let { step, elapsed } = await invoke({ step: 'piece', kind, piece: name, ...request });
+    const watch = kind === 'commits' && tagInterest.length > 0 ? { tagInterest } : {};
+    let { step, elapsed } = await invoke({ step: 'piece', kind, piece: name, ...request, ...watch });
     const lists = [...step.lists];
+    for (const oid of step.tagsFound ?? []) tagsFound.add(oid);
     for (let part = 1; step.pending !== null; part++) {
-      ({ step, elapsed } = await invoke({ step: 'resume', kind, piece: name, part, pending: step.pending }));
+      ({ step, elapsed } = await invoke({ step: 'resume', kind, piece: name, part, pending: step.pending, ...watch }));
       lists.push(...step.lists);
+      for (const oid of step.tagsFound ?? []) tagsFound.add(oid);
     }
     pieces++;
     packBytes += step.pack?.packBytes ?? 0;
@@ -841,15 +852,18 @@ async function runCloneSnapshot(
   identity: { jobId: string; optionsHash: string },
   stream: CloneStreamed['stream'],
   run: CloneBatchRun,
+  tagsFound: Set<string>,
 ): Promise<ClonePrepared> {
   const base = { ...facetOpts, ...identity, capabilities: [] };
+  const tagInterest = [...new Set(stream.tags.flatMap((tag) => [tag.oid, tag.peeled]))];
   let pending = stream.pending;
   for (let part = 1; pending !== null; part++) {
     const invocation = await invokeClonePhase('clone-history', {
-      ...base, history: { step: 'resume', kind: 'snapshot', piece: 'snapshot', part, pending },
+      ...base, history: { step: 'resume', kind: 'snapshot', piece: 'snapshot', part, pending, tagInterest },
     }, run);
     const step = (invocation.result as { history?: HistoryStepResult }).history;
     if (step === undefined) throw new GitClonePhaseError('clone-history', 'clone-history returned nothing', invocation.diagnostic);
+    for (const oid of step.tagsFound ?? []) tagsFound.add(oid);
     pending = step.pending;
   }
   const plan = await invokeClonePhase('clone-history', {
@@ -1038,17 +1052,19 @@ export async function execGitNetwork(
           };
           const identity = { jobId, optionsHash };
           let fast = prepared.fast;
+          // The ids of the remote's tags the clone's packs held: finish writes those tags.
+          const tagsFound = new Set(prepared.fast?.tagsFound ?? prepared.stream?.tagsFound ?? []);
           if (prepared.stream !== undefined) {
             // A server without wants by id sent one pack: finish decoding it, then plan the checkout from it.
-            fast = await runCloneSnapshot(facetOpts, identity, prepared.stream, run);
+            fast = await runCloneSnapshot(facetOpts, identity, prepared.stream, run, tagsFound);
           }
           if (fast === undefined) throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
           const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
           const full = facetOpts.depth === undefined;
           if (full && prepared.fast !== undefined && fast.commit !== null) {
-            await runCloneHistory(facetOpts, identity, fast, run);
+            await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
           }
-          const tags = prepared.fast?.tags ?? prepared.stream?.tags ?? [];
+          const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
           await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, run);
           return {
             success: true,
@@ -2323,6 +2339,7 @@ export default {
               source: history.source,
               capabilities: opts.capabilities,
               budgetUnits: opts.historyBudgetUnits,
+              tagInterest: history.tagInterest,
             });
           }
           return respond(true, { history: step, metadataOverlay: emptyMetadataOverlayStats() });

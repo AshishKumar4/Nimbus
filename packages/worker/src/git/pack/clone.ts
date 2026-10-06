@@ -106,8 +106,9 @@ export interface ClonePrepared {
   /** A partial clone (--filter): every pack it stores is a promisor pack. */
   partial: boolean;
   packs: PackSummary[];
-  /** The remote's tags: finish writes those whose objects the clone holds (cloneFinish). */
+  /** The remote's tags, and which of their ids prepare's pack held (TagWatch). */
   tags: CloneTag[];
+  tagsFound: string[];
 }
 
 /** An advertised tag: its ref, the id it names, and what that peels to. */
@@ -115,6 +116,35 @@ export interface CloneTag {
   name: string;
   oid: string;
   peeled: string;
+}
+
+/**
+ * Which of the remote's tags a clone fetched, seen as its packs are
+ * decoded: the commit and tag objects a tag names or peels to. git clone
+ * writes a tag whose object it has; finish writes these, reading nothing.
+ */
+export class TagWatch {
+  private readonly interest: Set<string>;
+  readonly found = new Set<string>();
+
+  constructor(interest: Iterable<string>) {
+    this.interest = new Set(interest);
+  }
+
+  static of(tags: readonly CloneTag[]): TagWatch {
+    return new TagWatch(tags.flatMap((tag) => [tag.oid, tag.peeled]));
+  }
+
+  see(type: string, oid: Uint8Array): void {
+    if (this.interest.size === 0 || (type !== 'commit' && type !== 'tag')) return;
+    const hex = oidToHex(oid);
+    if (this.interest.has(hex)) this.found.add(hex);
+  }
+}
+
+/** The tags whose objects the clone holds: those finish writes. */
+export function tagsHeld(tags: readonly CloneTag[], found: ReadonlySet<string>): CloneTag[] {
+  return tags.filter((tag) => found.has(tag.peeled) && (tag.oid === tag.peeled || found.has(tag.oid)));
 }
 
 /** The tags the remote advertises (refs/tags/*, peeled through "<name>^{}"). */
@@ -147,6 +177,7 @@ export interface CloneStreamed {
     pending: PendingPack | null;
     pack: PackSummary | null;
     tags: CloneTag[];
+    tagsFound: string[];
   };
 }
 
@@ -498,6 +529,8 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
   };
   const head = tagObject ?? commit;
   const promisorRefs = head + ' HEAD\n' + head + ' ' + fullRef + '\n';
+  const tags = advertisedTags(advertisement);
+  const watch = TagWatch.of(tags);
   // A blob that arrives before the checkout's trees are all in (git's write
   // order puts trees first, but a filtered pack need not) is held, to a
   // budget, and past it left in the stored pack to be read back by offset.
@@ -527,6 +560,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
     promisor: partial ? promisorRefs : undefined,
     async onObject(object) {
       const hex = oidToHex(object.oid);
+      watch.see(object.type, object.oid);
       if (object.type === 'tree') keepTree(hex, object.data);
       else if (object.type === 'commit' && hex === commit) commitObject = object.data;
       else if (object.type === 'blob') {
@@ -614,7 +648,8 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
     cacheTreeBytes: staged.cacheTreeBytes,
     partial,
     packs,
-    tags: advertisedTags(advertisement),
+    tags,
+    tagsFound: [...watch.found],
   };
 }
 
@@ -706,10 +741,13 @@ async function cloneStream(
     depth: request.history ? undefined : request.depth,
   });
   if (response.pack === null) throw new PackFormatError('the server sent no pack for the commit');
+  const tags = advertisedTags(advertisement);
+  const watch = TagWatch.of(tags);
   const stored = await storePackResumable(context, writer, response.pack, 'tmp_pack_' + request.jobId + '_snapshot', {
     cacheBytes: STREAM_CACHE_BYTES,
     recentBytes: STREAM_RECENT_BYTES,
     budgetUnits: request.budgetUnits,
+    onObject: (object) => watch.see(object.type, object.oid),
   });
   await writeCloneMetadata(writer, context.url, { fullRef, commit, tagObject, shallows: response.shallows });
   await writer.flush();
@@ -719,7 +757,8 @@ async function cloneStream(
       headRef: fullRef.startsWith('refs/heads/') ? fullRef : null,
       pending: 'pending' in stored ? stored.pending : null,
       pack: 'pending' in stored ? null : stored.summary,
-      tags: advertisedTags(advertisement),
+      tags,
+      tagsFound: [...watch.found],
     },
   };
 }
@@ -748,6 +787,7 @@ async function cloneEmpty(context: CloneContext, advertisement: Advertisement, f
     partial: filter !== undefined,
     packs: [],
     tags: [],
+    tagsFound: [],
   };
 }
 
@@ -806,6 +846,7 @@ export async function clonePlanFromStore(
     partial: false,
     packs: [],
     tags: [],
+    tagsFound: [],
   };
 }
 
@@ -924,17 +965,10 @@ export async function cloneFinish(
   await writer.file('.git/index', 0o644, index);
   // With its history fetched (history.ts) the clone is no longer shallow.
   if (request.full === true) await writer.remove('.git/shallow');
-  // git clone follows tags: a tag whose object it fetched (include-tag sent
-  // the annotated ones with their commits) is written, as a loose ref.
-  let tags = 0;
-  if ((request.tags ?? []).length > 0) {
-    const store = supervisorStore(context);
-    for (const tag of request.tags!) {
-      if (!await store.has(tag.peeled) || (tag.oid !== tag.peeled && !await store.has(tag.oid))) continue;
-      await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
-      tags++;
-    }
-  }
+  // git clone follows tags: those whose objects it fetched (include-tag sent
+  // the annotated ones with their commits; tagsHeld), each a loose ref.
+  for (const tag of request.tags ?? []) await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
+  const tags = request.tags?.length ?? 0;
   // The staged files one record each: a write group holds a bounded number
   // of rows, and one recursive delete of a full clone's staging (vscode:
   // ~200 files) passes it ("logicalRows limit: 326 > 256").
