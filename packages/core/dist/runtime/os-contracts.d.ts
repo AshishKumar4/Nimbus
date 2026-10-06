@@ -225,7 +225,7 @@ export declare function gateSyncLaunch(gate: {
 export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch' | 'awaitRecall'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -403,14 +403,36 @@ export interface RuntimeFsBridge {
         decodeDrainStartedAt?: number;
         admit?: () => void;
     }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
-    acquireExclusiveMutation(path: RuntimeFsPath, options?: {
-        includeMissingAncestors?: boolean;
-    }): Awaitable<{
-        root: string;
-        owner: string;
-    }>;
+    /**
+     * An exclusive-mutation lease on the subtree at `path`. With `delegate`,
+     * a delegation: the process decides the subtree's operations itself and
+     * sends them later under the lease, and another caller's access recalls
+     * them (awaitRecall, recalled) rather than being refused; its answer says
+     * how long the process has to answer a recall (recallTimeoutMs).
+     */
+    acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): Awaitable<ExclusiveMutationGrant>;
     releaseExclusiveMutation(owner: string): Awaitable<void>;
+    /** The next recall of the process's delegation `owner`; null when none is asked within `waitMs` (ask again), or once it has ended. */
+    awaitRecall(owner: string, waitMs?: number): Awaitable<RecallKind | null>;
+    /** The process has sent what it decided under `owner`, and done what recall `kind` asked. */
+    recalled(owner: string, kind: RecallKind): Awaitable<void>;
 }
+/** What a lease is asked for (RuntimeFsBridge.acquireExclusiveMutation). */
+export interface ExclusiveMutationRequest {
+    readonly includeMissingAncestors?: boolean;
+    /** Delegate the subtree to the process; `reads`: another caller's reads recall it too, not only its writes. */
+    readonly delegate?: {
+        readonly reads: boolean;
+    };
+}
+/** A lease granted: its root and owner, and for a delegation, how long a recall waits for the holder. */
+export interface ExclusiveMutationGrant {
+    readonly root: string;
+    readonly owner: string;
+    readonly recallTimeoutMs?: number;
+}
+/** What a recall asks of a delegation's holder: keep sending each operation ('share'), or give the subtree up ('revoke'). */
+export type RecallKind = 'share' | 'revoke';
 /**
  * One path in an {@link RuntimeFsBridge.acquire} delta, with the revision it
  * was last mutated at. The revision is what makes the delta usable by the

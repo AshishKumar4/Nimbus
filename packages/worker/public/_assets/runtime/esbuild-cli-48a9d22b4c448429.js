@@ -642,7 +642,9 @@ return globalThis.Go;
     "fsAppendAck",
     "writeBatch",
     "fsAcquireExclusiveMutation",
-    "fsReleaseExclusiveMutation"
+    "fsReleaseExclusiveMutation",
+    "fsAwaitRecall",
+    "fsRecalled"
   ];
   function bridgeOverSupervisor(supervisor, local) {
     return {
@@ -692,7 +694,9 @@ return globalThis.Go;
       writeBatch: (...args) => answerValue(supervisor.writeBatch(...args)),
       writeStream: (...args) => answerStream(supervisor.writeBatchStream(...args)),
       acquireExclusiveMutation: (...args) => answerValue(supervisor.fsAcquireExclusiveMutation(...args)),
-      releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args))
+      releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args)),
+      awaitRecall: (...args) => answerValue(supervisor.fsAwaitRecall(...args)),
+      recalled: (...args) => answerValue(supervisor.fsRecalled(...args))
     };
   }
 

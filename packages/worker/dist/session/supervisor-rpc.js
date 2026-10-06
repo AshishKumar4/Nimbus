@@ -507,6 +507,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
     async fsReleaseExclusiveMutation(...args) {
         return this._call(this._fsMutation('fsReleaseExclusiveMutation', args));
     }
+    /** A delegation's holder waits here for its next recall (a long poll, sent once: a lost one is asked again). */
+    async fsAwaitRecall(owner, waitMs) {
+        return this._call(this._fsOp('fsAwaitRecall', waitMs === undefined ? [owner] : [owner, waitMs]));
+    }
+    /** The holder has answered recall `kind`: delivered once. */
+    async fsRecalled(owner, kind) {
+        return this._call(this._fsMutation('fsRecalled', [owner, kind]));
+    }
     async fsClose(handleId) {
         return this._call(this._fsMutation('fsClose', [handleId]));
     }

@@ -658,7 +658,17 @@ export class NimbusSession extends CloudflareDurableObject {
         this.ensureSqliteFs();
         if (!this.sqliteFs)
             throw new Error('Filesystem is not initialized');
-        return this.processFiles ??= new ProcessFiles(this.sqliteFs);
+        return this.processFiles ??= new ProcessFiles(this.sqliteFs, {
+            // A delegation's holder that did not answer a recall in time is stopped
+            // (SIGKILL): its later writes are refused already (its lease ended), and
+            // a process that kept running on a subtree it no longer holds would read
+            // a view of it that is no longer true.
+            delegationRevoked: ({ pid, root, reason }) => {
+                console.warn(`[delegation] pid ${pid} lost /${root}: ${reason}; stopping it`);
+                if (!this.facetManager?.kill(pid, 'KILL'))
+                    this.processes.kill(pid, 137);
+            },
+        });
     }
     supervisorOps() {
         if (!this._supervisorOps)

@@ -27,7 +27,7 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter } from './events.js';
-import { normalizeVfsPath, parentVfsPath } from './path.js';
+import { normalizeVfsPath, parentVfsPath, pathsOverlap } from './path.js';
 import { PathRevisions } from './path-revisions.js';
 import { z } from 'zod/v4';
 import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES, FS_READ_BATCH_REQUEST_BYTES, INODE_CACHE_MAX_ENTRIES, } from '../constants.js';
@@ -42,7 +42,7 @@ import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
-import { RecallRequired } from './recall.js';
+import { RecallRequired, withRecall } from './recall.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
@@ -837,8 +837,12 @@ export class SqliteVFS {
     }
     exclusiveMutationLeases = new Map();
     activeMutationOwner = null;
-    /** The lease the running view call presents (callerView): its holder's own lookups recall nothing. */
-    activeLeaseHolder = null;
+    /**
+     * The delegations the running call is made by (callerView: a view bound
+     * to a lease, or a holder process's view, which answers what it holds):
+     * its own lookups recall none of them.
+     */
+    activeHolds = null;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     activeWrite = false;
     /** Shared by every concurrent stream targeting this session's VFS. */
@@ -1420,18 +1424,23 @@ export class SqliteVFS {
      * wherever they run: `principal` (else the calling view's, else `cred`'s)
      * is the one its write events name and its held appends are written as.
      */
-    openDescription(path, cred, rights, principal) {
+    openDescription(path, cred, rights, principal, holds) {
         const origin = principal ?? this.activeOrigin ?? Object.freeze({ cred });
         const asOpener = (call) => (...args) => this.asOrigin(origin, () => call(...args));
-        // Opened to write, it revokes a delegation it meets, rather than sharing it.
+        // Opened to write, it revokes a delegation it meets, rather than sharing
+        // it; opened by a holder, it recalls none of the holder's own.
         const priorWrite = this.activeWrite;
+        const priorHolds = this.activeHolds;
         this.activeWrite = priorWrite || rights.write;
+        if (holds !== undefined)
+            this.activeHolds = holds();
         let resolved;
         try {
             resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
         }
         finally {
             this.activeWrite = priorWrite;
+            this.activeHolds = priorHolds;
         }
         if (!resolved.inode)
             throw vfsKeyError('ENOENT', path);
@@ -1965,7 +1974,9 @@ export class SqliteVFS {
     /**
      * Bind credentials and, optionally, the capability of a live mutation
      * lease; `actor` names the principal finer than its uid, in the write
-     * events its mutations make (observeWrites).
+     * events its mutations make (observeWrites); `holds` answers, at each
+     * call, the delegations the view's process holds (its own lookups recall
+     * none of them).
      */
     as(cred, options) {
         const engine = this;
@@ -1980,6 +1991,7 @@ export class SqliteVFS {
         const view = {
             cred: bound,
             principal: origin,
+            holds: options?.holds,
             exists: (path) => this.exists(path, bound),
             isDirectory: (path) => this.isDirectory(path, bound),
             isFile: (path) => this.isFile(path, bound),
@@ -2039,7 +2051,7 @@ export class SqliteVFS {
             // Live: a view outlives rotateIncarnation.
             get epoch() { return engine._epoch; },
         };
-        return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner });
+        return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds });
     }
     /** `run` as `origin`'s call: the principal its write events name. */
     asOrigin(origin, run) {
@@ -2069,6 +2081,8 @@ export class SqliteVFS {
      */
     callerView(view, caller) {
         const { origin, privileged, mutationOwner } = caller;
+        const leased = mutationOwner === undefined ? null : new Set([mutationOwner]);
+        const holds = leased !== null ? () => leased : caller.holds ?? null;
         for (const key of Object.keys(view)) {
             const method = Reflect.get(view, key);
             if (typeof method !== 'function')
@@ -2078,12 +2092,12 @@ export class SqliteVFS {
             const owned = mutationOwner !== undefined && OWNED_MUTATIONS.has(key);
             Reflect.set(view, key, (...args) => {
                 const prior = this.privileged;
-                const priorHolder = this.activeLeaseHolder;
+                const priorHolds = this.activeHolds;
                 const priorWrite = this.activeWrite;
                 if (privileged)
                     this.privileged = true;
-                if (mutationOwner !== undefined)
-                    this.activeLeaseHolder = mutationOwner;
+                if (holds !== null)
+                    this.activeHolds = holds();
                 this.activeWrite = writes;
                 try {
                     if (settles)
@@ -2093,7 +2107,7 @@ export class SqliteVFS {
                 }
                 finally {
                     this.privileged = prior;
-                    this.activeLeaseHolder = priorHolder;
+                    this.activeHolds = priorHolds;
                     this.activeWrite = priorWrite;
                 }
             });
@@ -2204,6 +2218,11 @@ export class SqliteVFS {
     resolveName(path, cred, followLeaf, stop, tree = this.inodes) {
         const root = this.confinedTmpRoots.get(cred.uid);
         const current = this.nameOf(path, cred);
+        // As resolvePath: a lookup into a delegated subtree recalls it first.
+        // A walk that follows a link answers null below (the caller walks it by
+        // components, through resolvePath, which recalls where the link leads).
+        if (tree === this.inodes && this.exclusiveMutationLeases.size > 0)
+            this.recallReads(this.keyOfName(current, root));
         // A namespace's claim includes every ancestor of a mount. Even a
         // reusable inode walk asks the current namespace first: mount/unmount
         // is not an engine mutation.
@@ -2720,10 +2739,15 @@ export class SqliteVFS {
                     break;
             }
         }
-        for (const lease of this.exclusiveMutationLeases.values()) {
-            if (pathsOverlap(root, lease.root)) {
-                throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
-            }
+        // A subtree the delegation's maker will not have delegated is refused before anything is recalled for it.
+        options.delegation?.admit?.(root);
+        for (const [held, lease] of this.exclusiveMutationLeases) {
+            if (!pathsOverlap(root, lease.root))
+                continue;
+            // A delegation it overlaps is given up first (its holder's decided operations stored).
+            if (lease.delegation !== null && !this.isHolder(held))
+                throw this.recallRequired(held, lease, 'revoke', root);
+            throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
         }
         const owner = crypto.randomUUID();
         this.exclusiveMutationLeases.set(owner, { root, delegation: options.delegation ?? null, shared: false, recalling: null });
@@ -2764,14 +2788,17 @@ export class SqliteVFS {
      * holder (the lease a mutation scope or a view presents).
      */
     recallReads(key) {
-        const holder = this.activeMutationOwner ?? this.activeLeaseHolder;
         for (const [owner, lease] of this.exclusiveMutationLeases) {
-            if (lease.delegation === null || !lease.delegation.reads || lease.shared || owner === holder)
+            if (lease.delegation === null || !lease.delegation.reads || lease.shared || this.isHolder(owner))
                 continue;
             const { root } = lease;
             if (root === '' || key === root || key.startsWith(`${root}/`))
                 throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
         }
+    }
+    /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
+    isHolder(owner) {
+        return this.activeMutationOwner === owner || this.activeHolds?.has(owner) === true;
     }
     /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
     async recallDelegationsAt(key, owner) {
@@ -2860,9 +2887,13 @@ export class SqliteVFS {
             const { root } = lease;
             if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
                 continue;
-            // A delegation's holder may have decided what this would change: it gives the subtree up first.
-            if (lease.delegation !== null)
+            if (lease.delegation !== null) {
+                // Its holder writes there under the delegation (its lease), in the order it decided.
+                if (this.isHolder(owner))
+                    return { code: 'EBUSY', detail: `delegated to this process at /${root}: write under its lease` };
+                // Another's holder may have decided what this would change: it gives the subtree up first.
                 throw this.recallRequired(owner, lease, 'revoke', normalized);
+            }
             return { code: 'EBUSY', detail: `locked by an exclusive mutation at /${root}` };
         }
         if (this.activeMutationOwner !== null) {
@@ -7202,8 +7233,9 @@ export class SqliteVFS {
                 this.privileged = prior;
             }
         };
-        // Refused before a byte is read, as writeFile would refuse it.
-        const target = asCaller(() => this.fileWriteInode(path, size, options, cred)).path;
+        // Refused before a byte is read, as writeFile would refuse it; a
+        // delegation it meets is recalled first, so the source is read once.
+        const target = (await withRecall(() => asCaller(() => this.fileWriteInode(path, size, options, cred)))).path;
         const sourceMismatch = (received) => vfsError('EINVAL', `${target}: source ${received > size ? 'ran past' : `ended after ${received} of`} the ${size} bytes declared`);
         if (size <= CHUNK_SIZE) {
             // One chunk, named from its inode: no cut to stream into.
@@ -7265,9 +7297,22 @@ export class SqliteVFS {
      * stored exactly as the same bytes written any other way.
      */
     writeStream(stream, options = {}, cred, origin = null) {
-        return this.spanning(() => this.consumeStream(stream, options, cred, origin), options.mutationOwner);
+        // The delegations its caller holds, read now, in the caller's turn: its records apply as them.
+        const holds = options.mutationOwner !== undefined ? new Set([options.mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
+        return this.spanning(() => this.consumeStream(stream, options, cred, origin, holds), options.mutationOwner);
     }
-    async consumeStream(stream, options, cred, origin) {
+    /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
+    withHolds(holds, run) {
+        const prior = this.activeHolds;
+        this.activeHolds = holds;
+        try {
+            return run();
+        }
+        finally {
+            this.activeHolds = prior;
+        }
+    }
+    async consumeStream(stream, options, cred, origin, holds) {
         // Each group commits in its own turn, as the stream's caller (its lease, its principal).
         const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, fn));
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
@@ -7277,6 +7322,7 @@ export class SqliteVFS {
         let decodeDrainWaitMs = Math.max(0, performance.now() - decodeDrainStartedAt);
         let recordIterator = null;
         let recordIteratorFinished = false;
+        // Assigned as records apply (withHolds): typed so, not narrowed to their first value.
         let decodedRecordLease = null;
         /** Staging contents this stream created and has not yet published. */
         const ownedStaging = new Set();
@@ -7523,210 +7569,218 @@ export class SqliteVFS {
                     for (const lands of recordPaths(record))
                         await this.recallDelegationsAt(lands, options.mutationOwner);
                 }
-                switch (record.type) {
-                    case 'delete': {
-                        // A delete observes everything the stream wrote before it.
-                        phase = 'publish';
-                        flushGroup();
-                        flushDirectories();
-                        options.admit?.();
-                        const affected = Math.max(1, this.collectSubtreeInodes([record.path]).length);
-                        asCaller(() => {
-                            this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);
-                        });
-                        progress.committedGroupSequence++;
-                        progress.committedPathCount += affected;
-                        break;
-                    }
-                    case 'directory': {
-                        phase = 'validation';
-                        this.validateFileChunks(record.inode, []);
-                        phase = 'publish';
-                        // Records commit in their order: files the stream wrote before
-                        // this directory commit before it.
-                        if (groupInodes.length > 0)
+                // Each record is applied in one synchronous turn, by the stream's
+                // caller: as the delegations it holds, whose lookups recall none of them.
+                const ended = this.withHolds(holds, () => {
+                    switch (record.type) {
+                        case 'delete': {
+                            // A delete observes everything the stream wrote before it.
+                            phase = 'publish';
                             flushGroup();
-                        // Directory inodes carry no payload: rows are the only bound in
-                        // reach, priced by the plan's own accounting (each row, the
-                        // parent it dates, and a snapshot's before-images of both), so
-                        // the strict batch the flush commits always fits.
-                        if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null)
                             flushDirectories();
-                        pendingDirectories.push(record.inode);
-                        break;
-                    }
-                    case 'file-begin': {
-                        if (activeFile)
-                            throw vfsError('EINVAL', `nested streamed file ${record.inode.path}`);
-                        phase = 'validation';
-                        this.validateInodeContentShape(record.inode);
-                        phase = 'publish';
-                        // Authorising a file reads its parent from the committed inode
-                        // tree, so pending directories become visible first.
-                        flushDirectories();
-                        phase = 'validation';
-                        // The file lands where its name resolves (links followed, as a
-                        // batch places it), and that is the path its lease is checked on.
-                        // Close the group before the file that would overflow it, so a
-                        // file either fits whole or begins a group of its own; one too
-                        // large for any group stages across several.
-                        if (group.wouldExceedFile(record.inode.size) !== null)
-                            flushGroup();
-                        const whole = group.wouldExceedFile(record.inode.size) === null;
-                        if (placement.gen !== this._gen)
-                            placement = { gen: this._gen, placed: new Map() };
-                        let placedInode;
-                        let placedPrior = null;
-                        if (whole) {
-                            // Held whole until its group commits, and authorised there.
-                            const path = this.createdPath(this.storageKey(record.inode.path, cred), cred, placement.placed);
-                            asCaller(() => this.assertMutationsAllowed([path]));
-                            placedInode = { ...record.inode, path, parentPath: this.parentPath(path) };
-                        }
-                        else {
-                            // Too large for one group: its chunks commit as they arrive, so it
-                            // is authorised before the first of them.
-                            const priors = new Map();
-                            placedInode = asCaller(() => {
-                                const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
-                                this.assertMutationsAllowed([placed.path]);
-                                return placed;
+                            options.admit?.();
+                            const affected = Math.max(1, this.collectSubtreeInodes([record.path]).length);
+                            asCaller(() => {
+                                this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);
                             });
-                            placedPrior = { inode: priors.get(placedInode.path), gen: this._gen };
+                            progress.committedGroupSequence++;
+                            progress.committedPathCount += affected;
+                            break;
                         }
-                        phase = 'stage';
-                        activeFile = {
-                            streamContentId: record.streamContentId,
-                            named: record.inode.path,
-                            inode: placedInode,
-                            received: 0,
-                            nextChunk: 0,
-                            cutter: new ContentCutter(),
-                            held: whole ? [] : null,
-                            heldLeases: [],
-                            staging: null,
-                            stagedBytes: 0,
-                            raw: record.inode,
-                            prior: placedPrior,
-                        };
-                        break;
-                    }
-                    case 'file-chunk': {
-                        decodedRecordLease = record.retention;
-                        phase = 'validation';
-                        const file = activeFile;
-                        if (!file
-                            || record.streamContentId !== file.streamContentId
-                            || record.path !== file.named) {
-                            throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
+                        case 'directory': {
+                            phase = 'validation';
+                            this.validateFileChunks(record.inode, []);
+                            phase = 'publish';
+                            // Records commit in their order: files the stream wrote before
+                            // this directory commit before it.
+                            if (groupInodes.length > 0)
+                                flushGroup();
+                            // Directory inodes carry no payload: rows are the only bound in
+                            // reach, priced by the plan's own accounting (each row, the
+                            // parent it dates, and a snapshot's before-images of both), so
+                            // the strict batch the flush commits always fits.
+                            if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null)
+                                flushDirectories();
+                            pendingDirectories.push(record.inode);
+                            break;
                         }
-                        if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
-                            throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-                        }
-                        file.nextChunk++;
-                        file.received += record.data.byteLength;
-                        phase = 'stage';
-                        if (file.inode.size <= CHUNK_SIZE) {
-                            // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
-                            file.held.push({ data: record.data, hash: new Uint8Array(0) });
-                        }
-                        else {
-                            for (const data of file.cutter.push(record.data))
-                                stagePiece(file, { data, hash: chunkHash(data) });
-                        }
-                        if (file.held !== null)
-                            file.heldLeases.push(record.retention);
-                        else
-                            groupLeases.push(record.retention);
-                        decodedRecordLease = null;
-                        break;
-                    }
-                    case 'file-end': {
-                        phase = 'validation';
-                        const file = activeFile;
-                        if (!file || record.streamContentId !== file.streamContentId) {
-                            throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-                        }
-                        if (file.received !== file.inode.size) {
-                            throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
-                        }
-                        phase = 'publish';
-                        let content;
-                        if (file.inode.size === 0)
-                            content = { type: 'none' };
-                        else if (file.inode.size <= CHUNK_SIZE) {
-                            const parts = file.held;
-                            const data = parts.length === 1 ? parts[0].data : concatBytes(parts.map((part) => part.data));
-                            content = { type: 'small', piece: { data, hash: chunkHash(data) } };
-                        }
-                        else {
-                            for (const data of file.cutter.finish())
-                                stagePiece(file, { data, hash: chunkHash(data) });
-                            if (file.held !== null) {
-                                const digest = new ManifestDigest();
-                                for (const piece of file.held)
-                                    digest.add(piece.hash);
-                                content = { type: 'large', pieces: file.held, size: file.inode.size, digest: digest.digest(file.inode.size) };
+                        case 'file-begin': {
+                            if (activeFile)
+                                throw vfsError('EINVAL', `nested streamed file ${record.inode.path}`);
+                            phase = 'validation';
+                            this.validateInodeContentShape(record.inode);
+                            phase = 'publish';
+                            // Authorising a file reads its parent from the committed inode
+                            // tree, so pending directories become visible first.
+                            flushDirectories();
+                            phase = 'validation';
+                            // The file lands where its name resolves (links followed, as a
+                            // batch places it), and that is the path its lease is checked on.
+                            // Close the group before the file that would overflow it, so a
+                            // file either fits whole or begins a group of its own; one too
+                            // large for any group stages across several.
+                            if (group.wouldExceedFile(record.inode.size) !== null)
+                                flushGroup();
+                            const whole = group.wouldExceedFile(record.inode.size) === null;
+                            if (placement.gen !== this._gen)
+                                placement = { gen: this._gen, placed: new Map() };
+                            let placedInode;
+                            let placedPrior = null;
+                            if (whole) {
+                                // Held whole until its group commits, and authorised there.
+                                const path = this.createdPath(this.storageKey(record.inode.path, cred), cred, placement.placed);
+                                asCaller(() => this.assertMutationsAllowed([path]));
+                                placedInode = { ...record.inode, path, parentPath: this.parentPath(path) };
                             }
                             else {
-                                content = { type: 'staged', content: file.staging };
+                                // Too large for one group: its chunks commit as they arrive, so it
+                                // is authorised before the first of them.
+                                const priors = new Map();
+                                placedInode = asCaller(() => {
+                                    const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
+                                    this.assertMutationsAllowed([placed.path]);
+                                    return placed;
+                                });
+                                placedPrior = { inode: priors.get(placedInode.path), gen: this._gen };
                             }
+                            phase = 'stage';
+                            activeFile = {
+                                streamContentId: record.streamContentId,
+                                named: record.inode.path,
+                                inode: placedInode,
+                                received: 0,
+                                nextChunk: 0,
+                                cutter: new ContentCutter(),
+                                held: whole ? [] : null,
+                                heldLeases: [],
+                                staging: null,
+                                stagedBytes: 0,
+                                raw: record.inode,
+                                prior: placedPrior,
+                            };
+                            break;
                         }
-                        const overflows = file.held !== null
-                            ? group.wouldExceedFile(file.inode.size)
-                            : group.wouldExceedInode();
-                        if (overflows !== null)
-                            flushGroup();
-                        // Every file of the group, staged ones included, is authorised
-                        // (again) in the turn its group commits; until then its entry
-                        // holds the group's place and accounting, and claims no prior.
-                        const entry = asCaller(() => (this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })));
-                        group.addInode(entry);
-                        unauthorized.push({ raw: file.raw, entry });
-                        groupLeases.push(...file.heldLeases);
-                        groupInodes.push(entry.path);
-                        groupNames.set(entry.path, file.named);
-                        groupPublishedChunks += record.chunkCount;
-                        groupStagedBytes += file.stagedBytes;
-                        groupPaths++;
-                        activeFile = null;
-                        break;
-                    }
-                    case 'rename':
-                    case 'truncate':
-                    case 'setattr': {
-                        // Like a delete, it observes everything the stream wrote before it.
-                        phase = 'publish';
-                        flushGroup();
-                        flushDirectories();
-                        options.admit?.();
-                        asCaller(() => {
-                            if (record.type === 'rename')
-                                this.rename(record.from, record.to, cred);
-                            else if (record.type === 'truncate')
-                                this.truncate(record.path, record.size, cred);
-                            else if ('mode' in record.attrs)
-                                this.chmod(record.path, record.attrs.mode, cred);
-                            else if ('uid' in record.attrs)
-                                this.chown(record.path, record.attrs.uid, record.attrs.gid, cred, true);
+                        case 'file-chunk': {
+                            decodedRecordLease = record.retention;
+                            phase = 'validation';
+                            const file = activeFile;
+                            if (!file
+                                || record.streamContentId !== file.streamContentId
+                                || record.path !== file.named) {
+                                throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
+                            }
+                            if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
+                                throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
+                            }
+                            file.nextChunk++;
+                            file.received += record.data.byteLength;
+                            phase = 'stage';
+                            if (file.inode.size <= CHUNK_SIZE) {
+                                // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
+                                file.held.push({ data: record.data, hash: new Uint8Array(0) });
+                            }
+                            else {
+                                for (const data of file.cutter.push(record.data))
+                                    stagePiece(file, { data, hash: chunkHash(data) });
+                            }
+                            if (file.held !== null)
+                                file.heldLeases.push(record.retention);
                             else
-                                this.utimes(record.path, record.attrs.atime, record.attrs.mtime, cred, true);
-                        });
-                        progress.committedGroupSequence++;
-                        progress.committedPathCount += record.type === 'rename' ? 2 : 1;
-                        break;
+                                groupLeases.push(record.retention);
+                            decodedRecordLease = null;
+                            break;
+                        }
+                        case 'file-end': {
+                            phase = 'validation';
+                            const file = activeFile;
+                            if (!file || record.streamContentId !== file.streamContentId) {
+                                throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
+                            }
+                            if (file.received !== file.inode.size) {
+                                throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
+                            }
+                            phase = 'publish';
+                            let content;
+                            if (file.inode.size === 0)
+                                content = { type: 'none' };
+                            else if (file.inode.size <= CHUNK_SIZE) {
+                                const parts = file.held;
+                                const data = parts.length === 1 ? parts[0].data : concatBytes(parts.map((part) => part.data));
+                                content = { type: 'small', piece: { data, hash: chunkHash(data) } };
+                            }
+                            else {
+                                for (const data of file.cutter.finish())
+                                    stagePiece(file, { data, hash: chunkHash(data) });
+                                if (file.held !== null) {
+                                    const digest = new ManifestDigest();
+                                    for (const piece of file.held)
+                                        digest.add(piece.hash);
+                                    content = { type: 'large', pieces: file.held, size: file.inode.size, digest: digest.digest(file.inode.size) };
+                                }
+                                else {
+                                    content = { type: 'staged', content: file.staging };
+                                }
+                            }
+                            const overflows = file.held !== null
+                                ? group.wouldExceedFile(file.inode.size)
+                                : group.wouldExceedInode();
+                            if (overflows !== null)
+                                flushGroup();
+                            // Every file of the group, staged ones included, is authorised
+                            // (again) in the turn its group commits; until then its entry
+                            // holds the group's place and accounting, and claims no prior.
+                            const entry = asCaller(() => (this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })));
+                            group.addInode(entry);
+                            unauthorized.push({ raw: file.raw, entry });
+                            groupLeases.push(...file.heldLeases);
+                            groupInodes.push(entry.path);
+                            groupNames.set(entry.path, file.named);
+                            groupPublishedChunks += record.chunkCount;
+                            groupStagedBytes += file.stagedBytes;
+                            groupPaths++;
+                            activeFile = null;
+                            break;
+                        }
+                        case 'rename':
+                        case 'truncate':
+                        case 'setattr': {
+                            // Like a delete, it observes everything the stream wrote before it.
+                            phase = 'publish';
+                            flushGroup();
+                            flushDirectories();
+                            options.admit?.();
+                            asCaller(() => {
+                                if (record.type === 'rename')
+                                    this.rename(record.from, record.to, cred);
+                                else if (record.type === 'truncate')
+                                    this.truncate(record.path, record.size, cred);
+                                else if ('mode' in record.attrs)
+                                    this.chmod(record.path, record.attrs.mode, cred);
+                                else if ('uid' in record.attrs)
+                                    this.chown(record.path, record.attrs.uid, record.attrs.gid, cred, true);
+                                else
+                                    this.utimes(record.path, record.attrs.atime, record.attrs.mtime, cred, true);
+                            });
+                            progress.committedGroupSequence++;
+                            progress.committedPathCount += record.type === 'rename' ? 2 : 1;
+                            break;
+                        }
+                        case 'batch-end':
+                            phase = 'publish';
+                            flushDirectories();
+                            flushGroup();
+                            return true;
                     }
-                    case 'batch-end':
-                        phase = 'publish';
-                        flushDirectories();
-                        flushGroup();
-                        if (recordIterator.return)
-                            await recordIterator.return();
-                        recordIteratorFinished = true;
-                        this._decodeDrainStarts.delete(decodeDrainToken);
-                        this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
-                        decodeDrainFinished = true;
-                        return { ok: true, ...progress };
+                    return false;
+                });
+                if (ended) {
+                    if (recordIterator.return)
+                        await recordIterator.return();
+                    recordIteratorFinished = true;
+                    this._decodeDrainStarts.delete(decodeDrainToken);
+                    this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
+                    decodeDrainFinished = true;
+                    return { ok: true, ...progress };
                 }
             }
         }
@@ -9633,13 +9687,6 @@ function batchMutationPaths(payload) {
     for (const chunk of payload.chunks)
         paths.add(chunk.path);
     return paths;
-}
-function pathsOverlap(left, right) {
-    return left === ''
-        || right === ''
-        || left === right
-        || left.startsWith(`${right}/`)
-        || right.startsWith(`${left}/`);
 }
 /**
  * The paths strictly under `root`, as a range of the path index: `lower` <

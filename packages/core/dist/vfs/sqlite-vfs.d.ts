@@ -65,6 +65,8 @@ export interface DelegationTerms {
      * joins concurrent recalls of one delegation into one.
      */
     recall(kind: 'share' | 'revoke'): Promise<void>;
+    /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
+    admit?(root: string): void;
 }
 export interface VfsOpenDescription {
     /** Inode number the description currently resolves; 0 is never issued. */
@@ -140,6 +142,8 @@ export interface CredentialedVfs {
     readonly cred: VfsCred;
     /** Who the view acts as: its credential and actor, the principal its write events name. */
     readonly principal: Principal;
+    /** The delegations the view's process holds, asked at each call (SqliteVFS.as `holds`). */
+    readonly holds?: () => ReadonlySet<string>;
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
@@ -533,8 +537,12 @@ export declare class SqliteVFS {
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
     private activeMutationOwner;
-    /** The lease the running view call presents (callerView): its holder's own lookups recall nothing. */
-    private activeLeaseHolder;
+    /**
+     * The delegations the running call is made by (callerView: a view bound
+     * to a lease, or a holder process's view, which answers what it holds):
+     * its own lookups recall none of them.
+     */
+    private activeHolds;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
     /** Shared by every concurrent stream targeting this session's VFS. */
@@ -687,7 +695,7 @@ export declare class SqliteVFS {
         read: boolean;
         write: boolean;
         sync?: boolean;
-    }, principal?: Principal): VfsOpenDescription;
+    }, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
      * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
@@ -841,11 +849,14 @@ export declare class SqliteVFS {
     /**
      * Bind credentials and, optionally, the capability of a live mutation
      * lease; `actor` names the principal finer than its uid, in the write
-     * events its mutations make (observeWrites).
+     * events its mutations make (observeWrites); `holds` answers, at each
+     * call, the delegations the view's process holds (its own lookups recall
+     * none of them).
      */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
         actor?: string;
+        holds?: () => ReadonlySet<string>;
     }): CredentialedVfs;
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;
@@ -1071,6 +1082,8 @@ export declare class SqliteVFS {
      * holder (the lease a mutation scope or a view presents).
      */
     private recallReads;
+    /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
+    private isHolder;
     /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
     private recallDelegationsAt;
     /**
@@ -1805,6 +1818,8 @@ export declare class SqliteVFS {
      * stored exactly as the same bytes written any other way.
      */
     private writeStream;
+    /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
+    private withHolds;
     private consumeStream;
     private _writeBatchWithRetry;
     /**

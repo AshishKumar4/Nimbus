@@ -100,6 +100,8 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly fsCopyTree: "once";
     readonly fsAcquireExclusiveMutation: "once";
     readonly fsReleaseExclusiveMutation: "once";
+    readonly fsAwaitRecall: null;
+    readonly fsRecalled: "once";
     readonly innerDoFetch: null;
     readonly innerDoCall: null;
     readonly fanoutExecute: null;

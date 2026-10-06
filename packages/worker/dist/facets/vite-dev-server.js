@@ -41,6 +41,7 @@ import { isViteConfigPath, readViteConfigFile } from './vite-config-file.js';
 import { rewriteJavaScriptModuleSource } from '@nimbus-sh/core/runtime/module-source-rewriter.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { getTailwindPlayBundle, TAILWIND_PLAY_VERSION, } from '../tailwind-play.generated.js';
+import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 // ── HMR client code ─────────────────────────────────────────────────────
 // Injected into index.html. Listens for HMR messages from parent window
 // (forwarded by the main Nimbus frontend from the WebSocket).
@@ -1689,7 +1690,16 @@ export class ViteDevServer {
         // `<port>--<sid>` host serves at the root. Callers that omit it fall back
         // to the construction-time basePath.
         const base = this.normBase(mountBase ?? this.basePath);
-        const resp = await this._handleRequestInner(request, pathname, base);
+        // Serving reads the project as the server's principal; a read that meets
+        // a process's delegation waits for its recall and the request is served
+        // again (a request without a body is served the same way twice).
+        const resp = await (request.body === null
+            ? withRecall(() => this._handleRequestInner(request, pathname, base))
+            : this._handleRequestInner(request, pathname, base).catch((e) => {
+                if (recallOf(e) === null)
+                    throw e;
+                return new Response('503 Service Unavailable: the project is being written; send the request again', { status: 503, headers: { 'Retry-After': '1' } });
+            }));
         const elapsed = Date.now() - t0;
         // Strip query for the log line — keeps it scannable. The original
         // pathname (with query) is what was served; we trim purely for
@@ -1772,6 +1782,9 @@ export class ViteDevServer {
             return await this.serveFile(request, pathname, query, headers, base);
         }
         catch (e) {
+            // A delegation a read meets is waited for by handleRequest, which serves the request again.
+            if (recallOf(e) !== null)
+                throw e;
             // The server reads as the principal who started it: a file that
             // principal may not read is forbidden, not an error of the server's.
             if (e?.code === 'EACCES' || e?.code === 'EPERM') {

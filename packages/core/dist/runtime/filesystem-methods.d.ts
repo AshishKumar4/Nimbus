@@ -202,6 +202,14 @@ export declare const FILESYSTEM_METHODS: {
         readonly rpc: "fsReleaseExclusiveMutation";
         readonly answer: "value";
     };
+    readonly awaitRecall: {
+        readonly rpc: "fsAwaitRecall";
+        readonly answer: "value";
+    };
+    readonly recalled: {
+        readonly rpc: "fsRecalled";
+        readonly answer: "value";
+    };
 };
 export type FilesystemMethod = keyof typeof FILESYSTEM_METHODS;
 /** The supervisor RPC capability's filesystem: each bridge method under its RPC name, with its type. */

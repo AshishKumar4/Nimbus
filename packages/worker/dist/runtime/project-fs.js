@@ -11,6 +11,7 @@ import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { isVfsError, syscallError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeOf } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /** The exact type of `entry` in `dir`, lstat'ing it where its listing could not type it; null when it has gone. */
 export function projectEntryType(fs, dir, entry) {
     return direntTypeOf(entry, async () => {
@@ -89,23 +90,30 @@ export async function handKernelArtifact(filesystem, view, cred, path) {
     if (dir === null || dir === '')
         return;
     const kernel = filesystem.engine.as(CRED_KERNEL);
-    let owner;
-    try {
-        owner = kernel.stat(dir);
-    }
-    catch {
-        return;
-    }
-    if (owner.uid === 0 || owner.type !== 'directory')
-        return;
-    hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid);
+    // Handing it again hands it as before: repeatable, so it waits for a delegation it meets.
+    await withRecall(() => {
+        let owner;
+        try {
+            owner = kernel.stat(dir);
+        }
+        catch (error) {
+            if (recallOf(error) !== null)
+                throw error;
+            return;
+        }
+        if (owner.uid === 0 || owner.type !== 'directory')
+            return;
+        hand(kernel, `${dir}/${at.slice(cut + 1)}`, owner.uid, owner.gid);
+    });
 }
 function hand(kernel, key, uid, gid) {
     let st;
     try {
         st = kernel.lstat(key);
     }
-    catch {
+    catch (error) {
+        if (recallOf(error) !== null)
+            throw error;
         return;
     }
     if (st.uid !== 0)

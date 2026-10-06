@@ -52,6 +52,14 @@ export function resolveVfsPath(path, cwd) {
         ? normalizeVfsPath(path)
         : normalizeVfsPath(`${cwd}/${path}`);
 }
+/** Whether one engine key is the other or under it: '' (the root) overlaps every key. */
+export function pathsOverlap(left, right) {
+    return left === ''
+        || right === ''
+        || left === right
+        || left.startsWith(`${right}/`)
+        || right.startsWith(`${left}/`);
+}
 /** Return the canonical VFS parent key, or an empty string for root-level paths. */
 export function parentVfsPath(path) {
     const clean = normalizeVfsPath(path);

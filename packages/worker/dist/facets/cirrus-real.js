@@ -56,6 +56,7 @@
 import { REAL_VITE_VERSION, VITE_CLIENT_MJS, VITE_ENV_MJS, getRealViteBundle, getRollupWasmBase64, } from '../real-vite-bundle.generated.js';
 import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from '@nimbus-sh/fabric/supervisor-props.js';
@@ -625,7 +626,8 @@ export class CirrusReal {
         // (Lazy: eagerly seeds user project source + every package.json
         // under node_modules. Source files in node_modules are loaded on
         // demand via SUPERVISOR.readFile and cached in-facet.)
-        const snapshot = buildFsSnapshot(this.vfs, this.root);
+        // A read the walk meets in a process's delegation waits for its recall; the walk is made again.
+        const snapshot = await withRecall(() => buildFsSnapshot(this.vfs, this.root));
         this._snapshotStats = {
             fileCount: snapshot.fileCount,
             dirCount: snapshot.dirs.length,

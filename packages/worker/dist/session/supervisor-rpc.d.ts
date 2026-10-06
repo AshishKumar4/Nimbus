@@ -46,7 +46,7 @@
 import { WorkerEntrypoint } from 'cloudflare:workers';
 import type { WriteFileStatAnswer } from '@nimbus-sh/core/workspace/supervisor-op.js';
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
@@ -263,6 +263,10 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     fsCopyTree(...args: Parameters<RuntimeFsBridge['copyTree']>): Promise<Awaited<ReturnType<RuntimeFsBridge['copyTree']>>>;
     fsAcquireExclusiveMutation(...args: Parameters<RuntimeFsBridge['acquireExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['acquireExclusiveMutation']>>>;
     fsReleaseExclusiveMutation(...args: Parameters<RuntimeFsBridge['releaseExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>>;
+    /** A delegation's holder waits here for its next recall (a long poll, sent once: a lost one is asked again). */
+    fsAwaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null>;
+    /** The holder has answered recall `kind`: delivered once. */
+    fsRecalled(owner: string, kind: RecallKind): Promise<void>;
     fsClose(handleId: number): Promise<void>;
     /**
      * Stateless ranged ops. Unlike fsOpen/fsRead/fsWrite they carry no

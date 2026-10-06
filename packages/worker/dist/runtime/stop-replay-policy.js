@@ -74,6 +74,8 @@ export const REPLAY_OPERATION_POLICY = {
     fsFchmod: effect, fsFchown: effect, fsFutimes: effect, fsSync: read,
     fsRealpath: read, fsRemove: effect, fsCopyFile: effect, fsCopyTree: effect,
     fsAcquireExclusiveMutation: effect, fsReleaseExclusiveMutation: effect,
+    // A recall is the session asking; the answer to one changes what it holds.
+    fsAwaitRecall: { kind: 'input' }, fsRecalled: effect,
     innerDoFetch: effect, innerDoCall: effect, fanoutExecute: effect, processHostProbe: effect,
     hostProcess: effect, awaitHostedOpen: effect, awaitHostedBoot: effect,
     routeHostedHttp: effect, cancelHostProcess: effect, hmrRelay: effect,

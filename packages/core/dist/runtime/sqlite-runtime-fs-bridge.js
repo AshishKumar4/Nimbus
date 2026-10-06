@@ -358,7 +358,7 @@ export class SqliteRuntimeFsBridge {
     }
     /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
     owned(owner) {
-        return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor });
+        return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
     }
     appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes) {
         return called({ syscall: 'append', path }, () => {
@@ -490,7 +490,7 @@ export class SqliteRuntimeFsBridge {
                 this.vfs.truncate(p, 0);
             }
             const stat = this.vfs.stat(p);
-            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal);
+            const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds);
             const handle = {
                 id: this.scope.nextId++,
                 path: p,
@@ -811,16 +811,30 @@ export class SqliteRuntimeFsBridge {
     writeStream(stream, options) {
         return this.vfs.writeStream(stream, options);
     }
-    acquireExclusiveMutation(path, options) {
+    /**
+     * A lease, or with `terms` a delegation (made by the process that holds
+     * it: ProcessFiles' bridge, which answers its recalls). This bridge serves
+     * no process, so it delegates nothing itself (`delegate`: EINVAL).
+     */
+    acquireExclusiveMutation(path, options, terms) {
         return called({ syscall: 'acquireExclusiveMutation', path }, () => {
+            if (options?.delegate !== undefined && terms === undefined)
+                throw fsError('EINVAL', 'acquireExclusiveMutation', path);
             const p = this.sqlitePath(path, false, 'acquireExclusiveMutation');
             const parent = parentVfsPath(p);
             if (parent && !(options?.includeMissingAncestors && !this.vfs.exists(parent)))
                 this.vfs.access(parent, 0o3);
-            return this.vfs.acquireExclusiveMutation(p, options);
+            return this.vfs.acquireExclusiveMutation(p, { includeMissingAncestors: options?.includeMissingAncestors, delegation: terms });
         });
     }
     releaseExclusiveMutation(owner) { this.rawVfs.releaseExclusiveMutation(owner); }
+    /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
+    awaitRecall(owner) {
+        throw fsError('ESTALE', 'awaitRecall', owner, undefined, { detail: 'no delegation of this process under that lease' });
+    }
+    recalled(owner) {
+        throw fsError('ESTALE', 'recalled', owner, undefined, { detail: 'no delegation of this process under that lease' });
+    }
     pathArgument(path) {
         if (typeof path === 'string')
             return path;

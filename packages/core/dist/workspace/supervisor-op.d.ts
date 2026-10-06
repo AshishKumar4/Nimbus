@@ -204,11 +204,10 @@ declare const NATIVE_OPS: {
     fsRemove: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     fsCopyFile: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number | void>;
     fsCopyTree: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<number>;
-    fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<{
-        root: string;
-        owner: string;
-    }>;
+    fsAcquireExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").ExclusiveMutationGrant>;
     fsReleaseExclusiveMutation: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
+    fsAwaitRecall: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").RecallKind | null>;
+    fsRecalled: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<void>;
     readFileBytes: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<Uint8Array<ArrayBufferLike> | null>;
     stat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;
     lstat: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<RuntimeVfsStat | null>;

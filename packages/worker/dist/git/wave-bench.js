@@ -73,11 +73,16 @@ export class Producer extends WorkerEntrypoint {
     const waves = [];
     const writer = __nimbusWaveWriter.createWaveWriter({ supervisor: observed(sender(mode, env, sink), waves), root, base });
     const pingStarted = Date.now();
+    const pingWalls = [];
     for (let index = 0; index < pings; index++) {
+      const one = Date.now();
       await writer.file('ping/p' + index, 0o644, new Uint8Array([index & 0xff]));
       await writer.flush();
+      pingWalls.push(Date.now() - one);
     }
     const pingMs = pings > 0 ? (Date.now() - pingStarted) / pings : 0;
+    pingWalls.sort((a, b) => a - b);
+    const pingAt = (q) => (pingWalls.length === 0 ? 0 : pingWalls[Math.min(pingWalls.length - 1, Math.floor(q * pingWalls.length))]);
     waves.length = 0;
     const started = Date.now();
     let bytes = 0;
@@ -93,7 +98,7 @@ export class Producer extends WorkerEntrypoint {
     await writer.flush();
     const stats = writer.stats();
     return {
-      pingMs, files, bytes, wallMs: Date.now() - started, waves: stats.waves,
+      pingMs, pingP50Ms: pingAt(0.5), pingP95Ms: pingAt(0.95), pingMaxMs: pingAt(1), files, bytes, wallMs: Date.now() - started, waves: stats.waves,
       rpcWallMs: stats.rpcWallMs, maxRpcWallMs: stats.maxRpcWallMs, producerWaitMs: stats.producerWaitMs,
       timeline: waves,
     };

@@ -55,6 +55,10 @@ export interface WaveBenchWave {
 export interface WaveBenchProducer {
     /** Mean wall of a one-file wave, sent and published alone. */
     pingMs: number;
+    /** Its median, 95th percentile and slowest. */
+    pingP50Ms: number;
+    pingP95Ms: number;
+    pingMaxMs: number;
     timeline: WaveBenchWave[];
     files: number;
     bytes: number;

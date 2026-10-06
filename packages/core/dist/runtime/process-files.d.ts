@@ -16,6 +16,7 @@
  */
 import type { SqliteVFS, VfsExportChunk, VfsExportPage } from '../vfs/sqlite-vfs.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
+import { Delegations, type DelegationRevoked } from './delegations.js';
 import { CompositeVFS } from '../vfs/composite.js';
 import { ProcVFS } from '../vfs/proc-vfs.js';
 import type { VFS, VfsDirent, VfsRemoval, VfsStat } from '../vfs/vfs.js';
@@ -38,11 +39,16 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
     /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
     readonly hydrator: Hydrator | null;
+    /** Subtrees delegated to processes (Delegations): each recalled through its holder's bridge. */
+    readonly delegations: Delegations;
     /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
     private readonly bufferedWriteBytes;
     constructor(engine: SqliteVFS, options?: {
         hydration?: HydratorOptions;
         bufferedWriteBytes?: number;
+        /** Told of a delegation's holder revoked for not answering a recall in time: the host stops it. */
+        delegationRevoked?: (event: DelegationRevoked) => void;
+        delegationRecallTimeoutMs?: number;
     });
     /**
      * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
@@ -139,14 +145,11 @@ export declare function withHostView<T>(authority: NimbusFilesystemAuthority, cr
 export declare function engineKey(view: Pick<ProcessView, 'realpath' | 'stat'>, engine: Pick<SqliteVFS, 'deviceId'>, path: string): Promise<string | null>;
 /** POSIX access(2) modes. */
 export declare const F_OK = 0, X_OK = 1, W_OK = 2, R_OK = 4;
-/**
- * A process's namespace as a `VFS` over its bound bridge, plus the process
- * syscalls a `VFS` has no word for (access, realpath, append). Absent is
- * null from `stat`; every failure is a `VfsError`.
- */
 export declare class ProcessView implements VFS {
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     readonly process: RuntimeFsBridge;
+    /** The bridge as this view calls it: each call made again once a delegation it meets is recalled. */
+    private readonly fs;
     constructor(
     /** The bridge itself: what a runtime hands a guest as its syscall surface. */
     process: RuntimeFsBridge);

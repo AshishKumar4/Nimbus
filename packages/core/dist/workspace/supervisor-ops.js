@@ -100,6 +100,8 @@ export const SUPERVISOR_OP_TABLE = {
     fsCopyTree: 'once',
     fsAcquireExclusiveMutation: 'once',
     fsReleaseExclusiveMutation: 'once',
+    fsAwaitRecall: null,
+    fsRecalled: 'once',
     innerDoFetch: null,
     innerDoCall: null,
     fanoutExecute: null,

@@ -1,7 +1,7 @@
-import { type CredentialedVfs, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { type CompositeVFS } from '../vfs/composite.js';
 export { fsError, modeAllows, walkBeneath, type BeneathLookup } from './beneath-walk.js';
-import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner } from './os-contracts.js';
+import type { RuntimeFileHandle, RuntimeFsPath, RuntimeReadOptions, RuntimeSynchronousFs, RuntimeFsBridge, RuntimeOpenFlags, RuntimeVfsDirEntry, RuntimeVfsStat, VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeMutationOwner, ExclusiveMutationGrant, ExclusiveMutationRequest } from './os-contracts.js';
 interface OpenDescription {
     handle: RuntimeFileHandle;
     node: VfsOpenDescription;
@@ -150,10 +150,16 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         chunks: number;
     };
     writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]): Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
-    acquireExclusiveMutation(path: RuntimeFsPath, options?: {
-        includeMissingAncestors?: boolean;
-    }): import("../vfs/sqlite-vfs.js").ExclusiveMutationLease;
+    /**
+     * A lease, or with `terms` a delegation (made by the process that holds
+     * it: ProcessFiles' bridge, which answers its recalls). This bridge serves
+     * no process, so it delegates nothing itself (`delegate`: EINVAL).
+     */
+    acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest, terms?: DelegationTerms): ExclusiveMutationGrant;
     releaseExclusiveMutation(owner: string): void;
+    /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
+    awaitRecall(owner: string): never;
+    recalled(owner: string): never;
     private pathArgument;
     private resolveDataPath;
     /**

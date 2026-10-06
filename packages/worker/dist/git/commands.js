@@ -14,6 +14,7 @@ import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
@@ -2710,9 +2711,10 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 // through the trusted SupervisorRPC binding. Taken as the command's
                 // credential: the clone writes as it, so a confined caller's /tmp is
                 // held where those writes land, not at the shared tmp/ of that name.
-                const mutationLease = vfs.as(ctx.cred).acquireExclusiveMutation(target, {
+                // A delegation it overlaps is recalled first (withRecall).
+                const mutationLease = await withRecall(() => vfs.as(ctx.cred).acquireExclusiveMutation(target, {
                     includeMissingAncestors: true,
-                });
+                }));
                 // A piece of the clone that hung may still write: the facet runner
                 // hands the lease to a new owner before it runs the piece again.
                 let mutationOwner = mutationLease.owner;

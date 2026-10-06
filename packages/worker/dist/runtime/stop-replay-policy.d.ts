@@ -290,6 +290,12 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsReleaseExclusiveMutation: {
         readonly kind: "effect";
     };
+    fsAwaitRecall: {
+        kind: "input";
+    };
+    fsRecalled: {
+        readonly kind: "effect";
+    };
     innerDoFetch: {
         readonly kind: "effect";
     };
