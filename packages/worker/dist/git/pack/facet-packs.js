@@ -61,9 +61,10 @@ export function facetPacks(supervisor) {
                 return summary?.packSha ?? null;
             }
             catch (error) {
-                // A failed fetch leaves no temporary pack or idx behind (git's tmp_pack_ and tmp_idx_).
+                // A failed fetch leaves no temporary pack, idx or rev behind (git's tmp_pack_, tmp_idx_, tmp_rev_).
                 for (const name of await supervisor.readdir(dir).catch(() => [])) {
-                    if (name === tmpName || name === 'tmp_idx_' + tmpName.slice('tmp_pack_'.length)) {
+                    const id = tmpName.slice('tmp_pack_'.length);
+                    if (name === tmpName || name === 'tmp_idx_' + id || name === 'tmp_rev_' + id) {
                         await supervisor.unlink(dir + '/' + name).catch(() => undefined);
                     }
                 }

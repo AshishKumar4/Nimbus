@@ -160,3 +160,28 @@ export async function* encodeIdxV2(count, packChecksum, sweep) {
     yield emit(packChecksum.slice());
     yield hash.digest();
 }
+const RIDX_SIGNATURE = Uint8Array.of(0x52, 0x49, 0x44, 0x58, 0, 0, 0, 1, 0, 0, 0, 1);
+/**
+ * The pack's reverse index (gitformat-pack.txt "pack-*.rev"), byte for byte
+ * what `git index-pack --rev-index` writes: 'RIDX', version 1, SHA-1, then
+ * each object's idx position in pack-offset order, the pack checksum and
+ * the SHA-1 of everything above. `records` are in idx order. git reads it
+ * instead of building the same table, 16 bytes an object, in memory.
+ */
+export function encodeRev(records, packChecksum) {
+    const count = records.byteLength / ENTRY_BYTES;
+    // Offset and position in one key: a native numeric sort, no comparator.
+    const keys = new BigUint64Array(count);
+    for (let i = 0; i < count; i++)
+        keys[i] = (BigInt(entryOffset(records, i)) << 32n) | BigInt(i);
+    keys.sort();
+    const out = new Uint8Array(RIDX_SIGNATURE.byteLength + count * 4 + 2 * OID_BYTES);
+    out.set(RIDX_SIGNATURE);
+    const view = new DataView(out.buffer);
+    for (let i = 0; i < count; i++)
+        view.setUint32(RIDX_SIGNATURE.byteLength + i * 4, Number(keys[i] & 0xffffffffn));
+    const trailer = RIDX_SIGNATURE.byteLength + count * 4;
+    out.set(packChecksum, trailer);
+    out.set(createHash('sha1').update(out.subarray(0, trailer + OID_BYTES)).digest(), trailer + OID_BYTES);
+    return out;
+}

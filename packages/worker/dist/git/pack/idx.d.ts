@@ -37,4 +37,12 @@ export declare function sortEntries(records: Uint8Array): Uint8Array;
  * the records, so the entries are swept once per table and never held whole.
  */
 export declare function encodeIdxV2(count: number, packChecksum: Uint8Array, sweep: () => AsyncIterable<Uint8Array>): AsyncGenerator<Uint8Array>;
+/**
+ * The pack's reverse index (gitformat-pack.txt "pack-*.rev"), byte for byte
+ * what `git index-pack --rev-index` writes: 'RIDX', version 1, SHA-1, then
+ * each object's idx position in pack-offset order, the pack checksum and
+ * the SHA-1 of everything above. `records` are in idx order. git reads it
+ * instead of building the same table, 16 bytes an object, in memory.
+ */
+export declare function encodeRev(records: Uint8Array, packChecksum: Uint8Array): Uint8Array;
 //# sourceMappingURL=idx.d.ts.map

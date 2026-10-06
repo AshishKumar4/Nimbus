@@ -4,10 +4,10 @@
  * One implementation for every pack the git facet takes: a clone's, a
  * history piece's, a fetch's, a promisor fetch's.
  *
- * Installing follows git (index-pack's finish_tmp_packfile): the idx is
- * written under a temporary name, the .promisor beside it, then the pack is
- * named, and the idx last, so no reader finds an idx whose pack is not all
- * there. A step that may be run again after its answer was lost (a resumed
+ * Installing follows git (index-pack's finish_tmp_packfile): the idx and
+ * the reverse index (.rev) are written under temporary names, the .promisor
+ * beside them, then the pack is named, the .rev, and the idx last, so no
+ * reader finds an idx whose pack is not all there. A step that may be run again after its answer was lost (a resumed
  * pack, which cannot be fetched again) asks for a durable record of the
  * outcome, written before anything is named: run again, it finds the
  * record, finishes the naming, and returns it (resumeInstall).
