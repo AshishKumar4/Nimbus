@@ -63,6 +63,9 @@
 import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { retryingRegistryFetch } from './registry-retry.js';
+import { sriDigestOf, sriDigestsEqual, sriEntries, type SriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
 /**
  * Per-call cache-stat event (cache metrics support). R2CacheClient
@@ -122,9 +125,6 @@ export const PACKUMENT_TTL_MS = 60 * 60_000;
 // The origin rule lives with the command that reads NPM_REGISTRY; the cache
 // keys by the same value.
 export { NPM_REGISTRY_ORIGIN, npmRegistryOrigin };
-
-/** Jittered backoff between packument fetch attempts. */
-const PACKUMENT_BACKOFF_MS = [500, 1500, 4500];
 
 /** The registry URL a packument is read from — also what `npm http` lines report. */
 export function packumentUrl(name: string, registry: string = NPM_REGISTRY_ORIGIN): string {
@@ -275,13 +275,6 @@ async function l2Put(key: Request, body: Response): Promise<boolean> {
 // ── Content addressing ──────────────────────────────────────────────────
 
 /** Web-Crypto digest name per npm subresource-integrity algorithm. */
-const SRI_DIGEST_ALGOS: Record<string, string> = {
-  sha512: 'SHA-512',
-  sha384: 'SHA-384',
-  sha256: 'SHA-256',
-  sha1: 'SHA-1',
-};
-
 /**
  * A tarball's content address: the resolved integrity digest, parsed.
  * Holding the parsed form (rather than the raw SRI string) is what makes
@@ -295,49 +288,43 @@ export interface TarballAddress {
   digestAlgo: string;
   /** Lowercase hex digest. */
   hex: string;
+  /** The digest, base64 as the SRI string wrote it. */
+  digest: string;
 }
 
 /**
  * Parse an npm subresource-integrity string ("sha512-<base64>") into a
- * content address.
+ * content address, read as an install reads it (core _shared/tarball-integrity.ts).
  *
- * Returns null for anything we cannot verify: an empty string, a bare
- * legacy `dist.shasum` (hex, no algorithm prefix), a multi-entry SRI, an
- * unknown algorithm, or malformed base64. A null address means the
- * tarball does not participate in the shared cache at all — we neither
- * read nor write it. Refusing to cache what we cannot verify is the
- * whole point; there is no "trust the name instead" fallback.
+ * Returns null for anything we cannot verify the same way twice: an empty
+ * string, a bare legacy `dist.shasum` (hex, no algorithm prefix), a
+ * multi-entry SRI, an unknown algorithm, or a digest that is not one of its
+ * algorithm (which an install refuses). A null
+ * address means the tarball does not participate in the shared cache at
+ * all — we neither read nor write it. Refusing to cache what we cannot
+ * verify is the whole point; there is no "trust the name instead" fallback.
  */
 export function parseTarballAddress(integrity: string): TarballAddress | null {
-  if (typeof integrity !== 'string') return null;
-  const dash = integrity.indexOf('-');
-  if (dash <= 0) return null;
-  const algo = integrity.slice(0, dash).toLowerCase();
-  const digestAlgo = SRI_DIGEST_ALGOS[algo];
-  if (!digestAlgo) return null;
-  const b64 = integrity.slice(dash + 1);
-  // A single SRI entry only. Whitespace means a multi-hash string, which
-  // the install facet's verifier does not understand either.
-  if (!b64 || /\s/.test(b64)) return null;
-  let raw: string;
+  // A single SRI entry only: whitespace means a multi-hash string.
+  if (typeof integrity !== 'string' || /\s/.test(integrity)) return null;
+  let entry: SriEntry | undefined;
   try {
-    raw = atob(b64);
+    [entry] = sriEntries(integrity);
   } catch {
     return null;
   }
+  if (!entry) return null;
+  const raw = atob(entry.digest);
   let hex = '';
   for (let i = 0; i < raw.length; i++) {
     hex += raw.charCodeAt(i).toString(16).padStart(2, '0');
   }
-  return { algo, digestAlgo, hex };
+  return { algo: entry.algo, digestAlgo: entry.digestAlgo, hex, digest: entry.digest };
 }
 
 /** Whether `bytes` hash to `address` under its own algorithm. */
 async function bytesMatchAddress(bytes: Uint8Array, address: TarballAddress): Promise<boolean> {
-  const digest = new Uint8Array(await crypto.subtle.digest(address.digestAlgo, bytes));
-  let hex = '';
-  for (let i = 0; i < digest.length; i++) hex += digest[i].toString(16).padStart(2, '0');
-  return hex === address.hex;
+  return sriDigestsEqual(await sriDigestOf(bytes, address.digestAlgo), address.digest);
 }
 
 // ── Key helpers ─────────────────────────────────────────────────────────
@@ -679,15 +666,14 @@ export class R2CacheClient {
     }
 
     const url = packumentUrl(name, registry);
-    const retries = Math.max(0, options?.retries ?? 3);
     const timeoutMs = options?.timeoutMs ?? 15_000;
-    let lastErr: unknown;
-
-    for (let attempt = 0; attempt <= retries; attempt++) {
-      try {
+    let resp: Response;
+    try {
+      // One try is the request and, for a 2xx, reading its body: a body
+      // that breaks off mid-read is tried again like a request that failed.
+      resp = await retryingRegistryFetch(network, async (fetchVia) => {
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), timeoutMs);
-        let resp: Response;
         try {
           // Corgi (abbreviated) packument — up to ~17x smaller than the
           // full doc (vite: 38MB→2.2MB). Carries every field the resolver
@@ -695,41 +681,32 @@ export class R2CacheClient {
           // libc). It omits `exports`; that is read from the tarball's
           // package.json in the VFS at require time, where the resolver's
           // packument copy is `?? null` anyway.
-          resp = await network.fetch(url, {
+          const answer = await fetchVia(url, {
             headers: { Accept: 'application/vnd.npm.install-v1+json' },
             signal: ctl.signal,
           });
+          return answer.ok ? new Response(await answer.text(), { status: answer.status }) : answer;
         } finally {
           clearTimeout(timer);
         }
-        if (resp.ok) {
-          const json = await resp.text();
-          this._recordHit('L4', 'packument', json.length);
-          // Best-effort fill, awaited so a follow-up read in the same
-          // install sees it.
-          if (!this.readOnly && shared) await this.putPackument(name, json, registry);
-          return { json, source: 'network' };
-        }
-        if (resp.status >= 400 && resp.status < 500) {
-          // No such package. Not retryable, and not an error.
-          return { json: null, source: 'network', status: resp.status };
-        }
-        try { await resp.body?.cancel(); } catch { /* best-effort */ }
-        lastErr = new Error(`HTTP ${resp.status}`);
-      } catch (e) {
-        lastErr = e;
-      }
-      if (attempt < retries) {
-        const base = PACKUMENT_BACKOFF_MS[Math.min(attempt, PACKUMENT_BACKOFF_MS.length - 1)];
-        const jitter = Math.round(base + (Math.random() * 2 - 1) * base * 0.25);
-        await new Promise<void>((rs) => setTimeout(rs, Math.max(0, jitter)));
-      }
+      }, { retries: options?.retries });
+    } catch (e) {
+      return { json: null, source: 'network', failure: errorText(e) };
     }
-    return {
-      json: null,
-      source: 'network',
-      failure: lastErr instanceof Error ? lastErr.message : String(lastErr),
-    };
+    if (resp.ok) {
+      const json = await resp.text();
+      this._recordHit('L4', 'packument', json.length);
+      // Best-effort fill, awaited so a follow-up read in the same
+      // install sees it; never of what an egress answered.
+      if (!this.readOnly && shared) await this.putPackument(name, json, registry);
+      return { json, source: 'network' };
+    }
+    if (resp.status >= 400 && resp.status < 500) {
+      // No such package. Not retryable, and not an error.
+      return { json: null, source: 'network', status: resp.status };
+    }
+    try { await resp.body?.cancel(); } catch { /* best-effort */ }
+    return { json: null, source: 'network', failure: `HTTP ${resp.status}` };
   }
 
   /**

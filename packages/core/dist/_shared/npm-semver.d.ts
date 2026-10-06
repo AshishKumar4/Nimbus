@@ -1,9 +1,10 @@
 /**
- * npm/semver.ts — the one semver implementation the npm resolver picks
- * versions with.
+ * npm-semver.ts — the one semver implementation npm here picks versions
+ * with: the worker's resolver facet, and the shell's fallback npm (lifo
+ * commands/system/npm.ts) when no installer is wired.
  *
- * The resolver facet (npm/resolve-one-facet.ts) runs inside a dynamic worker
- * whose only module scope is the preamble string in
+ * The resolver facet (worker npm/resolve-one-facet.ts) runs inside a dynamic
+ * worker whose only module scope is the preamble string in worker
  * loaders/npm-resolve-preamble.ts. That preamble embeds THESE functions by
  * `fn.toString()`, so the facet's version pick is this module's by
  * construction — there is no second copy to drift, and
@@ -54,6 +55,16 @@ export declare function satisfiesRange(version: string, range: string): boolean;
  * presence is all a lockfile can answer.
  */
 export declare function isSemverRange(range: string): boolean;
+/**
+ * The version a registry request for `range` installs, from a packument's
+ * `versions` and `dist-tags`: an exact version it publishes; else the
+ * highest satisfying a range; else the dist-tag `range` names; else, for an
+ * open range (none, `latest`, `*`, `x`) or a spec that is neither a range
+ * nor a tag name (`github:…`, a URL, `file:…`), `latest`. Null when none
+ * answers: a range nothing satisfies, or a tag the package does not
+ * publish, as npm answers both (ETARGET).
+ */
+export declare function pickPackumentVersion(versions: unknown, distTags: unknown, range: string | null | undefined): string | null;
 /** The highest version satisfying `range`, or null; `latest`/`*` are the caller's dist-tag lookup. */
 export declare function resolveVersion(versions: readonly string[], range: string): string | null;
-//# sourceMappingURL=semver.d.ts.map
+//# sourceMappingURL=npm-semver.d.ts.map

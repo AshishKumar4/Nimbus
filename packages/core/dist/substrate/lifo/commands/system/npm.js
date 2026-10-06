@@ -4,7 +4,10 @@ import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
-import { RegistryPackumentSchema, RegistrySearchResponseSchema, RegistryVersionInfoSchema, } from './registry-schemas.js';
+import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
+import { packageRangeSeparator, parseRegistryRequest } from '../../../../_shared/npm-spec.js';
+import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
+import { RegistryPackumentSchema, RegistrySearchResponseSchema, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
 import { npmLogEnabled } from './npm-log.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
@@ -52,84 +55,10 @@ export function npmRegistryOrigin(configured) {
 function getRegistry(env) {
     return npmRegistryOrigin(env.NPM_REGISTRY);
 }
+/** `name[@range]` split where npm's npa splits it (core _shared/npm-spec.ts). */
 function parsePackageSpec(spec) {
-    // Scoped: @scope/name@version
-    if (spec.startsWith('@')) {
-        const slashIdx = spec.indexOf('/');
-        if (slashIdx === -1)
-            return { name: spec, version: null };
-        const rest = spec.slice(slashIdx + 1);
-        const atIdx = rest.lastIndexOf('@');
-        if (atIdx > 0) {
-            return {
-                name: spec.slice(0, slashIdx + 1 + atIdx),
-                version: rest.slice(atIdx + 1),
-            };
-        }
-        return { name: spec, version: null };
-    }
-    // Regular: name@version
-    const atIdx = spec.lastIndexOf('@');
-    if (atIdx > 0) {
-        return { name: spec.slice(0, atIdx), version: spec.slice(atIdx + 1) };
-    }
-    return { name: spec, version: null };
-}
-// ─── Semver helpers ───
-function parseVersion(v) {
-    const m = v.match(/^(\d+)\.(\d+)\.(\d+)/);
-    if (!m)
-        return null;
-    return [parseInt(m[1]), parseInt(m[2]), parseInt(m[3])];
-}
-function compareVersions(a, b) {
-    if (a[0] !== b[0])
-        return a[0] - b[0];
-    if (a[1] !== b[1])
-        return a[1] - b[1];
-    return a[2] - b[2];
-}
-function isVersionRange(version) {
-    return /[\^~>=<|*x]/.test(version);
-}
-function satisfiesRange(version, range) {
-    const v = parseVersion(version);
-    if (!v)
-        return false;
-    // Exact
-    if (/^\d+\.\d+\.\d+$/.test(range)) {
-        const r = parseVersion(range);
-        return r !== null && v[0] === r[0] && v[1] === r[1] && v[2] === r[2];
-    }
-    // Caret ^X.Y.Z
-    if (range.startsWith('^')) {
-        const r = parseVersion(range.slice(1));
-        if (!r)
-            return false;
-        if (r[0] > 0)
-            return v[0] === r[0] && compareVersions(v, r) >= 0;
-        if (r[1] > 0)
-            return v[0] === 0 && v[1] === r[1] && compareVersions(v, r) >= 0;
-        return v[0] === 0 && v[1] === 0 && v[2] === r[2];
-    }
-    // Tilde ~X.Y.Z
-    if (range.startsWith('~')) {
-        const r = parseVersion(range.slice(1));
-        if (!r)
-            return false;
-        return v[0] === r[0] && v[1] === r[1] && v[2] >= r[2];
-    }
-    // >=X.Y.Z
-    if (range.startsWith('>=')) {
-        const r = parseVersion(range.slice(2).trim());
-        if (!r)
-            return false;
-        return compareVersions(v, r) >= 0;
-    }
-    // * or latest
-    if (range === '*' || range === 'latest' || range === '')
-        return true;
-    return true; // unrecognised range - accept anything
+    const at = packageRangeSeparator(spec);
+    return at === -1 ? { name: spec, version: null } : { name: spec.slice(0, at), version: spec.slice(at + 1) };
 }
 // ─── Registry fetch ───
 function encodePackageName(name) {
@@ -137,52 +66,58 @@ function encodePackageName(name) {
         ? '@' + encodeURIComponent(name.slice(1))
         : encodeURIComponent(name);
 }
+/**
+ * The version `version` (a range, an exact version, a dist-tag, an
+ * `npm:<package>@<range>` alias, or none) installs, picked from the
+ * packument by the rule the worker's resolver picks with (core
+ * _shared/npm-spec.ts parseRegistryRequest, npm-semver.ts
+ * pickPackumentVersion).
+ */
 async function fetchPackageInfo(network, registry, name, version, signal) {
-    // If version is a semver range, resolve it against all versions
-    if (version && isVersionRange(version)) {
-        return (await fetchWithRange(network, registry, name, version, signal));
-    }
-    // Exact version or dist-tag (or null → latest)
-    const tag = version || 'latest';
-    const url = `${registry}/${encodePackageName(name)}/${tag}`;
-    const response = await network.fetch(url, { signal });
+    const request = parseRegistryRequest(name, version ?? '');
+    const url = `${registry}/${encodePackageName(request.registryName)}`;
+    const response = await network.fetch(url, {
+        signal,
+        headers: { Accept: 'application/json' },
+    });
     if (!response.ok) {
         if (response.status === 404) {
             throw new Error(`Package '${name}${version ? '@' + version : ''}' not found in registry`);
         }
         throw new Error(`Registry returned ${response.status} ${response.statusText}`);
     }
-    return RegistryVersionInfoSchema.parse(await response.json());
-}
-async function fetchWithRange(network, registry, name, range, signal) {
-    const url = `${registry}/${encodePackageName(name)}`;
-    const response = await network.fetch(url, {
-        signal,
-        headers: { Accept: 'application/json' },
-    });
-    if (!response.ok) {
-        throw new Error(`Package '${name}' not found in registry`);
-    }
     const data = RegistryPackumentSchema.parse(await response.json());
-    const versions = Object.keys(data.versions || {});
-    const matching = versions
-        .filter((v) => satisfiesRange(v, range))
-        .map((v) => ({ version: v, parsed: parseVersion(v) }))
-        .filter((v) => v.parsed !== null)
-        .sort((a, b) => compareVersions(b.parsed, a.parsed)); // highest first
-    if (matching.length === 0) {
-        throw new Error(`No version of '${name}' satisfies '${range}'`);
+    const picked = pickPackumentVersion(data.versions, data['dist-tags'], request.range);
+    const info = picked === null || !Object.hasOwn(data.versions, picked) ? undefined : data.versions[picked];
+    if (!info) {
+        throw new Error(`No version of '${request.registryName}' satisfies '${request.range}'`);
     }
-    return data.versions[matching[0].version];
+    return info;
 }
-async function fetchAndStreamPackage(network, tarballUrl, targetDir, vfs, signal) {
+/**
+ * Download a tarball, check it against `integrity` as an install checks it
+ * (core _shared/tarball-integrity.ts: the strongest entry, as npm's ssri
+ * does), and only then write it out.
+ */
+async function fetchAndStreamPackage(network, tarballUrl, integrity, targetDir, vfs, signal, stderr) {
     const response = await network.fetch(tarballUrl, { signal });
     if (!response.ok) {
         throw new Error(`Failed to download tarball: ${response.status}`);
     }
     if (!response.body)
         throw new Error(`Registry served no body for ${tarballUrl}`);
-    return (await writeTarballStream(response.body, targetDir, vfs));
+    const sri = integrity ? strongestSriEntry(integrity) : null;
+    if (sri === null) {
+        if (integrity)
+            await stderr.write(`npm WARN integrity "${integrity}" names no algorithm npm checks; skipped verification\n`);
+        return (await writeTarballStream(response.body, targetDir, vfs));
+    }
+    const bytes = new Uint8Array(await response.arrayBuffer());
+    const got = await sriDigestOf(bytes, sri.digestAlgo);
+    if (!sriDigestsEqual(got, sri.digest)) {
+        throw new Error(`integrity mismatch for ${tarballUrl}: expected ${sri.algo}-${sri.digest}, got ${sri.algo}-${got}`);
+    }
+    return (await writeTarballStream(new Response(bytes).body, targetDir, vfs));
 }
 async function readProjectPackageJson(vfs, cwd) {
     const pkgPath = join(cwd, 'package.json');
@@ -228,7 +163,7 @@ async function installSinglePackage(name, version, targetBase, vfs, npmRegistry,
     const info = await fetchPackageInfo(network, npmRegistry, name, version, signal);
     // writeTarballStream throws when the archive carried no manifest and writes
     // package.json last, so a return here is a complete package on disk.
-    await fetchAndStreamPackage(network, info.dist.tarball, targetDir, vfs, signal);
+    await fetchAndStreamPackage(network, info.dist.tarball, info.dist.integrity, targetDir, vfs, signal, stderr);
     let installed = 1;
     // Global install: link binaries into the resolved prefix's bin dir
     if (isGlobal && globalBinDir) {
@@ -409,7 +344,9 @@ async function npmInstall(ctx, registry, kernel, deps) {
                         let versionStr = 'latest';
                         try {
                             const ipkg = JSON.parse((await ctx.vfs.readFileString(installedPkgPath)));
-                            versionStr = '^' + ipkg.version;
+                            // An alias (`mine@npm:real@^1`) saves the package it
+                            // installed, as npm does: "mine": "npm:real@^1.1.0".
+                            versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
                         }
                         catch { /* ignore */ }
                         if (invocation.saveDev) {

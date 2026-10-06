@@ -180,6 +180,7 @@ export declare function packumentL2Url(name: string, registry?: string): string;
 /** L2 cache-key URL for a tarball content address. Hex + the SRI algo
  *  name are already URL-safe, so the R2 key doubles as the URL path. */
 export declare function tarballL2Url(address: TarballAddress): string;
+/** Web-Crypto digest name per npm subresource-integrity algorithm. */
 /**
  * A tarball's content address: the resolved integrity digest, parsed.
  * Holding the parsed form (rather than the raw SRI string) is what makes
@@ -193,17 +194,20 @@ export interface TarballAddress {
     digestAlgo: string;
     /** Lowercase hex digest. */
     hex: string;
+    /** The digest, base64 as the SRI string wrote it. */
+    digest: string;
 }
 /**
  * Parse an npm subresource-integrity string ("sha512-<base64>") into a
- * content address.
+ * content address, read as an install reads it (core _shared/tarball-integrity.ts).
  *
- * Returns null for anything we cannot verify: an empty string, a bare
- * legacy `dist.shasum` (hex, no algorithm prefix), a multi-entry SRI, an
- * unknown algorithm, or malformed base64. A null address means the
- * tarball does not participate in the shared cache at all — we neither
- * read nor write it. Refusing to cache what we cannot verify is the
- * whole point; there is no "trust the name instead" fallback.
+ * Returns null for anything we cannot verify the same way twice: an empty
+ * string, a bare legacy `dist.shasum` (hex, no algorithm prefix), a
+ * multi-entry SRI, an unknown algorithm, or a digest that is not one of its
+ * algorithm (which an install refuses). A null
+ * address means the tarball does not participate in the shared cache at
+ * all — we neither read nor write it. Refusing to cache what we cannot
+ * verify is the whole point; there is no "trust the name instead" fallback.
  */
 export declare function parseTarballAddress(integrity: string): TarballAddress | null;
 /**

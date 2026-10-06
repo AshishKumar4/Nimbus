@@ -18,9 +18,10 @@
  * (@nimbus-sh/platform/wave-writer.js), a ranged write by SupervisorRPC's
  * delivery, each under its own receipt; a piece never repeats them.
  *
- * Each is tried RETRY_ATTEMPTS times, RETRY_BACKOFF_MS apart (each wait
- * jittered by a quarter); every retry is logged by its caller with its
- * cause. Nothing else is retried.
+ * Each is tried RETRY_ATTEMPTS times, RETRY_BACKOFF_MS apart, through the
+ * platform's one retry policy (@nimbus-sh/platform retry.ts: its loop, and
+ * each wait jittered by a quarter); every retry is logged by its caller
+ * with its cause. Nothing else is retried.
  */
 export declare const RETRY_ATTEMPTS = 3;
 /** The waits before the second and the third try. */

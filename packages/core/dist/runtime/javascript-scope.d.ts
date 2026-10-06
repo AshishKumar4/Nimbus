@@ -41,6 +41,13 @@ export interface Scope {
 export declare function scoped(value: unknown, scope: Scope, sloppy: boolean, functionBody?: boolean, parent?: EsNode | null, key?: string): Generator<[EsNode, Scope, EsNode | null, string]>;
 /** The innermost scope from `scope` out that binds `name`, or null where none does. */
 export declare function bindingScope(scope: Scope | null, name: string): Scope | null;
+/**
+ * Whether an identifier under `parent` by `key` reads or writes a binding,
+ * rather than naming a property, a key or a label, `import.meta`'s parts, or
+ * an import or export specifier's names (the declaration's, or the other
+ * module's).
+ */
+export declare function namesBinding(parent: EsNode, key: string): boolean;
 /** Whether a program's code is sloppy: a script without "use strict". */
 export declare function isSloppy(program: EsNode): boolean;
 //# sourceMappingURL=javascript-scope.d.ts.map

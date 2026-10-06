@@ -31,6 +31,7 @@ export declare const RegistryPackumentSchema: z.ZodObject<{
             integrity: z.ZodOptional<z.ZodString>;
         }, z.core.$strip>;
     }, z.core.$loose>>;
+    'dist-tags': z.ZodOptional<z.ZodRecord<z.ZodString, z.ZodString>>;
 }, z.core.$loose>;
 export declare const RegistrySearchResponseSchema: z.ZodObject<{
     objects: z.ZodArray<z.ZodObject<{

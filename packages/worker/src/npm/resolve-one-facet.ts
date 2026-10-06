@@ -53,11 +53,12 @@
 import type { ResolvedPackage } from './resolver.js';
 import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, resolveVersion } from './semver.js';
-import { packageRangeSeparator } from './package-spec.js';
+import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickPackumentVersion, resolveVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
+import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 
 declare const RESOLVE_VERSION: typeof resolveVersion;
 declare const IS_SEMVER_RANGE: typeof isSemverRange;
+declare const PICK_VERSION: typeof pickPackumentVersion;
 declare const PARSE_SEMVER: typeof parseSemver;
 declare const COMPARE_SEMVER: typeof compareSemver;
 
@@ -178,31 +179,6 @@ export interface ResolveOneResult {
   error?:
     | { type: 'w6-reject'; from: string; reason: string; suggest?: string }
     | { type: 'unresolved'; reason: string };
-}
-
-/**
- * Parse an npm spec into install-name / registry-name / range. `npm:`
- * aliases redirect the registry lookup to a different package while the
- * dep records the alias as the install name; everything else is the
- * identity. Shared with the installer's lockfile check (which reads the
- * inner range out of an alias spec) and re-declared in the loader
- * preamble so the facet's serialized body sees the same implementation.
- */
-export function parseRegistryRequest(name: string, range: string) {
-  const text = String(range || 'latest');
-  if (!text.startsWith('npm:')) {
-    return { installName: name, registryName: name, range: text, alias: false };
-  }
-  const target = text.slice(4);
-  const splitAt = packageRangeSeparator(target);
-  const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
-  const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
-  return {
-    installName: name,
-    registryName: registryName || name,
-    range: targetRange || 'latest',
-    alias: true,
-  };
 }
 
 /**
@@ -535,17 +511,10 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   //    semver range nothing satisfies. That is npm's ETARGET, and falling
   //    back installed a version outside the range asked for (a swap target
   //    that lacks the range's versions handed back its own latest).
-  const pickVersion = (packument: Packument): unknown => {
-    let picked: unknown = null;
-    if (request.range && readProperty(packument.versions, request.range)) picked = request.range;
-    if (!picked && request.range && request.range !== 'latest') {
-      picked = RESOLVE_VERSION(Object.keys(packument.versions), request.range);
-    }
-    if (!picked) picked = readProperty(packument['dist-tags'], request.range) || null;
-    const open = !request.range || ['latest', '*', 'x', 'X'].includes(String(request.range).trim());
-    if (!picked && (open || !IS_SEMVER_RANGE(request.range))) picked = readProperty(packument['dist-tags'], 'latest') || null;
-    return picked;
-  };
+  // The version the request installs, by the rule every npm here picks with
+  // (core _shared/npm-semver.ts pickPackumentVersion, from the preamble).
+  const pickVersion = (packument: Packument): string | null =>
+    PICK_VERSION(packument.versions, packument['dist-tags'], request.range);
 
   // A `since` swap is decided on the package itself: resolve its own
   // packument and version first, and consult the target only when that

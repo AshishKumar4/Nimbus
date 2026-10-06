@@ -31,7 +31,6 @@ import type {
 } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
@@ -46,7 +45,7 @@ import {
 import { nestedPlacement, visiblePlacements } from './placement.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
-import { satisfiesRange, isSemverRange } from './semver.js';
+import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
 import {
   npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine,
   type NpmLogEmitter,
@@ -81,11 +80,11 @@ import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { type FacetCachedEntry } from './resolve-facet.js';
 import {
   resolveOnePackumentInFacet,
-  parseRegistryRequest,
   type ResolveOneSpec,
   type ResolveOneResult,
 } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
+import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
 import {
   buildSliceForSpecifierWithCap,
   type PrebundleSpec,
@@ -98,7 +97,7 @@ import {
 } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { packageRangeSeparator } from './package-spec.js';
+import { packageRangeSeparator, parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import {
   scanProjectImports,
   transformParser,
@@ -112,6 +111,7 @@ import {
   createNpmBinManifest,
   createNpmBinShim,
   npmBinManifestPath,
+  declaredPackageBins,
   packageBinEntries,
   parseNpmBinManifest,
   type NpmBinEntry,
@@ -1159,7 +1159,7 @@ export class NpmInstaller {
       // W7: tar-stream + W7-frame preambles concatenated. Forwarded
       // to every facet (in-DO and per-peer) so each shard's facet
       // can encode its own write-batch stream.
-      preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE,
+      preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + NPM_INSTALL_PREAMBLE,
       // Authorize each facet's writeBatchStream under the invoking
       // process credential; without a positive pid the supervisor
       // rejects the write (S2a cred enforcement).
@@ -1648,7 +1648,7 @@ export class NpmInstaller {
       const key = `${nmDir}/${placement}`;
       const inRemoved = removed.some((parent) => placement.startsWith(parent + '/node_modules/'));
       if (!inRemoved && await project.exists(key)) {
-        if (!placement.includes('/node_modules/')) for (const name of await this.declaredBins(project, key)) unlinked.add(name);
+        if (!placement.includes('/node_modules/')) for (const name of await declaredPackageBins(project, key)) unlinked.add(name);
         await project.removeRecursive(key);
       }
       removed.push(placement);
@@ -1670,14 +1670,6 @@ export class NpmInstaller {
     }
     log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
     return removed.length;
-  }
-
-  /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
-  private async declaredBins(project: ProjectFs, dir: string): Promise<string[]> {
-    let manifest: Record<string, unknown> | null = null;
-    try { manifest = safeJsonParse<Record<string, unknown> | null>(await project.readFileString(`${dir}/package.json`), null); } catch { return []; }
-    if (manifest === null || typeof manifest.name !== 'string') return [];
-    return [...npmBinMap(manifest.name, manifest.bin).keys()];
   }
 
   /**
