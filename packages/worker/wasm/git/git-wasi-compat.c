@@ -88,6 +88,7 @@ NIMBUS_PROC_IMPORT("dup") int __nimbus_dup(int fd, int *out);
 NIMBUS_PROC_IMPORT("dup2") int __nimbus_dup2(int from, int to);
 NIMBUS_PROC_IMPORT("spawn") int __nimbus_spawn(const char *argv, size_t argv_len, const char *env, size_t env_len,
     const char *dir, size_t dir_len, int fdin, int fdout, int fderr, int *pid);
+NIMBUS_PROC_IMPORT("start") int __nimbus_start(int pid);
 NIMBUS_PROC_IMPORT("wait") int __nimbus_wait(int pid, int options, int *status, int *waited);
 NIMBUS_PROC_IMPORT("kill") int __nimbus_kill(int pid, int signal);
 
@@ -146,9 +147,16 @@ pid_t nimbus_spawnvpe(const char *file, const char **argv, char **deltaenv, cons
   for (char **d = deltaenv; d && *d; d++) if (strchr(*d, '=')) env[used++] = *d;
   env[used] = NULL;
 
+  /* The child's directory, absolute: the host has no cwd of this process's. */
   char cwd[4096];
-  if (!dir) {
+  if (!dir || dir[0] != '/') {
     if (!getcwd(cwd, sizeof cwd)) { free(env); return -1; }
+    if (dir && dir[0]) {
+      size_t n = strlen(cwd);
+      if (n + 1 + strlen(dir) + 1 > sizeof cwd) { free(env); errno = ENAMETOOLONG; return -1; }
+      if (n > 1) cwd[n++] = '/';
+      strcpy(cwd + n, dir);
+    }
     dir = cwd;
   }
   size_t argv_len = 0, env_len = 0;
@@ -160,5 +168,13 @@ pid_t nimbus_spawnvpe(const char *file, const char **argv, char **deltaenv, cons
   int error = __nimbus_spawn(argv_buf, argv_len, env_buf, env_len, dir, strlen(dir), fdin, fdout, fderr, &pid);
   free(argv_buf);
   free(env_buf);
+  if (error) { errno = error; return -1; }
+  /*
+   * As posix_spawn reports a program that is not there (ENOENT, which git
+   * takes as "not a command") or no room to run it (EAGAIN): the host
+   * answers once the child started, or was refused. A wait it gives up on
+   * (EINTR) is asked again.
+   */
+  do error = __nimbus_start(pid); while (error == EINTR);
   return nimbus_result(error, pid);
 }
