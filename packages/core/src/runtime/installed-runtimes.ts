@@ -96,7 +96,15 @@ export function runtimeAbiForManifest(manifest: RuntimeManifest): RuntimePackage
  * here. Mechanically validated against `NIMBUS_RUNTIME_ABIS` by
  * tests/unit/runtime-command-aliases.mjs.
  */
-export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ManifestEntrypoint[]>> = {
+/**
+ * A command a runtime provides beyond its manifest's entrypoints: run by
+ * `runner`, or by whatever runner the manifest's `runnerOf` entrypoint
+ * names, so a command that drives the interpreter (pip) runs on the runner
+ * of the build installed, whichever that is.
+ */
+export type ExtraEntrypoint = Omit<ManifestEntrypoint, 'runner'> & ({ runner: string; runnerOf?: never } | { runnerOf: string; runner?: never });
+
+export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly ExtraEntrypoint[]>> = {
   bash: [
     { binName: '/bin/bash', runner: BASH_RUNNER, args: [] },
     { binName: '/usr/bin/bash', runner: BASH_RUNNER, args: [] },
@@ -105,8 +113,8 @@ export const RUNTIME_EXTRA_ENTRYPOINTS: Readonly<Record<string, readonly Manifes
   // may claim it. The python row went with python-runner: Pyodide's manifest
   // still names that runner, so it could not serve pip even if it were listed.
   cpython: [
-    { binName: 'pip', runner: 'cpython-runner', kind: 'pip', args: [] },
-    { binName: 'pip3', runner: 'cpython-runner', kind: 'pip', args: [] },
+    { binName: 'pip', runnerOf: 'python', kind: 'pip', args: [] },
+    { binName: 'pip3', runnerOf: 'python', kind: 'pip', args: [] },
   ],
   ruby: [
     { binName: 'gem', runner: 'ruby-runner', kind: 'gem', args: [] },
@@ -120,7 +128,11 @@ export function runtimeEntrypoints(manifest: RuntimeManifest): RuntimeManifest['
   const seen = new Set(out.map((ep) => ep.binName));
   for (const ep of RUNTIME_EXTRA_ENTRYPOINTS[manifest.name] ?? []) {
     if (seen.has(ep.binName)) continue;
-    out.push({ ...ep });
+    const { runnerOf, ...rest } = ep;
+    const runner = runnerOf === undefined ? ep.runner : manifest.entrypoints.find((m) => m.binName === runnerOf)?.runner;
+    // A manifest without the entrypoint it would run on provides no such command.
+    if (runner === undefined) continue;
+    out.push({ ...rest, runner });
     seen.add(ep.binName);
   }
   return out;

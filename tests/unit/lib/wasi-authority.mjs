@@ -125,7 +125,7 @@ export function makeGuest(P, session, init = {}, imports = {}) {
     stderrWrite: (s) => { stderr.push(s); },
     ...imports,
   };
-  const { wasiImport } = options.parking === 'jspi' && !suspending ? makeImportsWithoutJSPI(P, options) : P.__wasiMakeImports(options);
+  const { wasiImport, fsImport, procImport } = options.parking === 'jspi' && !suspending ? makeImportsWithoutJSPI(P, options) : P.__wasiMakeImports(options);
   const u8 = () => new Uint8Array(memory.buffer);
   const dv = () => new DataView(memory.buffer);
   // Bump allocator over the raw linear memory (well past page 0).
@@ -141,7 +141,7 @@ export function makeGuest(P, session, init = {}, imports = {}) {
   };
   const ALL_RIGHTS = -1n;
   return {
-    wasi: wasiImport, memory, u8, dv, alloc, putStr, iovec, stdout, stderr,
+    wasi: wasiImport, fsImport, procImport, memory, u8, dv, alloc, putStr, iovec, stdout, stderr,
     /** path_open against preopen fd 3 (or `dirfd`); every right by default. */
     open(p, { dirfd = 3, lookup = 1, oflags = 0, rights = ALL_RIGHTS, inheriting = ALL_RIGHTS, fdflags = 0 } = {}) {
       const [pp, pl] = putStr(p);

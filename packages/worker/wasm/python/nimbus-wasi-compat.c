@@ -48,32 +48,6 @@ __attribute__((weak)) int pthread_once(pthread_once_t *control, void (*init)(voi
 	return 0;
 }
 
-/* WASI has no notion of a user, so wasi-libc omits the identity calls
- * entirely — and a great deal of ordinary Python assumes they are there.
- * pip is the case that forced this: its vendored platformdirs does a bare
- * `from os import getuid` at import time, so every pip invocation died before
- * reaching a wheel. The value matches what Nimbus's other WASI guest reports
- * (bash, runtime/bash/preamble.ts). */
-uid_t getuid(void)
-{
-	return 0;
-}
-
-uid_t geteuid(void)
-{
-	return 0;
-}
-
-gid_t getgid(void)
-{
-	return 0;
-}
-
-gid_t getegid(void)
-{
-	return 0;
-}
-
 /* -lwasi-emulated-mman declares msync but does not define it, so linking
  * CPython's mmap module fails. Every mapping that can exist here is anonymous —
  * wasi-libc's mmap refuses a file descriptor — and flushing an anonymous

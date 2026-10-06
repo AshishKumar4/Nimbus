@@ -22,3 +22,11 @@ ac_cv_func_shutdown=yes
 ac_cv_func_getpeername=yes
 ac_cv_func_accept4=yes
 ac_cv_func_umask=yes
+
+# upstream's site file says chmod, fchmod and fchmodat are missing, and
+# os.chmod then succeeds and changes nothing (posixmodule.c's __wasi__ branch).
+# wasi-libc has them (stubs); the reactor link wraps them onto the Nimbus
+# filesystem extension (nimbus-fs-wrap.c), so os.chmod changes the mode.
+ac_cv_func_chmod=yes
+ac_cv_func_fchmod=yes
+ac_cv_func_fchmodat=yes

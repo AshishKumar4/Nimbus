@@ -46,7 +46,7 @@ async function boot({ label, supervisor, parking, enter, makeImports }) {
   P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
   P.__wasiAdoptSupervisor(supervisor);
   const stderr = [];
-  const { wasiImport } = makeImports({
+  const { wasiImport, fsImport, procImport } = makeImports({
     argv: ['python'],
     env: { HOME: '/home/user', TMPDIR: '/tmp', PYTHONUNBUFFERED: '1' },
     parking,
@@ -54,7 +54,9 @@ async function boot({ label, supervisor, parking, enter, makeImports }) {
     stdoutWrite: () => {},
     stderrWrite: (s) => { stderr.push(s); },
   });
-  const instance = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(WASM)), { wasi_snapshot_preview1: wasiImport });
+  const instance = new WebAssembly.Instance(new WebAssembly.Module(readFileSync(WASM)), {
+    wasi_snapshot_preview1: wasiImport, nimbus_fs: fsImport, nimbus_proc: procImport,
+  });
   const { memory, malloc, free, nimbus_py_init, nimbus_py_run } = instance.exports;
   const encoder = new TextEncoder();
   async function withCString(text, fn) {

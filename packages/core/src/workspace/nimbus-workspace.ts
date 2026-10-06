@@ -39,7 +39,7 @@ import {
   DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS,
   DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION,
 } from '../constants.js';
-import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import type { SqlDatabase, TransactionHost, NimbusFilesystemAuthority } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { ProcessView } from '../runtime/process-files.js';
@@ -788,7 +788,10 @@ function registerWasmRuntimes(deps: {
     // call, so a program that keeps serving is refused by name rather than
     // run as a one-shot that dies with it. Same for ruby, where a script is
     // the shape that may bind a port.
+    // The stock build and the one importing the Nimbus extensions (CPYTHON_RUNNER) run on the same runner.
     'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
+      .makeCPythonRunnerFactory({ facets: deps.facets })),
+    [CPYTHON_RUNNER]: lazy(async () => (await import('../runtime/cpython-runner.js'))
       .makeCPythonRunnerFactory({ facets: deps.facets })),
     'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
       .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome })),

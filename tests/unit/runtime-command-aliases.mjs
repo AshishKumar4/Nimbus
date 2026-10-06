@@ -32,12 +32,17 @@ import { NIMBUS_RUNTIME_ABIS } from '../../packages/core/src/runtime/os-contract
       assert.ok(!seenBins.has(ep.binName), `duplicate extra command '${ep.binName}'`);
       seenBins.add(ep.binName);
       // `<runtime>-runner`, with `@<contract>` once a rebuild has changed
-      // the artifact contract the runner binds (see BASH_RUNNER).
-      assert.match(
-        ep.runner,
-        new RegExp(`^${runtime}-runner(@\\d+)?$`),
-        `extra command '${ep.binName}' must dispatch to the ${runtime} runner`,
-      );
+      // the artifact contract the runner binds (see BASH_RUNNER); or the
+      // runner of one of the runtime's own entrypoints (`runnerOf`).
+      if (ep.runnerOf === undefined) {
+        assert.match(
+          ep.runner,
+          new RegExp(`^${runtime}-runner(@\\d+)?$`),
+          `extra command '${ep.binName}' must dispatch to the ${runtime} runner`,
+        );
+      } else {
+        assert.equal(ep.runner, undefined, `extra command '${ep.binName}' names one runner`);
+      }
       assert.deepEqual(ep.args, [], `extra command '${ep.binName}' must not inject args`);
     }
   }
@@ -204,6 +209,12 @@ class FakeVfs {
   assert.ok(vfs.exists('home/user/.nimbus/runtimes/cpython/3.13.14/manifest.json'));
   for (const bin of ['python', 'python3', 'pip', 'pip3']) {
     assert.ok(registered.includes(bin), `expected '${bin}' to be registered`);
+  }
+  // pip runs on the runner of the interpreter installed, whichever build it is.
+  const { runtimeEntrypoints } = await import('../../packages/core/src/runtime/installed-runtimes.ts');
+  for (const runner of ['cpython-runner', 'cpython-runner@2']) {
+    const manifest = { ...manifests['manifests/cpython-3.13.14.json'], entrypoints: [{ binName: 'python', runner, args: [] }] };
+    assert.equal(runtimeEntrypoints(manifest).find((ep) => ep.binName === 'pip')?.runner, runner, `pip on ${runner}`);
   }
 
   // Unknown specs still fail loudly with the catalog hint.

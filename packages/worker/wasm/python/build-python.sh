@@ -198,13 +198,14 @@ stage_deps() {
 stage_nimbus() {
 	log "libnimbuswasi.a"
 	mkdir -p "$WORK/nimbus"
-	for unit in nimbus-net nimbus-wasi-compat; do
+	# The shared shim (wasm/nimbus-libc) beside CPython's own units.
+	for unit in nimbus-net nimbus-wasi-compat nimbus-fs-wrap ../nimbus-libc/nimbus-fs; do
 		"$CC" $TARGET_CFLAGS -std=c11 -Wall -Wextra -Werror \
 		  -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_MMAN \
 		  -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
-		  -I"$HERE/include" -include "$HERE/include/nimbus-net.h" \
+		  -I"$HERE/include" -I"$HERE/../nimbus-libc" -include "$HERE/include/nimbus-net.h" \
 		  -include "$HERE/include/nimbus-wasi-compat.h" \
-		  -c "$HERE/$unit.c" -o "$WORK/nimbus/$unit.o"
+		  -c "$HERE/$unit.c" -o "$WORK/nimbus/$(basename "$unit").o"
 	done
 	"$AR" rcs "$DEPS/lib/libnimbuswasi.a" "$WORK/nimbus"/*.o
 }
@@ -332,7 +333,10 @@ link_reactor() {
 	    -c "$table" -o nimbus-ext.o
 	  # No --start-group: wasm-ld rejects the flag and does not need it, because
 	  # it resolves archives to a fixed point rather than in one pass.
+	  # A file's status and mode through the shared shim (nimbus-fs-wrap.c).
 	  "$CC" --sysroot="$SYSROOT" $(mkvar PY_CORE_LDFLAGS) -mexec-model=reactor \
+	    -Wl,--wrap=stat -Wl,--wrap=lstat -Wl,--wrap=fstat -Wl,--wrap=fstatat \
+	    -Wl,--wrap=chmod -Wl,--wrap=fchmod -Wl,--wrap=fchmodat -Wl,--wrap=access -Wl,--wrap=faccessat \
 	    -o "$out" nimbus-py.o nimbus-ext.o "$@" $(mkvar LINK_PYTHON_OBJS) \
 	    $(mkvar LIBS) $(mkvar MODLIBS) $(mkvar SYSLIBS) \
 	    -Wl,--export=nimbus_py_init -Wl,--export=nimbus_py_run \
@@ -568,7 +572,7 @@ REQUIRED_MODULES="ZLIB _BZ2 _LZMA _SSL _HASHLIB _SQLITE3 _SOCKET _DECIMAL _ASYNC
 # config.site-nimbus-wasi. Asserted here so a stale override shows up as a build
 # failure rather than as a missing attribute at runtime.
 REQUIRED_FUNCS="GETUID GETEUID GETGID GETEGID UMASK SOCKET SHUTDOWN GETPEERNAME ACCEPT4 \
-GETADDRINFO LSTAT FSTATAT MKDIRAT FUTIMENS UTIMENSAT READLINK SYMLINK"
+GETADDRINFO LSTAT FSTATAT MKDIRAT FUTIMENS UTIMENSAT READLINK SYMLINK CHMOD FCHMOD FCHMODAT"
 
 stage_verify() {
 	log "verify"
@@ -593,19 +597,24 @@ stage_verify() {
 		echo "ERROR: a required module or function is missing; see build-wasi/config.log" >&2
 		exit 1
 	fi
-	# Nothing but preview1 may be imported: the artifacts have to stay stock WASI
-	# modules that any conforming host can instantiate. Both variants, because
-	# the sci one links C++ and a second libc, either of which could drag in an
-	# import the base build never had.
+	# Nothing but what this tree's WASI host provides may be imported: preview1
+	# and the Nimbus extensions (core's WASI_RUNTIME_IMPORT_MODULES, read from
+	# its committed dist), and nimbus_fs must be, or modes were not linked.
+	# Both variants, because the sci one links C++ and a second libc, either of
+	# which could drag in an import the base build never had.
 	local variant ns
 	for variant in python.wasm python-sci.wasm; do
-		ns=$(node -e "
-		  const m = new WebAssembly.Module(require('fs').readFileSync('$HERE/$variant'));
-		  const s = new Set(WebAssembly.Module.imports(m).map(i => i.module));
-		  process.stdout.write([...s].sort().join(','));")
+		ns=$(node --input-type=module -e "
+		  import { readFileSync } from 'node:fs';
+		  import { WASI_RUNTIME_IMPORT_MODULES } from '$HERE/../../../core/dist/runtime/os-contracts.js';
+		  const m = new WebAssembly.Module(readFileSync('$HERE/$variant'));
+		  const s = [...new Set(WebAssembly.Module.imports(m).map(i => i.module))].sort();
+		  const stray = s.filter(n => !WASI_RUNTIME_IMPORT_MODULES.includes(n));
+		  if (stray.length || !s.includes('nimbus_fs')) process.exitCode = 1;
+		  process.stdout.write(s.join(','));") || {
+			echo "  $variant import namespaces: $ns" >&2
+			echo "ERROR: $variant imports outside WASI_RUNTIME_IMPORT_MODULES, or not nimbus_fs" >&2; exit 1; }
 		echo "  $variant import namespaces: $ns"
-		[ "$ns" = "wasi_snapshot_preview1" ] || {
-			echo "ERROR: unexpected import namespace in $variant" >&2; exit 1; }
 	done
 
 	# The sci variant's extensions have to be registered under the dotted names

@@ -7,7 +7,7 @@
  * the `latest` build. A runtime joins the npm set by gaining an `npm` entry.
  */
 
-import { BASH_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Static per-runtime spec. Each entry says where to fetch the upstream
@@ -215,15 +215,20 @@ export const SPECS = {
   // above this is a real WASI module: it talks to runtime/wasi/preamble.ts, so
   // it has no filesystem of its own to copy in and diff back out.
   //
-  // Additive alongside python/0.29.4. Nothing reads these keys until
-  // session/init.ts routes `python` at the cpython-runner factory.
-  'cpython/3.13.14': {
+  // Additive alongside python/0.29.4. The version's suffix numbers the
+  // build: -1 imports the Nimbus extensions (nimbus_fs, nimbus_proc ids) for
+  // file modes, owners, chmod and its credential, so its entrypoints name
+  // CPYTHON_RUNNER and a deployment whose host predates them never binds it.
+  // 3.13.14 is the stock build, published under `cpython-runner`.
+  'cpython/3.13.14-1': {
     license: 'PSF-2.0',
     wasi_namespace: 'wasi_snapshot_preview1',
     local_base: '../wasm/python',
     npm: {
       name: '@nimbus-sh/runtime-cpython',
       summary: 'CPython 3.13.14, cross-compiled to wasm32-wasi, with its stdlib',
+      // The first core whose runner is CPYTHON_RUNNER.
+      core: '>=0.16.0',
     },
     files: [
       { src: 'python.wasm',   vfs: 'share/cpython/python.wasm' },
@@ -250,8 +255,8 @@ export const SPECS = {
       // at this. Mozilla's bundle, as published by curl.se.
       { src: 'cacert.pem',     vfs: 'etc/ssl/cert.pem' },
       { src: 'STDLIB_MARKER', vfs: 'lib/python3.13/os.py' },
-      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: 'cpython-runner', binName: 'python' },
-      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: 'cpython-runner', binName: 'python3' },
+      { src: 'BIN_MARKER', vfs: 'bin/python',  mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python' },
+      { src: 'BIN_MARKER', vfs: 'bin/python3', mode: 'exec', runner: CPYTHON_RUNNER, binName: 'python3' },
     ],
     license_text: PSF_LICENSE_NOTICE(),
     /** Source 'BIN_MARKER' is synthesised, not fetched. */

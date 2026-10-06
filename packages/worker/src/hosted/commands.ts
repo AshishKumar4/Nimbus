@@ -5,7 +5,7 @@ import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/typ
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
-import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -165,8 +165,7 @@ workspace.runtimes.registerRunner(
 // no flags that would consume args) drops into an interactive
 // REPL. The wrap is purely additive — args-bearing invocations
 // pass through to the existing handler unchanged.
-workspace.runtimes.registerRunner(
-  'cpython-runner',
+const cpythonRunner: Parameters<typeof workspace.runtimes.registerRunner>[1] =
   (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx: any): Promise<number> {
     const argv: string[] = ctx.args || [];
     // No args at all → REPL session. Hand off to runPythonRepl
@@ -200,8 +199,10 @@ workspace.runtimes.registerRunner(
       facets: facetHostForManager(facetMgr),
       startResident: cpythonResidentStart(facetMgr),
     })(manifest, installRoot, binName, binKind)(ctx);
-  },
-);
+  };
+// The stock build, and the one importing the Nimbus extensions (CPYTHON_RUNNER): one runner.
+workspace.runtimes.registerRunner('cpython-runner', cpythonRunner);
+workspace.runtimes.registerRunner(CPYTHON_RUNNER, cpythonRunner);
 // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
 // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
 // bootstrap runs at child-facet module-init time, per-call

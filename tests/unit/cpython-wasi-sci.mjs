@@ -36,6 +36,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 
 import { loadWasiPreamble, makeGuest, makeSession } from './lib/wasi-authority.mjs';
+import { WASI_RUNTIME_IMPORT_MODULES } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const RUNTIME_DIR = path.join(
   import.meta.dir ?? path.dirname(new URL(import.meta.url).pathname),
@@ -71,13 +72,14 @@ const guest = makeGuest(P, session, {}, {
 const { wasi: wasiImport, stdout, stderr } = guest;
 
 const module_ = new WebAssembly.Module(readFileSync(WASM));
-assert.deepEqual(
-  [...new Set(WebAssembly.Module.imports(module_).map((i) => i.module))],
-  ['wasi_snapshot_preview1'],
-  'python-sci.wasm must import nothing but preview1',
-);
+// What it imports is what this tree's WASI host provides (core's
+// WASI_RUNTIME_IMPORT_MODULES): preview1, and the Nimbus extensions for file
+// modes, owners, chmod and its credential (wasm/nimbus-libc).
+const imported = [...new Set(WebAssembly.Module.imports(module_).map((i) => i.module))].sort();
+assert.deepEqual(imported.filter((name) => !WASI_RUNTIME_IMPORT_MODULES.includes(name)), [], 'python-sci.wasm imports only what the host provides');
+assert.ok(imported.includes('nimbus_fs'), 'python-sci.wasm reads modes through nimbus_fs');
 
-instance = new WebAssembly.Instance(module_, { wasi_snapshot_preview1: wasiImport });
+instance = new WebAssembly.Instance(module_, { wasi_snapshot_preview1: wasiImport, nimbus_fs: guest.fsImport, nimbus_proc: guest.procImport });
 const { memory, malloc, free, nimbus_py_init, nimbus_py_run } = instance.exports;
 
 const encoder = new TextEncoder();

@@ -666,6 +666,30 @@ export const NIMBUS_RUNTIME_ABIS: Readonly<Record<string, RuntimePackageAbi>> = 
  */
 export const BASH_RUNNER = 'bash-runner@3';
 
+/**
+ * The import modules a wasm runtime built in this tree may import: WASI
+ * preview1, and the Nimbus extensions this tree's WASI hosts provide —
+ * nimbus_fs (a file's mode and owner, chmod: runtime/wasi/types.ts
+ * NimbusFsImports) and nimbus_proc (the process's children, pipes and
+ * credential: the shared WASI layer's runtime/wasi/processes.ts; bash's
+ * runner provides its own table under the name, runtime/bash/preamble.ts,
+ * bound by BASH_RUNNER). Each build's verify stage checks
+ * its images against this list (packages/worker/wasm/python/build-python.sh,
+ * packages/worker/wasm/git/build-git.sh). An image importing an extension
+ * needs a host that provides it, so a runtime whose build first does takes a
+ * new runner key ({@link CPYTHON_RUNNER}).
+ */
+export const WASI_RUNTIME_IMPORT_MODULES: readonly string[] = Object.freeze(['nimbus_fs', 'nimbus_proc', 'wasi_snapshot_preview1']);
+
+/**
+ * The runner key a CPython manifest's entrypoints name. @2: the interpreter
+ * imports the Nimbus extensions beside preview1 (WASI_RUNTIME_IMPORT_MODULES)
+ * for file modes, owners, chmod and its credential (wasm/nimbus-libc), so a
+ * deployment whose host predates them never binds it and keeps the stock
+ * build, published under `cpython-runner`. This host runs both.
+ */
+export const CPYTHON_RUNNER = 'cpython-runner@2';
+
 /** Name-to-name package rewrite at the resolver/installer boundary. */
 export interface PackageSwapEntry {
   /** Original package name the user (or a transitive dep) asked for. */
