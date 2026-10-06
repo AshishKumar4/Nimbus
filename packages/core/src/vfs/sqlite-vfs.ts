@@ -4719,20 +4719,8 @@ export class SqliteVFS {
     const held: { off: number; piece: Piece }[] = [];
     let heldBytes = 0;
     let staging: StagingContent | null = null;
-    let builder: TransactionPlanBuilder | null = null;
-    const stagedPath = path ?? node.path;
-    const flush = (): void => {
-      if (builder === null || builder.empty) return;
-      const plan = builder.build();
-      builder = this.newPlan();
-      this.assertTransactionFits(plan.metrics);
-      this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
-    };
-    const stage = (next: Piece): void => {
-      builder ??= this.newPlan();
-      if (builder.wouldExceedPieces(next.data.byteLength, 1) !== null) flush();
-      builder!.addStagedPiece(staging!, next, stagedPath);
-    };
+    const { stage, flush } = this.stagingWriter(() => staging!, path ?? node.path,
+      (plan) => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
     const startStaging = (): void => {
       staging = this.beginStaging();
       if (node.contentId !== null && from > 0) this.stageManifestCopy(staging, node.contentId, 0, from);
@@ -4779,7 +4767,7 @@ export class SqliteVFS {
           for (const entry of held) digest.add(entry.piece.hash);
           content = { type: 'large', pieces: held.map((entry) => entry.piece), size: newSize, digest: digest.digest(newSize) };
         }
-        if (content !== null && this.tryPublishRewrite(node, path, newSize, content, onCommit, madeAt)) return;
+        if (content !== null && this.publishRewrite(node, path, newSize, content, onCommit, madeAt, true)) return;
         startStaging();
       }
       const target = staging!;
@@ -4798,22 +4786,11 @@ export class SqliteVFS {
   }
 
   /** Publish a rewrite in one transaction when it fits; false when it does not. */
-  private tryPublishRewrite(
-    node: INode,
-    path: string | null,
-    newSize: number,
-    content: InodeContent,
-    onCommit?: () => void,
-    madeAt?: number,
-  ): boolean {
-    const builder = this.newPlan();
-    builder.addInode(this.rewrittenEntry(node, path, newSize, content, madeAt));
-    const plan = builder.build();
-    if (exceededTransactionLimit(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics) !== null) return false;
-    this.commitRewrite(node, path, plan, onCommit);
-    return true;
-  }
-
+  /**
+   * Publish `node` rewritten to `content` in one transaction. One that would
+   * not fit the transaction bounds is refused (assertTransactionFits), or,
+   * `ifFits`, not made: false, and the caller publishes it another way.
+   */
   private publishRewrite(
     node: INode,
     path: string | null,
@@ -4821,12 +4798,19 @@ export class SqliteVFS {
     content: InodeContent,
     onCommit?: () => void,
     madeAt?: number,
-  ): void {
+    ifFits = false,
+  ): boolean {
     const builder = this.newPlan();
     builder.addInode(this.rewrittenEntry(node, path, newSize, content, madeAt));
     const plan = builder.build();
-    this.assertTransactionFits(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics);
+    const metrics = onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics;
+    if (ifFits) {
+      if (exceededTransactionLimit(metrics) !== null) return false;
+    } else {
+      this.assertTransactionFits(metrics);
+    }
     this.commitRewrite(node, path, plan, onCommit);
+    return true;
   }
 
   /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
@@ -4932,6 +4916,35 @@ export class SqliteVFS {
 
   private newPlan(commitRow = false): TransactionPlanBuilder {
     return new TransactionPlanBuilder(this._pinGen > 0, commitRow);
+  }
+
+  /**
+   * Pieces staged into `staging` (of the file at `path`) in bounded
+   * transactions: each takes pieces until the next would not fit, then
+   * commits through `commit` (the caller's: its authority, its checkpoint
+   * row with `commitRow`). `flush` commits what is held.
+   */
+  private stagingWriter(
+    staging: () => StagingContent,
+    path: string,
+    commit: (plan: TransactionPlan) => void,
+    commitRow = false,
+  ): { stage(piece: Piece): void; flush(): void } {
+    let builder = this.newPlan(commitRow);
+    const flush = (): void => {
+      if (builder.empty) return;
+      const plan = builder.build();
+      builder = this.newPlan(commitRow);
+      this.assertTransactionFits(plan.metrics);
+      commit(plan);
+    };
+    return {
+      stage: (piece) => {
+        if (builder.wouldExceedPieces(piece.data.byteLength, 1) !== null) flush();
+        builder.addStagedPiece(staging(), piece, path);
+      },
+      flush,
+    };
   }
 
   /** Create a state-0 content in its own transaction and hold it live. */
@@ -7531,22 +7544,15 @@ export class SqliteVFS {
       )][0];
       Object.assign(staging, { id: job.ahead, size: Number(row.size), count: Number(row.count) });
     }
-    let builder = this.newPlan(true);
-    const flush = (): void => {
-      if (builder.empty) return;
-      const plan = builder.build();
-      builder = this.newPlan(true);
-      this.assertTransactionFits(plan.metrics);
-      // The job names the staging in the transaction that makes it.
+    // The job names the staging in the transaction that makes it.
+    const { stage, flush } = this.stagingWriter(() => staging, target, (plan) => {
       this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
         this.sql.exec("UPDATE vfs_jobs SET args = json_set(args, '$.ahead', ?) WHERE id = ?", staging.id, id);
       });
-    };
+    }, true);
     let stored = 0;
     for (const hash of this.absentChunks([...given.keys()])) {
-      const data = given.get(hash)!;
-      if (builder.wouldExceedPieces(data.byteLength, 1) !== null) flush();
-      builder.addStagedPiece(staging, { data, hash: unhex(hash) }, target);
+      stage({ data: given.get(hash)!, hash: unhex(hash) });
       stored++;
     }
     flush();
@@ -8123,21 +8129,14 @@ export class SqliteVFS {
       throw vfsError('EINVAL', inode.path, `${data.byteLength} bytes for size ${inode.size}`);
     }
     const staging: StagingContent = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-    let builder = this.newPlan();
-    const flush = (): void => {
-      if (builder.empty) return;
-      const plan = builder.build();
-      builder = this.newPlan();
-      this.assertTransactionFits(plan.metrics);
-      this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
-    };
+    const { stage, flush } = this.stagingWriter(() => staging, inode.path,
+      (plan) => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
     try {
       let start = 0;
       for (const end of cutContent(data)) {
         const piece = data.subarray(start, end);
         start = end;
-        if (builder.wouldExceedPieces(piece.byteLength, 1) !== null) flush();
-        builder.addStagedPiece(staging, { data: piece, hash: chunkHash(piece) }, inode.path);
+        stage({ data: piece, hash: chunkHash(piece) });
       }
       flush();
       const result = this.publishStagedFile(inode, staging, onCommit);
@@ -8235,18 +8234,10 @@ export class SqliteVFS {
       return this._revision;
     }
     const staging: StagingContent = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-    let builder = this.newPlan();
-    const flush = (): void => {
-      if (builder.empty) return;
-      const plan = builder.build();
-      builder = this.newPlan();
-      this.assertTransactionFits(plan.metrics);
-      asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
-    };
-    const stage = (data: Uint8Array): void => {
-      if (builder.wouldExceedPieces(data.byteLength, 1) !== null) flush();
-      builder.addStagedPiece(staging, { data, hash: chunkHash(data) }, target);
-    };
+    const writer = this.stagingWriter(() => staging, target,
+      (plan) => asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' })));
+    const flush = writer.flush;
+    const stage = (data: Uint8Array): void => writer.stage({ data, hash: chunkHash(data) });
     const cutter = new ContentCutter();
     let received = 0;
     try {
