@@ -27,7 +27,12 @@ import type { ExclusiveMutationGrant, RecallKind } from './os-contracts.js';
  * say so. A holder making syscalls answers within one recall round trip and
  * one wave's flush; one that has not answered by then is taken to be unable
  * to (a long computation with nothing sent, the documented limit), and is
- * revoked. See the core README's process model for its measurement.
+ * revoked. Measured live (2026-10-06, six sessions): a one-file wave
+ * published alone took 34-66 ms at the median, 40-73 ms at p95, 627 ms at
+ * the slowest (the first, which opens the writer); a full wave (1,016
+ * files, 4 MiB) is under a second at the measured ingest rate. Five
+ * seconds is several times their sum. The core README's process model
+ * documents it.
  */
 export declare const DELEGATION_RECALL_TIMEOUT_MS = 5000;
 /**

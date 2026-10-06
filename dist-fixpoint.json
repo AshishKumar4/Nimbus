@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "eddb193b11e806a3881f8d00aae026ea13056682219adbe3ad904b981631f6d2",
+  "fingerprint": "1384bd10f09ccd449eed197d5a171bed79fa82065df54f37cdea3b757f60fcbd",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -68,7 +68,7 @@
     "packages/config/src/index.ts": "2d600da61395ea2ff7591e8c51229051e37be594c4ba8997d334b632ec1dfc05",
     "packages/config/tsconfig.json": "0b055a7f359d104d5fdcfdafc1b03e73aa54afa96be34d29e4a23f91031262d5",
     "packages/core/LICENSE": "9abf902a70f15256b6d108767fc510341854ec2297e3874c5bc6df496a895617",
-    "packages/core/README.md": "9b318346ea3cd59bdc5779c876c888d7a1ffaeaea1f99f027e204419f2cf9bce",
+    "packages/core/README.md": "4bbcb48cb4dd6bde20e33f59dbd9c2340d53099bf7b4a4c750d29c7a4902ab08",
     "packages/core/dist/_shared/ai-egress.d.ts": "ba2799e7be0ec11c06d0c1c9fddf7a9b1359d20aea012d625b6028a1aa380046",
     "packages/core/dist/_shared/ai-egress.d.ts.map": "0f78c29cce57241971fed547f11bed15b230b16a6e2074884cb2a122171393b7",
     "packages/core/dist/_shared/ai-egress.js": "a23a419673bd0fb7771344c1164f058147e9d0aa1a5bdb190eb21d6e397302ff",
@@ -261,9 +261,9 @@
     "packages/core/dist/runtime/css-syntax.d.ts": "05fa7d88441618ddc483920ed580dd362d8bd669d4fbdd6fc71a007f4730143c",
     "packages/core/dist/runtime/css-syntax.d.ts.map": "df50e5c167b9772e4227810a59bcf5d657cbd7198507db40b564318a03b2f5d5",
     "packages/core/dist/runtime/css-syntax.js": "f64cf8f613fd0ee565b6f0b1d9497ace8fd9242e8f714a6b7c14d6cfbf9b3c25",
-    "packages/core/dist/runtime/delegations.d.ts": "495e61a3d252225b1f2b4509bef68bce2b7df904550a545b1d8eb756a69b8b8d",
-    "packages/core/dist/runtime/delegations.d.ts.map": "388bae22e607fe8b2a3687f47d421e1a80d8298ce04f861ed1b625fc67b3d82e",
-    "packages/core/dist/runtime/delegations.js": "351e8b8b0a754d5c3e804e34dad42be4d965bec8f76f244e099af8086b6ffda8",
+    "packages/core/dist/runtime/delegations.d.ts": "401aeef620319db4cd30f06469aab22b3117da11addfa0d7c4879c5871d007e1",
+    "packages/core/dist/runtime/delegations.d.ts.map": "b004dbd336af0bcca69c480d9519eb3fb21b91bcad35e13fea25c37ec9ffdad2",
+    "packages/core/dist/runtime/delegations.js": "a7223edaacc397b5addad5b7ff86e6f08c0f8c853d68f108ba0e98708dc152be",
     "packages/core/dist/runtime/document-policy.d.ts": "cf81b3bcb4c15d1f863cafda7f66285d658b68d72ad7a735ec923826247dc055",
     "packages/core/dist/runtime/document-policy.d.ts.map": "d7d7ac7cbc3583387a6a2d0263930bcbe24f97627f63dbafec46f2561fcddd78",
     "packages/core/dist/runtime/document-policy.js": "de5f3d57f84fdbef04181aad0f123519e81973e6fe86d85d02c5b957c853e780",
@@ -1196,7 +1196,7 @@
     "packages/core/src/runtime/cpython-runner.ts": "c8fd0498254747cc9ea326ad3f025ba160156c01f5b531ca32c7b1ec7d8546b1",
     "packages/core/src/runtime/css-bundle.ts": "fbe4b93ba2aaf5d9c4c2cf28b7c451abeddf391aee90219198b1a77d53b08ff0",
     "packages/core/src/runtime/css-syntax.ts": "44bbbbbdf2398d0c6af55df46b71ecc5a075495e3e120cdc363a9d15a01a9a8b",
-    "packages/core/src/runtime/delegations.ts": "d22725525df1c8ba10cc5ca235033b5e60830c0f3f314bdaeb9afd99934bc1bc",
+    "packages/core/src/runtime/delegations.ts": "eef7f62bdf0fdef0f46922c8e25126ac5e226ca8a4acff4942932a82f302a556",
     "packages/core/src/runtime/document-policy.ts": "9c2089c0747a3ada7acae22a8634e8495083e6bc3914650a4d863b64f665fce7",
     "packages/core/src/runtime/dynamic-import-rewrite.ts": "21bf8be5e8250cad4e00907f617fb0b3bb8b4b0ad8118074288d4cf1377d869b",
     "packages/core/src/runtime/esbuild-cli.ts": "1ef1a390699ef9a1eeb8ad01e9df9be014f8b22637f0ae217fd8b22b8ea9de45",
