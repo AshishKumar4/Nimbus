@@ -1214,7 +1214,6 @@ export declare class SqliteVFS {
      * range scan only past its end. A kept manifest is dropped when it is edited.
      */
     private manifestRange;
-    /** One chunk's bytes, through the LRU when `cached`. */
     /**
      * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
      * statement, by id; a chunk not stored here (cold, pending) is
@@ -1222,6 +1221,13 @@ export declare class SqliteVFS {
      * what it expected.
      */
     private loadChunks;
+    /**
+     * The one decode point: the bytes of a chunk row whose state holds them
+     * (chunkHeld), from its `size`, `data` and `state`. EIO for `what` when a
+     * deflated row does not inflate to its size.
+     */
+    private heldChunkBytes;
+    /** One chunk's bytes, through the LRU when `cached`. */
     private readChunk;
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
@@ -1972,12 +1978,12 @@ export declare class SqliteVFS {
     private publishPlanContents;
     /** The plan's inode rows: identity, generation and content; what each replaced is queued for collection. */
     private upsertPlanInodes;
-    /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
-     * Chunk rows as (id, hash, data) triples; size is length(data), so a row
-     * binds three parameters, not four: 33 rows a statement instead of 25.
-     * The statement count is what an unshared large write pays per
-     * transaction (measured in workerd, where it dominated).
+     * New chunk rows, each stored as storedChunk has it. A row stored as its
+     * bytes binds three parameters (size is length(data)), a deflated one
+     * four, its state a literal: 25-33 rows a statement. The statement count
+     * is what an unshared large write pays per transaction (measured in
+     * workerd, where it dominated).
      */
     private insertChunkRows;
     /**
@@ -1986,6 +1992,7 @@ export declare class SqliteVFS {
      * manifest, and never fewer than 25.
      */
     private insertManifestRows;
+    /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     private insertRows;
     /**
      * N18: a transaction that can grow the database is admitted by the
