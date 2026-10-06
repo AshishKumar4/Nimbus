@@ -1,17 +1,18 @@
 // @serial
 // child_process children of one session run concurrently, as Node's do,
-// under workerd. Each scenario's deterministic lines are compared with the
-// same program under host node; its timing lines (`T <ms> ...`) are asserted
-// on their own.
+// under workerd. Each scenario's lines are compared with the same program
+// under host node (its timing lines, `T <ms> ...`, set aside), and each
+// property is a barrier the scenario cannot pass otherwise, not a deadline.
 //
 // What has to hold:
-//   - a child that never exits (a server, a watcher) does not hold back a
-//     second child: B prints while A lives, in the first half of A's life.
-//     Before, B waited the whole of A's life (15.6 s on a 15 s A), queued
-//     behind A on the one slot of the spawn pool that relayed it.
-//   - killing A frees what it held at once: a child spawned after the kill
-//     runs at once, and A's Dynamic Worker leaves the ledger (before, A's
-//     program ran on to its natural end and held both).
+//   - a child that is still running (a server, a watcher) does not hold back
+//     a second child: A waits for B to close, and both end. Before, B waited
+//     the whole of A's life (15.6 s on a 15 s A), queued behind A on the one
+//     slot of the spawn pool that relayed it.
+//   - killing A frees what it held at once: A's Dynamic Worker is off the
+//     ledger by the time its parent hears A closed, and a child spawned
+//     after runs (before, A's program ran on to its natural end and held
+//     both).
 //   - N children spawned together all run at once and all complete.
 //   - a child that spawns a grandchild and waits for it completes (before,
 //     the grandchild queued behind its own parent: a deadlock).
@@ -40,24 +41,35 @@ b.on('close', (code) => console.log('B close ' + code));
 `,
   ab: `
 const { spawn } = require('child_process');
-const t0 = Date.now();
-const a = spawn('node', ['-e', "setTimeout(() => console.log('A done'), 12000)"]);
+const fs = require('fs');
+// A waits for B: it ends only once B has closed, when the parent writes the
+// file A looks for (or after 120 s, saying so). Had B waited on anything A
+// held, neither would ever end.
+const go = require('os').tmpdir() + '/ab-go-' + process.pid;
+const a = spawn('node', ['-e', "const f = require('fs'); const t0 = Date.now(); (async () => { for (;;) { try { await f.promises.access(process.argv[1]); console.log('A done'); return; } catch {} if (Date.now() - t0 > 120000) { console.log('A gave up waiting for B'); return; } await new Promise((r) => setTimeout(r, 50)); } })();", go]);
 const b = spawn('node', ['-e', "console.log('B ran')"]);
-b.stdout.once('data', () => console.log('T ' + (Date.now() - t0) + ' B data'));
 b.stdout.on('data', (d) => process.stdout.write(String(d)));
-b.on('close', (code) => console.log('B close ' + code));
+b.on('close', (code) => { console.log('B close ' + code); fs.promises.writeFile(go, 'go'); });
 a.stdout.on('data', (d) => process.stdout.write(String(d)));
-a.on('close', (code) => { console.log('T ' + (Date.now() - t0) + ' A close'); console.log('A close ' + code); });
+a.on('close', (code) => { console.log('A close ' + code); fs.promises.rm(go, { force: true }); });
 `,
   kill: `
 const { spawn } = require('child_process');
+const fs = require('fs');
+// Given a path, the parent stops twice for the case to read the session's
+// ledger: once A is up (it writes A's pid to <path>.up and waits for
+// <path>.kill) and once A has closed (<path>.closed, then <path>.go).
+const stop = process.argv[2];
+const until = async (file) => { for (;;) { try { await fs.promises.access(file); return; } catch { await new Promise((r) => setTimeout(r, 50)); } } };
 const a = spawn('node', ['-e', "console.log('A up'); setTimeout(() => console.log('A done'), 120000)"]);
-a.stdout.once('data', (d) => {
+a.stdout.once('data', async (d) => {
   process.stdout.write(String(d));
+  if (stop) { await fs.promises.writeFile(stop + '.up', String(a.pid)); await until(stop + '.kill'); }
   console.log('kill ' + a.kill());
 });
-a.on('close', (_code, signal) => {
+a.on('close', async (_code, signal) => {
   console.log('A closed by ' + signal);
+  if (stop) { await fs.promises.writeFile(stop + '.closed', String(a.pid)); await until(stop + '.go'); }
   const t0 = Date.now();
   const b = spawn('node', ['-e', "console.log('B ran')"]);
   b.stdout.once('data', () => console.log('T ' + (Date.now() - t0) + ' B data'));
@@ -121,53 +133,56 @@ try {
     // after another: what tells a hang from that is the session's Dynamic
     // Worker ledger, which stops changing.
     const ledger = async () => { const { loader } = await terminal.memory(); return [loader.holders, loader.waiters, loader.news]; };
-    const run = async (name, { poll, args = '' } = {}) => {
-      const samples = [];
-      let polling = !!poll;
-      const poller = (async () => {
-        while (polling) {
-          samples.push((await terminal.memory()).loader);
-          await new Promise((resolve) => setTimeout(resolve, 250));
-        }
-      })();
-      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 280_000, { progress: ledger, stalledMs: 120_000 });
-      polling = false;
-      await poller;
+    const run = async (name) => {
+      const r = await terminal.run(`node /home/user/${name}.js`, 280_000, { progress: ledger, stalledMs: 120_000 });
       assert.equal(r.status, 0, `${name}: ${r.stdout.slice(-800)}`);
       const got = splitScenarioOutput(r.stdout);
       assert.deepEqual(got.lines, host[name].lines, `${name}: the same lines, in the same order, as under host node`);
-      return { ...got, samples };
+      return got;
     };
 
-    // What a child held is measured against what holding it would cost, timed
-    // beside it under the same load: never against a launch timed earlier,
-    // which a loaded machine makes slower or faster at will (a solo launch of
-    // 443 ms, then one of 2129 ms after a kill, with nothing held between).
     const solo = await run('solo');
     console.log(`  solo: B printed ${solo.timings['B data']} ms after its spawn`);
 
-    // A and B launch together, A to live 12 s. Had B waited on anything A
-    // held, it would print once A closed; it prints in the first half of
-    // A's life, about when A itself is up.
-    const ab = await run('ab');
-    console.log(`  ab: B printed at ${ab.timings['B data']} ms while A ran to ${ab.timings['A close']} ms`);
-    assert.ok(ab.timings['B data'] < ab.timings['A close'] - 6_000,
-      `B printed while A was still running, in the first half of A's 12 s life (${ab.timings['B data']} ms, A closed at ${ab.timings['A close']} ms): A held nothing B needed`);
+    // A and B launch together, and A ends only once B has closed (the
+    // scenario's barrier). B queued behind anything A holds would deadlock
+    // the two, and A would say it gave up: the lines differ from host node's.
+    await run('ab');
 
-    // Had the kill not ended A's program, it would run on for the rest of
-    // its 120 s holding its worker, and B would wait on it.
-    const killed = await run('kill');
-    console.log(`  kill: B printed ${killed.timings['B data']} ms after A was killed`);
-    assert.ok(killed.timings['B data'] < 60_000,
-      `a child spawned after the kill runs at once, not once A's program would have ended (${killed.timings['B data']} ms of A's 120 s)`);
-    // The parent has exited; A's program must not run on, holding its worker,
-    // for the rest of its 120 s: its worker leaves the ledger well before.
-    let loader = (await terminal.memory()).loader;
-    for (const until = Date.now() + 60_000; loader.inFlightWorkers.length > 0 && Date.now() < until;) {
-      await new Promise((resolve) => setTimeout(resolve, 250));
-      loader = (await terminal.memory()).loader;
-    }
-    assert.deepEqual(loader.inFlightWorkers, [], "the killed child's Dynamic Worker left the ledger with it");
+    // Killing A gives its Dynamic Worker back to the ledger as part of the
+    // kill: the broker runs the session's kill of the pid (its launch's
+    // terminator, which aborts the program's run and ends its admission)
+    // before it stamps the exit the parent hears as 'close' (facets/
+    // process.ts kill). So at A's close the ledger holds nothing of A's. The
+    // parent stops there while the case reads the ledger, and once before
+    // the kill, where A's hold must show, so the check names the right pid.
+    // Before, A's program ran on to its natural end (120 s) and held its
+    // worker; a kill acknowledged at once with the release behind it fails
+    // here however fast the machine.
+    const stop = '/home/user/kill-stop';
+    const file = async (path) => {
+      for (const until = Date.now() + 240_000; ;) {
+        const r = await terminal.run(`cat ${path} 2>/dev/null`);
+        if (/^\d+$/.test(r.stdout.trim())) return Number(r.stdout.trim());
+        if (Date.now() > until) throw new Error(`kill: ${path} never came: ${(await terminal.run('cat /home/user/kill.out')).stdout.slice(-800)}`);
+        await new Promise((resolve) => setTimeout(resolve, 100));
+      }
+    };
+    const heldBy = (loader, pid) => Object.entries(loader.holders).filter(([, pids]) => pids.includes(pid)).map(([key]) => key);
+    await terminal.run(`rm -f ${stop}.up ${stop}.kill ${stop}.closed ${stop}.go; node /home/user/kill.js ${stop} > /home/user/kill.out 2>&1 &`);
+    const aPid = await file(`${stop}.up`);
+    const beforeKill = (await terminal.memory()).loader;
+    assert.notDeepEqual(heldBy(beforeKill, aPid), [], `A (pid ${aPid}) holds a Dynamic Worker while it runs: ${JSON.stringify(beforeKill.holders)}`);
+    await terminal.run(`touch ${stop}.kill`);
+    assert.equal(await file(`${stop}.closed`), aPid);
+    const atClose = (await terminal.memory()).loader;
+    assert.deepEqual(heldBy(atClose, aPid), [], `A's Dynamic Worker left the ledger before its parent heard it closed: ${JSON.stringify(atClose.holders)}`);
+    await terminal.run(`touch ${stop}.go`);
+    const ended = await terminal.run('wait', 280_000, { progress: ledger, stalledMs: 120_000 });
+    assert.equal(ended.status, 0, ended.stdout);
+    const killed = splitScenarioOutput((await terminal.run('cat /home/user/kill.out')).stdout);
+    assert.deepEqual(killed.lines, host.kill.lines, 'kill: the same lines, in the same order, as under host node');
+    console.log(`  kill: A's worker gone at its close; B printed ${killed.timings['B data']} ms after its spawn`);
 
     // Each of the eight ends only once all eight are up (the scenario's
     // barrier): one at a time, the first would wait for good.

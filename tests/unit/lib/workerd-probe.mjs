@@ -254,11 +254,13 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   const run = async (command, timeoutMs = 120_000, { progress, stalledMs = 120_000 } = {}) => {
     const mark = `__NIMBUS_DONE_${++serial}__`;
     const line = `${command}; echo "${mark}$?"`;
-    // The echoed line carries the marker too, followed by `$?`, never by digits.
-    const done = new RegExp(`${mark}\\d+[\\s\\S]*[$#>]\\s*$`);
+    // The echoed line carries the marker too, followed by `$?`, never by
+    // digits. The prompt after the marker's line is the shell's; it need not
+    // end the buffer, where a background job's banner may follow it.
+    const done = new RegExp(`${mark}\\d+\\s*\\n[\\s\\S]*?[$#>](\\s|$)`);
     terminal.reset();
     terminal.cmd(line);
-    await wait(line, (b) => done.test(b.trimEnd()), timeoutMs, progress, stalledMs);
+    await wait(line, (b) => done.test(b), timeoutMs, progress, stalledMs);
     const text = strip(terminal.buf);
     const end = text.lastIndexOf(mark);
     if (end < 0) throw new Error(`${command}: no completion marker within ${timeoutMs} ms:\n${text.slice(-800)}`);
