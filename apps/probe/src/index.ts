@@ -34,7 +34,6 @@ import {
 } from '@nimbus-sh/worker/auth';
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
-import { connect } from 'cloudflare:sockets';
 
 /**
  * The host the test egress answers itself: unresolvable anywhere else, so a
@@ -70,6 +69,8 @@ export class TestEgress extends WorkerEntrypoint {
       await writer.close();
       return;
     }
+    // Loaded here, not at the top: a module that imports this app (a test's) need not provide sockets.
+    const { connect } = await import('cloudflare:sockets');
     const upstream = connect(localAddress!, { allowHalfOpen: true });
     await Promise.all([socket.readable.pipeTo(upstream.writable), upstream.readable.pipeTo(socket.writable)]).catch(() => {});
   }

@@ -15,6 +15,7 @@
 // recorded path and the read path are asserted against each other rather than
 // each against a literal.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 
 import {
@@ -44,7 +45,7 @@ console.log('  ok  a session without compiled packages stays on the base interpr
 // ── Installing numpy is what selects it, and pip is what records that ───────
 // The dist-info path is not written out here: it is taken from the install
 // pip actually generates, so the two halves cannot drift apart.
-const install = await buildPipInvocation(['install', 'numpy'], 'pip', '/home/user', vfsWith([]), { home: '/home/user' });
+const install = await buildPipInvocation(['install', 'numpy'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK });
 assert.equal(install.error, undefined, `pip install numpy failed to plan: ${install.error}`);
 assert.equal(install.mode, 'pip');
 
@@ -75,7 +76,7 @@ console.log('  ok  the record pip writes is the record the selector reads');
 // Its Python half installs from source and its _speedups is compiled into the
 // variant, so the two are only compatible at one version. build-python.sh pins
 // the same one; a bump on either side without the other is what this catches.
-const ms = await buildPipInvocation(['install', 'markupsafe'], 'pip', '/home/user', vfsWith([]), { home: '/home/user' });
+const ms = await buildPipInvocation(['install', 'markupsafe'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK });
 assert.equal(ms.error, undefined, `pip install markupsafe failed to plan: ${ms.error}`);
 const msVersion = ms.code.match(/markupsafe-([0-9.]+)\/src\/markupsafe/)?.[1];
 assert.equal(msVersion, '3.0.3', 'markupsafe must be pinned to the release _speedups.c is built from');
@@ -87,7 +88,7 @@ assert.equal(
 console.log('  ok  markupsafe pins to the built _speedups and selects the variant');
 
 // ── A version the interpreter does not carry is refused, not silently swapped ─
-const wrong = await buildPipInvocation(['install', 'numpy==1.26.4'], 'pip', '/home/user', vfsWith([]), { home: '/home/user' });
+const wrong = await buildPipInvocation(['install', 'numpy==1.26.4'], 'pip', '/home/user', vfsWith([]), { home: '/home/user', network: ISOLATE_NETWORK });
 assert.match(wrong.error ?? '', /2\.4\.3/,
   'asking for a numpy the variant does not have must say which one it has');
 assert.notEqual(wrong.exitCode, 0, 'an unsatisfiable pin must fail rather than install something else');

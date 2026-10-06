@@ -12,6 +12,7 @@
 // its caller too; a dev server persisted for a restore records who it ran
 // as; and real-vite finds and bundles the user's vite.config as the caller.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { mkdtemp, rm } from 'node:fs/promises';
@@ -145,6 +146,8 @@ const storage = {
   }),
 };
 const host = {
+  // The session's workspace, for what it hands a dev server: its network (no egress here).
+  runtimeWorkspace: { network: ISOLATE_NETWORK },
   ensureSqliteFs() {},
   getFilesystemAuthority() { return files; },
   ensureBundlePool() { return null; },

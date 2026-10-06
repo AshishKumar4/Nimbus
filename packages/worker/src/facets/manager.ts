@@ -16,7 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 
-import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import {
   COMMONJS_CELL_IMPORTS,
   COMMONJS_CELL_RUNTIME_SOURCE,
@@ -4389,6 +4389,12 @@ async function _buildPrefetchBundle(
  */
 export interface FacetManagerHooks {
   /**
+   * The workspace's network (`workspace.network`): every process the manager
+   * runs goes out through it, its binding carrying the egress. The session's
+   * composition supplies it; absent, the isolate's own network.
+   */
+  network?: () => WorkspaceNetwork;
+  /**
    * Fired when a process was terminated OUTSIDE the facet's own try/
    * finally (timeout via abort, explicit kill, etc.) — the facet never
    * runs its own `reportExit`, so the session side won't hear about the
@@ -4902,8 +4908,6 @@ export class FacetManager {
     processes: SessionProcessSupervisor,
     portRegistry: PortRegistry,
     host: ProcessHostFactory,
-    /** The workspace's network: its processes go out through it (their bindings carry its egress). */
-    network: () => WorkspaceNetwork,
     hooks: FacetManagerHooks = {},
   ) {
     this.ctx = ctx;
@@ -4912,8 +4916,9 @@ export class FacetManager {
     this.processes = processes;
     this.portRegistry = portRegistry;
     this.hooks = hooks;
-    this.network = network;
-    this.processHost = host(ctx, env, () => this._residentDisk(), network);
+    // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
+    this.network = hooks.network ?? (() => ISOLATE_NETWORK);
+    this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
     this.processFabric = new ProcessFabric(this.processHost);
     const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NIMBUS_DEBUG')

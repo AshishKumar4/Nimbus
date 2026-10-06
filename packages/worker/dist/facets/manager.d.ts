@@ -15,7 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
-import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -722,6 +722,12 @@ export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBund
  */
 export interface FacetManagerHooks {
     /**
+     * The workspace's network (`workspace.network`): every process the manager
+     * runs goes out through it, its binding carrying the egress. The session's
+     * composition supplies it; absent, the isolate's own network.
+     */
+    network?: () => WorkspaceNetwork;
+    /**
      * Fired when a process was terminated OUTSIDE the facet's own try/
      * finally (timeout via abort, explicit kill, etc.) — the facet never
      * runs its own `reportExit`, so the session side won't hear about the
@@ -1121,9 +1127,7 @@ export declare class FacetManager {
      */
     private ephemeralPids;
     private residentClaims;
-    constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, 
-    /** The workspace's network: its processes go out through it (their bindings carry its egress). */
-    network: () => WorkspaceNetwork, hooks?: FacetManagerHooks);
+    constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
     /**
      * A signal's default action: the process ends with 128+signo whether its
      * facet is still being built (the launch stops at its next ownership gate)

@@ -11,6 +11,7 @@
 // different `tool`, which must never be what runs; and /custom/bin holds
 // commands only a PATH naming it finds.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -174,7 +175,7 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/
     globalThis.fetch = async (url) => responses.get(String(url)) ?? new Response(null, { status: 404 });
     try {
       const view = main.filesystem.view({ pid: 900, cred: CRED_KERNEL });
-      await installRubyGems(view, [{ name: 'rackup', requirements: [] }], { gemHome: '/home/main/.gem' });
+      await installRubyGems(view, [{ name: 'rackup', requirements: [] }], { gemHome: '/home/main/.gem', network: ISOLATE_NETWORK });
     } finally {
       globalThis.fetch = realFetch;
     }

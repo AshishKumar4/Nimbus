@@ -9,6 +9,7 @@
 // never accepted an HMR upgrade. Driven through `handleFetch`, the DO's public
 // entrypoint, with only the heavy facet internals stubbed.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -93,6 +94,7 @@ function makeWokenSession(storage = {}) {
   const store = new Map(Object.entries(storage));
   let nextPid = 200;
   const self = {
+    runtimeWorkspace: { network: ISOLATE_NETWORK },
     env: {},
     sqliteFs: null,
     esbuildService: null,

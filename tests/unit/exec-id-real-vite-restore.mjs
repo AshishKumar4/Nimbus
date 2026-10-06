@@ -11,6 +11,7 @@
 // real-vite pid was `[]` at the root whatever had been persisted.
 // The facet internals are stubbed as in port-route-real-vite-restore.mjs.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
@@ -89,6 +90,7 @@ function session(store, generation) {
     readFile: (p) => new TextEncoder().encode(files.get(p) ?? ''),
   };
   const self = {
+    runtimeWorkspace: { network: ISOLATE_NETWORK },
     env: {},
     sqliteFs: null,
     esbuildService: null,

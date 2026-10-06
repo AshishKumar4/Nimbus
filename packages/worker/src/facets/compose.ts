@@ -196,7 +196,7 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
       : {}),
     resolveWorkerLaunchFallback: (recipe: WorkerRecipe) => resolveDurableWorkerImage(vfs, recipe),
   };
-  const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, deps.network, hooks);
+  const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, { ...hooks, network: deps.network });
   manager.setVfs(vfs, deps.filesystem);
   manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_KERNEL)));
   const { portRegistry } = deps;

@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
@@ -4101,17 +4102,16 @@ export class FacetManager {
     // facets/opencode-staging.ts assembles the module map inside the
     // Worker-Loader cache-miss callback, so the sources exist only while a facet
     // is actually loading.
-    constructor(ctx, env, processes, portRegistry, host, 
-    /** The workspace's network: its processes go out through it (their bindings carry its egress). */
-    network, hooks = {}) {
+    constructor(ctx, env, processes, portRegistry, host, hooks = {}) {
         this.ctx = ctx;
         this.learning = new LaunchLearningStore(ctx.storage);
         this.env = parseFacetManagerEnv(env);
         this.processes = processes;
         this.portRegistry = portRegistry;
         this.hooks = hooks;
-        this.network = network;
-        this.processHost = host(ctx, env, () => this._residentDisk(), network);
+        // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
+        this.network = hooks.network ?? (() => ISOLATE_NETWORK);
+        this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
         this.processFabric = new ProcessFabric(this.processHost);
         const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NIMBUS_DEBUG')
