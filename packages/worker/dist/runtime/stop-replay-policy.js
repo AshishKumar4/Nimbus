@@ -53,6 +53,8 @@ export const REPLAY_OPERATION_POLICY = {
     fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
     fsWriteRange: effect, fsAppend: effect, fsAppendAck: effect,
     fsTruncate: effect, writeBatch: effect, writeBatchStream: effect,
+    // Mints a write-wave epoch the session holds open for the live process (state on the host, not a read).
+    openWaveWriter: effect,
     putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
     registerPort: effect, allocatePort: effect, unregisterPort: effect,
     reportExit: output, routeLoopback: effect, transform: read,

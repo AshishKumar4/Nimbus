@@ -64,8 +64,10 @@ export const SUPERVISOR_DELIVER_OP = 'deliverOnce';
  * the one read id it minted for the read (the envelope's `readId`). A repeat
  * that reaches the host while the read is still being served joins it
  * ({@link SupervisorDeliveries.joinRead}): the host reads once, and every
- * attempt carries that answer. A read is not a mutation, so nothing is kept
- * once it settles, and a host that joins nothing serves each attempt.
+ * attempt carries that answer. A journaled run also keeps settled replies:
+ * a lost response must not turn a resend into another program observation.
+ * Ordinary runs keep only reads in flight; a host that joins nothing serves
+ * each attempt.
  */
 export const SUPERVISOR_JOINED_READ_OPS = [
     'access', 'exists', 'stat', 'lstat', 'readdir', 'readlink', 'fsLinkLeadsTo', 'readFile', 'readFileBytes',
@@ -80,6 +82,44 @@ export function supervisorJoinedReadOp(op) {
 /** Whether `a` came after `b` from the same writer. */
 function newerAttempt(a, b) {
     return a.wave > b.wave || (a.wave === b.wave && a.attempt > b.attempt);
+}
+/** A conservative retained-size charge, including backing buffers and metadata. */
+function readReplyBytes(value, limit) {
+    const seen = new Set();
+    let bytes = 256; // The receipt, its identity, and map entry.
+    const visit = (v) => {
+        if (bytes > limit)
+            return;
+        if (typeof v === 'string') {
+            bytes += 16 + 2 * v.length;
+            return;
+        }
+        if (!v || typeof v !== 'object') {
+            bytes += 16;
+            return;
+        }
+        if (seen.has(v))
+            return;
+        seen.add(v);
+        bytes += 64;
+        if (ArrayBuffer.isView(v)) {
+            // A small view may still hold a larger allocation alive.
+            visit(v.buffer);
+        }
+        else if (v instanceof ArrayBuffer || typeof SharedArrayBuffer !== 'undefined' && v instanceof SharedArrayBuffer) {
+            bytes += v.byteLength;
+        }
+        else {
+            for (const key of Object.getOwnPropertyNames(v)) {
+                bytes += 16 + 2 * key.length;
+                visit(Reflect.get(v, key));
+                if (bytes > limit)
+                    break;
+            }
+        }
+    };
+    visit(value);
+    return bytes;
 }
 function isDeliveryAnswer(value) {
     if (value === undefined || value === null)
@@ -160,7 +200,8 @@ export class SupervisorDeliveries {
     previous = new Map();
     rotatedAt = Number.NEGATIVE_INFINITY;
     running = new Map();
-    readsInFlight = new Map();
+    /** One joined-read index: pending reads, plus bounded replies of journaled runs. */
+    reads = new Map();
     /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
     waveEpochs = new Map();
     tombstones = new Set();
@@ -184,6 +225,17 @@ export class SupervisorDeliveries {
     /** Tombstones held, both generations: what their bound is stated against. */
     get tombstoneCount() {
         return this.tombstones.size + this.olderTombstones.size;
+    }
+    /** Writer activation starts a fresh run; no preceding run's reply can answer it. */
+    startReadRun(pid, run, retention) {
+        if (this.reads.get(pid)?.run?.id === run)
+            return;
+        this.reads.set(pid, { run: { id: run, retention }, replies: new Map(), bytes: 0 });
+    }
+    /** Rewind/exit releases replies, without an old completion resurrecting them. */
+    endReadRun(pid, run) {
+        if (run === undefined || this.reads.get(pid)?.run?.id === run)
+            this.reads.delete(pid);
     }
     /**
      * Apply `op` for `pid` once per `id`, and answer every repeat with what the
@@ -250,28 +302,63 @@ export class SupervisorDeliveries {
      * is who it says) and answered with the same promise, reading nothing. A
      * read queued here behind the session's read budget, a lazy import or a
      * busy input gate is exactly what the sender's hedge fires on, and joining
-     * is what keeps that hedge from reading the same bytes again. Nothing is
-     * kept once the read settles: an attempt after that reads afresh, which a
-     * read may. The map holds only reads in flight.
+     * is what keeps that hedge from reading the same bytes again. A journaled
+     * run also retains settled replies until its writer ends: a response lost
+     * AFTER the session answered must not consume a second journal occurrence.
+     * Non-journaled reads keep their in-flight-only behavior. Exceeding a run's
+     * retention bound forbids replay before handing out the reply; it never
+     * silently evicts a reply while that run remains replayable.
      *
      * Returns the answer, and whether this attempt joined a read already
      * being served rather than reading.
      */
-    joinRead(pid, id, op, admit, read) {
-        const key = `${pid}:${id}`;
-        const running = this.readsInFlight.get(key);
+    joinRead(pid, id, op, admit, read, run) {
+        let scope = this.reads.get(pid);
+        if (scope?.run && scope.run.id !== run) {
+            throw Object.assign(new Error(`ESTALE: read ${id} belongs to a different run`), { code: 'ESTALE' });
+        }
+        if (!scope) {
+            scope = { replies: new Map(), bytes: 0 };
+            this.reads.set(pid, scope);
+        }
+        const running = scope.replies.get(id);
         if (running) {
-            if (running.op !== op) {
+            if (running.op !== op || running.run !== run) {
                 throw Object.assign(new Error(`EINVAL: read ${id} is ${running.op}, not ${op}`), { code: 'EINVAL' });
             }
             admit();
             return { joined: true, answer: running.answer };
         }
+        const owner = scope.run?.retention;
+        if (owner?.recording() && scope.replies.size >= owner.maxEntries) {
+            owner.disqualify(`needed more than ${owner.maxEntries} retained filesystem read receipts before stdin`);
+        }
         const answer = read();
-        this.readsInFlight.set(key, { op, answer });
-        const settled = () => {
-            if (this.readsInFlight.get(key)?.answer === answer)
-                this.readsInFlight.delete(key);
+        const entry = { op, answer, run, pending: true };
+        scope.replies.set(id, entry);
+        const current = scope;
+        const settled = (value) => {
+            entry.pending = false;
+            if (this.reads.get(pid) !== current)
+                return;
+            if (owner?.recording()) {
+                let charged;
+                try {
+                    charged = readReplyBytes(value, owner.maxBytes - current.bytes);
+                }
+                catch (error) {
+                    owner.disqualify(`could not bound a retained filesystem read receipt (${String(error)})`);
+                    charged = Infinity;
+                }
+                if (charged <= owner.maxBytes - current.bytes) {
+                    current.bytes += charged;
+                    return;
+                }
+                owner.disqualify(`needed more than ${owner.maxBytes} bytes of retained filesystem read receipts before stdin`);
+            }
+            current.replies.delete(id);
+            if (!current.run && current.replies.size === 0)
+                this.reads.delete(pid);
         };
         answer.then(settled, settled);
         return { joined: false, answer };
@@ -320,7 +407,27 @@ export class SupervisorDeliveries {
     }
     /** Reads being served, which repeats of them would join. */
     get readsServing() {
-        return this.readsInFlight.size;
+        let count = 0;
+        for (const scope of this.reads.values())
+            for (const reply of scope.replies.values())
+                if (reply.pending)
+                    count++;
+        return count;
+    }
+    /** Settled receipts kept by active journaled runs, for lifecycle/bound checks. */
+    get readReceipts() {
+        let count = 0;
+        for (const scope of this.reads.values())
+            for (const reply of scope.replies.values())
+                if (!reply.pending)
+                    count++;
+        return count;
+    }
+    get readReceiptBytes() {
+        let bytes = 0;
+        for (const scope of this.reads.values())
+            bytes += scope.bytes;
+        return bytes;
     }
     /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
     forget(pid) {
@@ -328,6 +435,7 @@ export class SupervisorDeliveries {
         for (const key of this.waveEpochs.keys())
             if (key.startsWith(prefix))
                 this.waveEpochs.delete(key);
+        this.endReadRun(pid);
         const now = Date.now();
         for (const generation of [this.current, this.previous]) {
             const receipts = generation.get(pid);

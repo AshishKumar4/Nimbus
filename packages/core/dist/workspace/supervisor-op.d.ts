@@ -22,6 +22,12 @@ export interface SupervisorOpEnvelope {
     /** A host call's credential. Meaningless — and refused — with a pid. */
     readonly cred?: VfsCred;
     readonly writerId?: string;
+    /**
+     * Which run of the process sent it: its writer identity, stamped by the
+     * supervisor binding from its props. A process that can stop at a read of
+     * stdin is answered for its current run only (worker stop-replay.ts).
+     */
+    readonly run?: string;
     readonly mutationOwner?: string;
     readonly stream?: ReadableStream<Uint8Array>;
     /** Which mutation a {@link SUPERVISOR_DELIVER_OP} envelope carries. Refused on any other op. */
@@ -90,6 +96,13 @@ export interface SupervisorOpDeps {
      * predates delivery does not, and mints no binding that would send one.
      */
     readonly deliveries?: SupervisorDeliveries;
+    /**
+     * Observe one logical answer, after transport read attempts have joined or
+     * delivered mutations have found their receipt. A repeated pending read
+     * observes the SAME answer, never a second program request. Used by the
+     * session's replay journal; omitted by hosts without stoppable processes.
+     */
+    readonly observe?: (envelope: SupervisorOpEnvelope, dispatch: () => Promise<unknown>) => Promise<unknown>;
 }
 /**
  * One slot in an op's argument plan: a number takes `envelope.args[n]`, a
@@ -97,7 +110,7 @@ export interface SupervisorOpDeps {
  * `mutationOwner`). The envelope is always the shape — a host never
  * re-parses it.
  */
-export type SupervisorOpArg = number | 'pid' | 'writerId' | 'stream' | 'mutationOwner';
+export type SupervisorOpArg = number | 'pid' | 'writerId' | 'run' | 'stream' | 'mutationOwner';
 export interface SupervisorOpRoute {
     /** The host method this op dispatches to. */
     readonly method: string;
@@ -132,7 +145,7 @@ export interface SupervisorOpHost {
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
  * wrapper around one of these, which the handler unwraps.
  */
-export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "writeFileStat", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "fsLinkLeadsTo", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "openWaveWriter", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpBlocked", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "innerDoCall", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay", "hmrNextEvent"];
+export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "writeFileStat", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "fsLinkLeadsTo", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "openWaveWriter", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpBlocked", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "innerDoCall", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay", "hmrNextEvent", "replayBoundary", "netTls", "outbound", "stdinFileRead", "stdinPrepared", "getCachedTarball", "putCachedTarball", "getPackument", "cacheResult"];
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
@@ -242,6 +255,8 @@ export interface SupervisorOpBridgeStore {
     readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
     /** Drop a pid's bridge — a process exit ends its credential's validity. */
     readonly forget: (pid: number) => Promise<void>;
+    /** Close a live pid's descriptors for a run that starts in place of another (NimbusFilesystemAuthority.rewindProcess). */
+    readonly rewind?: (pid: number) => Promise<void>;
     readonly dispose: () => Promise<void>;
 }
 /**

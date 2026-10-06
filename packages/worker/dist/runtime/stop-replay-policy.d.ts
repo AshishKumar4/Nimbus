@@ -155,6 +155,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     writeBatchStream: {
         readonly kind: "effect";
     };
+    openWaveWriter: {
+        readonly kind: "effect";
+    };
     putRegistryEntries: {
         readonly kind: "effect";
     };
