@@ -291,126 +291,26 @@ export function packageSelfReferenceSubpath(
 // ─── JS-source emission for embedding into facet preambles ───────────────
 
 /**
- * Returns the resolver source as plain JavaScript (no TypeScript syntax),
- * suitable for embedding into a generated worker preamble or shim string.
+ * The resolver as plain JavaScript, for the node facet's shim string, which
+ * cannot import: the functions above by their own `toString()`, so the shim
+ * resolves by this module's code and no second copy exists. It declares, at
+ * top level, DEFAULT_ESM_CONDITIONS, DEFAULT_CJS_CONDITIONS, resolveExports,
+ * resolveConditionValue (their helper), resolvePackageEntry and
+ * packageSelfReferenceSubpath. Each function calls only the others by name.
  *
- * The emitted source declares four top-level functions in scope:
- *   - resolveExports(exports, subpath, conditions)
- *   - resolveConditionValue(target, conditions)        (helper)
- *   - resolvePackageEntry(pkg, subpath, conditions)
- *   - packageSelfReferenceSubpath(pkg, specifier)
- *
- * It also declares two arrays:
- *   - DEFAULT_ESM_CONDITIONS
- *   - DEFAULT_CJS_CONDITIONS
- *
- * This source must be byte-equivalent to the TS impl above (modulo type
- * annotations and `export` keywords). Keep them in sync — there is one
+ * Read when the shim string is generated (bundle-node-shims.mjs, from dist,
+ * and tests, from source), never in a minified bundle, where a renamed
+ * declaration would break those names. package-self-reference.mjs and
+ * typescript-specifier-resolution.mjs evaluate the emitted source.
  */
 export function getExportsResolverJS(): string {
-  return `
-// ── exports-resolver.js (auto-generated; keep in sync with src/_shared/exports-resolver.ts) ──
-const DEFAULT_ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
-const DEFAULT_CJS_CONDITIONS = ['require', 'node', 'default'];
-
-function resolveExports(exportsField, subpath, conditions) {
-  if (subpath === undefined) subpath = '.';
-  if (!conditions) conditions = DEFAULT_ESM_CONDITIONS;
-  if (exportsField === undefined || exportsField === null) return null;
-  if (typeof exportsField === 'string') {
-    return subpath === '.' ? exportsField : null;
-  }
-  if (Array.isArray(exportsField)) {
-    for (const item of exportsField) {
-      const r = resolveExports(item, subpath, conditions);
-      if (r) return r;
-    }
-    return null;
-  }
-  if (typeof exportsField !== 'object') return null;
-  const keys = Object.keys(exportsField);
-  if (keys.length === 0) return null;
-  const isSubpathMap = keys[0].startsWith('.') || keys[0].startsWith('#');
-  if (isSubpathMap) {
-    if (subpath in exportsField) {
-      const target = exportsField[subpath];
-      if (target === null) return null;
-      return resolveConditionValue(target, conditions);
-    }
-    const wildcardKeys = keys
-      .filter(k => k.includes('*'))
-      .sort((a, b) => b.length - a.length);
-    for (const pattern of wildcardKeys) {
-      const target = exportsField[pattern];
-      const starIdx = pattern.indexOf('*');
-      const prefix = pattern.slice(0, starIdx);
-      const suffix = pattern.slice(starIdx + 1);
-      if (
-        subpath.startsWith(prefix) &&
-        (suffix ? subpath.endsWith(suffix) : true) &&
-        subpath.length >= prefix.length + suffix.length
-      ) {
-        if (target === null) return null;
-        const matched = subpath.slice(
-          prefix.length,
-          suffix ? subpath.length - suffix.length : undefined,
-        );
-        const resolved = resolveConditionValue(target, conditions);
-        if (resolved) return resolved.split('*').join(matched);
-      }
-    }
-    return null;
-  }
-  if (subpath !== '.') return null;
-  return resolveConditionValue(exportsField, conditions);
-}
-
-function resolveConditionValue(target, conditions) {
-  if (target === null || target === undefined) return null;
-  if (typeof target === 'string') return target;
-  if (Array.isArray(target)) {
-    for (const item of target) {
-      const r = resolveConditionValue(item, conditions);
-      if (r) return r;
-    }
-    return null;
-  }
-  if (typeof target !== 'object') return null;
-  for (const cond of conditions) {
-    if (cond in target) {
-      const r = resolveConditionValue(target[cond], conditions);
-      if (r) return r;
-    }
-  }
-  if (!conditions.includes('default') && 'default' in target) {
-    return resolveConditionValue(target.default, conditions);
-  }
-  return null;
-}
-
-function resolvePackageEntry(pkg, subpath, conditions) {
-  if (subpath === undefined) subpath = '.';
-  if (!conditions) conditions = DEFAULT_ESM_CONDITIONS;
-  if (pkg.exports !== undefined && pkg.exports !== null) {
-    const entry = resolveExports(pkg.exports, subpath, conditions);
-    if (entry) return entry;
-    return null;
-  }
-  if (subpath === '.') {
-    if (conditions.includes('module') && pkg.module) return pkg.module;
-    if (pkg.main) return pkg.main;
-    return null;
-  }
-  return subpath;
-}
-
-function packageSelfReferenceSubpath(pkg, specifier) {
-  if (!pkg || typeof pkg.name !== 'string' || pkg.name.length === 0) return null;
-  if (pkg.exports === undefined || pkg.exports === null) return null;
-  if (specifier === pkg.name) return '.';
-  if (!specifier.startsWith(pkg.name + '/')) return null;
-  return '.' + specifier.slice(pkg.name.length);
-}
-// ── end exports-resolver.js ────────────────────────────────────────────
-`;
+  return [
+    '// ── exports-resolver (generated from src/_shared/exports-resolver.ts) ──',
+    `const DEFAULT_ESM_CONDITIONS = ${JSON.stringify(DEFAULT_ESM_CONDITIONS)};`,
+    `const DEFAULT_CJS_CONDITIONS = ${JSON.stringify(DEFAULT_CJS_CONDITIONS)};`,
+    resolveExports.toString(),
+    resolveConditionValue.toString(),
+    resolvePackageEntry.toString(),
+    packageSelfReferenceSubpath.toString(),
+  ].join('\n');
 }

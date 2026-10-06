@@ -76,26 +76,18 @@ export function typescriptFallbackCandidates(base: string): string[] {
 export const TYPESCRIPT_INDEX_CANDIDATES = ['/index.ts', '/index.tsx'] as const;
 
 /**
- * The same mapping as raw JS, for embedding in the facet shim.
- *
- * The regex and the index list are interpolated from the definitions above so
- * only the four-branch body is written twice, and the equivalence of the two
- * bodies is asserted over the whole table by the unit test rather than
- * asserted by a comment.
+ * The same mapping as raw JS, for embedding in the facet shim:
+ * `__typescriptFallbackCandidates` is typescriptFallbackCandidates by its own
+ * `toString()`, closed over the same regex, and `__TYPESCRIPT_INDEX_CANDIDATES`
+ * the same list, so there is no second body to keep in step.
  */
 export function getTypescriptSpecifiersJS(): string {
   return `
-// ── typescript-specifiers (mirrors src/_shared/typescript-specifiers.ts) ──
-const __NON_MAPPING_EXTENSION = ${NON_MAPPING_EXTENSION.toString()};
+// ── typescript-specifiers (generated from src/_shared/typescript-specifiers.ts) ──
 const __TYPESCRIPT_INDEX_CANDIDATES = ${JSON.stringify([...TYPESCRIPT_INDEX_CANDIDATES])};
-function __typescriptFallbackCandidates(base) {
-  if (__NON_MAPPING_EXTENSION.test(base)) return [];
-  if (base.endsWith(".mjs")) return [base.slice(0, -4) + ".mts"];
-  if (base.endsWith(".js")) {
-    const stem = base.slice(0, -3);
-    return [stem + ".ts", stem + ".tsx"];
-  }
-  return [base + ".ts", base + ".tsx"];
-}
+const __typescriptFallbackCandidates = (() => {
+  const NON_MAPPING_EXTENSION = ${NON_MAPPING_EXTENSION.toString()};
+  return ${typescriptFallbackCandidates.toString()};
+})();
 `;
 }
