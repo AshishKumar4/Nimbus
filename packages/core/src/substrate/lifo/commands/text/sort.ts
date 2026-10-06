@@ -1,11 +1,12 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { createHash } from 'node:crypto';
 import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU sort (coreutils 9.7) in en_US.UTF-8, on bytes. Keys (-k, -t), the
-// orderings -n -g -h -M -V, modifiers -b -d -f -i -r, -u, -s, -c/-C, -m, -o,
-// -z. Text compares as glibc's collation does: punctuation, symbols and
+// orderings -n -g -h -M -V -R (with --random-source), modifiers -b -d -f -i
+// -r, -u, -s, -c/-C, -m, -o, -z. Text compares as glibc's collation does: punctuation, symbols and
 // spaces (not currency) are ignored until everything else is equal, lower
 // case before upper, then those ignored characters decide, then the bytes.
 // Known limit: among strings that differ only in punctuation, glibc's
@@ -271,9 +272,35 @@ function transformText(bytes: Uint8Array, o: Ordering): Uint8Array {
   return Uint8Array.from(out);
 }
 
-function compareKey(a: Uint8Array, b: Uint8Array, o: Ordering): number {
+/**
+ * -R: keys ordered by the MD5 of a 16-byte salt followed by the key, as GNU
+ * sort's compare_random does, so equal keys sort together and a
+ * --random-source fixes the order. The salt is the source's first 16 bytes,
+ * or random ones. GNU hashes the key's strxfrm transform in a locale that
+ * collates (en_US.UTF-8), and its bytes in the C locale; this hashes the
+ * bytes, so a --random-source orders keys as GNU's C-locale sort does.
+ */
+class RandomOrder {
+  private readonly digests = new Map<string, Uint8Array>();
+  constructor(private readonly salt: Uint8Array) {}
+
+  compare(a: Uint8Array, b: Uint8Array): number {
+    return compareBytes(this.digest(a), this.digest(b)) || compareBytes(a, b);
+  }
+
+  private digest(key: Uint8Array): Uint8Array {
+    const id = decodeLossless(key);
+    let digest = this.digests.get(id);
+    if (!digest) this.digests.set(id, digest = new Uint8Array(createHash('md5').update(this.salt).update(key).digest()));
+    return digest;
+  }
+}
+
+function compareKey(a: Uint8Array, b: Uint8Array, o: Ordering, random: RandomOrder | null): number {
   let d: number;
-  if (o.kind === 'text') {
+  if (o.kind === 'R') {
+    d = random!.compare(transformText(a, o), transformText(b, o));
+  } else if (o.kind === 'text') {
     const x = transformText(a, o), y = transformText(b, o);
     d = collate(collationKey(decodeLossless(x)), collationKey(decodeLossless(y)));
   } else {
@@ -282,8 +309,7 @@ function compareKey(a: Uint8Array, b: Uint8Array, o: Ordering): number {
     else if (o.kind === 'g') d = compareGeneral(x, y);
     else if (o.kind === 'h') d = compareHuman(x, y);
     else if (o.kind === 'M') d = monthOf(x) - monthOf(y);
-    else if (o.kind === 'V') d = versionCompare(x, y);
-    else d = 0;
+    else d = versionCompare(x, y);
   }
   return o.reverse ? -d : d;
 }
@@ -294,6 +320,7 @@ const command: Command = async (ctx) => {
   let tab: number | null = null;
   let unique = false, stable = false, check: 'no' | 'diagnose' | 'quiet' = 'no', zero = false;
   let output: string | undefined;
+  let randomSource: string | undefined;
   const files: string[] = [];
   let keys: Key[] = [];
   const usage = async (message: string) => {
@@ -337,7 +364,8 @@ const command: Command = async (ctx) => {
           const c = ({ general: 'g', human: 'h', month: 'M', numeric: 'n', random: 'R', version: 'V' } as Record<string, string>)[v];
           if (!c) throw new SortUsage(`invalid argument \u2018${v}\u2019 for \u2018--sort\u2019`);
           applyOrderLetter(global, c, false);
-        } else if (['buffer-size', 'temporary-directory', 'parallel', 'batch-size', 'compress-program', 'random-source', 'files0-from'].includes(name)) {
+        } else if (name === 'random-source') randomSource = inline ?? args[++i];
+        else if (['buffer-size', 'temporary-directory', 'parallel', 'batch-size', 'compress-program', 'files0-from'].includes(name)) {
           if (inline === undefined) i++;
         } else if (name !== 'debug') throw new SortUsage(`unrecognized option '--${name}'`);
         continue;
@@ -368,6 +396,24 @@ const command: Command = async (ctx) => {
   } catch (error) {
     if (error instanceof SortUsage) return usage(error.message);
     throw error;
+  }
+
+  let random: RandomOrder | null = null;
+  if (global.kind === 'R' || keys.some((key) => key.kind === 'R')) {
+    let salt: Uint8Array = crypto.getRandomValues(new Uint8Array(16));
+    if (randomSource !== undefined) {
+      try {
+        salt = (await ctx.vfs.readFile(resolve(ctx.cwd, randomSource))).subarray(0, 16);
+      } catch (error) {
+        await ctx.stderr.write(`sort: open failed: ${randomSource}: ${strerror(error)}\n`);
+        return 2;
+      }
+      if (salt.length < 16) {
+        await ctx.stderr.write(`sort: '${randomSource}': end of file\n`);
+        return 2;
+      }
+    }
+    random = new RandomOrder(salt);
   }
 
   const delim = zero ? 0 : 0x0a;
@@ -405,11 +451,11 @@ const command: Command = async (ctx) => {
         return global.reverse ? -d : d;
       }
       const [sa, ea] = keyRange(a, whole, tab), [sb, eb] = keyRange(b, whole, tab);
-      return compareKey(a.subarray(sa, ea), b.subarray(sb, eb), global);
+      return compareKey(a.subarray(sa, ea), b.subarray(sb, eb), global, random);
     }
     for (const key of keys) {
       const [sa, ea] = keyRange(a, key, tab), [sb, eb] = keyRange(b, key, tab);
-      const d = compareKey(a.subarray(sa, ea), b.subarray(sb, eb), key);
+      const d = compareKey(a.subarray(sa, ea), b.subarray(sb, eb), key, random);
       if (d !== 0) return d;
     }
     return 0;
