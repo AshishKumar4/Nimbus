@@ -55,11 +55,14 @@ export interface NpmBinResolution extends NpmBinEntry {
  */
 type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat'>;
 type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'>;
+/** What validating a bin's target reads. */
+type BinTargetFs = Pick<VfsLike, 'exists' | 'isDirectory'>;
 
 interface PackageJsonLike {
   name: string;
   version?: string;
-  bin?: string | Record<string, string>;
+  /** Read by npmBinMap, which takes what npm takes (a string, a map, an array) and drops the rest. */
+  bin?: unknown;
 }
 
 const NpmBinEntrySchema: z.ZodType<NpmBinEntry> = z.object({
@@ -78,10 +81,7 @@ const NpmBinManifestSchema: z.ZodType<NpmBinManifest> = z.object({
 const PackageJsonSchema: z.ZodType<PackageJsonLike> = z.object({
   name: z.string().min(1),
   version: z.string().optional(),
-  bin: z.union([
-    z.string(),
-    z.record(z.string(), z.string()),
-  ]).optional(),
+  bin: z.unknown().optional(),
 }).passthrough();
 
 export function npmBinDirPath(nodeModulesPath: string): string {
@@ -131,6 +131,35 @@ export function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string)
     // VFS path under the package dir.
     targetPath: isStagedArtifactTarget(target) ? target : `${packagePath}/${target}`,
   }));
+}
+
+/**
+ * The names the package at `packagePath` declares in `bin`, as npm reads its
+ * package.json (npmBinMap), whether or not their targets exist: what an
+ * install links, and what removing the package unlinks.
+ */
+export async function declaredPackageBins(vfs: Pick<VfsLike, 'readFileString'>, packagePath: string): Promise<string[]> {
+  const pkg = await readPackageJson(vfs, `${packagePath}/package.json`);
+  return pkg ? [...npmBinMap(pkg.name, pkg.bin).keys()] : [];
+}
+
+/**
+ * The bin `npx` runs from the package at `packagePath` for `binName`, as a
+ * linked bin is validated (target present, `.js`/`.cjs`/`.mjs` probed, a
+ * staged-artifact sentinel passed through). A package that maps `bin` names
+ * runs its first entry when none is `binName`, as npm runs a single-binary
+ * package; a string `bin` runs only under the package's own name.
+ */
+export async function npxPackageBin(
+  vfs: BinTargetFs & Pick<VfsLike, 'readFileString'>,
+  packagePath: string,
+  binName: string,
+): Promise<NpmBinEntry | null> {
+  const path = normalizeVfsPath(packagePath);
+  const pkg = await readPackageJson(vfs, `${path}/package.json`);
+  if (!pkg) return null;
+  const entries = await packageJsonBinEntry(vfs, path, pkg);
+  return entries.find((entry) => entry.name === binName) ?? (typeof pkg.bin === 'string' ? null : entries[0] ?? null);
 }
 
 export async function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Promise<NpmBinResolution | null> {
@@ -304,7 +333,7 @@ async function* listPackagePaths(vfs: VfsLike, nodeModulesPath: string): AsyncGe
 }
 
 async function packageJsonBinEntry(
-  vfs: VfsLike,
+  vfs: BinTargetFs,
   packagePath: string,
   pkg: PackageJsonLike,
   requestedName?: string,
@@ -326,7 +355,7 @@ async function packageJsonBinEntry(
   return entries;
 }
 
-async function validateEntry(vfs: VfsLike, entry: unknown): Promise<NpmBinEntry | null> {
+async function validateEntry(vfs: BinTargetFs, entry: unknown): Promise<NpmBinEntry | null> {
   const parsed = NpmBinEntrySchema.safeParse(entry);
   if (!parsed.success) return null;
 
@@ -355,7 +384,7 @@ async function validateEntry(vfs: VfsLike, entry: unknown): Promise<NpmBinEntry 
   };
 }
 
-async function resolveExistingTarget(vfs: VfsLike, targetPath: string): Promise<string | null> {
+async function resolveExistingTarget(vfs: BinTargetFs, targetPath: string): Promise<string | null> {
   if (await vfs.exists(targetPath) && !await safeIsDirectory(vfs, targetPath)) return targetPath;
   for (const ext of ['.js', '.cjs', '.mjs']) {
     const withExt = targetPath + ext;
@@ -364,7 +393,7 @@ async function resolveExistingTarget(vfs: VfsLike, targetPath: string): Promise<
   return null;
 }
 
-async function readPackageJson(vfs: VfsLike, path: string): Promise<PackageJsonLike | null> {
+async function readPackageJson(vfs: Pick<VfsLike, 'readFileString'>, path: string): Promise<PackageJsonLike | null> {
   try {
     const parsed = PackageJsonSchema.safeParse(JSON.parse(await vfs.readFileString(path)));
     return parsed.success ? parsed.data : null;
@@ -382,7 +411,7 @@ async function readNpmBinManifest(vfs: VfsLike, manifestPath: string): Promise<N
   }
 }
 
-async function safeIsDirectory(vfs: VfsLike, path: string): Promise<boolean> {
+async function safeIsDirectory(vfs: Pick<VfsLike, 'isDirectory'>, path: string): Promise<boolean> {
   try { return await vfs.isDirectory(path); } catch { return false; }
 }
 

@@ -30,7 +30,6 @@ import type {
 } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
-import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
@@ -111,6 +110,7 @@ import {
   createNpmBinManifest,
   createNpmBinShim,
   npmBinManifestPath,
+  declaredPackageBins,
   packageBinEntries,
   parseNpmBinManifest,
   type NpmBinEntry,
@@ -1640,7 +1640,7 @@ export class NpmInstaller {
       const key = `${nmDir}/${placement}`;
       const inRemoved = removed.some((parent) => placement.startsWith(parent + '/node_modules/'));
       if (!inRemoved && await project.exists(key)) {
-        if (!placement.includes('/node_modules/')) for (const name of await this.declaredBins(project, key)) unlinked.add(name);
+        if (!placement.includes('/node_modules/')) for (const name of await declaredPackageBins(project, key)) unlinked.add(name);
         await project.removeRecursive(key);
       }
       removed.push(placement);
@@ -1662,14 +1662,6 @@ export class NpmInstaller {
     }
     log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
     return removed.length;
-  }
-
-  /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
-  private async declaredBins(project: ProjectFs, dir: string): Promise<string[]> {
-    let manifest: Record<string, unknown> | null = null;
-    try { manifest = safeJsonParse<Record<string, unknown> | null>(await project.readFileString(`${dir}/package.json`), null); } catch { return []; }
-    if (manifest === null || typeof manifest.name !== 'string') return [];
-    return [...npmBinMap(manifest.name, manifest.bin).keys()];
   }
 
   /**
