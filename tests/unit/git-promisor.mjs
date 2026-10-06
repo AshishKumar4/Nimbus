@@ -107,6 +107,29 @@ try {
     assert.notEqual(missing.code, 0);
     assert.match(missing.stderr, new RegExp(lacking));
     assert.equal(requests.fetchObjects, 3, 'no request without a promisor remote');
+
+    // Edits staged in a partial clone are loose objects: a command that needs
+    // them reads them here, and asks the promisor only for what it lacks.
+    assert.equal((await git('/home/user', ['clone', '--depth', '1', '--filter=blob:none', url, 'repo3'])).code, 0);
+    const host3 = join(work, 'host3');
+    hostGit(work, ['clone', '-q', '--depth', '1', '--filter=blob:none', 'file://' + join(served, 'repo.git'), host3]);
+    for (const [path, text] of [['src/f1.txt', 'edited\n'], ['src/new.txt', 'new\n']]) {
+      kernel.writeFile('home/user/repo3/' + path, text);
+      writeFileSync(join(host3, path), text);
+    }
+    const staged = await git('/home/user/repo3', ['add', 'src/f1.txt', 'src/new.txt']);
+    assert.equal(staged.code, 0, staged.stderr);
+    hostGit(host3, ['add', 'src/f1.txt', 'src/new.txt']);
+    const cached = await git('/home/user/repo3', ['diff', '--cached']);
+    assert.equal(cached.code, 0, cached.stderr);
+    assert.equal(cached.stdout, hostGit(host3, ['diff', '--cached']));
+    // The checkout brought HEAD's blobs; the staged ones are loose: nothing to ask for.
+    assert.equal(requests.fetchObjects, 3, 'the staged blobs are local: no request');
+    kernel.writeFile('home/user/repo3/src/f1.txt', 'dirty\n');
+    const restored = await git('/home/user/repo3', ['checkout', '--', 'src/f1.txt']);
+    assert.equal(restored.code, 0, restored.stderr);
+    assert.equal(kernel.readFileString('home/user/repo3/src/f1.txt'), 'edited\n', 'checkout restored the staged blob');
+    assert.equal(requests.fetchObjects, 3, 'the staged blob is local: no request');
   } finally {
     server.stop();
   }

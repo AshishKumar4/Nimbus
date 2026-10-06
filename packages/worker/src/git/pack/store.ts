@@ -262,9 +262,10 @@ export interface GitPacksSeam {
   has(gitdir: string, oid: string): Promise<boolean>;
   expand(gitdir: string, prefix: string): Promise<string[]>;
   /**
-   * Fetch, in one request, those of `oids` a partial clone lacks (git batches
-   * a checkout's, a diff's, a merge's); a no-op where nothing is missing or
-   * the repository has no promisor remote.
+   * Fetch, in one request, those of `oids` a partial clone lacks, in its
+   * packs and as loose objects (git batches a checkout's, a diff's, a
+   * merge's); a no-op where nothing is missing or the repository has no
+   * promisor remote.
    */
   prefetch(gitdir: string, oids: Iterable<string>): Promise<void>;
   /** Forget `gitdir`'s pack list: a pack was added. */
@@ -277,6 +278,29 @@ export interface GitPacksSeam {
  * absent outside a partial clone.
  */
 export type PromisorFetch = (gitdir: string, oids: string[]) => Promise<boolean>;
+
+/**
+ * Those of `oids` that are not loose objects of `gitdir`: what a command
+ * stages or commits in a partial clone is written loose, and the promisor
+ * never had it. One listing of objects/, then one of each fan-out directory
+ * an id names, only where it exists.
+ */
+async function withoutLoose(fs: PackStoreFs, gitdir: string, oids: string[]): Promise<string[]> {
+  if (oids.length === 0) return oids;
+  const fanout = new Set(await fs.readdir(gitdir + '/objects'));
+  const listed = new Map<string, Set<string>>();
+  const missing: string[] = [];
+  for (const oid of oids) {
+    const dir = oid.slice(0, 2);
+    let names = listed.get(dir);
+    if (names === undefined) {
+      names = fanout.has(dir) ? new Set(await fs.readdir(gitdir + '/objects/' + dir)) : new Set();
+      listed.set(dir, names);
+    }
+    if (!names.has(oid.slice(2))) missing.push(oid);
+  }
+  return missing;
+}
 
 export function packsSeam(fs: PackStoreFs, options: PackStoreOptions & { promisor?: PromisorFetch } = {}): GitPacksSeam {
   const stores = new Map<string, PackObjectStore>();
@@ -301,9 +325,9 @@ export function packsSeam(fs: PackStoreFs, options: PackStoreOptions & { promiso
     has: (gitdir, oid) => store(gitdir).has(oid),
     expand: (gitdir, prefix) => store(gitdir).expand(prefix),
     async prefetch(gitdir, oids) {
-      const missing: string[] = [];
-      for (const oid of new Set(oids)) if (!await store(gitdir).has(oid)) missing.push(oid);
-      await fetchMissing(gitdir, missing);
+      const unpacked: string[] = [];
+      for (const oid of new Set(oids)) if (!await store(gitdir).has(oid)) unpacked.push(oid);
+      await fetchMissing(gitdir, await withoutLoose(fs, gitdir, unpacked));
     },
     refresh: (gitdir) => store(gitdir).refresh(),
   };
