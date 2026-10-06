@@ -1,6 +1,6 @@
 import { spawn, spawnSync } from 'node:child_process';
 import { randomUUID } from 'node:crypto';
-import { readdirSync, readFileSync, writeFileSync, accessSync, constants, mkdtempSync, rmSync, statSync } from 'node:fs';
+import { readdirSync, readFileSync, writeFileSync, accessSync, constants, mkdirSync, mkdtempSync, rmdirSync, rmSync, statSync } from 'node:fs';
 import { resolve as resolvePath } from 'node:path';
 import { tmpdir, userInfo } from 'node:os';
 import { fileURLToPath } from 'node:url';
@@ -41,14 +41,17 @@ function identity(pid) {
   try { return statFields(pid)[19]; } catch { return null; }
 }
 
-function descendants(root, rootStart, known) {
+/** Adds the case's descendants to `known`, and their command names to `commands`. */
+function descendants(root, rootStart, known, commands = null) {
   if (process.platform !== 'linux') return;
   const parents = new Map();
   for (const pid of readdirSync('/proc')) {
     if (!/^\d+$/.test(pid)) continue;
     try {
       const fields = statFields(pid);
-      parents.set(Number(pid), { parent: Number(fields[1]), start: fields[19] });
+      // The command name, from /proc/<pid>/comm: it may hold spaces and parentheses.
+      const comm = commands ? readFileSync(`/proc/${pid}/comm`, 'utf8').trimEnd() : '';
+      parents.set(Number(pid), { parent: Number(fields[1]), start: fields[19], comm });
     } catch { /* A process exited during the snapshot. */ }
   }
   const owned = new Set();
@@ -61,6 +64,7 @@ function descendants(root, rootStart, known) {
       if (!owned.has(pid) && owned.has(info.parent)) {
         owned.add(pid);
         known.set(pid, info.start);
+        commands?.add(info.comm);
         changed = true;
       }
     }
@@ -82,6 +86,28 @@ function killTree(child, rootStart, known) {
   if (current !== null && current !== rootStart) return;
   try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Group already gone. */ }
   if (current !== null) { try { child.kill('SIGKILL'); } catch { /* Spawn failed. */ } }
+}
+
+const JOIN_FAILED = 'bounded-process: could not join the case cgroup';
+
+/**
+ * Remove a case's cgroup and any a nested runner left inside it, deepest
+ * first (cgroup.kill empties a subtree but removes none of it). Returns
+ * what could not be removed, or ''.
+ */
+function removeGroup(group) {
+  let entries = [];
+  try { entries = readdirSync(group, { withFileTypes: true }); } catch { return ''; }
+  const left = entries.filter((entry) => entry.isDirectory()).map((entry) => removeGroup(resolvePath(group, entry.name))).filter(Boolean);
+  try { rmdirSync(group); } catch (error) { left.push(`${group}: ${error.code ?? error.message}`); }
+  return left.join(', ');
+}
+
+/** systemd's MemoryMax syntax (`4G`, `512M`, bytes) as bytes, for memory.max. */
+function memoryBytes(value) {
+  const match = /^(\d+)([KMGT]?)$/i.exec(String(value).trim());
+  if (!match) throw new Error(`NIMBUS_TEST_MEMORY_MAX ${JSON.stringify(value)} is not <digits>[K|M|G|T]`);
+  return Number(match[1]) * 1024 ** ' KMGT'.indexOf(match[2].toUpperCase() || ' ');
 }
 
 let installed = false;
@@ -119,6 +145,9 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     let cleanupTimer;
     let exitCode = null;
     let exitSignal = null;
+    // The case's whole process tree, where its cgroup can be read: null otherwise.
+    let cpuMs = null;
+    let memoryPeakBytes = null;
     // run-bounded explicitly requests PID isolation. Every case gets its own
     // cgroup: detached descendants cannot escape, even before the first read.
     // Outside that wrapper, retain the explicitly weaker portable fallback.
@@ -152,6 +181,34 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     if (!isExecutableFile(executable)) { resolveResultMissing(); return; }
     function resolveResultMissing() {
       resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
+    }
+    // NIMBUS_TEST_CGROUP names a cgroup v2 directory this runner may create
+    // groups in; the CI containers delegate one (apps/ci-runner). Each case
+    // gets its own group there and joins it before exec, so nothing it starts
+    // is ever outside it. Its CPU and peak memory are read from that group,
+    // and cgroup.kill ends every descendant, setsid and reparented ones too.
+    // A case whose environment carries NIMBUS_TEST_CGROUP is handed its own
+    // group there, so a runner it starts nests its cases inside it.
+    const cgroupRoot = strong ? null : process.env.NIMBUS_TEST_CGROUP || null;
+    let caseGroup = null;
+    if (cgroupRoot) {
+      // env(1) takes the first argument without `=` as the command.
+      // A failure here launched nothing: launchError says so, so a runner
+      // can tell it from a test that ran and failed.
+      const refuse = (launchError) => resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: launchError, launchError, code: null, signal: null, outputTruncated: false });
+      if (executable.includes('=')) { refuse(`cgroup launch cannot exec a path containing "=": ${executable}`); return; }
+      try {
+        caseGroup = resolvePath(cgroupRoot, `case-${randomUUID()}`);
+        mkdirSync(caseGroup);
+        if (readFileSync(resolvePath(cgroupRoot, 'cgroup.subtree_control'), 'utf8').split(/\s+/).includes('memory')) {
+          writeFileSync(resolvePath(caseGroup, 'memory.max'), String(memoryBytes(process.env.NIMBUS_TEST_MEMORY_MAX || '4G')));
+          writeFileSync(resolvePath(caseGroup, 'memory.swap.max'), '0');
+        }
+      } catch (error) {
+        if (caseGroup) removeGroup(caseGroup);
+        refuse(`cgroup isolation unavailable under ${cgroupRoot}: ${error.message}`);
+        return;
+      }
     }
     let statusDir;
     let statusFile;
@@ -192,7 +249,15 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       '--unshare-pid', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev', '--die-with-parent',
       '--', process.execPath, fileURLToPath(new URL('./subprocess-entry.mjs', import.meta.url)), requestFile,
     ] : args;
-    const child = spawn(unit ? '/usr/bin/systemd-run' : executable, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
+    // The shell joins the case's group and execs env(1), which execs the
+    // target with exactly the requested environment: the shell's own (it
+    // adds PWD and drops names that are not identifiers) never reaches it.
+    const cgroupEnv = caseGroup && env.NIMBUS_TEST_CGROUP !== undefined ? { ...env, NIMBUS_TEST_CGROUP: caseGroup } : env;
+    const child = caseGroup
+      ? spawn('/bin/sh', ['-c', `echo $$ > "$0/cgroup.procs" || { echo '${JOIN_FAILED}' >&2; exit 125; }; exec /usr/bin/env -i -- "$@"`, caseGroup,
+        ...Object.entries(cgroupEnv).filter(([key, value]) => key && !key.includes('=') && value !== undefined).map(([key, value]) => `${key}=${value}`),
+        executable, ...args], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {}, cwd })
+      : spawn(unit ? '/usr/bin/systemd-run' : executable, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
     const rootStart = child.pid ? identity(child.pid) : null;
     const job = {
       name,
@@ -203,7 +268,10 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
           // The systemd-run client can retain its bus/stdio handles after the
           // service is killed. It is our direct child, not a namespace PID.
           if (child.exitCode === null && child.signalCode === null) child.kill('SIGKILL');
-        } else killTree(child, rootStart, known);
+        } else {
+          if (caseGroup) { try { writeFileSync(resolvePath(caseGroup, 'cgroup.kill'), '1'); } catch { /* Already removed. */ } }
+          killTree(child, rootStart, known);
+        }
       },
       cancel(signal) {
         reason = `runner received ${signal}`;
@@ -211,7 +279,10 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       },
     };
     active.add(job);
-    const census = unit ? null : setInterval(() => { if (child.pid) descendants(child.pid, rootStart, known); }, 25);
+    // What the case started, as seen every 25 ms: a run's report says which
+    // files drive a local workerd. Strong isolation has no census.
+    const commands = new Set();
+    const census = unit ? null : setInterval(() => { if (child.pid) descendants(child.pid, rootStart, known, commands); }, 25);
     // A setsid descendant may be reparented before the first census. Never
     // wait forever on its inherited pipes. The outer run-bounded cgroup is
     // REQUIRED: polling/process groups cannot close this race or bound RSS.
@@ -277,13 +348,37 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
             || !(status.signal === null || typeof status.signal === 'string') || typeof status.error !== 'string') throw new Error('invalid wait status');
           code = status.code;
           signal = status.signal;
+          if (Number.isSafeInteger(status.cpuUsec)) cpuMs = Math.round(status.cpuUsec / 1000);
           if (status.error) reason ||= `spawn failed: ${status.error}`;
           if (signal) reason ||= `process terminated by ${signal}`;
         } catch (error) {
           reason ||= `PID-isolated process produced no valid wait status: ${error.message}`;
         } finally { rmSync(statusDir, { recursive: true, force: true }); }
       }
-      resolve({ ok: code === 0 && !reason, stdout: stdout.text(), stderr: stderr.text(), reason, code, signal, outputTruncated });
+      // The join shell's own failure: the target never started.
+      const launchError = caseGroup && code === 125 && stderr.text().toString().includes(JOIN_FAILED) ? `could not join case cgroup ${caseGroup}` : undefined;
+      if (launchError) reason ||= launchError;
+      const settle = () => resolve({ ok: code === 0 && !reason, stdout: stdout.text(), stderr: stderr.text(), reason, ...(launchError ? { launchError } : {}), code, signal, outputTruncated, cpuMs, memoryPeakBytes, commands: [...commands].sort() });
+      if (!caseGroup) { settle(); return; }
+      // cgroup.kill is asynchronous: read the group once it is empty, so the
+      // CPU of every descendant is in it, then remove it.
+      const drainedBy = Date.now() + 2000;
+      const release = () => {
+        let populated = true;
+        try { populated = /^populated 1$/m.test(readFileSync(resolvePath(caseGroup, 'cgroup.events'), 'utf8')); } catch { populated = false; }
+        if (populated && Date.now() < drainedBy) { setTimeout(release, 10); return; }
+        if (populated) reason ||= `case cgroup ${caseGroup} still populated 2s after cgroup.kill`;
+        try {
+          const usec = Number(readFileSync(resolvePath(caseGroup, 'cpu.stat'), 'utf8').match(/^usage_usec (\d+)$/m)?.[1]);
+          if (Number.isSafeInteger(usec)) cpuMs = Math.round(usec / 1000);
+          const peak = Number(readFileSync(resolvePath(caseGroup, 'memory.peak'), 'utf8'));
+          if (Number.isSafeInteger(peak)) memoryPeakBytes = peak;
+        } catch { /* No memory controller in this group. */ }
+        const left = removeGroup(caseGroup);
+        if (left) reason ||= `case cgroup not removed: ${left}`;
+        settle();
+      };
+      release();
     };
     child.on('error', (error) => { reason = `spawn failed: ${error.message}`; finish(null); });
     child.on('close', (code, signal) => finish(code, signal));
