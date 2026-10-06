@@ -37,20 +37,43 @@ export interface CjsExports {
   readonly reexports: string[];
 }
 
-/** `source`'s exports and reexports by cjs-module-lexer's rules; none for a source that does not tokenize. */
+/** `source`'s exports and reexports by cjs-module-lexer's rules; none for a source that does not tokenize, as the lexer has none. */
 export function scanCjsExports(source: string): CjsExports {
-  let tokens: Token[];
   try {
-    tokens = [...tokenizer(source, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true, allowReturnOutsideFunction: true })];
+    return scan(source);
   } catch {
     return { names: [], reexports: [] };
   }
+}
+
+function scan(source: string): CjsExports {
+  // The tokens stream through a window: a bundle of megabytes would be
+  // millions of tokens at once, and the patterns look back three tokens and
+  // forward only as far as one declaration reaches.
+  const stream = tokenizer(source, { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true, allowReturnOutsideFunction: true });
+  const window: Token[] = [];
+  let base = 0;
+  let ended = false;
+  const at = (i: number): Token | undefined => {
+    while (!ended && i >= base + window.length) {
+      const token = stream.getToken();
+      if (token.type === tokTypes.eof) ended = true;
+      else window.push(token);
+    }
+    return i >= base ? window[i - base] : undefined;
+  };
+  /** Drop the tokens more than a few behind `i`. */
+  const slide = (i: number): void => {
+    if (i - base < 256) return;
+    const drop = i - base - 8;
+    window.splice(0, drop);
+    base += drop;
+  };
   const names = new Set<string>();
   const unsafe = new Set<string>();
   let reexports = new Set<string>();
   let depth = 0;
 
-  const at = (i: number): Token | undefined => tokens[i];
   const is = (i: number, type: typeof tokTypes.name): boolean => at(i)?.type === type;
   const word = (i: number, value?: string): boolean => {
     const token = at(i);
@@ -248,8 +271,9 @@ export function scanCjsExports(source: string): CjsExports {
     return all(punct(tokTypes.braceR), punct(tokTypes.parenR)) ? id : null;
   };
 
-  for (let i = 0; i < tokens.length; i++) {
-    const token = tokens[i];
+  for (let i = 0; at(i) !== undefined; i++) {
+    slide(i);
+    const token = at(i)!;
     if (token.type === tokTypes.parenL || token.type === tokTypes.braceL || token.type === tokTypes.dollarBraceL) depth++;
     else if (token.type === tokTypes.parenR || token.type === tokTypes.braceR) depth = Math.max(0, depth - 1);
     if (token.type !== tokTypes.name) continue;
