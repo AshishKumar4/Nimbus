@@ -47,7 +47,8 @@ import { generateUndiciShimCode } from '@nimbus-sh/core/runtime/undici-shim.js';
 import { getExportsResolverJS } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { ESM_RESOLVER_PREAMBLE, HTTP2_MODULE_PREAMBLE } from '../loaders/generated-workers.js';
 import { getTypescriptSpecifiersJS } from '@nimbus-sh/core/_shared/typescript-specifiers.js';
-import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV } from '@nimbus-sh/core/_shared/ai-egress.js';
+import { NIMBUS_AI_CREDENTIAL_HEADERS, NIMBUS_AI_TOKEN_ENV, presentedCredential } from '@nimbus-sh/core/_shared/ai-egress.js';
+import { LOOPBACK_HOSTNAMES } from '@nimbus-sh/core/_shared/loopback.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { ERRNO_DESCRIPTION } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { DIRENT_TYPES } from '@nimbus-sh/core/vfs/dirent-type.js';
@@ -76,11 +77,15 @@ const TYPESCRIPT_SPECIFIERS_JS = getTypescriptSpecifiersJS();
 // constants.ts for the rationale (create-astro preflight, etc.).
 const NODE_VERSION_LITERAL = JSON.stringify(NODE_VERSION);
 const NODE_VERSIONS_LITERAL = JSON.stringify(NODE_VERSIONS);
-// AI-egress mediation policy, interpolated for the same reason: the emitted
-// shim is a string and cannot import, so the constants it decides with come
-// from _shared/ai-egress.ts at build time rather than being written twice.
+// AI-egress mediation policy and the loopback host list, interpolated for the
+// same reason: the emitted shim is a string and cannot import, so the
+// constants it decides with, and the credential predicate's own source, come
+// from _shared/ai-egress.ts and _shared/loopback.ts at build time rather than
+// being written twice.
 const AI_TOKEN_ENV_LITERAL = JSON.stringify(NIMBUS_AI_TOKEN_ENV);
 const AI_CREDENTIAL_HEADERS_LITERAL = JSON.stringify(NIMBUS_AI_CREDENTIAL_HEADERS);
+const PRESENTED_CREDENTIAL_SOURCE = presentedCredential.toString();
+const LOOPBACK_HOSTNAMES_LITERAL = JSON.stringify(LOOPBACK_HOSTNAMES);
 const ABI_ADVISORIES_LITERAL = JSON.stringify(PACKAGE_ABI_POLICY.rejects.map(
   (r) => [r.from, r.suggest ? `${r.reason} … try: ${r.suggest}` : r.reason],
 ));
@@ -405,7 +410,7 @@ function __nimbusWasmDigest(bytes) {
     if (Array.isArray(h)) return h.some((p) => String(p?.[0]).toLowerCase() === "user-agent");
     return Object.keys(h).some((k) => k.toLowerCase() === "user-agent");
   };
-  const __loopbackHosts = new Set(["127.0.0.1", "localhost", "0.0.0.0", "::1"]);
+  const __loopbackHosts = new Set(${LOOPBACK_HOSTNAMES_LITERAL});
   const __fetchUrl = (input) => {
     try {
       const href = typeof input === "string" ? input
@@ -461,6 +466,7 @@ function __nimbusWasmDigest(bytes) {
   // carrying anything else (the user's own real provider key) is not ours, is
   // left alone, and goes to that provider. See _shared/ai-egress.ts.
   const __aiCredentialHeaders = ${AI_CREDENTIAL_HEADERS_LITERAL};
+  const __presentedCredential = ${PRESENTED_CREDENTIAL_SOURCE};
   const __maybeRouteAiEgress = (url, input, init) => {
     if (url.protocol !== "http:" && url.protocol !== "https:") return null;
     let token = "";
@@ -469,7 +475,7 @@ function __nimbusWasmDigest(bytes) {
     for (const name of __aiCredentialHeaders) {
       const raw = __headerOf(input, init, name);
       if (!raw) continue;
-      if (String(raw).trim().replace(/^bearer\\s+/i, "") !== token) continue;
+      if (__presentedCredential(String(raw)) !== token) continue;
       return Promise.resolve(__supervisor.routeLoopback(${NIMBUS_AI_GATEWAY_PORT}, __supervisorRequest(url, input, init)));
     }
     return null;
