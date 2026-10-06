@@ -57,6 +57,7 @@ import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbu
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import {
   scanProjectImports,
+  transformParser,
   namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
@@ -2025,7 +2026,7 @@ export class ViteDevServer {
 
   // ── Module serving (/@modules/<pkg>) ──────────────────────────────────
 
-  private getBarrelModuleCacheInfo(specifier: string): BarrelModuleCacheInfo | null {
+  private async getBarrelModuleCacheInfo(specifier: string): Promise<BarrelModuleCacheInfo | null> {
     const pkgName = packageNameFromSpecifier(specifier);
     if (specifier !== pkgName) return null;
 
@@ -2033,7 +2034,7 @@ export class ViteDevServer {
     const fileCount = countPackageFiles(this.vfs, pkgDir);
     if (fileCount <= BARREL_PKG_FILE_THRESHOLD) return null;
 
-    const names = scanProjectImports(this.vfs, this.root).namedImports.get(pkgName) ?? null;
+    const names = (await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild))).namedImports.get(pkgName) ?? null;
     return {
       pkgName,
       fileCount,
@@ -2054,7 +2055,7 @@ export class ViteDevServer {
     const JS_CT = 'application/javascript; charset=utf-8';
     const generation = this.configGeneration;
     const cacheKey = this.ck(base, `@modules/${specifier}`);
-    const barrelInfo = this.getBarrelModuleCacheInfo(specifier);
+    const barrelInfo = await this.getBarrelModuleCacheInfo(specifier);
 
     // 1. In-memory cache (hot path — already bundled)
     const memCached = this.moduleCache.get(cacheKey);
@@ -2171,7 +2172,7 @@ export class ViteDevServer {
     if (resolved) {
       const pkgName = packageNameFromSpecifier(specifier);
       const pkgDir = this.root + '/node_modules/' + pkgName;
-      const barrelInfo = knownBarrelInfo ?? this.getBarrelModuleCacheInfo(specifier);
+      const barrelInfo = knownBarrelInfo ?? await this.getBarrelModuleCacheInfo(specifier);
       const fileCount = barrelInfo?.fileCount ?? countPackageFiles(this.vfs, pkgDir);
       const isBarrel = !!barrelInfo && specifier === pkgName;
       let bundled: string | null = null;
@@ -2299,8 +2300,8 @@ export class ViteDevServer {
               // references (+ transitive relative imports + package.json).
               // Skips the full package walk so icon-libraries with
               // thousands of files don't blow the 28 MiB cap.
-              const scoped = buildScopedSliceForSynthetic(
-                this.vfs, nmDir, pkgName, syntheticReferencedFiles,
+              const scoped = await buildScopedSliceForSynthetic(
+                this.vfs, nmDir, pkgName, syntheticReferencedFiles, transformParser(this.esbuild),
               );
               const built: { slice: SliceEntry[]; totalBytes: number } = {
                 slice: scoped.entries,

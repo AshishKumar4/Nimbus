@@ -20,8 +20,11 @@
  * tags and text are blanked (a closing tag's slash is no regex, an
  * apostrophe in text opens no string, a URL in text opens no comment) and
  * its `{…}` expressions are lexed as code again. A TypeScript generic
- * arrow's `<T,>` / `<T extends U>` is not an element. A source whose `<`
- * the lexer cannot close as an element is read on without JSX from there.
+ * arrow's `<T,>` / `<T extends U>`, and in a TSX file a generic function
+ * type's `<T>(…) =>`, is not an element. A `<` the lexer can neither close
+ * as an element nor read as one of those is a construct it cannot decide:
+ * it throws UndecidableSourceError, and the caller reads that file with a
+ * parser instead. It never guesses on.
  *
  * The output is assembled from input slices and joined once. It used to
  * be built one character at a time (`stripped += c`), which V8 keeps as
@@ -35,9 +38,23 @@ export function stripCommentsForImports(src: string): string {
   return maskForImports(src, { keywords: false, jsx: false });
 }
 
-/** A project source file's import-detection view (see the module comment); `path` decides TypeScript. */
+/**
+ * A project source file's import-detection view (see the module comment);
+ * `path` decides the language: TypeScript (`.ts`, no JSX), TSX, or
+ * JavaScript with JSX. Throws UndecidableSourceError for a construct the
+ * lexer cannot decide.
+ */
 export function maskSourceForImports(src: string, path: string): string {
-  return maskForImports(src, { keywords: true, jsx: !/\.[mc]?ts$/.test(path) });
+  const typescript = /\.[mc]?tsx?$/.test(path);
+  return maskForImports(src, { keywords: true, jsx: !/\.[mc]?ts$/.test(path), typescript });
+}
+
+/** A `<` the import lexer can neither close as a JSX element nor read as type parameters. */
+export class UndecidableSourceError extends Error {
+  constructor(readonly offset: number) {
+    super(`the import lexer cannot decide the '<' at offset ${offset}: not a JSX element it can close, nor type parameters`);
+    this.name = 'UndecidableSourceError';
+  }
 }
 
 /**
@@ -64,6 +81,8 @@ interface MaskDialect {
   readonly keywords: boolean;
   /** A `<` that starts an expression is a JSX element. */
   readonly jsx: boolean;
+  /** TypeScript's syntax: a generic function type's `<T>(…) =>` is not an element. */
+  readonly typescript?: boolean;
 }
 
 /** Keywords an expression may follow. */
@@ -89,7 +108,7 @@ function maskForImports(src: string, dialect: MaskDialect): string {
   const NEWLINE = 0x0a;
   const N = src.length;
   const parts: string[] = [];
-  let jsx = dialect.jsx;
+  const { jsx } = dialect;
 
   /** Whether the `/` or `<` at `i` starts an expression, `lastNonWs` being the last character the lexer passed. */
   const startsExpression = (i: number, lastNonWs: string): boolean => {
@@ -108,6 +127,52 @@ function maskForImports(src: string, dialect: MaskDialect): string {
     if (next === '>') return true;
     if (next === undefined || !/[A-Za-z_$]/.test(next)) return false;
     return !/^<[\w$]+\s*(?:,|extends\s)/.test(src.slice(i, i + 64));
+  };
+
+  /** The index after the quoted text that opens at `open`, or N. */
+  const afterQuoted = (open: number): number => {
+    const quote = src[open];
+    for (let i = open + 1; i < N; i++) {
+      if (src[i] === '\\') i++;
+      else if (src[i] === quote) return i + 1;
+    }
+    return N;
+  };
+
+  /** The index after the bracket `close` that matches the `open` at `start`, within `limit` characters; -1 when there is none. */
+  const afterMatching = (start: number, open: string, close: string, limit: number): number => {
+    let depth = 0;
+    for (let i = start; i < N && i < start + limit;) {
+      const c = src[i];
+      if (c === '"' || c === "'" || c === '`') {
+        i = afterQuoted(i);
+        continue;
+      }
+      if (c === open) depth++;
+      else if (c === close && !(close === '>' && src[i - 1] === '=')) {
+        if (--depth === 0) return i + 1;
+      }
+      i++;
+    }
+    return -1;
+  };
+
+  /**
+   * Whether the `<` at `start` opens a TypeScript generic function type's
+   * parameters, `<T, U extends V = W>(…) =>`: in a TSX file that is a type,
+   * since TSX reads an expression's `<T>` as an element.
+   */
+  const genericFunctionType = (start: number): boolean => {
+    const typeParameters = afterMatching(start, '<', '>', 512);
+    if (typeParameters < 0) return false;
+    let at = typeParameters;
+    while (at < N && /\s/.test(src[at])) at++;
+    if (src[at] !== '(') return false;
+    const parameters = afterMatching(at, '(', ')', 4096);
+    if (parameters < 0) return false;
+    at = parameters;
+    while (at < N && /\s/.test(src[at])) at++;
+    return src[at] === '=' && src[at + 1] === '>';
   };
 
   /**
@@ -250,7 +315,8 @@ function maskForImports(src: string, dialect: MaskDialect): string {
           depth--;
         }
       }
-      if (jsx && ch === '<' && startsExpression(i, lastNonWs) && opensElement(i)) {
+      if (jsx && ch === '<' && startsExpression(i, lastNonWs) && opensElement(i)
+        && !(dialect.typescript && genericFunctionType(i))) {
         copy(i);
         const mark = parts.length;
         emit(' ');
@@ -263,11 +329,11 @@ function maskForImports(src: string, dialect: MaskDialect): string {
           lastNonWs = ')';
           continue;
         }
-        // Not an element after all (a generic function type's `<T>(…)`):
-        // the `<` is a character. When the input ended inside it, this
-        // source's `<` is not JSX as the lexer reads it: read on without.
+        // A closing tag that names another element shows this `<` opened
+        // none: it is a character. One the input ends inside is neither
+        // decided way, and guessing on would lose what follows.
+        if (end === ENDS_INSIDE) throw new UndecidableSourceError(i);
         parts.length = mark;
-        if (end === ENDS_INSIDE) jsx = false;
         spanStart = i;
       }
       step();
@@ -286,13 +352,20 @@ function maskForImports(src: string, dialect: MaskDialect): string {
     const name = tagName(start + 1);
     let i = start + 1 + name.length;
     // The opening tag, to `/>` or `>`: attribute names, strings (JSX has no
-    // escapes in them) and `{…}` expressions.
+    // escapes in them), `{…}` expressions, and comments between attributes.
     for (;;) {
       if (i >= N) return ENDS_INSIDE;
       const ch = src[i];
       if (ch === '/' && src[i + 1] === '>') return i + 2;
       if (ch === '>') { i++; break; }
-      if (ch === '"' || ch === "'") {
+      if (ch === '/' && src[i + 1] === '/') {
+        const end = src.indexOf('\n', i);
+        i = end < 0 ? N : end;
+      } else if (ch === '/' && src[i + 1] === '*') {
+        const end = src.indexOf('*/', i + 2);
+        if (end < 0) return ENDS_INSIDE;
+        i = end + 2;
+      } else if (ch === '"' || ch === "'") {
         const close = src.indexOf(ch, i + 1);
         if (close < 0) return ENDS_INSIDE;
         i = close + 1;

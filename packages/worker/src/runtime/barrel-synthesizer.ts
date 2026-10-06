@@ -56,7 +56,7 @@
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
 import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { importedSpecifiers, maskSourceForImports } from '@nimbus-sh/core/runtime/comment-strip.js';
+import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '@nimbus-sh/core/runtime/comment-strip.js';
 import { BUNDLER_IMPORT_CONDITIONS } from '@nimbus-sh/core/runtime/bundler-resolution.js';
 import { resolvePackageEntry, type ResolvablePackageJson } from '@nimbus-sh/core/_shared/exports-resolver.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -117,12 +117,13 @@ export interface ProjectImports {
  * Each file is read through core's import lexer (comment-strip.ts
  * maskSourceForImports: comments, strings, regexes and JSX told apart, as
  * TypeScript's parser reads them; import-scan-differential.mjs holds it to
- * the parser over this repository's sources), then the grammars above. The
- * supervisor and the dev server call this synchronously and load no parser:
- * the lexer reads ~77 MB/s where Oxc's transform, in-process, reads ~26 MB/s
- * and would cost a transform-facet hop besides.
+ * the parser over this repository's sources), then the grammars above. A
+ * file the lexer cannot decide is read through `parse` instead
+ * (parsedImportView). The lexer reads ~77 MB/s where Oxc's transform,
+ * in-process, reads ~26 MB/s and costs a transform-facet hop besides, so
+ * the parser is the exception, not the path.
  */
-export function scanProjectImports(vfs: CredentialedVfs, projDir: string): ProjectImports {
+export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser): Promise<ProjectImports> {
   const bare = new Set<string>();
   const namedImports: NamedImportMap = new Map();
   const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
@@ -143,8 +144,10 @@ export function scanProjectImports(vfs: CredentialedVfs, projDir: string): Proje
     set.add(name);
   };
 
-  const scan = (source: string, path: string, ext: string): void => {
-    const code = maskSourceForImports(source, path);
+  // Files the lexer cannot decide, read with the parser once the walk is done.
+  const undecided: { source: string; path: string; ext: string }[] = [];
+
+  const scan = (code: string, ext: string): void => {
     for (const specifier of importedSpecifiers(code)) {
       if (specifier.startsWith('.') || specifier.startsWith('/')) continue;
       const clean = specifier.split('?')[0];
@@ -189,14 +192,54 @@ export function scanProjectImports(vfs: CredentialedVfs, projDir: string): Proje
       if (dot < 0) continue;
       const ext = entry.name.substring(dot);
       if (!scanExts.has(ext)) continue;
-      let code: string;
-      try { code = vfs.readFileString(path); } catch { continue; }
-      scan(code, path, ext);
+      let source: string;
+      try { source = vfs.readFileString(path); } catch { continue; }
+      const view = lexedImportView(source, path);
+      if (view === null) undecided.push({ source, path, ext });
+      else scan(view, ext);
     }
   };
 
   walk(projDir, 0);
+  for (const { source, path, ext } of undecided) scan(await parsedImportView(source, path, parse), ext);
   return { bareSpecifiers: [...bare], namedImports };
+}
+
+/**
+ * A source file as plain JavaScript (its TypeScript and JSX lowered, module
+ * syntax kept), for a file the import lexer cannot decide: the session's
+ * transform (EsbuildService.transform, through its transform host), as
+ * transformParser builds it.
+ */
+export type SourceParser = (path: string, source: string) => Promise<string>;
+
+/** A SourceParser over a transform service: `.tsx`/`.ts` as TypeScript, anything else as JavaScript with JSX. */
+export function transformParser(service: { transform(code: string, options: { loader: 'ts' | 'tsx' | 'jsx'; format: 'esm' }): Promise<{ code: string }> }): SourceParser {
+  return async (path, source) => {
+    const loader = /\.[mc]?tsx$/.test(path) ? 'tsx' : /\.[mc]?ts$/.test(path) ? 'ts' : 'jsx';
+    return (await service.transform(source, { loader, format: 'esm' })).code;
+  };
+}
+
+/** `source`'s import-detection view as the lexer reads it, or null for a file it cannot decide (UndecidableSourceError). */
+function lexedImportView(source: string, path: string): string | null {
+  try {
+    return maskSourceForImports(source, path);
+  } catch (error) {
+    if (error instanceof UndecidableSourceError) return null;
+    throw error;
+  }
+}
+
+/**
+ * The import-detection view of a file the lexer cannot decide: the lexer's
+ * view of what `parse` makes of it. A transform drops the imports a
+ * TypeScript module names only as types or never uses, which name nothing
+ * to bundle.
+ */
+async function parsedImportView(source: string, path: string, parse: SourceParser): Promise<string> {
+  // The transform's output holds no JSX: read it as a `.ts` file is read.
+  return maskSourceForImports(await parse(path, source), path.replace(/\.[^./]*$/, '') + '.ts');
 }
 
 /**
@@ -462,13 +505,14 @@ export function buildSyntheticEntry(
  * which empirically covers icon-libraries with up to ~400 imported
  * icons (each pulling 1-2 transitive shared utility files).
  */
-export function buildScopedSliceForSynthetic(
+export async function buildScopedSliceForSynthetic(
   vfs: CredentialedVfs,
   nmDir: string,
   pkgName: string,
   referencedFiles: string[],
+  parse: SourceParser,
   transitiveCap = 800,
-): { entries: SliceEntry[]; totalBytes: number } {
+): Promise<{ entries: SliceEntry[]; totalBytes: number }> {
   const entries: SliceEntry[] = [];
   let totalBytes = 0;
   const visited = new Set<string>();
@@ -509,7 +553,9 @@ export function buildScopedSliceForSynthetic(
     entries.push({ path: '/' + filePath.replace(/^\/+/, ''), bytes, isDir: false });
     totalBytes += bytes.length + filePath.length;
     // Queue the relative imports, read by the project scan's grammar.
-    for (const rel of importedSpecifiers(maskSourceForImports(new TextDecoder().decode(bytes), filePath))) {
+    const source = new TextDecoder().decode(bytes);
+    const view = lexedImportView(source, filePath) ?? await parsedImportView(source, filePath, parse);
+    for (const rel of importedSpecifiers(view)) {
       if (!rel.startsWith('./') && !rel.startsWith('../')) continue;
       const dir = filePath.substring(0, slash > 0 ? slash : 0);
       const candidate = normalizeJoin(dir, rel);

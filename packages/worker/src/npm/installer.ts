@@ -100,6 +100,7 @@ import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier,
 import { packageRangeSeparator } from './package-spec.js';
 import {
   scanProjectImports,
+  transformParser,
   namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
@@ -1996,7 +1997,8 @@ export class NpmInstaller {
       return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
     };
 
-    const { bareSpecifiers: usedSpecifiers, namedImports } = scanProjectImports(fs, projDir);
+    const parse = transformParser(this.esbuild);
+    const { bareSpecifiers: usedSpecifiers, namedImports } = await scanProjectImports(fs, projDir, parse);
 
     // Vite plugins / postcss plugins / build-time tools NEVER ship to the
     // browser — they're invoked server-side by vite's own plugin
@@ -2305,9 +2307,9 @@ export class NpmInstaller {
               // 28 MiB cap. (lucide-react@0.460 ships ~5-15 MiB across
               // 3940 files; full walk hits cap on Mossaic-scale projects
               // with 70+ imported icons.)
-              const scoped = buildScopedSliceForSynthetic(
+              const scoped = await buildScopedSliceForSynthetic(
                 fs, nmDir, packageNameFromSpecifier(next.specifier),
-                next.syntheticReferencedFiles,
+                next.syntheticReferencedFiles, parse,
               );
               const built = { slice: scoped.entries, totalBytes: scoped.totalBytes };
               // Append the synthetic entry file itself (lives outside

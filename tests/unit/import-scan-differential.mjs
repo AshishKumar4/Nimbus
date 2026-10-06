@@ -11,14 +11,16 @@
  * (its packages, scripts, tests and apps),
  * plus JSX shapes the repository has few of: a closing tag before an import,
  * a URL and an apostrophe in JSX text, `return <a/>`, expressions inside
- * elements, generic arrows and function types in TSX.
+ * elements, generic arrows and function types in TSX, each again with every
+ * specifier scoped. A file the lexer cannot decide must say so, never
+ * mis-read: the scan reads it with a parser.
  */
 
 import assert from 'node:assert/strict';
 import { execSync } from 'node:child_process';
 import { readFileSync } from 'node:fs';
 import ts from 'typescript';
-import { importedSpecifiers, maskSourceForImports } from '../../packages/core/src/runtime/comment-strip.ts';
+import { importedSpecifiers, maskSourceForImports, UndecidableSourceError } from '../../packages/core/src/runtime/comment-strip.ts';
 
 const ROOT = new URL('../../', import.meta.url).pathname;
 
@@ -35,7 +37,18 @@ const JSX_SHAPES = {
   'type-args.tsx': "const n = useState<number>(0); const m = a < b && c > d; import { C } from 'after-comparison';",
   'assertion.ts': "const n = <number>value / 2; import { D } from 'after-assertion';",
   'regex.js': "const r = /<div>'\"/g; const s = x.split(/\\//); import E from 'after-regex'; if (a) return /\\/*x/.test(b);",
+  // A generic function type, then JSX, then a scoped import: the type's `<T>`
+  // is decided locally, so the JSX after it is still JSX.
+  'generic-type-then-jsx.tsx': "type F = <T>(x: T) => T; const view = <div></div>; import { Icon } from '@scope/icons';",
+  // Comments between a tag's attributes: an apostrophe in one opens no string.
+  'tag-comments.tsx': "const f = <iframe\n  src={u}\n  // the token's claims\n  /* it's */ title='t'\n/>; import { G } from 'after-tag-comments';",
 };
+
+// Each hazard again, every specifier scoped: a scoped specifier's slash is
+// the one a mis-read closing tag or regex would run on to.
+for (const [name, text] of Object.entries(JSX_SHAPES)) {
+  JSX_SHAPES[name.replace(/(\.[a-z]+)$/, '-scoped$1')] = text.replace(/(from\s*|import\(\s*|import\s+)(['"])(?!@)([^'"]+)\2/g, '$1$2@scope/$3$2');
+}
 
 function astSpecifiers(path, text) {
   const kind = path.endsWith('.tsx') ? ts.ScriptKind.TSX
@@ -71,6 +84,9 @@ for (const path of listed) {
 let compared = 0;
 let imports = 0;
 const missed = [];
+// Files the lexer cannot decide: it says so (UndecidableSourceError), and the
+// scan reads them with the parser. None of the fixtures is one.
+const undecided = [];
 for (const [path, text] of corpus) {
   const expected = astSpecifiers(path, text);
   if (expected === null) {
@@ -79,10 +95,19 @@ for (const [path, text] of corpus) {
   }
   compared++;
   imports += expected.length;
-  const found = new Set(importedSpecifiers(maskSourceForImports(text, path)));
+  let view;
+  try {
+    view = maskSourceForImports(text, path);
+  } catch (error) {
+    assert.ok(error instanceof UndecidableSourceError, `${path}: ${error}`);
+    assert.ok(!(path in JSX_SHAPES), `${path}: the lexer decides the fixture`);
+    undecided.push(path);
+    continue;
+  }
+  const found = new Set(importedSpecifiers(view));
   for (const specifier of expected) if (!found.has(specifier)) missed.push(`${path}: ${specifier}`);
 }
 assert.deepEqual(missed, [], 'the lexer finds every import the parser does');
 assert.ok(compared > 1500, `compared ${compared} sources`);
 
-console.log(`import-scan-differential: ${compared} sources, ${imports} imports, none missed`);
+console.log(`import-scan-differential: ${compared} sources (${Object.keys(JSX_SHAPES).length} fixtures), ${imports} imports, none missed; ${undecided.length} left to the parser${undecided.length ? ': ' + undecided.join(', ') : ''}`);
