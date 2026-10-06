@@ -143,7 +143,10 @@ export function buildSessionSupervisorOps(
     host.supervisorDeliveries?.forget(pid);
     return store.forget(pid);
   };
-  return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => { await store.rewind?.(pid); }, dispose: store.dispose };
+  return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => {
+    host.supervisorDeliveries?.endReadRun(pid);
+    await store.rewind?.(pid);
+  }, dispose: store.dispose };
 }
 
 /**

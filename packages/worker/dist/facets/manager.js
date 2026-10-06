@@ -56,7 +56,8 @@ import { SUPERVISOR_ANSWERING_SRC } from '@nimbus-sh/core/runtime/supervisor-ans
 import { STOP_REPLAY_SOURCE } from '../runtime/stop-replay.js';
 import { encodeBase64, OwnedPieces, ReplayOutputGate, StdinTaken, stopRecordOf } from '../runtime/stop-replay-host.js';
 import { answerDigest, ReplayJournal } from '../runtime/stop-replay-journal.js';
-import { REPLAY_FETCH_MAX_BYTES, REPLAY_PREFIX_MAX_BYTES, STOP_LIMIT } from '../runtime/stop-replay-contracts.js';
+import { REPLAY_FETCH_MAX_BYTES, REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_READ_RECEIPT_MAX_BYTES, STOP_LIMIT } from '../runtime/stop-replay-contracts.js';
+import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
 import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, } from '../runtime/staged-bindings.js';
@@ -5026,8 +5027,12 @@ export class FacetManager {
         this.processRpcResources.delete(pid);
         disposeRpcResources(tracked.resources);
     }
-    revokeProcessVfsWriters(pid) {
-        this.vfs?.revokeAppendWriters(pid);
+    revokeProcessVfsWriters(pid, writerId) {
+        openSupervisorDeliveries(this.ctx).endReadRun(pid, writerId);
+        if (writerId === undefined)
+            this.vfs?.revokeAppendWriters(pid);
+        else
+            this.vfs?.revokeAppendWriter(pid, writerId);
     }
     /**
      * True while a resident facet holds this pid — it was adopted through the
@@ -6050,7 +6055,7 @@ export class FacetManager {
             // such reservation here so a dead facet leaves no stale null-stub port.
             this.portRegistry.unregisterByPid(entry.pid);
             if (writerActivated)
-                this.vfs?.revokeAppendWriter(entry.pid, writerId);
+                this.revokeProcessVfsWriters(entry.pid, writerId);
         }
     }
     /**
@@ -6102,7 +6107,7 @@ export class FacetManager {
         finally {
             disposeRpcResource(entrypoint);
             if (writerActivated)
-                this.vfs?.revokeAppendWriter(staged.pid, writerId);
+                this.revokeProcessVfsWriters(staged.pid, writerId);
         }
     }
     /**
@@ -6195,7 +6200,7 @@ export class FacetManager {
                     this._activateProcessVfsWriter(pid, writerId);
                 },
                 onWriterRetired: (writerId) => {
-                    this.vfs?.revokeAppendWriter(pid, writerId);
+                    this.revokeProcessVfsWriters(pid, writerId);
                 },
             });
             this._noteProcessPlacement(pid, handle);
@@ -6332,7 +6337,7 @@ export class FacetManager {
                     this._activateProcessVfsWriter(pid, writerId);
                 },
                 onWriterRetired: (writerId) => {
-                    this.vfs?.revokeAppendWriter(pid, writerId);
+                    this.revokeProcessVfsWriters(pid, writerId);
                 },
             });
             this._noteProcessPlacement(pid, handle);
@@ -6443,7 +6448,7 @@ export class FacetManager {
                 this._activateProcessVfsWriter(pid, writerId);
             },
             onWriterRetired: (writerId) => {
-                this.vfs?.revokeAppendWriter(pid, writerId);
+                this.revokeProcessVfsWriters(pid, writerId);
             },
             ...process,
         });
@@ -6459,6 +6464,14 @@ export class FacetManager {
         if (!entry || entry.state !== 'running') {
             throw new Error(`Nimbus: cannot activate append writer for non-running process ${pid}`);
         }
+        const journal = this.journals.get(pid);
+        if (journal)
+            openSupervisorDeliveries(this.ctx).startReadRun(pid, writerId, {
+                maxEntries: REPLAY_JOURNAL_MAX_ENTRIES,
+                maxBytes: REPLAY_READ_RECEIPT_MAX_BYTES,
+                recording: () => journal.recording,
+                disqualify: (why) => journal.disqualify(why + ` (REPLAY_JOURNAL_MAX_ENTRIES=${REPLAY_JOURNAL_MAX_ENTRIES}; REPLAY_READ_RECEIPT_MAX_BYTES=${REPLAY_READ_RECEIPT_MAX_BYTES})`),
+            });
         // ProcessTable PIDs are monotonic within a generation and generation-strided
         // across resets, so this live entry is the sole positive authority root.
         this.vfs?.activateAppendWriter(pid, writerId);

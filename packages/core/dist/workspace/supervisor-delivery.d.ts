@@ -52,13 +52,23 @@ export declare const SUPERVISOR_DELIVER_OP = "deliverOnce";
  * the one read id it minted for the read (the envelope's `readId`). A repeat
  * that reaches the host while the read is still being served joins it
  * ({@link SupervisorDeliveries.joinRead}): the host reads once, and every
- * attempt carries that answer. A read is not a mutation, so nothing is kept
- * once it settles, and a host that joins nothing serves each attempt.
+ * attempt carries that answer. A journaled run also keeps settled replies:
+ * a lost response must not turn a resend into another program observation.
+ * Ordinary runs keep only reads in flight; a host that joins nothing serves
+ * each attempt.
  */
 export declare const SUPERVISOR_JOINED_READ_OPS: readonly ["access", "exists", "stat", "lstat", "readdir", "readlink", "fsLinkLeadsTo", "readFile", "readFileBytes", "fsRealpath", "fsRevision", "fsList", "fsAcquire", "fsAcquired", "fsFstat", "fsReaddirHandle", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "hasLegacySymlinkUnder"];
 export type SupervisorJoinedReadOpName = (typeof SUPERVISOR_JOINED_READ_OPS)[number];
 /** The joined read `op` names, or undefined for any op that is not one. */
 export declare function supervisorJoinedReadOp(op: string): SupervisorJoinedReadOpName | undefined;
+/** Settled read retention is owned by the run's existing replay journal. */
+export interface ReadRunRetention {
+    readonly maxEntries: number;
+    readonly maxBytes: number;
+    readonly recording: () => boolean;
+    /** Called before an over-bound reply is handed to its caller. */
+    readonly disqualify: (why: string) => void;
+}
 /** Which mutation, under which id, for which host instance. The envelope's args are the mutation's. */
 export interface SupervisorDelivery {
     readonly op: SupervisorDeliveredOpName;
@@ -128,7 +138,8 @@ export declare class SupervisorDeliveries {
     private previous;
     private rotatedAt;
     private readonly running;
-    private readonly readsInFlight;
+    /** One joined-read index: pending reads, plus bounded replies of journaled runs. */
+    private readonly reads;
     private tombstones;
     private olderTombstones;
     private tombstonesSince;
@@ -143,6 +154,10 @@ export declare class SupervisorDeliveries {
     get incarnation(): string;
     /** Tombstones held, both generations: what their bound is stated against. */
     get tombstoneCount(): number;
+    /** Writer activation starts a fresh run; no preceding run's reply can answer it. */
+    startReadRun(pid: number, run: string, retention: ReadRunRetention): void;
+    /** Rewind/exit releases replies, without an old completion resurrecting them. */
+    endReadRun(pid: number, run?: string): void;
     /**
      * Apply `op` for `pid` once per `id`, and answer every repeat with what the
      * first answered — its value, or its failure — applying nothing; a repeat
@@ -169,16 +184,22 @@ export declare class SupervisorDeliveries {
      * is who it says) and answered with the same promise, reading nothing. A
      * read queued here behind the session's read budget, a lazy import or a
      * busy input gate is exactly what the sender's hedge fires on, and joining
-     * is what keeps that hedge from reading the same bytes again. Nothing is
-     * kept once the read settles: an attempt after that reads afresh, which a
-     * read may. The map holds only reads in flight.
+     * is what keeps that hedge from reading the same bytes again. A journaled
+     * run also retains settled replies until its writer ends: a response lost
+     * AFTER the session answered must not consume a second journal occurrence.
+     * Non-journaled reads keep their in-flight-only behavior. Exceeding a run's
+     * retention bound forbids replay before handing out the reply; it never
+     * silently evicts a reply while that run remains replayable.
      *
      * Returns the answer, and whether this attempt joined a read already
      * being served rather than reading.
      */
-    joinRead(pid: number, id: string, op: SupervisorJoinedReadOpName, admit: () => void, read: () => ReturnType<SupervisorOpDispatch>): JoinedRead;
+    joinRead(pid: number, id: string, op: SupervisorJoinedReadOpName, admit: () => void, read: () => ReturnType<SupervisorOpDispatch>, run?: string): JoinedRead;
     /** Reads being served, which repeats of them would join. */
     get readsServing(): number;
+    /** Settled receipts kept by active journaled runs, for lifecycle/bound checks. */
+    get readReceipts(): number;
+    get readReceiptBytes(): number;
     /** A process ended: its receipts answer nothing more, and their ids stay refused. */
     forget(pid: number): void;
     private record;

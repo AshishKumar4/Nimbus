@@ -436,7 +436,7 @@ export function createSupervisorOpHandler(deps) {
             return (async () => serve(op, plain))();
         const { joined: repeat, answer } = deliveries.joinRead(pid, readId.data, joined, 
         // A repeat is answered only for the live process that sent the read.
-        () => { tools.bridge(pid, envelope.cred); }, async () => serve(op, plain));
+        () => { tools.bridge(pid, envelope.cred); }, async () => serve(op, plain), envelope.run);
         span.set({ 'nimbus.read.joined': repeat });
         return answer;
     };

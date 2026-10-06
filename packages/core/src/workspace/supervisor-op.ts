@@ -611,6 +611,7 @@ export function createSupervisorOpHandler(
       // A repeat is answered only for the live process that sent the read.
       () => { tools.bridge(pid, envelope.cred); },
       async () => serve(op, plain),
+      envelope.run,
     );
     span.set({ 'nimbus.read.joined': repeat });
     return answer;

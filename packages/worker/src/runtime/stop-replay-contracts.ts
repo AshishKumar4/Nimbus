@@ -17,6 +17,9 @@ export const REPLAY_TAPE_MAX_RANDOM_BYTES = 1024 * 1024;
 /** The most answers the session journals for one run; past it the run cannot be replayed. */
 export const REPLAY_JOURNAL_MAX_ENTRIES = 65_536;
 
+/** Joined reads keep their actual answers until the run ends, including lost-response resends. */
+export const REPLAY_READ_RECEIPT_MAX_BYTES = 8 * 1024 * 1024;
+
 /** The most response bytes the session records for one process's runs; past it, unreplayable. */
 export const REPLAY_FETCH_MAX_BYTES = 8 * 1024 * 1024;
 

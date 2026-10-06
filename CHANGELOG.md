@@ -19,6 +19,9 @@ published independently in the `@nimbus-sh` npm scope.
   destroying its returned socket cancels the pending carrier and registration.
   Repeated in-flight read attempts join before journaling, so a transport
   hedge cannot be mistaken for an extra pre-read observation.
+  A journaled run also keeps bounded settled read replies until its writer
+  ends: a lost response resent after settlement cannot consume a second
+  observation. Exceeding the retention bound forbids a later replay by name.
 
 - Fixed: synchronous-stdin replay is fail-closed at the session boundary.
   Every supervisor operation has an explicit observation, effect, or

@@ -12,6 +12,8 @@ export declare const REPLAY_TAPE_MAX_READINGS = 65536;
 export declare const REPLAY_TAPE_MAX_RANDOM_BYTES: number;
 /** The most answers the session journals for one run; past it the run cannot be replayed. */
 export declare const REPLAY_JOURNAL_MAX_ENTRIES = 65536;
+/** Joined reads keep their actual answers until the run ends, including lost-response resends. */
+export declare const REPLAY_READ_RECEIPT_MAX_BYTES: number;
 /** The most response bytes the session records for one process's runs; past it, unreplayable. */
 export declare const REPLAY_FETCH_MAX_BYTES: number;
 /**
