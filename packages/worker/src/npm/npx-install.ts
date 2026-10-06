@@ -33,7 +33,7 @@ import { isStagedArtifactTarget, npxPackageBin } from './bin-links.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProjectFs } from '../runtime/project-fs.js';
 import { bundleProfileForNpmBin, type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { packageRangeSeparator } from './package-spec.js';
+import { packageRangeSeparator } from '@nimbus-sh/core/_shared/npm-spec.js';
 
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */

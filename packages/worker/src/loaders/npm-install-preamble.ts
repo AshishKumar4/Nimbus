@@ -18,7 +18,7 @@ import {
   sriDigestsEqual,
   sriEntries,
   strongestSriEntry,
-} from '../npm/tarball-integrity.js';
+} from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
 export const NPM_INSTALL_PREAMBLE: string = `
 // ── Retry (embedded from @nimbus-sh/platform retry.ts, npm/registry-retry.ts) ──
@@ -26,7 +26,7 @@ const REGISTRY_RETRY_BACKOFF_MS = ${JSON.stringify(REGISTRY_RETRY_BACKOFF_MS)};
 ${retryDelayMs.toString()}
 ${retrying.toString()}
 ${retryingRegistryFetch.toString()}
-// ── Tarball integrity (embedded from npm/tarball-integrity.ts) ──────────────
+// ── Tarball integrity (embedded from @nimbus-sh/core _shared/tarball-integrity.ts) ──────────────
 const SRI_DIGEST_ALGORITHMS = ${JSON.stringify(SRI_DIGEST_ALGORITHMS)};
 ${sriEntries.toString()}
 ${strongestSriEntry.toString()}

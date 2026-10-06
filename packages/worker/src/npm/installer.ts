@@ -44,7 +44,7 @@ import {
 import { nestedPlacement, visiblePlacements } from './placement.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
-import { satisfiesRange, isSemverRange } from './semver.js';
+import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
 import {
   npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine,
   type NpmLogEmitter,
@@ -79,7 +79,6 @@ import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { type FacetCachedEntry } from './resolve-facet.js';
 import {
   resolveOnePackumentInFacet,
-  parseRegistryRequest,
   type ResolveOneSpec,
   type ResolveOneResult,
 } from './resolve-one-facet.js';
@@ -97,7 +96,7 @@ import {
 } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { packageRangeSeparator } from './package-spec.js';
+import { packageRangeSeparator, parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import {
   scanProjectImports,
   transformParser,

@@ -1,9 +1,10 @@
 /**
- * npm/semver.ts — the one semver implementation the npm resolver picks
- * versions with.
+ * npm-semver.ts — the one semver implementation npm here picks versions
+ * with: the worker's resolver facet, and the shell's fallback npm (lifo
+ * commands/system/npm.ts) when no installer is wired.
  *
- * The resolver facet (npm/resolve-one-facet.ts) runs inside a dynamic worker
- * whose only module scope is the preamble string in
+ * The resolver facet (worker npm/resolve-one-facet.ts) runs inside a dynamic
+ * worker whose only module scope is the preamble string in worker
  * loaders/npm-resolve-preamble.ts. That preamble embeds THESE functions by
  * `fn.toString()`, so the facet's version pick is this module's by
  * construction — there is no second copy to drift, and
@@ -184,6 +185,41 @@ export function isSemverRange(range: string): boolean {
     }
   }
   return true;
+}
+
+/**
+ * The version a registry request for `range` installs, from a packument's
+ * `versions` and `dist-tags`: an exact version it publishes; else the
+ * highest satisfying a range; else the dist-tag `range` names; else, for an
+ * open range (none, `latest`, `*`, `x`) or a spec that is neither a range
+ * nor a tag name (`github:…`, a URL, `file:…`), `latest`. Null when none
+ * answers: a range nothing satisfies, or a tag the package does not
+ * publish, as npm answers both (ETARGET).
+ */
+export function pickPackumentVersion(versions: unknown, distTags: unknown, range: string | null | undefined): string | null {
+  // A packument is the registry's JSON: read only its own properties.
+  const own = (record: unknown, key: string): unknown =>
+    record !== null && typeof record === 'object' && Object.prototype.hasOwnProperty.call(record, key)
+      ? (record as Record<string, unknown>)[key]
+      : undefined;
+  const requested = range === null || range === undefined ? '' : String(range);
+  if (requested && own(versions, requested) !== undefined) return requested;
+  let picked: string | null = null;
+  if (requested && requested !== 'latest' && versions !== null && typeof versions === 'object') {
+    picked = resolveVersion(Object.keys(versions), requested);
+  }
+  if (picked === null) {
+    const tagged = own(distTags, requested);
+    if (typeof tagged === 'string') picked = tagged;
+  }
+  const open = !requested || ['latest', '*', 'x', 'X'].includes(requested.trim());
+  // npm-package-arg's tag: no range, and nothing a URL would escape.
+  const tagName = !isSemverRange(requested) && encodeURIComponent(requested) === requested;
+  if (picked === null && (open || (!isSemverRange(requested) && !tagName))) {
+    const latest = own(distTags, 'latest');
+    if (typeof latest === 'string') picked = latest;
+  }
+  return picked;
 }
 
 /** The highest version satisfying `range`, or null; `latest`/`*` are the caller's dist-tag lookup. */

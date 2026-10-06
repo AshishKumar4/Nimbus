@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { NPM_INSTALL_PREAMBLE } from '../../packages/worker/src/loaders/npm-install-preamble.ts';
 import { R2CacheClient, parseTarballAddress } from '../../packages/worker/src/npm/r2-cache.ts';
-import * as integrity from '../../packages/worker/src/npm/tarball-integrity.ts';
+import * as integrity from '../../packages/core/src/_shared/tarball-integrity.ts';
 
 const embedded = new Function(`${NPM_INSTALL_PREAMBLE}
 return { retryingRegistryFetch, strongestSriEntry, sriEntries, sriDigestOf, sriDigestsEqual, REGISTRY_RETRY_BACKOFF_MS };`)();

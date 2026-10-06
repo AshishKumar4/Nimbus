@@ -1,8 +1,10 @@
 /**
  * tarball-integrity.ts — reading a tarball's subresource-integrity string
- * (`<algorithm>-<base64 digest>`) and checking bytes against it, for both
- * places that do: the install facet, which verifies what it downloads, and
- * the shared tarball cache (r2-cache.ts), which addresses what it stores.
+ * (`<algorithm>-<base64 digest>`) and checking bytes against it, for every
+ * place that does: the worker's install facet and the shell's fallback npm
+ * (lifo commands/system/npm.ts), which verify what they download, and the
+ * shared tarball cache (worker npm/r2-cache.ts), which addresses what it
+ * stores.
  *
  * One reading, two rules on top of it:
  *   - an install checks the entry of the strongest algorithm the string
@@ -12,7 +14,7 @@
  *     decodes: it stores nothing it could not verify the same way twice.
  *
  * Self-contained but for SRI_DIGEST_ALGORITHMS, which the functions name:
- * the install facet carries all of them by source (its preamble,
+ * the install facet carries all of them by source (its preamble, worker
  * loaders/npm-install-preamble.ts).
  */
 

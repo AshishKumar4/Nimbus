@@ -64,7 +64,7 @@ import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrat
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { retryingRegistryFetch } from './registry-retry.js';
-import { sriDigestOf, sriDigestsEqual, sriEntries } from './tarball-integrity.js';
+import { sriDigestOf, sriDigestsEqual, sriEntries } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
 /**
  * Per-call cache-stat event (cache metrics support). R2CacheClient
@@ -293,7 +293,7 @@ export interface TarballAddress {
 
 /**
  * Parse an npm subresource-integrity string ("sha512-<base64>") into a
- * content address, read as an install reads it (tarball-integrity.ts).
+ * content address, read as an install reads it (core _shared/tarball-integrity.ts).
  *
  * Returns null for anything we cannot verify the same way twice: an empty
  * string, a bare legacy `dist.shasum` (hex, no algorithm prefix), a

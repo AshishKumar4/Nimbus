@@ -37,10 +37,10 @@ import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 declare const __nimbusWaveWriter: typeof import('@nimbus-sh/platform/wave-writer.js');
 /** The registry's retry policy, from the preamble (loaders/npm-install-preamble.ts). */
 declare const retryingRegistryFetch: typeof import('./registry-retry.js').retryingRegistryFetch;
-/** Tarball integrity, from the preamble (npm/tarball-integrity.ts). */
-declare const strongestSriEntry: typeof import('./tarball-integrity.js').strongestSriEntry;
-declare const sriDigestOf: typeof import('./tarball-integrity.js').sriDigestOf;
-declare const sriDigestsEqual: typeof import('./tarball-integrity.js').sriDigestsEqual;
+/** Tarball integrity, from the preamble (@nimbus-sh/core _shared/tarball-integrity.ts). */
+declare const strongestSriEntry: typeof import('@nimbus-sh/core/_shared/tarball-integrity.js').strongestSriEntry;
+declare const sriDigestOf: typeof import('@nimbus-sh/core/_shared/tarball-integrity.js').sriDigestOf;
+declare const sriDigestsEqual: typeof import('@nimbus-sh/core/_shared/tarball-integrity.js').sriDigestsEqual;
 
 declare const __nimbusUseRpcResult: <T, R>(
   promise: Promise<T>,
@@ -486,7 +486,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
 
         // 2. Integrity verify (if supplied) AND capture bytes for R2 write-back.
         //    The entry checked is the strongest algorithm's, as npm's ssri
-        //    checks it (npm/tarball-integrity.ts, carried by the preamble).
+        //    checks it (core _shared/tarball-integrity.ts, carried by the preamble).
         const sri = spec.integrity ? strongestSriEntry(spec.integrity) : null;
         if (sri === null) {
           if (spec.integrity) warnings.push(`integrity "${spec.integrity}" names no algorithm npm checks; skipped verification`);
