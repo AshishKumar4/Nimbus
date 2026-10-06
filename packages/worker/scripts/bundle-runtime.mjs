@@ -409,7 +409,10 @@ if (spec.ingest_only) {
   );
 
   // The catalog just changed, so the pin the deploy carries is now stale.
-  await writeCatalogPin(catalogSha256);
+  if (!(await writeCatalogPin(catalogSha256))) {
+    console.error(`ERROR: the catalog is published (${catalogShaKey}) but the configs are not pinned to it; fix them and run --pin-catalog.`);
+    process.exit(1);
+  }
 
   console.log(`\n[bundle-runtime] DONE`);
   console.log(`[bundle-runtime] uploaded ${downloaded.length} files (${totalMb} MiB) for ${RUNTIME}@${VERSION}`);
@@ -507,13 +510,18 @@ function bucketIsReadable() {
  * (wrangler vars do not inherit, so each environment and each Preview states
  * its own). Each block must already carry the var: one that does not is an
  * environment this script does not know, and is refused rather than guessed
- * at, with no config changed. For any other bucket the line is for the
- * embedder's own config.
+ * at, with no config changed, and false comes back (the caller's exit
+ * status says so; the line is not printed). For any other bucket the line
+ * is for the embedder's own config.
  */
 async function writeCatalogPin(sha256) {
-  if (BUCKET === PRODUCTION_BUCKET) await pinNimbusConfigs(sha256);
-  else console.log(`[bundle-runtime] catalog pin for '${BUCKET}': set this var in the wrangler config that binds it`);
+  if (BUCKET === PRODUCTION_BUCKET) {
+    if (!(await pinNimbusConfigs(sha256))) return false;
+  } else {
+    console.log(`[bundle-runtime] catalog pin for '${BUCKET}': set this var in the wrangler config that binds it`);
+  }
   console.log(`NIMBUS_RUNTIME_CATALOG_SHA256=${sha256}`);
+  return true;
 }
 
 /**
@@ -531,7 +539,8 @@ function varsBlocks(jsonc, tree) {
 /**
  * Set the pin in every vars block of Nimbus's own configs, through a JSONC
  * editor: only the values change, comments and layout stay, and a `"vars"`
- * in a comment is a comment. All configs are checked before any is written.
+ * in a comment is a comment. All configs are checked before any is written;
+ * false when one is refused (nothing written), so the caller's cleanup runs.
  */
 async function pinNimbusConfigs(sha256) {
   // Only Nimbus's own tree pins its configs, so only it needs the editor.
@@ -544,14 +553,14 @@ async function pinNimbusConfigs(sha256) {
     const tree = jsonc.parseTree(text, errors, { allowTrailingComma: true });
     if (!tree || errors.length > 0) {
       console.error(`ERROR: ${url.pathname} is not valid JSONC (${errors.map((e) => jsonc.printParseErrorCode(e.error)).join(', ')}). No config was changed.`);
-      process.exit(1);
+      return false;
     }
     const blocks = varsBlocks(jsonc, tree);
     const unpinned = blocks.filter((path) => jsonc.findNodeAtLocation(tree, [...path, PIN_VAR])?.type !== 'string');
     if (blocks.length === 0 || unpinned.length > 0) {
       console.error(`ERROR: ${url.pathname}: ${blocks.length === 0 ? 'no vars block' : unpinned.map((p) => p.join('.')).join(', ')} without ${PIN_VAR};`);
       console.error('       every vars block must carry it. No config was changed.');
-      process.exit(1);
+      return false;
     }
     let next = text;
     for (const path of blocks) next = jsonc.applyEdits(next, jsonc.modify(next, [...path, PIN_VAR], sha256, {}));
@@ -560,13 +569,14 @@ async function pinNimbusConfigs(sha256) {
     for (const path of blocks) path.reduce((at, key) => at[key], expected)[PIN_VAR] = sha256;
     if (JSON.stringify(jsonc.parse(next, [], { allowTrailingComma: true })) !== JSON.stringify(expected)) {
       console.error(`ERROR: rewriting ${url.pathname} changed more than its pins. No config was changed.`);
-      process.exit(1);
+      return false;
     }
     edits.push([url, next]);
   }
   for (const [url, text] of edits) writeFileSync(url, text, 'utf8');
   console.log(`[bundle-runtime] catalog pin: ${sha256}`);
   console.log(`[bundle-runtime] commit ${CATALOG_PIN_CONFIGS.map((c) => c.replace('../../../', '')).join(' and ')}, and redeploy`);
+  return true;
 }
 
 /**
@@ -625,7 +635,7 @@ async function pinCatalogFromR2() {
       process.exitCode = 1;
       return;
     }
-    await writeCatalogPin(sha256);
+    if (!(await writeCatalogPin(sha256))) process.exitCode = 1;
   } finally {
     rmSync(workDir, { recursive: true, force: true });
   }

@@ -26,7 +26,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { spawnSync } from 'node:child_process';
-import { cpSync, mkdirSync, mkdtempSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { cpSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { catalogKey } from '../../packages/worker/src/runtime/runtime-catalog.ts';
@@ -49,6 +49,9 @@ ${blocks.slice(1).map((vars, i) => `    "env${i + 1}": {\n      "vars": {\n${var
 const pinned = `      // the catalog this environment reads\n      "NIMBUS_RUNTIME_CATALOG_SHA256": "${OLD}",\n      "OTHER": "x"`;
 
 const root = mkdtempSync(join(tmpdir(), 'nimbus-pin-test-'));
+// The script's own working directory, under its TMPDIR: every run must remove it, refused or not.
+const scriptTmp = join(root, 'tmp');
+mkdirSync(scriptTmp);
 try {
   const scripts = join(root, 'packages/worker/scripts');
   mkdirSync(scripts, { recursive: true });
@@ -89,7 +92,7 @@ process.exit(1);
   const setObjects = (objects) => { writeFileSync(objectsPath, JSON.stringify(objects)); writeFileSync(askedPath, ''); };
   const run = (env = {}, ...args) => spawnSync(process.execPath, [join(scripts, 'bundle-runtime.mjs'), '--pin-catalog', ...args], {
     cwd: root, encoding: 'utf8',
-    env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, CLOUDFLARE_ACCOUNT_ID: 'test-account', ...env },
+    env: { ...process.env, PATH: `${join(root, 'bin')}:${process.env.PATH}`, CLOUDFLARE_ACCOUNT_ID: 'test-account', TMPDIR: scriptTmp, ...env },
   });
   const values = (path) => [...readFileSync(path, 'utf8').matchAll(/"NIMBUS_RUNTIME_CATALOG_SHA256": "([a-f0-9]*)"/g)].map((m) => m[1]);
   const both = { 'catalog/v1.json': CATALOG, [catalogKey(CATALOG_SHA)]: CATALOG };
@@ -168,6 +171,8 @@ process.exit(1);
   const everyBlock = run();
   assert.equal(everyBlock.status, 0, everyBlock.stderr);
   assert.deepEqual(values(hosted), Array(5).fill(CATALOG_SHA), 'top level, env, and previews');
+
+  assert.deepEqual(readdirSync(scriptTmp), [], 'a refused pin left its download behind');
 
   // An unreadable bucket pins nothing.
   resetConfigs();
