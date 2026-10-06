@@ -308,6 +308,35 @@ function remote(files, delayMs = 2) {
   await pending;
 }
 
+// ── One backend mounted directly and through a factory is one backend:
+//    writes through either alias take one turn queue, asynchronous or not ──
+{
+  const { vfs } = namespace();
+  const backing = new MemoryVFS();
+  backing.writeFile('/f', enc.encode('old'));
+  const shared = new Proxy(remote(backing, 5), { get: (target, key) => (key === 'sync' ? backing : Reflect.get(target, key)) });
+  vfs.mount('/a', shared, { resolvesPaths: true });
+  vfs.mount('/b', () => shared, { resolvesPaths: true });
+  const { events } = record(vfs);
+  await Promise.all([
+    vfs.writeFile('/a/f', enc.encode('a1')),
+    vfs.writeFile('/b/f', enc.encode('b1')),
+    vfs.writeFile('/a/f', enc.encode('a2')),
+  ]);
+  const chain = events.map(({ before, after }) => [before, after]);
+  assert.equal(chain[0][0], 'old');
+  for (let index = 1; index < chain.length; index++) {
+    assert.equal(chain[index][0], chain[index - 1][1], `writes through a fixed and a factory alias read each other's content: ${JSON.stringify(chain)}`);
+  }
+  for (const [busy, other] of [['/a/f', '/b/f'], ['/b/f', '/a/f']]) {
+    const pending = vfs.writeFile(busy, enc.encode('async'));
+    await new Promise((resolve) => setTimeout(resolve, 1));
+    assert.throws(() => vfs.sync.writeFile(other, enc.encode('sync')), (error) => error.code === 'EAGAIN' && error.asyncMount === true,
+      `a synchronous write through ${other} ran inside ${busy}'s busy section`);
+    await pending;
+  }
+}
+
 // ── A root write the namespace does not show (beneath a mount point) is not
 //    the namespace's; a rename half shown is the delete it is there ──
 {

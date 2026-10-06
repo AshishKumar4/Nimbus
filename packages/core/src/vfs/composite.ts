@@ -230,12 +230,14 @@ interface WriteWatches {
   watches: Set<WriteWatch>;
   subscribed: Map<Mount, () => void>;
   /**
-   * Observed mutations on backends that do not report their own take turns
-   * per backend (reportWrite): a backend's own links, or the backend mounted
-   * twice, give one file several namespace paths, so no path decides what
-   * conflicts. Keyed by the mounted source (writeDomain); a turn's section is `busy`.
+   * Observed mutations on backends that do not report their own take one
+   * turn per namespace (reportWrite): one store can sit behind several
+   * mounts (a backend mounted directly and through a factory, its own
+   * links), and nothing here can tell reliably which, so no path or mount
+   * decides what conflicts. Costs only while someone observes; a turn's
+   * section is `busy`.
    */
-  domains: Map<object, { tail: Promise<void>; waiting: number; busy: boolean }>;
+  turn: { tail: Promise<void>; busy: boolean };
 }
 
 /**
@@ -769,7 +771,7 @@ export class CompositeVFS implements VFS {
    * before and after.
    */
   observeWrites(observer: VfsWriteObserver, options?: { wants?: (path: string, principal: Principal) => boolean }): () => void {
-    const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), domains: new Map() };
+    const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), turn: { tail: Promise.resolve(), busy: false } };
     const watch: WriteWatch = { observer, wants: options?.wants ?? (() => true) };
     writes.watches.add(watch);
     if (writes.watches.size === 1) for (const mount of this.table.mounts.values()) this.subscribeWrites(mount);
@@ -853,8 +855,8 @@ export class CompositeVFS implements VFS {
    * writes (subscribed), else here. Here, what the path held before and
    * after is read through the same backend view, with the operation's own
    * leaf-follow policy (content only where an observer wants it); the
-   * mounted source's observed mutations take turns, capture to capture, so
-   * none reads another's (writeDomain); and the guard is asked right before the
+   * namespace's observed mutations there take turns, capture to capture,
+   * so none reads another's (WriteWatches.turn); and the guard is asked right before the
    * write, after the reads it waited on. `landed` says where the mutation actually landed
    * (default: its path): a compare-and-write that lost, or an rm -r that
    * kept its operand, did not land there.
@@ -899,12 +901,11 @@ export class CompositeVFS implements VFS {
         });
       });
     };
-    const domain = this.writeDomain(route.mount);
     if (sync) {
       // A caller that cannot wait cannot take a turn: while another's
       // section holds this backend, it is refused as an asynchronous mount
       // refuses it (a caller that can wait retries on the asynchronous face).
-      if (writes.domains.get(domain)?.busy === true) {
+      if (writes.turn.busy) {
         throw Object.assign(
           new Refusal('EAGAIN', path, `${route.mount.point}: an observed write to this filesystem is in flight; this caller cannot wait for it`),
           { asyncMount: true as const },
@@ -912,37 +913,25 @@ export class CompositeVFS implements VFS {
       }
       return report();
     }
-    return this.takeTurn(writes, domain, report);
+    return this.takeTurn(writes, report);
   }
 
-  /**
-   * What an observed mutation on `mount` takes its turn on: its source, as
-   * mounted (the backend, or the function resolving it), which is stable
-   * while a resolved view need not be (a factory may answer a fresh adapter
-   * over one store on every lookup). One source mounted twice is one domain.
-   */
-  private writeDomain(mount: Mount): object {
-    return mount.source;
-  }
-
-  /** `run` once every observed mutation of `domain` queued before it is done; those after it wait for it. */
-  private async takeTurn<T>(writes: WriteWatches, domain: object, run: () => Awaitable<T>): Promise<T> {
-    let state = writes.domains.get(domain);
-    if (state === undefined) writes.domains.set(domain, state = { tail: Promise.resolve(), waiting: 0, busy: false });
-    const prior = state.tail;
+  /** `run` once every observed mutation queued before it is done; those after it wait for it. */
+  private async takeTurn<T>(writes: WriteWatches, run: () => Awaitable<T>): Promise<T> {
+    const { turn } = writes;
+    const prior = turn.tail;
     let done!: () => void;
-    state.tail = new Promise<void>((resolve) => { done = resolve; });
-    state.waiting++;
+    turn.tail = new Promise<void>((resolve) => { done = resolve; });
     try {
       await prior;
-      state.busy = true;
+      turn.busy = true;
       return await run();
     } finally {
-      state.busy = false;
-      if (--state.waiting === 0) writes.domains.delete(domain);
+      turn.busy = false;
       done();
     }
   }
+
 
   /**
    * What stands at `rel` on a backend that does not report its own writes,
