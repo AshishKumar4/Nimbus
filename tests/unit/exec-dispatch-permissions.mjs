@@ -29,6 +29,9 @@ root.mkdir('home/user/proj', { mode: 0o755 });
 root.writeFile('home/user/proj/s.sh', '#!/bin/sh\necho s\n', { mode: 0o755 });
 root.symlink('proj', 'home/user/ldir');
 root.symlink('proj/s.sh', 'home/user/sl.sh');
+root.mkdir('home/user/.git', { mode: 0o755 });
+root.mkdir('home/user/.git/hooks', { mode: 0o755 });
+root.writeFile('home/user/.git/hooks/post-commit', '#!/bin/sh\necho hook\n', { mode: 0o755 });
 
 const files = new ProcessFiles(sqlite);
 
@@ -97,5 +100,15 @@ assert.equal(throughLinkedDir.stdout, 'ran /home/user/ldir/s.sh\n');
 const throughLink = await run('./sl.sh', USER);
 assert.equal(throughLink.exitCode, 23, throughLink.stderr);
 assert.equal(throughLink.stdout, 'ran /home/user/proj/s.sh\n');
+
+// A name with a slash anywhere is a path from the cwd, as execvp takes it:
+// git runs a hook as `.git/hooks/post-commit`.
+const relative = await run('proj/s.sh', USER);
+assert.equal(relative.exitCode, 23, relative.stderr);
+assert.equal(relative.stdout, 'ran /home/user/proj/s.sh\n');
+const hook = await run('.git/hooks/post-commit', USER);
+assert.equal(hook.exitCode, 23, hook.stderr);
+assert.equal(hook.stdout, 'ran /home/user/.git/hooks/post-commit\n');
+assert.equal(await registry.resolve('proj/absent.sh'), undefined, 'a path that is not there resolves to nothing');
 
 console.log('exec dispatch permissions: ok');
