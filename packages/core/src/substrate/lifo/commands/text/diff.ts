@@ -1,8 +1,9 @@
-import type { Command, CommandContext } from '../types.js';
+import type { Command } from '../types.js';
 import { getopt, type GetoptSpec } from '../../utils/args.js';
 import { concatBytes, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { basename, resolve } from '../../utils/path.js';
-import { strerror } from '../../../../vfs/vfs-error.js';
+import { isVfsError, strerror } from '../../../../vfs/vfs-error.js';
+import { statOrThrow, type VfsStat } from '../../../../vfs/vfs.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
 import { blankLine, compareTexts, diffText, type DiffChange, type DiffOptions, type DiffText } from './diff-analysis.js';
 
@@ -244,18 +245,6 @@ function parseSettings(args: readonly string[]): Parsed {
   return { operands: [operands[0], operands[1]], settings };
 }
 
-/** An operand's bytes and its mtime: `-` is standard input; a directory beside a file names that file in it. */
-async function readOperand(ctx: CommandContext, operand: string, other: string): Promise<{ bytes: Uint8Array; mtimeMs: number; name: string }> {
-  if (operand === '-') return { bytes: await readAllInput(ctx, '-'), mtimeMs: Date.now(), name: operand };
-  let name = operand;
-  let stat = await ctx.vfs.stat(resolve(ctx.cwd, name));
-  if (stat?.type === 'directory' && other !== '-') {
-    name = `${operand.replace(/\/+$/, '')}/${basename(other)}`;
-    stat = await ctx.vfs.stat(resolve(ctx.cwd, name));
-  }
-  return { bytes: await readAllInput(ctx, name), mtimeMs: stat?.mtimeMs ?? Date.now(), name };
-}
-
 /**
  * diff FILE1 FILE2, as GNU diffutils 3.12's: its edit script (diff-analysis),
  * in the normal or unified format; binary files (a NUL byte) compared whole;
@@ -269,18 +258,47 @@ const command: Command = async (ctx) => {
     return 2;
   }
   if ('fatal' in parsed) { await ctx.stderr.write(`diff: ${parsed.fatal}\n`); return 2; }
-  const { operands: [file1, file2], settings } = parsed;
-  if ((await ctx.vfs.stat(resolve(ctx.cwd, file1)))?.type === 'directory' && (await ctx.vfs.stat(resolve(ctx.cwd, file2)))?.type === 'directory') {
+  const { operands, settings } = parsed;
+
+  // Each operand is inspected once, as GNU's compare_files stats it, and read by the
+  // name inspection settles: `-` is standard input, a directory beside a file names
+  // that file in it. Every operand that fails is named, and that is trouble (2).
+  const names = [...operands];
+  const stats: (VfsStat | null)[] = [null, null];
+  let trouble = false;
+  const failed = async (name: string, error: unknown) => {
+    if (!isVfsError(error)) throw error;
+    await ctx.stderr.write(`diff: ${shellEscape(name)}: ${strerror(error)}\n`);
+    trouble = true;
+  };
+  const inspect = async (f: 0 | 1) => {
+    try {
+      stats[f] = names[f] === '-' ? null : await statOrThrow(ctx.vfs, resolve(ctx.cwd, names[f]));
+    } catch (error) {
+      await failed(names[f], error);
+    }
+  };
+  await inspect(0);
+  await inspect(1);
+  if (trouble) return 2;
+  if (stats[0]?.type === 'directory' && stats[1]?.type === 'directory') {
     await ctx.stderr.write('diff: comparing directories: option not supported\n');
     return 2;
   }
+  for (const f of [0, 1] as const) {
+    const other = names[1 - f];
+    if (stats[f]?.type !== 'directory' || other === '-') continue;
+    names[f] = `${names[f].replace(/\/+$/, '')}/${basename(other)}`;
+    await inspect(f);
+  }
+  if (trouble) return 2;
 
   const inputs: { bytes: Uint8Array; mtimeMs: number; name: string }[] = [];
-  for (const [operand, other] of [[file1, file2], [file2, file1]]) {
+  for (const f of [0, 1] as const) {
     try {
-      inputs.push(await readOperand(ctx, operand, other));
+      inputs.push({ bytes: await readAllInput(ctx, names[f]), mtimeMs: stats[f]?.mtimeMs ?? Date.now(), name: names[f] });
     } catch (error) {
-      await ctx.stderr.write(`diff: ${shellEscape(operand)}: ${strerror(error)}\n`);
+      await failed(names[f], error);
       return 2;
     }
   }

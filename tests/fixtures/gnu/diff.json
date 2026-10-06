@@ -336,6 +336,41 @@
    "args": "-sB k1 k3",
    "stdout": "Files k1 and k3 are identical\n",
    "exit": 0
+  },
+  {
+   "args": "ln -sf loop loop; %T loop a; s=$?; rm -f loop; (exit $s)",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "ln -sf loop loop; %T a loop; s=$?; rm -f loop; (exit $s)",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "ln -sf loop loop; %T nope loop; s=$?; rm -f loop; (exit $s)",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "mkdir -p d && printf 'x\\n' > d/x && chmod 000 d; %T d/x a; s=$?; chmod 700 d; rm -r d; (exit $s)",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "mkdir -p d && printf 'x\\n' > d/x && chmod 000 d; %T -q a d/x; s=$?; chmod 700 d; rm -r d; (exit $s)",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "mkdir -p dd; %T a dd; s=$?; rmdir dd; (exit $s)",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "mkdir -p dd; %T dd a; s=$?; rmdir dd; (exit $s)",
+   "stdout": "",
+   "exit": 2
   }
  ],
  "recorded": "diff (GNU diffutils) 3.12, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)"
