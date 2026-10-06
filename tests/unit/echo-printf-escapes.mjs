@@ -9,7 +9,7 @@
 // not know, read no \c or \e, and printf's format no \NNN.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const CASES = [
   ["printf", ["%b|\\n", "a\\tb\\\\c\\x41\\0101\\101\\n"], "a\tb\\cAAA\n|\n"],

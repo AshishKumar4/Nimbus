@@ -10,7 +10,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { singleQuote } from '../../packages/core/src/_shared/shell-quote.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const CASES = [["plain", "plain"], ["a b", "'a b'"], ["a=b", "'a=b'"], ["a^b", "'a^b'"], ["a{b", "a{b"], ["{", "'{'"], ["}", "'}'"], ["a}", "a}"], ["it's", "\"it's\""], ["\u00e9", "\u00e9"], ["a!b", "'a!b'"], ["a,b", "a,b"], ["]", "]"], ["?", "'?'"], ["a\\b", "'a\\b'"], ["#a", "'#a'"], ["a#", "a#"], ["~a", "'~a'"], ["a~", "a~"], ["it's $x", "'it'\\''s $x'"], ["a\"b", "'a\"b'"], ["\n", "''$'\\n'"], ["a\nb", "'a'$'\\n''b'"], ["\na", "''$'\\n''a'"], ["\t\t", "''$'\\t\\t'"], ["\u0001", "''$'\\001'"], ["it's\n", "'it'\\''s'$'\\n'"], ["\u007f", "''$'\\177'"], ["@%+:-./_", "@%+:-./_"], ["", "''"]];
 

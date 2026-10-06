@@ -37,8 +37,8 @@ import { buildSessionSupervisorOps } from '../../packages/worker/src/session/sup
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { createFacetCtx, createFacetWorld, createProcessFacetCtx } from './facet-host-harness.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { facetSql } from './lib/resident-body.mjs';
 import { supervisorDouble } from './lib/supervisor-double.mjs';

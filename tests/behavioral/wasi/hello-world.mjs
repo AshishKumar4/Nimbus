@@ -8,46 +8,21 @@
 //
 // core WASI WASI fn under test: fd_write (fd 1 → stdout via ProcessLogStore).
 
-import { mintSession, deleteSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeFixtureCmd } from './_fixtures.mjs';
+import { openWasiProbe, tailLines } from './_harness.mjs';
 
-const sid = await mintSession();
-console.log(`[wasi/hello-world] sid=${sid} BASE=${BASE}`);
-
-const t = new Terminal(sid);
-let exitCode = 1;
+const probe = await openWasiProbe('wasi/hello-world', { dir: '/home/user/wasi', fixture: 'hello', as: 'hello.wasm' });
+const { t } = probe;
 try {
-  await t.connect();
-  await sleep(2_000);
-  await t.waitForPrompt(60_000);
-
-  await t.run('mkdir -p /home/user/wasi && cd /home/user/wasi', 10_000);
-  await t.run(writeFixtureCmd('hello', 'hello.wasm'), 30_000);
-
   const result = await t.run('wasm-runner hello.wasm _start', 30_000);
-  const out = stripAnsi(result.output);
-  const tail = out.split(/\r?\n/).slice(-6).join('\n');
+  const tail = tailLines(result.output, 6);
   const wroteOk = /hello, WASI!/.test(tail);
   const noErr  = !/error|err:/i.test(tail);
 
-  const findings = { probe: 'wasi/hello-world', sid, base: BASE, tail, wroteOk, noErr };
-  console.log(JSON.stringify(findings, null, 2));
-
-  const checks = [
+  probe.report([
     ['hello-world fd_write produced "hello, WASI!"', wroteOk],
     ['no error string in output',                    noErr],
-  ];
-  let pass = 0;
-  for (const [name, ok] of checks) {
-    console.log(`  ${ok ? 'PASS' : 'FAIL'}  ${name}`);
-    if (ok) pass++;
-  }
-  const verdict = pass === checks.length ? 'passing' : 'failing';
-  console.log(`[wasi/hello-world] ${verdict} — ${pass}/${checks.length}`);
-  exitCode = verdict === 'passing' ? 0 : 1;
+  ], { tail, wroteOk, noErr });
 } finally {
-  await t.close().catch(() => {});
-  const del = await deleteSession(sid, 'wasi/hello-world');
-  console.log(`deleteSession: ${del.status}`);
+  await probe.close();
 }
-process.exit(exitCode);
+process.exit(probe.exitCode());

@@ -12,7 +12,7 @@
  * session here would evaluate esbuild-service (and its `.wasm` static
  * import) before those plugins exist.
  */
-import { answerSupervisorOp, buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
+import { answerSupervisorOp, buildSessionSupervisorOps } from '../../../packages/worker/src/session/supervisor-op.ts';
 
 export function attachSupervisorOps(host, ops = buildSessionSupervisorOps(host)) {
   host.serveSupervisorOp = (envelope) => ops.dispatch(envelope);

@@ -25,7 +25,7 @@ import { MAX_TX_LOGICAL_ROWS } from '../../packages/platform/src/limits.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { renameOutcome } from '../../packages/core/src/vfs/vfs-error.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 function openVfs(harness = createSqliteVfsTestHarness()) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);

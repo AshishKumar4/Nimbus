@@ -7,7 +7,7 @@ export async function clientLifetime(https, runToExit, mode) {
   let producerFinished = false;
   let cancelled = false;
   let timer;
-  globalThis.fetch = async () => new Response(new ReadableStream({
+  globalThis.fetch = /** @type {typeof fetch} */ (/** @type {unknown} */ (async () => new Response(new ReadableStream({
     start(controller) {
       controller.enqueue(new TextEncoder().encode('first'));
       timer = setTimeout(() => {
@@ -18,7 +18,7 @@ export async function clientLifetime(https, runToExit, mode) {
       }, 40);
     },
     cancel() { cancelled = true; clearTimeout(timer); produced.resolve(); },
-  }));
+  }))));
   let ended = false, errored = false, closed = false, streamed = false, body = '';
   try {
     const request = https.get('https://controlled-network.invalid/body', response => {
@@ -117,9 +117,11 @@ export async function exchangeLifetime(http, liveHandles, serve, mode) {
     await settle();
     return { body, heldAfter: liveHandles() > 0 };
   }
+  /** @type {ReadableStreamDefaultController} */
   let upload;
   const stream = new ReadableStream({ start(controller) { upload = controller; controller.enqueue(new TextEncoder().encode('a')); } });
-  const reply = await serve(port, new Request('http://loopback/', { method: 'POST', body: stream, duplex: 'half' }));
+  // `duplex` is required for a streamed body; the DOM's RequestInit predates it.
+  const reply = await serve(port, new Request('http://loopback/', /** @type {RequestInit} */ ({ method: 'POST', body: stream, duplex: 'half' })));
   const reader = reply.body.getReader();
   const first = new TextDecoder().decode((await reader.read()).value);
   await settle();

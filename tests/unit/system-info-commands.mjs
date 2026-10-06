@@ -9,7 +9,7 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import { formatUptime } from '../../packages/core/src/substrate/lifo/utils/system-info.ts';
 import { createTopCommand } from '../../packages/core/src/substrate/lifo/commands/system/top.ts';
 import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/ProcessRegistry.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 // procps' sprint_uptime: days when there are any, then H:MM (hours padded
 // to two) past the first hour, else whole minutes.

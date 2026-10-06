@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 28 s wall, 26 s CPU, 1.7 GiB peak (6 runs, 2026-10-06)
 // TLS from a node program that can stop at a synchronous read of stdin, as
 // under Node and as from one that cannot stop.
 //

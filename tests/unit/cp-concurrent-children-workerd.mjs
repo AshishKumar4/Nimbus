@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 70 s wall, 30 s CPU, 1.5 GiB peak (6 runs, 2026-10-06)
 // child_process children of one session run concurrently, as Node's do,
 // under workerd. Each scenario's deterministic lines are compared with the
 // same program under host node; its timing lines (`T <ms> ...`) are asserted

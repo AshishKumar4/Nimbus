@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 69 s wall, 57 s CPU, 2.1 GiB peak (6 runs, 2026-10-06)
 // Node guests on the real registry: how module cells are wrapped and named,
 // and code a program produces at runtime, under workerd.
 //

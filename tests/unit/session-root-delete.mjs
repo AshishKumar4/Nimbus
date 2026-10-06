@@ -39,7 +39,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SESSION_DESTROYED_KEY } from '../../packages/worker/src/session/keys.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const SID = 'nimble-otter-4271';
 const SHELL_HTML = '<!DOCTYPE html><title>session shell</title>';

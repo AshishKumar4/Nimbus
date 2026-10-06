@@ -3,6 +3,11 @@ import { type SourceEdit } from './javascript-ast.js';
  * One name an import binds: the module's namespace, or one of its exports
  * by name (`default` included, which `import d from` binds too). A string
  * name is any string, `"*"` included: only `namespace` is the namespace.
+ *
+ * A named binding's `references` are where the module uses it. Null where
+ * the reader saw no scopes (the bounded bundle rewrite, which must not build
+ * a multi-MiB bundle's tree): the binding is then read once, when its module
+ * is required, as Node binds a builtin's or a CommonJS module's names.
  */
 export type EsmImportBinding = {
     readonly kind: 'namespace';
@@ -11,7 +16,18 @@ export type EsmImportBinding = {
     readonly kind: 'named';
     readonly local: string;
     readonly imported: string;
+    readonly references: readonly EsmReference[] | null;
 };
+/**
+ * A use of an imported binding: a read, a call (`this` stays undefined), a
+ * shorthand property (`{ n }`), or a write, which throws as the language's
+ * assignment to an import does.
+ */
+export interface EsmReference {
+    readonly start: number;
+    readonly end: number;
+    readonly use: 'read' | 'call' | 'shorthand' | 'write';
+}
 /**
  * A name a module exports: one of its own bindings, or, re-exported from
  * the record's source, one of that module's exports by name or its

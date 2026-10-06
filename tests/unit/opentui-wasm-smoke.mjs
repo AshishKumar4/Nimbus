@@ -10,11 +10,10 @@
 //   - the nimbus_alloc / nimbus_free copy-in arena exports work
 
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, rmSync } from 'node:fs';
+import { readFileSync } from 'node:fs';
 import { createHash } from 'node:crypto';
-import os from 'node:os';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import {
   OPENTUI_WASM_VERSION,
@@ -24,8 +23,8 @@ import {
 } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
 import {
   WASI_IMPLEMENTED_FNS,
-  WASI_INSTANCE_PREAMBLE_SRC,
 } from '../../packages/core/src/runtime/wasi-instance.ts';
+import { loadWasiPreamble } from './lib/wasi-authority.mjs';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -60,15 +59,7 @@ assert.equal(WebAssembly.Module.exports(module).length, manifest.exportCount);
 // ── Host: the real wasi-instance.ts preamble + the opentui callback shims ────
 // The preamble is module-shaped (it uses top-level await), so evaluate it as
 // an ES module from a temp file (bun cannot import data: URLs).
-const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports };`;
-const preamblePath = path.join(os.tmpdir(), `opentui-smoke-wasi-preamble-${process.pid}.mjs`);
-writeFileSync(preamblePath, preambleSrc);
-let preamble;
-try {
-  preamble = await import(pathToFileURL(preamblePath).href);
-} finally {
-  rmSync(preamblePath, { force: true });
-}
+const preamble = await loadWasiPreamble();
 // A render backend touches no file: the preopen is there for wasi-libc's
 // bookkeeping and no supervisor is adopted.
 preamble.__wasiInitFS({

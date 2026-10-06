@@ -19,7 +19,7 @@
  */
 
 import type * as esbuild from 'esbuild-wasm';
-import { BUNDLER_IMPORT_CONDITIONS, bundlerConditions, createSyncBundlerResolver } from './bundler-resolution.js';
+import { BUNDLER_IMPORT_CONDITIONS, bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import type { EsbuildBuildOutcome, EsbuildHostBuildOptions, EsbuildRemotePlugin } from './esbuild-service.js';
 
 /**
@@ -152,9 +152,7 @@ export async function prebundleSlice(spec: PrebundleSpec, build: PrebundleBuild)
   for (const p of files.keys()) {
     for (let slash = p.lastIndexOf('/'); slash > 0; slash = p.lastIndexOf('/', slash - 1)) dirs.add(p.slice(0, slash));
   }
-  // Synchronous, so the plugin's answer is settled when rolldown gets it
-  // (createSyncBundlerResolver).
-  const resolver = createSyncBundlerResolver({
+  const resolver = createBundlerResolver({
     isFile: (p) => files.has(norm(p)),
     isDirectory: (p) => dirs.has(norm(p)),
     readText: (p) => {
@@ -177,7 +175,7 @@ export async function prebundleSlice(spec: PrebundleSpec, build: PrebundleBuild)
       const at = (path: string | null) => (path ? { path, namespace: 'nimbus-slice' } : null);
       // `#name` first, so it never falls through to external and reaches the browser.
       if (args.path.startsWith('#') && args.resolveDir) {
-        const resolved = at(resolver.resolvePackageImport(args.path, args.resolveDir));
+        const resolved = at(await resolver.resolvePackageImport(args.path, args.resolveDir));
         if (resolved) return resolved;
         warnings.push(`unresolved subpath import "${args.path}" from ${args.importer || '?'} (no owning package.json#imports entry); marked external`);
         return { external: true };
@@ -187,15 +185,15 @@ export async function prebundleSlice(spec: PrebundleSpec, build: PrebundleBuild)
       // bundles its own entry, which esbuild's top-level `external` refused.
       if (bare(args.path) && isExternal(args.path)) return { external: true };
       if (args.path.startsWith('/')) {
-        const resolved = at(resolver.resolveFile(args.path));
+        const resolved = at(await resolver.resolveFile(args.path));
         if (resolved) return resolved;
       }
       if (args.path.startsWith('.') && args.resolveDir) {
-        const resolved = at(resolver.resolveFile(args.resolveDir + '/' + args.path));
+        const resolved = at(await resolver.resolveFile(args.resolveDir + '/' + args.path));
         if (resolved) return resolved;
       }
       if (bare(args.path)) {
-        const resolved = at(resolver.resolveBarePackage(args.path, args.resolveDir || '/home/user', bundlerConditions(args.kind)));
+        const resolved = at(await resolver.resolveBarePackage(args.path, args.resolveDir || '/home/user', bundlerConditions(args.kind)));
         if (resolved) return resolved;
         warnings.push(`unresolved bare import "${args.path}" from ${args.importer || '?'} → marked external`);
       }

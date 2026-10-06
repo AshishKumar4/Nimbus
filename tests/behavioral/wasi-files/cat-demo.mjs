@@ -12,38 +12,23 @@
 // validates argv-driven path_open + multi-block fd_read loop + fd_write
 // to stdout.
 
-import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
-import { writeFixtureCmd } from './_fixtures.mjs';
+import { openWasiProbe, tailLines } from '../wasi/_harness.mjs';
 
 const CONTENTS = 'hello, world from cat.wasm running on Nimbus WASI filesystem WASI\n';
 
-const sid = await mintSession();
-console.log(`[wasi-files/cat-demo] sid=${sid} BASE=${BASE}`);
+const probe = await openWasiProbe('wasi-files/cat-demo', { dir: '/home/user/w2', fixture: 'cat', as: 'cat.wasm' });
+const { t } = probe;
+try {
+  // Write hello.txt via shell — supervisor VFS-visible.
+  const b64 = Buffer.from(CONTENTS, 'utf8').toString('base64');
+  await t.run(`node -e "require('fs').writeFileSync('hello.txt', Buffer.from('${b64}','base64'))"`, 30_000);
 
-const t = new Terminal(sid);
-await t.connect();
-await sleep(2_000);
-await t.waitForPrompt(60_000);
+  const r = await t.run('wasm-runner cat.wasm hello.txt', 60_000);
+  const tail = tailLines(r.output, 5);
+  const ok = /hello, world from cat\.wasm/.test(tail);
 
-await t.run('mkdir -p /home/user/w2 && cd /home/user/w2', 10_000);
-await t.run(writeFixtureCmd('cat', 'cat.wasm'), 30_000);
-
-// Write hello.txt via shell — supervisor VFS-visible.
-const b64 = Buffer.from(CONTENTS, 'utf8').toString('base64');
-await t.run(`node -e "require('fs').writeFileSync('hello.txt', Buffer.from('${b64}','base64'))"`, 30_000);
-
-const r = await t.run('wasm-runner cat.wasm hello.txt', 60_000);
-const out = stripAnsi(r.output);
-const tail = out.split(/\r?\n/).slice(-5).join('\n');
-const ok = /hello, world from cat\.wasm/.test(tail);
-
-await t.close();
-
-console.log(JSON.stringify({ probe: 'wasi-files/cat-demo', sid, base: BASE, tail, ok }, null, 2));
-
-const checks = [['cat.wasm hello.txt → echoes file content via WASI fd_read+fd_write', ok]];
-let pass = 0;
-for (const [n, o] of checks) { console.log(`  ${o ? 'PASS' : 'FAIL'}  ${n}`); if (o) pass++; }
-const verdict = pass === checks.length ? 'passing' : 'failing';
-console.log(`[wasi-files/cat-demo] ${verdict} — ${pass}/${checks.length}`);
-process.exit(verdict === 'passing' ? 0 : 1);
+  probe.report([['cat.wasm hello.txt → echoes file content via WASI fd_read+fd_write', ok]], { tail, ok });
+} finally {
+  await probe.close();
+}
+process.exit(probe.exitCode());

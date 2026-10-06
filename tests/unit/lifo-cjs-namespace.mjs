@@ -22,7 +22,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { scanCjsExports } from '../../packages/core/src/runtime/cjs-export-names.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const FILES = {
   "lib.cjs": "exports.a = 1;\nmodule.exports.b = 2;\nexports['c-d'] = 3;\nObject.defineProperty(exports, 'e', { enumerable: true, get: function () { return inner.e; } });\nObject.defineProperty(exports, 'unsafe', { get() { return 'computed'; } });\n// exports.inComment = 5;\nconst s = \"exports.inString = 6\";\nconst inner = { e: 4 };\nexports.default = 'own-default';\nif (false) exports.never = 8;\nexports.unsafe = 9;\n",

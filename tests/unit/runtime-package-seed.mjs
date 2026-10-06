@@ -14,7 +14,7 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { seedRuntimePackage } from '../../packages/core/src/runtime/runtime-package.ts';
 import { listInstalledManifestsView } from '../../packages/core/src/runtime/installed-runtimes.ts';

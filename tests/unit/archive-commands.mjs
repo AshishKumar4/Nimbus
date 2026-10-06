@@ -11,7 +11,7 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import unzip from '../../packages/core/src/substrate/lifo/commands/archive/unzip.ts';
 import { createZip } from '../../packages/core/src/substrate/lifo/utils/archive.ts';
 import { encodeLossless } from '../../packages/core/src/substrate/lifo/utils/bytes-io.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
