@@ -6,7 +6,7 @@
  */
 
 import type { RuntimeDirentType, RuntimeFileType } from '../runtime/os-contracts.js';
-import { S_IFMT, type Awaitable } from './vfs.js';
+import { S_IFCHR, S_IFDIR, S_IFLNK, S_IFMT, S_IFREG, type Awaitable } from './vfs.js';
 
 /** Every dirent type but 'unknown': what an entry is once readdir, or a stat, has said. */
 export type KnownDirentType = Exclude<RuntimeDirentType, 'unknown'>;
@@ -16,10 +16,10 @@ export type NodeTypePredicate =
   | 'isFile' | 'isDirectory' | 'isSymbolicLink' | 'isCharacterDevice' | 'isBlockDevice' | 'isFIFO' | 'isSocket';
 
 export const DIRENT_TYPES: Readonly<Record<KnownDirentType, { readonly format: number; readonly node: NodeTypePredicate }>> = {
-  file: { format: 0o100000, node: 'isFile' },
-  directory: { format: 0o040000, node: 'isDirectory' },
-  symlink: { format: 0o120000, node: 'isSymbolicLink' },
-  character: { format: 0o020000, node: 'isCharacterDevice' },
+  file: { format: S_IFREG, node: 'isFile' },
+  directory: { format: S_IFDIR, node: 'isDirectory' },
+  symlink: { format: S_IFLNK, node: 'isSymbolicLink' },
+  character: { format: S_IFCHR, node: 'isCharacterDevice' },
   block: { format: 0o060000, node: 'isBlockDevice' },
   fifo: { format: 0o010000, node: 'isFIFO' },
   socket: { format: 0o140000, node: 'isSocket' },
