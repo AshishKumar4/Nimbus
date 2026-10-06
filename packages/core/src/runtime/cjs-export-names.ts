@@ -128,22 +128,26 @@ function scan(source: string, policy: CjsExportPolicy): CjsExports {
 
   /**
    * The Vite policy's `module.exports = { ... }` from the `{` at `i`: each
-   * property's key (a name, a string, a number; a method's, a getter's), its
-   * value skipped whatever it is; a spread or a computed key names nothing.
+   * property's key (a name, a string, a number; a method's, a getter's), the
+   * rest of the property skipped whatever it is; a spread or a computed key
+   * names nothing. Exactly the keys the literal itself puts on
+   * module.exports, without the names Node's grammar misreads (`get` of
+   * `get [a]() {}`).
    */
   const anyLiteral = (i: number): void => {
     const key = (j: number): boolean => word(j) || is(j, tokTypes.string) || is(j, tokTypes.num);
+    const keyOrComputed = (j: number): boolean => key(j) || is(j, tokTypes.bracketL);
     for (let k = i + 1; at(k) !== undefined && !is(k, tokTypes.braceR); ) {
-      if (is(k, tokTypes.ellipsis) || is(k, tokTypes.bracketL)) {
-        k = pastValue(k + 1);
-      } else {
-        // `get a() {}`, `set a(v) {}`, `async a() {}`, `*a() {}`, `async *a() {}`: the key follows the modifiers.
-        if (word(k, 'async') && (is(k + 1, tokTypes.star) || key(k + 1))) k++;
-        if (is(k, tokTypes.star)) k++;
-        else if ((word(k, 'get') || word(k, 'set')) && key(k + 1)) k++;
-        if (key(k)) names.add(text(k));
-        k = pastValue(k + 1);
-      }
+      // `get a() {}`, `set a(v) {}`, `async a() {}`, `*a() {}`, `async *a() {}`, a computed `[a]` in each: the key follows the modifiers.
+      if (word(k, 'async') && (is(k + 1, tokTypes.star) || keyOrComputed(k + 1))) k++;
+      if (is(k, tokTypes.star)) k++;
+      else if ((word(k, 'get') || word(k, 'set')) && keyOrComputed(k + 1)) k++;
+      if (key(k)) names.add(text(k));
+      // A spread of a whole `require(...)` reexports it, as Node reads one.
+      const required = is(k, tokTypes.ellipsis) ? requireAt(k + 1) : null;
+      if (required && (is(required.end, tokTypes.comma) || is(required.end, tokTypes.braceR))) reexports.add(required.specifier);
+      // The property, from its key, its `[`, or its `...`, ends at the next comma at its own depth.
+      k = pastValue(k);
       if (k === -1 || !is(k, tokTypes.comma)) return;
       k++;
     }
@@ -367,9 +371,8 @@ function scan(source: string, policy: CjsExportPolicy): CjsExports {
       const required = requireAt(after + 1);
       if (required) reexports.add(required.specifier);
       else if (is(after + 1, tokTypes.braceL)) {
-        // Under both, the literal's names as Node reads them (the spreads' reexports included).
-        literal(after + 1);
         if (policy === 'vite') anyLiteral(after + 1);
+        else literal(after + 1);
       }
     }
   }

@@ -47,6 +47,14 @@ try {
 }
 
 // Each property shape, its value holding commas, brackets and braces at depth.
+// What a scan cannot see comes from outside the module: a spread's source
+// (`base`, a required module) and a computed key's value (`key`), whose
+// names a literal's own keys are compared without. A required module is a
+// reexport when the whole of it is spread: every key of it is on
+// module.exports.
+const MODULES = { './x': { fromX: 1, sub: { fromSub: 1 } }, './y': { fromY: 1, sub: { fromSub: 1 } } };
+const UNSEEN = { base: { fromSpread: 1 }, key: 'computed', require: (id) => MODULES[id] };
+const outside = (name) => ['fromSpread', 'fromX', 'fromY', 'sub', 'fromSub'].includes(name) || name.startsWith(UNSEEN.key);
 const LITERALS = [
   'module.exports = { a: [1, 2], b: { c: 1, d: [3] }, e: (x, y) => ({ x, y }), f: `${[1, 2]},${{ g: 1 }.g}`, h: /[,}]/g };',
   'module.exports = { "aliceblue": [240, 248, 255], \'red\': [255, 0, 0], 3: "three", 0x10: 16 };',
@@ -56,10 +64,20 @@ const LITERALS = [
   'module.exports = { a: 1, b: 2, };',
   'module.exports = {};',
   'module.exports = { a: x ? { b: 1 } : [c, d], e: new Map([[1, 2]]) }; var x, c, d;',
+  'module.exports = { [key]: 1, red: [255, 0, 0] };',
+  'module.exports = { ...base, red: [255, 0, 0] };',
+  'module.exports = { [[key][0]]: 1, [Symbol.toStringTag]: "Module", ...[base][0], green: [0, 128, 0], ...{ ...base }, blue: [0, 0, 255] };',
+  'module.exports = { get [key]() { return 1; }, set [key](v) {}, async [key]() {}, *[Symbol.iterator]() {}, async *[key + 1]() {}, red: 1 };',
+  'module.exports = { a: 1, ...require("./x"), b: 2 };',
+  'module.exports = { ...require("./y").sub, d: 1 };',
+  'module.exports = { [key]: 1, ...require("./x") };',
 ];
 for (const source of LITERALS) {
   const module = { exports: {} };
-  runInNewContext(source, { module, exports: module.exports });
-  assert.deepEqual(new Set(scanCjsExports(source, 'vite').names), new Set(Object.keys(module.exports)), source);
+  runInNewContext(source, { module, exports: module.exports, ...UNSEEN });
+  const scanned = scanCjsExports(source, 'vite');
+  assert.deepEqual(new Set(scanned.names), new Set(Object.keys(module.exports).filter((name) => !outside(name))), source);
+  const whole = Object.keys(MODULES).filter((id) => Object.keys(MODULES[id]).every((name) => Object.hasOwn(module.exports, name)));
+  assert.deepEqual(scanned.reexports, whole, `${source}: reexports`);
 }
 console.log(`vite-cjs-interop-differential: ${checked} named imports serve as real Vite ${fixture.versions.vite} serves them; ${LITERALS.length} literal shapes name their keys`);
