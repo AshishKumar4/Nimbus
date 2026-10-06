@@ -66,7 +66,12 @@ export declare const CRED_KERNEL: VfsCred;
  * gain more authority than the shell it is writing files for.
  */
 export declare const CRED_SESSION_USER: VfsCred;
+/** Whether `value` is a credential: unsigned integer uid, gid, umask and supplementary groups. The one shape check. */
+export declare function isVfsCred(value: unknown): value is VfsCred;
+/** `value` as a credential of its own (its groups copied), or the refusal `source` makes without one. */
 export declare function requireVfsCred(value: unknown, source: string): VfsCred;
+/** Whether two credentials are the same identity: the same ids, mask and groups, in order. */
+export declare function sameCred(a: VfsCred, b: VfsCred): boolean;
 export type RuntimeFileType = 'file' | 'directory' | 'symlink';
 export interface RuntimeVfsStat {
     dev: number;
