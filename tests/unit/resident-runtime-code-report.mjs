@@ -11,35 +11,15 @@
 // manager's store — and asserts on the next launch's module map.
 
 import assert from 'node:assert/strict';
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { _rpcReportExit, _rpcReportRuntimeCode } from '../../packages/worker/src/session/rpc.ts';
 import { runtimeCodeKey, runtimeCodeModuleName } from '../../packages/core/src/_shared/commonjs-cell.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
-import { processFiles } from './lib/process-bridge.mjs';
-import { stagedAssets } from './lib/staged-assets.mjs';
+import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 
-const world = createFacetWorld(() => ({
-  async startProcess() { return { ok: true }; },
-  async handleHttpRequest() { return new Response('ok'); },
-}));
-const env = {
-  LOADER: world.loader,
-  ASSETS: stagedAssets,
-};
-const processes = new SessionProcessSupervisor();
-const manager = new FacetManager(createFacetCtx(world, 'runtime-code-report'), env, processes, new PortRegistry(), processHostFor, {});
-const harness = createSqliteVfsTestHarness();
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs, processFiles(vfs));
+const { world, processes, manager, vfs } = launchManager('runtime-code-report');
 
 const PROGRAM = 'require("http").createServer(() => {}).listen(3000);';
 const spawn = () => manager.spawnNode(PROGRAM, { command: 'node server.js', filename: '/home/user/server.js', cwd: '/home/user' });

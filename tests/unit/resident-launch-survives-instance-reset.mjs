@@ -23,18 +23,11 @@
 import assert from 'node:assert/strict';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
-import { processFiles } from './lib/process-bridge.mjs';
-import { stagedAssets } from './lib/staged-assets.mjs';
+import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -46,10 +39,8 @@ adoptCtxExports({
 
 /** The durable half of a session: its storage rows and its filesystem. */
 function createSession(label) {
-  const storage = new Map();
-  const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  const fs = vfs.as(CRED_KERNEL);
+  const session = launchSession();
+  const fs = session.vfs.as(CRED_KERNEL);
   fs.mkdir('home/user/node_modules/dep/lib', { recursive: true, mode: 0o755 });
   fs.writeFile(
     'home/user/node_modules/dep/package.json',
@@ -69,7 +60,7 @@ function createSession(label) {
       { mode: 0o644 },
     );
   }
-  return { label, storage, vfs };
+  return { label, ...session };
 }
 
 /**
@@ -98,25 +89,13 @@ function parkedPastLease(gen) {
  *  `ctx.storage.crash()` — the reset — drops what was never synced, which is
  *  what the platform's rollback did to the journal of a mid-launch death. */
 function createInstance(session, generation, { pumpWhile, crashable = false }) {
-  const world = createFacetWorld(() => ({
-    async startProcess() { return { ok: true }; },
-    async handleHttpRequest() { return new Response('ok'); },
-  }));
-  const processes = new SessionProcessSupervisor();
-  processes.setPidBase(generation * PID_GEN_STRIDE);
   const notices = [];
   const spawns = [];
-  const env = {
-    LOADER: world.loader,
-    NIMBUS_LAUNCH_CHUNK_BYTES: '2048',
-    ASSETS: stagedAssets,
-  };
-  const ctx = createFacetCtx(world, session.label, session.storage, { crashable });
   let waiting = false;
-  const manager = new FacetManager(
-    ctx,
-    env, processes, new PortRegistry(), processHostFor,
-    {
+  const { ctx, manager, processes, world } = launchManager(session.label, {
+    session, generation, crashable,
+    env: { NIMBUS_LAUNCH_CHUNK_BYTES: '2048' },
+    hooks: {
       // A launch that asks for a turn this instance will not pump is parked,
       // waiting for one: what the platform's alarm would grant.
       requestLaunchTurn: () => {
@@ -130,8 +109,7 @@ function createInstance(session, generation, { pumpWhile, crashable = false }) {
       notify: (line) => { notices.push(line); },
       onSpawn: (pid, command) => { spawns.push({ pid, command }); },
     },
-  );
-  manager.setVfs(session.vfs, processFiles(session.vfs));
+  });
   return { ctx, manager, processes, world, notices, spawns, waitingForTurn: () => waiting };
 }
 

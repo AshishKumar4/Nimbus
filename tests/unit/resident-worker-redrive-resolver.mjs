@@ -17,16 +17,9 @@
 import assert from 'node:assert/strict';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { processFiles } from './lib/process-bridge.mjs';
-import { stagedAssets } from './lib/staged-assets.mjs';
+import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -35,10 +28,7 @@ const evaluate = (config) => ({
   async handleHttpRequest() { return Response.json({ mainModule: config.mainModule }); },
 });
 
-function createSession() {
-  const disk = createSqliteVfsTestHarness();
-  return { storage: new Map(), vfs: new SqliteVFS(disk.sql, disk.ctx) };
-}
+const createSession = () => launchSession();
 
 /**
  * An instance with BOTH resolvers composed and both recording what they were
@@ -46,27 +36,21 @@ function createSession() {
  * re-drive happened.
  */
 function createInstance(session, generation, label, { embedderModules }) {
-  const world = createFacetWorld(evaluate);
-  const processes = new SessionProcessSupervisor();
-  processes.setPidBase(generation * PID_GEN_STRIDE);
-  const ctx = createFacetCtx(world, label, session.storage);
   const asked = { embedder: [], fallback: [] };
-  const env = {
-    LOADER: world.loader,
-    ASSETS: stagedAssets,
-  };
-  const manager = new FacetManager(ctx, env, processes, new PortRegistry(), processHostFor, {
-    notify: () => {},
-    resolveWorkerLaunch: async (recipe) => {
-      asked.embedder.push(recipe);
-      return { env: null, globalOutbound: undefined, modules: embedderModules, mainModule: 'runner.js' };
-    },
-    resolveWorkerLaunchFallback: async (recipe) => {
-      asked.fallback.push(recipe);
-      return { env: null, globalOutbound: undefined, modules: { 'worker.js': 'export default {} // fallback' } };
+  const { ctx, world, processes, manager } = launchManager(label, {
+    evaluate, session, generation,
+    hooks: {
+      notify: () => {},
+      resolveWorkerLaunch: async (recipe) => {
+        asked.embedder.push(recipe);
+        return { env: null, globalOutbound: undefined, modules: embedderModules, mainModule: 'runner.js' };
+      },
+      resolveWorkerLaunchFallback: async (recipe) => {
+        asked.fallback.push(recipe);
+        return { env: null, globalOutbound: undefined, modules: { 'worker.js': 'export default {} // fallback' } };
+      },
     },
   });
-  manager.setVfs(session.vfs, processFiles(session.vfs));
   return { ctx, world, processes, manager, asked };
 }
 
