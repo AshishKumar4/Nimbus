@@ -1,4 +1,4 @@
-import type { ChildExit, CommandRunAsHost, RunAsOptions, TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { ChildExit, CommandInputStream, CommandRunAsHost, RunAsOptions, TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
 import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -29,7 +29,7 @@ export type ShellEntrypointExecutor = {
     env?: Record<string, string>;
     onStdout?: (data: Uint8Array) => void | Promise<void>;
     onStderr?: (data: Uint8Array) => void | Promise<void>;
-    stdin?: string;
+    stdin?: string | CommandInputStream;
     terminalStdin?: TerminalInputStream;
     runExitTrap?: boolean;
     isolateShellState?: boolean;
@@ -136,13 +136,21 @@ function makeShellEntrypoint(
   };
 }
 
+/**
+ * What the program's commands read as their stdin: the shell's own, as a
+ * shell's commands inherit its fd 0. A stream is handed on as it is, so a
+ * command reads what arrives while it runs (a script's `cat` echoes a pipe
+ * live) and each reads what the one before it left. Commands read from
+ * stdin have none left; a terminal is the terminal's.
+ */
 async function resolveInheritedStdin(
   shellName: ShellName,
   program: ParsedProgram,
   ctx: ShellCommandContext,
-): Promise<{ stdin?: string } | { error: string; exitCode: number }> {
+): Promise<{ stdin?: string | CommandInputStream } | { error: string; exitCode: number }> {
   if (program.kind === 'stdin') return { stdin: '' };
   if (ctx.isFdTerminal?.(0) !== false) return {};
+  if (isInputStream(ctx.stdin)) return { stdin: ctx.stdin };
   try {
     return { stdin: await readContextStdin(ctx.stdin) };
   } catch (e: unknown) {
@@ -280,6 +288,10 @@ function hasReadAll(value: object): value is ReadAllStdin {
 
 function hasRead(value: object): value is ReadStdin {
   return 'read' in value && typeof value.read === 'function';
+}
+
+function isInputStream(value: unknown): value is CommandInputStream {
+  return typeof value === 'object' && value !== null && hasRead(value) && hasReadAll(value);
 }
 
 function stdinChunkToString(chunk: unknown): string {

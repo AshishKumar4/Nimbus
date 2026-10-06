@@ -71,6 +71,13 @@ export interface RuntimeRunOpts {
     captureOutput?: boolean;
     forceLongRunning?: boolean;
     attachedTty?: boolean;
+    /**
+     * A resident whose stdin its launcher writes and ends without waiting for
+     * the boot: a synchronous read of stdin while it boots waits for that
+     * input (worker runtime/stop-replay.ts). A resident started from the
+     * terminal has no such writer, and the read fails naming why.
+     */
+    stdinWriter?: boolean;
     bundleProfile?: FacetBundleProfile;
     /** Invoking process credentials for credential-bound runtime snapshots. */
     cred?: VfsCred;
@@ -92,14 +99,6 @@ export interface RuntimeRunOpts {
         read(): Promise<string | null>;
         readBytes?(maxLength: number): Promise<Uint8Array | null>;
     };
-    /**
-     * The program's code reads stdin synchronously (stdin-read.ts), which
-     * cannot wait for bytes arriving after it runs: a one-shot runner reads up
-     * to STDIN_SYNC_READ_BYTES of a pipe before starting it, or has the program
-     * read its `< file` whole first. Never set for a program that starts a
-     * server.
-     */
-    stdinReadsSync?: boolean;
     /**
      * The regular file a `< file` redirect opened, and the offset its stream is
      * at: the program's fd 0 is that file (read at a position, streamed as it

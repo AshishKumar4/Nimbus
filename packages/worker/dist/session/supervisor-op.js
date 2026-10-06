@@ -24,6 +24,12 @@ function outputBytesArg(value) {
         return value;
     throw new Error(`supervisor op stdout/stderr: expected bytes, got ${typeof value}`);
 }
+/** A chunk's offset in what its run printed, and the run, when the guest sent them. */
+function outputPlace(args) {
+    const at = args?.[1];
+    const run = args?.[2];
+    return typeof at === 'number' && typeof run === 'number' ? [at, run] : [];
+}
 export function buildSessionSupervisorOps(host, store, methods) {
     host.ensureSqliteFs();
     const vfs = host.sqliteFs;
@@ -33,8 +39,8 @@ export function buildSessionSupervisorOps(host, store, methods) {
     const extend = {
         // stdout/stderr are session methods, not bridge ops: mirroring,
         // log-append and prior-generation filtering all live in _rpcStdout.
-        stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
-        stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),
+        stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
+        stderr: (envelope) => host._rpcStderr(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0]), ...outputPlace(envelope.args)),
     };
     const dispatch = createSupervisorOpHandler({
         vfs: host.sqliteFs,
@@ -55,12 +61,20 @@ export function buildSessionSupervisorOps(host, store, methods) {
         readLease: withReadAllocation,
         extend,
         deliveries: host.supervisorDeliveries,
+        // Joining is part of the canonical handler, BEFORE this logical-answer
+        // seam. A transport hedge must not consume another journal occurrence.
+        observe: (envelope, dispatch) => host.facetManager
+            ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
+            : dispatch(),
     });
     const forget = (pid) => {
         host.supervisorDeliveries?.forget(pid);
         return store.forget(pid);
     };
-    return { dispatch, bridge: store.bridge, forget, dispose: store.dispose };
+    return { dispatch, bridge: store.bridge, forget, rewind: async (pid) => {
+            host.supervisorDeliveries?.endReadRun(pid);
+            await store.rewind?.(pid);
+        }, dispose: store.dispose };
 }
 /**
  * Answer `envelope` to a caller outside the session (NimbusSession's

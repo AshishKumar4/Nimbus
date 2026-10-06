@@ -126,7 +126,7 @@ function world() {
   w.process = () => {
     const pid = w.session.processes.spawn('python3', ['python3'], '/home/user').pid;
     const hostIncarnation = supervisorDeliveryProps(w.session.ctx).hostIncarnation;
-    return { pid, rpc: new SupervisorRPC({ props: { doId: 'session', pid, hostIncarnation } }, w.env) };
+    return { pid, rpc: new SupervisorRPC({ props: { doId: 'session', pid, hostIncarnation, writerId: 'write-run' } }, w.env) };
   };
   w.read = (path) => dec.decode(w.session.vfs.as(CRED_KERNEL).readFile(path));
   w.exists = (path) => w.session.vfs.as(CRED_KERNEL).exists(path);
@@ -321,13 +321,13 @@ function assertOneDelivery(arrivals, op, attempts) {
   w.session = openSession(w.harness, { deliveries: false });
   const pid = w.session.processes.spawn('python3', ['python3'], '/home/user').pid;
   const handle = await w.session.host.supervisorOp({ op: 'fsOpen', args: ['/home/user/wheel.py', { write: true, create: true }], pid });
-  const rpc = new SupervisorRPC({ props: { doId: 'session', pid, hostIncarnation: crypto.randomUUID() } }, w.env);
+  const rpc = new SupervisorRPC({ props: { doId: 'session', pid, hostIncarnation: crypto.randomUUID(), writerId: 'write-run' } }, w.env);
   w.faults.push({ kind: 'lost-reply' });
   await assert.rejects(rpc.fsWrite(handle.id, null, enc.encode('member.')), /supervisor op: 'deliverOnce' is not served by this host/);
   assert.equal(w.of(pid).length, 1, 'a refused delivery was repeated');
   assert.equal(w.read('home/user/wheel.py'), '', 'a host that could not dedupe it applied the write');
   // And a binding such a host mints — none names an incarnation — sends plainly.
-  const plain = new SupervisorRPC({ props: { doId: 'session', pid } }, w.env);
+  const plain = new SupervisorRPC({ props: { doId: 'session', pid, writerId: 'write-run' } }, w.env);
   assert.equal(await plain.fsWrite(handle.id, null, enc.encode('member.')), 7);
   assert.equal(w.of(pid).at(-1).wire, 'fsWrite');
   assert.equal(w.read('home/user/wheel.py'), 'member.');

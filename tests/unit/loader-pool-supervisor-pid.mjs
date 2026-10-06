@@ -33,19 +33,19 @@ const route = { supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'NIMBUS_SE
 // A positive supervisorPid must reach the SUPERVISOR binding props.
 boundProps.length = 0;
 new IsolatePool(env, ctx, { supervisorPid: 42 });
-assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 42, route }],
+assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 42, route, bindingKind: 'infrastructure' }],
   'supervisorPid must be minted into the SUPERVISOR binding props');
 
 // Default (unset) stays 0 — resolve/pre-bundle pools never call _pid().
 boundProps.length = 0;
 new IsolatePool(env, ctx, {});
-assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route }],
+assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }],
   'absent supervisorPid defaults to 0');
 
 // supervisorDoIdOverride and supervisorPid compose (peer-DO install path).
 boundProps.length = 0;
 new IsolatePool(env, ctx, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
-assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
+assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKind: 'infrastructure' }],
   'supervisorPid composes with supervisorDoIdOverride');
 
 // ── Hibernation-wake regression (the sv-create "process pid 1000001 does
@@ -85,7 +85,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
 
   // The minted worker's env carries the pid it was keyed under.
   const g2Props = boundProps[boundProps.length - 1];
-  assert.deepEqual(g2Props, { doId: 'loader-pid-test', pid: 2000001, route },
+  assert.deepEqual(g2Props, { doId: 'loader-pid-test', pid: 2000001, route, bindingKind: 'infrastructure' },
     'generation-2 pool mints SUPERVISOR with the new pid');
   assert.ok((await loaderEnvs[1])?.SUPERVISOR,
     'the gen-2 worker config carries the SUPERVISOR binding in env');
@@ -131,16 +131,16 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
     await pool.map((v) => v, ['a']);
     await pool.dispose();
   }
-  assert.deepEqual(boundProps, incarnations.map((hostIncarnation) => ({ doId: 'loader-pid-test', pid: 5, route, hostIncarnation })),
+  assert.deepEqual(boundProps, incarnations.map((hostIncarnation) => ({ doId: 'loader-pid-test', pid: 5, route, hostIncarnation, bindingKind: 'infrastructure' })),
     'each instance mints its own incarnation into the binding');
   assert.notEqual(loaderIds[0], loaderIds[1], 'a restarted instance reused the warm slot of the one before');
 
   boundProps.length = 0;
   new IsolatePool(env, before, { supervisorDoIdOverride: 'coordinator-do', supervisorPid: 7 });
-  assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
+  assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKind: 'infrastructure' }],
     'a binding routed to another actor named this instance');
 
-  // A pid-0 pool (esbuild pre-bundle, npm resolve) can deliver
+  // A pid-0 pool (esbuild pre-bundle, npm resolve, cp-spawn) can deliver
   // nothing — SupervisorRPC refuses every filesystem mutation of pid 0 — so
   // its binding names no instance and its warm isolate survives a restart.
   loaderIds.length = 0;
@@ -150,7 +150,7 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route }],
     await pool.map((v) => v, ['a']);
     await pool.dispose();
   }
-  assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route }, { doId: 'loader-pid-test', pid: 0, route }],
+  assert.deepEqual(boundProps, [{ doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }, { doId: 'loader-pid-test', pid: 0, route, bindingKind: 'infrastructure' }],
     'a pid-0 binding named its instance');
   assert.equal(loaderIds[0], loaderIds[1], 'a pid-0 pool lost its warm isolate to a restart');
 }

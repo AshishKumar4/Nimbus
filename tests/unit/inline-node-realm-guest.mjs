@@ -1,4 +1,5 @@
-#!/usr/bin/env bun
+// @serial
+// The unchanged <100 ms launch-cost assertions need an uncontended sample.
 // A program in the inline node's realm cannot take its host down, and its
 // realm lives exactly as long as a Node process would (Kinu ask 17, review).
 //

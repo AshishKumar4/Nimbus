@@ -22,7 +22,10 @@
  * stdin / stdout / stderr stream through per-child queues maintained on
  * this manager instance. cpReadOutput long-polls for incremental delivery
  * to the parent; cpDrainOutput is a one-shot full-flush invoked from the
- * parent's exit path so unawaited children don't lose output.
+ * parent's exit path so unawaited children don't lose output. A child's
+ * stdin is a pipe: what runs it here reads the queue as a stream, as the
+ * parent writes it (`_stdinOf`), and a runtime's facet reads the same queue
+ * through cpReadStdin.
  *
  * Children run concurrently, as Node's do: each is dispatched on its own,
  * and nothing here waits for one child before starting the next. What a
@@ -45,6 +48,10 @@ import type { ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { enc, dec } from '@nimbus-sh/core/_shared/bytes.js';
 import { exitCodeForSignal, parseSignalName, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { isDynamicWorkerDeadlock } from '@nimbus-sh/fabric/budgets.js';
+import { pulledStdinReader, staticStdinReader } from '@nimbus-sh/core/shell/stdin-adapter.js';
+import type { CommandInputStream } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
+import type { SqlDatabase } from '@nimbus-sh/core/runtime/os-contracts.js';
 
 /**
  * Result of running a pure-builtin or facet-direct command. Mirrors
@@ -211,9 +218,10 @@ export type CommandKind = 'pure-builtin' | 'facet-direct' | 'shell-direct' | 'un
  * the real FacetManager; tests pass a mock with execStream.
  */
 export interface FacetManagerLike {
+  /** `opts.stdin` is the command's stdin, a pipe it reads as it arrives. */
   execStream(
     code: string,
-    opts: { cwd?: string; env?: Record<string, string>; argv?: string[] },
+    opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[]; stdin?: CommandInputStream },
     hooks: OutputHooks,
   ): Promise<number>;
   /**
@@ -244,7 +252,7 @@ export interface CommandRegistryLike {
     args: string[],
     env: Record<string, string>,
     cwd: string,
-    stdin: string,
+    stdin: CommandInputStream,
     hooks: OutputHooks,
   ): Promise<number>;
 }
@@ -255,7 +263,7 @@ export interface ShellExecutorLike {
     commandLine: string,
     env: Record<string, string>,
     cwd: string,
-    stdin: string,
+    stdin: CommandInputStream,
     hooks: OutputHooks,
   ): Promise<number>;
 }
@@ -292,8 +300,9 @@ export const CHILD_PROCESS_MAX_DEPTH = 8;
  * signal (real Node would return false from .write).
  */
 const STDIN_QUEUE_MAX_BYTES = 256 * 1024; // 256 KiB
+/** The most of a child's queued stdin one read takes. */
+const STDIN_TAKE_BYTES = 64 * 1024;
 const EMPTY_BYTES = new Uint8Array(0);
-const STDIN_ATTACH_WAIT_MS = 500;
 
 /**
  * How long the parent's cpReadOutput long-poll waits for new chunks
@@ -516,7 +525,7 @@ export class FacetProcessManager {
     // once its launch is let in (hooks.onStarted).
     if (kind !== 'facet-direct') this._markStarted(child);
     if (kind === 'pure-builtin') {
-      const stdin = await this._drainStdinForBuiltin(child);
+      const stdin = this._stdinOf(child);
       try {
         const code = await this.deps.commandRegistry.runPureBuiltin(
           child.pid, req.command, req.args, { ...child.env }, cwd, stdin, hooks,
@@ -538,13 +547,13 @@ export class FacetProcessManager {
           return;
         }
         const commandLine = await this._shellCommandLineForPlan(
-          plan, cwd, '', hooks, shellNameForCommand(req.command), child.pid,
+          plan, cwd, this._stdinOf(child), hooks, shellNameForCommand(req.command), child.pid,
         );
         if (commandLine === null) {
           this._stampExit(child, 127, null);
           return;
         }
-        const code = await this._runShellLine(child.pid, commandLine, env, cwd, '', hooks);
+        const code = await this._runShellLine(child.pid, commandLine, env, cwd, this._stdinOf(child), hooks);
         this._stampExit(child, typeof code === 'number' ? code : 0, null);
       } catch (e: any) {
         this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
@@ -562,54 +571,36 @@ export class FacetProcessManager {
       processPid: child.pid,
     });
     try {
-      const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args }, hooks);
+      const code = await this.deps.facetMgr.execStream(payload, { cwd, env, argv: req.args, stdin: this._stdinOf(child) }, hooks);
       this._stampExit(child, typeof code === 'number' ? code : 0, null);
     } catch (e: any) {
-      // Refused a Dynamic Worker for good (every one held by a process
-      // waiting on a descendant that waits for one): the program never ran,
-      // and its spawn fails as one at a process limit does.
-      if (isDynamicWorkerDeadlock(e)) {
+      // An initial admission refused before onStarted is a failed spawn.
+      // A child already started (including one stopped on stdin whose
+      // replay was refused) exists: stderr, exit 1 and close, never a second
+      // spawn outcome or a negative errno in place of its exit.
+      if (isDynamicWorkerDeadlock(e) && !child.started) {
         child.spawnError = e.code;
         this._stampExit(child, e.errno, null);
         return;
       }
-      this._appendText(child, 2, `facet error: ${e?.message || String(e)}\n`);
+      this._appendText(child, 2, `facet error: ${isDynamicWorkerDeadlock(e) ? `${e.code}: ` : ''}${e?.message || String(e)}\n`);
       this._stampExit(child, 1, null);
     }
   }
 
   /**
-   * Synchronously drain the stdin queue for a pure-builtin. Waits up to
-   * 50ms for stdinClosed if data is still flowing. Pure-builtins block
-   * on full stdin so we have to commit upfront — the parent should have
-   * called stdinEnd() before the wait ticks expire.
+   * The child's stdin as a stream over its queue: each read takes what the
+   * parent has written, waiting for it, and ends when the parent ends stdin
+   * or the child exits. Nothing is read ahead of the command's own reads.
    */
-  private async _waitForStdinEvent(child: ChildEntry, waitMs: number): Promise<void> {
-    if (child.stdinClosed) return;
-    await new Promise<void>((resolve) => {
-      const timer = setTimeout(() => {
-        const idx = child.stdinWaiters.indexOf(wrapped);
-        if (idx >= 0) child.stdinWaiters.splice(idx, 1);
-        resolve();
-      }, Math.max(0, waitMs));
-      const wrapped = () => {
-        clearTimeout(timer);
-        resolve();
-      };
-      child.stdinWaiters.push(wrapped);
+  private _stdinOf(child: ChildEntry): CommandInputStream {
+    return pulledStdinReader(async () => {
+      for (;;) {
+        const packet = this._takeStdin(child);
+        if (packet) return packet.ended ? null : packet.data;
+        await new Promise<void>((resolve) => child.stdinWaiters.push(resolve));
+      }
     });
-  }
-
-  private async _drainStdinForBuiltin(child: ChildEntry): Promise<string> {
-    if (!child.stdinClosed && child.stdinChunks.length === 0) {
-      await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
-    }
-    if (!child.stdinClosed && child.stdinChunks.length > 0) {
-      await this._waitForStdinEvent(child, STDIN_ATTACH_WAIT_MS);
-    }
-    // A pure builtin takes its stdin as text, so the decode happens here,
-    // at the consumer's edge, over the whole queued run at once.
-    return dec.decode(concatBytes(child.stdinChunks));
   }
 
   private _shellPlanFor(req: SpawnReq): ShellSpawnPlan | null {
@@ -622,17 +613,46 @@ export class FacetProcessManager {
     return parseShellCommandArgs(req.command, args);
   }
 
+  private async _dispatchShell(child: ChildEntry, req: SpawnReq, hooks: OutputHooks): Promise<void> {
+    const plan = this._shellPlanFor(req);
+    if (!plan) {
+      this._appendText(child, 2, `${req.command}: unsupported shell invocation\n`);
+      this._stampExit(child, 127, null);
+      return;
+    }
+    try {
+      const stdin = this._stdinOf(child);
+      const commandLine = await this._shellCommandLineForPlan(
+        plan,
+        req.cwd,
+        stdin,
+        hooks,
+        shellNameForCommand(req.command),
+        child.pid,
+      );
+      if (commandLine === null) {
+        this._stampExit(child, 127, null);
+        return;
+      }
+      const code = await this._runShellLine(child.pid, commandLine, child.env, req.cwd, stdin, hooks);
+      this._stampExit(child, typeof code === 'number' ? code : 0, null);
+    } catch (e: any) {
+      this._appendText(child, 2, `shell error: ${e?.message || String(e)}\n`);
+      this._stampExit(child, 1, null);
+    }
+  }
 
+  /** The shell's program: its `-c` text, its script, or (`sh` alone) its stdin, which it then has none left of. */
   private async _shellCommandLineForPlan(
     plan: ShellSpawnPlan,
     cwd: string,
-    stdin: string,
+    stdin: CommandInputStream,
     hooks: OutputHooks,
     shellName: ShellName,
     processPid: number,
   ): Promise<string | null> {
     if (plan.kind === 'command') return plan.commandLine;
-    if (plan.kind === 'stdin') return stdin;
+    if (plan.kind === 'stdin') return stdin.readAll();
 
     const scriptPath = '/' + resolveVfsPath(plan.path, cwd || '/home/user');
     try {
@@ -653,7 +673,7 @@ export class FacetProcessManager {
     commandLine: string,
     env: Record<string, string>,
     cwd: string,
-    stdin: string,
+    stdin: CommandInputStream,
     hooks: OutputHooks,
   ): Promise<number> {
     if (!this.deps.shellExecutor) {
@@ -665,14 +685,16 @@ export class FacetProcessManager {
 
   // ── stdin queue ─────────────────────────────────────────────────────────
 
-  stdinWrite(childPid: number, data: Uint8Array): { ok: boolean } {
+  stdinWrite(childPid: number, data: Uint8Array): { ok: boolean; full?: boolean } {
     const child = this.children.get(childPid);
     if (!child || child.stdinClosed || child.exitCode !== null) return { ok: false };
     // The cap counts BYTES. It used to count the string's UTF-16 code units,
     // which undercounts any multibyte character and overcounts a surrogate
-    // pair, so the queue's own limit did not mean what it said.
+    // pair, so the queue's own limit did not mean what it said. A write
+    // refused for room says so: the writer waits and writes again, as a full
+    // pipe makes it, where one refused because nothing reads any more is gone.
     if (child.stdinTotalBytes + data.byteLength > STDIN_QUEUE_MAX_BYTES) {
-      return { ok: false };
+      return { ok: false, full: true };
     }
     child.stdinChunks.push(data);
     child.stdinTotalBytes += data.byteLength;
@@ -687,11 +709,38 @@ export class FacetProcessManager {
     for (const w of child.stdinWaiters.splice(0)) w();
   }
 
+  /**
+   * Put stdin the child took back in front of its queue, as it was, past the
+   * queue's cap and after its end too: a run of the child that stopped
+   * before using it, run again (runtime/stop-replay.ts).
+   */
+  unreadStdin(childPid: number, chunks: readonly Uint8Array[]): void {
+    const child = this.children.get(childPid);
+    if (!child || chunks.length === 0) return;
+    child.stdinChunks = chunks.concat(child.stdinChunks);
+    for (const chunk of chunks) child.stdinTotalBytes += chunk.byteLength;
+    // A reader already waiting takes what came back.
+    for (const w of child.stdinWaiters.splice(0)) w();
+  }
+
   /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
   private _takeStdin(child: ChildEntry): { data: Uint8Array; ended: boolean } | null {
-    const data = child.stdinChunks.shift();
-    if (data !== undefined) {
-      child.stdinTotalBytes -= data.byteLength;
+    const first = child.stdinChunks.shift();
+    if (first !== undefined) {
+      // Chunks queued back to back leave together, up to a read's worth: a
+      // writer's small writes cost the reader one round trip, not one each.
+      let size = first.byteLength;
+      const run = [first];
+      while (child.stdinChunks.length > 0 && size + child.stdinChunks[0].byteLength <= STDIN_TAKE_BYTES) {
+        const next = child.stdinChunks.shift()!;
+        run.push(next);
+        size += next.byteLength;
+      }
+      child.stdinTotalBytes -= size;
+      if (run.length === 1) return { data: first, ended: false };
+      const data = new Uint8Array(size);
+      let at = 0;
+      for (const piece of run) { data.set(piece, at); at += piece.byteLength; }
       return { data, ended: false };
     }
     if (child.stdinClosed || child.exitCode !== null) return { data: EMPTY_BYTES, ended: true };

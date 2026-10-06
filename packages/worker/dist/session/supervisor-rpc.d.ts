@@ -79,6 +79,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _host;
     private _route;
     private _op;
+    /** Every path (including resent reads/mutations) uses the bound caller. */
+    private _caller;
     /** Stamp filesystem credentials from the binding, not the supplied arguments. */
     private _fsOp;
     /**
@@ -140,7 +142,11 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _hostIncarnation;
     private _reportingPid;
     private _call;
+    private _cacheRead;
+    private _infrastructureCache;
     private _pid;
+    /** The run of the process this binding was minted for, when it has one. */
+    private _runId;
     private _writerId;
     /**
      * The filesystem call `method` (one of SUPERVISOR_ANSWERED_METHODS), with a
@@ -363,13 +369,6 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
         failed: number;
     }>;
     /**
-     * Build a fresh R2CacheClient bound to this request's env. Cheap to
-     * instantiate; does no async work. Called from each R2 RPC method to
-     * avoid keeping the client in instance state (the WorkerEntrypoint
-     * lifecycle is per-invocation and we want a clean closure each time).
-     */
-    private _r2;
-    /**
      * Look up a tarball in the R2 cross-tenant cache by its content
      * address (the resolved npm integrity string). Returns
      * { bytes, events } where:
@@ -418,8 +417,8 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }): Promise<PackumentReadThrough & {
         events: SupervisorCacheStatEvent[];
     }>;
-    stdout(data: Uint8Array): Promise<void>;
-    stderr(data: Uint8Array): Promise<void>;
+    stdout(data: Uint8Array, at?: number, run?: number): Promise<void>;
+    stderr(data: Uint8Array, at?: number, run?: number): Promise<void>;
     /**
      * Report process exit to the supervisor. Called from the facet's own
      * `finally` block after I/O has drained. The supervisor uses this to
@@ -465,6 +464,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     }>;
     cpStdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
+        full?: boolean;
     }>;
     cpStdinEnd(childPid: number): Promise<void>;
     /**
@@ -474,6 +474,30 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * session/rpc.ts `_acquireOnDelivery`), so the process applies it without
      * asking. The caller's pid names whose credential answers it.
      */
+    replayBoundary(): Promise<void>;
+    /** fd-0 preparation, not a program's ordinary read of this pathname. */
+    stdinFileRead(path: string, offset: number, length: number): Promise<{
+        data: Uint8Array;
+        size: number;
+    }>;
+    stdinPrepared(): Promise<void>;
+    netTls(action: 'open' | 'upgrade', token: string, payload: Record<string, unknown>): Promise<unknown>;
+    /**
+     * The program's network, when this binding is its globalOutbound (a run
+     * that can stop): a read is recorded with its bytes and answered again to a
+     * run after a stop; anything else is something done outside the process.
+     */
+    fetch(request: Request): Promise<Response>;
+    /**
+     * A connection the program opens. One its TLS shim opened is named
+     * `<token>.nimbus-net.invalid`: the session says where it goes, and this
+     * side makes the TLS session with the server when the program asks for it
+     * (netTls 'upgrade'), then carries the plaintext both ways. workerd's
+     * outbound connect cannot carry TLS itself ("Incoming CONNECT with TLS not
+     * supported", worker-entrypoint.c++), which is why TLS ends here. Any
+     * other connection is proxied as it is.
+     */
+    connect(socket: Socket): Promise<void>;
     cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
         data: Uint8Array;
         ended: boolean;

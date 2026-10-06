@@ -215,7 +215,8 @@ const session = namespace.get(namespace.idFromName(`tenant:owner:${SID}`));
       plugins: [{
         name: 'cloudflare-workers-test-stub',
         setup(builder) {
-          builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
+          // cloudflare:sockets too: SupervisorRPC.connect loads it, and nothing here calls that.
+          builder.onResolve({ filter: /^cloudflare:(workers|sockets)$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
           // What the bundle imports from the runtime module: the base classes,
           // and `tracing`, which the Worker's entry adopts at module scope. An
           // untraced invocation's span, as workerd runs one without sampling.

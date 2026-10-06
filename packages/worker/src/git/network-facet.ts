@@ -927,8 +927,10 @@ export async function execGitNetwork(
 
     const { mutationOwner, rotateMutationOwner, ...facetOpts } = opts;
     const ctxExports = getCtxExports();
+    // One run for every binding this operation mints, a fence's included.
+    const writerId = crypto.randomUUID();
     const bindingFor = (owner: string | undefined) => ctxExports!.SupervisorRPC!<GitSupervisorStub>({
-      props: { ...supervisorBindingProps(ctx, opts.pid), mutationOwner: owner },
+      props: { ...supervisorBindingProps(ctx, opts.pid, { writerId }), mutationOwner: owner },
     });
     const supervisorBinding = ctxExports?.SupervisorRPC ? bindingFor(mutationOwner) : undefined;
 

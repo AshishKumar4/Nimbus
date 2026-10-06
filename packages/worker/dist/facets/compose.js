@@ -53,6 +53,9 @@ export function composeFacetManager(deps) {
         onExternalExit: deps.hooks.onExternalExit,
         notify: deps.hooks.notify,
         requestLaunchTurn: deps.hooks.requestLaunchTurn,
+        ...(deps.hooks.deliverOutput !== undefined ? { deliverOutput: deps.hooks.deliverOutput } : {}),
+        ...(deps.hooks.stdinChannel !== undefined ? { stdinChannel: deps.hooks.stdinChannel } : {}),
+        ...(deps.hooks.rewindProcessFiles !== undefined ? { rewindProcessFiles: deps.hooks.rewindProcessFiles } : {}),
         ...(deps.hooks.onSpawn !== undefined ? { onSpawn: deps.hooks.onSpawn } : {}),
         ...(deps.hooks.resolveWorkerLaunch !== undefined
             ? { resolveWorkerLaunch: deps.hooks.resolveWorkerLaunch }
