@@ -2312,7 +2312,9 @@ export class SqliteVFS {
     holds?: () => ReadonlySet<string>,
   ): VfsOpenDescription {
     const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
-    const asOpener = <A extends unknown[], R>(call: (...args: A) => R) => (...args: A): R => this.asOrigin(origin, () => call(...args));
+    // Its calls are its opener's: as its principal, and as the delegations its process holds then.
+    const asOpener = <A extends unknown[], R>(call: (...args: A) => R) => (...args: A): R =>
+      this.asOrigin(origin, () => (holds === undefined ? call(...args) : this.withHolds(holds(), () => call(...args))));
     // Opened to write, it revokes a delegation it meets, rather than sharing
     // it; opened by a holder, it recalls none of the holder's own.
     const priorWrite = this.activeWrite;
@@ -2905,8 +2907,8 @@ export class SqliteVFS {
       storageKey: (path) => this.storageKey(path, bound),
       acquireExclusiveMutation: (path, options) => {
         const lease = this.acquireExclusiveMutationAt(this.storageKey(path, bound), options);
-        // Never null: the key came from a name this caller has.
-        return { root: this.logicalPath(lease.root, bound) ?? lease.root, owner: lease.owner };
+        // Never null: the key came from a name this caller has. A delegation's reservations travel with it.
+        return { ...lease, root: this.logicalPath(lease.root, bound) ?? lease.root };
       },
       subscribe: (path, listener) => this.subscribe(path, bound, listener),
       // Live: a view outlives rotateIncarnation.
@@ -2946,7 +2948,8 @@ export class SqliteVFS {
     const holds = leased !== null ? () => leased : caller.holds ?? null;
     for (const key of Object.keys(view) as (keyof CredentialedVfs)[]) {
       const method: unknown = Reflect.get(view, key);
-      if (typeof method !== 'function') continue;
+      // `holds` answers who the caller is; it is no call on the filesystem.
+      if (typeof method !== 'function' || key === 'holds') continue;
       const settles = !LEAF_READS.has(key);
       const writes = OWNED_MUTATIONS.has(key) || SPANNING_MUTATIONS.has(key);
       const owned = mutationOwner !== undefined && OWNED_MUTATIONS.has(key);
@@ -3612,6 +3615,12 @@ export class SqliteVFS {
     }
     // A subtree the delegation's maker will not have delegated is refused before anything is recalled for it.
     options.delegation?.admit?.(root);
+    // A holder decides creates as a plain directory makes them: a subtree
+    // whose directories inherit a default ACL, or a shared directory's, is
+    // the session's to decide (EPERM: its holder writes through).
+    if (options.delegation !== undefined && this.inheritsPermissions(root)) {
+      throw vfsError('EPERM', root, 'a subtree with a default ACL or a shared directory is not delegated');
+    }
     for (const [held, lease] of this.exclusiveMutationLeases) {
       if (!pathsOverlap(root, lease.root)) continue;
       // A delegation it overlaps is given up first (its holder's decided operations stored).
@@ -3681,6 +3690,17 @@ export class SqliteVFS {
       const { root } = lease;
       if (root === '' || key === root || key.startsWith(`${root}/`)) throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
     }
+  }
+
+  /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
+  private inheritsPermissions(root: string): boolean {
+    if (this.sharedDirectory(root + '/x') !== undefined) return true;
+    for (const shared of this.sharedDirectories.keys()) if (pathsOverlap(shared, root)) return true;
+    const under = subtreeWhere(root, { withRoot: true });
+    return [...this.sql.exec(
+      `SELECT 1 AS found FROM vfs_inodes WHERE dacl IS NOT NULL${under === null ? '' : ` AND ${under.sql}`} LIMIT 1`,
+      ...(under?.params ?? []),
+    )].length > 0;
   }
 
   /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
@@ -8565,6 +8585,8 @@ export class SqliteVFS {
     origin: Principal | null,
     holds: ReadonlySet<string> | null,
   ): Promise<WriteBatchStreamResult> {
+    // A delegation's holder's wave: the names it made are owned as the caller's.
+    const delegatedWave = options.mutationOwner !== undefined && (this.exclusiveMutationLeases.get(options.mutationOwner)?.delegation ?? null) !== null;
     // Each group commits in its own turn, as the stream's caller (its lease, its principal).
     const asCaller = <T>(fn: () => T): T => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, fn));
     const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
@@ -8841,6 +8863,13 @@ export class SqliteVFS {
         // its group's commit would otherwise be refused.
         if (this.exclusiveMutationLeases.size > 0) {
           for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, options.mutationOwner);
+        }
+        // A name a delegation's holder made is the caller's, as a create of
+        // its own would make it (creationAttrs): its owner, and a setgid
+        // directory's group. The holder made it so; this keeps it so.
+        if ((record.type === 'directory' || record.type === 'file-begin') && delegatedWave && !this.inodes.get(record.inode.path)) {
+          const attrs = this.creationAttrs(record.inode.path, record.inode.mode, cred, record.type === 'directory');
+          Object.assign(record.inode, { uid: cred.uid, gid: attrs.gid, mode: attrs.mode });
         }
         // Each record is applied in one synchronous turn, by the stream's
         // caller: as the delegations it holds, whose lookups recall none of them.

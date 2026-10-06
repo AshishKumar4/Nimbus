@@ -45,6 +45,7 @@ import type {
 } from '../os-contracts.js';
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
+import { delegationHolder, type DelegationHolder, type HolderSession } from './delegation-holder.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -275,7 +276,17 @@ function statOf(entry: ResidentEntry): RuntimeVfsStat {
 
 const identity = (dev: number, ino: number): string => `${dev}:${ino}`;
 
-export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem {
+/**
+ * What makes the process a delegation's holder (delegation-holder.ts): the
+ * session calls it takes and answers recalls with, and which keys are home
+ * directories (never held themselves).
+ */
+export interface ResidentDelegation {
+  readonly session: HolderSession;
+  readonly isHomeRoot?: (key: string) => boolean;
+}
+
+export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
   const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
   // Every wait on the session is timed where it leaves: the authority's calls
   // and the store's listings, fills and barriers. A facet's clock moves only
@@ -285,19 +296,29 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const started = Date.now();
     return value.finally(() => { counts.waitMs += Date.now() - started; }) as T;
   };
+  // The subtrees this process holds, when it may hold any (it waits in its
+  // syscalls): what it decided there is answered here and sent later.
+  let holder: DelegationHolder | null = null;
   const authority = new Proxy(session, {
     get(target, name, receiver) {
       const value: unknown = Reflect.get(target, name, receiver);
       if (typeof value !== 'function') return value;
-      return (...args: unknown[]) => timed(Reflect.apply(value, target, args));
+      // Whatever the session is asked, it has what this process decided first.
+      return (...args: unknown[]) => (holder !== null && holder.pending()
+        ? timed(holder.flush().then(() => Reflect.apply(value, target, args)))
+        : timed(Reflect.apply(value, target, args)));
     },
   });
   const store: ResidentNamespace = {
     get device() { return resident.device; },
     get cred() { return resident.cred; },
     ready: () => resident.ready(),
-    entry: (key) => resident.entry(key),
-    children: (key) => resident.children(key),
+    // What this process decided in a subtree it holds is what it sees there.
+    entry: (key) => {
+      const own = holder?.entry(key);
+      return own !== undefined ? own : resident.entry(key);
+    },
+    children: (key) => (holder === null ? resident.children(key) : holder.children(key, resident.children(key))),
     list: (key) => timed(resident.list(key)),
     lookup: (keys, content) => timed(resident.lookup(keys, content)),
     listTree: (key) => timed(resident.listTree(key)),
@@ -310,6 +331,21 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const delegated = (name: string): void => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
   /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
   let owed = false;
+  if (delegation !== undefined) {
+    holder = delegationHolder({
+      session: delegation.session,
+      // The holder reads the store itself, its own decisions aside.
+      store: {
+        get device() { return resident.device; },
+        get cred() { return resident.cred; },
+        entry: (key) => resident.entry(key),
+        children: (key) => resident.children(key),
+      },
+      isHomeRoot: delegation.isHomeRoot,
+      // What it sent changed the session: the store catches up before it answers next.
+      sent: () => { owed = true; },
+    });
+  }
   /** Writes held for the session's descriptors, by descriptor; their buffers are charged to the store's budget. */
   const writes = new Map<number, HeldWrite>();
   /** Held writes the session refused, by descriptor, until reported (by that descriptor's close or fsync, or by settle). */
@@ -496,6 +532,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    * in its pin, charged, for as long as a descriptor holds it).
    */
   const contentOf = (key: string, entry: ResidentEntry): Uint8Array | undefined | Promise<Uint8Array | undefined> => {
+    const decided = holder?.content(entry);
+    if (decided !== undefined) return decided;
     const writing = heldFor(entry.dev, entry.ino);
     if (writing !== undefined) return writing.bytes.slice(0, writing.length);
     const keep = (bytes: Uint8Array | null | undefined): Uint8Array | undefined =>
@@ -529,6 +567,32 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }
     return after(local(), settle);
   };
+
+  /**
+   * A mutation the holder may decide (a subtree it holds, or one it takes
+   * for this): `local` with the barrier taken when owed, its answer counted
+   * as local; DELEGATE (or false/undefined from the holder) hands it on.
+   */
+  const decide = <T>(name: string, local: () => T | Delegate | Promise<T | Delegate>): T | Delegate | Promise<T | Delegate> => {
+    if (holder === null || !store.ready()) return DELEGATE;
+    const settle = (value: T | Delegate): T | Delegate => {
+      if (value !== DELEGATE) counts.local++;
+      return value;
+    };
+    if (owed) {
+      counts.barriers++;
+      return store.barrier().then((ok) => {
+        if (!ok || !store.ready()) return DELEGATE;
+        owed = false;
+        return after(local(), settle);
+      });
+    }
+    return after(local(), settle);
+  };
+
+  /** The resolved key of `path` for a mutation the holder may decide, or DELEGATE. */
+  const keyFor = (path: RuntimeFsPath, follow: boolean): string | Delegate | Promise<string | Delegate> =>
+    after(resolve(path, follow), (key) => (typeof key === 'string' && key !== '' ? key : DELEGATE));
 
   /** The authority, for a call that may change what the store holds: the barrier is owed once it returns. */
   const changing = <T>(name: string, call: () => T | Promise<T>): T | Promise<T> => {
@@ -565,12 +629,18 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   Reflect.set(fs, 'synchronous', authority.synchronous);
 
   fs.inbound = () => { owed = true; };
-  fs.holding = () => writes.size > 0;
-  fs.flush = () => flush();
+  fs.holding = () => writes.size > 0 || (holder?.pending() ?? false);
+  // What leaves the process is preceded by everything it wrote: its held
+  // writes, and what it decided in the subtrees it holds.
+  fs.flush = () => flush().then(() => holder?.flush());
   fs.settle = async () => {
     await flush();
     const failures = [...unsettled.values()];
     unsettled.clear();
+    // The run's end: what it decided is sent, and the subtrees it held are given back.
+    if (holder !== null) {
+      try { await holder.settle(); } catch (error) { failures.push({ path: '/', dev: 0, ino: 0, error }); }
+    }
     return failures;
   };
   fs.syncInode = (dev, ino) => syncIdentity(dev, ino);
@@ -701,6 +771,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
 
   fs.open = (path, flags: RuntimeOpenFlags) => {
     const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
+    if (!readOnly && holder !== null) {
+      // A file made or emptied in a subtree this process holds is decided here.
+      const local = decide<RuntimeFileHandle>('open', () => after(keyFor(path, true), (key) => (key === DELEGATE ? DELEGATE
+        : after(holder!.open(key, typeof path === 'string' ? path : path.path, flags), (handle) => handle ?? DELEGATE))));
+      return after(local, (handle) => (handle === DELEGATE ? openOnSession(path, flags) : handle));
+    }
+    return openOnSession(path, flags);
+  };
+
+  const openOnSession = (path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle | Promise<RuntimeFileHandle> => {
+    const readOnly = !flags.write && !flags.create && !flags.truncate && !flags.append && !flags.exclusive;
     if (!readOnly) {
       // Whatever this process holds is the file's content before a writer
       // opens it: a second r+ reads it, and a second O_TRUNC empties it.
@@ -733,6 +814,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.fstat = (handleId) => {
+    if (holder?.owns(handleId)) { counts.local++; return statOf(holder.fstat(handleId)); }
     delegated('fstat');
     return after(authority.fstat(handleId), (stat) => {
       identities.set(handleId, identity(stat.dev, stat.ino));
@@ -751,6 +833,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.read = (handleId, offset, length) => {
+    if (holder?.owns(handleId)) { counts.local++; return holder.read(handleId, offset, length); }
     const held = writes.get(handleId);
     if (held === undefined) { delegated('read'); return authority.read(handleId, offset, length); }
     if (!held.readable) throw fsError('EBADF', 'read', held.path);
@@ -762,6 +845,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.seek = (handleId, offset, whence) => {
+    if (holder?.owns(handleId)) { counts.local++; return holder.seek(handleId, offset, whence); }
     const held = writes.get(handleId);
     if (held === undefined) { delegated('seek'); return authority.seek(handleId, offset, whence); }
     counts.local++;
@@ -772,6 +856,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.write = (handleId, offset, bytes) => {
+    if (holder?.owns(handleId)) { counts.local++; return holder.write(handleId, offset, bytes); }
     const held = writes.get(handleId);
     if (held === undefined) return changing('write', () => authority.write(handleId, offset, bytes));
     const start = offset ?? held.position;
@@ -794,6 +879,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.ftruncate = (handleId, size) => {
+    if (holder?.owns(handleId)) { counts.local++; holder.ftruncate(handleId, size); return; }
     const held = writes.get(handleId);
     if (held === undefined) return changing('ftruncate', () => authority.ftruncate(handleId, size));
     if (!room(held, size)) {
@@ -809,6 +895,8 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.close = (handleId) => {
+    // A descriptor of the holder's closes here: what it wrote is sent with the log.
+    if (holder?.owns(handleId)) { counts.local++; holder.close(handleId); return; }
     identities.delete(handleId);
     const held = writes.get(handleId);
     // The descriptor closes either way; a write the session refused is the close's error, as on a network filesystem.
@@ -831,6 +919,19 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }, () => authority.readdirHandle(handleId));
 
   fs.fsync = (handleId) => {
+    // Synced means in the session: what this process decided goes first.
+    if (handleId !== undefined && holder?.owns(handleId)) return holder.flush();
+    if (handleId === undefined && holder !== null) return holder.flush().then(() => syncAll());
+    return syncOne(handleId);
+  };
+
+  const syncAll = (): Promise<void> => flush().then(() => {
+    const failure = unsettled.values().next();
+    if (!failure.done) throw failure.value.error;
+    return authority.fsync();
+  });
+
+  const syncOne = (handleId: number | undefined): void | Promise<void> => {
     if (handleId === undefined) {
       // sync(2) over every file: whatever any writer met is its answer (and still its writer's).
       return flush().then(() => {
@@ -854,12 +955,58 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     const passed: unknown = Reflect.get(fs, name);
     if (typeof passed !== 'function') continue;
     Reflect.set(fs, name, (handleId: number, ...rest: unknown[]) => {
+      if (holder?.owns(handleId)) return holderDescriptorCall(name, handleId, rest);
       // Anything but a write or a truncate of a held file sends what is held first.
       const held = writes.get(handleId);
       if (held !== undefined) return release(held).then(() => { reportUnsettled(handleId); return Reflect.apply(passed, fs, [handleId, ...rest]); });
       return Reflect.apply(passed, fs, [handleId, ...rest]);
     });
   }
+
+  /**
+   * fchmod, futimes, fchown and dup of a descriptor of the holder's: decided
+   * here where the holder decides them, else by the file's name at the
+   * session, once what was decided is sent.
+   */
+  const holderDescriptorCall = (name: 'fchmod' | 'fchown' | 'futimes' | 'dup', handleId: number, rest: unknown[]): unknown => {
+    const key = holder!.keyOf(handleId);
+    if (name === 'dup') return holder!.dup(handleId);
+    const attrs = name === 'fchmod' ? { mode: Number(rest[0]) }
+      : name === 'futimes' && typeof rest[0] === 'number' && typeof rest[1] === 'number' ? { atime: rest[0], mtime: rest[1] }
+      : null;
+    const bySession = (): unknown => holder!.flush().then(() => {
+      const path = '/' + key;
+      if (name === 'fchmod') return fs.chmod(path, Number(rest[0]));
+      if (name === 'fchown') return fs.chown(path, rest[0] as number, rest[1] as number);
+      return fs.utimes(path, rest[0] as number | null, rest[1] as number | null);
+    });
+    if (attrs === null) return bySession();
+    return after(holder!.setattr(key, attrs), (done) => (done ? undefined : bySession()));
+  };
+
+  // Changes by name a held subtree holds are decided here; any other is the session's.
+  const bySessionMkdir = fs.mkdir;
+  fs.mkdir = (path, options) => {
+    if (holder === null || options?.recursive) return bySessionMkdir(path, options);
+    const local = decide<void>('mkdir', () => after(keyFor(path, false), (key) => (key === DELEGATE ? DELEGATE
+      : after(holder!.mkdir(key, typeof path === 'string' ? path : path.path, options?.mode ?? 0o777), (done) => (done ? undefined : DELEGATE)))));
+    return after(local, (done) => (done === DELEGATE ? bySessionMkdir(path, options) : undefined));
+  };
+  const bySessionUnlink = fs.unlink;
+  fs.unlink = (path) => {
+    if (holder === null) return bySessionUnlink(path);
+    const local = decide<void>('unlink', () => after(keyFor(path, false), (key) => (key === DELEGATE ? DELEGATE
+      : after(holder!.unlink(key, typeof path === 'string' ? path : path.path), (done) => (done ? undefined : DELEGATE)))));
+    return after(local, (done) => (done === DELEGATE ? bySessionUnlink(path) : undefined));
+  };
+  const bySessionRename = fs.rename;
+  fs.rename = (from, to) => {
+    if (holder === null) return bySessionRename(from, to);
+    const local = decide<void>('rename', () => after(keyFor(from, false), (source) => (source === DELEGATE ? DELEGATE
+      : after(keyFor(to, false), (target) => (target === DELEGATE ? DELEGATE
+        : after(holder!.rename(source, target, typeof from === 'string' ? from : from.path), (done) => (done ? undefined : DELEGATE)))))));
+    return after(local, (done) => (done === DELEGATE ? bySessionRename(from, to) : undefined));
+  };
 
   return fs;
 }

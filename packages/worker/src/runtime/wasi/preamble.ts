@@ -59,6 +59,7 @@ import {
   type ResidentNamespace,
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { HolderSession } from '@nimbus-sh/core/runtime/wasi/delegation-holder.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 
 // The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
@@ -245,7 +246,28 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
     reserve: (bytes: number) => view !== null && view.reserve(bytes),
     release: (bytes: number) => { view?.release(bytes); },
   };
-  return residentFilesystem(authority, booting);
+  // The process holds the subtrees it writes (delegation-holder.ts): its
+  // creates, writes, mkdirs, unlinks and renames there are decided here and
+  // sent as one ordered wave under the delegation's lease.
+  const waves = sup as unknown as WaveSender;
+  const holderSession: HolderSession = {
+    acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+    release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+    awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+    recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+    sendWave: (stream, owner) => waves.writeBatchStream(stream, undefined, owner),
+  };
+  return residentFilesystem(authority, booting, { session: holderSession, isHomeRoot: isHomeDirectory });
+}
+
+/** A wave sent under a named lease (SupervisorRPC.writeBatchStream's third argument). */
+interface WaveSender {
+  writeBatchStream(stream: ReadableStream<Uint8Array>, fence: undefined, owner: string): Promise<{ ok: boolean; error?: { message: string } }>;
+}
+
+/** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
+function isHomeDirectory(key: string): boolean {
+  return key.startsWith('home/') && key.length > 'home/'.length && !key.slice('home/'.length).includes('/');
 }
 
 /** The filesystem the codec answers from: the process's resident one over the adopted supervisor, else the session's. */

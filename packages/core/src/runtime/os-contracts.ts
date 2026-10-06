@@ -483,6 +483,8 @@ export interface ExclusiveMutationGrant {
   readonly recallTimeoutMs?: number;
   readonly inos?: { readonly first: number; readonly end: number };
   readonly bytes?: number;
+  /** The umask the session applies to what the holder creates (its process's): the holder decides creates with it. */
+  readonly umask?: number;
 }
 
 /** What a recall asks of a delegation's holder: keep sending each operation ('share'), or give the subtree up ('revoke'). */
