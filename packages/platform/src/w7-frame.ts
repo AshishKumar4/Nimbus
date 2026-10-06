@@ -5,6 +5,7 @@
 
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
+import { utf8Length } from './utf8.js';
 
 // The batch payload types live WITH the wire format that encodes them: every
 // producer and consumer of a W7 stream speaks exactly these records, and the
@@ -35,23 +36,43 @@ export interface BatchChunkEntry {
   data: Uint8Array;
 }
 
+/**
+ * A file whose bytes are read from `source` while the stream is drained, never
+ * held whole: its inode (in `inodes`) carries the size, and the source must
+ * yield exactly that many bytes, in pieces of any size.
+ */
+export interface BatchStreamEntry {
+  path: string;
+  source: AsyncIterable<Uint8Array>;
+}
+
 /** Payload for writeBatch() — all inodes + chunks written in ONE transactionSync(). */
 export interface BatchWritePayload {
   inodes: BatchInodeEntry[];
   chunks: BatchChunkEntry[];
   /** Paths to delete before writing (for clean reinstall). */
   deletePaths?: string[];
+  /** Files streamed from a source rather than given as chunks; encoder only. */
+  streams?: BatchStreamEntry[];
 }
 
 export const W7_MAGIC = new Uint8Array([0x4e, 0x57, 0x37, 0x03]);
 
 const ENCODER_QUEUE_HWM = 0;
+const ENCODER_PULL_BYTES = 256 * 1024;
+/** What one stream read asks for when a record's small fields are wanted. */
+const READ_AHEAD_BYTES = 64 * 1024;
 const MAX_METADATA_BYTES = 64 * 1024;
 const MAX_PATH_BYTES = 64 * 1024;
 const MAX_BATCH_ID_BYTES = 128;
 const MAX_CONTENT_ID_BYTES = 256;
-export const W7_MAX_PATHS_PER_BATCH = 128;
-export const W7_MAX_OWNED_PATH_BYTES = 64 * 1024;
+/**
+ * A batch's owned paths. Each stream costs the receiver a round trip and a
+ * publication's fixed work, so a batch is as wide as its byte budget allows;
+ * ownership is a set of names, small beside the bytes.
+ */
+export const W7_MAX_PATHS_PER_BATCH = 1024;
+export const W7_MAX_OWNED_PATH_BYTES = 256 * 1024;
 export const W7_MAX_RECORD_BYTES = 5 + 4 + MAX_CONTENT_ID_BYTES + 8 + CHUNK_SIZE;
 
 const enum RecordTag {
@@ -160,6 +181,7 @@ interface EncoderFile {
   inode: W7ContentInode;
   contentId: string;
   chunks: BatchChunkEntry[];
+  source: AsyncIterable<Uint8Array> | null;
 }
 
 interface EncoderState {
@@ -167,7 +189,13 @@ interface EncoderState {
   summary: Omit<W7BatchSummary, 'check'>;
 }
 
-/** Encode one bounded record per pull; no batch-sized metadata header exists. */
+/**
+ * Encode the records a pull reaches into one enqueued chunk of about
+ * ENCODER_PULL_BYTES (a record never splits; a file's chunk is at most
+ * CHUNK_SIZE), so a wave crosses the RPC boundary in a few writes rather than
+ * one per record. The bytes are the same records either way; no batch-sized
+ * metadata header exists.
+ */
 export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array> {
   const batchId = crypto.randomUUID();
   const { deletes, directories, files } = preparePayload(payload, batchId);
@@ -176,21 +204,33 @@ export function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStre
   let magicEmitted = false;
   const source: UnderlyingByteSource = {
     type: 'bytes',
-    pull(controller) {
+    async pull(controller) {
       if (closed) return;
       try {
+        const parts: Uint8Array[] = [];
+        let bytes = 0;
         if (!magicEmitted) {
           magicEmitted = true;
-          controller.enqueue(W7_MAGIC.slice());
-          return;
+          parts.push(W7_MAGIC.slice());
+          bytes += W7_MAGIC.byteLength;
         }
-        const next = iterator.next();
-        if (next.done) {
-          closed = true;
-          controller.close();
-          return;
+        while (bytes < ENCODER_PULL_BYTES) {
+          const next = await iterator.next();
+          if (next.done) {
+            closed = true;
+            break;
+          }
+          for (const part of next.value) {
+            parts.push(part);
+            bytes += part.byteLength;
+          }
         }
-        for (const part of next.value) controller.enqueue(part);
+        // Every chunk enqueued is one the encoder built: a lone part is the
+        // magic or a metadata record, and a file chunk's record is always
+        // two parts, so its bytes are copied here. A caller's buffers are
+        // never transferred, and a payload may be encoded again.
+        if (bytes > 0) controller.enqueue(parts.length === 1 ? parts[0]! : concatBytes(...parts));
+        if (closed) controller.close();
       } catch (error) {
         closed = true;
         controller.error(error);
@@ -271,6 +311,8 @@ async function* decodeRecords(
   const contentIds = new Set<string>();
   let active: {
     metadata: FileBeginMetadata;
+    /** The content id as the wire carries it: what each chunk must repeat. */
+    contentIdBytes: Uint8Array;
     inode: W7ContentInode;
     nextChunkId: number;
     receivedBytes: number;
@@ -298,26 +340,28 @@ async function* decodeRecords(
 
       if (envelope.tag === RecordTag.FileChunk) {
         if (!active) throw new Error('w7-frame: file-chunk without active file');
-        const prefixLength = Math.min(envelope.length, 4 + MAX_CONTENT_ID_BYTES + 8);
-        const idLengthBytes = await buffer.readExact(4, 'file-chunk content-id length');
-        const idLength = readU32LE(idLengthBytes, 0);
+        // The chunk must name its file's content id, so its prefix is that
+        // id's length plus the id-length, chunk-id and data-length fields:
+        // read whole, then checked field by field.
+        const expectedId = active.contentIdBytes;
+        const prefixLength = 4 + expectedId.byteLength + 8;
+        if (prefixLength > envelope.length) {
+          throw new Error('w7-frame: malformed file-chunk record length');
+        }
+        const headerPayload = await buffer.readExact(prefixLength, 'file-chunk header');
+        const idLength = readU32LE(headerPayload, 0);
         if (idLength === 0 || idLength > MAX_CONTENT_ID_BYTES) {
           throw new Error(`w7-frame: invalid file-chunk content-id length ${idLength}`);
         }
-        const remainingPrefixLength = idLength + 8;
-        if (4 + remainingPrefixLength > prefixLength || 4 + remainingPrefixLength > envelope.length) {
-          throw new Error('w7-frame: malformed file-chunk record length');
+        if (idLength !== expectedId.byteLength || !sameBytes(headerPayload.subarray(4, 4 + idLength), expectedId)) {
+          throw new Error(`w7-frame: file-chunk content id does not own ${active.inode.path}`);
         }
-        const rest = await buffer.readExact(remainingPrefixLength, 'file-chunk header');
-        const contentId = decodeText(rest.subarray(0, idLength), 'file-chunk content id');
-        const chunkId = readU32LE(rest, idLength);
-        const dataLength = readU32LE(rest, idLength + 4);
+        const chunkId = readU32LE(headerPayload, 4 + idLength);
+        const dataLength = readU32LE(headerPayload, 8 + idLength);
         if (envelope.length !== 4 + idLength + 8 + dataLength) {
           throw new Error('w7-frame: file-chunk payload length mismatch');
         }
-        if (contentId !== active.metadata.contentId) {
-          throw new Error(`w7-frame: file-chunk content id ${contentId} does not own ${active.inode.path}`);
-        }
+        const contentId = active.metadata.contentId;
         if (chunkId !== active.nextChunkId) {
           throw new Error(
             `w7-frame: ${active.inode.path}: expected chunk ${active.nextChunkId}, got ${chunkId}`,
@@ -335,7 +379,6 @@ async function* decodeRecords(
             `w7-frame: ${active.inode.path}: chunk ${chunkId} has ${dataLength} bytes; expected ${expectedBytes}`,
           );
         }
-        const headerPayload = concatBytes(idLengthBytes, rest);
         let retention: W7ChunkRetention | null = null;
         try {
           retention = options.retainChunk
@@ -404,6 +447,7 @@ async function* decodeRecords(
           summary.fileCount++;
           active = {
             metadata,
+            contentIdBytes: TEXT_ENCODER.encode(metadata.contentId),
             inode,
             nextChunkId: 0,
             receivedBytes: 0,
@@ -473,12 +517,12 @@ async function* decodeRecords(
   }
 }
 
-function* encodeRecords(
+async function* encodeRecords(
   batchId: string,
   deletes: string[],
   directories: W7DirectoryInode[],
   files: EncoderFile[],
-): Generator<Uint8Array[]> {
+): AsyncGenerator<Uint8Array[]> {
   const state: EncoderState = {
     batchCheck: 0,
     summary: {
@@ -516,13 +560,14 @@ function* encodeRecords(
       chunkCount: file.inode.chunkCount,
     }, state);
     let fileCheck = 0;
-    for (const chunk of file.chunks) {
-      const data = chunk.data;
+    let chunkId = 0;
+    const pieces = file.source === null ? givenChunks(file.chunks) : fixedChunks(file.inode, file.source);
+    for await (const data of pieces) {
       const contentBytes = new TextEncoder().encode(file.contentId);
       const prefix = new Uint8Array(4 + contentBytes.length + 8);
       writeU32LE(prefix, 0, contentBytes.length);
       prefix.set(contentBytes, 4);
-      writeU32LE(prefix, 4 + contentBytes.length, chunk.chunkId);
+      writeU32LE(prefix, 4 + contentBytes.length, chunkId++);
       writeU32LE(prefix, 8 + contentBytes.length, data.byteLength);
       const header = recordHeader(RecordTag.FileChunk, prefix.byteLength + data.byteLength);
       state.batchCheck = updateRecordCheck(state.batchCheck, header, prefix, data);
@@ -544,6 +589,46 @@ function* encodeRecords(
     check: state.batchCheck,
   };
   yield encodeMetadataRecord(RecordTag.BatchEnd, end);
+}
+
+/** Each chunk's bytes, read as the encoder reaches it (a producer's `data` may copy on access). */
+function* givenChunks(chunks: BatchChunkEntry[]): Generator<Uint8Array> {
+  for (const chunk of chunks) yield chunk.data;
+}
+
+/**
+ * A streamed file's bytes as the wire's positional chunks: CHUNK_SIZE each but
+ * the last, every one over its own buffer (the stream transfers what it
+ * enqueues). The source must yield exactly the inode's size.
+ */
+async function* fixedChunks(
+  inode: W7ContentInode,
+  source: AsyncIterable<Uint8Array>,
+): AsyncGenerator<Uint8Array> {
+  let pending = new Uint8Array(Math.min(CHUNK_SIZE, inode.size));
+  let filled = 0;
+  let total = 0;
+  for await (const part of source) {
+    if (!(part instanceof Uint8Array)) throw new Error(`w7-frame: ${inode.path}: streamed piece is not bytes`);
+    if (total + part.byteLength > inode.size) {
+      throw new Error(`w7-frame: ${inode.path}: streamed source exceeds its ${inode.size} bytes`);
+    }
+    total += part.byteLength;
+    for (let offset = 0; offset < part.byteLength;) {
+      const take = Math.min(pending.byteLength - filled, part.byteLength - offset);
+      pending.set(part.subarray(offset, offset + take), filled);
+      filled += take;
+      offset += take;
+      if (filled === pending.byteLength) {
+        yield pending;
+        pending = new Uint8Array(Math.min(CHUNK_SIZE, inode.size - total + (part.byteLength - offset)));
+        filled = 0;
+      }
+    }
+  }
+  if (total !== inode.size) {
+    throw new Error(`w7-frame: ${inode.path}: streamed source ended at ${total} of ${inode.size} bytes`);
+  }
 }
 
 function encodeMetadataRecord(
@@ -573,6 +658,12 @@ function preparePayload(
   const ownedPaths = new PathOwnership();
   const deletes = [...(payload.deletePaths ?? [])];
   for (const path of deletes) claimPath(ownedPaths, canonicalPath(path, 'delete path'));
+  const streamsByPath = new Map<string, AsyncIterable<Uint8Array>>();
+  for (const stream of payload.streams ?? []) {
+    const path = canonicalPath(stream.path, 'stream path');
+    if (streamsByPath.has(path)) throw new Error(`w7-frame: duplicate stream for ${path}`);
+    streamsByPath.set(path, stream.source);
+  }
   const chunksByPath = new Map<string, BatchChunkEntry[]>();
   for (const chunk of payload.chunks) {
     const path = canonicalPath(chunk.path, 'chunk path');
@@ -589,21 +680,28 @@ function preparePayload(
     claimPath(ownedPaths, path);
     const normalizedInode = normalizeInode(inode);
     const fileChunks = chunksByPath.get(path) ?? [];
+    const streamed = streamsByPath.get(path) ?? null;
     if (normalizedInode.kind === 'directory') {
-      if (fileChunks.length > 0) throw new Error(`w7-frame: directory ${path} has chunks`);
+      if (fileChunks.length > 0 || streamed !== null) throw new Error(`w7-frame: directory ${path} has chunks`);
       directories.push(normalizedInode);
     } else {
-      validateChunks(normalizedInode, fileChunks);
+      if (streamed === null) validateChunks(normalizedInode, fileChunks);
+      else if (fileChunks.length > 0) throw new Error(`w7-frame: streamed file ${path} also has chunks`);
       files.push({
         inode: normalizedInode,
         contentId: `${batchId}:${fileIndex++}`,
         chunks: fileChunks,
+        source: streamed,
       });
     }
     chunksByPath.delete(path);
+    streamsByPath.delete(path);
   }
   if (chunksByPath.size > 0) {
     throw new Error(`w7-frame: chunk has no inode: ${chunksByPath.keys().next().value}`);
+  }
+  if (streamsByPath.size > 0) {
+    throw new Error(`w7-frame: stream has no inode: ${streamsByPath.keys().next().value}`);
   }
   return { deletes, directories, files };
 }
@@ -818,7 +916,7 @@ class PathOwnership {
     if (this.paths.size >= W7_MAX_PATHS_PER_BATCH) {
       throw new Error(`w7-frame: batch exceeds ${W7_MAX_PATHS_PER_BATCH} owned paths`);
     }
-    const nextPathBytes = this.pathBytes + new TextEncoder().encode(path).byteLength;
+    const nextPathBytes = this.pathBytes + utf8Length(path);
     if (nextPathBytes > W7_MAX_OWNED_PATH_BYTES) {
       throw new Error(
         `w7-frame: owned path bytes exceed ${W7_MAX_OWNED_PATH_BYTES}`,
@@ -854,8 +952,7 @@ function boundedString(value: unknown, label: string, maxBytes: number): string 
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`w7-frame: ${label} must be a non-empty string`);
   }
-  const length = new TextEncoder().encode(value).byteLength;
-  if (length > maxBytes) throw new Error(`w7-frame: ${label} exceeds ${maxBytes} bytes`);
+  if (utf8Length(value) > maxBytes) throw new Error(`w7-frame: ${label} exceeds ${maxBytes} bytes`);
   return value;
 }
 
@@ -925,14 +1022,27 @@ function noopRetention(bytes: number): W7ChunkRetention {
   return { bytes, release() {} };
 }
 
+// One decoder for every record: a non-streaming decode() starts from a
+// clean state each call, so sharing it changes nothing but the cost of
+// constructing one per record (three per small file).
+// Both options stated: workers-types declares TextDecoderConstructorOptions
+// with every property required, and ignoreBOM's default is false anyway.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
+
 function decodeText(bytes: Uint8Array, label: string): string {
   try {
-    // Both options stated: workers-types declares TextDecoderConstructorOptions
-    // with every property required, and ignoreBOM's default is false anyway.
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
+    return UTF8.decode(bytes);
   } catch (error) {
     throw new Error(`w7-frame: invalid UTF-8 in ${label}: ${errorMessage(error)}`);
   }
+}
+
+const TEXT_ENCODER = new TextEncoder();
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index++) if (left[index] !== right[index]) return false;
+  return true;
 }
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {
@@ -977,8 +1087,17 @@ async function cancelReader(
   try { reader.releaseLock(); } catch { /* already released */ }
 }
 
+/**
+ * Exact reads over a byte stream, served from a block read ahead of them: a
+ * stream read is an await through the stream machinery (and, across RPC, its
+ * pump), so the small reads a record's header and metadata take come out of
+ * one READ_AHEAD_BYTES block instead of one read each. A read larger than
+ * the block (a chunk's data) fills its own buffer directly.
+ */
 class ExactByteReader {
   private done = false;
+  private block: Uint8Array<ArrayBufferLike> = new Uint8Array(0);
+  private offset = 0;
 
   constructor(private readonly reader: ReadableStreamBYOBReader, private readonly signal?: AbortSignal) {}
 
@@ -995,30 +1114,89 @@ class ExactByteReader {
     }
   }
 
+  /** One stream read into `view`; zero bytes at the end of the stream. */
+  private async fill(view: Uint8Array): Promise<Uint8Array> {
+    const next = await this.read(
+      () => this.reader.read(view),
+      () => this.reader.cancel(this.signal?.reason),
+    );
+    if (next.done) {
+      this.done = true;
+      return new Uint8Array(0);
+    }
+    return next.value;
+  }
+
   async readExact(length: number, label: string): Promise<Uint8Array> {
     if (length === 0) return new Uint8Array(0);
+    const buffered = this.block.byteLength - this.offset;
+    if (buffered >= length) {
+      const out = this.block.slice(this.offset, this.offset + length);
+      this.offset += length;
+      return out;
+    }
     const output = new Uint8Array(length);
-    let offset = 0;
-    while (offset < length) {
+    let filled = 0;
+    if (buffered > 0) {
+      output.set(this.block.subarray(this.offset), 0);
+      filled = buffered;
+    }
+    this.offset = this.block.byteLength;
+    while (filled < length) {
       if (this.done) {
         throw new Error(
-          `w7-frame: stream ended ${offset} bytes into expected ${length}-byte ${label}`,
+          `w7-frame: stream ended ${filled} bytes into expected ${length}-byte ${label}`,
         );
       }
-      const next = await this.read(
-        () => this.reader.read(new Uint8Array(length - offset)),
-        () => this.reader.cancel(this.signal?.reason),
-      );
-      if (next.done) this.done = true;
-      else if (next.value.byteLength > 0) {
-        output.set(next.value, offset);
-        offset += next.value.byteLength;
+      const remaining = length - filled;
+      if (remaining >= READ_AHEAD_BYTES) {
+        const got = await this.fill(output.subarray(filled));
+        filled += got.byteLength;
+        // The read took output's buffer and handed it back under a new view.
+        if (got.byteLength > 0) return this.finish(got, length);
+        continue;
       }
+      // A BYOB read transfers the buffer it fills and returns it: the block's
+      // storage is reused from read to read, never reallocated.
+      const got = await this.fill(new Uint8Array(this.spare(), 0, READ_AHEAD_BYTES));
+      const take = Math.min(remaining, got.byteLength);
+      output.set(got.subarray(0, take), filled);
+      filled += take;
+      this.block = got;
+      this.offset = take;
     }
     return output;
   }
 
+  /** The read-ahead storage, taken back from the block once it is drained. */
+  private spare(): ArrayBufferLike {
+    const storage = this.block.buffer;
+    return storage.byteLength >= READ_AHEAD_BYTES ? storage : new ArrayBuffer(READ_AHEAD_BYTES);
+  }
+
+  /**
+   * A large read lands in place: what one read returned is a view over the
+   * output's own (transferred) buffer, so the remainder fills the same one.
+   */
+  private async finish(view: Uint8Array, length: number): Promise<Uint8Array> {
+    let filled = view.byteOffset + view.byteLength;
+    let buffer = view.buffer;
+    while (filled < length) {
+      if (this.done) {
+        throw new Error(`w7-frame: stream ended ${filled} bytes into expected ${length}-byte file-chunk data`);
+      }
+      const got = await this.fill(new Uint8Array(buffer, filled, length - filled));
+      buffer = got.buffer;
+      filled += got.byteLength;
+    }
+    return new Uint8Array(buffer, 0, length);
+  }
+
   async ensureEof(stream: ReadableStream<Uint8Array>): Promise<void> {
+    if (this.offset < this.block.byteLength) {
+      await this.reader.cancel(new Error('w7-frame: trailing bytes after batch-end'));
+      throw new Error('w7-frame: trailing bytes after batch-end');
+    }
     if (this.done) return;
     this.reader.releaseLock();
     const reader = stream.getReader();

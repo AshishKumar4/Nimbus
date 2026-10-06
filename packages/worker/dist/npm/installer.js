@@ -29,7 +29,7 @@ import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
-import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
+import { prebundleCacheKey } from './cache-keys.js';
 import { NpmCache } from './cache.js';
 import { computeHoistPlan, hoistPlacements, } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
@@ -39,9 +39,9 @@ import { satisfiesRange, isSemverRange } from './semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, swapCoversVersion, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { encodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH } from '@nimbus-sh/platform/w7-frame.js';
+import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import { Fanout } from '@nimbus-sh/fabric/fanout.js';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 import { installPackagesInFacet, } from './install-batch-facet.js';
 import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, recordR2RaceCounters, readDiagCounters, } from '@nimbus-sh/platform/diag-counters.js';
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
@@ -49,9 +49,9 @@ import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
 import { resolveOnePackumentInFacet, parseRegistryRequest, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
-import { buildSliceForSpecifierWithCap, } from './pre-bundle-facet.js';
-import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
-import { CHUNK_SIZE, PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/platform/limits.js';
+import { buildSliceForSpecifierWithCap, externalsForSpecifier, } from './pre-bundle-facet.js';
+import { sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { scanNamedImports, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
@@ -966,7 +966,6 @@ export class NpmInstaller {
             pkgDir: nmDir + '/' + placement,
             installRoot: nmDir,
             mtime,
-            chunkSize: CHUNK_SIZE,
         }));
         if (specs.length === 0) {
             return { installed, failed, filesWritten };
@@ -1024,7 +1023,7 @@ export class NpmInstaller {
             // W7: tar-stream + W7-frame preambles concatenated. Forwarded
             // to every facet (in-DO and per-peer) so each shard's facet
             // can encode its own write-batch stream.
-            preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
+            preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE,
             // Authorize each facet's writeBatchStream under the invoking
             // process credential; without a positive pid the supervisor
             // rejects the write (S2a cred enforcement).
@@ -1766,54 +1765,17 @@ export class NpmInstaller {
                 await target.fs.writeFile(file.path, file.data, { mode: file.mode });
             return;
         }
-        // One W7 stream owns at most W7_MAX_PATHS_PER_BATCH paths: the shims go
-        // in waves, the directory with the first, the manifest with the last. A
-        // file is carried in CHUNK_SIZE chunks (a manifest of hundreds of bins
-        // outgrows one).
-        const mtime = Date.now();
-        for (let at = 0; at < files.length; at += BIN_WAVE_PATHS) {
-            const wave = files.slice(at, at + BIN_WAVE_PATHS);
-            const inodes = wave.map((file) => ({
-                path: file.path,
-                parentPath: binDir,
-                isDir: false,
-                size: file.data.length,
-                mtime,
-                mode: file.mode,
-                chunkCount: Math.ceil(file.data.length / CHUNK_SIZE),
-            }));
-            if (at === 0) {
-                inodes.push({
-                    path: binDir,
-                    parentPath: parentOf(binDir),
-                    isDir: true,
-                    size: 0,
-                    mtime,
-                    mode: 0o755,
-                    chunkCount: 0,
-                });
-            }
-            const chunks = [];
-            for (const file of wave) {
-                if (file.data.length <= CHUNK_SIZE) {
-                    chunks.push({ path: file.path, chunkId: 0, data: file.data });
-                    continue;
-                }
-                // Each chunk its own buffer: the byte stream detaches what it enqueues.
-                for (let chunkId = 0; chunkId * CHUNK_SIZE < file.data.length; chunkId++) {
-                    chunks.push({ path: file.path, chunkId, data: file.data.slice(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
-                }
-            }
-            await this.writeStreamPayload(target.engine, { inodes, chunks });
-        }
-    }
-    async writeStreamPayload(vfs, payload) {
-        const result = await vfs.writeStream(encodeWriteBatchStream(payload));
-        if (!result.ok) {
-            throw new Error(`writeBatchStream failed after group ${result.committedGroupSequence} ` +
-                `(${result.committedPathCount} committed paths): ${result.error.message}`);
-        }
-        return result;
+        // The shims and the manifest in waves the writer cuts at W7's path and
+        // byte bounds; the manifest goes last.
+        const engine = target.engine;
+        const writer = createWaveWriter({
+            supervisor: { writeBatchStream: (stream) => engine.writeStream(stream) },
+            root: binDir,
+            mtimeMs: Date.now(),
+        });
+        for (const file of files)
+            await writer.file(file.path, file.mode, file.data);
+        await writer.flush();
     }
     // ── Package.json update ───────────────────────────────────────────────
     async updatePackageJson(projDir, fs, principal, explicitPackages, resolved) {
@@ -1875,23 +1837,8 @@ export class NpmInstaller {
         // bundle pool must also be present because the facets run in it.
         if (!this.esbuild || !this.bundlePool)
             return;
-        // What a pre-bundle row is keyed by beside its input: the code that
-        // built it and the request (npm/cache-keys.ts), the define the Vite dev
-        // server's own pre-bundles take, so either's row is the other's.
-        const read = (path) => {
-            try {
-                return fs.readFileString(path);
-            }
-            catch {
-                return null;
-            }
-        };
-        /** Whether `existing` is this request's pre-bundle, from the manifests it was built from as they read now. */
-        const current = async (specifier, existing) => {
-            if (!existing)
-                return false;
-            return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
-        };
+        // What a pre-bundle row is keyed by beside its input: the code that built it (npm/cache-keys.ts).
+        const bundleKey = await prebundleCacheKey();
         const usedSpecifiers = this.scanBareImports(fs, projDir);
         // Vite plugins / postcss plugins / build-time tools NEVER ship to the
         // browser — they're invoked server-side by vite's own plugin
@@ -1976,7 +1923,9 @@ export class NpmInstaller {
                         `with no static named imports detected. Add explicit imports to enable bundling.`);
                     continue;
                 }
-                if (existing && existing.inputHash === inputHash && await current(specifier, existing)) {
+                if (existing &&
+                    existing.bundleHash === bundleKey &&
+                    existing.inputHash === inputHash) {
                     continue;
                 }
                 const synth = buildSyntheticEntry(fs, nmDir, pkgName, names);
@@ -2002,7 +1951,7 @@ export class NpmInstaller {
                 });
                 continue;
             }
-            if (existing && existing.inputHash === '' && await current(specifier, existing))
+            if (existing && existing.bundleHash === bundleKey && existing.inputHash === '')
                 continue;
             pending.push({ specifier, entryPath });
         }
@@ -2199,12 +2148,12 @@ export class NpmInstaller {
                         skippedCount++;
                         continue;
                     }
-                    // The request (its externals the shared runtime's, pure JS over a
-                    // small list: extremely unlikely to throw, but cheap to guard since
-                    // we're hardening this path comprehensively), and its key.
-                    let request;
+                    // externalsForSpecifier is pure JS over a small list — extremely
+                    // unlikely to throw, but cheap to guard since we're hardening
+                    // this path comprehensively.
+                    let externals;
                     try {
-                        request = prebundleRequest(next.specifier, sliceManifests(slice.slice, read));
+                        externals = externalsForSpecifier(next.specifier);
                     }
                     catch (e) {
                         const msg = e?.message || String(e);
@@ -2213,17 +2162,15 @@ export class NpmInstaller {
                         errorsByModule[next.specifier] = msg;
                         continue;
                     }
-                    const key = await prebundleCacheKey(request);
                     // What the bundle can have read, recorded with it: the cache is
                     // shared, and a server serves it only to a principal who may read it all.
                     const sources = sliceSources(slice.slice);
                     let spec = {
                         specifier: next.specifier,
                         entryPath: next.entryPath,
-                        externals: [...request.externals],
+                        externals,
                         slice: slice.slice,
-                        bundlerVersion: key,
-                        define: PREBUNDLE_DEFINE,
+                        bundlerVersion: bundleKey,
                     };
                     // Drop our supervisor-side reference to the slice array as soon
                     // as it's owned by `spec`. `spec` is the only thing that needs
@@ -2262,14 +2209,6 @@ export class NpmInstaller {
                             safeProgress(`  [warn] ${next.specifier}: ${w}`);
                         }
                     }
-                    // A package reinstalled while it was bundled: its bundle is not
-                    // stored under the manifests the slice read (the next install, or
-                    // the dev server on demand, bundles what is there now).
-                    if (!stillCurrent(request.manifests, read)) {
-                        safeProgress(`  pre-bundle of ${next.specifier} not cached: its package changed while it was bundled`);
-                        result = null;
-                        continue;
-                    }
                     // Stamp into pkg_esm_bundles. Cache is supervisor-side SQLite,
                     // so the write happens here (not via writeBatch — that's VFS).
                     // Defensive: SQL writes can throw on schema mismatch / disk-full
@@ -2281,7 +2220,7 @@ export class NpmInstaller {
                     try {
                         this.cache.putEsmBundle({
                             specifier: next.specifier,
-                            bundleHash: key,
+                            bundleHash: bundleKey,
                             esmCode: result.esmCode,
                             builtAt: Date.now(),
                             inputHash: next.inputHash ?? '',
@@ -2568,14 +2507,9 @@ export class NpmInstaller {
 // @nimbus-sh/platform/diag-counters.js:4). The deterministic
 // supervisor-heap estimator is the C'.1 replacement; see
 // NpmInstaller._estimateSupervisorHeapMiB.
-function parentOf(path) {
-    return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-}
 /** What staging directories in /tmp and copies beside a mounted package are named. */
 const STAGE_PREFIX = '.npm-stage-';
 const COPY_PREFIX = '.nimbus-copy-';
-/** Bin shims one W7 stream carries: its path limit, less room for the directory. */
-const BIN_WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 /** `src`'s tree on the engine written into `dst` through `to`; with `packageJsonLast`, its own package.json goes last. */
 async function copyTreeInto(from, src, to, dst, packageJsonLast) {
     await to.mkdir(dst, { recursive: true });

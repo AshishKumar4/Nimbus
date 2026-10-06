@@ -23,7 +23,9 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { GIT_BUNDLE_ENTRY } from '../../packages/worker/src/git-bundle.generated.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
-import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
+import { assembleGitNetworkFacetSource, execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
+import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 // The facet's git module is the staged asset the Worker fetches (runtime/git-bundle-artifact.ts).
@@ -191,31 +193,29 @@ try {
       readdir: async (path) => bridge.readdir(path),
       readFileBytes: async (path) => bridge.readFile(path),
       fsReadRange: async (path, offset, length) => bridge.readRange(path, offset, length),
+      fsReadRangeUncached: async (path, offset, length) => bridge.readRange(path, offset, length, { cached: false }),
       writeBatchStream: async (stream) => kernel.writeStream(stream),
+      // The ranged calls git/pack/facet-packs.ts makes to store a fetched pack as it arrives.
+      fsWriteRange: async (path, offset, bytes) => bridge.writeRange(path, offset, bytes),
+      fsTruncate: async (path, size) => bridge.truncate(path, size),
+      rename: async (from, to) => bridge.rename(from, to),
+      unlink: async (path) => bridge.unlink(path),
       async stdout() {},
     },
   };
   let jobs = 0;
-  /** The facet's two clone phases, as execGitNetwork drives them for `git clone [-b ref] url dir`. */
+  // The supervisor clones as `git clone --depth 1 [-b ref] url dir` does: its facet loaded in-process.
+  adoptCtxExports({ SupervisorRPC: () => env.SUPERVISOR });
+  const doEnv = {
+    ASSETS: stagedAssets,
+    LOADER: { load: () => ({ getEntrypoint: () => ({ fetch: (request) => facet.default.fetch(request, env) }) }) },
+  };
   async function nimbusClone(dir, url, ref) {
-    const jobId = `config-${++jobs}`;
-    const request = { op: 'clone', dir, url, ref, depth: 1, exclusiveDestination: true, jobId, optionsHash: 'a'.repeat(64) };
-    const call = async (phase, extra) => {
-      const invocationId = `${jobId}-${phase}`;
-      const response = await facet.default.fetch(new Request(`http://git/git/${phase}/${invocationId}`, {
-        method: 'POST',
-        body: JSON.stringify({ ...request, ...extra, phase, invocationId, phaseDeadline: Date.now() + 60_000 }),
-      }), env);
-      const result = await response.json();
-      assert.equal(result.success, true, `${phase} ${url} ${ref ?? ''}: ${result.error}`);
-      return result;
-    };
-    const prepare = await call('clone-prepare', {});
-    await call('clone-checkout', {
-      prepared: prepare.prepared,
-      checkoutCursor: null,
-      checkoutBounds: { maxEntries: 10_000, maxDecodedBytes: 32 * 1024 * 1024, maxWallMs: 20_000 },
+    jobs++;
+    const result = await execGitNetwork({ id: { toString: () => 'config-do' } }, doEnv, {
+      op: 'clone', pid: 1, dir, url, ref, depth: 1, exclusiveDestination: true,
     });
+    assert.equal(result.success, true, `clone ${url} ${ref ?? ''}: ${result.error}`);
   }
 
   for (const [label, repo, ref, extra] of [
@@ -234,6 +234,9 @@ try {
     assert.equal(vfsConfig(dir), diskConfig(disk), `clone of ${label}: .git/config`);
     assert.equal(new TextDecoder().decode(user.readFile(`${dir.slice(1)}/.git/HEAD`)),
       readFileSync(join(disk, '.git/HEAD'), 'utf8'), `clone of ${label}: HEAD`);
+    const packed = (read) => { try { return read(); } catch { return null; } };
+    assert.equal(packed(() => new TextDecoder().decode(user.readFile(`${dir.slice(1)}/.git/packed-refs`))),
+      packed(() => readFileSync(join(disk, '.git/packed-refs'), 'utf8')), `clone of ${label}: packed-refs`);
   }
 
   // ── chmod +x in a repository Nimbus made, beside real git ──

@@ -84,6 +84,8 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '@nimbus-sh/core/runtime/os-contr
 // uses (they did: the packument purge used a stale `/p/` segment).
 import { R2CacheClient, packumentL2Url, tarballL2Url, parseTarballAddress } from '../npm/r2-cache.js';
 import { Fanout, MAX_PEER_FANOUT, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
+import { runWaveBench } from '../git/wave-bench.js';
+import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platform/w7-frame.js';
 import { z } from 'zod/v4';
 
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -95,6 +97,22 @@ type RoutesHost = any;
 // call the one implementation without importing this file (which reaches
 // `cloudflare:workers` through fabric bindings). The session-only helpers
 // the route delegates to stay here and arrive on the host as fields.
+
+const SqlBenchBodySchema = z.object({
+  /** Only this phase runs, so a client timing the request times the phase. */
+  only: z.string().optional(),
+  files: z.number().int().min(1).max(20_000),
+  size: z.number().int().min(0).max(65_536),
+  perWave: z.number().int().min(1).max(1_000),
+});
+
+const W7BenchBodySchema = z.object({
+  sink: z.enum(['supervisor', 'vfs', 'vfs-bytes', 'drain', 'drain-writing']).default('supervisor'),
+  pings: z.number().int().min(0).max(1_000).optional(),
+  producers: z.number().int().min(1).max(8),
+  files: z.number().int().min(1).max(50_000),
+  sizes: z.array(z.number().int().min(0).max(4 * 1024 * 1024)).min(1).max(64),
+});
 
 const TestSpawnEmitterBodySchema = z.object({
   lines: z.coerce.number().optional(),
@@ -957,6 +975,169 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         } catch (e: any) {
           return Response.json({ error: e?.message }, { status: 400 });
         }
+      }
+      // How fast the session takes a clone's writes from N producers
+      // (git/wave-bench.ts): files/s and MB/s into SQLite, end to end.
+      if (url.pathname === '/api/_test/w7-bench' && request.method === 'POST') {
+        const body = await parseJsonBody(request, W7BenchBodySchema);
+        const entry = self.processes.spawn('_test:w7-bench', ['_test'], '/');
+        try {
+          // The producers publish below a directory their process owns, in a
+          // session no terminal may have set up.
+          const root = `home/user/w7-bench-${Date.now()}`;
+          const cred = self.processes.cred(entry.pid);
+          const kernel = self.ensureSqliteFs().as(CRED_KERNEL);
+          kernel.mkdir(root, { recursive: true, mode: 0o755 });
+          kernel.chown(root, cred.uid, cred.gid);
+          const writer = self.ensureSqliteFs().as(cred);
+          const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body }, {
+            writeStream: (stream) => writer.writeStream(stream),
+            sql: self.ctx.storage.sql,
+          });
+          return Response.json({ ...result, vfs: self.ensureSqliteFs().getStats().sql.phases });
+        } catch (e: any) {
+          return Response.json({ error: e?.message || String(e) }, { status: 500 });
+        }
+      }
+      // Where a session's write time goes, phase by phase, without RPC: the
+      // clock only moves across I/O, so each phase ends on a timer turn.
+      if (url.pathname === '/api/_test/sql-bench' && request.method === 'POST') {
+        const body = await parseJsonBody(request, SqlBenchBodySchema);
+        const tick = async (): Promise<number> => {
+          await new Promise((resolve) => setTimeout(resolve, 0));
+          return Date.now();
+        };
+        const sql = self.ctx.storage.sql;
+        const phases: Record<string, number> = {};
+        let at = await tick();
+        const phase = async (name: string, run: () => void | Promise<void>): Promise<void> => {
+          if (body.only !== undefined && body.only !== name) return;
+          await run();
+          const now = await tick();
+          phases[name] = now - at;
+          at = now;
+        };
+        await phase('timer', () => {});
+        sql.exec('CREATE TABLE IF NOT EXISTS nimbus_bench_tmp (path TEXT PRIMARY KEY, n INTEGER, data BLOB)');
+        await phase('selectMiss', () => {
+          for (let i = 0; i < body.files; i++) [...sql.exec('SELECT path, n FROM nimbus_bench_tmp WHERE path = ?', `miss/${i}`)];
+        });
+        await phase('insertRowTx', () => {
+          for (let i = 0; i < body.files; i++) {
+            self.ctx.storage.transactionSync(() => { sql.exec('INSERT OR REPLACE INTO nimbus_bench_tmp VALUES (?, ?, ?)', `a/${i}`, i, new Uint8Array(body.size)); });
+          }
+        });
+        await phase('insertWaveTx', () => {
+          for (let i = 0; i < body.files; i += body.perWave) {
+            self.ctx.storage.transactionSync(() => {
+              for (let j = i; j < Math.min(body.files, i + body.perWave); j++) {
+                sql.exec('INSERT OR REPLACE INTO nimbus_bench_tmp VALUES (?, ?, ?)', `b/${j}`, j, new Uint8Array(body.size));
+              }
+            });
+          }
+        });
+        sql.exec('DROP TABLE nimbus_bench_tmp');
+        // The VFS's two row shapes for a new small file, alone, to price each
+        // B-tree a write touches: the chunk row with and without its unique
+        // hash index (a random key), and the inode row with and without its
+        // four secondary indexes (parent, gen, chunk, ino).
+        const chunkTable = (indexed: boolean) => {
+          sql.exec('DROP TABLE IF EXISTS nimbus_bench_chunks');
+          sql.exec('CREATE TABLE nimbus_bench_chunks (id INTEGER PRIMARY KEY, hash BLOB NOT NULL, size INTEGER NOT NULL, data BLOB NOT NULL)');
+          if (indexed) sql.exec('CREATE UNIQUE INDEX nimbus_bench_chunks_hash ON nimbus_bench_chunks(hash)');
+          for (let i = 0; i < body.files; i += body.perWave) {
+            self.ctx.storage.transactionSync(() => {
+              for (let j = i; j < Math.min(body.files, i + body.perWave); j++) {
+                const hash = new Uint8Array(32);
+                crypto.getRandomValues(hash);
+                sql.exec('INSERT INTO nimbus_bench_chunks (id, hash, size, data) VALUES (?, ?, ?, ?)', j + 1, hash, body.size, new Uint8Array(body.size));
+              }
+            });
+          }
+          sql.exec('DROP TABLE nimbus_bench_chunks');
+        };
+        const inodeTable = (indexed: boolean) => {
+          sql.exec('DROP TABLE IF EXISTS nimbus_bench_inodes');
+          sql.exec(`CREATE TABLE nimbus_bench_inodes (path TEXT PRIMARY KEY, parent_path TEXT NOT NULL, kind INTEGER NOT NULL,
+            size INTEGER NOT NULL, atime INTEGER NOT NULL, mtime INTEGER NOT NULL, ctime INTEGER NOT NULL, mode INTEGER NOT NULL,
+            uid INTEGER NOT NULL, gid INTEGER NOT NULL, ino INTEGER NOT NULL, gen INTEGER NOT NULL, chunk_id INTEGER NULL) WITHOUT ROWID`);
+          if (indexed) {
+            sql.exec('CREATE INDEX nimbus_bench_inodes_parent ON nimbus_bench_inodes(parent_path, kind)');
+            sql.exec('CREATE INDEX nimbus_bench_inodes_gen ON nimbus_bench_inodes(gen)');
+            sql.exec('CREATE INDEX nimbus_bench_inodes_chunk ON nimbus_bench_inodes(chunk_id) WHERE chunk_id IS NOT NULL');
+            sql.exec('CREATE INDEX nimbus_bench_inodes_ino ON nimbus_bench_inodes(ino)');
+          }
+          for (let i = 0; i < body.files; i += body.perWave) {
+            self.ctx.storage.transactionSync(() => {
+              for (let j = i; j < Math.min(body.files, i + body.perWave); j++) {
+                const parent = `home/user/repo/src/d${j % 64}`;
+                sql.exec('INSERT INTO nimbus_bench_inodes VALUES (?, ?, 1, ?, 1, 1, 1, 420, 1000, 1000, ?, ?, ?)',
+                  `${parent}/file-${j}.ts`, parent, body.size, j + 2, 7, j + 1);
+              }
+            });
+          }
+          sql.exec('DROP TABLE nimbus_bench_inodes');
+        };
+        await phase('chunkRows', () => chunkTable(false));
+        await phase('chunkRowsHashIndexed', () => chunkTable(true));
+        await phase('inodeRows', () => inodeTable(false));
+        await phase('inodeRowsIndexed', () => inodeTable(true));
+        const vfs = self.ensureSqliteFs().as(CRED_KERNEL);
+        const root = `tmp/sql-bench-${Date.now()}`;
+        vfs.mkdir(root, { recursive: true });
+        const payload = (prefix: string, from: number) => {
+          const inodes = [];
+          const chunks = [];
+          for (let j = from; j < Math.min(body.files, from + body.perWave); j++) {
+            const data = new Uint8Array(body.size);
+            crypto.getRandomValues(data);
+            const path = `${root}/${prefix}/f${j}`;
+            inodes.push({ path, parentPath: `${root}/${prefix}`, kind: 'file' as const, isDir: false, size: data.byteLength, mtime: Date.now(), mode: 0o644, chunkCount: data.byteLength ? 1 : 0 });
+            if (data.byteLength) chunks.push({ path, chunkId: 0, data });
+          }
+          return { inodes, chunks };
+        };
+        vfs.mkdir(`${root}/batch`, { recursive: true });
+        await phase('vfsWriteBatch', () => {
+          for (let i = 0; i < body.files; i += body.perWave) vfs.writeBatch(payload('batch', i));
+        });
+        await phase('w7Decode', async () => {
+          for (let i = 0; i < body.files; i += body.perWave) {
+            const decoded = await decodeWriteBatchStream(encodeWriteBatchStream(payload('decode', i)));
+            for await (const record of decoded.records) {
+              if (record.type === 'file-chunk') record.retention.release();
+            }
+          }
+        });
+        await phase('w7Encode', async () => {
+          for (let i = 0; i < body.files; i += body.perWave) {
+            const reader = encodeWriteBatchStream(payload('encode', i)).getReader();
+            while (!(await reader.read()).done) { /* drain */ }
+          }
+        });
+        // As the network delivers a wave: its bytes already encoded, read in large chunks.
+        const wire = async (prefix: string, from: number): Promise<ReadableStream<Uint8Array>> => {
+          const bytes = new Uint8Array(await new Response(encodeWriteBatchStream(payload(prefix, from))).arrayBuffer());
+          return new Response(bytes).body!;
+        };
+        await phase('w7EncodeBytes', async () => {
+          for (let i = 0; i < body.files; i += body.perWave) await wire('bytes', i);
+        });
+        vfs.mkdir(`${root}/wire`, { recursive: true });
+        await phase('vfsWriteStreamWire', async () => {
+          for (let i = 0; i < body.files; i += body.perWave) {
+            const result = await vfs.writeStream(await wire('wire', i));
+            if (!result.ok) throw new Error(result.error.message);
+          }
+        });
+        vfs.mkdir(`${root}/stream`, { recursive: true });
+        await phase('vfsWriteStream', async () => {
+          for (let i = 0; i < body.files; i += body.perWave) {
+            const result = await vfs.writeStream(encodeWriteBatchStream(payload('stream', i)));
+            if (!result.ok) throw new Error(result.error.message);
+          }
+        });
+        return Response.json({ ...body, phases, perFileUs: Object.fromEntries(Object.entries(phases).map(([name, ms]) => [name, Math.round(ms * 1000 / body.files)])) });
       }
       if (url.pathname === '/api/_test/log-tail' && request.method === 'GET') {
         const pid = parseInt(url.searchParams.get('pid') || '', 10);

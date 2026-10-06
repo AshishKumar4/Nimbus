@@ -11,6 +11,7 @@
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
+import { DirCache } from './worktree/dircache.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
     /** Present on sinks that keep bytes verbatim (files, byte-capable pipes). */
@@ -50,8 +51,25 @@ export interface ParsedCloneArgs {
     branch: string | undefined;
     /** `-q`/`--quiet`: no progress on stdout; errors still reach stderr. */
     quiet: boolean;
+    /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
+    filter: string | undefined;
 }
-export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+export declare const CLONE_USAGE = "usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]";
+/**
+ * `git fetch --depth <n> | --deepen <n> | --unshallow`, as cf-git's fetch
+ * takes them: a depth from the remote's tips, or (relative) from the
+ * repository's current shallow boundary.
+ */
+export declare function parseFetchDepth(args: readonly string[]): {
+    depth: number;
+    relative: boolean;
+} | undefined;
+/**
+ * A partial clone's filter (list-objects-filter-options.c), normalized as
+ * git normalizes it: blob:limit's size in bytes. The filters Nimbus
+ * fetches with; any other is refused by name rather than ignored.
+ */
+export declare function parseCloneFilter(spec: string): string;
 /**
  * Every flag is either handled or refused loudly. Silently skipping unknown
  * flags corrupted positionals for value-taking ones (`--branch dev URL`
@@ -62,9 +80,9 @@ export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
 /**
  * The index entries that restoring `restored` replaces (add_index_entry_with_check):
  * a file at one of a restored path's leading directories, or anything below a
- * restored path.
+ * restored path. Each restored path costs lookups, not a pass over the index.
  */
-export declare function replacedIndexEntries(index: readonly string[], restored: ReadonlySet<string>): string[];
+export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet<string>): Set<number>;
 /**
  * The `git` command handler. Split out from registration so it can be
  * lazy-loaded (`await import('./commands.js')`) on first `git` use, keeping

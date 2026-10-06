@@ -31,7 +31,9 @@ import { VFS_DELIVERY_RECEIPT_RETENTION_MS, VFS_DELIVERY_TOMBSTONE_LIMIT, VFS_DE
  * The filesystem mutations a process's supervisor delivers exactly once.
  *
  * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
- * first delivery), the descriptor read `fsRead` (it advances the position and
+ * first delivery: its writer re-sends a lost wave re-encoded, under a newer
+ * fence in an epoch the host issued — {@link SupervisorDeliveries.admitWave}),
+ * the descriptor read `fsRead` (it advances the position and
  * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
  * append ledger's own writer/module/operation identity already makes them
  * repeatable), and the process, socket and storage-grant ops.
@@ -74,6 +76,10 @@ const JOINED_READ_OP_NAMES = new Map(SUPERVISOR_JOINED_READ_OPS.map((op) => [op,
 /** The joined read `op` names, or undefined for any op that is not one. */
 export function supervisorJoinedReadOp(op) {
     return JOINED_READ_OP_NAMES.get(op);
+}
+/** Whether `a` came after `b` from the same writer. */
+function newerAttempt(a, b) {
+    return a.wave > b.wave || (a.wave === b.wave && a.attempt > b.attempt);
 }
 function isDeliveryAnswer(value) {
     if (value === undefined || value === null)
@@ -155,6 +161,8 @@ export class SupervisorDeliveries {
     rotatedAt = Number.NEGATIVE_INFINITY;
     running = new Map();
     readsInFlight = new Map();
+    /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
+    waveEpochs = new Map();
     tombstones = new Set();
     olderTombstones = new Set();
     tombstonesSince = Number.NEGATIVE_INFINITY;
@@ -268,12 +276,58 @@ export class SupervisorDeliveries {
         answer.then(settled, settled);
         return { joined: false, answer };
     }
+    /**
+     * Open a write-wave epoch for process `pid`: the only writer identity
+     * {@link admitWave} admits, for `ttlMs` from now. Its waves are refused
+     * once it expires or its process is forgotten, whatever arrives then.
+     */
+    openWaveWriter(pid, ttlMs) {
+        const now = Date.now();
+        for (const [key, epoch] of this.waveEpochs)
+            if (epoch.expiresAt <= now)
+                this.waveEpochs.delete(key);
+        const writer = crypto.randomUUID();
+        this.waveEpochs.set(`${pid}:${writer}`, { wave: 0, attempt: 0, expiresAt: now + ttlMs });
+        return writer;
+    }
+    /**
+     * Admit attempt (`wave`, `attempt`) of a write wave from epoch `writer`,
+     * and answer whether it may still commit: it may while the epoch is open
+     * and no newer attempt under it has been admitted. Refused, ESTALE, by
+     * default: an epoch this instance did not open, or opened and has since
+     * expired or forgotten, admits nothing; and an attempt older than one
+     * already admitted is one its writer gave up on and re-sent, so applying
+     * it could only put back bytes a newer write replaced. `check` is asked
+     * again before each of the attempt's commits, which is what stops an
+     * attempt overtaken, or outlived by its epoch, while it runs.
+     */
+    admitWave(pid, writer, wave, attempt) {
+        const key = `${pid}:${writer}`;
+        const mine = { wave, attempt };
+        const check = () => {
+            const epoch = this.waveEpochs.get(key);
+            if (epoch === undefined || epoch.expiresAt <= Date.now()) {
+                throw Object.assign(new Error(`ESTALE: write wave ${wave} attempt ${attempt} names a writer epoch this session does not hold open`), { code: 'ESTALE' });
+            }
+            if (newerAttempt(epoch, mine)) {
+                throw Object.assign(new Error(`ESTALE: write wave ${wave} attempt ${attempt} was overtaken by wave ${epoch.wave} attempt ${epoch.attempt}`), { code: 'ESTALE' });
+            }
+            return epoch;
+        };
+        const epoch = check();
+        this.waveEpochs.set(key, { wave, attempt, expiresAt: epoch.expiresAt });
+        return { check: () => { check(); } };
+    }
     /** Reads being served, which repeats of them would join. */
     get readsServing() {
         return this.readsInFlight.size;
     }
-    /** A process ended: its receipts answer nothing more, and their ids stay refused. */
+    /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
     forget(pid) {
+        const prefix = `${pid}:`;
+        for (const key of this.waveEpochs.keys())
+            if (key.startsWith(prefix))
+                this.waveEpochs.delete(key);
         const now = Date.now();
         for (const generation of [this.current, this.previous]) {
             const receipts = generation.get(pid);

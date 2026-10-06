@@ -1,6 +1,7 @@
 import { isPendingChunkError } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
 import { traced } from '@nimbus-sh/platform/tracing.js';
+import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
@@ -116,7 +117,7 @@ export const SUPERVISOR_OPS = [
     'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
     'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
     'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
-    'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream',
+    'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream', 'openWaveWriter',
     'putRegistryEntries', 'stdout', 'stderr', 'prefetch', 'registerPort', 'allocatePort',
     'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
     'reportRuntimeCode',
@@ -194,6 +195,8 @@ export const SUPERVISOR_OP_ROUTES = {
 };
 /** Every native op reads its filesystem the same way: the envelope's identity. */
 const fsFor = (e, tools) => tools.bridge(e.pid, e.cred);
+/** The exclusive mutation lease the envelope's binding presents, if it holds one (SupervisorRPC props). */
+const leaseOf = (e) => e.mutationOwner === undefined ? undefined : { mutationOwner: e.mutationOwner };
 /** A whole-file read, leased for what the file holds. */
 async function readWholeFile(e, t, path) {
     const fs = fsFor(e, t);
@@ -281,18 +284,43 @@ const NATIVE_OPS = {
     mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
     rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
     unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),
-    rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
+    rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),
     symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
     access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
     chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
     chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
     utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
-    fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-    fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2)),
+    fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1), leaseOf(e)),
+    fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2), leaseOf(e)),
+    // The decode-drain clock starts when the envelope arrives, not when the
+    // store first reads it. A fenced wave commits only while its writer's
+    // epoch is open on this instance and no newer attempt of it was admitted
+    // (SupervisorDeliveries.admitWave); any other instance refuses it.
     writeBatchStream: (e, t) => {
+        const decodeDrainStartedAt = performance.now();
         if (!e.stream)
             throw new Error('supervisor op writeBatchStream: no stream');
-        return fsFor(e, t).writeStream(e.stream, { mutationOwner: e.mutationOwner });
+        const fence = e.waveFence;
+        let admit;
+        if (fence !== undefined) {
+            if (t.deliveries === undefined || fence.hostIncarnation !== t.deliveries.incarnation || e.pid === undefined) {
+                throw Object.assign(new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'), { code: 'ESTALE' });
+            }
+            t.bridge(e.pid, e.cred);
+            admit = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt).check;
+        }
+        return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit });
+    },
+    // A write-wave epoch for the live process that asks, on this instance:
+    // the only writer identity a fenced writeBatchStream is admitted under.
+    // Repeating it is harmless: an unused epoch admits nothing and expires.
+    openWaveWriter: (e, t) => {
+        if (t.deliveries === undefined)
+            throw new Error("supervisor op: 'openWaveWriter' is not served by this host");
+        if (e.pid === undefined)
+            throw new Error('supervisor op: openWaveWriter names no process');
+        t.bridge(e.pid, e.cred);
+        return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
     },
     stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
     stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
@@ -338,6 +366,7 @@ export function createSupervisorOpHandler(deps) {
         output: deps.output,
         readLease: deps.readLease ?? ((_bytes, read) => read()),
         hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
+        deliveries: deps.deliveries,
     };
     const extend = deps.extend ?? {};
     const serve = (op, envelope) => {

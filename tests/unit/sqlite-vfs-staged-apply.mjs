@@ -31,7 +31,15 @@ try {
       defaultAcl: stat.type === 'directory' ? view.getDefaultAcl(path) : null,
       key: stat.type === 'directory' ? null : view.contentKey(path) };
   };
-  const before = new Map(changes.map(({ path }) => [path, fingerprint(dst, path)]));
+  // A directory's mtime moves whenever an entry in it is created or removed,
+  // the apply's own included (POSIX), so it cannot tell a peer's change from
+  // the apply's: the peer check leaves it out, and the apply dates
+  // directories last, deepest first, as tar and rsync do.
+  const peerFingerprint = (view, path) => {
+    const print = fingerprint(view, path);
+    return print && print.type === 'directory' ? { ...print, mtime: undefined } : print;
+  };
+  const before = new Map(changes.map(({ path }) => [path, peerFingerprint(dst, path)]));
   const expected = new Map(changes.map(({ path }) => [path, fingerprint(source.at('head'), path)]));
   const expectedRevision = dst.revision('tree');
 
@@ -64,9 +72,11 @@ try {
       if (first) assert.equal(dst.revision('tree'), expectedRevision, 'revalidate the target after staging, before publishing');
       for (let index = 0; index < ordered.length; index++) {
         const { path, change, type } = ordered[index];
+        // Applied already (a replay), but for a directory's time, which the last pass sets.
         const current = fingerprint(dst, path), final = expected.get(path);
-        if (JSON.stringify(current) !== JSON.stringify(final)) {
-          assert.deepEqual(current, before.get(path), `a peer changed ${path}; refuse before overwriting`);
+        const finalPeer = final && final.type === 'directory' ? { ...final, mtime: undefined } : final;
+        if (JSON.stringify(peerFingerprint(dst, path)) !== JSON.stringify(finalPeer)) {
+          assert.deepEqual(peerFingerprint(dst, path), before.get(path), `a peer changed ${path}; refuse before overwriting`);
           if (change === 'removed') {
             if (type === 'directory') own.removeRecursive(path); else own.unlink(path);
           } else {
@@ -78,11 +88,18 @@ try {
               if (!own.exists(path)) own.mkdir(path);
             } else own.rename(staged, path);
             const metadata = rows.find((row) => row.path === path.slice('tree/'.length));
-            own.chmod(path, metadata.mode); own.chown(path, metadata.uid, metadata.gid); own.utimes(path, metadata.atime, metadata.mtime);
+            own.chmod(path, metadata.mode); own.chown(path, metadata.uid, metadata.gid);
+            if (type !== 'directory') own.utimes(path, metadata.atime, metadata.mtime);
             if (type === 'directory') own.setDefaultAcl(path, metadata.defaultAcl);
           }
         }
         if (index + 1 === interruptAfter) throw new Error('caller interrupted after committed prefix');
+      }
+      // Directory times last, deepest first: nothing after dates them again.
+      for (const { path, change, type } of [...changes].sort((a, b) => b.path.length - a.path.length)) {
+        if (change === 'removed' || type !== 'directory') continue;
+        const metadata = rows.find((row) => row.path === path.slice('tree/'.length));
+        own.utimes(path, metadata.atime, metadata.mtime);
       }
     } finally { target.releaseExclusiveMutation(lease.owner); }
   }

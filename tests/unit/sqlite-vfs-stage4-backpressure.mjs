@@ -37,8 +37,9 @@ const payload = (path, data) => ({
   ),
 });
 
-function instrumentChunkPulls(stream, onChunkData) {
+function instrumentPulledBytes(stream, onPulled) {
   const reader = stream.getReader();
+  let pulled = 0;
   return new ReadableStream({
     type: 'bytes',
     async pull(controller) {
@@ -47,7 +48,8 @@ function instrumentChunkPulls(stream, onChunkData) {
         controller.close();
         return;
       }
-      if (next.value.byteLength === CHUNK_SIZE) onChunkData();
+      pulled += next.value.byteLength;
+      onPulled(pulled);
       controller.enqueue(next.value);
     },
     async cancel(reason) {
@@ -56,30 +58,32 @@ function instrumentChunkPulls(stream, onChunkData) {
   }, { highWaterMark: 0 });
 }
 
-// The decoder cannot pull the 17th full chunk until the first 1 MiB bucket
-// has committed synchronously and returned its credit.
+// The producer cannot run more than one transaction's blob bound ahead of the
+// first commit, plus what transport batches on the way: the encoder's one
+// coalesced pull and the decoder's one read-ahead block.
+const TRANSPORT_SLACK_BYTES = 256 * 1024 + 64 * 1024 + 4 * 1024;
 {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const vfs = rawVfs.as(CRED_KERNEL);
-  const data = bytes(MAX_TX_BLOB_BYTES + CHUNK_SIZE, 11);
+  const data = bytes(MAX_TX_BLOB_BYTES * 3, 11);
   const startTransactions = harness.transactionCount;
-  let chunkPulls = 0;
-  const stream = instrumentChunkPulls(
+  let checked = false;
+  const stream = instrumentPulledBytes(
     encodeWriteBatchStream(payload('boundary.bin', data)),
-    () => {
-      chunkPulls++;
-      if (chunkPulls === 17) {
+    (pulled) => {
+      if (pulled > MAX_TX_BLOB_BYTES + TRANSPORT_SLACK_BYTES && !checked) {
+        checked = true;
         assert.ok(
           harness.transactionCount >= startTransactions + 1,
-          'producer pulled beyond 1 MiB before the staging commit',
+          `producer pulled ${pulled} bytes before the staging commit`,
         );
       }
     },
   );
   const result = await vfs.writeStream(stream);
   assert.equal(result.ok, true);
-  assert.equal(chunkPulls, 17);
+  assert.equal(checked, true, 'the stream never ran past one transaction of bytes');
   assert.deepEqual(vfs.readFile('boundary.bin'), data);
   const stats = rawVfs.getStats().sql;
   assert.ok(stats.creditRetainedBytes.peak <= MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
@@ -185,9 +189,10 @@ function corruptFileEndCheck(frame) {
   assert.equal(stats.stagedBytes.current, 0);
 }
 
-// Aborting after the first credited chunk stops further pulls, cancels the
-// upstream producer, leaves the incomplete path unpublished, and releases the
-// decoded record plus bucket credits.
+// Aborting after the first pull that carries file data stops further pulls,
+// cancels the upstream producer, leaves the incomplete path unpublished, and
+// releases the decoded record plus bucket credits. (The encoder coalesces a
+// pull's records, so its first pull already carries the first chunks.)
 {
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -195,11 +200,12 @@ function corruptFileEndCheck(frame) {
   const abort = new AbortController();
   const source = encodeWriteBatchStream(payload(
     'cancelled.bin',
-    bytes(MAX_TX_BLOB_BYTES + CHUNK_SIZE, 41),
+    bytes(MAX_TX_BLOB_BYTES * 2 + CHUNK_SIZE, 41),
   ));
   const reader = source.getReader();
   let cancelled = false;
-  let dataChunksPulled = 0;
+  let pulls = 0;
+  let pullsAtAbort = 0;
   const stream = new ReadableStream({
     type: 'bytes',
     async pull(controller) {
@@ -208,9 +214,10 @@ function corruptFileEndCheck(frame) {
         controller.close();
         return;
       }
-      if (next.value.byteLength === CHUNK_SIZE) {
-        dataChunksPulled++;
-        if (dataChunksPulled === 1) abort.abort('unit cancellation');
+      pulls++;
+      if (pulls === 1) {
+        abort.abort('unit cancellation');
+        pullsAtAbort = pulls;
       }
       controller.enqueue(next.value);
     },
@@ -225,7 +232,7 @@ function corruptFileEndCheck(frame) {
   assert.equal(result.error.phase, 'decode');
   assert.match(result.error.message, /unit cancellation/);
   assert.equal(cancelled, true, 'decoder cancellation did not reach the producer');
-  assert.equal(dataChunksPulled, 1, 'producer continued after cancellation');
+  assert.ok(pulls <= pullsAtAbort + 1, `producer continued after cancellation (${pulls} pulls)`);
   assert.equal(vfs.exists('cancelled.bin'), false);
   const stats = rawVfs.getStats().sql;
   assert.equal(stats.creditRetainedBytes.current, 0);

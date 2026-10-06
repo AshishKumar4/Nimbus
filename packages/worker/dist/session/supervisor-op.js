@@ -31,23 +31,6 @@ export function buildSessionSupervisorOps(host, store, methods) {
         throw new Error('Supervisor filesystem is not initialized');
     store ??= createSupervisorBridgeStore({ vfs, processes: host.processes, filesystem: host.getFilesystemAuthority?.() ?? host.runtimeWorkspace?.filesystem });
     const extend = {
-        // The write stream's decode-drain timestamp starts when the envelope
-        // arrives, not when the DO first reads it — the same contract
-        // _rpcWriteBatchStream has always had.
-        writeBatchStream: (envelope, tools) => {
-            if (!envelope.stream)
-                throw new Error('supervisor op writeBatchStream: no stream');
-            // Same contract _rpcWriteBatchStream had: a supplied pid must be a
-            // real process pid; only an absent pid is a host call.
-            const pid = envelope.pid;
-            if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
-                throw new Error('filesystem RPC requires a valid process pid');
-            }
-            return tools.bridge(pid, envelope.cred).writeStream(envelope.stream, {
-                decodeDrainStartedAt: performance.now(),
-                mutationOwner: envelope.mutationOwner,
-            });
-        },
         // stdout/stderr are session methods, not bridge ops: mirroring,
         // log-append and prior-generation filtering all live in _rpcStdout.
         stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),

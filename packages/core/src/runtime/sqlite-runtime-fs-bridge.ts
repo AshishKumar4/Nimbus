@@ -4,6 +4,7 @@ import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, ty
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
 import { errnoDescription } from '../vfs/vfs-error.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import type {
   RuntimeFileHandle,
   RuntimeFsPath,
@@ -17,6 +18,7 @@ import type {
   VfsAcquireResult,
   VfsListPage,
   VfsMutationReceipt,
+  RuntimeMutationOwner,
 } from './os-contracts.js';
 
 interface OpenDescription {
@@ -206,7 +208,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           ino: 0,
           nlink: 1,
           type: 'symlink',
-          size: new TextEncoder().encode(target).byteLength,
+          size: utf8Length(target),
           ctime: now,
           atime: now,
           mtime: now,
@@ -358,10 +360,10 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     path: RuntimeFsPath,
     offset: number,
     bytes: Uint8Array,
-    options: { createParents?: boolean; expectedRevision?: number } = {},
+    options: { createParents?: boolean; expectedRevision?: number } & RuntimeMutationOwner = {},
   ): VfsMutationReceipt {
     return called({ syscall: 'write', path }, () => {
-      const located = this.locateMutation(path, true, 'write');
+      const located = this.locateMutation(path, true, 'write', options.mutationOwner);
       if (located.mount) {
         if (options.expectedRevision !== undefined) throw fsError('ESTALE', 'write', path);
         if (!located.mount.writeRange) throw fsError('ENOTSUP', 'write', path);
@@ -373,8 +375,13 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       this.assertExpectedRevision(p, options.expectedRevision);
       if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'write', path);
       if (options.createParents === true) this.ensureParent(p);
-      return this.receipted(p, () => this.vfs.writeRange(p, offset, bytes));
+      return this.receipted(p, () => this.owned(options.mutationOwner).writeRange(p, offset, bytes));
     });
+  }
+
+  /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
+  private owned(owner: string | undefined): CredentialedVfs {
+    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner });
   }
 
   appendOnce(
@@ -403,15 +410,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   truncate(
     path: RuntimeFsPath,
     size: number,
-    options: { followSymlinks?: boolean } = {},
+    options: { followSymlinks?: boolean } & RuntimeMutationOwner = {},
   ): VfsMutationReceipt {
     return called({ syscall: 'truncate', path }, () => {
-      const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate');
+      const located = this.locateMutation(path, options.followSymlinks !== false, 'truncate', options.mutationOwner);
       if (located.mount) { mountOp(located.mount.truncate, 'truncate', path)(located.path, size); return this.mountReceipt(); }
       const p = located.path;
       if (!this.vfs.exists(p)) throw fsError('ENOENT', 'truncate', path);
       if (this.vfs.isDirectory(p)) throw fsError('EISDIR', 'truncate', path);
-      return this.receipted(p, () => this.vfs.truncate(p, size));
+      return this.receipted(p, () => this.owned(options.mutationOwner).truncate(p, size));
     });
   }
 
@@ -634,12 +641,12 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  rename(from: RuntimeFsPath, to: RuntimeFsPath): void {
+  rename(from: RuntimeFsPath, to: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
     // Every refusal names the call's own two paths, whichever lookup met it.
     const call: FsCall = { syscall: 'rename', path: from, dest: to };
     return called(call, () => {
-      const source = this.locateMutation(from, false, call);
-      const target = this.locateMutation(to, false, call);
+      const source = this.locateMutation(from, false, call, options.mutationOwner);
+      const target = this.locateMutation(to, false, call, options.mutationOwner);
       // A name on a mount is renamed by the namespace: within one mount by that
       // mount, and otherwise refused in the namespace's order (EBUSY for a
       // mount point, then EXDEV between two filesystems and on a backend with
@@ -658,7 +665,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         const staleDestination = this.legacySymlinks.isSymlink(newKey);
         if (staleDestination) this.legacySymlinks.assertMutable(newKey);
         this.assertParentDirectory(newPath, call);
-        this.vfs.rename(oldPath, newPath);
+        this.owned(options.mutationOwner).rename(oldPath, newPath);
         if (staleDestination) this.legacySymlinks.delete(newKey);
         return;
       }
@@ -929,14 +936,14 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
   }
 
   /** `call`: the syscall a refusal names, or the whole call when it names two paths. */
-  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall): Located {
+  private locateMutation(path: RuntimeFsPath, followSymlinks: boolean, call: string | FsCall, owner?: string): Located {
     // A lease on a directory also covers names inside it that resolve
     // elsewhere through a symlink, so the literal path is checked as well.
-    this.leaseAllows(this.pathArgument(path));
+    this.leaseAllows(this.pathArgument(path), owner);
     const located = this.locate(path, followSymlinks);
     if (located === null) throw callError('ELOOP', typeof call === 'string' ? { syscall: call, path } : call);
     // And the name it reaches, on a mount as on SQLite.
-    this.leaseAllows(located.path);
+    this.leaseAllows(located.path, owner);
     return located;
   }
 
@@ -946,8 +953,8 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * caller's own lease root (EPERM). Leases are held on storage keys: a
    * confined caller's /tmp/x is its private file, not the shared tmp/x.
    */
-  private leaseAllows(path: string): void {
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)));
+  private leaseAllows(path: string, owner?: string): void {
+    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner);
   }
 
 
