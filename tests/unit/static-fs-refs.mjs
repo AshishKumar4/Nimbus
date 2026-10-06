@@ -23,6 +23,16 @@ for (const [label, source] of [
   assert.ok(paths(refs(source, FILE).exact).includes('/p/node_modules/pkg/data/x.json'), label);
 }
 
+// A sync read is one however its callee is spelled: a bracketed name, an
+// optional call, a parenthesized one.
+for (const [label, source] of [
+  ['bracketed', `const fs = require('fs'); fs['readFileSync'](__dirname + '/x.json');`],
+  ['optional call', `const fs = require('fs'); fs?.readFileSync(__dirname + '/x.json');`],
+  ['interop sequence', `const fs_1 = require('fs'); (0, fs_1.readFileSync)(__dirname + '/x.json');`],
+]) {
+  assert.deepEqual(syncPaths(refs(source, FILE).exact), ['/p/node_modules/pkg/lib/x.json'], label);
+}
+
 // ESM: new URL(rel, import.meta.url), fileURLToPath, import.meta.dirname.
 assert.deepEqual(
   refs(`import { readFileSync } from 'node:fs'; readFileSync(new URL('../runtime/entry.js', import.meta.url), 'utf8');`, ESM).exact,

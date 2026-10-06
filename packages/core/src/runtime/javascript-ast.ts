@@ -36,6 +36,26 @@ export function parseJavaScriptProgram(source: string): Program | null {
   }
 }
 
+/** Parentheses, `(0, f)`, `await` and `?.` do not change what is called. */
+export function unwrapCallee(node: AnyNode): AnyNode {
+  let at = node;
+  for (;;) {
+    if (at.type === 'ParenthesizedExpression' || at.type === 'ChainExpression') at = at.expression;
+    else if (at.type === 'SequenceExpression') at = at.expressions[at.expressions.length - 1];
+    else if (at.type === 'AwaitExpression') at = at.argument;
+    else return at;
+  }
+}
+
+/** The name of the function a call reaches: `f`, `x.f`, `x['f']`, through {@link unwrapCallee}. */
+export function calleeName(callee: AnyNode): string | null {
+  const at = unwrapCallee(callee);
+  if (at.type === 'Identifier') return at.name;
+  if (at.type !== 'MemberExpression') return null;
+  if (!at.computed && at.property.type === 'Identifier') return at.property.name;
+  return at.property.type === 'Literal' && typeof at.property.value === 'string' ? at.property.value : null;
+}
+
 /** Whether `source` holds a top-level `import` or `export` declaration. */
 export function hasTopLevelModuleSyntax(source: string): boolean {
   return walkTopLevelModuleTokens(source, (_token, declaration) => declaration !== null) === true;

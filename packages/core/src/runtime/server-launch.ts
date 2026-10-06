@@ -60,7 +60,7 @@ import type {
   Program,
   SwitchStatement,
 } from 'acorn';
-import { forEachChild, forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import { forEachChild, forEachNode, parseJavaScriptProgram, unwrapCallee } from './javascript-ast.js';
 
 type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
 type ClassNode = ClassDeclaration | AnonymousClassDeclaration | ClassExpression;
@@ -180,17 +180,6 @@ function isClass(node: AnyNode | null | undefined): node is ClassNode {
   return !!node && (node.type === 'ClassDeclaration' || node.type === 'ClassExpression');
 }
 
-/** Parentheses, `(0, f)`, `await` and `?.` do not change what is called. */
-function unwrap(node: AnyNode): AnyNode {
-  let at = node;
-  for (;;) {
-    if (at.type === 'ParenthesizedExpression' || at.type === 'ChainExpression') at = at.expression;
-    else if (at.type === 'SequenceExpression') at = at.expressions[at.expressions.length - 1];
-    else if (at.type === 'AwaitExpression') at = at.argument;
-    else return at;
-  }
-}
-
 function keyName(key: AnyNode, computed: boolean): string | null {
   if (!computed && key.type === 'Identifier') return key.name;
   if (key.type === 'Literal' && typeof key.value === 'string') return key.value;
@@ -202,7 +191,7 @@ function propertyName(member: AnyNode): string | null {
 }
 
 function isNamed(node: AnyNode, object: string, property: string): boolean {
-  const n = unwrap(node);
+  const n = unwrapCallee(node);
   return n.type === 'MemberExpression' && n.object.type === 'Identifier' && n.object.name === object
     && propertyName(n) === property;
 }
@@ -221,7 +210,7 @@ const INTEROP_WRAPPER_RE = /^_*(?:toESM|toCommonJS|importDefault|importStar|inte
  * CommonJS writes an import).
  */
 function interopSpecifier(node: AnyNode): string | null {
-  const n = unwrap(node);
+  const n = unwrapCallee(node);
   const direct = requiredSpecifier(n);
   if (direct !== null) return direct;
   if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && INTEROP_WRAPPER_RE.test(n.callee.name)
@@ -233,7 +222,7 @@ function interopSpecifier(node: AnyNode): string | null {
 
 /** `require('<literal>')`'s or `import('<literal>')`'s specifier. */
 function requiredSpecifier(node: AnyNode): string | null {
-  const n = unwrap(node);
+  const n = unwrapCallee(node);
   if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && n.callee.name === 'require'
     && n.arguments.length >= 1 && n.arguments[0].type === 'Literal' && typeof n.arguments[0].value === 'string') {
     return n.arguments[0].value;
@@ -284,7 +273,7 @@ export async function resolveOwnModules(
 
 /** `exports` or `module.exports`: the object exports are assigned on. */
 function isExportsObject(node: AnyNode): boolean {
-  const n = unwrap(node);
+  const n = unwrapCallee(node);
   return (n.type === 'Identifier' && n.name === 'exports') || isNamed(n, 'module', 'exports');
 }
 
@@ -374,14 +363,14 @@ class ModuleGraph {
   isParser(record: ModuleRecord, value: AnyNode, depth = 0): boolean {
     if (depth > 8) return false;
     const scope = this.scope(record);
-    let v = unwrap(value);
+    let v = unwrapCallee(value);
     for (;;) {
       const ref = moduleOf(record, scope, v);
       if (ref !== null && this.exportIsParser(ref, depth + 1)) return true;
       const specifier = interopSpecifier(v);
       if (specifier !== null) return CLI_PARSERS.has(specifier);
-      if (v.type === 'MemberExpression') v = unwrap(v.object);
-      else if (v.type === 'CallExpression' || v.type === 'NewExpression') v = unwrap(v.callee);
+      if (v.type === 'MemberExpression') v = unwrapCallee(v.object);
+      else if (v.type === 'CallExpression' || v.type === 'NewExpression') v = unwrapCallee(v.callee);
       else break;
     }
     if (v.type !== 'Identifier') return false;
@@ -461,7 +450,7 @@ function buildScope(record: ModuleRecord): Scope {
   };
   const moduleRef = (value: AnyNode) => moduleOf(record, scope, value);
   const bindValue = (name: string, value: AnyNode) => {
-    const v = unwrap(value);
+    const v = unwrapCallee(value);
     if (isFunction(v) || isClass(v)) {
       push(scope.functions, name, v);
       if (isClass(v)) addClassMembers(name, v);
@@ -479,8 +468,8 @@ function buildScope(record: ModuleRecord): Scope {
     if (ref !== null) { scope.modules.set(name, ref); return; }
     if (v.type === 'NewExpression' && v.callee.type === 'Identifier') { scope.instances.set(name, v.callee.name); return; }
     // `const make = http.createServer` / `server.listen.bind(server)`.
-    const callee = v.type === 'CallExpression' ? unwrap(v.callee) : null;
-    const bound = callee?.type === 'MemberExpression' && propertyName(callee) === 'bind' ? unwrap(callee.object) : v;
+    const callee = v.type === 'CallExpression' ? unwrapCallee(v.callee) : null;
+    const bound = callee?.type === 'MemberExpression' && propertyName(callee) === 'bind' ? unwrapCallee(callee.object) : v;
     const created = propertyName(bound);
     if (created !== null && CREATORS.has(created)) scope.creators.add(name);
   };
@@ -529,7 +518,7 @@ function buildScope(record: ModuleRecord): Scope {
     }
   };
   const exportValue = (name: string, value: AnyNode) => {
-    const v = unwrap(value);
+    const v = unwrapCallee(value);
     if (v.type === 'ObjectExpression' && name === 'default') {
       // `module.exports = { start, serve: require('./serve') }`: each property is an export.
       for (const prop of v.properties) {
@@ -604,11 +593,11 @@ function buildScope(record: ModuleRecord): Scope {
         const name = propertyName(left);
         if (isNamed(left, 'module', 'exports')) { exportValue('default', n.right); break; }
         if (name !== null && isExportsObject(left.object)) { exportValue(name, n.right); break; }
-        const right = unwrap(n.right);
+        const right = unwrapCallee(n.right);
         if (isFunction(right)) {
           // `Owner.prototype.method = function` / `Owner.method = function`.
-          let owner = unwrap(left.object);
-          if (owner.type === 'MemberExpression' && propertyName(owner) === 'prototype') owner = unwrap(owner.object);
+          let owner = unwrapCallee(left.object);
+          if (owner.type === 'MemberExpression' && propertyName(owner) === 'prototype') owner = unwrapCallee(owner.object);
           if (name !== null && owner.type === 'Identifier') addMember(owner.name, name, right);
         }
         break;
@@ -628,7 +617,7 @@ function buildScope(record: ModuleRecord): Scope {
  * name bound to one, or an instance of one. Null otherwise.
  */
 function moduleOf(record: ModuleRecord, scope: Scope, node: AnyNode): ModuleRef | null {
-  const at = unwrap(node);
+  const at = unwrapCallee(node);
   const specifier = requiredSpecifier(at);
   if (specifier !== null) {
     const path = record.deps.get(specifier) ?? null;
@@ -721,7 +710,7 @@ class Walk {
     switch (s.type) {
       case 'ExpressionStatement': {
         this.expression(s.expression);
-        const e = unwrap(s.expression);
+        const e = unwrapCallee(s.expression);
         return e.type === 'CallExpression' && isNamed(e.callee, 'process', 'exit') ? 'abrupt' : 'normal';
       }
       case 'VariableDeclaration':
@@ -845,7 +834,7 @@ class Walk {
   }
 
   private call(node: CallExpression | NewExpression): void {
-    const callee = unwrap(node.callee);
+    const callee = unwrapCallee(node.callee);
     if (this.startsServer(callee, node.arguments)) { this.launches = true; return; }
     if (callee.type === 'MemberExpression' && PARSE_CALLS.has(propertyName(callee) ?? '') && this.fromCliParser(callee.object)) {
       this.parse(callee.object, node.arguments);
@@ -857,7 +846,7 @@ class Walk {
 
     // The callee runs: an inline function, a local function or method, or a
     // value of one of the program's modules.
-    const receiver = callee.type === 'MemberExpression' ? unwrap(callee.object) : null;
+    const receiver = callee.type === 'MemberExpression' ? unwrapCallee(callee.object) : null;
     const applied = receiver !== null && ['call', 'apply'].includes(propertyName(callee) ?? '') ? receiver : null;
     if (isFunction(callee) || isClass(callee)) this.run(callee);
     else if (isFunction(applied)) this.run(applied);
@@ -872,7 +861,7 @@ class Walk {
     const handed: AnyNode[] = [];
     for (const argument of node.arguments) {
       if (this.launches || this.exited) return;
-      const a = unwrap(argument.type === 'SpreadElement' ? argument.argument : argument);
+      const a = unwrapCallee(argument.type === 'SpreadElement' ? argument.argument : argument);
       if (!logs) handed.push(a);
       if (!isFunction(a)) this.expression(a);
     }
@@ -927,21 +916,21 @@ class Walk {
     if ((method !== 'command' && method !== 'action') || !this.fromCliParser(callee.object)) return undefined;
     let registration: readonly AnyNode[] | null = method === 'command' ? args : null;
     // `.command('serve').option(...).action(fn)`: the nearest command down the chain.
-    for (let at = unwrap(callee.object); registration === null && at.type === 'CallExpression';) {
-      const inner = unwrap(at.callee);
+    for (let at = unwrapCallee(callee.object); registration === null && at.type === 'CallExpression';) {
+      const inner = unwrapCallee(at.callee);
       if (propertyName(inner) === 'command') registration = at.arguments;
-      else if (inner.type === 'MemberExpression') at = unwrap(inner.object);
+      else if (inner.type === 'MemberExpression') at = unwrapCallee(inner.object);
       else break;
     }
     if (registration === null || registration.length === 0) return null;
     const names: string[] = [];
     const addNames = (node: AnyNode | undefined) => {
-      const n = node ? unwrap(node) : null;
+      const n = node ? unwrapCallee(node) : null;
       if (n?.type === 'Literal' && typeof n.value === 'string') names.push(n.value.trim().split(/\s+/)[0]);
       else if (n?.type === 'ArrayExpression') for (const element of n.elements) if (element) addNames(element);
       else if (n !== null) names.push('*');
     };
-    const first = unwrap(registration[0]);
+    const first = unwrapCallee(registration[0]);
     if (first.type === 'ObjectExpression') {
       for (const prop of first.properties) {
         if (prop.type !== 'Property') continue;
@@ -952,7 +941,7 @@ class Walk {
       addNames(first);
     }
     const isDefault = registration.some((arg) => {
-      const a = unwrap(arg);
+      const a = unwrapCallee(arg);
       return a.type === 'ObjectExpression'
         && a.properties.some((p) => p.type === 'Property' && keyName(p.key, p.computed) === 'isDefault');
     });
@@ -975,7 +964,7 @@ class Walk {
    * walked when called, it is not a bind in itself.
    */
   private ownsListen(receiver: AnyNode): boolean {
-    const r = unwrap(receiver);
+    const r = unwrapCallee(receiver);
     if (moduleOf(this.record, this.scope, r) !== null) return true;
     if (r.type !== 'Identifier') return false;
     const owner = this.scope.instances.get(r.name) ?? r.name;
@@ -990,9 +979,9 @@ class Walk {
    * port (`3000`, `const p = 3000`, `process.env.PORT || 3000`, a parameter).
    */
   private notAPort(arg: AnyNode, depth = 0): boolean {
-    const a = unwrap(arg);
+    const a = unwrapCallee(arg);
     if (isFunction(a) || a.type === 'ThisExpression') return true;
-    if (a.type === 'CallExpression' && propertyName(unwrap(a.callee)) === 'bind') return true;
+    if (a.type === 'CallExpression' && propertyName(unwrapCallee(a.callee)) === 'bind') return true;
     const known = this.evaluate(a);
     if (known !== undefined) return typeof known.value === 'string' && !/^\d+$/.test(known.value);
     if (a.type === 'Identifier') {
@@ -1009,7 +998,7 @@ class Walk {
 
   /** Whatever calling a value runs: local functions and methods, a module's exports. */
   private invoke(value: AnyNode): void {
-    const v = unwrap(value);
+    const v = unwrapCallee(value);
     const ref = moduleOf(this.record, this.scope, v);
     if (ref !== null) { this.use(ref); return; }
     if (isFunction(v) || isClass(v)) { this.run(v); return; }
@@ -1025,7 +1014,7 @@ class Walk {
 
   /** Calling `owner.method`: the local methods of that name, or a module's export's. */
   private invokeMember(owner: AnyNode, method: string): void {
-    const o = unwrap(owner);
+    const o = unwrapCallee(owner);
     const ref = moduleOf(this.record, this.scope, o);
     if (ref !== null) { this.use({ path: ref.path, members: [...ref.members, method] }); return; }
     // A module calling its own export (`exports.start()`, `module.exports.start()`).
@@ -1066,7 +1055,7 @@ class Walk {
   /** The value of an expression that depends only on this invocation, or undefined. */
   private evaluate(node: AnyNode, depth = 0): Known | undefined {
     if (depth > 16) return undefined;
-    const e = unwrap(node);
+    const e = unwrapCallee(node);
     switch (e.type) {
       case 'Literal':
         return 'regex' in e ? undefined : { value: e.value };
@@ -1089,7 +1078,7 @@ class Walk {
         return undefined;
       }
       case 'CallExpression': {
-        const callee = unwrap(e.callee);
+        const callee = unwrapCallee(e.callee);
         if (callee.type !== 'MemberExpression') return undefined;
         const method = propertyName(callee);
         if (method === null || !['slice', 'includes', 'indexOf', 'at', 'startsWith', 'endsWith'].includes(method)) return undefined;
@@ -1117,7 +1106,7 @@ class Walk {
       case 'BinaryExpression': {
         // `require.main === module`: true for the entry, false for a module it loads.
         const mainTest = (a: AnyNode, b: AnyNode) => {
-          const other = unwrap(b);
+          const other = unwrapCallee(b);
           return isNamed(a, 'require', 'main') && other.type === 'Identifier' && other.name === 'module';
         };
         if (mainTest(e.left, e.right) || mainTest(e.right, e.left)) {
