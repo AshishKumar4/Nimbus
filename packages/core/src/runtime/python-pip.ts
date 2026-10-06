@@ -18,6 +18,7 @@ import type {
   VersionSpec,
 } from 'pip-requirements-js';
 import { z } from 'zod/v4';
+import { errorText } from '../_shared/error-text.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import {
@@ -550,7 +551,7 @@ async function readVfsText(vfs: PythonPipVfs, path: string): Promise<{ text: str
   try {
     return { text: new TextDecoder('utf-8').decode((await vfs.readFile(path))) };
   } catch (e) {
-    return { error: errorMessage(e) };
+    return { error: errorText(e) };
   }
 }
 
@@ -558,13 +559,10 @@ async function probeVfsPath(vfs: PythonPipVfs, path: string): Promise<{ exists: 
   try {
     return { exists: (await vfs.exists(path)) };
   } catch (e) {
-    return { error: errorMessage(e) };
+    return { error: errorText(e) };
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 async function resolveRequirements(
   roots: PackageRequirement[],

@@ -663,21 +663,8 @@ function splitVersion(version: string): Array<number | string> {
   return out;
 }
 
-function normalizeGemName(name: string): string {
-  const clean = name.trim();
-  if (!clean) throw new Error('empty gem name');
-  for (const ch of clean) {
-    const ok = ch === '-' || ch === '_' || ch === '.' ||
-      ch >= '0' && ch <= '9' ||
-      ch >= 'a' && ch <= 'z' ||
-      ch >= 'A' && ch <= 'Z';
-    if (!ok) throw new Error(`unsupported gem name '${name}'`);
-  }
-  return clean;
-}
-
-function isValidGemExecutableName(name: string): boolean {
-  if (!name || name === '.' || name === '..' || name.includes('/')) return false;
+/** Every character is one a gem or gem executable name may hold: `[-_.0-9A-Za-z]`. */
+function isGemNameCharset(name: string): boolean {
   for (const ch of name) {
     const ok = ch === '-' || ch === '_' || ch === '.' ||
       ch >= '0' && ch <= '9' ||
@@ -686,6 +673,18 @@ function isValidGemExecutableName(name: string): boolean {
     if (!ok) return false;
   }
   return true;
+}
+
+function normalizeGemName(name: string): string {
+  const clean = name.trim();
+  if (!clean) throw new Error('empty gem name');
+  if (!isGemNameCharset(clean)) throw new Error(`unsupported gem name '${name}'`);
+  return clean;
+}
+
+function isValidGemExecutableName(name: string): boolean {
+  if (!name || name === '.' || name === '..' || name.includes('/')) return false;
+  return isGemNameCharset(name);
 }
 
 async function ensureDir(vfs: CredentialedVfs, path: string): Promise<void> {
