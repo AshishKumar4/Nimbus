@@ -541,7 +541,7 @@ export class CompositeVFS {
      * before and after.
      */
     observeWrites(observer, options) {
-        const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), domains: new Map() };
+        const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map(), turn: { tail: Promise.resolve(), busy: false } };
         const watch = { observer, wants: options?.wants ?? (() => true) };
         writes.watches.add(watch);
         if (writes.watches.size === 1)
@@ -635,8 +635,8 @@ export class CompositeVFS {
      * writes (subscribed), else here. Here, what the path held before and
      * after is read through the same backend view, with the operation's own
      * leaf-follow policy (content only where an observer wants it); the
-     * mounted source's observed mutations take turns, capture to capture, so
-     * none reads another's (writeDomain); and the guard is asked right before the
+     * namespace's observed mutations there take turns, capture to capture,
+     * so none reads another's (WriteWatches.turn); and the guard is asked right before the
      * write, after the reads it waited on. `landed` says where the mutation actually landed
      * (default: its path): a compare-and-write that lost, or an rm -r that
      * kept its operand, did not land there.
@@ -692,45 +692,30 @@ export class CompositeVFS {
                 });
             });
         };
-        const domain = this.writeDomain(route.mount);
         if (sync) {
             // A caller that cannot wait cannot take a turn: while another's
             // section holds this backend, it is refused as an asynchronous mount
             // refuses it (a caller that can wait retries on the asynchronous face).
-            if (writes.domains.get(domain)?.busy === true) {
+            if (writes.turn.busy) {
                 throw Object.assign(new Refusal('EAGAIN', path, `${route.mount.point}: an observed write to this filesystem is in flight; this caller cannot wait for it`), { asyncMount: true });
             }
             return report();
         }
-        return this.takeTurn(writes, domain, report);
+        return this.takeTurn(writes, report);
     }
-    /**
-     * What an observed mutation on `mount` takes its turn on: its source, as
-     * mounted (the backend, or the function resolving it), which is stable
-     * while a resolved view need not be (a factory may answer a fresh adapter
-     * over one store on every lookup). One source mounted twice is one domain.
-     */
-    writeDomain(mount) {
-        return mount.source;
-    }
-    /** `run` once every observed mutation of `domain` queued before it is done; those after it wait for it. */
-    async takeTurn(writes, domain, run) {
-        let state = writes.domains.get(domain);
-        if (state === undefined)
-            writes.domains.set(domain, state = { tail: Promise.resolve(), waiting: 0, busy: false });
-        const prior = state.tail;
+    /** `run` once every observed mutation queued before it is done; those after it wait for it. */
+    async takeTurn(writes, run) {
+        const { turn } = writes;
+        const prior = turn.tail;
         let done;
-        state.tail = new Promise((resolve) => { done = resolve; });
-        state.waiting++;
+        turn.tail = new Promise((resolve) => { done = resolve; });
         try {
             await prior;
-            state.busy = true;
+            turn.busy = true;
             return await run();
         }
         finally {
-            state.busy = false;
-            if (--state.waiting === 0)
-                writes.domains.delete(domain);
+            turn.busy = false;
             done();
         }
     }

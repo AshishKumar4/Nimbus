@@ -164,16 +164,17 @@ interface WriteWatches {
     watches: Set<WriteWatch>;
     subscribed: Map<Mount, () => void>;
     /**
-     * Observed mutations on backends that do not report their own take turns
-     * per backend (reportWrite): a backend's own links, or the backend mounted
-     * twice, give one file several namespace paths, so no path decides what
-     * conflicts. Keyed by the mounted source (writeDomain); a turn's section is `busy`.
+     * Observed mutations on backends that do not report their own take one
+     * turn per namespace (reportWrite): one store can sit behind several
+     * mounts (a backend mounted directly and through a factory, its own
+     * links), and nothing here can tell reliably which, so no path or mount
+     * decides what conflicts. Costs only while someone observes; a turn's
+     * section is `busy`.
      */
-    domains: Map<object, {
+    turn: {
         tail: Promise<void>;
-        waiting: number;
         busy: boolean;
-    }>;
+    };
 }
 interface Table {
     mounts: Map<string, Mount>;
@@ -304,21 +305,14 @@ export declare class CompositeVFS implements VFS {
      * writes (subscribed), else here. Here, what the path held before and
      * after is read through the same backend view, with the operation's own
      * leaf-follow policy (content only where an observer wants it); the
-     * mounted source's observed mutations take turns, capture to capture, so
-     * none reads another's (writeDomain); and the guard is asked right before the
+     * namespace's observed mutations there take turns, capture to capture,
+     * so none reads another's (WriteWatches.turn); and the guard is asked right before the
      * write, after the reads it waited on. `landed` says where the mutation actually landed
      * (default: its path): a compare-and-write that lost, or an rm -r that
      * kept its operand, did not land there.
      */
     private reportWrite;
-    /**
-     * What an observed mutation on `mount` takes its turn on: its source, as
-     * mounted (the backend, or the function resolving it), which is stable
-     * while a resolved view need not be (a factory may answer a fresh adapter
-     * over one store on every lookup). One source mounted twice is one domain.
-     */
-    private writeDomain;
-    /** `run` once every observed mutation of `domain` queued before it is done; those after it wait for it. */
+    /** `run` once every observed mutation queued before it is done; those after it wait for it. */
     private takeTurn;
     /**
      * What stands at `rel` on a backend that does not report its own writes,
