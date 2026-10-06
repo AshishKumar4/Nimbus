@@ -566,6 +566,8 @@ export declare class SqliteVFS {
     private activeHolds;
     /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
     private activeWrite;
+    /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
+    private activeLanded;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -872,12 +874,15 @@ export declare class SqliteVFS {
      * lease; `actor` names the principal finer than its uid, in the write
      * events its mutations make (observeWrites); `holds` answers, at each
      * call, the delegations the view's process holds (its own lookups recall
-     * none of them).
+     * none of them). `landed`: the view reads what has landed, never asking a
+     * holder to send first (an observer that is told when a wave lands, the
+     * editor's file tree, reads after it); its writes still recall.
      */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
         actor?: string;
         holds?: () => ReadonlySet<string>;
+        landed?: boolean;
     }): CredentialedVfs;
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;

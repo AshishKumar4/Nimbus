@@ -31,6 +31,9 @@ export async function initSession(self, ws, options = {}) {
     const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs.as(CRED_KERNEL);
+    // The file tree lists on fs-watch events, so it reads what has landed:
+    // listing a directory a process holds asks the process for nothing.
+    const treeFs = self.sqliteFs.as(CRED_KERNEL, { landed: true });
     self.ensureFacetManager();
     // Idempotent, so a delegation it meets is waited out and it runs again.
     await withRecall(() => self.seedFilesystem());
@@ -205,7 +208,7 @@ export async function initSession(self, ws, options = {}) {
     //
     // Answered by serveEditorFs (editor-fs.ts).
     self.terminal.onFs((msg, reply) => {
-        void serveEditorFs(kernelFs, msg).then(reply);
+        void serveEditorFs({ files: kernelFs, tree: treeFs }, msg).then(reply);
     });
     // W8: hand the registry to the cp broker so child_process.spawn from
     // a parent facet can resolve and dispatch commands the same way the

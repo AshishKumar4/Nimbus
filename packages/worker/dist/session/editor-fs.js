@@ -13,11 +13,15 @@ import { parentVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js'
 import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 /**
  * The frame answering `msg`, computed again once a delegation it meets is
- * recalled (withRecall): the editor's reads and writes wait for a command
- * holding the subtree rather than failing. Any other failure is the frame's
- * error.
+ * recalled (withRecall): the editor's reads and writes wait for a process
+ * holding the subtree rather than failing; its listings (`views.tree`, a
+ * `landed` view) read what has landed and wait for nothing. Any other
+ * failure is the frame's error.
  */
-export function serveEditorFs(kernelFs, msg) {
+export function serveEditorFs(views, msg) {
+    // A listing is the file tree's, which reads after each wave lands (fs-watch):
+    // it reads what has landed. Opening and saving a file wait for its holder.
+    const kernelFs = msg?.type === 'fs-list' ? views.tree : views.files;
     return withRecall(() => answerEditorFs(kernelFs, msg)).catch((e) => ({
         type: msg.type + '-result',
         path: msg.path,
