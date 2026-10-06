@@ -14,7 +14,9 @@
  *     asynchronously (fd 0, read to its end) holds the guest exactly as a
  *     blocking read holds a Node program;
  *   - events: its output, the requests its loopback clients make, the
- *     requests this side forwards to its servers, its exit.
+ *     requests this side forwards to its servers, its exit, and under an
+ *     egress the requests it makes off the box, whose responses cross back
+ *     as they arrive (OffTheBox).
  *
  * Everything the program sends is untrusted: this side answers only the calls
  * it names below, with arguments of their kind, and never lets a message, an
@@ -32,13 +34,11 @@ import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
+import type { WorkspaceNetwork } from '../../../../_shared/workspace-network.js';
 import type { NodeProgram } from './node.js';
 
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'network'>>;
-
-/** The port a guest's request names when it is not for a port of the box: it leaves through the workspace's network. */
-export const EXTERNAL_PORT = -1;
 
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
@@ -51,11 +51,34 @@ export type NodeCall =
   | { readonly op: 'unlisten'; readonly port: number }
   | { readonly op: 'watch'; readonly on: boolean };
 
-/** A response, as data, either way across (bytes for a request that left the box). */
+/** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
   readonly status: number;
   readonly headers: Record<string, string>;
   readonly body: string | Uint8Array;
+}
+
+/** A header list as it crosses: in order, a name once per value (set-cookie). */
+export type HeaderPairs = readonly (readonly [string, string])[];
+
+/** A request the program sends off the box: its body whole, its redirect mode the program's. */
+export interface EgressRequest {
+  readonly url: string;
+  readonly method: string;
+  readonly headers: HeaderPairs;
+  readonly body: Uint8Array | null;
+  readonly redirect: 'follow' | 'manual' | 'error';
+}
+
+/** Its response's head. A body, when there is one, crosses a chunk per `egress-pull`. */
+export interface EgressHead {
+  readonly status: number;
+  readonly statusText: string;
+  readonly headers: HeaderPairs;
+  /** Where the response came from, after any redirect followed. */
+  readonly url: string;
+  readonly redirected: boolean;
+  readonly body: boolean;
 }
 
 /** What the guest posts on `events`. */
@@ -63,21 +86,31 @@ export type GuestEvent =
   | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array }
   | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
-  | { readonly type: 'exit'; readonly code: number };
+  | { readonly type: 'exit'; readonly code: number }
+  | { readonly type: 'egress'; readonly id: number; readonly request: EgressRequest }
+  /** The program reads its response's body: the next chunk, or its end. */
+  | { readonly type: 'egress-pull'; readonly id: number }
+  /** The program is done with the request (it cancelled the body, or aborted). */
+  | { readonly type: 'egress-cancel'; readonly id: number };
 
 /** What this side posts on `events`. */
 export type HostEvent =
   | { readonly type: 'fetched'; readonly id: number; readonly response: RealmResponse | null }
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
-  | { readonly type: 'changed' };
+  | { readonly type: 'changed' }
+  | { readonly type: 'egress-head'; readonly id: number; readonly head: EgressHead }
+  | { readonly type: 'egress-chunk'; readonly id: number; readonly chunk: Uint8Array }
+  | { readonly type: 'egress-end'; readonly id: number }
+  /** The request failed, or its body did after the head: what a failed connection is in Node. */
+  | { readonly type: 'egress-error'; readonly id: number; readonly message: string };
 
 /** What the realm starts with: the program, and whether its network goes through an egress. */
 export interface NodeRealmPayload {
   readonly program: NodeProgram;
   /**
    * The workspace's network goes through its host's egress: every request
-   * the program makes off the box crosses here ({@link EXTERNAL_PORT}) and
-   * leaves through it; a WebSocket, which cannot cross, is refused by name.
+   * the program makes off the box crosses here (`egress`) and leaves through
+   * it; a WebSocket, which cannot cross, is refused by name.
    */
   readonly egress: boolean;
 }
@@ -88,6 +121,16 @@ export interface NodeRealmPayload {
 const record = (value: unknown): value is Record<string, unknown> => typeof value === 'object' && value !== null;
 const stringRecord = (value: unknown): value is Record<string, string> =>
   record(value) && Object.values(value).every((entry) => typeof entry === 'string');
+
+const headerPairs = (value: unknown): value is HeaderPairs =>
+  Array.isArray(value) && value.every((pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string');
+const REDIRECT_MODES: readonly unknown[] = ['follow', 'manual', 'error'];
+const isEgressRequest = (value: unknown): value is EgressRequest =>
+  record(value) && typeof value.url === 'string' && typeof value.method === 'string' && headerPairs(value.headers)
+  && (value.body === null || value.body instanceof Uint8Array) && REDIRECT_MODES.includes(value.redirect);
+const isEgressHead = (value: unknown): value is EgressHead =>
+  record(value) && typeof value.status === 'number' && typeof value.statusText === 'string' && headerPairs(value.headers)
+  && typeof value.url === 'string' && typeof value.redirected === 'boolean' && typeof value.body === 'boolean';
 
 const isResponse = (value: unknown): value is RealmResponse | null =>
   value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
@@ -103,6 +146,9 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
         && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code);
+    case 'egress': return Number.isSafeInteger(value.id) && isEgressRequest(value.request);
+    case 'egress-pull':
+    case 'egress-cancel': return Number.isSafeInteger(value.id);
     default: return false;
   }
 }
@@ -113,6 +159,10 @@ export function isHostEvent(value: unknown): value is HostEvent {
     case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
     case 'serve': return typeof value.id === 'number' && typeof value.port === 'number' && record(value.request);
     case 'changed': return true;
+    case 'egress-head': return typeof value.id === 'number' && isEgressHead(value.head);
+    case 'egress-chunk': return typeof value.id === 'number' && value.chunk instanceof Uint8Array;
+    case 'egress-end': return typeof value.id === 'number';
+    case 'egress-error': return typeof value.id === 'number' && typeof value.message === 'string';
     default: return false;
   }
 }
@@ -291,6 +341,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
 
   let code: number | null = null;
   const payload: NodeRealmPayload = { program, egress: kernel?.network?.egress !== undefined };
+  const offTheBox = new OffTheBox(kernel?.network, (event) => { post(event); });
   const realm = await startRealm({
     entry: new URL('./node-guest.js', import.meta.url),
     payload,
@@ -313,6 +364,15 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
             post({ type: 'fetched', id: event.id, response });
           });
           return;
+        case 'egress':
+          offTheBox.start(event.id, event.request);
+          return;
+        case 'egress-pull':
+          offTheBox.pull(event.id);
+          return;
+        case 'egress-cancel':
+          offTheBox.cancel(event.id);
+          return;
       }
     },
   });
@@ -331,6 +391,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   ctx.signal.removeEventListener('abort', abort);
   for (const port of ports) kernel?.portRegistry.delete(port);
   for (const respond of pending.values()) respond(null);
+  offTheBox.close();
   unwatch?.();
   await written;
   if (end.terminated) return 130;
@@ -363,7 +424,6 @@ async function readToEnd(stdin: NonNullable<CommandContext['stdin']>): Promise<U
  */
 async function fetchForGuest(kernel: NodeRealmKernel | undefined, event: Extract<GuestEvent, { type: 'fetch' }>): Promise<RealmResponse | null> {
   if (!kernel) return null;
-  if (event.port === EXTERNAL_PORT) return await fetchExternal(kernel, event);
   try {
     const request = new Request(event.url, { method: event.method, headers: event.headers, body: event.body });
     const result = await dispatchWorkspaceRequest(kernel, event.port, request);
@@ -376,21 +436,123 @@ async function fetchForGuest(kernel: NodeRealmKernel | undefined, event: Extract
   }
 }
 
+// ── The program's requests off the box ──────────────────────────────────────
+
+/** Statuses fetch follows a Location from. */
+const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
+/** At most this many redirects followed, as fetch follows them. */
+const MAX_REDIRECTS = 20;
+/** Headers that describe a request body: dropped with the body when a redirect turns the request into a GET. */
+const REQUEST_BODY_HEADERS = ['content-encoding', 'content-language', 'content-location', 'content-type', 'content-length'];
+/** Headers fetch drops when a redirect leaves the origin. */
+const CROSS_ORIGIN_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'host'];
+
 /**
- * A request the program made off the box, under an egress: it leaves through
- * the workspace's network, and its answer crosses back as bytes. A failure
- * crosses as a 502 naming it, as a proxy answers, so the program sees a
- * response rather than a request that never settles.
+ * `request` through `network`, each hop its own request with redirect
+ * 'manual', and the program's redirect mode applied here: as workerd's fetch
+ * follows a Fetcher's redirects (each hop to the Fetcher) and as Node's fetch
+ * follows them (the HTTP-redirect fetch of https://fetch.spec.whatwg.org,
+ * undici lib/web/fetch/index.js), so the egress sees every request the
+ * program's redirects make. Rejects as Node's fetch fails: 'unexpected
+ * redirect' under 'error', 'redirect count exceeded' past 20.
  */
-async function fetchExternal(kernel: NodeRealmKernel, event: Extract<GuestEvent, { type: 'fetch' }>): Promise<RealmResponse> {
-  try {
-    const network = kernel.network;
-    if (network?.egress === undefined) throw new Error('no egress');
-    const response = await network.fetch(event.url, { method: event.method, headers: event.headers, body: event.body, redirect: 'manual' });
-    const headers: Record<string, string> = {};
-    response.headers.forEach((value, key) => { headers[key] = value; });
-    return { status: response.status, headers, body: new Uint8Array(await response.arrayBuffer()) };
-  } catch (error) {
-    return { status: 502, headers: { 'content-type': 'text/plain' }, body: `nimbus egress: ${error instanceof Error ? error.message : String(error)}` };
+async function fetchFollowing(network: WorkspaceNetwork, request: EgressRequest, signal: AbortSignal): Promise<{ response: Response; url: string; redirected: boolean }> {
+  let url = new URL(request.url);
+  url.hash = '';
+  let method = request.method;
+  let body = request.body;
+  const headers = new Headers(request.headers.map(([name, value]) => [name, value]));
+  for (let followed = 0; ; followed++) {
+    const response = await network.fetch(url.href, { method, headers, body, redirect: 'manual', signal });
+    const answered = { response, url: url.href, redirected: followed > 0 };
+    if (!REDIRECT_STATUSES.has(response.status) || request.redirect === 'manual') return answered;
+    if (request.redirect === 'error') {
+      await response.body?.cancel();
+      throw new Error('unexpected redirect');
+    }
+    const location = response.headers.get('location');
+    if (location === null) return answered;
+    await response.body?.cancel();
+    if (followed === MAX_REDIRECTS) throw new Error('redirect count exceeded');
+    const next = new URL(location, url);
+    next.hash = '';
+    if (next.protocol !== 'http:' && next.protocol !== 'https:') throw new Error('URL scheme must be a HTTP(S) scheme');
+    if ((response.status === 303 && method !== 'GET' && method !== 'HEAD') || ((response.status === 301 || response.status === 302) && method === 'POST')) {
+      method = 'GET';
+      body = null;
+      for (const name of REQUEST_BODY_HEADERS) headers.delete(name);
+    }
+    if (next.origin !== url.origin) for (const name of CROSS_ORIGIN_HEADERS) headers.delete(name);
+    url = next;
+  }
+}
+
+const errorText = (error: unknown): string => (error instanceof Error ? error.message : String(error));
+
+/**
+ * The program's requests off the box, under an egress: each leaves through
+ * the workspace's network, and its response crosses back as it arrives: the
+ * head first, then one chunk of the body each time the program reads one. A
+ * response that does not end (server-sent events) is read as it comes, and a
+ * body the program does not read is not read here either: nothing of it waits
+ * in this isolate.
+ */
+class OffTheBox {
+  private readonly open = new Map<number, { readonly abort: AbortController; reader?: ReadableStreamDefaultReader<Uint8Array> }>();
+
+  constructor(private readonly network: WorkspaceNetwork | undefined, private readonly post: (event: HostEvent) => void) {}
+
+  start(id: number, request: EgressRequest): void {
+    const entry: { readonly abort: AbortController; reader?: ReadableStreamDefaultReader<Uint8Array> } = { abort: new AbortController() };
+    this.open.set(id, entry);
+    void (async () => {
+      try {
+        if (this.network?.egress === undefined) throw new Error('the workspace has no egress');
+        const { response, url, redirected } = await fetchFollowing(this.network, request, entry.abort.signal);
+        if (this.open.get(id) !== entry) {
+          await response.body?.cancel();
+          return;
+        }
+        if (response.body) entry.reader = response.body.getReader();
+        else this.open.delete(id);
+        this.post({ type: 'egress-head', id, head: { status: response.status, statusText: response.statusText, headers: [...response.headers], url, redirected, body: entry.reader !== undefined } });
+      } catch (error) {
+        if (this.open.get(id) !== entry) return;
+        this.open.delete(id);
+        this.post({ type: 'egress-error', id, message: errorText(error) });
+      }
+    })();
+  }
+
+  pull(id: number): void {
+    const entry = this.open.get(id);
+    const reader = entry?.reader;
+    if (!reader) return;
+    reader.read().then(({ done, value }) => {
+      if (this.open.get(id) !== entry) return;
+      if (done) {
+        this.open.delete(id);
+        this.post({ type: 'egress-end', id });
+      } else {
+        this.post({ type: 'egress-chunk', id, chunk: value });
+      }
+    }, (error: unknown) => {
+      if (this.open.get(id) !== entry) return;
+      this.open.delete(id);
+      this.post({ type: 'egress-error', id, message: errorText(error) });
+    });
+  }
+
+  cancel(id: number): void {
+    const entry = this.open.get(id);
+    if (!entry) return;
+    this.open.delete(id);
+    entry.abort.abort();
+    entry.reader?.cancel().catch(() => {});
+  }
+
+  /** The realm has ended: what it left open is closed. */
+  close(): void {
+    for (const id of [...this.open.keys()]) this.cancel(id);
   }
 }
