@@ -19,6 +19,17 @@ export const enc = new TextEncoder();
 export const dec = new TextDecoder();
 
 /**
+ * A fresh ArrayBuffer holding exactly the bytes `bytes` views — its window,
+ * not its whole backing buffer — for APIs that take an ArrayBuffer
+ * (WebAssembly modules, structured clone across a facet boundary).
+ */
+export function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  const out = new ArrayBuffer(bytes.byteLength);
+  new Uint8Array(out).set(bytes);
+  return out;
+}
+
+/**
  * A text consumer's edge over a byte stream: one streaming UTF-8 decoder per
  * key (a pid, or a (pid, stream) pair), so a multibyte character whose bytes
  * arrive in two chunks still decodes as one character. `drop(key)` flushes

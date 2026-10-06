@@ -1,6 +1,7 @@
 import type { ProcessView as CredentialedVfs } from './process-files.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
 import { extractTarball } from '../_shared/tarball.js';
+import { toArrayBuffer } from '../_shared/bytes.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { isVfsError } from '../vfs/vfs-error.js';
@@ -472,12 +473,6 @@ async function extractGemData(gemBytes: Uint8Array): Promise<Map<string, Uint8Ar
   const data = outer.get('data.tar.gz');
   if (!data) throw new Error('RubyGems archive missing data.tar.gz');
   return await extractTarball(toArrayBuffer(data));
-}
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  const out = new ArrayBuffer(bytes.byteLength);
-  new Uint8Array(out).set(bytes);
-  return out;
 }
 
 function findNativeExtensionPath(paths: string[]): string | null {
