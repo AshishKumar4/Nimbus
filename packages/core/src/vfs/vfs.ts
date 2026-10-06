@@ -89,6 +89,46 @@ export interface VfsEvent {
   oldPath?: string;
 }
 
+/**
+ * Who a view acts as. The embedder's own view has no credential. `actor` names
+ * a principal finer than its uid: two agents (or a node and its origin) that
+ * share a credential but see different mounts.
+ */
+export interface Principal {
+  readonly cred: VfsCred | null;
+  readonly actor?: string;
+}
+
+/** What stood, or stands, at a path a mutation landed on (VfsWriteEvent). */
+export interface VfsContentRef {
+  readonly type: VfsFileType;
+  readonly size: number;
+  /**
+   * The bytes (a link's text) as they were then, whatever was written
+   * since; EISDIR for a directory. Readable until the observer's callback
+   * (and the promise it returned) settles, EBADF after.
+   */
+  read(): Awaitable<Uint8Array>;
+}
+
+/** A mutation that landed (VFS.observeWrites): reported once, after it committed. */
+export interface VfsWriteEvent {
+  /** 'create' when nothing stood at `path`, 'delete' when nothing does now, 'rename' with `oldPath`. */
+  readonly type: VfsEvent['type'];
+  readonly path: string;
+  /** A rename's source. */
+  readonly oldPath?: string;
+  /** What stood at `path` before: null when nothing did, undefined when it was not captured. */
+  readonly before: VfsContentRef | null | undefined;
+  /** What stands at `path` after: null when nothing does, undefined when it was not captured. */
+  readonly after: VfsContentRef | null | undefined;
+  /** Who made it: the principal of the view it came through. */
+  readonly principal: Principal;
+}
+
+/** Told of each landed mutation; a promise it returns holds the event's content until it settles. */
+export type VfsWriteObserver = (event: VfsWriteEvent) => void | Promise<void>;
+
 export interface VfsMountDescription {
   /** df's "Filesystem" column. */
   source: string;
@@ -140,8 +180,13 @@ export interface VFS {
   /** Exactly that version, or a refusal; never the current file in its place. */
   readFileAtRevision?(path: string, revision: VfsRevision, range?: VfsRange): Awaitable<Uint8Array>;
   open?(path: string, flags: VfsOpenFlags): Awaitable<VfsHandle>;
-  /** This backend as another principal. Absent: the backend has one identity. */
-  as?(cred: VfsCred): VFS;
+  /** This backend as another principal (`actor` names it finer than its uid). Absent: the backend has one identity. */
+  as?(cred: VfsCred, actor?: string): VFS;
+  /**
+   * Every mutation that lands on this backend, whoever made it, with what
+   * it replaced (VfsWriteEvent); the returned function stops the reports.
+   */
+  observeWrites?(observer: VfsWriteObserver): () => void;
   /** The same operations, completing without waiting. Present only when every call can. */
   readonly sync?: SyncVFS;
   /**

@@ -21,7 +21,8 @@
  * would change what the operation means.
  */
 import type {
-  Awaitable, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRemovalFailure, VfsRevision, VfsStat, VfsUsage,
+  Awaitable, Principal, SyncVFS, VFS, VfsCasResult, VfsChanges, VfsContentRef, VfsCred, VfsDirent, VfsMountDescription, VfsRemoval, VfsRemovalFailure,
+  VfsRevision, VfsStat, VfsUsage, VfsWriteEvent, VfsWriteObserver,
 } from './vfs.js';
 import type { RuntimeVfsStat, VfsAcquireOptions, VfsInvalidatedPath, VfsListEntry } from '../runtime/os-contracts.js';
 import { VfsError, VFS_DESCRIPTION, isVfsError, syscallError, type VfsErrorCode } from './vfs-error.js';
@@ -144,15 +145,7 @@ export function runtimeStatOf(stat: VfsStat): RuntimeVfsStat {
   };
 }
 
-/**
- * Who a view acts as. The embedder's own view has no credential. `actor` names
- * a principal finer than its uid: two agents (or a node and its origin) that
- * share a credential but see different mounts.
- */
-export interface Principal {
-  readonly cred: VfsCred | null;
-  readonly actor?: string;
-}
+export type { Principal } from './vfs.js';
 
 /** A backend, or a function giving the backend for a principal at this instant (null: absent). */
 export type VfsSource = VFS | ((principal: Principal) => VFS | null);
@@ -226,8 +219,16 @@ interface Mount {
   inos: Map<string, number>;
 }
 
+/** One observeWrites registration: its observer, and where it wants content read. */
+interface WriteWatch {
+  observer: VfsWriteObserver;
+  wants: (path: string, principal: Principal) => boolean;
+}
+
 interface Table {
   mounts: Map<string, Mount>;
+  /** observeWrites: who is told, and the mounts whose backends report their own writes, subscribed. */
+  writes?: { watches: Set<WriteWatch>; subscribed: Map<Mount, () => void> };
   /** Directory → names of mount points (or their missing ancestors) directly in it. */
   synthesized: Map<string, Set<string>>;
   /** Asked before a credentialed view's mutation reaches a backend (guardMutations). */
@@ -304,6 +305,30 @@ function syncValue<T>(value: Awaitable<T>): T {
 /** Apply `next` to a value that may or may not be a promise, staying synchronous when it is not. */
 function then<T, U>(value: Awaitable<T>, next: (resolved: T) => Awaitable<U>): Awaitable<U> {
   return isPromise(value) ? value.then(next) : next(value);
+}
+
+/** `run`'s value, or `fallback`'s when it throws or rejects. */
+function attempt<T>(run: () => Awaitable<T>, fallback: () => T): Awaitable<T> {
+  try {
+    const out = run();
+    return isPromise(out) ? out.catch(fallback) : out;
+  } catch {
+    return fallback();
+  }
+}
+
+const utf8 = new TextEncoder();
+
+/** Content the namespace read itself (a backend without observeWrites): held as bytes. */
+function capturedRef(type: VfsContentRef['type'], bytes: Uint8Array | null): VfsContentRef {
+  return {
+    type,
+    size: bytes?.byteLength ?? 0,
+    read: () => {
+      if (bytes === null) throw new VfsError('EISDIR', '', 'a directory has no bytes');
+      return bytes;
+    },
+  };
 }
 
 /**
@@ -659,14 +684,124 @@ export class CompositeVFS implements VFS {
     const at = normalizePath(point);
     if (at === ROOT_POINT) throw syscallError('EBUSY', 'mount', point, { detail: 'the root is mounted at construction' });
     if (this.table.mounts.has(at)) throw syscallError('EBUSY', 'mount', point, { detail: 'something is already mounted there' });
-    this.table.mounts.set(at, { point: at, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() });
+    const mount: Mount = { point: at, source, options, dev: ANONYMOUS_DEV + ++this.nextDev, inos: new Map() };
+    this.table.mounts.set(at, mount);
     this.resynthesize();
+    if (this.table.writes !== undefined) this.subscribeWrites(mount);
   }
 
   unmount(point: string): void {
     const at = normalizePath(point);
-    if (at === ROOT_POINT || !this.table.mounts.delete(at)) throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
+    const mount = this.table.mounts.get(at);
+    if (at === ROOT_POINT || mount === undefined) throw syscallError('EINVAL', 'umount', point, { detail: 'nothing is mounted there' });
+    this.table.mounts.delete(at);
+    this.table.writes?.subscribed.get(mount)?.();
+    this.table.writes?.subscribed.delete(mount);
     this.resynthesize();
+  }
+
+  // ── write observation ─────────────────────────────────────────────────
+
+  /**
+   * Every mutation that lands in this namespace, on any mount, reported
+   * once it landed (never a refused or failed one) with what stood at its
+   * path before, what stands there after, and the principal it was made as
+   * (VfsWriteEvent, paths in this namespace). For every view of this table;
+   * the returned function stops it.
+   *
+   * A backend that reports its own writes (VFS.observeWrites: SQLite) is
+   * subscribed per mount, so its every mutation is reported, whoever made
+   * it (a process's, a W7 stream's), its content held until the observer is
+   * done. Any other backend's mutations are reported as they are made
+   * through this namespace: each costs a stat of its path before, and,
+   * where `wants` says (by default, everywhere), a read of its content
+   * before and after.
+   */
+  observeWrites(observer: VfsWriteObserver, options?: { wants?: (path: string, principal: Principal) => boolean }): () => void {
+    const writes = this.table.writes ??= { watches: new Set(), subscribed: new Map() };
+    const watch: WriteWatch = { observer, wants: options?.wants ?? (() => true) };
+    writes.watches.add(watch);
+    if (writes.watches.size === 1) for (const mount of this.table.mounts.values()) this.subscribeWrites(mount);
+    return () => {
+      if (!writes.watches.delete(watch) || writes.watches.size > 0) return;
+      // No one observes: a backend that holds content for observers stops.
+      for (const stop of writes.subscribed.values()) stop();
+      writes.subscribed.clear();
+      if (this.table.writes === writes) delete this.table.writes;
+    };
+  }
+
+  /** Subscribe to `mount`'s backend when it reports its own writes (a source fixed for every principal). */
+  private subscribeWrites(mount: Mount): void {
+    const writes = this.table.writes!;
+    const source = mount.source;
+    if (typeof source === 'function' || typeof source.observeWrites !== 'function' || writes.subscribed.has(mount)) return;
+    writes.subscribed.set(mount, source.observeWrites((event) => this.deliverWrite({
+      ...event,
+      path: CompositeVFS.reroot(mount.point, event.path),
+      ...(event.oldPath !== undefined ? { oldPath: CompositeVFS.reroot(mount.point, event.oldPath) } : {}),
+    })));
+  }
+
+  /** `event` to every observer of this table; settles once each is done (a backend holds its content until then). */
+  private deliverWrite(event: VfsWriteEvent): Promise<void> | undefined {
+    const pending: Promise<void>[] = [];
+    for (const { observer } of this.table.writes?.watches ?? []) {
+      try {
+        const out = observer(event);
+        if (out !== undefined && isPromise(out)) pending.push(out);
+      } catch (error) {
+        console.error('[composite-vfs] a write observer failed:', error instanceof Error ? error.message : String(error));
+      }
+    }
+    return pending.length === 0 ? undefined : Promise.allSettled(pending).then(() => undefined);
+  }
+
+  /**
+   * `run`, a mutation landing at `path` on `route`'s backend, reported once
+   * it landed: by the backend itself when it reports its own writes
+   * (subscribed), else here, with what the path held before and after, read
+   * through the same backend view (content only where an observer wants it).
+   * `oldPath`: a rename's source.
+   */
+  private reportWrite<T>(path: string, route: Route, ops: Ops, what: string, run: () => Awaitable<T>, oldPath?: string): Awaitable<T> {
+    const writes = this.table.writes;
+    if (writes === undefined || writes.subscribed.has(route.mount)) return run();
+    const principal = this.viewer;
+    let wanted = false;
+    for (const watch of writes.watches) if (watch.wants(path, principal)) { wanted = true; break; }
+    const removes = what === 'unlinked' || what === 'removed';
+    const before = what === 'created' ? null : this.capture(ops, route.rel, wanted);
+    return then(before, (prior) => then(run(), (result) => {
+      const after = removes ? null : this.capture(ops, route.rel, wanted);
+      return then(after, (now) => {
+        const type: VfsWriteEvent['type'] = oldPath !== undefined ? 'rename' : removes ? 'delete' : prior === null ? 'create' : 'modify';
+        this.deliverWrite({
+          type,
+          path,
+          ...(oldPath !== undefined ? { oldPath } : {}),
+          before: prior === false ? undefined : prior,
+          after: now === false ? undefined : now,
+          principal,
+        });
+        return result;
+      });
+    }));
+  }
+
+  /**
+   * What stands at `rel` on a backend that does not report its own writes:
+   * null when nothing does, its content when `read`, false when what is
+   * there was not read (not wanted, or the backend would not say).
+   */
+  private capture(ops: Ops, rel: string, read: boolean): Awaitable<VfsContentRef | null | false> {
+    return attempt(() => then(this.softStat(ops, rel, false), (stat): Awaitable<VfsContentRef | null | false> => {
+      if (stat === null) return null;
+      if (stat.type === 'directory') return capturedRef('directory', null);
+      if (!read) return false;
+      if (stat.type === 'symlink') return then((ops as SyncVFS).readlink!(rel), (target) => capturedRef('symlink', utf8.encode(target)));
+      return then((ops as SyncVFS).readFile(rel), (bytes) => capturedRef('file', bytes));
+    }), () => false);
   }
 
   /** The mounts this view's principal has now, root first, in mount order. */
@@ -920,7 +1055,8 @@ export class CompositeVFS implements VFS {
     const cred = this.viewer.cred;
     if (cred === null || found.as === undefined) return found;
     let view = this.viewed.get(found);
-    if (view === undefined) this.viewed.set(found, view = found.as(cred));
+    // The actor goes with the credential: a backend's write events name the principal (observeWrites).
+    if (view === undefined) this.viewed.set(found, view = found.as(cred, this.viewer.actor));
     return view;
   }
 
@@ -1426,7 +1562,8 @@ export class CompositeVFS implements VFS {
       if (route.mount.options.readOnly) throw new Refusal('EROFS', path, `${route.mount.point} is mounted read-only`);
       return then(this.reachable(path, sync), () => then(parents ? this.makeTree(parentOf(path), undefined, sync) : undefined, () => {
         this.guardMutation([input, path]);
-        return run(this.ops(route, sync), route.rel, path);
+        const ops = this.ops(route, sync);
+        return this.reportWrite(path, route, ops, what, () => run(ops, route.rel, path));
       }));
     });
   }
@@ -1461,7 +1598,8 @@ export class CompositeVFS implements VFS {
       if (!options?.recursive) {
         return then(this.reachable(path, sync), () => {
           this.guardMutation([input, path]);
-          return (this.ops(route, sync) as SyncVFS).mkdir(route.rel, options);
+          const ops = this.ops(route, sync);
+          return this.reportWrite(path, route, ops, 'created', () => (ops as SyncVFS).mkdir(route.rel, options));
         });
       }
       this.guardMutation([input, path]);
@@ -1492,7 +1630,8 @@ export class CompositeVFS implements VFS {
       // a backend that resolves its own paths makes the rest in one call.
       if (r.mount.options.resolvesPaths) {
         this.guardMutation([at, path]);
-        return ops.mkdir(this.locate(path).rel, { recursive: true, mode });
+        const whole = this.locate(path);
+        return this.reportWrite(path, whole, ops, 'made', () => ops.mkdir(whole.rel, { recursive: true, mode }));
       }
       return then(this.softStat(ops, r.rel, true), (stat) => {
         if (stat !== null) {
@@ -1502,7 +1641,7 @@ export class CompositeVFS implements VFS {
           return make(i + 1);
         }
         this.guardMutation([at]);
-        return then(ops.mkdir(r.rel, { mode }), () => make(i + 1));
+        return then(this.reportWrite(at, r, ops, 'created', () => ops.mkdir(r.rel, { mode })), () => make(i + 1));
       });
     };
     return make(1);
@@ -1522,7 +1661,7 @@ export class CompositeVFS implements VFS {
       if (source.mount.options.readOnly) throw new Refusal('EROFS', from, `${source.mount.point} is mounted read-only`);
       return then(this.reachable(from, sync), () => then(this.reachable(to, sync), () => {
         this.guardMutation([fromInput, from, toInput, to]);
-        return this.renameIn(source, target, from, sync);
+        return this.reportWrite(to, target, this.ops(target, sync), 'renamed', () => this.renameIn(source, target, from, sync), from);
       }));
     }));
   }
@@ -1574,10 +1713,11 @@ export class CompositeVFS implements VFS {
           if (route.mount.options.readOnly) throw new Refusal('EROFS', at, `${route.mount.point} is mounted read-only`);
           if (source.mount === route.mount && typeof sourceOps.copy === 'function') {
             this.guardMutation([toInput, at]);
-            return sourceOps.copy(source.rel, route.rel, options);
+            return this.reportWrite(at, route, sourceOps, 'copied', () => sourceOps.copy!(source.rel, route.rel, options));
           }
           this.guardMutation([toInput]);
-          return this.copyBytes(sourceOps, source.rel, stat, this.ops(route, sync) as SyncVFS, route.rel, at);
+          const targetOps = this.ops(route, sync);
+          return this.reportWrite(at, route, targetOps, 'copied', () => this.copyBytes(sourceOps, source.rel, stat, targetOps as SyncVFS, route.rel, at));
         };
         // The target's parent is a directory, unless its backend resolves its own paths and answers for it (it may make it).
         return then(target.mount.options.resolvesPaths ? undefined : then(this.statAt(parentOf(to), true, sync), (parent) => {
