@@ -278,6 +278,11 @@ export class Shell {
     return view;
   }
 
+  /** The names this shell runs itself, as help and completion list them. */
+  builtinNames(): string[] {
+    return [...this.builtins.keys()];
+  }
+
   private registerBuiltins(): void {
     this.ownBuiltins.set('cd', async (args, _stdout, stderr) => (await this.builtinCd(args, stderr)));
     this.ownBuiltins.set('pwd', async (_args, stdout) => (await this.builtinPwd(stdout)));
@@ -791,7 +796,7 @@ export class Shell {
       env: this.env,
       vfs: this.vfs,
       registry: this.registry,
-      builtinNames: [...this.builtins.keys()],
+      builtinNames: this.builtinNames(),
     };
 
     const result = (await complete(completionCtx));

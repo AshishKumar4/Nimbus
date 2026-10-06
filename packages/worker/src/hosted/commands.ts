@@ -1619,6 +1619,6 @@ registry.register('kill', createKillCommand(processRegistry, hostSignals));
 
 registry.register('top', createTopCommand(processRegistry));
 registry.register('watch', createWatchCommand(registry));
-registry.register('help', createHelpCommand(registry));
+registry.register('help', createHelpCommand(registry, () => shell.builtinNames()));
 
 }
