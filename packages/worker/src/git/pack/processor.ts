@@ -20,7 +20,6 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib';
 
 import { ByteLru } from './byte-lru.js';
 import {
-  MAX_OBJECT_HEADER_BYTES,
   OBJ_OFS_DELTA,
   OBJ_REF_DELTA,
   PACK_HEADER_BYTES,
@@ -176,6 +175,8 @@ const APPEND_PIECE_BYTES = 512 * 1024 - 64 * 1024;
  * 39,950 base reads reach further back than 8 MiB, 9,620 past 16 MiB.
  */
 const DEFAULT_RECENT_BYTES = 2 * 1024 * 1024;
+/** Entries' first bytes a run keeps, for a delta chain walked down and applied back up. */
+const PROBE_CACHE_BYTES = 1024 * 1024;
 /** A continuation reads the stored pack ahead in windows this long. */
 const READ_AHEAD_BYTES = 8 * 1024 * 1024;
 
@@ -245,10 +246,11 @@ class PackOutput {
   private readonly sent: { offset: number; bytes: Uint8Array }[] = [];
   private window: { offset: number; bytes: Uint8Array } | null = null;
   /**
-   * An entry's leading bytes, read with its header: a delta chain's walk
-   * reads each link's header alone (reader.ts objectAt), and its entry next.
+   * Entries' leading bytes, read with their headers, by offset: a delta
+   * chain's walk reads each link's header alone (reader.ts objectAt), and
+   * its entry when the chain is applied back up. Packed bytes, a chain's worth.
    */
-  private probe: { offset: number; bytes: Uint8Array } | null = null;
+  private readonly probes = new ByteLru<number, { bytes: Uint8Array; byteLength: number }>(PROBE_CACHE_BYTES);
 
   constructor(
     private readonly store: PackStore,
@@ -298,16 +300,18 @@ class PackOutput {
       }
       return out;
     }
-    for (const held of [this.window, this.probe]) {
-      if (held !== null && offset >= held.offset && offset + length <= held.offset + held.bytes.byteLength) {
-        return held.bytes.subarray(offset - held.offset, offset - held.offset + length);
-      }
+    const window = this.window;
+    if (window !== null && offset >= window.offset && offset + length <= window.offset + window.bytes.byteLength) {
+      return window.bytes.subarray(offset - window.offset, offset - window.offset + length);
     }
+    const probe = this.probes.get(offset);
+    if (probe !== undefined && length <= probe.byteLength) return probe.bytes.subarray(0, length);
     await this.flush();
     this.storeReads++;
-    if (length <= MAX_OBJECT_HEADER_BYTES) {
-      this.probe = { offset, bytes: await this.store.read(offset, Math.min(ENTRY_PROBE_BYTES, this.written - offset)) };
-      return this.probe.bytes.subarray(0, length);
+    if (length <= ENTRY_PROBE_BYTES) {
+      const bytes = await this.store.read(offset, Math.min(ENTRY_PROBE_BYTES, this.written - offset));
+      this.probes.set(offset, { bytes, byteLength: bytes.byteLength });
+      return bytes.subarray(0, length);
     }
     return await this.store.read(offset, length);
   }
