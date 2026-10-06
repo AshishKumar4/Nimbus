@@ -8,18 +8,27 @@
  * client waits far longer, but here an install's iteration speed matters
  * more than its last-ditch resilience.
  *
+ * Every try goes through the network it is given, never the isolate's
+ * fetch: the supervisor's packument fetch passes the workspace's network
+ * (core _shared/workspace-network.ts, which an egress may own), the install
+ * facet its own fetch, which its loader already routes there.
+ *
  * Self-contained but for retrying, a function too: the install facet
  * carries both by source (its preamble, loaders/npm-install-preamble.ts), so
  * a tarball fetch there and a packument fetch in the supervisor (r2-cache.ts)
  * retry alike. The schedule is a literal here, not a module constant: the
  * preamble keeps the identifiers the Worker's bundler gives only functions.
  */
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+/** What a registry request is fetched through. */
+export type RegistryNetwork = Pick<WorkspaceNetwork, 'fetch'>;
 /**
- * `fetchOnce(n)` (try n, 0-based) under the registry's retry policy: the last
- * answer, a 5xx included once the re-tries are spent, or the last failure
- * thrown. `onRetry` hears each re-try ("HTTP 503", "timeout", or the error).
+ * `fetchOnce(fetch, n)` (try n, 0-based, fetching through `network`) under
+ * the registry's retry policy: the last answer, a 5xx included once the
+ * re-tries are spent, or the last failure thrown. `onRetry` hears each re-try
+ * ("HTTP 503", "timeout", or the error).
  */
-export declare function retryingRegistryFetch(fetchOnce: (attempt: number) => Promise<Response>, options?: {
+export declare function retryingRegistryFetch(network: RegistryNetwork, fetchOnce: (fetch: RegistryNetwork['fetch'], attempt: number) => Promise<Response>, options?: {
     retries?: number;
     onRetry?: (retry: number, of: number, delayMs: number, reason: string) => void;
 }): Promise<Response>;

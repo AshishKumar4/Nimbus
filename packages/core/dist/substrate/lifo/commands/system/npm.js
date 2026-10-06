@@ -1,3 +1,4 @@
+import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { resolveContext } from '../registry.js';
 import { resolve, join } from '../../utils/path.js';
 import { writeTarballStream } from '../../../../_shared/tarball.js';
@@ -72,10 +73,10 @@ function encodePackageName(name) {
  * _shared/npm-spec.ts parseRegistryRequest, npm-semver.ts
  * pickPackumentVersion).
  */
-async function fetchPackageInfo(registry, name, version, signal) {
+async function fetchPackageInfo(network, registry, name, version, signal) {
     const request = parseRegistryRequest(name, version ?? '');
     const url = `${registry}/${encodePackageName(request.registryName)}`;
-    const response = await fetch(url, {
+    const response = await network.fetch(url, {
         signal,
         headers: { Accept: 'application/json' },
     });
@@ -98,8 +99,8 @@ async function fetchPackageInfo(registry, name, version, signal) {
  * (core _shared/tarball-integrity.ts: the strongest entry, as npm's ssri
  * does), and only then write it out.
  */
-async function fetchAndStreamPackage(tarballUrl, integrity, targetDir, vfs, signal, stderr) {
-    const response = await fetch(tarballUrl, { signal });
+async function fetchAndStreamPackage(network, tarballUrl, integrity, targetDir, vfs, signal, stderr) {
+    const response = await network.fetch(tarballUrl, { signal });
     if (!response.ok) {
         throw new Error(`Failed to download tarball: ${response.status}`);
     }
@@ -158,10 +159,11 @@ async function installSinglePackage(name, version, targetBase, vfs, npmRegistry,
         return 0;
     }
     (await stdout.write(`  ${name}${version ? '@' + version : ''}...\n`));
-    const info = await fetchPackageInfo(npmRegistry, name, version, signal);
+    const network = kernel?.network ?? ISOLATE_NETWORK;
+    const info = await fetchPackageInfo(network, npmRegistry, name, version, signal);
     // writeTarballStream throws when the archive carried no manifest and writes
     // package.json last, so a return here is a complete package on disk.
-    await fetchAndStreamPackage(info.dist.tarball, info.dist.integrity, targetDir, vfs, signal, stderr);
+    await fetchAndStreamPackage(network, info.dist.tarball, info.dist.integrity, targetDir, vfs, signal, stderr);
     let installed = 1;
     // Global install: link binaries into the resolved prefix's bin dir
     if (isGlobal && globalBinDir) {
@@ -619,7 +621,7 @@ async function registerPkgBins(vfs, pkgDir, registry, kernel) {
     catch { /* ignore */ }
     return count;
 }
-async function npmInfo(ctx) {
+async function npmInfo(ctx, network) {
     const args = ctx.args.slice(1);
     const spec = args[0];
     if (!spec) {
@@ -629,7 +631,7 @@ async function npmInfo(ctx) {
     const { name, version } = parsePackageSpec(spec);
     const npmRegistry = getRegistry(ctx.env);
     try {
-        const info = await fetchPackageInfo(npmRegistry, name, version, ctx.signal);
+        const info = await fetchPackageInfo(network, npmRegistry, name, version, ctx.signal);
         await ctx.stdout.write(`\n${info.name}@${info.version}\n`);
         if (info.description)
             await ctx.stdout.write(`${info.description}\n`);
@@ -659,7 +661,7 @@ async function npmInfo(ctx) {
     }
     return 0;
 }
-async function npmSearch(ctx) {
+async function npmSearch(ctx, network) {
     const args = ctx.args.slice(1);
     const term = args.join(' ');
     if (!term) {
@@ -669,7 +671,7 @@ async function npmSearch(ctx) {
     const npmRegistry = getRegistry(ctx.env);
     const url = `${npmRegistry}/-/v1/search?text=${encodeURIComponent(term)}&size=10`;
     try {
-        const response = await fetch(url, { signal: ctx.signal });
+        const response = await network.fetch(url, { signal: ctx.signal });
         if (!response.ok) {
             throw new Error(`Registry returned ${response.status}`);
         }
@@ -732,9 +734,9 @@ export function createNpmCommand(registry, shellExecute, kernel, deps) {
             case 'info':
             case 'view':
             case 'show':
-                return (await npmInfo(ctx));
+                return (await npmInfo(ctx, kernel?.network ?? ISOLATE_NETWORK));
             case 'search':
-                return (await npmSearch(ctx));
+                return (await npmSearch(ctx, kernel?.network ?? ISOLATE_NETWORK));
             case '-v':
             case '--version':
                 await ctx.stdout.write(NPM_VERSION + '\n');
