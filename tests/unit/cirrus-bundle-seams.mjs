@@ -10,6 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
+import { createRequire } from 'node:module';
 import { join } from 'node:path';
 import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
 import { replaceSeam, requirePolyfillSeam } from '../../packages/worker/scripts/cirrus-bundle-shared.mjs';
@@ -150,11 +151,30 @@ assert.throws(
 {
   const worker = new URL('../../packages/worker/', import.meta.url).pathname;
   const staged = readFileSync(join(worker, 'public/_assets/cirrus-plugin-react.bundle.js'), 'utf8');
-  const start = staged.indexOf('var runtimeCode = `');
-  assert.ok(start >= 0, 'the staged bundle defines runtimeCode');
-  let end = start + 'var runtimeCode = `'.length;
-  while (staged[end] !== '`') end += staged[end] === '\\' ? 2 : 1;
-  const runtimeCode = new Function(`return ${staged.slice(start + 'var runtimeCode = '.length, end + 1)};`)();
+  // The bundle parsed as the module it is, so a malformed or truncated asset
+  // is a syntax error rather than a delimiter scan that never ends.
+  const { parse } = createRequire(join(worker, 'package.json'))('acorn');
+  const runtimeCodeOf = (source) => {
+    const stack = [parse(source, { ecmaVersion: 'latest', sourceType: 'module' })];
+    while (stack.length > 0) {
+      const node = stack.pop();
+      if (node?.type === 'VariableDeclarator' && node.id.name === 'runtimeCode') {
+        assert.equal(node.init?.type, 'TemplateLiteral', 'runtimeCode is a template literal');
+        assert.equal(node.init.expressions.length, 0, 'runtimeCode interpolates nothing');
+        return node.init.quasis[0].value.cooked;
+      }
+      for (const value of Object.values(node ?? {})) {
+        if (Array.isArray(value)) stack.push(...value.filter((child) => typeof child?.type === 'string'));
+        else if (typeof value?.type === 'string') stack.push(value);
+      }
+    }
+    assert.fail('the staged bundle defines runtimeCode');
+  };
+  const opening = staged.indexOf('var runtimeCode = `');
+  assert.ok(opening >= 0, 'the staged bundle defines runtimeCode');
+  assert.throws(() => runtimeCodeOf(staged.slice(0, opening + 'var runtimeCode = `'.length + 64)),
+    /Unterminated template/, 'an asset cut inside runtimeCode is refused, not scanned forever');
+  const runtimeCode = runtimeCodeOf(staged);
   const refreshRuntime = readFileSync(join(resolvePackageDir('react-refresh', { start: worker }), 'cjs/react-refresh-runtime.development.js'), 'utf8');
   const refreshUtils = readFileSync(join(resolvePackageDir('@vitejs/plugin-react', { start: worker }), 'dist/refreshUtils.js'), 'utf8');
   assert.ok(runtimeCode.includes("getProperty(type, '$$typeof')"), "react-refresh's `$$typeof` survives in the staged bundle");
