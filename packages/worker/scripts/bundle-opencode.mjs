@@ -59,20 +59,13 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
+import { readCorePin, sha256Hex } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const CORE_ROOT = path.resolve(ROOT, '..', 'core');
 const OUT_TS = path.join(ROOT, 'src', 'opencode-artifact.generated.ts');
 
 const DIST_DIR = process.env.NIMBUS_OPENCODE_DIST || null;
-
-async function readPinnedVersion() {
-  const src = await fs.readFile(path.join(CORE_ROOT, 'src', 'constants.ts'), 'utf8');
-  const m = src.match(/OPENCODE_VERSION\s*=\s*'([^']+)'/);
-  if (!m) throw new Error('[bundle-opencode] OPENCODE_VERSION not found in constants.ts');
-  return m[1];
-}
 
 async function exists(p) {
   try {
@@ -252,7 +245,7 @@ export const OPENCODE_CHUNKS_PACK: string | null = ${
 }
 
 async function main() {
-  const version = await readPinnedVersion();
+  const version = readCorePin('OPENCODE_VERSION');
   const assetRel = path.join('_assets', 'opencode', version);
   const assetDir = path.join(ROOT, 'public', assetRel);
 
@@ -404,7 +397,7 @@ async function main() {
     totalBytes += bytes.length;
     hash.update(name);
     hash.update(bytes);
-    digests[name] = createHash('sha256').update(bytes).digest('hex');
+    digests[name] = sha256Hex(bytes);
     if (name !== 'index.js') sidecars.push(name);
     console.log(
       `[bundle-opencode] staged ${name} (${(bytes.length / 1024).toFixed(1)} KiB)`,

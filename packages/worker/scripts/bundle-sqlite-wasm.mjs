@@ -43,14 +43,13 @@
 
 import { promises as fs } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 
 import { resolvePackageDir } from './resolve-package-dir.mjs';
+import { readCorePin, sha256Hex, stageAsset } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
-const CORE_ROOT = path.resolve(ROOT, '..', 'core');
 
 const PKG_DIR = resolvePackageDir('sql.js', { start: ROOT });
 const JS_SRC = path.join(PKG_DIR, 'dist', 'sql-wasm.js');
@@ -61,13 +60,6 @@ const OUT_ASSETS_DIR = path.join(ROOT, 'public', '_assets');
 
 // SQLJS_VERSION is the source of truth (src/constants.ts). Read it back
 // out of the TS source rather than importing (constants.ts is ESM TS).
-async function readPinnedVersion() {
-  const src = await fs.readFile(path.join(CORE_ROOT, 'src', 'constants.ts'), 'utf8');
-  const m = src.match(/SQLJS_VERSION\s*=\s*'([^']+)'/);
-  if (!m) throw new Error('[bundle-sqlite-wasm] SQLJS_VERSION not found in constants.ts');
-  return m[1];
-}
-
 /**
  * Patterns that, if present in the glue OUTSIDE the Node-only
  * (ENVIRONMENT_IS_NODE) branch, would break facet evaluation. sql.js
@@ -86,7 +78,7 @@ const FORBIDDEN_PATTERNS = [
 async function main() {
   const pkgJson = JSON.parse(await fs.readFile(PKG_JSON, 'utf8'));
   const installed = pkgJson.version;
-  const pinned = await readPinnedVersion();
+  const pinned = readCorePin('SQLJS_VERSION');
   console.log(`[bundle-sqlite-wasm] installed sql.js: ${installed}`);
   if (installed !== pinned) {
     throw new Error(
@@ -127,25 +119,19 @@ async function main() {
   }
   const jsFn = jsRaw.replace(footerRe, '\n') + '\nreturn initSqlJs;\n';
 
-  // ── 2. Stage the wasm into public/_assets/ ──────────────────────────
-  await fs.mkdir(OUT_ASSETS_DIR, { recursive: true });
+  // ── 2. Stage the wasm into public/_assets/, removing other versions ─
   const assetName = `sqljs-${version}.wasm`;
   const assetOut = path.join(OUT_ASSETS_DIR, assetName);
   const wasmBytes = await fs.readFile(WASM_SRC);
-  await fs.writeFile(assetOut, wasmBytes);
-  const wasmSha256 = createHash('sha256').update(wasmBytes).digest('hex');
+  const removed = stageAsset(OUT_ASSETS_DIR, assetName, wasmBytes,
+    (entry) => entry.startsWith('sqljs-') && entry.endsWith('.wasm'));
+  const wasmSha256 = sha256Hex(wasmBytes);
   console.log(
     `[bundle-sqlite-wasm] copied sql-wasm.wasm → ${path.relative(ROOT, assetOut)} ` +
       `(${(wasmBytes.length / 1024).toFixed(1)} KiB)`,
   );
 
-  // ── 3. Clean up stale-versioned sqljs wasm assets ──────────────────
-  for (const entry of await fs.readdir(OUT_ASSETS_DIR)) {
-    if (entry.startsWith('sqljs-') && entry.endsWith('.wasm') && entry !== assetName) {
-      await fs.unlink(path.join(OUT_ASSETS_DIR, entry));
-      console.log(`[bundle-sqlite-wasm] removed stale asset: ${entry}`);
-    }
-  }
+  for (const entry of removed) console.log(`[bundle-sqlite-wasm] removed stale asset: ${entry}`);
 
   // ── 4. Emit the JS-only generated TS module ─────────────────────────
   const header = `/**

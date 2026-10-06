@@ -61,8 +61,7 @@
  */
 
 import { build } from 'esbuild';
-import { createHash } from 'node:crypto';
-import { readFileSync, writeFileSync, mkdirSync, readdirSync, unlinkSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdirSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 // core's own parser dependency, reached through the workspace hoist; the
@@ -70,6 +69,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { parse } from 'acorn';
 
 import { resolvePackageDir } from './resolve-package-dir.mjs';
+import { stageRuntimeAsset } from './stage-asset.mjs';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const root = join(__dirname, '..');
@@ -492,16 +492,7 @@ async function bundleEsbuildCli() {
  * <constant>_SHA256 (the digest every fetch is verified against).
  */
 function stageRuntimeSource(src, { prefix, generated, constant, description }) {
-  const sha256 = createHash('sha256').update(src, 'utf8').digest('hex');
-  const buildId = sha256.slice(0, 16);
-  const assetDir = join(root, 'public', '_assets', 'runtime');
-  const assetName = `${prefix}-${buildId}.js`;
-  mkdirSync(assetDir, { recursive: true });
-  for (const entry of readdirSync(assetDir)) {
-    if (entry.startsWith(`${prefix}-`) && entry !== assetName) unlinkSync(join(assetDir, entry));
-  }
-  writeFileSync(join(assetDir, assetName), src, 'utf8');
-  const assetPath = `/_assets/runtime/${assetName}`;
+  const { assetPath, buildId, sha256 } = stageRuntimeAsset(root, prefix, src);
   const generatedPath = join(root, 'src', generated);
   writeFileSync(generatedPath, [
     '/**',
