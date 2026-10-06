@@ -1,5 +1,5 @@
 import { Database } from 'bun:sqlite';
-import { SQL_MAX_BOUND_PARAMETERS } from '../../packages/platform/src/limits.ts';
+import { SQL_MAX_BOUND_PARAMETERS } from '../../../packages/platform/src/limits.ts';
 
 export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
   let fault = null;

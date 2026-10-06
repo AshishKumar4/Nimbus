@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 62 s wall, 57 s CPU, 0.1 GiB peak (6 runs, 2026-10-06)
 // The refinement bridge for the coherence model of a resident node facet's
 // namespace and pushed content (Lean: Nimbus.Coherence.Namespace.apply).
 //

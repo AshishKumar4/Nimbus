@@ -24,52 +24,21 @@ import {
   cpSync,
   mkdtempSync,
   readdirSync,
-  existsSync,
 } from 'node:fs';
 import os from 'node:os';
 import path from 'node:path';
-import { execSync } from 'node:child_process';
 import { pathToFileURL } from 'node:url';
 
 import {
   nimbusPatchOpenTUI,
   OPENTUI_FFI_CHUNK_MARKER,
 } from '../../packages/worker/scripts/opencode/bundle-patches.ts';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { OpenTUIWasmBackend } from '../../packages/core/src/runtime/opentui-wasm-backend.ts';
 import { OPENTUI_WASM_ENTRY } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
+import { openTUICoreDirOrSkip, wasiHost } from './lib/opentui-harness.mjs';
 
 // ── locate the @opentui/core source dir carrying the FFI chunk ────────────────
-function findOpenTUICoreDir() {
-  if (process.env.NIMBUS_OPENTUI_CORE_DIR) return process.env.NIMBUS_OPENTUI_CORE_DIR;
-  for (const root of ['/tmp/opencode-research/opencode', process.env.NIMBUS_OPENCODE_CLONE].filter(Boolean)) {
-    if (!existsSync(root)) continue;
-    let out = '';
-    try {
-      out = execSync(
-        `find ${root} -path '*@opentui/core/index.js' -not -path '*core-*' 2>/dev/null | head -5`,
-      ).toString();
-    } catch {
-      /* find may exit non-zero; ignore */
-    }
-    for (const main of out.split('\n').filter(Boolean)) {
-      const dir = path.dirname(main);
-      if (readdirSync(dir).some((f) => /^index(-[a-z0-9]+)?\.js$/.test(f) &&
-        readFileSync(path.join(dir, f), 'utf8').includes(OPENTUI_FFI_CHUNK_MARKER))) {
-        return dir;
-      }
-    }
-  }
-  return null;
-}
-
-const coreDir = findOpenTUICoreDir();
-if (!coreDir) {
-  console.log('opentui-bundle-wiring SKIP: no @opentui/core source found ' +
-    '(needs the opencode build clone; set NIMBUS_OPENTUI_CORE_DIR to run)');
-  process.exit(0);
-}
-console.log(`opentui-bundle-wiring — @opentui/core source: ${coreDir}`);
+const coreDir = openTUICoreDirOrSkip('opentui-bundle-wiring');
 
 const tmp = mkdtempSync(path.join(os.tmpdir(), 'opentui-bundle-wiring-'));
 try {
@@ -94,9 +63,7 @@ try {
   console.log('  [1] @opentui/core FFI chunk patched — backend/pointerSize/span-feed/buffer seams applied fail-loud');
 
   // ── build the wasm backend over the staged Stage A artifact + real WASI host ──
-  const prePath = path.join(tmp, '__wasi-preamble.mjs');
-  writeFileSync(prePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports };`);
-  const { __wasiInitFS, __wasiMakeImports } = await import(pathToFileURL(prePath).href);
+  const wasi = await wasiHost();
   const workerPublic = path.resolve(
     path.dirname(new URL(import.meta.url).pathname),
     '../../packages/worker/public',
@@ -104,7 +71,7 @@ try {
   const module = new WebAssembly.Module(readFileSync(workerPublic + OPENTUI_WASM_ENTRY));
   const backend = OpenTUIWasmBackend.create({
     module,
-    wasi: { makeImports: __wasiMakeImports, initFS: __wasiInitFS },
+    wasi,
     env: { TERM: 'xterm-256color' },
   });
   globalThis.__nimbusOpenTUIBackend = backend;

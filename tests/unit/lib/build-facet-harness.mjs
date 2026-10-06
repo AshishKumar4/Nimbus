@@ -46,20 +46,24 @@ const made = [];
 export async function freshFacetClass() {
   const n = ++copy;
   const ownBinding = (text) => text.replaceAll('globalThis.__nimbusRolldownBinding', `globalThis.__nimbusRolldownBinding${n}`);
-  const code = buildFacetWorkerCode(parts);
+  const code = buildFacetWorkerCode(/** @type {any} */ (parts));
+  /** The emitted module `name` as text (each of these is a JavaScript module). */
+  const text = (name) => /** @type {string} */ (code.modules[name]);
+  /** The emitted wasm module `name`'s bytes. */
+  const wasm = (name) => /** @type {{ wasm: ArrayBuffer }} */ (code.modules[name]).wasm;
   const dir = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'build-facet-'));
   made.push(dir);
   const loaderFile = join(dir, 'napi-wasm-loader.mjs');
   const runtimeFile = join(dir, 'rolldown-runtime.mjs');
-  writeFileSync(loaderFile, code.modules['napi-wasm-loader.js']);
-  if (!code.modules['rolldown-runtime.js'].includes('globalThis.__nimbusRolldownBinding')) throw new Error('build-facet-harness: rolldown no longer reads its binding from globalThis.__nimbusRolldownBinding');
-  writeFileSync(runtimeFile, ownBinding(code.modules['rolldown-runtime.js']));
+  writeFileSync(loaderFile, text('napi-wasm-loader.js'));
+  if (!text('rolldown-runtime.js').includes('globalThis.__nimbusRolldownBinding')) throw new Error('build-facet-harness: rolldown no longer reads its binding from globalThis.__nimbusRolldownBinding');
+  writeFileSync(runtimeFile, ownBinding(text('rolldown-runtime.js')));
   globalThis.__buildFacetImports = {
     DurableObject: class DurableObject { constructor(ctx, env) { this.ctx = ctx; this.env = env; } },
-    rolldownWasm: await WebAssembly.compile(code.modules['rolldown.wasm'].wasm),
-    trampolineWasm: await WebAssembly.compile(code.modules['trampoline.wasm'].wasm),
+    rolldownWasm: await WebAssembly.compile(wasm('rolldown.wasm')),
+    trampolineWasm: await WebAssembly.compile(wasm('trampoline.wasm')),
   };
-  const source = ownBinding(code.modules['worker.js'])
+  const source = ownBinding(text('worker.js'))
     .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject, rolldownWasm, trampolineWasm } = globalThis.__buildFacetImports;')
     .replace(/import \{ ([\w, ]+) \} from "napi-wasm-loader\.js";/, (_, names) => `import { ${names} } from ${JSON.stringify(loaderFile)};`)
     .replace('import rolldownWasm from "rolldown.wasm";', '')
@@ -87,6 +91,10 @@ export async function freshFacetClass() {
  * its answer's delivery included: `deliveryDelayMs(call, argument)` holds the
  * answer of the call-th facet call (0-based), whose first argument is
  * `argument`, that long on its way back.
+ *
+ * @param {any} BuildFacet
+ * @param {(id: string) => Promise<any>} [classFor]
+ * @param {{ deliveryDelayMs?: (call: number, argument: unknown) => number }} [options]
  */
 export function durableObject(BuildFacet, classFor = async () => BuildFacet, { deliveryDelayMs = () => 0 } = {}) {
   const counts = { loaderGets: 0, facetInstances: 0, loaderIds: [], aborted: [], prebundling: 0, mostPrebundling: 0, calls: 0 };

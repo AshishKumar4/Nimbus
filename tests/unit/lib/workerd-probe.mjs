@@ -38,7 +38,7 @@ async function freePort() {
     const server = createServer();
     server.once('error', reject);
     server.listen(0, '127.0.0.1', () => {
-      const { port } = server.address();
+      const { port } = /** @type {import('node:net').AddressInfo} */ (server.address());
       server.close(() => resolvePort(port));
     });
   });
@@ -111,7 +111,7 @@ async function putObjects(puts, persist, work) {
 /**
  * Boot apps/probe on workerd with `runtimes` installable, and `vars` over
  * its config vars (`wrangler dev --var`).
- * @returns {Promise<{ base: string, token: string, stop: () => Promise<void> }>}
+ * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number }>}
  */
 export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {} } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));

@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 20 s wall, 18 s CPU, 1.3 GiB peak (6 runs, 2026-10-06)
 // process.exit() ends a Nimbus process as it ends a Node one: at once,
 // whatever it still holds open. Two cases, each run under host node and in a
 // Nimbus session, with equal output and about the same time:

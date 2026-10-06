@@ -9065,6 +9065,7 @@ const ${binding} = arguments[2];
     for (let at2 = scope; at2; at2 = at2.parent) if (at2.names.has(name)) return at2;
     return null;
   }
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/oxc-facet-ca07f8a6961468ab.js
   function namesBinding(parent, key) {
     switch (parent.type) {
       case "MemberExpression":
@@ -9089,6 +9090,8 @@ const ${binding} = arguments[2];
         return true;
     }
   }
+========
+>>>>>>>> 35861740b:packages/worker/public/_assets/runtime/oxc-facet-9eb760d9a673dfae.js
 
   function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
@@ -9187,6 +9190,33 @@ const ${binding} = arguments[2];
     }
     return references;
   }
+<<<<<<<< HEAD:packages/worker/public/_assets/runtime/oxc-facet-ca07f8a6961468ab.js
+========
+  function namesBinding(parent, key) {
+    switch (parent.type) {
+      case "MemberExpression":
+        return key !== "property" || parent.computed === true;
+      case "Property":
+      case "MethodDefinition":
+      case "PropertyDefinition":
+        return key !== "key" || parent.computed === true;
+      case "ImportAttribute":
+        return key !== "key";
+      case "LabeledStatement":
+      case "BreakStatement":
+      case "ContinueStatement":
+      case "MetaProperty":
+      case "ImportSpecifier":
+      case "ImportDefaultSpecifier":
+      case "ImportNamespaceSpecifier":
+      case "ExportSpecifier":
+      case "ExportAllDeclaration":
+        return false;
+      default:
+        return true;
+    }
+  }
+>>>>>>>> 35861740b:packages/worker/public/_assets/runtime/oxc-facet-9eb760d9a673dfae.js
   function useOf(parent, key, patternProperties) {
     switch (parent.type) {
       case "AssignmentExpression":

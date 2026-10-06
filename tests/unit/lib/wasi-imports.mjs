@@ -27,11 +27,12 @@
  * @param {object} options  Forwarded to __wasiMakeImports unchanged.
  */
 export function makeImportsWithoutJSPI(preamble, options) {
-  const { Suspending } = WebAssembly;
-  delete WebAssembly.Suspending;
+  const wasm = /** @type {any} */ (WebAssembly);
+  const { Suspending } = wasm;
+  delete wasm.Suspending;
   try {
     return preamble.__wasiMakeImports(options);
   } finally {
-    if (Suspending !== undefined) WebAssembly.Suspending = Suspending;
+    if (Suspending !== undefined) wasm.Suspending = Suspending;
   }
 }

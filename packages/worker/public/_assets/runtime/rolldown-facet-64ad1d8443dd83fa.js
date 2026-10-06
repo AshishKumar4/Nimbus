@@ -15961,70 +15961,57 @@ function bundlerConditions(kind) {
 }
 var BUNDLER_IMPORT_CONDITIONS = ["import", "module", "browser", "default"];
 var BUNDLER_REQUIRE_CONDITIONS = ["require", "node", "browser", "default"];
-function* isFile(path3) {
-  return (yield { op: "isFile", path: path3 }) === true;
-}
-function* isDirectory(path3) {
-  return (yield { op: "isDirectory", path: path3 }) === true;
-}
-function* packageJson(path3) {
-  if (!(yield* isFile(path3))) return null;
-  const text = yield { op: "readText", path: path3 };
-  if (typeof text !== "string") return null;
-  try {
-    const parsed = JSON.parse(text);
-    return parsed !== null && typeof parsed === "object" ? parsed : null;
-  } catch {
+function createBundlerResolver(fs) {
+  const packageJson = async (path3) => {
+    if (!await fs.isFile(path3)) return null;
+    const text = await fs.readText(path3);
+    if (text === null) return null;
+    try {
+      const parsed = JSON.parse(text);
+      return parsed !== null && typeof parsed === "object" ? parsed : null;
+    } catch {
+      return null;
+    }
+  };
+  const resolveFile = async (base) => {
+    const path3 = "/" + normalizeVfsPath(base);
+    for (const ext of BUNDLER_EXTENSIONS) if (await fs.isFile(path3 + ext)) return path3 + ext;
+    const named = /\.(js|mjs|cjs|jsx)$/.exec(path3);
+    if (named) {
+      const stem = path3.slice(0, path3.length - named[0].length);
+      for (const ext of TYPESCRIPT_TWINS[named[1]]) if (await fs.isFile(stem + ext)) return stem + ext;
+    }
+    if (await fs.isDirectory(path3)) {
+      for (const index of INDEX_FILES) if (await fs.isFile(path3 + "/" + index)) return path3 + "/" + index;
+    }
     return null;
-  }
-}
-function* fileSteps(base) {
-  const path3 = "/" + normalizeVfsPath(base);
-  for (const ext of BUNDLER_EXTENSIONS) if (yield* isFile(path3 + ext)) return path3 + ext;
-  const named = /\.(js|mjs|cjs|jsx)$/.exec(path3);
-  if (named) {
-    const stem = path3.slice(0, path3.length - named[0].length);
-    for (const ext of TYPESCRIPT_TWINS[named[1]]) if (yield* isFile(stem + ext)) return stem + ext;
-  }
-  if (yield* isDirectory(path3)) {
-    for (const index of INDEX_FILES) if (yield* isFile(path3 + "/" + index)) return path3 + "/" + index;
-  }
-  return null;
-}
-function* ancestors(dir) {
-  for (let at = normalizeVfsPath(dir); at; at = at.slice(0, Math.max(0, at.lastIndexOf("/")))) yield "/" + at;
-}
-function* packageImportSteps(specifier, fromDir) {
-  for (const dir of ancestors(fromDir)) {
-    if (!(yield* isFile(dir + "/package.json"))) continue;
-    const pkg = yield* packageJson(dir + "/package.json");
-    const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
-    return target ? yield* fileSteps(dir + "/" + target.replace(/^\.\//, "")) : null;
-  }
-  return null;
-}
-function* barePackageSteps(specifier, fromDir, conditions) {
-  const { name: name50, subpath } = splitBareSpecifier(specifier);
-  for (const dir of ancestors(fromDir)) {
-    const packageDir = dir + "/node_modules/" + name50;
-    if (!(yield* isDirectory(packageDir))) continue;
-    const pkg = yield* packageJson(packageDir + "/package.json");
-    const entry = pkg ? resolvePackageEntry(pkg, subpath ? "./" + subpath : ".", conditions) : null;
-    const resolved = entry && (yield* fileSteps(packageDir + "/" + entry.replace(/^\.\//, ""))) || subpath && (yield* fileSteps(packageDir + "/" + subpath)) || (yield* fileSteps(packageDir + "/index"));
-    if (resolved) return resolved;
-  }
-  return null;
-}
-function createSyncBundlerResolver(fs) {
-  const run = (steps) => {
-    let step = steps.next();
-    while (!step.done) step = steps.next(fs[step.value.op](step.value.path));
-    return step.value;
+  };
+  const ancestors = function* (dir) {
+    for (let at = normalizeVfsPath(dir); at; at = at.slice(0, Math.max(0, at.lastIndexOf("/")))) yield "/" + at;
   };
   return {
-    resolveFile: (base) => run(fileSteps(base)),
-    resolvePackageImport: (specifier, fromDir) => run(packageImportSteps(specifier, fromDir)),
-    resolveBarePackage: (specifier, fromDir, conditions) => run(barePackageSteps(specifier, fromDir, conditions))
+    resolveFile,
+    async resolvePackageImport(specifier, fromDir) {
+      for (const dir of ancestors(fromDir)) {
+        if (!await fs.isFile(dir + "/package.json")) continue;
+        const pkg = await packageJson(dir + "/package.json");
+        const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
+        return target ? resolveFile(dir + "/" + target.replace(/^\.\//, "")) : null;
+      }
+      return null;
+    },
+    async resolveBarePackage(specifier, fromDir, conditions) {
+      const { name: name50, subpath } = splitBareSpecifier(specifier);
+      for (const dir of ancestors(fromDir)) {
+        const packageDir = dir + "/node_modules/" + name50;
+        if (!await fs.isDirectory(packageDir)) continue;
+        const pkg = await packageJson(packageDir + "/package.json");
+        const entry = pkg ? resolvePackageEntry(pkg, subpath ? "./" + subpath : ".", conditions) : null;
+        const resolved = entry && await resolveFile(packageDir + "/" + entry.replace(/^\.\//, "")) || subpath && await resolveFile(packageDir + "/" + subpath) || await resolveFile(packageDir + "/index");
+        if (resolved) return resolved;
+      }
+      return null;
+    }
   };
 }
 
@@ -16077,7 +16064,7 @@ async function prebundleSlice(spec2, build3) {
   for (const p of files.keys()) {
     for (let slash = p.lastIndexOf("/"); slash > 0; slash = p.lastIndexOf("/", slash - 1)) dirs.add(p.slice(0, slash));
   }
-  const resolver = createSyncBundlerResolver({
+  const resolver = createBundlerResolver({
     isFile: (p) => files.has(norm(p)),
     isDirectory: (p) => dirs.has(norm(p)),
     readText: (p) => {
@@ -16097,22 +16084,22 @@ async function prebundleSlice(spec2, build3) {
     async resolve(args2) {
       const at = (path3) => path3 ? { path: path3, namespace: "nimbus-slice" } : null;
       if (args2.path.startsWith("#") && args2.resolveDir) {
-        const resolved = at(resolver.resolvePackageImport(args2.path, args2.resolveDir));
+        const resolved = at(await resolver.resolvePackageImport(args2.path, args2.resolveDir));
         if (resolved) return resolved;
         warnings.push(`unresolved subpath import "${args2.path}" from ${args2.importer || "?"} (no owning package.json#imports entry); marked external`);
         return { external: true };
       }
       if (bare(args2.path) && isExternal(args2.path)) return { external: true };
       if (args2.path.startsWith("/")) {
-        const resolved = at(resolver.resolveFile(args2.path));
+        const resolved = at(await resolver.resolveFile(args2.path));
         if (resolved) return resolved;
       }
       if (args2.path.startsWith(".") && args2.resolveDir) {
-        const resolved = at(resolver.resolveFile(args2.resolveDir + "/" + args2.path));
+        const resolved = at(await resolver.resolveFile(args2.resolveDir + "/" + args2.path));
         if (resolved) return resolved;
       }
       if (bare(args2.path)) {
-        const resolved = at(resolver.resolveBarePackage(args2.path, args2.resolveDir || "/home/user", bundlerConditions(args2.kind)));
+        const resolved = at(await resolver.resolveBarePackage(args2.path, args2.resolveDir || "/home/user", bundlerConditions(args2.kind)));
         if (resolved) return resolved;
         warnings.push(`unresolved bare import "${args2.path}" from ${args2.importer || "?"} \u2192 marked external`);
       }

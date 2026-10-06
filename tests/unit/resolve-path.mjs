@@ -25,7 +25,7 @@ import { searchPath } from '../../packages/core/src/shell/exec-dispatch.ts';
 import { resolveContext } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { installRubyGems } from '../../packages/core/src/runtime/ruby-gems.ts';
 import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 /** A workspace as the session builds one: shell entrypoints, then the npm bin fallback. */
