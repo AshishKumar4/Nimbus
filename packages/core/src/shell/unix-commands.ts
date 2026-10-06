@@ -161,14 +161,12 @@ async function stdinText(ctx: Ctx): Promise<string | undefined> {
  * A text command shared with the lifo registry: one implementation, reading
  * standard input as the byte stream it is, not a decoded string.
  */
-function textCommand(sqliteVfs: SqliteVFS, command: Command): (ctx: Ctx) => Promise<number> {
-  return wrap(withInvocationVfs(sqliteVfs, () => command as unknown as CmdFn));
+function textCommand(command: Command): (ctx: Ctx) => Promise<number> {
+  return wrap(withInvocationVfs(() => command as unknown as CmdFn));
 }
 
-function withInvocationVfs(
-  _sqliteVfs: SqliteVFS,
-  factory: (vfs: UnixVfs) => CmdFn,
-): CmdFn {
+/** `factory`'s command over the invocation's own view, once the call carries a credential. */
+function withInvocationVfs(factory: (vfs: UnixVfs) => CmdFn): CmdFn {
   return async (ctx) => {
     requireVfsCred(ctx.cred, 'unix command dispatch');
     return (await factory(ctx.vfs)(ctx));
@@ -4559,7 +4557,6 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
       }
       return await fn(ctx);
     } catch (e) {
-      // A closed pipe is the shell's to report (SIGPIPE), not the command's.
       if (isBrokenPipe(e)) throw e;
       (await ctx.stderr.write(`${errorText(e)}\n`));
       return 1;
@@ -4571,10 +4568,10 @@ export function registerUnixCommands(
   registry: UnixCommandRegistry,
   sqliteVfs: SqliteVFS,
 ): void {
-  registry.register('which', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhich(vfs, registry))));
-  registry.register('whereis', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhereis(vfs, registry))));
-  registry.register('command', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkCommand(vfs, registry))));
-  registry.register('type', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkType(vfs, registry))));
+  registry.register('which', wrap(withInvocationVfs((vfs) => mkWhich(vfs, registry))));
+  registry.register('whereis', wrap(withInvocationVfs((vfs) => mkWhereis(vfs, registry))));
+  registry.register('command', wrap(withInvocationVfs((vfs) => mkCommand(vfs, registry))));
+  registry.register('type', wrap(withInvocationVfs((vfs) => mkType(vfs, registry))));
   registry.register('export', wrap(mkExport()));
   registry.register('unset', wrap(mkUnset()));
   registry.register('clear', wrap(mkClear()));
@@ -4582,49 +4579,49 @@ export function registerUnixCommands(
   registry.register('getfacl', wrap(mkGetfacl(sqliteVfs)));
   registry.register('date', wrap(mkDate()));
   registry.register('uptime', wrap(mkUptime()));
-  registry.register('tree', wrap(withInvocationVfs(sqliteVfs, mkTree)));
-  registry.register('grep', textCommand(sqliteVfs, grepCommand));
+  registry.register('tree', wrap(withInvocationVfs(mkTree)));
+  registry.register('grep', textCommand(grepCommand));
   // SHELL-R6-B2: head reads the pipe reader itself, so it terminates after
   // N lines, triggering the abort cascade for upstream producers like `yes`.
-  registry.register('head', textCommand(sqliteVfs, headCommand));
-  registry.register('tail', textCommand(sqliteVfs, tailCommand));
-  registry.register('wc', textCommand(sqliteVfs, wcCommand));
-  registry.register('sort', textCommand(sqliteVfs, sortCommand));
-  registry.register('uniq', textCommand(sqliteVfs, uniqCommand));
-  registry.register('sed', textCommand(sqliteVfs, sedCommand));
-  registry.register('awk', wrap(withInvocationVfs(sqliteVfs, mkAwk)));
-  registry.register('xargs', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkXargs(vfs, registry))));
-  registry.register('tee', textCommand(sqliteVfs, teeCommand));
-  registry.register('du', wrap(withInvocationVfs(sqliteVfs, mkDu)));
+  registry.register('head', textCommand(headCommand));
+  registry.register('tail', textCommand(tailCommand));
+  registry.register('wc', textCommand(wcCommand));
+  registry.register('sort', textCommand(sortCommand));
+  registry.register('uniq', textCommand(uniqCommand));
+  registry.register('sed', textCommand(sedCommand));
+  registry.register('awk', wrap(withInvocationVfs(mkAwk)));
+  registry.register('xargs', wrap(withInvocationVfs((vfs) => mkXargs(vfs, registry))));
+  registry.register('tee', textCommand(teeCommand));
+  registry.register('du', wrap(withInvocationVfs(mkDu)));
   // Registry-level echo + cat for xargs cross-command dispatch.
   // Shell.builtins still wins for direct `echo X` invocations; this
   // entry is only reached when a command (xargs etc.) looks them up
   // via the registry path.
   registry.register('echo', wrap(mkEcho()));
-  registry.register('pwd', wrap(withInvocationVfs(sqliteVfs, mkPwd)));
-  registry.register('cat', textCommand(sqliteVfs, catCommand));
-  registry.register('tac', textCommand(sqliteVfs, tacCommand));
-  registry.register('ls', wrap(withInvocationVfs(sqliteVfs, mkLs)));
-  registry.register('rm', wrap(withInvocationVfs(sqliteVfs, mkRm)));
-  registry.register('touch', wrap(withInvocationVfs(sqliteVfs, mkTouch)));
-  registry.register('stat', wrap(withInvocationVfs(sqliteVfs, (v) => mkStat(v, sqliteVfs))));
-  registry.register('base64', wrap(withInvocationVfs(sqliteVfs, mkBase64)));
+  registry.register('pwd', wrap(withInvocationVfs(mkPwd)));
+  registry.register('cat', textCommand(catCommand));
+  registry.register('tac', textCommand(tacCommand));
+  registry.register('ls', wrap(withInvocationVfs(mkLs)));
+  registry.register('rm', wrap(withInvocationVfs(mkRm)));
+  registry.register('touch', wrap(withInvocationVfs(mkTouch)));
+  registry.register('stat', wrap(withInvocationVfs((v) => mkStat(v, sqliteVfs))));
+  registry.register('base64', wrap(withInvocationVfs(mkBase64)));
   registry.register('id', wrap(mkId(sqliteVfs)));
-  registry.register('realpath', wrap(withInvocationVfs(sqliteVfs, mkRealpath)));
+  registry.register('realpath', wrap(withInvocationVfs(mkRealpath)));
   registry.register('printf', wrap(mkPrintf()));
   registry.register('true', wrap(mkTrue()));
   registry.register('false', wrap(mkFalse()));
-  registry.register('readlink', wrap(withInvocationVfs(sqliteVfs, mkReadlink)));
-  registry.register('md5sum', textCommand(sqliteVfs, checksum.md5sum));
-  registry.register('sha1sum', textCommand(sqliteVfs, checksum.sha1sum));
-  registry.register('sha224sum', textCommand(sqliteVfs, checksum.sha224sum));
-  registry.register('sha256sum', textCommand(sqliteVfs, checksum.sha256sum));
-  registry.register('sha384sum', textCommand(sqliteVfs, checksum.sha384sum));
-  registry.register('sha512sum', textCommand(sqliteVfs, checksum.sha512sum));
-  registry.register('b2sum', textCommand(sqliteVfs, checksum.b2sum));
-  registry.register('cksum', textCommand(sqliteVfs, checksum.cksum));
-  registry.register('sum', textCommand(sqliteVfs, checksum.sum));
-  registry.register('file', wrap(withInvocationVfs(sqliteVfs, mkFile)));
+  registry.register('readlink', wrap(withInvocationVfs(mkReadlink)));
+  registry.register('md5sum', textCommand(checksum.md5sum));
+  registry.register('sha1sum', textCommand(checksum.sha1sum));
+  registry.register('sha224sum', textCommand(checksum.sha224sum));
+  registry.register('sha256sum', textCommand(checksum.sha256sum));
+  registry.register('sha384sum', textCommand(checksum.sha384sum));
+  registry.register('sha512sum', textCommand(checksum.sha512sum));
+  registry.register('b2sum', textCommand(checksum.b2sum));
+  registry.register('cksum', textCommand(checksum.cksum));
+  registry.register('sum', textCommand(checksum.sum));
+  registry.register('file', wrap(withInvocationVfs(mkFile)));
   // od/hexdump/xxd read operands and sinks through ctx.vfs — the
   // mount-aware seam the host hands every command — so they need no
   // invocation-scoped raw view of their own.
