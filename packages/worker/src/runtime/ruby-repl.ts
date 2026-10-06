@@ -25,7 +25,6 @@
  *   - irb history pickling.
  */
 
-import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
@@ -40,8 +39,6 @@ import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 
 export interface RubyReplDeps {
   facetMgr: FacetManager;
-  /** The workspace's network: the prompt's program goes out through its egress. */
-  network: WorkspaceNetwork;
   /** Owns the installed interpreter blob the prompt is booted from. */
   authority: NimbusFilesystemAuthority;
   terminal: WebSocketTerminal;
@@ -214,7 +211,7 @@ class RubyReplAdapter implements ReplAdapter {
     // every REPL eval died on boot) — compose it in exactly one place.
     const preamble = buildRubyPreamble();
 
-    const { env, ctx } = getFacetManagerLoaderHost(facetMgr);
+    const { env, ctx, network } = getFacetManagerLoaderHost(facetMgr);
     // The caller's filesystem, under the caller's credential: the prompt
     // starts in the shell's working directory and reads and writes there.
     this.pool = new IsolatePool(env, ctx, {
@@ -222,7 +219,8 @@ class RubyReplAdapter implements ReplAdapter {
       concurrency: 1,
       supervisorPid: this.deps.pid,
       preamble,
-      network: this.deps.network,
+      // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
+      network,
     });
   }
 

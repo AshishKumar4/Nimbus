@@ -34,6 +34,7 @@ import {
 } from '@nimbus-sh/worker/auth';
 
 import { WorkerEntrypoint } from 'cloudflare:workers';
+import { CANARY_PROJECT, CANARY_WHEEL, canaryPypiJson, canaryWheel } from './egress-canary.js';
 
 /**
  * The host the test egress answers itself: unresolvable anywhere else, so a
@@ -41,16 +42,48 @@ import { WorkerEntrypoint } from 'cloudflare:workers';
  */
 const EGRESS_TEST_HOST = 'egress-test.invalid';
 
+/** What the egress answers a plain-HTTP request to EGRESS_TEST_HOST with, over TCP: the canary wheel, or its request line. */
+function egressTcpHttpResponse(requestLine: string): Uint8Array {
+  const [method = '', path = ''] = requestLine.split(' ');
+  const wheel = method === 'GET' && path === `/${CANARY_WHEEL}`;
+  const body = wheel ? canaryWheel() : new TextEncoder().encode(`via-egress-tcp ${method} ${path}`);
+  const head = new TextEncoder().encode(
+    `HTTP/1.1 200 OK\r\ncontent-type: ${wheel ? 'application/octet-stream' : 'text/plain'}\r\n`
+    + `content-length: ${body.byteLength}\r\nconnection: close\r\n\r\n`,
+  );
+  const response = new Uint8Array(head.byteLength + body.byteLength);
+  response.set(head);
+  response.set(body, head.byteLength);
+  return response;
+}
+
+/** The request line of the HTTP request at the head of `readable` (read to its blank line). */
+async function readRequestLine(readable: ReadableStream<Uint8Array>): Promise<string> {
+  const reader = readable.getReader();
+  let text = '';
+  while (!text.includes('\r\n\r\n')) {
+    const { done, value } = await reader.read();
+    if (done) break;
+    text += new TextDecoder().decode(value);
+  }
+  reader.releaseLock();
+  return text.split('\r\n', 1)[0] ?? '';
+}
+
 /**
  * A recording egress for tests (NIMBUS_TEST_EGRESS=1): it answers
- * EGRESS_TEST_HOST itself (HTTP, WebSocket upgrades, plain TCP on port 7)
- * and sends everything else on to the network, so a session under it can
- * still install packages. What an embedder supplies is the same shape: a
- * Fetcher, minted per session with its identity in props.
+ * EGRESS_TEST_HOST itself (HTTP, WebSocket upgrades, plain TCP on port 7,
+ * plain HTTP over TCP on port 80) and PyPI's metadata for its canary project
+ * (egress-canary.ts), and sends everything else on to the network, so a
+ * session under it can still install packages. What an embedder supplies is
+ * the same shape: a Fetcher, minted per session with its identity in props.
  */
 export class TestEgress extends WorkerEntrypoint {
   async fetch(request: Request): Promise<Response> {
     const url = new URL(request.url);
+    if (url.hostname === 'pypi.org' && (url.pathname === `/pypi/${CANARY_PROJECT}/json` || url.pathname === `/pypi/${CANARY_PROJECT}/1.0/json`)) {
+      return Response.json(canaryPypiJson(`http://${EGRESS_TEST_HOST}/${CANARY_WHEEL}`));
+    }
     if (url.hostname !== EGRESS_TEST_HOST) return fetch(request);
     if (request.headers.get('upgrade')?.toLowerCase() === 'websocket') {
       const pair = new WebSocketPair();
@@ -63,6 +96,13 @@ export class TestEgress extends WorkerEntrypoint {
 
   async connect(socket: Socket): Promise<void> {
     const { localAddress } = await socket.opened as { localAddress?: string };
+    if (localAddress === `${EGRESS_TEST_HOST}:80`) {
+      const response = egressTcpHttpResponse(await readRequestLine(socket.readable));
+      const writer = socket.writable.getWriter();
+      await writer.write(response);
+      await writer.close();
+      return;
+    }
     if (localAddress?.startsWith(`${EGRESS_TEST_HOST}:`)) {
       const writer = socket.writable.getWriter();
       await writer.write(new TextEncoder().encode('via-egress-tcp\n'));

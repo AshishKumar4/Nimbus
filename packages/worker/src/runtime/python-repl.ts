@@ -1,5 +1,4 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
-import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
@@ -52,8 +51,6 @@ const EXIT_MARKER = '__NIMBUS_PY_EXIT__';
 
 export interface PythonReplDeps {
   facetMgr: FacetManager;
-  /** The workspace's network: the prompt's program goes out through its egress. */
-  network: WorkspaceNetwork;
   /** Owns the installed interpreter blobs the prompt is booted from. */
   authority: NimbusFilesystemAuthority;
   terminal: WebSocketTerminal;
@@ -93,7 +90,7 @@ export interface PythonReplDeps {
 const PythonFacetResult = z.object({ stdout: z.string(), stderr: z.string(), exitCode: z.number().int(), error: z.string().optional() });
 const PythonFacetFailure = z.object({ __nimbusFacetError: z.string() });
 type PythonReplFacetResult = z.infer<typeof PythonFacetResult>;
-type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'network' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'start'>;
+type InterpreterDeps = Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest' | 'pid' | 'start'>;
 
 
 /** Where cpython-runner's catalog spec stages the interpreter. */
@@ -283,7 +280,8 @@ class PythonReplAdapter implements ReplAdapter {
       concurrency: 1,
       preamble: buildCPythonPreamble(),
       wasmModules: { 'python.wasm': this.wasmBytes },
-      network: this.deps.network,
+      // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
+      network: host.network,
     };
     const pid = this.deps.pid;
     this.pool = typeof pid === 'number' && pid > 0
@@ -378,7 +376,7 @@ export async function runPythonRepl(deps: PythonReplDeps): Promise<number> {
  * source compiles to a no-op, so the only thing it does is bring the facet up.
  */
 export async function warmPythonRepl(
-  deps: Pick<PythonReplDeps, 'facetMgr' | 'network' | 'authority' | 'installRoot' | 'home' | 'manifest'>,
+  deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest'>,
 ): Promise<void> {
   const adapter = new PythonReplAdapter(deps);
   await adapter.push('');
