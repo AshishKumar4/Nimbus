@@ -37,6 +37,8 @@ const REFERENCE = {
   rev: /util-linux/,
   awk: /GNU Awk/,
   diff: /GNU diffutils/,
+  // Ubuntu's gnudd says `dd (coreutils)`; uutils' dd says `dd (uutils coreutils)`.
+  dd: /^dd \((GNU )?coreutils\)/,
 };
 
 async function oracle(command, args, options, label) {

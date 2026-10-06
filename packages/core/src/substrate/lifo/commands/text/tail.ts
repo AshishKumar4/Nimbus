@@ -1,6 +1,7 @@
 import type { Command } from '../types.js';
 import { concatBytes, inputChunks, writeBytes, asciiBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
+import { parseSuffixedCount } from '../../utils/size-units.js';
 
 // GNU tail (coreutils 9.7) on bytes: -n [+]N lines, -c [+]N bytes, -N, -q,
 // -v, -z. Output is the input's own bytes: nothing is added or re-encoded.
@@ -9,13 +10,11 @@ type Mode = { unit: 'lines' | 'bytes'; count: number; fromStart: boolean };
 
 class TailUsage extends Error {}
 
+/** A count as GNU tail reads one: `+N` counts from the start, `-N` (or N) back from the end, with head's suffixes. */
 function parseCount(value: string, unit: 'lines' | 'bytes'): Mode {
-  const m = /^([+-]?)(\d+)([bkKmMgG]?|[kKmMgG]B|[kKmMgG]iB)?$/.exec(value);
-  if (m === null) throw new TailUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
-  const scale: Record<string, number> = { '': 1, b: 512, k: 1024, K: 1024, kB: 1000, KB: 1000, KiB: 1024, m: 1048576, M: 1048576, MB: 1e6, MiB: 1048576, g: 1073741824, G: 1073741824, GB: 1e9, GiB: 1073741824 };
-  const factor = scale[m[3] ?? ''];
-  if (factor === undefined) throw new TailUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
-  return { unit, count: Number(m[2]) * factor, fromStart: m[1] === '+' };
+  const count = parseSuffixedCount(value.startsWith('-') ? value.slice(1) : value, 'bkKmMGTPEZYRQ0');
+  if (count === null) throw new TailUsage(`invalid number of ${unit}: \u2018${value}\u2019`);
+  return { unit, count: Math.min(count, Number.MAX_SAFE_INTEGER), fromStart: value.startsWith('+') };
 }
 
 const command: Command = async (ctx) => {

@@ -13,7 +13,6 @@ import { requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { dec, enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { NIMBUS_VERSION } from '../constants.js';
-import { SinkWriter, streamRange } from '../_shared/byte-stream.js';
 import type { VfsFileType as FileType } from '../vfs/vfs.js';
 import type { ChildExit, Command, CommandInputStream, RunAsOptions } from '../substrate/lifo/commands/types.js';
 import { resolveContext, type ResolveContext } from '../substrate/lifo/commands/registry.js';
@@ -43,6 +42,8 @@ import {
 import { createSuCommand, createSudoCommand, createUmaskCommand } from './elevation-commands.js';
 import { isVfsError, syscallError, VFS_STRERROR, strerror } from '../vfs/vfs-error.js';
 import { parseDateTime, realDay } from '../substrate/lifo/utils/parse-datetime.js';
+import { globMatch } from '../substrate/lifo/utils/glob.js';
+import { humanReadable, parseSuffixedCount } from '../substrate/lifo/utils/size-units.js';
 import { isCharacterDevice, isDirectory, fileTypeChar, lstatOrThrow, statOrThrow } from '../vfs/vfs.js';
 import { direntTypeIn } from '../vfs/dirent-type.js';
 
@@ -908,183 +909,6 @@ function mkTree(vfs: UnixVfs): CmdFn {
 }
 
 /**
- * `grep`'s argv, carrying `-F` alongside it. Both spellings of the flag — its
- * own word and a letter inside a cluster — land on the parsed argv, which is
- * what the pattern escape below reads.
- */
-type GrepArgv = string[] & { __fixedStrings?: boolean };
-
-type HeadArgs = { lines: number; bytes?: number; files: string[]; error?: string };
-
-/** `-c N`, `-cN`, `--bytes=N`, `-n N`, `-nN`, `--lines=N`, `-N`, `-q`, `-v`. */
-function parseHeadArgs(args: string[]): HeadArgs {
-  const result: HeadArgs = { lines: 10, files: [] };
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    const option = matchCountOption(arg, args[i + 1], 'c', 'bytes')
-      ?? matchCountOption(arg, args[i + 1], 'n', 'lines');
-
-    if (option) {
-      i += option.consumed;
-      const count = parseByteCount(option.value);
-      if (count === null) {
-        const what = option.flag === 'c' ? 'bytes' : 'lines';
-        return { ...result, error: `invalid number of ${what}: '${option.value}'` };
-      }
-      if (option.flag === 'c') result.bytes = count; else result.lines = count;
-    } else if (/^-\d+$/.test(arg)) {
-      result.lines = Number.parseInt(arg.slice(1), 10);
-    } else if (arg === '-q' || arg === '--quiet' || arg === '-v' || arg === '--verbose') {
-      continue;
-    } else if (arg !== '-' && arg.startsWith('-') && !arg.startsWith('--') && arg.length > 1) {
-      // A cluster of switches, `-qn 1`; `c` and `n` take the rest of the
-      // cluster or the next argument.
-      let consumed = false;
-      for (let j = 1; j < arg.length && !consumed; j++) {
-        const flag = arg[j];
-        if (flag === 'q' || flag === 'v') continue;
-        if (flag !== 'c' && flag !== 'n') {
-          return { ...result, error: `invalid option -- '${flag}'` };
-        }
-        const text = arg.slice(j + 1) || (args[++i] ?? '');
-        const count = parseByteCount(text);
-        if (count === null) {
-          const what = flag === 'c' ? 'bytes' : 'lines';
-          return { ...result, error: `invalid number of ${what}: '${text}'` };
-        }
-        if (flag === 'c') result.bytes = count; else result.lines = count;
-        consumed = true;
-      }
-    } else if (arg !== '-' && arg.startsWith('--')) {
-      return { ...result, error: `unrecognized option '${arg}'` };
-    } else {
-      result.files.push(arg);
-    }
-  }
-  return result;
-}
-
-function matchCountOption(
-  arg: string,
-  next: string | undefined,
-  flag: string,
-  long: string,
-): { flag: string; value: string; consumed: number } | null {
-  if (arg === `-${flag}`) return { flag, value: next ?? '', consumed: 1 };
-  if (arg.startsWith(`-${flag}`) && arg.length > 2) return { flag, value: arg.slice(2), consumed: 0 };
-  if (arg === `--${long}`) return { flag, value: next ?? '', consumed: 1 };
-  if (arg.startsWith(`--${long}=`)) return { flag, value: arg.slice(long.length + 3), consumed: 0 };
-  return null;
-}
-
-/** `head`/`dd`-style counts: plain digits with an optional binary/SI suffix. */
-function parseByteCount(value: string): number | null {
-  const match = /^(\d+)([bkKmMgG]?[Bb]?)$/.exec(value.trim());
-  if (!match) return null;
-  const scale: Record<string, number> = {
-    '': 1, b: 512, k: 1024, K: 1024, kB: 1000, KB: 1000,
-    m: 1024 ** 2, M: 1024 ** 2, mB: 1000 ** 2, MB: 1000 ** 2,
-    g: 1024 ** 3, G: 1024 ** 3, gB: 1000 ** 3, GB: 1000 ** 3,
-  };
-  const factor = scale[match[2]];
-  if (factor === undefined) return null;
-  return Number.parseInt(match[1], 10) * factor;
-}
-
-/**
- * `head -c N` — emit the first N bytes. Streams through the positional read
- * so byte counts hold for any N and character devices such as /dev/zero,
- * which have no stored content to read whole, work like they do on Unix.
- */
-async function headBytes(ctx: Ctx, files: string[], limit: number): Promise<number> {
-  const writer = new SinkWriter(ctx.stdout);
-  if (files.length === 0 || (files.length === 1 && files[0] === '-')) {
-    await streamStdinBytes(ctx, writer, limit);
-    writer.end();
-    return 0;
-  }
-
-  let exit = 0;
-  for (const f of files) {
-    const path = resolvePath(ctx.cwd, f);
-    try {
-      if (files.length > 1) (await ctx.stdout.write(`==> ${f} <==\n`));
-      (await streamRange(async (offset, length) => (await ctx.vfs.readRange(path, offset, length)), writer, {
-        length: limit,
-        signal: ctx.signal,
-      }));
-    } catch (error) {
-      (await ctx.stderr.write(`head: ${f}: ${strerror(error)}\n`));
-      exit = 1;
-    }
-  }
-  writer.end();
-  return exit;
-}
-
-/**
- * Pull at most `limit` bytes from stdin, whether the shell handed us an
- * already-drained string or a live pipe reader. Reading only the string form
- * would make `producer | head -c N` emit nothing at all.
- */
-async function streamStdinBytes(ctx: Ctx, writer: SinkWriter, limit: number): Promise<void> {
-  const stdin: unknown = ctx.stdin;
-  if (typeof stdin === 'string') {
-    (await writer.write(enc.encode(stdin).subarray(0, limit)));
-    return;
-  }
-  const reader = stdin as {
-    read?: () => Promise<string | null>;
-    readBytes?: (n: number) => Promise<Uint8Array | null>;
-  };
-  if (typeof reader?.read !== 'function') return;
-
-  let copied = 0;
-  while (copied < limit) {
-    const want = limit - copied;
-    let chunk: Uint8Array | null;
-    if (reader.readBytes) {
-      chunk = await reader.readBytes(want);
-    } else {
-      // Text-only readers report EOF with null; encoding that null into an
-      // empty chunk would spin the loop forever without advancing.
-      const text = await reader.read();
-      if (text === null) break;
-      chunk = enc.encode(text);
-    }
-    if (chunk === null) break;
-    const bytes = chunk.subarray(0, want);
-    (await writer.write(bytes));
-    copied += bytes.length;
-  }
-}
-
-/** Absolute, mount-aware path — `ctx.vfs` resolves virtual mounts like /dev. */
-async function readWholeFileString(ctx: Ctx, path: string): Promise<string> {
-  if ((await statOrThrow(ctx.vfs, path)).type === 'directory') {
-    throw Object.assign(new Error('Is a directory'), { code: 'EISDIR' });
-  }
-  return dec.decode((await ctx.vfs.readFile(path)));
-}
-
-type TailArgs = {
-  count: number;
-  /** `-n +N` counts forward from the first line instead of back from the last. */
-  fromStart: boolean;
-  files: string[];
-  verbose: boolean;
-  error?: string;
-};
-
-function applyTailCount(result: TailArgs, spec: string): string | null {
-  const value = /^([+-]?)(\d+)$/.exec(spec.trim());
-  if (value === null) return `invalid number of lines: '${spec}'`;
-  result.fromStart = value[1] === '+';
-  result.count = Number.parseInt(value[2], 10);
-  return null;
-}
-
-/**
  * What an awk expression evaluates to. The subset below has neither arrays nor
  * a match operator, so every value is one of the two scalars awk itself has,
  * and `print` decides which spelling to use.
@@ -1882,52 +1706,18 @@ function mkXargs(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
 }
 
 /**
- * shell compatibility (2026-05-11): du flag parsing for combined forms.
- * Pre-fix `du -sh` didn't activate -h because we checked for literal
- * `-h` only — `-sh` is a single arg containing both flags. POSIX
- * conformant short-flag stacking.
+ * du -B's block size: a count with GNU's suffixes for it. A unit with no
+ * count (`K`, `MB`, `KiB`) is also what du prints after each size: the
+ * letter as GNU spells it (`k` for the 1000-based kilo, else upper case)
+ * and its `B` or `iB`.
  */
-/**
- * GNU du's human-readable size (-h, or --si with `base` 1000): rounded up,
- * one decimal below 10 of a unit, whole units from 10 up, bytes below one unit.
- */
-function duHuman(bytes: number, base: 1024 | 1000): string {
-  if (bytes < base) return String(bytes);
-  const units = base === 1024 ? ['K', 'M', 'G', 'T', 'P', 'E'] : ['k', 'M', 'G', 'T', 'P', 'E'];
-  let value = bytes / base;
-  let unit = 0;
-  for (;;) {
-    const shown = value < 10 ? Math.ceil(value * 10) / 10 : Math.ceil(value);
-    if (shown < base || unit === units.length - 1) {
-      return `${shown < 10 ? shown.toFixed(1) : String(shown)}${units[unit]}`;
-    }
-    value /= base;
-    unit++;
-  }
-}
-
-/** A GNU size argument (`-B`, `-t`): digits, a unit (K, KiB: 1024s; KB: 1000s; M, G, T, P, E), or both. */
-function parseDuSize(text: string): { bytes: number; suffix: string } | null {
-  const m = /^(-?\d*)([KMGTPE](?:iB|B)?|[kKMGTPE]B?)?$/.exec(text);
-  if (!m || (m[1] === '' || m[1] === '-') && !m[2]) return null;
-  const powers = 'KMGTPE';
-  let factor = 1;
-  if (m[2]) {
-    const letter = m[2][0].toUpperCase();
-    const base = m[2].length === 2 && m[2][1] === 'B' ? 1000 : 1024;
-    factor = base ** (powers.indexOf(letter) + 1);
-  }
-  const count = m[1] === '' ? 1 : m[1] === '-' ? -1 : Number(m[1]);
-  // A unit alone is also the suffix du prints; GNU spells the 1000-based kilo `kB`.
-  const suffix = m[1] === '' ? (m[2] ?? '').replace(/^[kK]B$/, 'kB') : '';
-  return { bytes: count * factor, suffix };
-}
-
-/** A shell glob (`*`, `?`, `[...]`) as a whole-string regular expression, for --exclude. */
-function duGlob(pattern: string): RegExp {
-  let source = '';
-  for (const ch of pattern) source += ch === '*' ? '.*' : ch === '?' ? '.' : ch === '[' || ch === ']' ? ch : ch.replace(/[.+^${}()|\\/]/g, '\\$&');
-  return new RegExp(`^${source}$`);
+function parseDuBlockSize(text: string): { bytes: number; suffix: string } | null {
+  const bytes = parseSuffixedCount(text, 'EgGkKmMPtTYZ0');
+  if (bytes === null) return null;
+  const unit = /^([a-zA-Z])(iB|B)?$/.exec(text);
+  if (unit === null) return { bytes, suffix: '' };
+  const letter = unit[2] === 'B' && unit[1].toLowerCase() === 'k' ? 'k' : unit[1].toUpperCase();
+  return { bytes, suffix: letter + (unit[2] ?? '') };
 }
 
 /**
@@ -1947,14 +1737,14 @@ function mkDu(vfs: UnixVfs): CmdFn {
     let maxDepth: number | null = null;
     let threshold = 0;
     let follow: 'never' | 'operands' | 'always' = 'never';
-    const excludes: RegExp[] = [];
+    const excludes: string[] = [];
     const operands: string[] = [];
     const usage = async (text: string) => {
       await ctx.stderr.write(`du: ${text}\nTry 'du --help' for more information.\n`);
       return 1;
     };
     const setBlock = async (text: string, option: string) => {
-      const size = parseDuSize(text);
+      const size = parseDuBlockSize(text);
       if (!size || size.bytes <= 0) { await ctx.stderr.write(`du: invalid ${option} argument '${text}'\n`); return false; }
       block = size;
       human = null;
@@ -1966,9 +1756,11 @@ function mkDu(vfs: UnixVfs): CmdFn {
       return true;
     };
     const setThreshold = async (text: string) => {
-      const size = parseDuSize(text);
-      if (!size || (size.bytes === 0 && text.startsWith('-'))) { await usage(`invalid --threshold argument '${text}'`); return false; }
-      threshold = size.bytes;
+      // A signed count in base 0 (0x hex, 0 octal), as GNU's xstrtoimax reads it.
+      const negative = text.startsWith('-');
+      const bytes = parseSuffixedCount(negative ? text.slice(1) : text, 'kKmMGTPEZYRQ0', 0);
+      if (bytes === null || (bytes === 0 && negative)) { await usage(`invalid --threshold argument '${text}'`); return false; }
+      threshold = negative ? -bytes : bytes;
       return true;
     };
     const args = ctx.args;
@@ -2006,7 +1798,7 @@ function mkDu(vfs: UnixVfs): CmdFn {
           case '--max-depth': if (!(await setDepth(value!))) return 1; break;
           case '--block-size': if (!(await setBlock(value!, '--block-size'))) return 1; break;
           case '--threshold': if (!(await setThreshold(value!))) return 1; break;
-          case '--exclude': excludes.push(duGlob(value!)); break;
+          case '--exclude': excludes.push(value!); break;
           case '--time': case '--time-style': case '--exclude-from': case '--files0-from': case '--inodes':
             await ctx.stderr.write(`du: ${name} is not supported here\n`);
             return 1;
@@ -2052,13 +1844,14 @@ function mkDu(vfs: UnixVfs): CmdFn {
     if (operands.length === 0) operands.push('.');
     const end = nul ? '\0' : '\n';
     const fmt = (bytes: number) => (human !== null
-      ? duHuman(bytes, human)
+      ? humanReadable(bytes, human)
       : `${Math.ceil(bytes / block.bytes)}${block.suffix}`);
     const usageOf = (st: { type: string; size: number }) => (apparent
       ? (st.type === 'directory' ? 0 : st.size)
       : (st.type === 'file' ? Math.ceil(st.size / 512) * 512 : 0));
     const shown = (bytes: number) => (threshold >= 0 ? bytes >= threshold : bytes <= -threshold);
-    const excluded = (name: string, path: string) => excludes.some((re) => re.test(name) || re.test(path));
+    // --exclude's patterns are fnmatch's, as GNU du reads them: `*` crosses a `/`.
+    const excluded = (name: string, path: string) => excludes.some((pattern) => globMatch(pattern, name) || globMatch(pattern, path));
     let failed = false;
     let grand = 0;
     const seen = new Set<string>();
@@ -3509,31 +3302,13 @@ function mkFile(vfs: UnixVfs): CmdFn {
 // ── Hex dumps: od, hexdump, xxd ─────────────────────────────────────────
 
 /**
- * Dump-tool byte counts: decimal, `0x` hex, leading-zero octal, and the
- * classic suffixes (`b` blocks of 512, K/KiB, KB, M, G — powers of 1024
- * except the round-decimal `KB`/`MB`/`GB` spellings). Null means the value
- * is not a count these tools accept.
+ * Dump-tool byte counts, as GNU od reads -j/-N: base 0 (`0x` hex, leading-zero
+ * octal) and od's suffixes. hexdump and xxd read theirs the same way. Null
+ * means the value is not a count these tools accept, or past what is exact.
  */
 function parseDumpCount(value: string): number | null {
-  const match = /^(0[xX][0-9a-fA-F]+|0[0-7]*|[1-9][0-9]*)([bB]|[kKmMgGtT](?:i?[bB])?)?$/.exec(value);
-  if (match === null) return null;
-  const digits = match[1];
-  const base = digits.startsWith('0x') || digits.startsWith('0X')
-    ? Number.parseInt(digits, 16)
-    : /^0/.test(digits) ? Number.parseInt(digits, 8) : Number.parseInt(digits, 10);
-  if (!Number.isSafeInteger(base) || base < 0) return null;
-  if (match[2] === undefined || match[2] === '') return base;
-  const scale: Record<string, number> = {
-    b: 512, B: 512,
-    k: 1024, K: 1024, KiB: 1024, kB: 1000, KB: 1000,
-    m: 1024 ** 2, M: 1024 ** 2, MiB: 1024 ** 2, mB: 1000 ** 2, MB: 1000 ** 2,
-    g: 1024 ** 3, G: 1024 ** 3, GiB: 1024 ** 3, gB: 1000 ** 3, GB: 1000 ** 3,
-    t: 1024 ** 4, T: 1024 ** 4, TiB: 1024 ** 4, tB: 1000 ** 4, TB: 1000 ** 4,
-  };
-  const factor = scale[match[2]];
-  if (factor === undefined) return null;
-  const total = base * factor;
-  return Number.isSafeInteger(total) ? total : null;
+  const count = parseSuffixedCount(value, 'bEGKkMmPQRTYZ0', 0);
+  return count !== null && Number.isSafeInteger(count) ? count : null;
 }
 
 /** Little-endian word; a short final chunk reads its missing bytes as zero. */
