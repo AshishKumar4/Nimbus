@@ -19,16 +19,19 @@ const wat = `(module
     (i32.store (i32.const 4) (i32.const 32)) (br $again))))))`;
 const wabt = await wabtInit(), mod = wabt.parseWat('byte-echo.wat', wat), wasm = mod.toBinary({}).buffer; mod.destroy();
 const inheritWat = `(module
+ (import "wasi_snapshot_preview1" "proc_exit" (func $exit (param i32)))
  (import "nimbus_proc" "spawn" (func $spawn (param i32 i32 i32 i32 i32 i32 i32 i32 i32 i32) (result i32)))
  (import "nimbus_proc" "start" (func $start (param i32) (result i32)))
  (import "nimbus_proc" "wait" (func $wait (param i32 i32 i32 i32) (result i32)))
  (memory (export "memory") 1)
  (data (i32.const 128) "/home/user/byte-echo.wasm\\00")
+ (func $check (param i32) (if (local.get 0) (then (call $exit (local.get 0)))))
  (func (export "_start")
-  (drop (call $spawn (i32.const 128) (i32.const 24) (i32.const 0) (i32.const 0) (i32.const 0) (i32.const 0)
+  (call $check (call $spawn (i32.const 128) (i32.const ${Buffer.byteLength('/home/user/byte-echo.wasm')+1}) (i32.const 0) (i32.const 0) (i32.const 0) (i32.const 0)
    (i32.const 0) (i32.const 1) (i32.const 2) (i32.const 64)))
-  (drop (call $start (i32.load (i32.const 64))))
-  (drop (call $wait (i32.load (i32.const 64)) (i32.const 0) (i32.const 68) (i32.const 72)))))`;
+  (call $check (call $start (i32.load (i32.const 64))))
+  (call $check (call $wait (i32.load (i32.const 64)) (i32.const 0) (i32.const 68) (i32.const 72)))
+  (call $exit (i32.const 0))))`;
 const inheritedMod=wabt.parseWat('inherit-echo.wat',inheritWat), inheritedWasm=inheritedMod.toBinary({}).buffer; inheritedMod.destroy();
 const probe = await startLocalProbe({ runtimes: [] });
 const hostBytes = spawnSync('node', ['-e', 'process.stdout.write(Buffer.from([0xff,0xfe]))']);
