@@ -229,4 +229,51 @@ function open() {
   assert.deepEqual(other.recalls, ['share']);
 }
 
+// ── A grant reserves inode numbers and storage for its holder: the holder
+//    numbers what it makes, the session keeps those numbers, and no one
+//    else is given them; what it did not use goes back when it ends ──
+{
+  const { raw, kernel } = open();
+  const before = raw.ledger.view().reserved;
+  const lease = raw.acquireExclusiveMutation('work/d', { delegation: { reads: true, inos: 16, bytes: 1 << 20, recall: async () => {} } });
+  assert.equal(lease.inos.end - lease.inos.first, 16);
+  assert.equal(lease.bytes, 1 << 20);
+  assert.equal(raw.ledger.view().reserved - before, 1 << 20, 'the grant reserved no storage');
+  const holder = raw.as(CRED_KERNEL, { mutationOwner: lease.owner });
+  const file = (path, text, ino) => {
+    const data = new TextEncoder().encode(text);
+    return { type: 'file', inode: { path, parentPath: path.slice(0, path.lastIndexOf('/')), kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1, ino }, data };
+  };
+  const wave = (...ops) => holder.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }));
+  const first = lease.inos.first;
+  let result = await wave(
+    { type: 'directory', inode: { path: 'work/d/sub', parentPath: 'work/d', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0, ino: first } },
+    file('work/d/sub/x', 'numbered by its holder', first + 1),
+  );
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.equal(holder.stat('work/d/sub').ino, first);
+  assert.equal(holder.stat('work/d/sub/x').ino, first + 1);
+  // Renamed, and written again under its new name with the same number.
+  result = await wave({ type: 'rename', from: 'work/d/sub/x', to: 'work/d/sub/y' }, file('work/d/sub/y', 'again', first + 1));
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.equal(holder.stat('work/d/sub/y').ino, first + 1);
+  // A number outside the range, or another name's, is refused.
+  result = await wave(file('work/d/sub/z', 'z', lease.inos.end));
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /not one this writer's delegation reserved/);
+  result = await wave(file('work/d/sub/z', 'z', first));
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /is work\/d\/sub's/);
+  // A writer with no delegation numbers nothing.
+  assert.throws(() => kernel.writeBatch({ inodes: [{ path: 'outside2', parentPath: '', isDir: false, size: 1, mtime: 1, mode: 0o644, chunkCount: 1, ino: first + 5 }], chunks: [{ path: 'outside2', chunkId: 0, data: new Uint8Array([1]) }] }),
+    /not one this writer's delegation reserved/);
+  // The session's own numbering never meets the reserved range.
+  kernel.writeFile('outside3', 'session-numbered');
+  const own = kernel.stat('outside3').ino;
+  assert.ok(own < first || own >= lease.inos.end, `the session gave ${own}, inside the reserved [${first}, ${lease.inos.end})`);
+  raw.releaseExclusiveMutation(lease.owner);
+  assert.ok(raw.ledger.view().reserved - before < 1 << 20, 'the unused reservation was not given back');
+  assert.equal(raw.ledger.view().reserved, before, 'the reservation outlived its lease');
+}
+
 console.log('sqlite-vfs delegation: ok');

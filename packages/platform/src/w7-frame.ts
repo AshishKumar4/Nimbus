@@ -33,6 +33,12 @@ export interface BatchInodeEntry {
   uid?: number;
   gid?: number;
   chunkCount: number;
+  /**
+   * The inode number a delegation's holder gave a file or directory it made
+   * (v4): one of the numbers its grant reserved, so the name keeps the
+   * number the holder already showed. Absent: the session numbers it.
+   */
+  ino?: number;
 }
 
 /** Entry for bulk chunk creation via writeBatch(). */
@@ -152,6 +158,7 @@ interface InodeMetadata {
   atime?: number;
   mtime: number;
   mode: number;
+  ino?: number;
 }
 
 interface DirectoryMetadata extends InodeMetadata {
@@ -496,7 +503,7 @@ async function* decodeRecords(
           break;
         }
         case RecordTag.Directory: {
-          const metadata = parseDirectory(payload);
+          const metadata = parseDirectory(payload, v3);
           ownedPaths.claim(metadata.path);
           summary.pathCount++;
           summary.directoryCount++;
@@ -504,7 +511,7 @@ async function* decodeRecords(
           break;
         }
         case RecordTag.FileBegin: {
-          const metadata = parseFileBegin(payload);
+          const metadata = parseFileBegin(payload, v3);
           ownedPaths.claim(metadata.path);
           if (contentIds.has(metadata.contentId)) {
             throw new Error(`w7-frame: duplicate stream content id ${metadata.contentId}`);
@@ -874,20 +881,25 @@ function parseDelete(bytes: Uint8Array): DeleteMetadata {
   return { path: canonicalPath(value.path, 'delete path') };
 }
 
-function parseDirectory(bytes: Uint8Array): DirectoryMetadata {
-  const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], ['atime']);
+/** A v3 record names no inode number; a v4 one may. */
+function inodeOptional(v3: boolean): string[] {
+  return v3 ? ['atime'] : ['atime', 'ino'];
+}
+
+function parseDirectory(bytes: Uint8Array, v3: boolean): DirectoryMetadata {
+  const value = parseObject(bytes, 'directory', ['path', 'kind', 'mtime', 'mode'], inodeOptional(v3));
   if (value.kind !== 'directory') {
     throw new Error(`w7-frame: unsupported directory kind ${String(value.kind)}`);
   }
   return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
 
-function parseFileBegin(bytes: Uint8Array): FileBeginMetadata {
+function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
   const value = parseObject(
     bytes,
     'file-begin',
     ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'],
-    ['atime'],
+    inodeOptional(v3),
   );
   const base = parseInodeMetadata(value, 'file-begin');
   if (value.kind !== 'file' && value.kind !== 'symlink') {
@@ -941,7 +953,15 @@ function parseInodeMetadata(value: Record<string, unknown>, label: string): Inod
     ...(value.atime === undefined ? {} : { atime: safeInteger(value.atime, `${label} atime`) }),
     mtime: safeInteger(value.mtime, `${label} mtime`),
     mode: u32(value.mode, `${label} mode`),
+    ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, `${label} ino`) }),
   };
+}
+
+/** An inode number: an integer from 2 (1 is the root's). */
+function inodeNumber(value: unknown, label: string): number {
+  const ino = safeInteger(value, label);
+  if (ino < 2) throw new Error(`w7-frame: ${label} must be at least 2`);
+  return ino;
 }
 
 function parseObject(
@@ -977,6 +997,7 @@ function normalizeInode(inode: BatchInodeEntry): W7DirectoryInode | W7ContentIno
   u32(inode.chunkCount, `${inode.path} chunk count`);
   safeInteger(inode.mtime, `${inode.path} mtime`);
   if (inode.atime !== undefined) safeInteger(inode.atime, `${inode.path} atime`);
+  if (inode.ino !== undefined) inodeNumber(inode.ino, `${inode.path} ino`);
   u32(inode.mode, `${inode.path} mode`);
   const rawKind: unknown = inode.kind ?? (inode.isDir ? 'directory' : 'file');
   if (rawKind !== 'file' && rawKind !== 'directory' && rawKind !== 'symlink') {
@@ -1030,6 +1051,7 @@ function directoryInode(metadata: DirectoryMetadata): W7DirectoryInode {
     mtime: metadata.mtime,
     mode: metadata.mode,
     chunkCount: 0,
+    ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
   };
 }
 
@@ -1044,6 +1066,7 @@ function fileInode(metadata: FileBeginMetadata): W7ContentInode {
     mtime: metadata.mtime,
     mode: metadata.mode,
     chunkCount: metadata.chunkCount,
+    ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
   };
 }
 
@@ -1053,6 +1076,7 @@ function inodeMetadata(inode: BatchInodeEntry): InodeMetadata {
     ...(inode.atime === undefined ? {} : { atime: inode.atime }),
     mtime: inode.mtime,
     mode: inode.mode,
+    ...(inode.ino === undefined ? {} : { ino: inode.ino }),
   };
 }
 

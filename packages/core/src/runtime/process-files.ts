@@ -249,7 +249,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     const delegate = options?.delegate;
     if (delegate === undefined || this.pid === undefined) return this.target.acquireExclusiveMutation(path, options);
     // A delegation is the process's: it ends with the process's scope.
-    return this.delegations.grant(this.pid, delegate.reads, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
+    return this.delegations.grant(this.pid, delegate, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
   }
   releaseExclusiveMutation(owner: string): void {
     this.guard();

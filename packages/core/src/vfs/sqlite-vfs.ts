@@ -155,6 +155,16 @@ export type {
 export interface ExclusiveMutationLease {
   readonly root: string;
   readonly owner: string;
+  /** A delegation's inode numbers, reserved for what its holder makes: [first, end). */
+  readonly inos?: InodeRange;
+  /** A delegation's storage bytes, reserved for what its holder writes. */
+  readonly bytes?: number;
+}
+
+/** Inode numbers reserved for a delegation's holder: [first, end). */
+export interface InodeRange {
+  readonly first: number;
+  readonly end: number;
 }
 
 export interface ExclusiveMutationOptions {
@@ -184,12 +194,28 @@ export interface DelegationTerms {
   recall(kind: 'share' | 'revoke'): Promise<void>;
   /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
   admit?(root: string): void;
+  /**
+   * How many inode numbers to reserve for what the holder makes: it numbers
+   * them itself (a stat shows the number before the session has the file)
+   * and sends each with its file (W7 v4 `ino`).
+   */
+  readonly inos?: number;
+  /**
+   * Storage bytes to reserve for what the holder writes (N18): the holder
+   * decides a write fits locally against them, and its waves draw on them.
+   * Past them, its waves are admitted as anyone's (ENOSPC when full).
+   */
+  readonly bytes?: number;
 }
 
 /** A lease: its root, and its terms when it is a delegation. */
 interface Lease {
   readonly root: string;
   readonly delegation: DelegationTerms | null;
+  /** The inode numbers reserved for its holder (DelegationTerms.inos). */
+  readonly inos: InodeRange | null;
+  /** The ledger reservation its holder's writes draw on (DelegationTerms.bytes), released when it ends. */
+  readonly reservation: string | null;
   /** A delegation another caller reads: its holder sends each operation as it decides it. */
   shared: boolean;
   /** The recall in flight, and what it asks. */
@@ -542,6 +568,9 @@ const PAGE_DIGEST_MEMO_ENTRIES = 8_192;
  * 1M-row copyTree in one turn was reset).
  */
 const JOB_SLICE_PAGES = 200;
+
+/** The most inode numbers one delegation reserves at once: a holder that uses them asks again (a new grant). */
+const MAX_DELEGATED_INOS = 1 << 20;
 /** Chunks one tier pass moves, and chunk ids it examines. */
 const TIER_PAGE_CHUNKS = 64;
 const TIER_SCAN_ROWS = 4_096;
@@ -3590,8 +3619,15 @@ export class SqliteVFS {
       throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
     }
     const owner = crypto.randomUUID();
-    this.exclusiveMutationLeases.set(owner, { root, delegation: options.delegation ?? null, shared: false, recalling: null });
-    return { root, owner };
+    // The holder's storage first: a grant the ledger cannot back is refused (ENOSPC) before it numbers anything.
+    const bytes = options.delegation?.bytes ?? 0;
+    if (bytes > 0) this.ledger.reserve(owner, bytes, this.privileged);
+    let inos: InodeRange | null;
+    try { inos = this.reserveInos(options.delegation?.inos ?? 0); } catch (error) { this.ledger.release(owner); throw error; }
+    this.exclusiveMutationLeases.set(owner, {
+      root, delegation: options.delegation ?? null, inos, reservation: bytes > 0 ? owner : null, shared: false, recalling: null,
+    });
+    return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
   }
 
   acquireGlobalExclusiveMutation(): ExclusiveMutationLease {
@@ -3600,12 +3636,20 @@ export class SqliteVFS {
       throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
     }
     const owner = crypto.randomUUID();
-    this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, shared: false, recalling: null });
+    this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, inos: null, reservation: null, shared: false, recalling: null });
     return { root: '', owner };
   }
 
   releaseExclusiveMutation(owner: string): void {
+    this.endLease(owner);
+  }
+
+  /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
+  private endLease(owner: string): void {
+    const lease = this.exclusiveMutationLeases.get(owner);
+    if (lease === undefined) return;
     this.exclusiveMutationLeases.delete(owner);
+    if (lease.reservation !== null) this.ledger.release(lease.reservation);
   }
 
   /**
@@ -3639,6 +3683,37 @@ export class SqliteVFS {
     }
   }
 
+  /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
+  private reserveInos(count: number): InodeRange | null {
+    if (count <= 0) return null;
+    if (!Number.isSafeInteger(count) || count > MAX_DELEGATED_INOS) throw vfsError('EINVAL', `cannot reserve ${count} inode numbers`);
+    const end = this.withTransaction(() => Number([...this.sql.exec(
+      'UPDATE vfs_state SET next_ino = next_ino + ? WHERE slot = 1 RETURNING next_ino', count,
+    )][0]!.next_ino));
+    return { first: end - count, end };
+  }
+
+  /**
+   * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
+   * be numbered here. Only the holder of a delegation numbers its own
+   * entries, from its lease's reserved range, and a number already used by
+   * another name is refused (there are no hard links).
+   */
+  private askedIno(entry: { path: string; ino?: number }): number | undefined {
+    if (entry.ino === undefined) return undefined;
+    const lease = this.activeMutationOwner === null ? undefined : this.exclusiveMutationLeases.get(this.activeMutationOwner);
+    const range = lease?.inos;
+    if (range == null || entry.ino < range.first || entry.ino >= range.end) {
+      throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is not one this writer's delegation reserved`);
+    }
+    const holder = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', entry.ino)][0];
+    if (holder !== undefined && String(holder.path) !== entry.path) {
+      const moved = this.inodes.peek(entry.path);
+      if (moved?.ino !== entry.ino) throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is ${String(holder.path)}'s`);
+    }
+    return entry.ino;
+  }
+
   /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
   private isHolder(owner: string): boolean {
     return this.activeMutationOwner === owner || this.activeHolds?.has(owner) === true;
@@ -3670,7 +3745,7 @@ export class SqliteVFS {
         if (this.exclusiveMutationLeases.get(owner) !== lease) return;
         await lease.delegation!.recall(kind);
         if (kind === 'share') lease.shared = true;
-        else if (this.exclusiveMutationLeases.get(owner) === lease) this.exclusiveMutationLeases.delete(owner);
+        else if (this.exclusiveMutationLeases.get(owner) === lease) this.endLease(owner);
       })().finally(() => {
         if (lease.recalling?.done === done) lease.recalling = null;
       });
@@ -3685,13 +3760,15 @@ export class SqliteVFS {
 
   private withMutationOwner<T>(owner: string | undefined, callback: () => T): T {
     if (owner === undefined) return callback();
-    if (!this.exclusiveMutationLeases.has(owner)) throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
+    const lease = this.exclusiveMutationLeases.get(owner);
+    if (lease === undefined) throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
     if (this.activeMutationOwner !== null) {
       throw new Error('[sqlite-vfs] nested mutation owner scope is not supported');
     }
     this.activeMutationOwner = owner;
     try {
-      return callback();
+      // A delegation's writes draw on the storage its grant reserved.
+      return lease.reservation === null || this.activeReservation !== null ? callback() : this.withReservation(lease.reservation, callback);
     } finally {
       this.activeMutationOwner = null;
     }
@@ -8346,6 +8423,7 @@ export class SqliteVFS {
       uid: inode.uid ?? prior?.uid ?? 1000,
       gid: inode.gid ?? prior?.gid ?? 1000,
       content,
+      ...(inode.ino !== undefined ? { ino: this.askedIno(inode) } : {}),
       ...(knownPrior && knownPrior.gen === this._gen ? { knownPrior } : {}),
     };
   }
@@ -10448,6 +10526,7 @@ export class SqliteVFS {
         gid: entry.gid,
         content,
         defaultAcl: (entry as NormalizedBatchInodeEntry).defaultAcl,
+        ...(entry.ino !== undefined ? { ino: this.askedIno(entry) } : {}),
       });
     }
     return { plan: builder.build(), deletedInodes };

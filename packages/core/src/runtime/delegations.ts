@@ -102,13 +102,15 @@ export class Delegations {
    */
   grant(
     pid: number,
-    reads: boolean,
-    acquire: (terms: DelegationTerms) => { root: string; owner: string },
+    asked: { readonly reads: boolean; readonly inos?: number; readonly bytes?: number },
+    acquire: (terms: DelegationTerms) => ExclusiveMutationGrant,
     scope: { readonly subscriptions: Set<() => void> },
   ): ExclusiveMutationGrant {
     let held: Held | null = null;
     const terms: DelegationTerms = {
-      reads,
+      reads: asked.reads,
+      ...(asked.inos === undefined ? {} : { inos: asked.inos }),
+      ...(asked.bytes === undefined ? {} : { bytes: asked.bytes }),
       admit: (root) => {
         const kernelRoot = SESSION_KERNEL_ROOTS.find((store) => pathsOverlap(root, store));
         if (kernelRoot !== undefined) {
@@ -136,7 +138,7 @@ export class Delegations {
     if (owned === undefined) this.byPid.set(pid, owned = new Set());
     owned.add(lease.owner);
     scope.subscriptions.add(end);
-    return { root: lease.root, owner: lease.owner, recallTimeoutMs: this.recallTimeoutMs };
+    return { ...lease, recallTimeoutMs: this.recallTimeoutMs };
   }
 
   /** The next recall of `owner`'s delegation, as soon as one is asked; null after `waitMs` with none, or once it has ended. */
