@@ -8,7 +8,9 @@
  * `npm install` against a mocked registry:
  *   - each spec installs what the worker's pick answers, and what npm's own
  *     npm-pick-manifest answers, where the two agree (see KNOWN_DIVERGENCE);
- *   - an `npm:` alias installs the aliased package under the alias's name;
+ *   - an `npm:` alias installs the aliased package under the alias's name,
+ *     and saves as npm does (`"mine": "npm:real@^1.1.0"`), so a reinstall
+ *     from package.json installs the aliased package again;
  *   - a tarball whose bytes do not match its integrity is refused and
  *     nothing is installed; a multi-hash integrity is checked by its
  *     strongest entry.
@@ -100,10 +102,22 @@ try {
     assert.notEqual(pickPackumentVersion(PACKUMENTS.pkg.versions, DIST_TAGS, spec), npmPicks[spec], `'${spec}' still diverges from npm`);
   }
 
+  assert.equal((await ws.exec(`printf '%s' '{"name":"app","version":"1.0.0"}' > package.json`)).exitCode, 0);
   const alias = await ws.exec(`npm install 'mine@npm:real@^1.0.0'`);
   assert.equal(alias.exitCode, 0, alias.stderr);
-  assert.deepEqual(JSON.parse(fs.readFileString('/home/user/node_modules/mine/package.json')), { name: 'real', version: '1.1.0' },
+  const devAlias = await ws.exec(`npm install --save-dev 'tool@npm:real@1'`);
+  assert.equal(devAlias.exitCode, 0, devAlias.stderr);
+  const installedAs = () => ['mine', 'tool'].map((name) => JSON.parse(fs.readFileString(`/home/user/node_modules/${name}/package.json`)));
+  assert.deepEqual(installedAs(), [{ name: 'real', version: '1.1.0' }, { name: 'real', version: '1.1.0' }],
     'an npm: alias installs the aliased package under the alias');
+  const saved = JSON.parse(fs.readFileString('/home/user/package.json'));
+  assert.deepEqual([saved.dependencies, saved.devDependencies], [{ mine: 'npm:real@^1.1.0' }, { tool: 'npm:real@^1.1.0' }],
+    'and saves it as npm does, naming the aliased package');
+  assert.equal((await ws.exec('rm -rf node_modules')).exitCode, 0);
+  const reinstall = await ws.exec('npm install');
+  assert.equal(reinstall.exitCode, 0, reinstall.stderr);
+  assert.deepEqual(installedAs(), [{ name: 'real', version: '1.1.0' }, { name: 'real', version: '1.1.0' }],
+    'a reinstall from package.json installs the aliased package again');
 
   const corrupt = await ws.exec('npm install corrupt');
   assert.notEqual(corrupt.exitCode, 0, 'a tarball that does not match its integrity is refused');
