@@ -34,6 +34,17 @@
  */
 import { Parser } from 'acorn';
 import { applySourceEdits } from './javascript-ast.js';
+/**
+ * Names for code generated around `source`: a prefix its text does not hold
+ * anywhere, then a number, so no binding of the source is one of them.
+ */
+export function generatedNames(source) {
+    let prefix = '__nimbus_m';
+    while (source.includes(prefix))
+        prefix += '_';
+    let count = 0;
+    return () => `${prefix}${count++}`;
+}
 /** `esm` lowered to the CommonJS function body of an async module. */
 export function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
@@ -107,11 +118,7 @@ export function readEsmRecords(source) {
 }
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export function emitCommonJs(source, records, options) {
-    let prefix = '__nimbus_m';
-    while (source.includes(prefix))
-        prefix += '_';
-    let temps = 0;
-    const temp = () => `${prefix}${temps++}`;
+    const temp = options.names ?? generatedNames(source);
     const key = (name) => `[${JSON.stringify(name)}]`;
     const requireFunction = options.requireFunction ?? 'require';
     const requireOf = (specifier) => `${requireFunction}(${JSON.stringify(specifier)})`;

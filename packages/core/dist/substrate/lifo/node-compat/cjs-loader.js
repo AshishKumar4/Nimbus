@@ -1,8 +1,8 @@
 import { createModuleMap, ProcessExitError } from './index.js';
 import { createModuleShim } from './module.js';
 import { Buffer } from './buffer.js';
-import { emitCommonJs, readEsmRecords } from '../../../runtime/async-module-lowering.js';
-import { applySourceEdits, forEachNode, hasTopLevelModuleSyntax, parseJavaScriptModule } from '../../../runtime/javascript-ast.js';
+import { emitCommonJs, generatedNames, readEsmRecords } from '../../../runtime/async-module-lowering.js';
+import { applySourceEdits, forEachNode, hasTopLevelModuleSyntax, parseJavaScriptModule, parseJavaScriptProgram } from '../../../runtime/javascript-ast.js';
 import { fileURLToPath } from './url.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
 import { DEFAULT_CJS_CONDITIONS, parseResolvablePackageJson, resolveExports, } from '../../../_shared/exports-resolver.js';
@@ -26,13 +26,21 @@ export function stripShebang(src) {
     }
     return src;
 }
-/** The `import.meta` and dynamic `import()` expressions of module `source`, as acorn parses it. */
-function moduleOnlyExpressions(source) {
+/**
+ * The `import.meta` and dynamic `import()` expressions of `source`, as acorn
+ * parses it: as a module, or for CommonJS (`esm` false) as Node would run it,
+ * a script whose top level may `return`. A CommonJS source that does not
+ * parse has none here; compiling it reports the SyntaxError.
+ */
+function moduleOnlyExpressions(source, esm = true) {
     const found = { meta: [], dynamic: [] };
-    // Neither can occur without the keyword followed by `.` or `(`: a module without one needs no second parse.
+    // Neither can occur without the keyword followed by `.` or `(`: a source without one needs no parse.
     if (!/\bimport\s*[.(]/.test(source))
         return found;
-    forEachNode(parseJavaScriptModule(source), (node) => {
+    const program = esm ? parseJavaScriptModule(source) : parseJavaScriptProgram(source);
+    if (program === null)
+        return found;
+    forEachNode(program, (node) => {
         if (node.type === 'MetaProperty' && node.meta.name === 'import')
             found.meta.push(node);
         else if (node.type === 'ImportExpression')
@@ -88,36 +96,43 @@ export function treatAsEsm(source, filename, declared) {
     const type = ext === '.js' ? declared() : null;
     return type === null ? isEsmSource(source) : type === 'module';
 }
-// The wrapper every module runs in: CommonJS's five names, the globals a
-// module may find as free variables, and for a lowered ES module its
-// import.meta, its dynamic import, and the require and module the lowering's
-// own lines use (names the module's bindings cannot shadow: a module may
-// declare its own `require` with createRequire).
-const WRAPPER_PARAMS = 'exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMeta, __importDynamic, __nimbusRequire, __nimbusModule';
+// The wrapper every module runs in: CommonJS's five names and the globals a
+// module may find as free variables, then the loader's own values, under
+// names moduleWrapper draws for each module (wrapperArguments passes them in
+// this order).
+const WRAPPER_PARAMS = 'exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global';
 /**
- * ES module `source` as the CommonJS the module wrapper runs: its import.meta
- * the wrapper's __importMeta, its import() the wrapper's __importDynamic, and
- * its declarations through the shared emitter (async-module-lowering.ts). The
- * whole is one block, so the module's own bindings (`const __dirname`, `import
- * process from`) shadow the wrapper's parameters as module scope does.
+ * `source` as the module wrapper's function text: a CommonJS body as written
+ * but for its import() calls, or an ES module lowered (ESM when `esm`).
+ *
+ * The loader's values reach the body under names drawn, with the emitter's
+ * own, from one generatedNames over the source, so none is a name the
+ * source holds: import.meta, import() (which loads through this loader, from
+ * the workspace, in either body), and the require and module the lowering's
+ * lines use. A lowered module is one block, so its own bindings (`const
+ * __dirname`, `import process from`, `const require = createRequire(...)`)
+ * shadow the wrapper's parameters as module scope does.
+ *
+ * Throws a SyntaxError for an ES module that does not parse.
  */
-function lowerModule(source) {
-    const { meta, dynamic } = moduleOnlyExpressions(source);
-    const rewritten = applySourceEdits(source, [
-        ...meta.map((node) => ({ start: node.start, end: node.end, text: '__importMeta' })),
-        ...dynamic.map((node) => ({ start: node.start, end: node.start + 'import'.length, text: '__importDynamic' })),
-    ]);
-    const lowered = emitCommonJs(rewritten, readEsmRecords(rewritten), {
-        body: 'sync',
-        requireFunction: '__nimbusRequire',
-        exportsObject: '__nimbusModule.exports',
-    });
-    return `{\n${lowered}\n}`;
-}
-/** `source`, ESM lowered when `esm`, as the module wrapper's function text. Throws a SyntaxError for an ES module that does not parse. */
 export function moduleWrapper(source, esm, async = false) {
-    const body = esm ? `"use strict";\n${lowerModule(source)}` : `\n${source}`;
-    return `(${async ? 'async ' : ''}function(${WRAPPER_PARAMS}) {${body}\n})`;
+    const names = generatedNames(source);
+    const loader = { importMeta: names(), importDynamic: names(), require: names(), module: names() };
+    const { meta, dynamic } = moduleOnlyExpressions(source, esm);
+    const rewritten = applySourceEdits(source, [
+        ...(esm ? meta.map((node) => ({ start: node.start, end: node.end, text: loader.importMeta })) : []),
+        ...dynamic.map((node) => ({ start: node.start, end: node.start + 'import'.length, text: loader.importDynamic })),
+    ]);
+    const body = esm
+        ? `"use strict";\n{\n${emitCommonJs(rewritten, readEsmRecords(rewritten), {
+            body: 'sync',
+            names,
+            requireFunction: loader.require,
+            exportsObject: `${loader.module}.exports`,
+        })}\n}`
+        : `\n${rewritten}`;
+    const params = `${WRAPPER_PARAMS}, ${loader.importMeta}, ${loader.importDynamic}, ${loader.require}, ${loader.module}`;
+    return `(${async ? 'async ' : ''}function(${params}) {${body}\n})`;
 }
 // @rollup/rollup-* are platform-specific NAPI addons, which no realm here can
 // load. Vite's dev server uses es-module-lexer, not rollup's parser, so these

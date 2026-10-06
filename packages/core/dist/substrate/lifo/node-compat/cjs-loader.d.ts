@@ -15,7 +15,20 @@ export declare function isEsmSource(source: string): boolean;
 export declare function declaredPackageType(packageJson: string): PackageType;
 /** Whether a module runs as an ES module: .mjs always, .cjs never, a .js by its package's type, else by its syntax. */
 export declare function treatAsEsm(source: string, filename: string, declared: () => PackageType): boolean;
-/** `source`, ESM lowered when `esm`, as the module wrapper's function text. Throws a SyntaxError for an ES module that does not parse. */
+/**
+ * `source` as the module wrapper's function text: a CommonJS body as written
+ * but for its import() calls, or an ES module lowered (ESM when `esm`).
+ *
+ * The loader's values reach the body under names drawn, with the emitter's
+ * own, from one generatedNames over the source, so none is a name the
+ * source holds: import.meta, import() (which loads through this loader, from
+ * the workspace, in either body), and the require and module the lowering's
+ * lines use. A lowered module is one block, so its own bindings (`const
+ * __dirname`, `import process from`, `const require = createRequire(...)`)
+ * shadow the wrapper's parameters as module scope does.
+ *
+ * Throws a SyntaxError for an ES module that does not parse.
+ */
 export declare function moduleWrapper(source: string, esm: boolean, async?: boolean): string;
 /** What one module's wrapper receives as console and process. */
 export interface ModuleScope {

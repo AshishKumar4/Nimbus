@@ -8950,6 +8950,12 @@ const ${binding} = arguments[2];
     return applySourceEdits(code, edits);
   }
 
+  function generatedNames(source) {
+    let prefix = "__nimbus_m";
+    while (source.includes(prefix)) prefix += "_";
+    let count = 0;
+    return () => `${prefix}${count++}`;
+  }
   function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
   }
@@ -9031,10 +9037,7 @@ const ${binding} = arguments[2];
     return records;
   }
   function emitCommonJs(source, records, options) {
-    let prefix = "__nimbus_m";
-    while (source.includes(prefix)) prefix += "_";
-    let temps = 0;
-    const temp = () => `${prefix}${temps++}`;
+    const temp = options.names ?? generatedNames(source);
     const key = (name) => `[${JSON.stringify(name)}]`;
     const requireFunction = options.requireFunction ?? "require";
     const requireOf = (specifier) => `${requireFunction}(${JSON.stringify(specifier)})`;

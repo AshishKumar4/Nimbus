@@ -58,9 +58,22 @@ export type EsmRecord = {
         readonly end: number;
     };
 };
+/**
+ * Names for code generated around `source`: a prefix its text does not hold
+ * anywhere, then a number, so no binding of the source is one of them.
+ */
+export declare function generatedNames(source: string): () => string;
 export interface CommonJsEmitOptions {
     /** `async`: the module in an async IIFE (top-level await); `sync`: at the wrapper's top level. */
     readonly body: 'sync' | 'async';
+    /**
+     * Where the emitter's own names come from: generatedNames over the source,
+     * by default. A caller that generates names of its own around the module
+     * (a wrapper's parameters, rewritten expressions) passes the allocator it
+     * drew them from, generatedNames over its original source, so the two never
+     * meet.
+     */
+    readonly names?: () => string;
     /** The CommonJS exports object, as an expression. Default `module.exports`. */
     readonly exportsObject?: string;
     /** The CommonJS require function, as an expression. Default `require`. */
