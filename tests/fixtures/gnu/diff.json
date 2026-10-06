@@ -4,7 +4,22 @@
   "a": "b25lCnR3bwp0aHJlZQo=",
   "b": "b25lClRXTwp0aHJlZQpmb3VyCg==",
   "c": "emVybwpvbmUKdHdvCnRocmVlCg==",
-  "e": ""
+  "e": "",
+  "r1": "YQpiCmEKYgphCmIK",
+  "r2": "YgphCmIKYQpiCmEKYwo=",
+  "n1": "eAp5",
+  "n2": "eAp5Cg==",
+  "n3": "eAp6",
+  "n4": "eQ==",
+  "s1": "ICBoZWxsbyAgd29ybGQKZm9vClRhaWwK",
+  "s2": "aGVsbG8gd29ybGQKRk9PIAp0YWlsCg==",
+  "long1": "bGluZSAwCmxpbmUgMQpsaW5lIDIKbGluZSAzCmxpbmUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpsaW5lIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKbGluZSAyMApsaW5lIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI3CmxpbmUgMjgKbGluZSAyOQpsaW5lIDMwCmxpbmUgMzEKbGluZSAzMgpsaW5lIDMzCmxpbmUgMzQKbGluZSAzNQpsaW5lIDM2CmxpbmUgMzcKbGluZSAzOApsaW5lIDM5Cg==",
+  "long2": "bGluZSAwCmxpbmUgMQpsaW5lIDIKTElORSAzCkxJTkUgNApsaW5lIDUKbGluZSA2CmxpbmUgNwpsaW5lIDgKbGluZSA5CmxpbmUgMTAKbGluZSAxMQpMSU5FIDEyCmxpbmUgMTMKbGluZSAxNApsaW5lIDE1CmxpbmUgMTYKbGluZSAxNwpsaW5lIDE4CmxpbmUgMTkKTElORSAyMApMSU5FIDIxCmxpbmUgMjIKbGluZSAyMwpsaW5lIDI0CmxpbmUgMjUKbGluZSAyNgpsaW5lIDI4CmxpbmUgMjkKbGluZSAzMAppbnNlcnRlZApsaW5lIDMxCmxpbmUgMzIKbGluZSAzMwpsaW5lIDM0CkxJTkUgMzUKbGluZSAzNgpsaW5lIDM3CmxpbmUgMzgKbGluZSAzOQo=",
+  "u1": "Y2Fmw6kKbmHDr3ZlCg==",
+  "u2": "Q0FGw4kKbmFpdmUK",
+  "k1": "YQoKYgoKCmMKZAo=",
+  "k2": "YQpiCgpjCiAgCmQKZQo=",
+  "k3": "YQpiCmMKZAo="
  },
  "cases": [
   {
@@ -45,6 +60,281 @@
   {
    "args": "-u a a",
    "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "r1 r2",
+   "stdout": "1d0\n< a\n6a6,7\n> a\n> c\n",
+   "exit": 1
+  },
+  {
+   "args": "r2 r1",
+   "stdout": "1d0\n< b\n7c6\n< c\n---\n> b\n",
+   "exit": 1
+  },
+  {
+   "args": "-d r1 r2",
+   "stdout": "1d0\n< a\n6a6,7\n> a\n> c\n",
+   "exit": 1
+  },
+  {
+   "args": "-u -L A -L B r1 r2",
+   "stdout": "--- A\n+++ B\n@@ -1,6 +1,7 @@\n-a\n b\n a\n b\n a\n b\n+a\n+c\n",
+   "exit": 1
+  },
+  {
+   "args": "n1 n2",
+   "stdout": "2c2\n< y\n\\ No newline at end of file\n---\n> y\n",
+   "exit": 1
+  },
+  {
+   "args": "n2 n1",
+   "stdout": "2c2\n< y\n---\n> y\n\\ No newline at end of file\n",
+   "exit": 1
+  },
+  {
+   "args": "n1 n3",
+   "stdout": "2c2\n< y\n\\ No newline at end of file\n---\n> z\n\\ No newline at end of file\n",
+   "exit": 1
+  },
+  {
+   "args": "n3 n4",
+   "stdout": "1,2c1\n< x\n< z\n\\ No newline at end of file\n---\n> y\n\\ No newline at end of file\n",
+   "exit": 1
+  },
+  {
+   "args": "-u -L A -L B n1 n3",
+   "stdout": "--- A\n+++ B\n@@ -1,2 +1,2 @@\n x\n-y\n\\ No newline at end of file\n+z\n\\ No newline at end of file\n",
+   "exit": 1
+  },
+  {
+   "args": "-u -L A -L B n2 n1",
+   "stdout": "--- A\n+++ B\n@@ -1,2 +1,2 @@\n x\n-y\n+y\n\\ No newline at end of file\n",
+   "exit": 1
+  },
+  {
+   "args": "-b n1 n2",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-i s1 s2",
+   "stdout": "1,2c1,2\n<   hello  world\n< foo\n---\n> hello world\n> FOO \n",
+   "exit": 1
+  },
+  {
+   "args": "-b s1 s2",
+   "stdout": "1,3c1,3\n<   hello  world\n< foo\n< Tail\n---\n> hello world\n> FOO \n> tail\n",
+   "exit": 1
+  },
+  {
+   "args": "-w s1 s2",
+   "stdout": "2,3c2,3\n< foo\n< Tail\n---\n> FOO \n> tail\n",
+   "exit": 1
+  },
+  {
+   "args": "-wi s1 s2",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-bi s1 s2",
+   "stdout": "1c1\n<   hello  world\n---\n> hello world\n",
+   "exit": 1
+  },
+  {
+   "args": "-i u1 u2",
+   "stdout": "2c2\n< naÃ¯ve\n---\n> naive\n",
+   "exit": 1
+  },
+  {
+   "args": "-q a b",
+   "stdout": "Files a and b differ\n",
+   "exit": 1
+  },
+  {
+   "args": "-q a a",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-s a a",
+   "stdout": "Files a and a are identical\n",
+   "exit": 0
+  },
+  {
+   "args": "-s a b",
+   "stdout": "2c2\n< two\n---\n> TWO\n3a4\n> four\n",
+   "exit": 1
+  },
+  {
+   "args": "-qs a a",
+   "stdout": "Files a and a are identical\n",
+   "exit": 0
+  },
+  {
+   "args": "a nope",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "nope a",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-Q a b",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "a",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "a b c",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-U x a b",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-U -1 a b",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "--unified=2 -L A -L B long1 long2",
+   "stdout": "--- A\n+++ B\n@@ -2,6 +2,6 @@\n line 1\n line 2\n-line 3\n-line 4\n+LINE 3\n+LINE 4\n line 5\n line 6\n@@ -11,5 +11,5 @@\n line 10\n line 11\n-line 12\n+LINE 12\n line 13\n line 14\n@@ -19,6 +19,6 @@\n line 18\n line 19\n-line 20\n-line 21\n+LINE 20\n+LINE 21\n line 22\n line 23\n@@ -26,13 +26,13 @@\n line 25\n line 26\n-line 27\n line 28\n line 29\n line 30\n+inserted\n line 31\n line 32\n line 33\n line 34\n-line 35\n+LINE 35\n line 36\n line 37\n",
+   "exit": 1
+  },
+  {
+   "args": "-U1 -L A -L B long1 long2",
+   "stdout": "--- A\n+++ B\n@@ -3,4 +3,4 @@\n line 2\n-line 3\n-line 4\n+LINE 3\n+LINE 4\n line 5\n@@ -12,3 +12,3 @@\n line 11\n-line 12\n+LINE 12\n line 13\n@@ -20,4 +20,4 @@\n line 19\n-line 20\n-line 21\n+LINE 20\n+LINE 21\n line 22\n@@ -27,3 +27,2 @@\n line 26\n-line 27\n line 28\n@@ -31,2 +30,3 @@\n line 30\n+inserted\n line 31\n@@ -35,3 +35,3 @@\n line 34\n-line 35\n+LINE 35\n line 36\n",
+   "exit": 1
+  },
+  {
+   "args": "-u -L A -L B long1 long2",
+   "stdout": "--- A\n+++ B\n@@ -1,8 +1,8 @@\n line 0\n line 1\n line 2\n-line 3\n-line 4\n+LINE 3\n+LINE 4\n line 5\n line 6\n line 7\n@@ -10,7 +10,7 @@\n line 9\n line 10\n line 11\n-line 12\n+LINE 12\n line 13\n line 14\n line 15\n@@ -18,22 +18,22 @@\n line 17\n line 18\n line 19\n-line 20\n-line 21\n+LINE 20\n+LINE 21\n line 22\n line 23\n line 24\n line 25\n line 26\n-line 27\n line 28\n line 29\n line 30\n+inserted\n line 31\n line 32\n line 33\n line 34\n-line 35\n+LINE 35\n line 36\n line 37\n line 38\n",
+   "exit": 1
+  },
+  {
+   "args": "-U0 -L A -L B long1 long2",
+   "stdout": "--- A\n+++ B\n@@ -4,2 +4,2 @@\n-line 3\n-line 4\n+LINE 3\n+LINE 4\n@@ -13 +13 @@\n-line 12\n+LINE 12\n@@ -21,2 +21,2 @@\n-line 20\n-line 21\n+LINE 20\n+LINE 21\n@@ -28 +27,0 @@\n-line 27\n@@ -31,0 +31 @@\n+inserted\n@@ -36 +36 @@\n-line 35\n+LINE 35\n",
+   "exit": 1
+  },
+  {
+   "args": "-u -L A -L B e a",
+   "stdout": "--- A\n+++ B\n@@ -0,0 +1,3 @@\n+one\n+two\n+three\n",
+   "exit": 1
+  },
+  {
+   "args": "-u -L A -L B a e",
+   "stdout": "--- A\n+++ B\n@@ -1,3 +0,0 @@\n-one\n-two\n-three\n",
+   "exit": 1
+  },
+  {
+   "args": "long1 long2",
+   "stdout": "4,5c4,5\n< line 3\n< line 4\n---\n> LINE 3\n> LINE 4\n13c13\n< line 12\n---\n> LINE 12\n21,22c21,22\n< line 20\n< line 21\n---\n> LINE 20\n> LINE 21\n28d27\n< line 27\n31a31\n> inserted\n36c36\n< line 35\n---\n> LINE 35\n",
+   "exit": 1
+  },
+  {
+   "args": "-L A -L B -L C a b",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-3 -u -L A -L B long1 long2",
+   "stdout": "--- A\n+++ B\n@@ -1,8 +1,8 @@\n line 0\n line 1\n line 2\n-line 3\n-line 4\n+LINE 3\n+LINE 4\n line 5\n line 6\n line 7\n@@ -10,7 +10,7 @@\n line 9\n line 10\n line 11\n-line 12\n+LINE 12\n line 13\n line 14\n line 15\n@@ -18,22 +18,22 @@\n line 17\n line 18\n line 19\n-line 20\n-line 21\n+LINE 20\n+LINE 21\n line 22\n line 23\n line 24\n line 25\n line 26\n-line 27\n line 28\n line 29\n line 30\n+inserted\n line 31\n line 32\n line 33\n line 34\n-line 35\n+LINE 35\n line 36\n line 37\n line 38\n",
+   "exit": 1
+  },
+  {
+   "args": "-u5 -L A -L B long1 long2",
+   "stdout": "--- A\n+++ B\n@@ -1,40 +1,40 @@\n line 0\n line 1\n line 2\n-line 3\n-line 4\n+LINE 3\n+LINE 4\n line 5\n line 6\n line 7\n line 8\n line 9\n line 10\n line 11\n-line 12\n+LINE 12\n line 13\n line 14\n line 15\n line 16\n line 17\n line 18\n line 19\n-line 20\n-line 21\n+LINE 20\n+LINE 21\n line 22\n line 23\n line 24\n line 25\n line 26\n-line 27\n line 28\n line 29\n line 30\n+inserted\n line 31\n line 32\n line 33\n line 34\n-line 35\n+LINE 35\n line 36\n line 37\n line 38\n line 39\n",
+   "exit": 1
+  },
+  {
+   "args": "--brief a b",
+   "stdout": "Files a and b differ\n",
+   "exit": 1
+  },
+  {
+   "args": "--rep a a",
+   "stdout": "Files a and a are identical\n",
+   "exit": 0
+  },
+  {
+   "args": "--uni -L A -L B a b",
+   "stdout": "",
+   "exit": 2
+  },
+  {
+   "args": "-B a b",
+   "stdout": "2c2\n< two\n---\n> TWO\n3a4\n> four\n",
+   "exit": 1
+  },
+  {
+   "args": "a -u -L A b -L B",
+   "stdout": "--- A\n+++ B\n@@ -1,3 +1,4 @@\n one\n-two\n+TWO\n three\n+four\n",
+   "exit": 1
+  },
+  {
+   "args": "-B k1 k2",
+   "stdout": "6a5\n>   \n7a7\n> e\n",
+   "exit": 1
+  },
+  {
+   "args": "-B k1 k3",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-B k3 k1",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-Bb k1 k2",
+   "stdout": "7a7\n> e\n",
+   "exit": 1
+  },
+  {
+   "args": "-Bw k1 k2",
+   "stdout": "7a7\n> e\n",
+   "exit": 1
+  },
+  {
+   "args": "-B -u -L A -L B k1 k2",
+   "stdout": "--- A\n+++ B\n@@ -1,7 +1,7 @@\n a\n-\n b\n \n-\n c\n+  \n d\n+e\n",
+   "exit": 1
+  },
+  {
+   "args": "-B -U0 -L A -L B k1 k2",
+   "stdout": "--- A\n+++ B\n@@ -6,0 +5 @@\n+  \n@@ -7,0 +7 @@\n+e\n",
+   "exit": 1
+  },
+  {
+   "args": "-B -u -L A -L B k1 k3",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-qB k1 k3",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-sB k1 k3",
+   "stdout": "Files k1 and k3 are identical\n",
    "exit": 0
   }
  ],
