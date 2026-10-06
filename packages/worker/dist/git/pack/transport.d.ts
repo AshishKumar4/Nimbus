@@ -9,11 +9,14 @@
  *   no headers within STALL_MS; only an idempotent one (a GET, an
  *   upload-pack POST: it changes nothing on the server).
  * - A clone piece (network-facet.ts invokeClonePhase): its request failed
- *   in transit (an UploadPackError), its write to the session was lost (the
- *   Durable Object's "Network connection lost", which the platform's docs
- *   say to retry when idempotent), or it hung. Objects are addressed by
+ *   in transit (an UploadPackError), or it hung. Objects are addressed by
  *   content, so a piece run again writes what it would have; a hung one
  *   loses its write authority first (CloneFacets.fence).
+ *
+ * The hop to the session is the platform's: a write wave whose answer is
+ * lost ("Network connection lost") is re-sent by the wave writer
+ * (@nimbus-sh/platform/wave-writer.js), a ranged write by SupervisorRPC's
+ * delivery, each under its own receipt; a piece never repeats them.
  *
  * Each is tried RETRY_ATTEMPTS times, RETRY_BACKOFF_MS apart (each wait
  * jittered by a quarter); every retry is logged by its caller with its
@@ -32,7 +35,7 @@ export declare const TRANSIENT_HTTP_STATUSES: ReadonlySet<number>;
 export declare const STALL_MS = 45000;
 /** What upload-pack.ts throws for a request to the git server that failed in transit. */
 export declare const UPLOAD_PACK_ERROR_PREFIX = "git upload-pack: ";
-/** Whether a failure's message names a lost transport (a hang is known by its timeout, not its message). */
+/** Whether a failure's message names a lost transport to the git server (a hang is known by its timeout). */
 export declare function isLostTransport(message: string): boolean;
 /** The wait before try `attempt + 2` (0-based `attempt` of the one that failed). */
 export declare function retryDelay(attempt: number, schedule?: readonly number[]): Promise<void>;

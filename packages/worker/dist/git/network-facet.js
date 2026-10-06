@@ -30,10 +30,9 @@ import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
-import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
+import { W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import { COMMITS_PER_CHUNK, treeSlices } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
@@ -45,14 +44,15 @@ import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js
 export const GIT_CLONE_JOB_MARKER = 'nimbus-clone-job';
 const WAVE_DIAGNOSTIC_FIELDS = [
     'waves', 'files', 'bytes', 'rpcWallMs', 'maxRpcWallMs', 'producerWaitMs',
-    'ownershipVisits', 'maxWavePaths', 'maxWaveBytes',
+    'ownershipVisits', 'maxWavePaths', 'maxWaveBytes', 'retries',
 ];
+/** The facet's wave writer counters, as it reported them. */
 function parseWaveDiagnostic(value) {
     if (!value || typeof value !== 'object')
         return undefined;
     const parsed = {
         waves: 0, files: 0, bytes: 0, rpcWallMs: 0, maxRpcWallMs: 0, producerWaitMs: 0,
-        ownershipVisits: 0, maxWavePaths: 0, maxWaveBytes: 0,
+        ownershipVisits: 0, maxWavePaths: 0, maxWaveBytes: 0, retries: 0,
     };
     for (const field of WAVE_DIAGNOSTIC_FIELDS) {
         parsed[field] = nonNegativeCounter(Reflect.get(value, field));
@@ -393,10 +393,10 @@ async function runPool(items, concurrency, run) {
 /**
  * A batch or history piece that failed in transit, or hung, is tried again
  * under the one lost-transport policy (pack/transport.ts): seen live as a
- * request to the git server failing (UploadPackError), a write wave to the
- * session lost ("Network connection lost", on Linux, TypeScript and vscode,
- * the session up throughout), and a piece hung (react's first batch, three
- * times in five clones). Its earlier attempt's temporary pack is discarded.
+ * request to the git server failing (UploadPackError) and a piece hung
+ * (react's first batch, three times in five clones). A write wave whose
+ * answer is lost is the wave writer's to re-send. Its earlier attempt's
+ * temporary pack is discarded.
  */
 const CLONE_PIECE_ATTEMPTS = RETRY_ATTEMPTS;
 /** A piece takes seconds (Linux's batches ~17 s, react's largest history piece 51 s): one hung this long is retried. */
@@ -889,7 +889,7 @@ export async function execGitNetwork(ctx, env, opts) {
  * fs adapter, and flushes writes through W7 v3.
  */
 export function assembleGitNetworkFacetSource() {
-    return GIT_PACK_NODE_IMPORTS + '\n' + W7_FRAME_PREAMBLE + '\n' + GIT_WAVE_WRITER_SRC + '\n' + GIT_PACK_SRC + '\n' +
+    return GIT_PACK_NODE_IMPORTS + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + GIT_PACK_SRC + '\n' +
         generateGitNetworkFacetCode();
 }
 function generateGitNetworkFacetCode() {
@@ -1187,7 +1187,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       },
     },
     writer(onReceipts) {
-      return __nimbusGitWaveWriter.createWaveWriter({
+      return __nimbusWaveWriter.createWaveWriter({
         supervisor: {
           writeBatchStream(stream) {
             stats.supervisorRpc.writeBatchStream++;
@@ -1217,8 +1217,8 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
  * Create the buffered fs adapter isomorphic-git will use.
  * Writes buffer in-memory; reads check buffer then fall back to supervisor.
  *
- * Every write is a record for the wave writer (__nimbusGitWaveWriter, from
- * src/git/wave-writer.ts), which publishes them in W7 waves, one in flight
+ * Every write is a record for the wave writer (__nimbusWaveWriter, from
+ * @nimbus-sh/platform src/wave-writer.ts), which publishes them in W7 waves, one in flight
  * while the next buffers. The adapter keeps the closed-world metadata
  * overlay a clone reads back; the writer keeps the buffered bytes.
  *
@@ -1254,7 +1254,7 @@ function createBufferedFs(
   // Each record carries its overlay metadata (fetch and pull have no other
   // record of a buffered file); a cut stamps the wave's mtime on it, so the
   // overlay's stat agrees with what the wave publishes.
-  const writer = __nimbusGitWaveWriter.createWaveWriter({
+  const writer = __nimbusWaveWriter.createWaveWriter({
     supervisor: {
       writeBatchStream(stream) {
         stats.supervisorRpc.writeBatchStream++;

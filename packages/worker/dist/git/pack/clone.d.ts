@@ -29,7 +29,7 @@ export interface CloneSupervisor {
     /** Names in a directory, [] when it is absent. */
     readdir(path: string): Promise<string[]>;
 }
-/** The wave writer's surface (git/wave-writer.ts), as a clone uses it. */
+/** The wave writer's surface (@nimbus-sh/platform/wave-writer.js), as a clone uses it. */
 export interface CloneWriter {
     file(path: string, mode: number, bytes: Uint8Array): Promise<void>;
     symlink(path: string, target: string): Promise<void>;
