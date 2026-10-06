@@ -9,7 +9,7 @@
 // /tmp/big standing for any input larger than a pipe).
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { runScript } from './lib/bash-preamble.mjs';
 
 const BIG = 'x'.repeat(76) + '\n';

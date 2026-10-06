@@ -19,7 +19,7 @@ import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/n17-hydration.json', import.meta.url), 'utf8'));
 const CHUNK = 65_536;

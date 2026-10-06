@@ -19,7 +19,7 @@ import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from '../../../packages/core/sr
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { acrossRpc } from './rpc-error.mjs';
 
 const wasmDir = fileURLToPath(new URL('../../../packages/worker/wasm/bash/', import.meta.url));

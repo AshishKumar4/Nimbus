@@ -16,7 +16,7 @@ import { SqliteRuntimeFsBridge } from '../../../packages/core/src/runtime/sqlite
 import { adoptCtxExports } from '../../../packages/fabric/src/composition.ts';
 import { runGitCommand } from '../../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../../packages/worker/src/git/network-facet.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './staged-assets.mjs';
 
 export function hostGitEnv(home) {

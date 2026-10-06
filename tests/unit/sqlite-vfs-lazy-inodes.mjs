@@ -10,7 +10,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness, inodeTableScans } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness, inodeTableScans } from './lib/sqlite-vfs-test-harness.mjs';
 
 const CRED_USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const encode = (text) => new TextEncoder().encode(text);

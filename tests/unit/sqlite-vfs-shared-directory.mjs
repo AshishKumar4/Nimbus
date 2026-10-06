@@ -2,7 +2,7 @@
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 const A = { uid: 2000, gid: 2000, groups: [2000, 1000], umask: 0o022 };
 const B = { uid: 2001, gid: 2001, groups: [2001, 1000], umask: 0o022 };
 const h = createSqliteVfsTestHarness();

@@ -28,10 +28,10 @@ import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processBridge, processFiles } from './lib/process-bridge.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 

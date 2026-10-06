@@ -20,7 +20,7 @@ import { join } from 'node:path';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { testBox } from './lib/test-box.mjs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const GNU_DU = ['gnudu', 'du'].find((bin) => /GNU coreutils/.test(spawnSync(bin, ['--version'], { encoding: 'utf8' }).stdout ?? ''));
 assert.ok(GNU_DU, 'GNU du is required as the oracle (gnudu or du from GNU coreutils)');

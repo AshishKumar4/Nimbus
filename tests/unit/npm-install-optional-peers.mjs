@@ -21,7 +21,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const PREAMBLE_SYMBOLS = [
   'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',

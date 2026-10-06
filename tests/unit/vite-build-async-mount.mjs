@@ -15,7 +15,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { asyncMemoryVfs } from './lib/async-memory-vfs.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';

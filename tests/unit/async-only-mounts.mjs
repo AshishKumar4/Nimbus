@@ -11,7 +11,7 @@ import assert from 'node:assert/strict';
 import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { runScript } from './lib/bash-preamble.mjs';
 import { asyncOnly } from './lib/async-memory-vfs.mjs';
 

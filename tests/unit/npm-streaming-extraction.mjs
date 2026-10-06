@@ -6,7 +6,7 @@ import { createTar } from '../../packages/core/src/substrate/lifo/utils/archive.
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { readText } from '../../packages/core/src/vfs/vfs.ts';
 
 function archive(entries, prefix = 'package') {

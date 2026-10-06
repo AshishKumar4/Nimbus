@@ -10,7 +10,7 @@ import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-ru
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 // A W7 wave holding a file larger than CHUNK_SIZE must not materialize a
 // second full copy of the file beside the writer's original. An eager
 // per-chunk slice() made the oversize single-file wave (a packfile) peak at

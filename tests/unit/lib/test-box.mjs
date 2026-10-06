@@ -7,7 +7,7 @@ import { NimbusWorkspace } from '../../../packages/core/src/workspace/nimbus-wor
 import { ProcessFiles } from '../../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 export async function testBox({ harness = createSqliteVfsTestHarness(), vfs, terminal, env, cwd, mounts = {} } = {}) {
   const engine = vfs ?? new SqliteVFS(harness.sql, harness.ctx);

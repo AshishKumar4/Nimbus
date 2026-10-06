@@ -42,8 +42,8 @@ import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/ses
 import { SUPERVISOR_OP_ROUTES } from '../../../packages/core/src/workspace/supervisor-op.ts';
 import * as rpc from '../../../packages/worker/src/session/rpc.ts';
 import { buildSessionSupervisorOps } from '../../../packages/worker/src/session/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from '../session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { supervisorDouble } from './supervisor-double.mjs';
 
 plugin({

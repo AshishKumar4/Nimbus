@@ -12,7 +12,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { chunkBytesWritten, createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { chunkBytesWritten, createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
 
 const harness = createSqliteVfsTestHarness();

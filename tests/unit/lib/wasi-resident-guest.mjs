@@ -21,7 +21,7 @@ import { FILESYSTEM_RPC_METHODS } from '../../../packages/core/src/runtime/vfs-s
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { makeImportsWithoutJSPI } from './wasi-imports.mjs';
 import { acrossRpc } from './rpc-error.mjs';
 

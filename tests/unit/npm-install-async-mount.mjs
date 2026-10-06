@@ -19,7 +19,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { asyncMemoryVfs } from './lib/async-memory-vfs.mjs';
 import { VfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 
