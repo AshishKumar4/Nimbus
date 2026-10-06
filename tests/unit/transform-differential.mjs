@@ -18,22 +18,19 @@
 // A divergence must be listed, with its reason, in the fixture's DIVERGENT.
 
 import assert from 'node:assert/strict';
-import { readFile } from 'node:fs/promises';
-import { createRequire } from 'node:module';
 import { CASES, DIVERGENT } from '../fixtures/transform-differential/cases.mjs';
 import { generateTransformFacetRuntimeSource } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { prepareBundleCell, settleBundleCell } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
 import { lowerAsyncModule } from '../../packages/core/src/runtime/async-module-lowering.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
 
 const { runTransformRequest } = new Function(`${generateTransformFacetRuntimeSource()}\nreturn { runTransformRequest };`)();
 
 // esbuild as Nimbus ran it: the browser build over the compiled wasm.
-const resolveFromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
-const esbuild = await import(resolveFromCore.resolve('esbuild-wasm/esm/browser.js'));
-await esbuild.initialize({ wasmModule: await WebAssembly.compile(await readFile(resolveFromCore.resolve('esbuild-wasm/esbuild.wasm'))), worker: false });
+const esbuild = await esbuildEngine();
 assert.equal(esbuild.version, '0.24.2');
 const engines = { esbuild, oxc: oxcEngine };
 
@@ -258,4 +255,5 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
   console.log('  ok  refusals read as esbuild\'s, and unsupported options are refused, not ignored');
 }
 
+await stopEsbuildEngine();
 console.log('transform-differential OK');

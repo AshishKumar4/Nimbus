@@ -12,6 +12,7 @@ import {
   stripAnsi,
   Terminal,
 } from '../_driver.mjs';
+import { installPython, pipInstall } from './_setup.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 
@@ -27,19 +28,8 @@ try {
   await t.connect();
   await t.waitForPrompt(60_000);
 
-  const install = await t.run('nimbus install python --reinstall', 360_000);
-  const cleanInstall = stripAnsi(install.output);
-  a.check('python runtime installs from runtime catalog',
-    /installed at|already installed/.test(cleanInstall)
-      && !/catalog cannot be fetched|command not found/i.test(cleanInstall),
-    JSON.stringify(cleanInstall.slice(-1000)));
-
-  const pip = await t.run('pip install numpy flask', 420_000);
-  const cleanPip = stripAnsi(pip.output);
-  a.check('pip installs numpy and flask without request-time wasm failures',
-    /Successfully installed/.test(cleanPip)
-      && !/Wasm code generation disallowed|Failed to load dynamic library|Failed to load MarkupSafe/i.test(cleanPip),
-    JSON.stringify(cleanPip.slice(-1800)));
+  await installPython(t, a, { reinstall: true, timeoutMs: 360_000 });
+  await pipInstall(t, a, 'numpy flask', { timeoutMs: 420_000, installed: /Successfully installed/ });
 
   const imports = await t.run(
     'python -c "import flask, markupsafe._speedups, numpy as np; print(\'PY_IMPORT_OK\', int(np.arange(5).sum()))"',

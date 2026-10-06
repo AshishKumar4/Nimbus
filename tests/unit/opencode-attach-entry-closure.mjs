@@ -57,6 +57,25 @@ for (const stubbed of ['chunk-run.js', 'chunk-baretui.js']) {
   assert.ok(out.includes(`${stubbed} is outside`), `${stubbed} must be a fail-loud stub`);
 }
 
+// A closure chunk that loads an asset chunk through a dynamic import with
+// import attributes (opencode's tree-sitter wasm and highlight queries:
+// `import("./chunk-….js", {with:{type:"wasm"}})`) reaches it: it is inlined
+// and loads, not stubbed.
+{
+  const assetPack = {
+    ...pack,
+    'chunk-attachtui.js':
+      'import "./chunk-shared.js";\n' +
+      'export const TuiConfig = { wasm: async () => (await import("./chunk-grammar.js", {with:{type:"wasm"}})).default };',
+    'chunk-grammar.js': 'var t = "./tree-sitter-grammar.wasm"; export { t as default };',
+  };
+  const withAssets = await buildOpencodeAttachEntryFromSources(entry, assetPack);
+  assert.ok(!withAssets.includes('chunk-grammar.js is outside'), 'an attribute-carrying dynamic import is in the closure');
+  const mod = await import(`data:text/javascript;base64,${Buffer.from(withAssets).toString('base64')}`);
+  const [TuiConfig] = await mod.cli[0].handler();
+  assert.equal(await TuiConfig.wasm(), './tree-sitter-grammar.wasm');
+}
+
 // Seed derivation is fail-loud when the attach command is gone.
 await assert.rejects(
   () => buildOpencodeAttachEntryFromSources('export async function nimbusMain(){}', pack),

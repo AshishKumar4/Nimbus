@@ -1,6 +1,6 @@
 #!/usr/bin/env bun
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
@@ -14,6 +14,7 @@ import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
 import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const { host, rawVfs, kfs } = createAuthority();
 const root = 'home/user/transient-transform';
@@ -21,9 +22,8 @@ kfs.mkdir(root, { recursive: true });
 kfs.writeFile(root + '/value.mjs', 'export const value = "recovered after transient transform failure";');
 const program = 'console.log(require("./value.mjs").value);';
 kfs.writeFile(root + '/entry.cjs', program);
-const native = new EsbuildService();
-native.ensureInit = async () => {};
-native._esbuild = (await import('./lib/oxc-engine.mjs')).oxcEngine;
+const { oxcEngine } = await import('./lib/oxc-engine.mjs');
+const native = new EsbuildService(undefined, { engine: async () => oxcEngine });
 let attempts = 0;
 let fault = 'outcome';
 const evalProgram = 'import("node:path").then(path => console.log(path.default.basename("/tmp/eval-entry")));';
@@ -62,7 +62,7 @@ const env = {
     },
     get() { throw new Error('unexpected keyed loader publication'); },
   },
-  ASSETS: { async fetch(request) { return new Response(readFileSync(new URL('../../packages/worker/public/' + new URL(request.url).pathname.replace(/^\//, ''), import.meta.url))); } },
+  ASSETS: stagedAssets,
 };
 const manager = new FacetManager(createFacetCtx(createFacetWorld(() => ({})), 'transient-transform-recovery'), env, host.processes, new PortRegistry(), processHostFor, {});
 manager.setVfs(rawVfs, processFiles(rawVfs));

@@ -7,51 +7,9 @@ import {
   MAX_TX_LOGICAL_ROWS,
   MAX_TX_SQL_EXECS,
 } from '../../packages/platform/src/limits.ts';
-import {
-  SqliteVFS,
-  SqliteVfsTransactionTooLargeError,
-} from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
+import { SqliteVfsTransactionTooLargeError } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-
-function openVfs() {
-  const harness = createSqliteVfsTestHarness();
-  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  // Load the running counters now: probes below read stats from inside a
-  // statement, where the first read's aggregate would re-enter them.
-  rawVfs.getStats();
-  return {
-    harness,
-    rawVfs,
-    vfs: rawVfs.as(CRED_KERNEL),
-    baselineTransactions: harness.transactionCount,
-  };
-}
-
-function fileInode(path, size) {
-  return {
-    path,
-    parentPath: '',
-    isDir: false,
-    size,
-    mtime: 1,
-    mode: 0o644,
-    chunkCount: size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE),
-  };
-}
-
-function dirInode(path) {
-  return {
-    path,
-    parentPath: '',
-    isDir: true,
-    size: 0,
-    mtime: 1,
-    mode: 0o755,
-    chunkCount: 0,
-  };
-}
+import { dirInode, fileInode, openVfs } from './lib/staged-import.mjs';
 
 function chunks(path, data) {
   const entries = [];

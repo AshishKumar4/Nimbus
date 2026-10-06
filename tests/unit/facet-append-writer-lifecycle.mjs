@@ -1,7 +1,6 @@
 #!/usr/bin/env bun
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -11,6 +10,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const bindings = [];
 const stagedEntrypoints = [];
@@ -62,15 +62,7 @@ const env = {
       return worker;
     },
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const ctx = createFacetCtx(createFacetWorld(() => ({})), 'writer-lifecycle-test');
 const processes = new SessionProcessSupervisor();

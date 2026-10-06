@@ -3,11 +3,10 @@
 import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
-import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { runCommand, unixCommandRegistry } from './lib/unix-commands.mjs';
 
 const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 const harness = createSqliteVfsTestHarness();
@@ -26,13 +25,13 @@ rootVfs.writeFile('etc/group', [
   '',
 ].join('\n'), { mode: 0o644 });
 
-const registry = createDefaultRegistry();
-registerUnixCommands(registry, rawVfs);
+const registry = unixCommandRegistry(rawVfs);
 
 await assertElevation('sudo defaults to root', 'sudo', ['id'], CRED_KERNEL, ['id']);
 await assertElevation('sudo -u maps a named user', 'sudo', ['-u', 'user', 'whoami'], USER, ['whoami']);
 await assertElevation('su defaults to a root login shell', 'su', ['-c', 'id'], CRED_KERNEL, ['sh', '-c', 'id']);
 await assertElevation('su accepts a named target user', 'su', ['user', '-c', 'whoami'], USER, ['sh', '-c', 'whoami']);
+await assertElevation('passwordless su with no command starts a root shell', 'su', ['root'], CRED_KERNEL, ['sh']);
 
 // In a workspace, the command sudo starts is a program, found as execvp
 // finds one: not a shell function or an alias by that name, and one that
@@ -57,22 +56,12 @@ await assertElevation('su accepts a named target user', 'su', ['user', '-c', 'wh
 console.log('shell su and sudo: ok');
 
 async function assertElevation(name, commandName, args, expectedCred, expectedArgv) {
-  const command = await registry.resolve(commandName);
-  assert.ok(command, `${commandName} is registered`);
-
   const calls = [];
-  let stdout = '';
-  let stderr = '';
-  const exitCode = await command({
-    args,
+  const { exitCode, stdout, stderr } = await runCommand(registry, rawVfs, commandName, args, {
     pid: 51,
     cred: USER,
     cwd: '/home/user',
     env: { USER: 'user' },
-    vfs: rawVfs.as(USER),
-    signal: new AbortController().signal,
-    stdout: { write: (text) => { stdout += text; } },
-    stderr: { write: (text) => { stderr += text; } },
     runAs: async (cred, argv) => {
       calls.push({ cred, argv });
       return { status: 7, signal: null };

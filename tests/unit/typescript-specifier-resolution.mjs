@@ -35,25 +35,7 @@ import {
   bundleTypescriptLoader,
   isBundleModuleCandidate,
 } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
-
-class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
-  constructor(files = {}) {
-    this.files = new Map(Object.entries(files));
-    this.dirs = new Set();
-    for (const path of this.files.keys()) {
-      const parts = path.split('/');
-      for (let i = 1; i < parts.length; i++) this.dirs.add(parts.slice(0, i).join('/'));
-    }
-  }
-  exists(path) { return this.files.has(path) || this.dirs.has(path); }
-  isDirectory(path) { return this.dirs.has(path); }
-  readFileString(path) {
-    if (!this.files.has(path)) throw new Error(`missing file: ${path}`);
-    return this.files.get(path);
-  }
-}
+import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 /** What the entry's specifiers resolved to — the entry itself is always shipped. */
 const bundleOf = async (files, entryFile) =>

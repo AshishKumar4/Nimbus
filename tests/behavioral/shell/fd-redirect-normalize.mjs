@@ -6,7 +6,7 @@
 // `2>&1`, matching real installer scripts that broke brittle line
 // preprocessors.
 
-import { deleteSession, mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { deleteSession, mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/fd-redirect-normalize');
@@ -97,10 +97,3 @@ try {
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
 
-function hasOutputLine(output, expected) {
-  return output
-    .replace(/\r/g, '\n')
-    .split('\n')
-    .map((line) => line.trim())
-    .includes(expected);
-}

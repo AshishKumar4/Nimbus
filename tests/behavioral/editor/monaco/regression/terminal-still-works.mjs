@@ -18,6 +18,16 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
+// Probe 0: a fresh shell starts in the user's home, which has entries.
+const r0 = await t.run('pwd', 10_000);
+a.check('a fresh shell starts in /home/user',
+  /\/home\/user/.test(stripAnsi(r0.output)),
+  `output=${JSON.stringify(stripAnsi(r0.output).slice(-200))}`);
+const ls = stripAnsi((await t.run('ls /home/user', 10_000)).output);
+a.check('ls /home/user lists entries',
+  ls.length > 0 && !/error/i.test(ls) && /[a-zA-Z]/.test(ls),
+  `output=${JSON.stringify(ls.slice(-300))}`);
+
 // Probe 1: single-line echo.
 const r1 = await t.run('echo hello-wave-a', 10_000);
 a.check('echo single-line', /hello-wave-a/.test(stripAnsi(r1.output)),

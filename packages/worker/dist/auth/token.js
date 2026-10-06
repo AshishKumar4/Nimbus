@@ -61,18 +61,7 @@ export async function issueNimbusToken(env, input, opts = {}) {
     if (!env || typeof env.JWT_SECRET !== 'string' || env.JWT_SECRET.length === 0) {
         throw new NimbusAuthConfigError('JWT_SECRET is not configured (set via `wrangler secret put JWT_SECRET`)');
     }
-    if (!ID_COMPONENT_RE.test(input.tn)) {
-        throw new NimbusTokenClaimsError(`tn must match ${ID_COMPONENT_RE} (got: ${JSON.stringify(input.tn)})`);
-    }
-    if (input.sub !== undefined && !ID_COMPONENT_RE.test(input.sub)) {
-        throw new NimbusTokenClaimsError(`sub must match ${ID_COMPONENT_RE} (got: ${JSON.stringify(input.sub)})`);
-    }
-    if (input.sid !== undefined && !ID_COMPONENT_RE.test(input.sid)) {
-        throw new NimbusTokenClaimsError(`sid must match ${ID_COMPONENT_RE} (got: ${JSON.stringify(input.sid)})`);
-    }
-    if (input.jti !== undefined && !ID_COMPONENT_RE.test(input.jti)) {
-        throw new NimbusTokenClaimsError(`jti must match ${ID_COMPONENT_RE} (got: ${JSON.stringify(input.jti)})`);
-    }
+    checkIdComponents(input);
     const ttlMs = opts.ttlMs ?? DEFAULT_TOKEN_TTL_MS;
     if (ttlMs <= 0) {
         throw new NimbusTokenTtlError(ttlMs, MAX_TOKEN_TTL_MS);
@@ -164,18 +153,7 @@ export async function verifyNimbusToken(env, token) {
     if (claims.scope !== 'nimbus') {
         throw new NimbusTokenClaimsError(`scope must be "nimbus" (got: ${JSON.stringify(claims.scope)})`);
     }
-    if (typeof claims.tn !== 'string' || !ID_COMPONENT_RE.test(claims.tn)) {
-        throw new NimbusTokenClaimsError(`tn is missing or invalid`);
-    }
-    if (claims.sub !== undefined && (typeof claims.sub !== 'string' || !ID_COMPONENT_RE.test(claims.sub))) {
-        throw new NimbusTokenClaimsError(`sub shape invalid`);
-    }
-    if (claims.sid !== undefined && (typeof claims.sid !== 'string' || !ID_COMPONENT_RE.test(claims.sid))) {
-        throw new NimbusTokenClaimsError(`sid shape invalid`);
-    }
-    if (claims.jti !== undefined && (typeof claims.jti !== 'string' || !ID_COMPONENT_RE.test(claims.jti))) {
-        throw new NimbusTokenClaimsError(`jti shape invalid`);
-    }
+    checkIdComponents(claims);
     if (typeof claims.iat !== 'number' || typeof claims.exp !== 'number') {
         throw new NimbusTokenClaimsError(`iat and exp must be numbers (NumericDate)`);
     }
@@ -194,6 +172,21 @@ export async function verifyNimbusToken(env, token) {
     };
 }
 // ── Internal helpers ─────────────────────────────────────────────────────
+/**
+ * The claims that name things (tenant, subject, session, token id) each
+ * match ID_COMPONENT_RE: `tn` always, the others when present. Issuing and
+ * verifying apply the same rule with the same message.
+ */
+function checkIdComponents(claims) {
+    for (const name of ['tn', 'sub', 'sid', 'jti']) {
+        const value = claims[name];
+        if (value === undefined && name !== 'tn')
+            continue;
+        if (typeof value !== 'string' || !ID_COMPONENT_RE.test(value)) {
+            throw new NimbusTokenClaimsError(`${name} must match ${ID_COMPONENT_RE} (got: ${JSON.stringify(value)})`);
+        }
+    }
+}
 /**
  * HMAC-SHA-256 sign via WebCrypto subtle. Returns raw signature bytes.
  *

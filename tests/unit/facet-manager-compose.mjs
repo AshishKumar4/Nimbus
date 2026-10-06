@@ -18,11 +18,6 @@
 //      transforms in the same loader-backed facet, never in the host isolate.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -35,6 +30,8 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 
 import { composeFacetManager } from '../../packages/worker/src/facets/compose.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -44,12 +41,7 @@ adoptCtxExports({
   }),
 });
 
-const ASSETS = {
-  async fetch(request) {
-    const path = new URL(request.url).pathname.replace(/^\//, '');
-    return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-  },
-};
+const ASSETS = stagedAssets;
 
 /** A filesystem with enough of a dependency tree that a node launch is paced. */
 function createDisk() {
@@ -144,46 +136,20 @@ const settle = async (predicate, tries = 400) => {
 // nimbus-session.ts transitively imports `cloudflare:workers`, so the
 // session class comes from a stubbed bundle; the factory under test is the
 // same source-graph import the published subpath exposes.
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-compose-test-'));
-let bundle;
-try {
-  const entryPath = join(outputDir, 'entry.ts');
-  await writeFile(entryPath, [
-    `export { NimbusSession } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/session/nimbus-session.ts';`,
-    `export { composeFacetManager } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/compose.ts';`,
-    `export { ensureFacetManager } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/hosted/services.ts';`,
-    // The bundle is a second copy of core: the authority the host hands
-    // `ensureFacetManager` has to be the class THIS graph knows, or its
-    // typed check sees a stranger.
-    `export { processFiles } from '${new URL('./lib/process-bridge.mjs', import.meta.url).pathname}';`,
-    `export { adoptCtxExports, composeFabric } from '${new URL('../../', import.meta.url).pathname}packages/fabric/src/composition.ts';`,
-    // The facet's id hashes its code, and this graph's copy of that code is its own.
-    `export { OXC_FACET_WORKER_ID } from '${new URL('../../', import.meta.url).pathname}packages/worker/src/facets/oxc-transform.ts';`,
-    '',
-  ].join('\n'));
-  const build = await Bun.build({
-    entrypoints: [entryPath],
-    outdir: join(outputDir, 'out'),
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  bundle = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/entry.js')).path).href);
-  bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
-  bundle.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+const bundle = await importWorkerBundle({
+  'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+  'packages/worker/src/facets/compose.ts': ['composeFacetManager'],
+  'packages/worker/src/hosted/services.ts': ['ensureFacetManager'],
+  // The bundle is a second copy of core: the authority the host hands
+  // `ensureFacetManager` has to be the class THIS graph knows, or its
+  // typed check sees a stranger.
+  'tests/unit/lib/process-bridge.mjs': ['processFiles'],
+  'packages/fabric/src/composition.ts': ['adoptCtxExports', 'composeFabric'],
+  // The facet's id hashes its code, and this graph's copy of that code is its own.
+  'packages/worker/src/facets/oxc-transform.ts': ['OXC_FACET_WORKER_ID'],
+});
+bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC' });
+bundle.adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 {
 
   /** The same launch, on a manager, recorded as the hook events it produced. */

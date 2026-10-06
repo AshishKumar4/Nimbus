@@ -11,28 +11,10 @@
 import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
 
-const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
 const IMAGE_BYTES = 3 * 1024 * 1024 + 11;
 const image = Uint8Array.from({ length: IMAGE_BYTES }, (_, i) => (i * 7 + (i >> 12)) & 0xff);
-
-function installed(files) {
-  const harness = createSqliteVfsTestHarness();
-  const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const root = raw.as(CRED_KERNEL);
-  root.mkdir('home/user', { recursive: true, mode: 0o755 });
-  root.chown('home/user', USER.uid, USER.gid);
-  for (const [path, bytes] of Object.entries(files)) {
-    root.mkdir(path.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
-    root.writeFile(path, bytes, { mode: 0o644 });
-  }
-  return { raw, filesystem: new ProcessFiles(raw) };
-}
 
 /** A facet host that records every wasm image it is handed. */
 function recordingFacets() {
@@ -55,17 +37,7 @@ function recordingFacets() {
   };
 }
 
-const context = (filesystem, args) => ({
-  pid: 41,
-  cred: USER,
-  vfs: new ProcessView(filesystem.bind({ pid: 41, cred: USER })),
-  args,
-  cwd: '/home/user',
-  env: {},
-  stdin: '',
-  stdout: { write() {} },
-  stderr: { write() {} },
-});
+const context = (filesystem, args) => runtimeContext(filesystem, { args }).ctx;
 
 function assertHandedOff(raw, images, name) {
   assert.equal(images.length, 1, `${name}: ${images.length} images handed to the facet`);
@@ -75,7 +47,7 @@ function assertHandedOff(raw, images, name) {
 }
 
 {
-  const { raw, filesystem } = installed({
+  const { raw, filesystem } = installedRuntime({
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
@@ -88,10 +60,36 @@ function assertHandedOff(raw, images, name) {
   console.log('  ok  python hands its facet the installed image without caching it');
 }
 
+// The facet is opened per invocation, under the invoking process's pid, and
+// disposed after it: the supervisor capability is bound when it opens, so a
+// facet held across calls would hand every later caller the first caller's
+// write credential (cpython-runner.ts).
+{
+  const { filesystem } = installedRuntime({
+    'runtime/python/share/cpython/python.wasm': image,
+    'runtime/python/lib/python313.zip': new Uint8Array([1]),
+  });
+  const manifest = { version: '3.13.14', files: [{ path: 'share/cpython/python.wasm' }, { path: 'lib/python313.zip' }] };
+  const opened = [];
+  let disposed = 0;
+  const host = {
+    open(spec) {
+      opened.push(spec.syscalls?.pid);
+      return { async submit() { return { exitCode: 0, stdout: '', stderr: '' }; }, dispose() { disposed++; } };
+    },
+  };
+  const run = makeCPythonRunnerFactory({ facets: host })(manifest, '/runtime/python', 'python', undefined);
+  assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(1)'], pid: 41 }).ctx), 0);
+  assert.equal(await run(runtimeContext(filesystem, { args: ['-c', 'print(2)'], pid: 42 }).ctx), 0);
+  assert.deepEqual(opened, [41, 42], 'each invocation opens its own facet under its own pid');
+  assert.equal(disposed, 2, 'each invocation disposes the facet it opened');
+  console.log('  ok  python opens a facet per invocation, under the invoker\'s pid');
+}
+
 // A program that keeps serving runs as a resident process, whose host reads
 // the image by path itself: the one-shot path's copy is never taken.
 {
-  const { raw, filesystem } = installed({
+  const { raw, filesystem } = installedRuntime({
     'runtime/python/share/cpython/python.wasm': image,
     'runtime/python/lib/python313.zip': new Uint8Array([1]),
   });
@@ -109,7 +107,7 @@ function assertHandedOff(raw, images, name) {
 }
 
 {
-  const { raw, filesystem } = installed({ 'runtime/ruby/share/ruby/ruby+stdlib.wasm': image });
+  const { raw, filesystem } = installedRuntime({ 'runtime/ruby/share/ruby/ruby+stdlib.wasm': image });
   const manifest = { files: [{ path: 'share/ruby/ruby+stdlib.wasm' }] };
   const facets = recordingFacets();
   const run = await makeRubyRunnerFactory({ facets: facets.host, filesystem, getHome: () => '/home/user' })(manifest, '/runtime/ruby', 'ruby', undefined);

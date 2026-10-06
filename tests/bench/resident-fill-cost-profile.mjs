@@ -23,12 +23,14 @@
 // multiplying a local function call by a guessed hop cost would be a made-up
 // number, not a measurement.
 //
-// Run directly; it prints a table rather than asserting a threshold, because a
-// performance figure that fails a build is a flake generator.
+// Run directly (`bun tests/bench/resident-fill-cost-profile.mjs`); it prints a
+// table rather than asserting a threshold, because a performance figure that
+// fails a build is a flake generator. That is why it lives outside the unit
+// suite: a file that cannot fail is not a test.
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from '../unit/sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from '../unit/session-supervisor-ops.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';

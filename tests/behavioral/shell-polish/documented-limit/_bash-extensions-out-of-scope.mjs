@@ -1,5 +1,5 @@
 #!/usr/bin/env bun
-// shell-polish/documented-limit/bash-extensions-out-of-scope —
+// shell-polish/documented-limit/_bash-extensions-out-of-scope —
 // Several bash 4+ extensions are NOT supported by lifo-sh's parser
 // (which targets a POSIX-leaning subset). Patching them requires
 // modifying the @lifo-sh/core/dist bundle (hash-named file; brittle
@@ -13,7 +13,9 @@
 // the surface lock).
 //
 // Category: F (forensic) — always exits 0; reports observed state.
-// Run this manually to audit current parser support.
+// A report with no verdict is not a probe, so run-all does not discover it
+// (the leading `_`). Run it by hand to audit current parser support:
+//   BASE=<target> bun tests/behavioral/shell-polish/documented-limit/_bash-extensions-out-of-scope.mjs
 //
 // Pre-fix observable (prod 1914938):
 //   - `arr=(a b c)`            → "unexpected token '('"

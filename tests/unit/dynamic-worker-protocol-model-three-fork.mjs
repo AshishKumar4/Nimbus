@@ -15,20 +15,15 @@
 // runs, 7.4M states), ran once with no violation (83 CPU-minutes); these
 // files are the sample that fits the suite's per-file budget.
 
-import { checkFamilies } from './lib/ledger-protocol-model.mjs';
+import { checkFamilies, threeHolderCases } from './lib/ledger-protocol-model.mjs';
 
-const cases = [];
-const rotations = [[['q'], ['q', 'b'], ['q', 's']], [['q', 'b'], ['q', 's'], ['q']], [['q', 's'], ['q'], ['q', 'b']]];
-// The third rotation with its parent racing is past the budget (537k
-// states, 196 s alone); it ran clean in the full sweep.
-for (const [r, children] of rotations.entries()) {
-  const family = children.map((c, i) => ({ parent: ['R', 0, 0][i], children: c }));
-  for (const focus of [10, 20, 30]) {
-    if (r === 2 && focus === 10) continue;
-    cases.push([family, focus]);
-  }
-}
-for (const focus of [10, 20, 30]) cases.push([[{ parent: 'R', children: ['q'] }, { parent: 0, children: ['q'] }, { parent: 0, children: ['q'] }], focus]);
+const cases = [
+  // The third rotation with its parent racing is past the budget (537k
+  // states, 196 s alone); it ran clean in the full sweep.
+  ...threeHolderCases('fork', { skip: (rotation, focus) => rotation === 2 && focus === 10 }),
+  // The fork in which a parent hears two children print, the replies crossing.
+  ...[10, 20, 30].map((focus) => [[{ parent: 'R', children: ['q'] }, { parent: 0, children: ['q'] }, { parent: 0, children: ['q'] }], focus]),
+];
 
 await checkFamilies(cases);
 console.log('ok - dynamic-worker-protocol-model-three-fork (three holders in a fork: no refusal while one can progress, and one whenever all are stuck)');

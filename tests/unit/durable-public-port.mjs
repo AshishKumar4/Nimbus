@@ -10,10 +10,6 @@
 // application has ever booted and re-adopted by every binding it makes.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import {
   buildPreviewHost,
@@ -41,6 +37,7 @@ import {
   PUBLIC_BEARER_HEADER,
   PREVIEW_CAPABILITY_HEADER,
 } from '../../packages/worker/src/_shared/session-router.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -149,26 +146,7 @@ const CAP = 'abcdef0123456789abcdef01';
 // ── 3. the session gate: visibility is the stored record's, capability the
 //      bearer's ─────────────────────────────────────────────────────────────
 {
-  const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-public-port-test-'));
-  const build = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/port-capability.ts'],
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  const entry = build.outputs.find((output) => output.path.endsWith('/port-capability.js'));
-  const { routeToSessionPort } = await import(pathToFileURL(entry.path).href);
+  const { routeToSessionPort } = await importWorkerBundle({ 'packages/worker/src/session/port-capability.ts': ['routeToSessionPort'] });
 
   const boots = [];
   const world = createFacetWorld(() => {
@@ -282,7 +260,6 @@ const CAP = 'abcdef0123456789abcdef01';
   assert.equal((await readPortReservation(ctx, 20700)).visibility, 'public',
     're-reserving upgrades visibility in place');
 
-  await rm(outputDir, { recursive: true, force: true });
 }
 
 console.log('ok - public durable port (host forms disjoint, router forwards unauthenticated, visibility gates, reservations mint + upgrade)');

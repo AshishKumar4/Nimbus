@@ -13,10 +13,6 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -25,6 +21,7 @@ import { NpmInstaller } from '../../packages/worker/src/npm/installer.ts';
 import { makeFanoutEnv } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const USER = CRED_SESSION_USER;
 const PID = 7;
@@ -108,30 +105,7 @@ const install = (dir, opts = {}) => installer.install(dir, { pid: PID, cred: USE
 {
   const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
   // vite-command.ts transitively imports `cloudflare:workers`; bundled with the stub the route tests use.
-  const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-root-artifacts-test-'));
-  let createViteCommand;
-  try {
-    const bundle = await Bun.build({
-      entrypoints: ['./packages/worker/src/session/vite-command.ts'],
-      outdir: outputDir,
-      target: 'bun',
-      format: 'esm',
-      plugins: [{
-        name: 'cloudflare-workers-test-stub',
-        setup(builder) {
-          builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-          builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-            contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-            loader: 'js',
-          }));
-        },
-      }],
-    });
-    assert.equal(bundle.success, true, bundle.logs.map(String).join('\n'));
-    ({ createViteCommand } = await import(pathToFileURL(bundle.outputs.find((o) => o.path.endsWith('/vite-command.js')).path).href));
-  } finally {
-    await rm(outputDir, { recursive: true, force: true });
-  }
+  const { createViteCommand } = await importWorkerBundle({ 'packages/worker/src/session/vite-command.ts': ['createViteCommand'] });
   const registry = new CommandRegistry();
   registry.register('vite', createViteCommand({
     ensureSqliteFs() {},
