@@ -899,13 +899,6 @@ export class NimbusSession extends CloudflareDurableObject {
         return _programmatic.rpcSpawnWorker(this, workerCode, command, cwd, opts);
     }
     async _rpcDestroy(options) { return _programmatic.rpcDestroy(this, options); }
-    // Legacy VFS (direct method calls)
-    vfsReadFile(path) { return _rpc.vfsReadFile(this, path); }
-    vfsReadFileString(path) { return _rpc.vfsReadFileString(this, path); }
-    vfsStat(path) { return _rpc.vfsStat(this, path); }
-    vfsExists(path) { return _rpc.vfsExists(this, path); }
-    vfsReaddir(path) { return _rpc.vfsReaddir(this, path); }
-    vfsWriteFile(path, data) { return _rpc.vfsWriteFile(this, path, data); }
     // ── HTTP handler ──────────────────────────────────────────────────────
     async fetch(request) {
         // Every client reaches the session through here; facets reach it

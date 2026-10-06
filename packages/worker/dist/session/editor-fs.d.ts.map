@@ -1,0 +1,1 @@
+{"version":3,"file":"editor-fs.d.ts","sourceRoot":"","sources":["../../src/session/editor-fs.ts"],"names":[],"mappings":"AAaA,OAAO,KAAK,EAAE,eAAe,EAAE,MAAM,mCAAmC,CAAC;AAEzE,KAAK,QAAQ,GAAG,IAAI,CAAC,eAAe,EAAE,QAAQ,GAAG,aAAa,GAAG,UAAU,GAAG,OAAO,GAAG,WAAW,GAAG,SAAS,CAAC,CAAC;AAEjH;;;;;GAKG;AACH,wBAAgB,aAAa,CAAC,QAAQ,EAAE,QAAQ,EAAE,GAAG,EAAE,GAAG,GAAG,OAAO,CAAC,GAAG,CAAC,CAQxE"}

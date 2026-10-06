@@ -467,28 +467,6 @@ export declare function _rpcCpKill(self: RpcHost, childPid: number, signal: stri
  */
 export declare function _rpcCpBlocked(self: RpcHost, pid: number, report: unknown): Promise<void>;
 export declare function _rpcCpWait(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, knownStarted?: boolean): Promise<any>;
-/** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
-export declare function vfsReadFile(self: RpcHost, path: string): ArrayBuffer | null;
-/** RPC: Read a file as string. Returns string or null. */
-export declare function vfsReadFileString(self: RpcHost, path: string): string | null;
-/** RPC: Stat a path. Returns file metadata or null. */
-export declare function vfsStat(self: RpcHost, path: string): {
-    type: string;
-    size: number;
-    atime: number;
-    ctime: number;
-    mtime: number;
-    mode: number;
-} | null;
-/** RPC: Check if path exists. */
-export declare function vfsExists(self: RpcHost, path: string): boolean;
-/** RPC: List directory contents. Returns array of { name, type }. */
-export declare function vfsReaddir(self: RpcHost, path: string): {
-    name: string;
-    type: string;
-}[];
-/** RPC: Write a file to the VFS. */
-export declare function vfsWriteFile(self: RpcHost, path: string, data: ArrayBuffer): void;
 /**
  * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
  *

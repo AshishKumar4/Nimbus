@@ -17,6 +17,7 @@ import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
@@ -858,21 +859,24 @@ async function runTool(self, name, args) {
         if (name === 'read_file') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user');
-            return { path: '/' + path, content: self.sqliteFs.as(CRED_KERNEL).readFileString(path) };
+            // Each file tool waits for a delegation it meets to be recalled (withRecall).
+            return { path: '/' + path, content: await withRecall(() => self.sqliteFs.as(CRED_KERNEL).readFileString(path)) };
         }
         if (name === 'write_file') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user/file.txt');
             const vfs = self.sqliteFs.as(CRED_KERNEL);
-            ensureParentDirs(vfs, path);
-            vfs.writeFile(path, String(args.content ?? ''));
+            await withRecall(() => {
+                ensureParentDirs(vfs, path);
+                vfs.writeFile(path, String(args.content ?? ''));
+            });
             return { ok: true, path: '/' + path, bytes: String(args.content ?? '').length };
         }
         if (name === 'list_files') {
             await ensureProgrammaticReady(self);
             const path = normalizeAgentVfsPath(args.path || '/home/user');
             const base = trimTrailingSlash(path);
-            const entries = self.sqliteFs.as(CRED_KERNEL).readdir(path).map((entry) => ({
+            const entries = (await withRecall(() => self.sqliteFs.as(CRED_KERNEL).readdir(path))).map((entry) => ({
                 name: entry.name,
                 type: entry.type,
                 path: '/' + base + '/' + entry.name,

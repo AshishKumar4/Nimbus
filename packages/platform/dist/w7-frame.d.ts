@@ -1,6 +1,12 @@
 /**
- * W7 v3 — incremental typed records for streamed bulk filesystem writes.
- * The format is internal: every producer and consumer deploys together.
+ * W7 v4 — incremental typed records for streamed filesystem writes, in
+ * program order: the records are the operations a writer made, in the order
+ * it made them, and a stream that stops commits a prefix of them (each group
+ * whole). A path may be named by several operations (a file written, renamed,
+ * written again). Every producer speaks v4; the format is internal, and every
+ * producer and consumer deploys together. v3 (no rename, truncate or setattr,
+ * one operation per path, deletes then directories then files) is still
+ * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  */
 export type VfsInodeKind = 'file' | 'directory' | 'symlink';
 /** Entry for bulk inode creation via writeBatch(). */
@@ -41,7 +47,52 @@ export interface BatchWritePayload {
     deletePaths?: string[];
     /** Files streamed from a source rather than given as chunks; encoder only. */
     streams?: BatchStreamEntry[];
+    /**
+     * The operations themselves, in program order (encoder only): a writer
+     * with an order to keep (a delegation's holder) gives these, and nothing
+     * in `inodes`, `chunks`, `deletePaths` or `streams`. Without them, a
+     * payload is encoded as its deletes, then its directories, then its files.
+     */
+    ops?: W7Op[];
 }
+/** One attribute change (setattr): the mode, the owner, or the times; what chmod, chown and utimes each make. */
+export type W7Attrs = {
+    mode: number;
+} | {
+    uid: number;
+    gid: number;
+} | {
+    atime: number;
+    mtime: number;
+};
+/** One operation of a program-order payload (BatchWritePayload.ops). */
+export type W7Op = {
+    type: 'delete';
+    path: string;
+} | {
+    type: 'directory';
+    inode: BatchInodeEntry;
+} | {
+    type: 'file';
+    inode: BatchInodeEntry;
+    data: Uint8Array;
+} | {
+    type: 'file';
+    inode: BatchInodeEntry;
+    source: AsyncIterable<Uint8Array>;
+} | {
+    type: 'rename';
+    from: string;
+    to: string;
+} | {
+    type: 'truncate';
+    path: string;
+    size: number;
+} | {
+    type: 'setattr';
+    path: string;
+    attrs: W7Attrs;
+};
 export declare const W7_MAGIC: Uint8Array<ArrayBuffer>;
 /**
  * A batch's owned paths. Each stream costs the receiver a round trip and a
@@ -55,7 +106,10 @@ export declare const W7_MAX_RECORD_BYTES: number;
 export declare function w7ChunkCount(size: number): number;
 /** `data`, the content at `path`, as its wire chunks (w7ChunkCount): views of it, not copies. */
 export declare function w7Chunks(path: string, data: Uint8Array): BatchChunkEntry[];
-declare const MODE: "path-atomic-committed-prefix";
+declare const MODE: "program-order-committed-prefix";
+/** v3's batch mode. Delete with v3 decoding. */
+declare const MODE_V3: "path-atomic-committed-prefix";
+type W7Mode = typeof MODE | typeof MODE_V3;
 export interface W7BatchSummary {
     recordCount: number;
     pathCount: number;
@@ -64,6 +118,8 @@ export interface W7BatchSummary {
     fileCount: number;
     chunkCount: number;
     byteCount: number;
+    /** Renames, truncates and attribute changes (v4; none in v3). */
+    opCount: number;
     check: number;
 }
 export interface W7ChunkRetention {
@@ -107,12 +163,24 @@ export type W7DecodedRecord = {
     chunkCount: number;
     check: number;
 } | {
+    type: 'rename';
+    from: string;
+    to: string;
+} | {
+    type: 'truncate';
+    path: string;
+    size: number;
+} | {
+    type: 'setattr';
+    path: string;
+    attrs: W7Attrs;
+} | {
     type: 'batch-end';
     summary: W7BatchSummary;
 };
 export interface W7DecodedStream {
     readonly batchId: string;
-    readonly mode: typeof MODE;
+    readonly mode: W7Mode;
     readonly records: AsyncIterable<W7DecodedRecord>;
 }
 /**

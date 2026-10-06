@@ -598,22 +598,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     /** Colocated embedders only (DO stub); not on the remote dispatcher. See `rpcSpawnWorker`. */
     _rpcSpawnWorker(workerCode: string, command: string, cwd: string, opts?: import('../facets/manager.js').LongRunningWorkerSpawnOptions): Promise<import("../facets/manager.js").SpawnedWorker>;
     _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions): Promise<_programmatic.ProgrammaticDestroyResult>;
-    vfsReadFile(path: string): ArrayBuffer | null;
-    vfsReadFileString(path: string): string | null;
-    vfsStat(path: string): {
-        type: string;
-        size: number;
-        atime: number;
-        ctime: number;
-        mtime: number;
-        mode: number;
-    } | null;
-    vfsExists(path: string): boolean;
-    vfsReaddir(path: string): {
-        name: string;
-        type: string;
-    }[];
-    vfsWriteFile(path: string, data: ArrayBuffer): void;
     fetch(request: Request): Promise<Response>;
     _handleFetch(request: Request): Promise<Response>;
     /**

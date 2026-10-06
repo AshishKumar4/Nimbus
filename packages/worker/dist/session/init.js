@@ -3,7 +3,6 @@ import { runtimeCatalogSource } from '../runtime/runtime-catalog.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { WebSocketTerminal } from '../facets/ws-terminal.js';
-import { parentVfsPath, stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 // Runtime factories (clang/python/ruby/bash/wasm) are imported lazily at
 // first-use inside their registered handlers — see the registrations below.
@@ -23,6 +22,8 @@ import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
+import { serveEditorFs } from './editor-fs.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 function quoteShellArgument(value) {
     return `'${value.replace(/'/g, `'\\''`)}'`;
 }
@@ -31,7 +32,8 @@ export async function initSession(self, ws, options = {}) {
     self.ensureSqliteFs();
     const kernelFs = self.sqliteFs.as(CRED_KERNEL);
     self.ensureFacetManager();
-    self.seedFilesystem();
+    // Idempotent, so a delegation it meets is waited out and it runs again.
+    await withRecall(() => self.seedFilesystem());
     // ── Phase R: rehydrate session state from DO SQLite [B'.1] ──────────
     //
     // Track B' invariant: every observable session field has a SQL-backed
@@ -201,116 +203,9 @@ export async function initSession(self, ws, options = {}) {
     //   IN  { type:'fs-list',  dir, recursive? }
     //   OUT { type:'fs-list-result',  dir, entries:[{path,type}], error? }
     //
-    // Binary refuse: fs-read uses readFile(bytes) + fatal:true UTF-8
-    // decode. Throws on invalid bytes → reply { binary:true } with no
-    // content. The editor pane shows a friendly placeholder; this is
-    // the same heuristic hardening-r5 already uses for VFS<->facet
-    // serialization (see manager.ts _readBundleCell).
-    //
+    // Answered by serveEditorFs (editor-fs.ts).
     self.terminal.onFs((msg, reply) => {
-        try {
-            if (msg.type === 'fs-read') {
-                const p = stripLeadingSlashes(String(msg.path || ''));
-                if (!kernelFs.exists(p)) {
-                    reply({ type: 'fs-read-result', path: msg.path, error: 'ENOENT: no such file or directory' });
-                    return;
-                }
-                if (kernelFs.isDirectory(p)) {
-                    reply({ type: 'fs-read-result', path: msg.path, error: 'EISDIR: is a directory' });
-                    return;
-                }
-                // Read bytes; attempt strict UTF-8 decode. Non-UTF-8 → mark
-                // binary so the editor shows a friendly placeholder rather
-                // than mojibake.
-                const bytes = kernelFs.readFile(p);
-                try {
-                    const content = new TextDecoder('utf-8', { fatal: true }).decode(bytes);
-                    reply({ type: 'fs-read-result', path: msg.path, content });
-                }
-                catch {
-                    reply({
-                        type: 'fs-read-result',
-                        path: msg.path,
-                        binary: true,
-                        error: 'binary file (non-UTF-8) — editor cannot display',
-                    });
-                }
-                return;
-            }
-            if (msg.type === 'fs-write') {
-                const p = stripLeadingSlashes(String(msg.path || ''));
-                if (!p) {
-                    reply({ type: 'fs-write-result', path: msg.path, ok: false, error: 'empty path' });
-                    return;
-                }
-                const parent = parentVfsPath(p);
-                if (parent)
-                    try {
-                        kernelFs.mkdir(parent, { recursive: true });
-                    }
-                    catch { }
-                const content = typeof msg.content === 'string' ? msg.content : String(msg.content ?? '');
-                kernelFs.writeFile(p, content);
-                reply({ type: 'fs-write-result', path: msg.path, ok: true });
-                return;
-            }
-            if (msg.type === 'fs-list') {
-                const dir = stripLeadingSlashes(String(msg.dir || ''));
-                const recursive = msg.recursive === true;
-                if (dir && !kernelFs.exists(dir)) {
-                    reply({ type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOENT' });
-                    return;
-                }
-                if (dir && !kernelFs.isDirectory(dir)) {
-                    reply({ type: 'fs-list-result', dir: msg.dir, entries: [], error: 'ENOTDIR' });
-                    return;
-                }
-                // BFS walk with per-call cap so a 10k-file project doesn't
-                // ship a megabyte JSON frame. 2000 entries is well above
-                // typical project sizes (vite scaffold = ~30 files; even
-                // node_modules tree of a 50-dep project under 2000).
-                const MAX_ENTRIES = 2000;
-                const out = [];
-                const queue = [dir];
-                while (queue.length > 0 && out.length < MAX_ENTRIES) {
-                    const cur = queue.shift();
-                    let entries;
-                    try {
-                        entries = kernelFs.readdir(cur);
-                    }
-                    catch {
-                        continue;
-                    }
-                    for (const e of entries) {
-                        if (out.length >= MAX_ENTRIES)
-                            break;
-                        if (e.name === 'node_modules' || e.name === '.git')
-                            continue; // skip noisy
-                        const child = cur ? cur + '/' + e.name : e.name;
-                        out.push({ path: '/' + child, type: e.type });
-                        if (recursive && e.type === 'directory')
-                            queue.push(child);
-                    }
-                }
-                reply({
-                    type: 'fs-list-result',
-                    dir: msg.dir,
-                    entries: out,
-                    truncated: out.length >= MAX_ENTRIES,
-                });
-                return;
-            }
-            reply({ type: msg.type + '-result', ok: false, error: 'unknown fs message type' });
-        }
-        catch (e) {
-            reply({
-                type: msg.type + '-result',
-                path: msg.path,
-                dir: msg.dir,
-                ok: false,
-                error: (e?.message || String(e)),
-            });
-        }
+        void serveEditorFs(kernelFs, msg).then(reply);
     });
     // W8: hand the registry to the cp broker so child_process.spawn from
     // a parent facet can resolve and dispatch commands the same way the

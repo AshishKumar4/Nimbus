@@ -101,6 +101,7 @@ function getHome(self) {
     catch { }
     return '/home/user';
 }
+/** What a runtime install writes with: as the kernel, repeatable, so its callers pass a delegation it meets by withRecall. */
 function runtimeDeps(self) {
     self.ensureSqliteFs();
     if (!self.sqliteFs)
@@ -120,7 +121,7 @@ export async function ensureProgrammaticReady(self, options = {}) {
         .map((s) => String(s).trim())
         .filter(Boolean);
     if (preinstall.length > 0) {
-        const results = await ensureRuntimesProgrammatic(runtimeDeps(self), preinstall);
+        const results = await withRecall(() => ensureRuntimesProgrammatic(runtimeDeps(self), preinstall));
         const failed = results.filter((r) => r.exitCode !== 0);
         if (failed.length > 0) {
             const details = failed.map((r) => `${r.spec}: ${r.stderr || r.stdout}`).join('\n');
@@ -432,11 +433,11 @@ export async function rpcRunCode(self, code, options = {}) {
 }
 export async function rpcInstallRuntime(self, spec, options = {}) {
     await ensureProgrammaticReady(self);
-    return installRuntimeProgrammatic(runtimeDeps(self), String(spec), options);
+    return withRecall(() => installRuntimeProgrammatic(runtimeDeps(self), String(spec), options));
 }
 export async function rpcEnsureRuntimes(self, specs, options = {}) {
     await ensureProgrammaticReady(self);
-    return ensureRuntimesProgrammatic(runtimeDeps(self), specs.map((s) => String(s)), options);
+    return withRecall(() => ensureRuntimesProgrammatic(runtimeDeps(self), specs.map((s) => String(s)), options));
 }
 export async function rpcListRuntimes(self) {
     await ensureProgrammaticReady(self);

@@ -1898,6 +1898,23 @@ export declare class SqliteVFS {
     /** The cache and the publication learn what touchDirectoryRows committed. */
     private touchedDirectoriesCommitted;
     private executeTransactionPlan;
+    /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
+    private applyPlanDeletes;
+    /** The plan's new staging contents, numbered and stored (state staging). */
+    private createPlanStagings;
+    /**
+     * Every chunk the plan's pieces name, by hash: found, brought back from
+     * cold, rewritten in place, or inserted. Its id, by hash key.
+     */
+    private storePlanChunks;
+    /**
+     * Each inode's content reference (entry.chunkId, entry.contentId): a
+     * chunk, a manifest found by digest or made, a staging published, or an
+     * edit of a manifest in place.
+     */
+    private publishPlanContents;
+    /** The plan's inode rows: identity, generation and content; what each replaced is queued for collection. */
+    private upsertPlanInodes;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
      * Chunk rows as (id, hash, data) triples; size is length(data), so a row
@@ -2003,6 +2020,7 @@ export declare class SqliteVFS {
      * joined, cut and hashed here, before the transaction; the hashes resolve
      * to chunk ids inside it.
      */
+    /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
     private prepareBatchTransaction;
     private validateFileChunks;
     private validateInodeContentShape;

@@ -1384,65 +1384,6 @@ export async function _rpcCpWait(self, childPid, waitMs, acquire, pid, knownStar
     const status = await fpm.wait(childPid, waitMs, knownStarted !== false);
     return withDeliveredAcquire(self, status, status.done, acquire, pid);
 }
-// ── Legacy VFS RPC Entrypoints (direct method calls) ──────────────────
-// Kept for backward compatibility with direct DO stub callers.
-/** RPC: Read a file from the VFS. Returns ArrayBuffer or null. */
-export function vfsReadFile(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        const data = self.sqliteFs.as(CRED_KERNEL).readFile(stripped);
-        return data.buffer.slice(data.byteOffset, data.byteOffset + data.byteLength);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Read a file as string. Returns string or null. */
-export function vfsReadFileString(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readFileString(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Stat a path. Returns file metadata or null. */
-export function vfsStat(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).stat(stripped);
-    }
-    catch {
-        return null;
-    }
-}
-/** RPC: Check if path exists. */
-export function vfsExists(self, path) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    return self.sqliteFs.as(CRED_KERNEL).exists(stripped);
-}
-/** RPC: List directory contents. Returns array of { name, type }. */
-export function vfsReaddir(self, path) {
-    self.ensureSqliteFs();
-    try {
-        const stripped = path.replace(/^\/+/, '');
-        return self.sqliteFs.as(CRED_KERNEL).readdir(stripped);
-    }
-    catch {
-        return [];
-    }
-}
-/** RPC: Write a file to the VFS. */
-export function vfsWriteFile(self, path, data) {
-    self.ensureSqliteFs();
-    const stripped = path.replace(/^\/+/, '');
-    self.sqliteFs.as(CRED_KERNEL).writeFile(stripped, new Uint8Array(data));
-}
 /**
  * RPC: peer-DO execute leg of Fanout's peer-DO fanout topology.
  *
