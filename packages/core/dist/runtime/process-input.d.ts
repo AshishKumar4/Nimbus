@@ -24,9 +24,13 @@ export declare class ProcessInputStore {
     write(pid: number, data: string): {
         ok: boolean;
     };
-    /** Queue bytes exactly as given: a pipe or redirect, which need not be text. */
+    /**
+     * Queue bytes exactly as given: a pipe or redirect, which need not be text.
+     * Refused for room, it says \`full\`: its writer waits and writes again.
+     */
     writeBytes(pid: number, data: Uint8Array): {
         ok: boolean;
+        full?: boolean;
     };
     resize(pid: number, columns: number, rows: number): {
         ok: boolean;
@@ -45,6 +49,13 @@ export declare class ProcessInputStore {
      * or gone and will take no more.
      */
     whenWritable(pid: number): Promise<boolean>;
+    /**
+     * Put input a reader took back in front of the queue, as it was: a process
+     * that stopped before using it, run again (worker runtime/stop-replay.ts).
+     * Past the queue's bound if need be, and after the channel ended too: the
+     * writer wrote it within both.
+     */
+    unread(pid: number, packets: readonly ProcessInputPacket[]): void;
     end(pid: number): void;
     close(pid: number): void;
     read(pid: number, waitMs?: number): Promise<ProcessInputPacket>;

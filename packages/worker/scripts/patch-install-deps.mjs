@@ -118,7 +118,7 @@ function gitApply(cwd) {
   });
   if (result.status === 0) return;
   const why = result.error?.message || result.stderr?.trim() || result.stdout?.trim() || 'unknown error';
-  throw new Error(`Failed to apply cf-git checkout repairs at ${cwd}: ${why}`);
+  throw new Error(`Failed to apply the cf-git patch at ${cwd}: ${why}`);
 }
 
 // Each copy's index.js is identified by its blob id against the patch's
@@ -129,7 +129,7 @@ function gitApply(cwd) {
 for (const cfGitDir of cfGitDirs) {
   const state = cfGitState(cfGitDir, images);
   if (state === 'patched') {
-    console.log(`[patch] cf-git checkout repairs already applied: ${cfGitDir}`);
+    console.log(`[patch] cf-git patch already applied: ${cfGitDir}`);
     continue;
   }
   if (state !== 'pristine') {
@@ -150,5 +150,5 @@ for (const cfGitDir of cfGitDirs) {
   if (cfGitState(cfGitDir, images) !== 'patched') {
     throw new Error(`cf-git at ${cfGitDir} does not match the tracked patch's post-image ${images.post} after applying it`);
   }
-  console.log(`[patch] cf-git checkout repairs applied: ${cfGitDir}`);
+  console.log(`[patch] cf-git patch applied: ${cfGitDir}`);
 }

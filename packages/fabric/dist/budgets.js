@@ -498,18 +498,58 @@ const launchAdmission = new AsyncLocalStorage();
  * flight in body's async context (its transform facet, its build facet, its
  * own program) is that worker: a launch prepares and then runs, one of them
  * at a time, so its preparation can never wait on room its own admission
- * holds. (A helper call its program makes later, over RPC, is not in that
+ * holds. A stopped program releases the admission while it awaits input
+ * (suspendLaunchAdmission), and waits its turn to regain it before preparing
+ * its next run. (A helper call its program makes later, over RPC, is not in that
  * context: a worker more, it waits its turn.) `signal` abandons the wait; a
  * wait no release can satisfy is refused with {@link DynamicWorkerDeadlockError}.
  */
 export async function withLaunchAdmission(ctx, process, signal, body) {
     const end = await beginLoaderFetchWhenFree(ctx, `launch:${process.pid}`, { signal, process });
+    const admission = { ctx, process, end, claimed: false, closed: false };
     try {
-        return await launchAdmission.run({ ctx, pid: process.pid, claimed: false }, body);
+        return await launchAdmission.run(admission, body);
     }
     finally {
-        end();
+        admission.closed = true;
+        admission.end?.();
+        admission.end = undefined;
     }
+}
+/**
+ * A program that stopped has no Worker in flight: give back its launch's
+ * admission before waiting on input. Its nested run hold must already have
+ * ended. The returned resume waits on the ledger with the same process,
+ * fairly and abortably, before the caller does any replay preparation.
+ * Calling resume twice joins one readmission, never takes two holds. If the
+ * process ends instead, the launch's finally finds nothing held.
+ * Undefined outside a launch admission (a shell's one-shot owns only its
+ * run hold, which has already ended).
+ */
+export function suspendLaunchAdmission(ctx) {
+    const admission = launchAdmission.getStore();
+    if (admission?.ctx !== ctx)
+        return undefined;
+    if (admission.claimed || admission.end === undefined || admission.closed) {
+        throw new Error('Nimbus: only a stopped launch with no run in flight can release its admission');
+    }
+    const end = admission.end;
+    admission.end = undefined;
+    end();
+    let resumed;
+    return (signal) => resumed ??= (async () => {
+        if (admission.closed)
+            throw new Error('Nimbus: a finished launch cannot regain its admission');
+        const hold = await beginLoaderFetchWhenFree(ctx, `launch:${admission.process.pid}`, { signal, process: admission.process });
+        // A kill may arrive after admission but before this continuation runs.
+        if (signal?.aborted || admission.closed) {
+            hold();
+            if (signal?.aborted)
+                throw signal.reason;
+            throw new Error('Nimbus: a finished launch cannot regain its admission');
+        }
+        admission.end = hold;
+    })();
 }
 /**
  * Within an admitted launch on `ctx`'s ledger, a hold on that launch's own
@@ -519,9 +559,9 @@ export async function withLaunchAdmission(ctx, process, signal, body) {
  */
 export function beginAdmittedFetch(ctx) {
     const admission = launchAdmission.getStore();
-    if (admission?.ctx !== ctx)
+    if (admission?.ctx !== ctx || admission.end === undefined)
         return undefined;
-    return beginLoaderFetch(ctx, `launch:${admission.pid}`, undefined, admission.pid);
+    return beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, admission.process.pid);
 }
 /**
  * Within an admitted launch on `ctx`'s ledger, the admission's worker for the
@@ -535,10 +575,10 @@ export function beginAdmittedFetch(ctx) {
  */
 export function claimAdmission(ctx, pid) {
     const admission = launchAdmission.getStore();
-    if (admission?.ctx !== ctx || admission.claimed)
+    if (admission?.ctx !== ctx || admission.end === undefined || admission.claimed)
         return undefined;
     admission.claimed = true;
-    const runner = beginLoaderFetch(ctx, `launch:${admission.pid}`, undefined, pid ?? admission.pid);
+    const runner = beginLoaderFetch(ctx, `launch:${admission.process.pid}`, undefined, pid ?? admission.process.pid);
     let ended = false;
     return (failure) => {
         if (ended)

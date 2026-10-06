@@ -1,9 +1,10 @@
 import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
+import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { CRED_SESSION_USER, requireVfsCred, type VfsCred } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
-import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeVfsStat } from '../runtime/os-contracts.js';
+import type { NimbusFilesystemAuthority, NimbusHostFilesystemLease, RuntimeFsBridge, RuntimeFsPath, RuntimeMutationOwner, RuntimeVfsStat } from '../runtime/os-contracts.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import type { SessionProcessSupervisor } from '../runtime/session-process-supervisor.js';
 import {
@@ -52,6 +53,12 @@ export interface SupervisorOpEnvelope {
   /** A host call's credential. Meaningless — and refused — with a pid. */
   readonly cred?: VfsCred;
   readonly writerId?: string;
+  /**
+   * Which run of the process sent it: its writer identity, stamped by the
+   * supervisor binding from its props. A process that can stop at a read of
+   * stdin is answered for its current run only (worker stop-replay.ts).
+   */
+  readonly run?: string;
   readonly mutationOwner?: string;
   readonly stream?: ReadableStream<Uint8Array>;
   /** Which mutation a {@link SUPERVISOR_DELIVER_OP} envelope carries. Refused on any other op. */
@@ -63,6 +70,21 @@ export interface SupervisorOpEnvelope {
    * predates it ignores it and serves each attempt, which a read allows.
    */
   readonly readId?: string;
+  /**
+   * Which attempt of which write wave a writeBatchStream carries, and the
+   * host instance its binding names (platform wave-writer.ts `WaveFence`):
+   * the instance refuses an attempt older than one it has seen from the
+   * same writer (`SupervisorDeliveries.admitWave`), and any other instance
+   * refuses it outright. Only on writeBatchStream.
+   */
+  readonly waveFence?: SupervisorWaveFence;
+}
+
+export interface SupervisorWaveFence {
+  readonly writer: string;
+  readonly wave: number;
+  readonly attempt: number;
+  readonly hostIncarnation: string;
 }
 
 /**
@@ -109,6 +131,13 @@ export interface SupervisorOpDeps {
    * predates delivery does not, and mints no binding that would send one.
    */
   readonly deliveries?: SupervisorDeliveries;
+  /**
+   * Observe one logical answer, after transport read attempts have joined or
+   * delivered mutations have found their receipt. A repeated pending read
+   * observes the SAME answer, never a second program request. Used by the
+   * session's replay journal; omitted by hosts without stoppable processes.
+   */
+  readonly observe?: (envelope: SupervisorOpEnvelope, dispatch: () => Promise<unknown>) => Promise<unknown>;
 }
 
 function stringArg(envelope: SupervisorOpEnvelope, index: number): string {
@@ -182,7 +211,7 @@ function credFor(deps: SupervisorOpDeps, pid: number | undefined, cred?: VfsCred
  * `mutationOwner`). The envelope is always the shape — a host never
  * re-parses it.
  */
-export type SupervisorOpArg = number | 'pid' | 'writerId' | 'stream' | 'mutationOwner';
+export type SupervisorOpArg = number | 'pid' | 'writerId' | 'run' | 'stream' | 'mutationOwner';
 
 export interface SupervisorOpRoute {
   /** The host method this op dispatches to. */
@@ -227,7 +256,7 @@ export const SUPERVISOR_OPS = [
   'symlink', 'fsAcquire', 'fsAcquired', 'fsRevision', 'fsList', 'fsStorageGrant', 'wsOpen', 'wsPoll',
   'wsSend', 'wsClose', 'fsOpen', 'fsRead', 'fsWrite', 'fsClose',
   'fsReadRange', 'fsReadRangeUncached', 'fsReadBatch', 'fsWriteRange',
-  'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream',
+  'fsAppend', 'fsAppendAck', 'fsTruncate', 'writeBatch', 'writeBatchStream', 'openWaveWriter',
   'putRegistryEntries', 'stdout', 'stderr', 'prefetch', 'registerPort', 'allocatePort',
   'unregisterPort', 'reportExit', 'routeLoopback', 'transform', 'cpSpawn',
   'reportRuntimeCode',
@@ -236,6 +265,9 @@ export const SUPERVISOR_OPS = [
   'fsFstat', 'fsDup', 'fsSeek', 'fsSetStatus', 'fsReaddirHandle', 'fsFtruncate', 'fsFchmod', 'fsFchown', 'fsFutimes', 'fsSync', 'fsRealpath', 'fsRemove', 'fsCopyFile', 'fsCopyTree', 'fsAcquireExclusiveMutation', 'fsReleaseExclusiveMutation',
   'innerDoFetch', 'innerDoCall', 'fanoutExecute', 'processHostProbe', 'hostProcess',
   'awaitHostedOpen', 'awaitHostedBoot', 'routeHostedHttp', 'cancelHostProcess', 'hmrRelay', 'hmrNextEvent',
+  'replayBoundary', 'netTls', 'outbound', 'stdinFileRead', 'stdinPrepared',
+  'getCachedTarball', 'putCachedTarball', 'getPackument',
+  'cacheResult',
 ] as const;
 
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
@@ -254,6 +286,8 @@ export interface SupervisorOpTools {
   readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
   /** N17: resolves once `path`'s bytes are hydrated out of a lazy import. */
   readonly hydrated: (path: string) => Promise<void>;
+  /** The host instance's delivery store, absent on a host that applies nothing once. */
+  readonly deliveries?: SupervisorDeliveries;
 }
 
 /**
@@ -303,7 +337,13 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cpSpawn: { method: '_rpcCpSpawn', args: [0] },
   cpStdinWrite: { method: '_rpcCpStdinWrite', args: [0,1] },
   cpStdinEnd: { method: '_rpcCpStdinEnd', args: [0] },
-  cpReadStdin: { method: '_rpcCpReadStdin', args: [0,1,2,'pid'] },
+  cpReadStdin: { method: '_rpcCpReadStdin', args: [0,1,2,'pid','writerId'] },
+  stdinFileRead: { method: '_rpcStdinFileRead', args: [0,1,2,'pid'] },
+  stdinPrepared: { method: '_rpcStdinPrepared', args: ['pid', 'run'] },
+  getCachedTarball: { method: '_rpcGetCachedTarball', args: [0, 'pid', 'run'] },
+  putCachedTarball: { method: '_rpcPutCachedTarball', args: [0, 1] },
+  getPackument: { method: '_rpcGetPackument', args: [0, 1, 'pid', 'run'] },
+  cacheResult: { method: '_rpcCacheResult', args: [0, 1, 'pid', 'run'] },
   cpReadOutput: { method: '_rpcCpReadOutput', args: [0,1,2,3,4,'pid'] },
   cpDrainOutput: { method: '_rpcCpDrainOutput', args: [0] },
   cpKill: { method: '_rpcCpKill', args: [0,1] },
@@ -320,10 +360,18 @@ export const SUPERVISOR_OP_ROUTES: Readonly<Record<Exclude<SupervisorOpName, Nat
   cancelHostProcess: { method: '_rpcCancelHostProcess', args: [0] },
   hmrRelay: { method: '_rpcHmrRelay', args: [0,1] },
   hmrNextEvent: { method: '_rpcHmrNextEvent', args: [0] },
+  // A process that can stop at a read of stdin (worker runtime/stop-replay.ts).
+  replayBoundary: { method: '_rpcReplayBoundary', args: ['pid', 'run'] },
+  netTls: { method: '_rpcNetTls', args: [0, 1, 2, 'pid', 'run'] },
+  outbound: { method: '_rpcOutbound', args: [0, 1, 'pid', 'run'] },
 } as const;
 
 /** Every native op reads its filesystem the same way: the envelope's identity. */
 const fsFor = (e: SupervisorOpEnvelope, tools: SupervisorOpTools): RuntimeFsBridge => tools.bridge(e.pid, e.cred);
+
+/** The exclusive mutation lease the envelope's binding presents, if it holds one (SupervisorRPC props). */
+const leaseOf = (e: SupervisorOpEnvelope): RuntimeMutationOwner | undefined =>
+  e.mutationOwner === undefined ? undefined : { mutationOwner: e.mutationOwner };
 
 /** A whole-file read, leased for what the file holds. */
 async function readWholeFile(e: SupervisorOpEnvelope, t: SupervisorOpTools, path: RuntimeFsPath): Promise<Uint8Array | null> {
@@ -412,17 +460,43 @@ const NATIVE_OPS = {
   mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
   rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0])),
   unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0])),
-  rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
+  rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),
   symlink: (e, t) => fsFor(e, t).symlink(stringArg(e, 0), FsPath.parse(e.args?.[1])),
   access: (e, t) => fsFor(e, t).access(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
   chown: (e, t) => fsFor(e, t).chown(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[3])),
   chmod: (e, t) => fsFor(e, t).chmod(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
   utimes: (e, t) => fsFor(e, t).utimes(FsPath.parse(e.args?.[0]), numberArg(e, 1), numberArg(e, 2)),
-  fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1)),
-  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2)),
+  fsTruncate: (e, t) => fsFor(e, t).truncate(FsPath.parse(e.args?.[0]), numberArg(e, 1), leaseOf(e)),
+  fsWriteRange: (e, t) => fsFor(e, t).writeRange(FsPath.parse(e.args?.[0]), RangeOffset.parse(e.args?.[1]), writeRangeBytesArg(e, 2), leaseOf(e)),
+  // The decode-drain clock starts when the envelope arrives, not when the
+  // store first reads it. A fenced wave commits only while its writer's
+  // epoch is open on this instance and no newer attempt of it was admitted
+  // (SupervisorDeliveries.admitWave); any other instance refuses it.
   writeBatchStream: (e, t) => {
+    const decodeDrainStartedAt = performance.now();
     if (!e.stream) throw new Error('supervisor op writeBatchStream: no stream');
-    return fsFor(e, t).writeStream(e.stream, { mutationOwner: e.mutationOwner });
+    const fence = e.waveFence;
+    let admit: (() => void) | undefined;
+    if (fence !== undefined) {
+      if (t.deliveries === undefined || fence.hostIncarnation !== t.deliveries.incarnation || e.pid === undefined) {
+        throw Object.assign(
+          new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'),
+          { code: 'ESTALE' },
+        );
+      }
+      t.bridge(e.pid, e.cred);
+      admit = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt).check;
+    }
+    return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit });
+  },
+  // A write-wave epoch for the live process that asks, on this instance:
+  // the only writer identity a fenced writeBatchStream is admitted under.
+  // Repeating it is harmless: an unused epoch admits nothing and expires.
+  openWaveWriter: (e, t) => {
+    if (t.deliveries === undefined) throw new Error("supervisor op: 'openWaveWriter' is not served by this host");
+    if (e.pid === undefined) throw new Error('supervisor op: openWaveWriter names no process');
+    t.bridge(e.pid, e.cred);
+    return { writer: t.deliveries.openWaveWriter(e.pid, WAVE_EPOCH_TTL_MS), hostIncarnation: t.deliveries.incarnation };
   },
   stdout: (e, t) => t.output?.('stdout', e.pid ?? 0, stringArg(e, 0)),
   stderr: (e, t) => t.output?.('stderr', e.pid ?? 0, stringArg(e, 0)),
@@ -449,6 +523,8 @@ export interface SupervisorOpBridgeStore {
   readonly bridge: (pid?: number, cred?: VfsCred) => RuntimeFsBridge;
   /** Drop a pid's bridge — a process exit ends its credential's validity. */
   readonly forget: (pid: number) => Promise<void>;
+  /** Close a live pid's descriptors for a run that starts in place of another (NimbusFilesystemAuthority.rewindProcess). */
+  readonly rewind?: (pid: number) => Promise<void>;
   readonly dispose: () => Promise<void>;
 }
 
@@ -472,6 +548,7 @@ export function createSupervisorBridgeStore(
       return lease.fs;
     },
     forget: (pid) => authority.releaseProcess(pid),
+    rewind: async (pid) => { await authority.rewindProcess?.(pid); },
     dispose: async () => {
       await Promise.all([...hostLeases.values()].map(lease => lease.dispose()));
       hostLeases.clear();
@@ -494,9 +571,10 @@ export function createSupervisorOpHandler(
     output: deps.output,
     readLease: deps.readLease ?? ((_bytes, read) => read()),
     hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
+    deliveries: deps.deliveries,
   };
   const extend = deps.extend ?? {};
-  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {
+  const perform = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {
     // Priority: the embedder's own handler → the native filesystem op → the
     // canonical route table onto the host's _rpc* methods. An op in none of
     // these is not served by this host.
@@ -519,6 +597,8 @@ export function createSupervisorOpHandler(
     const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
     return Reflect.apply(method, host, args);
   };
+  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => deps.observe
+    ? deps.observe(envelope, async () => perform(op, envelope)) : perform(op, envelope);
   /**
    * A mutation delivered exactly once (supervisor-delivery.ts), checked in
    * the order that makes a repeat safe: the delivery was minted for THIS
@@ -580,6 +660,7 @@ export function createSupervisorOpHandler(
       // A repeat is answered only for the live process that sent the read.
       () => { tools.bridge(pid, envelope.cred); },
       async () => serve(op, plain),
+      envelope.run,
     );
     span.set({ 'nimbus.read.joined': repeat });
     return answer;

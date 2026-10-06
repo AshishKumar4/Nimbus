@@ -82,6 +82,7 @@ import {
 } from './agent-contract.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 
 
 interface Host extends ProgrammaticHost, SessionAiHost {
@@ -476,7 +477,7 @@ function agentChatStream(
       };
 
       const scheduleTextFlush = (delta: string): Promise<void> | null => {
-        textBytesSinceFlush += encoder.encode(delta).byteLength;
+        textBytesSinceFlush += utf8Length(delta);
         if (textBytesSinceFlush >= STREAMING_TEXT_FLUSH_BYTES) return flushStreamingTurn();
         if (textFlushTimer === null) {
           textFlushTimer = setTimeout(() => {

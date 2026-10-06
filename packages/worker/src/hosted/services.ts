@@ -10,7 +10,7 @@ import {
 } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER, type NimbusFilesystemAuthority, type VfsCred } from "@nimbus-sh/core/runtime/os-contracts.js";
 import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
-import type { ChildExit, Command, CommandContext, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
+import type { ChildExit, Command, CommandContext, CommandInputStream, RunAsOptions } from "@nimbus-sh/core/substrate/lifo/commands/types.js";
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
 import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 
@@ -45,14 +45,14 @@ import type { RuntimeCatalogEnv } from '../runtime/runtime-catalog.js';
 import type { IsolatePoolEnv } from '@nimbus-sh/fabric/isolate-pool.js';
 
 /** What a builtin run for a process inherits from it: its pid, environment, directory and descriptors. */
-type BuiltinIo = Pick<CommandContext, 'pid' | 'env' | 'cwd' | 'stdin' | 'stdout' | 'stderr'>;
+type BuiltinIo = Pick<CommandContext, 'pid' | 'env' | 'cwd' | 'stdin' | 'stdout' | 'stderr' | 'isFdTerminal'>;
 
 export interface HostedRuntimeEnv extends RuntimeCatalogEnv, IsolatePoolEnv {
   ASSETS?: Fetcher;
 }
 
 export type RuntimeServiceHost = Pick<SessionInternal,
-  '_cpRegistry' | '_envFlagDefaultOn' | '_reportExternalExit' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'
+  '_cpRegistry' | '_envFlagDefaultOn' | '_reportExternalExit' | '_rpcStderr' | '_rpcStdout' | 'supervisorRewindBridge' | 'buildFetchFn' | 'bundlePool' | 'ensureBundlePool' | 'ensureFacetManager' | 'ensureFetchProxy' | 'ensureSqliteFs' | 'esbuildService' | 'facetManagerComposed' | 'getFilesystemAuthority' | 'facetProcessManager' | 'fetchProxyEntrypoint' | 'npmInstaller' | 'portRegistry' | 'processes' | 'runtimeWorkspace' | 'shell' | 'sqliteFs' | 'terminal'
 > & { webSocketRelay: WebSocketRelay | null };
 
 export interface RuntimeServiceContext {
@@ -124,6 +124,24 @@ export function ensureFacetManager(self: RuntimeServiceHost, runtimeContext: Run
         ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
         hooks: {
           onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
+          deliverOutput: (pid, stream, bytes) => (stream === 'stdout' ? self._rpcStdout(pid, bytes) : self._rpcStderr(pid, bytes)),
+          rewindProcessFiles: (pid) => self.supervisorRewindBridge(pid),
+          // Where cpReadStdin reads a pid's stdin (session/rpc.ts): the input
+          // store when it has a channel there, else the broker's child queue.
+          stdinChannel: (pid) => {
+            if (self.processes.hasInput(pid)) {
+              return {
+                read: (waitMs) => self.processes.readInput(pid, waitMs),
+                unread: (packets) => self.processes.unreadInput(pid, packets),
+              };
+            }
+            const broker = self.facetProcessManager;
+            if (!broker || !broker.isChild(pid)) return null;
+            return {
+              read: (waitMs) => broker.cpReadStdin(pid, waitMs),
+              unread: (packets) => broker.unreadStdin(pid, packets.flatMap((p) => (p.data instanceof Uint8Array && p.data.byteLength > 0 ? [p.data] : []))),
+            };
+          },
           requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
           resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
           notify: (line) => runtimeContext.notify(line),
@@ -185,7 +203,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
     const facetMgrAdapter = {
       execStream: async (
         codeJson: string,
-        opts: { cwd?: string; env?: Record<string, string>; argv?: string[] },
+        opts: { facetName?: string; cwd?: string; env?: Record<string, string>; argv?: string[]; stdin?: CommandInputStream },
         hooks: OutputHooks,
       ): Promise<number> => {
         // codeJson is a payload from FacetProcessManager._dispatch facet-direct
@@ -226,7 +244,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         }
         // Synthesize a CommandContext for the internal shell substrate.
         const ac = new AbortController();
-        const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', payload.stdin || '', hooks);
+        const io = processIo(payload.processPid, payload.env || {}, payload.cwd || '/home/user', opts.stdin ?? staticStdinReader(payload.stdin || ''), hooks);
         const ctx = {
           ...io,
           cred,
@@ -235,15 +253,23 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           signal: ac.signal,
           setUmask: (mask: number) => { self.processes.setUmask(payload.processPid, mask); },
           runAs: (targetCred: VfsCred, argv: string[], options?: RunAsOptions) => spawnBuiltin(options?.parent ?? io, targetCred, argv),
-          // The program runs as the broker's pid, and its output reaches the
-          // child's live queues over runtime RPC.
-          __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' ') },
+          // Reuse the broker's pid and let runtime RPC output reach its
+          // live queues. A direct inline invocation without a managed child
+          // still needs a captured result.
+          __nimbusCaptureOutput: !self.facetProcessManager?.isChild(payload.processPid),
+          // A child's runtime reads its stdin from its own live channel, the
+          // broker's queue for its pid (NIMBUS_CP_CHILD_PID), as the parent writes it.
+          ...(self.facetProcessManager?.isChild(payload.processPid) ? {
+            __nimbusBinSpawn: { callerPid: payload.processPid, command: [payload.command, ...payload.args].join(' '), liveInput: true },
+          } : {}),
         };
         // Admitted once on the Dynamic Worker ledger, before its preparation:
         // its transform, its prebundle and its program are that one worker,
-        // in turn (withLaunchAdmission). A kill while it waits for room ends
-        // the wait; the launch registers its own terminator once it runs, and
-        // aborting ctx.signal still reaches it.
+        // in turn (withLaunchAdmission). A synchronous-stdin stop gives its
+        // admission back while it waits, and requeues before preparing the
+        // replay. A kill while it waits for room ends the wait; the launch
+        // registers its own terminator once it runs, and aborting ctx.signal
+        // still reaches it.
         self.processes.setTerminator(payload.processPid, () => ac.abort());
         try {
           const code = await withLaunchAdmission(
@@ -293,7 +319,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         args: string[],
         env: Record<string, string>,
         cwd: string,
-        stdin: string,
+        stdin: CommandInputStream,
         hooks: OutputHooks,
       ): Promise<number> => {
         const registry: CommandRegistry | null = self._cpRegistry;
@@ -304,14 +330,20 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
         return (await runBuiltin(cmd, name, args, processIo(pid, env, cwd, stdin, hooks))).status;
       },
     };
-    /** A process's descriptors, environment and directory, over the facet's output hooks and its stdin text. */
-    const processIo = (pid: number, env: Record<string, string>, cwd: string, stdin: string, hooks: OutputHooks): BuiltinIo => ({
+    /**
+     * A process's descriptors, environment and directory: its stdin, and its
+     * output over the broker's hooks. They are pipes (or /dev/null), never a
+     * terminal: the broker has none to give a child, and a shell that took
+     * its stdin for one read nothing from it.
+     */
+    const processIo = (pid: number, env: Record<string, string>, cwd: string, stdin: CommandInputStream, hooks: OutputHooks): BuiltinIo => ({
       pid,
       env,
       cwd,
       stdout: { write: (d: string) => hooks.onStdout(textBytes(String(d))) },
       stderr: { write: (d: string) => hooks.onStderr(textBytes(String(d))) },
-      stdin: staticStdinReader(stdin),
+      stdin,
+      isFdTerminal: () => false,
     });
     /** A registry command run as process `io.pid`, on `io`'s descriptors, and how it ended. */
     const runBuiltin = async (cmd: Command, name: string, args: string[], io: BuiltinIo): Promise<ChildExit> => {
@@ -357,7 +389,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
       const endWork = self.processes.beginWork(child.pid);
       let exitCode = 1;
       try {
-        const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr });
+        const ended = await runBuiltin(cmd, name, args, { pid: child.pid, env: parent.env, cwd: parent.cwd, stdin: parent.stdin, stdout: parent.stdout, stderr: parent.stderr, isFdTerminal: parent.isFdTerminal });
         exitCode = ended.status;
         return ended;
       } finally {
@@ -384,7 +416,7 @@ export function _ensureFacetProcessManager(self: RuntimeServiceHost, runtimeCont
           commandLine: string,
           env: Record<string, string>,
           cwd: string,
-          stdin: string,
+          stdin: CommandInputStream,
           hooks: OutputHooks,
         ): Promise<number> => {
           const workspace = self.runtimeWorkspace;

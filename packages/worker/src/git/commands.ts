@@ -13,13 +13,16 @@ import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
-import { execGitNetwork } from './network-facet.js';
+import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
+import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
+import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   DEFAULT_CONTEXT,
   DEFAULT_RENAME_SCORE,
   absentSpec,
+  binaryPath,
   bytesFromBinary,
   detectRenames,
   formatNameOnly,
@@ -29,11 +32,20 @@ import {
   parseRenameScore,
   pathLine,
   statFile,
+  StatList,
   type DiffPair,
   type DiffSpec,
   type QueuedPair,
-  type StatFile,
 } from './unified-diff.js';
+import { CheckoutRefused, UnmergedIndex, switchTrees, type CheckoutWriter } from './worktree/checkout.js';
+import { DirCache, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
+import { PairList, type PairSide } from './worktree/pairs.js';
+import { WorktreeRepo, configBool } from './worktree/repo.js';
+import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
+import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
+import {
+  DirtySet, modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId, type Dirty, type WalkCounters, type WorktreeStat,
+} from './worktree/walk.js';
 
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
 // NOTE: local git ops (init, status, add, commit, log, branch, checkout,
@@ -82,7 +94,7 @@ function wantsUtf8(options: unknown): boolean {
  * through it. Components above the top are followed, as git follows them.
  * Commands that only read the worktree or write `.git` pass no worktree.
  */
-function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
+function createGitFs(vfs: ProjectFs, worktree: string | null = null, promisor?: PromisorFetch) {
   // Path normalization is shared with esbuild-service via @nimbus-sh/core/vfs/path.js.
   // isomorphic-git constructs paths like `dir + '/' + filepath` which can
   // produce `/home/user/project/.` or paths with `..` segments — those are
@@ -150,6 +162,14 @@ function createGitFs(vfs: ProjectFs, worktree: string | null = null) {
   }
 
   return {
+    // Packed objects are read by range, never a whole pack (git/pack/store.ts).
+    packs: packsSeam({
+      readRange: async (path, offset, length) => await vfs.readRangeUncached(normalizePath(path), offset, length),
+      readdir: async (dir) => {
+        try { return (await vfs.readdir(normalizePath(dir))).map((entry) => entry.name); }
+        catch { return []; }
+      },
+    }, { promisor }),
     promises: {
       async readFile(filepath: string, opts?: any): Promise<Uint8Array | string> {
         const p = normalizePath(filepath);
@@ -301,10 +321,55 @@ export interface ParsedCloneArgs {
   branch: string | undefined;
   /** `-q`/`--quiet`: no progress on stdout; errors still reach stderr. */
   quiet: boolean;
+  /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
+  filter: string | undefined;
 }
 
 export const CLONE_USAGE =
-  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+
+const SIZE_SUFFIX: Record<string, number> = { '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
+
+const FETCH_DEPTH_FLAGS = ['--depth', '--deepen', '--unshallow'];
+/** git's INFINITE_DEPTH (shallow.h): --unshallow asks for this much. */
+const INFINITE_DEPTH = 0x7fffffff;
+
+/**
+ * `git fetch --depth <n> | --deepen <n> | --unshallow`, as cf-git's fetch
+ * takes them: a depth from the remote's tips, or (relative) from the
+ * repository's current shallow boundary.
+ */
+export function parseFetchDepth(args: readonly string[]): { depth: number; relative: boolean } | undefined {
+  let found: { depth: number; relative: boolean } | undefined;
+  for (let i = 0; i < args.length; i++) {
+    const [flag, inline] = args[i].split('=', 2);
+    if (!FETCH_DEPTH_FLAGS.includes(flag)) continue;
+    if (found !== undefined) throw new Error('--depth, --deepen and --unshallow are mutually exclusive');
+    if (flag === '--unshallow') {
+      found = { depth: INFINITE_DEPTH, relative: false };
+      continue;
+    }
+    const value = inline ?? args[++i];
+    const depth = Number(value);
+    if (!Number.isSafeInteger(depth) || depth < 1) throw new Error(`${flag} ${value ?? ''} is not a positive number`.trimEnd());
+    found = { depth, relative: flag === '--deepen' };
+  }
+  return found;
+}
+
+/**
+ * A partial clone's filter (list-objects-filter-options.c), normalized as
+ * git normalizes it: blob:limit's size in bytes. The filters Nimbus
+ * fetches with; any other is refused by name rather than ignored.
+ */
+export function parseCloneFilter(spec: string): string {
+  if (spec === 'blob:none') return spec;
+  const limit = /^blob:limit=(\d+)([kmg]?)$/i.exec(spec);
+  if (limit) return 'blob:limit=' + Number(limit[1]) * SIZE_SUFFIX[limit[2].toLowerCase()];
+  const tree = /^tree:(\d+)$/.exec(spec);
+  if (tree) return 'tree:' + Number(tree[1]);
+  throw new Error(`invalid filter-spec '${spec}': git clone here takes blob:none, blob:limit=<n>[kmg] or tree:<depth>`);
+}
 
 /**
  * Every flag is either handled or refused loudly. Silently skipping unknown
@@ -318,6 +383,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   let noShallow = false;
   let isBg = false;
   let quiet = false;
+  let filter: string | undefined;
   const positionals: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -339,13 +405,8 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     else if (arg === '-q' || arg === '--quiet') quiet = true;
     // Progress is already the default; there is no more of it to ask for.
     else if (arg === '-v' || arg === '--verbose') { /* accepted */ }
-    else if (name === '--filter') {
-      throw new Error(
-        "clone does not support '--filter': the bundled isomorphic-git has no " +
-        'partial-clone support, so a filter would silently download every object. ' +
-        'Use --depth <n> to bound history instead.',
-      );
-    } else if (arg.startsWith('-')) {
+    else if (name === '--filter') filter = parseCloneFilter(takeValue());
+    else if (arg.startsWith('-')) {
       throw new Error(`unknown option '${arg}'\n${CLONE_USAGE}`);
     } else {
       positionals.push(arg);
@@ -360,6 +421,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     isBg,
     branch,
     quiet,
+    filter,
   };
 }
 
@@ -431,55 +493,26 @@ function commitCleanupMode(value: string | undefined): 'strip' | 'whitespace' | 
 
 // ── The cf-git surface below ─────────────────────────────────────────────
 
-/** isomorphic-git's WalkerEntry: one tree's view of one path. */
-interface WalkerEntry {
-  type(): Promise<'tree' | 'blob' | 'special' | 'commit'>;
-  mode(): Promise<number>;
-  oid(): Promise<string>;
-}
-
-/** An opaque TREE/STAGE/WORKDIR walker handle. */
-type Walker = object;
-
-/** The cf-git calls staging and worktree inspection make. */
+/** The cf-git calls the commands here make. */
 interface CfGit {
-  // parallel: false (through the tracked cf-git patch) adds an array's paths one at a time.
-  add(args: { fs: unknown; dir: string; filepath: string | string[]; parallel?: boolean; force?: boolean; cache?: object }): Promise<void>;
-  // Takes an array through the tracked cf-git patch, as add does.
-  remove(args: { fs: unknown; dir: string; filepath: string | string[]; cache?: object }): Promise<void>;
-  statusMatrix(args: { fs: unknown; dir: string; cache?: object; ignored?: boolean; filepaths?: string[]; deferRefresh?: boolean }): Promise<[string, number, number, number][]>;
-  /** One index write: a deferred statusMatrix refresh under the same cache, the removals, then the additions. */
-  stage(args: { fs: unknown; dir: string; cache?: object; add?: string[]; remove?: string[]; force?: boolean; parallel?: boolean }): Promise<void>;
   listTags(args: { fs: unknown; dir: string }): Promise<string[]>;
   deleteTag(args: { fs: unknown; dir: string; ref: string }): Promise<void>;
   tag(args: { fs: unknown; dir: string; ref: string; object: string; force: boolean }): Promise<void>;
-  writeObject(args: { fs: unknown; dir: string; type: 'tag'; object: Uint8Array; format: 'content' }): Promise<string>;
-  writeRef(args: { fs: unknown; dir: string; ref: string; value: string; force: boolean }): Promise<void>;
+  writeObject(args: { fs: unknown; dir: string; type: 'blob' | 'tree' | 'commit' | 'tag'; object: Uint8Array; format: 'content' }): Promise<string>;
+  writeRef(args: { fs: unknown; dir: string; ref: string; value: string; force: boolean; symbolic?: boolean }): Promise<void>;
   readObject(args: { fs: unknown; dir: string; oid: string; cache: object; format: 'parsed' | 'content' }): Promise<{ type: string; object: unknown }>;
-  listFiles(args: { fs: unknown; dir: string; cache?: object }): Promise<string[]>;
-  walk(args: {
-    fs: unknown;
-    dir: string;
-    cache: object;
-    trees: Walker[];
-    map(path: string, entries: (WalkerEntry | null)[]): Promise<unknown>;
-    reduce(parent: unknown, children: unknown[]): Promise<unknown>;
-    iterate(walk: (child: unknown) => Promise<unknown>, children: Iterable<unknown>): Promise<unknown[]>;
-  }): Promise<unknown>;
-  TREE(args: { ref: string }): Walker;
-  STAGE(): Walker;
-  WORKDIR(): Walker;
-  isIgnored(args: { fs: unknown; dir: string; filepath: string }): Promise<boolean>;
-  readBlob(args: { fs: unknown; dir: string; oid: string; cache: object }): Promise<{ blob: Uint8Array }>;
+  readCommit(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ commit: { tree: string } }>;
+  readTree(args: { fs: unknown; gitdir: string; oid: string; cache?: object }): Promise<{ tree: { type: string; oid: string }[] }>;
   hashBlob(args: { object: Uint8Array }): Promise<{ oid: string }>;
   resolveRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
   expandOid(args: { fs: unknown; gitdir: string; oid: string; cache: object }): Promise<string>;
   expandRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
   currentBranch(args: { fs: unknown; gitdir: string; fullname?: boolean }): Promise<string | undefined>;
-  commit(args: {
-    fs: unknown; dir: string; message: string; author: object; committer: object; rawMessage?: boolean;
-  }): Promise<string>;
-  getConfig(args: { fs: unknown; dir: string; path: string }): Promise<unknown>;
+  getConfig(args: { fs: unknown; dir?: string; gitdir?: string; path: string }): Promise<unknown>;
+  setConfig(args: { fs: unknown; gitdir: string; path: string; value: string }): Promise<void>;
+  findMergeBase(args: { fs: unknown; dir: string; oids: string[] }): Promise<string[]>;
+  merge(args: { fs: unknown; dir: string; ours: string; theirs: string; author: GitIdent; committer: GitIdent; noUpdateBranch: boolean }):
+    Promise<{ oid: string; alreadyMerged?: boolean; fastForward?: boolean }>;
 }
 
 function isNotFound(error: unknown): boolean {
@@ -498,22 +531,93 @@ async function writeBinary(stream: OutputStream, bin: string): Promise<void> {
 
 // ── Staging ──────────────────────────────────────────────────────────────
 
-/**
- * `commit -a`'s staging of tracked changes: the status refresh, the removals
- * and the additions under one index write, as git's, and a path at a time
- * (1,000 concurrent deflates reset the isolate).
- */
-async function stageTracked(git: CfGit, fs: unknown, dir: string): Promise<void> {
-  const cache = {};
-  const added: string[] = [];
-  const removed: string[] = [];
-  for (const [filepath, head, workdir, stage] of await git.statusMatrix({ fs, dir, cache, deferRefresh: true })) {
-    if (stage === 0) continue;
-    if (head === workdir && workdir === stage) continue;
-    if (workdir === 0) removed.push(filepath);
-    else added.push(filepath);
+/** What one command's worktree work cost, by its filesystem (one per command): NIMBUS_GIT_COUNTERS=1 prints it. */
+const commandCounters = new WeakMap<GitFs, WalkCounters>();
+
+/** The repository at `root` as the worktree commands read it: its index, worktree and objects (through `fs`'s pack store). */
+function worktreeRepo(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, gitdir: string, root: string): WorktreeRepo {
+  let counters = commandCounters.get(fs);
+  if (!counters) {
+    counters = newCounters();
+    // NIMBUS_GIT_COUNTERS=why also says why the first entries read had to be.
+    if (ctx.env.NIMBUS_GIT_COUNTERS === 'why') counters.why = [];
+    commandCounters.set(fs, counters);
   }
-  await git.stage({ fs, dir, cache, add: added, remove: removed, parallel: false });
+  return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env, counters);
+}
+
+/**
+ * add_to_index: the worktree's file or link at `path` as an index entry, its
+ * blob written (unless the repository holds it) and its stat recorded. A
+ * nested repository is its HEAD commit, a gitlink. Null when there is nothing
+ * there to add.
+ */
+async function indexEntryFor(wrepo: WorktreeRepo, git: CfGit, dc: DirCache, path: string): Promise<NewEntry | null> {
+  const tree = await wrepo.worktree();
+  const st = await wrepo.fs.lstat(path);
+  if (st === null || st.type === 'other') return null;
+  if (st.type === 'directory') {
+    const oid = await git.resolveRef({ fs: wrepo.gitFs, gitdir: `${wrepo.root}/${path}/.git`, ref: 'HEAD' });
+    return { path, mode: 0o160000, oid, stat: st };
+  }
+  const oid = await wrepo.store.write('blob', await worktreeBlob(tree, path, st.type));
+  const at = dc.find(path);
+  return { path, mode: modeFromStat(st, at >= 0 ? dc.mode(at) : undefined, tree.filemode), oid, stat: st };
+}
+
+/**
+ * `commit -a`'s staging of tracked changes: the refresh, the removals and the
+ * additions in one index write, as git's, a path at a time (1,000 concurrent
+ * deflates reset the isolate).
+ */
+async function stageTracked(ctx: Ctx, wrepo: WorktreeRepo, git: CfGit): Promise<void> {
+  const dc = await wrepo.readIndex();
+  const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null, uncleanIsDirty: true, unmerged: true });
+  for (const line of scan.errors.tracked) await ctx.stderr.write(`${line}\n`);
+  const removed = new Set<number>();
+  const added: NewEntry[] = [];
+  for (const [i, dirty] of scan.dirty) {
+    const entry = dirty.change === 'D' ? null : await indexEntryFor(wrepo, git, dc, dc.path(i));
+    if (entry) added.push(entry);
+    else removed.add(i);
+  }
+  // An unmerged path is resolved as add -u resolves it: with what the worktree holds, or by its removal.
+  for (const { path, lo, hi, stat } of scan.unmerged) {
+    const entry = stat === null || stat.type === 'directory' ? null : await indexEntryFor(wrepo, git, dc, path);
+    if (entry) added.push(entry);
+    else for (let k = lo; k < hi; k++) removed.add(k);
+  }
+  if (removed.size || added.length || dc.refreshed) await wrepo.writeIndex(dc, { removed, added });
+}
+
+type GitFs = ReturnType<typeof createGitFs>;
+
+/**
+ * Before a command reads the trees and blobs of `commits` (a checkout, a
+ * reset, a merge), fetch what a partial clone lacks in two requests, as git
+ * prefetches a checkout's blobs: the commits' root trees with their subtrees
+ * (a tree:<depth> clone has neither), then every blob of those trees the
+ * repository does not hold. Nothing is walked outside a partial clone.
+ */
+async function prefetchCommits(git: CfGit, fs: GitFs, gitdir: string, commits: readonly string[], partial: (gitdir: string) => Promise<boolean>): Promise<void> {
+  if (commits.length === 0 || !await partial(gitdir)) return;
+  const cache = {};
+  const roots: string[] = [];
+  for (const oid of commits) roots.push((await git.readCommit({ fs, gitdir, oid, cache })).commit.tree);
+  await fs.packs.prefetch(gitdir, roots);
+  const blobs = new Set<string>();
+  const pending = [...roots];
+  const seen = new Set<string>();
+  while (pending.length > 0) {
+    const tree = pending.pop()!;
+    if (seen.has(tree)) continue;
+    seen.add(tree);
+    for (const entry of (await git.readTree({ fs, gitdir, oid: tree, cache })).tree) {
+      if (entry.type === 'tree') pending.push(entry.oid);
+      else if (entry.type === 'blob') blobs.add(entry.oid);
+    }
+  }
+  await fs.packs.prefetch(gitdir, blobs);
 }
 
 // ── Repository discovery ─────────────────────────────────────────────────
@@ -644,31 +748,6 @@ async function revParse(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args:
 
 // ── Worktree inspection (ls-files, diff) ─────────────────────────────────
 
-/** Whether git trusts the worktree's exec bit here: core.filemode, true unless set false. */
-async function trustsFileMode(git: CfGit, fs: unknown, dir: string): Promise<boolean> {
-  return (await git.getConfig({ fs, dir, path: 'core.filemode' })) !== false;
-}
-
-/** ce_mode_from_stat: without a trusted exec bit a file keeps its index mode, or 100644 when new. */
-function worktreeMode(mode: number, indexMode: number | undefined, filemode: boolean): number {
-  if (filemode || mode === 0o120000) return mode;
-  return indexMode !== undefined && indexMode !== 0o120000 ? indexMode : 0o100644;
-}
-
-/** git's index and tree order: the UTF-8 bytes, which is code point order rather than UTF-16's. */
-function comparePaths(a: string, b: string): number {
-  for (let i = 0; i < a.length && i < b.length; i++) {
-    let x = a.charCodeAt(i);
-    let y = b.charCodeAt(i);
-    if (x === y) continue;
-    // Surrogates (astral code points) sort above the rest of the BMP.
-    if (x >= 0xd800) x = x >= 0xe000 ? x - 0x800 : x + 0x2000;
-    if (y >= 0xd800) y = y >= 0xe000 ? y - 0x800 : y + 0x2000;
-    return x - y;
-  }
-  return a.length - b.length;
-}
-
 /** A repo-relative path as seen from `prefix`, climbing with '../' where it must. */
 function relativeTo(path: string, prefix: string): string {
   if (!prefix) return path;
@@ -692,32 +771,16 @@ function repoPaths(args: readonly string[], cwd: string, worktree: string): stri
   });
 }
 
-/** cf-git's walk one entry at a time, not every sibling at once; `visit` answers whether to descend. */
-async function walkScoped(
-  git: CfGit,
-  fs: unknown,
-  dir: string,
-  cache: object,
-  trees: Walker[],
-  specs: readonly string[],
-  visit: (path: string, entries: (WalkerEntry | null)[]) => Promise<boolean>,
-): Promise<void> {
-  await git.walk({
-    fs, dir, cache, trees,
-    map: async (path: string, entries: (WalkerEntry | null)[]) => {
-      if (path === '.') return true;
-      const inScope = specs.length === 0
-        || specs.some((spec) => spec === '' || path === spec || path.startsWith(`${spec}/`));
-      // Outside the pathspecs a directory is entered only on the way to one.
-      if (!inScope) return specs.some((spec) => spec.startsWith(`${path}/`)) ? true : null;
-      return (await visit(path, entries)) ? true : null;
-    },
-    reduce: async () => undefined,
-    iterate: async (walk: (child: unknown) => Promise<unknown>, children: Iterable<unknown>) => {
-      for (const child of children) await walk(child);
-      return [];
-    },
-  });
+/** The index entries the pathspecs name (a path, or everything below it), in index order, each once. */
+function entriesInSpecs(dc: DirCache, specs: readonly string[]): number[] {
+  if (specs.length === 0 || specs.includes('')) return Array.from({ length: dc.count }, (_, i) => i);
+  const picked = new Set<number>();
+  for (const spec of specs) {
+    for (let i = dc.find(spec); i >= 0 && i < dc.count && dc.path(i) === spec; i++) picked.add(i);
+    const [lo, hi] = dc.rangeUnder(spec);
+    for (let i = lo; i < hi; i++) picked.add(i);
+  }
+  return [...picked].sort((x, y) => x - y);
 }
 
 const ADD_USAGE = 'usage: git add [-n | --dry-run] [-v | --verbose] [-f | --force] [-A | --all | --no-all] '
@@ -736,7 +799,7 @@ const ADD_UNSUPPORTED = new Set(['i', 'p', 'e', 'N', 'U', '--interactive', '--pa
  * pathspec that matches nothing fails before anything is staged; one that
  * names an ignored path is reported (exit 1) unless -f, the rest still added.
  */
-async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[]): Promise<number> {
   let dryRun = false;
   let verbose = false;
   let force = false;
@@ -790,73 +853,129 @@ async function addCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, arg
     return 0;
   }
   const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [''];
-  const inSpec = (path: string, spec: string) => spec === '' || path === spec || path.startsWith(`${spec}/`);
-  const cache = {};
-  // Its stat refreshes ride in the one index write that stages (git add writes once).
-  const matrix = await git.statusMatrix({ fs, dir: root, cache, deferRefresh: !dryRun });
-  // -f takes the ignored files below each pathspec as well.
-  const forced = force
-    ? await git.statusMatrix({ fs, dir: root, cache, ignored: true, filepaths: specs.map((spec) => spec || '.') })
-    : [];
-  const rows = new Map<string, [number, number, number]>();
-  for (const [path, head, workdir, stage] of [...matrix, ...forced]) {
-    // -u updates what the index holds and nothing else: a path it does not
-    // hold (never added, or removed with rm --cached) is not git's to update.
-    if (update && stage === 0) continue;
-    if (specs.some((spec) => inSpec(path, spec))) rows.set(path, [head, workdir, stage]);
-  }
-  const ignored: string[] = [];
-  for (const [i, spec] of specs.entries()) {
-    if (spec === '' || [...rows.keys()].some((path) => inSpec(path, spec))) continue;
-    if (update) {
-      // "Known to git" is the index; git names the first pathspec it holds nothing under.
-      await ctx.stderr.write(`error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`);
-      return 128;
-    }
-    let st = null;
-    try { st = await vfs.lstat(normalizeVfsPath(`${root}/${spec}`)); } catch { /* absent */ }
-    if (!st) {
-      await ctx.stderr.write(`fatal: pathspec '${pathArgs[i]}' did not match any files\n`);
-      return 128;
-    }
-    // Named but not listed: ignored (reported at the path the ignore rule names), or an empty directory.
-    const parts = spec.split('/');
-    for (let depth = 1; depth <= parts.length; depth++) {
-      const prefix = parts.slice(0, depth).join('/');
-      if (await git.isIgnored({ fs, dir: root, filepath: prefix })) {
-        if (!ignored.includes(prefix)) ignored.push(prefix);
-        break;
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
+  // The index is read and written under its lock: an add never writes over another writer's change.
+  return await wrepo.withIndexLock(async () => {
+    const dc = await wrepo.readIndex();
+    const excludes = await wrepo.excludes(dc);
+    // -u updates what the index holds and nothing else; -f takes the ignored files below each pathspec as well.
+    const scan = await scanWorktree(await wrepo.worktree(), dc, {
+      specs, untracked: update ? 'no' : 'all', excludes, ignoredToo: force, uncleanIsDirty: true, unmerged: true,
+    });
+    // A nested repository stays 'dir/' here, as git prints it; it is added as a gitlink.
+    const untracked = scan.untracked.sort(comparePaths);
+    const ignored: string[] = [];
+    for (const [i, spec] of specs.entries()) {
+      if (spec === '') continue;
+      // A pathspec matches what the index holds there, or (but for -u) what is untracked there.
+      const [lo, hi] = dc.rangeUnder(spec);
+      if (dc.find(spec) >= 0 || hi > lo || untracked.some((path) => inSpecs([spec], path.replace(/\/$/, '')))) continue;
+      if (update) {
+        // "Known to git" is the index; git names the first pathspec it holds nothing under.
+        await ctx.stderr.write(`error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`);
+        return 128;
+      }
+      const st = await wrepo.fs.lstat(spec);
+      if (!st) {
+        await ctx.stderr.write(`fatal: pathspec '${pathArgs[i]}' did not match any files\n`);
+        return 128;
+      }
+      // Named but not listed: ignored (reported at the path the ignore rule names), or an empty directory.
+      const parts = spec.split('/');
+      for (let depth = 1; depth <= parts.length; depth++) {
+        const prefix = parts.slice(0, depth).join('/');
+        if (await excludes.isExcluded(prefix, depth < parts.length || st.type === 'directory')) {
+          if (!ignored.includes(prefix)) ignored.push(prefix);
+          break;
+        }
       }
     }
-  }
-  const tracked: [string, 'add' | 'remove'][] = [];
-  const untracked: string[] = [];
-  for (const [path, [head, workdir, stage]] of [...rows].sort(([a], [b]) => comparePaths(a, b))) {
-    if (head === 0 && stage === 0) {
-      if (workdir !== 0 && !update) untracked.push(path);
-      continue;
+    // Tracked paths first, in index order, then the new ones, as git's add_files_to_cache and add_files go.
+    // An unmerged path is resolved: what the worktree holds replaces its stages, or its deletion removes them.
+    const tracked: { at: number; end: number; action: 'add' | 'remove'; stat: WorktreeStat | null; unmerged: boolean }[] = [];
+    for (const [i, dirty] of scan.dirty) {
+      if (dirty.change !== 'D') tracked.push({ at: i, end: i + 1, action: 'add', stat: null, unmerged: false });
+      else if (all !== false) tracked.push({ at: i, end: i + 1, action: 'remove', stat: null, unmerged: false });
     }
-    if (workdir === 0) {
-      if (stage !== 0 && all !== false) tracked.push([path, 'remove']);
-    } else if (stage !== workdir) {
-      tracked.push([path, 'add']);
+    for (const { lo, hi, stat } of scan.unmerged) {
+      if (stat !== null && stat.type !== 'directory') tracked.push({ at: lo, end: hi, action: 'add', stat, unmerged: true });
+      else if (all !== false) tracked.push({ at: lo, end: hi, action: 'remove', stat: null, unmerged: true });
     }
-  }
-  if (ignored.length) {
-    await ctx.stderr.write(`The following paths are ignored by one of your .gitignore files:\n${ignored.map((p) => `${p}\n`).join('')}`
-      + 'hint: Use -f if you really want to add them.\n'
-      + 'hint: Disable this message with "git config set advice.addIgnoredFile false"\n');
-  }
-  let out = '';
-  for (const [path, action] of tracked) out += `${action} '${path}'\n`;
-  for (const path of untracked) out += `add '${path}'\n`;
-  if (dryRun || verbose) await writeBinary(ctx.stdout, out);
-  if (!dryRun) {
-    const removed = tracked.filter(([, action]) => action === 'remove').map(([path]) => path);
-    const added = [...tracked.filter(([, action]) => action === 'add').map(([path]) => path), ...untracked];
-    await git.stage({ fs, dir: root, cache, add: added, remove: removed, parallel: false, force: true });
-  }
-  return ignored.length ? 1 : 0;
+    tracked.sort((a, b) => a.at - b.at);
+    // read_directory's warnings, then diff-files' lstat failures, then add_files' advice.
+    for (const line of [...scan.errors.untracked, ...scan.errors.tracked]) await ctx.stderr.write(`${line}\n`);
+    if (ignored.length) {
+      await ctx.stderr.write(`The following paths are ignored by one of your .gitignore files:\n${ignored.map((p) => `${p}\n`).join('')}`
+        + 'hint: Use -f if you really want to add them.\n'
+        + 'hint: Disable this message with "git config set advice.addIgnoredFile false"\n');
+    }
+    // -n and -v print each path as it is staged; -n stages nothing.
+    let out = '';
+    const show = dryRun || verbose;
+    const removed = new Set<number>();
+    const added: NewEntry[] = [];
+    const tree = await wrepo.worktree();
+    for (const { at: i, end, action, stat: st, unmerged } of tracked) {
+      const path = dc.path(i);
+      if (action === 'remove') {
+        if (show) out += `remove '${path}'\n`;
+        if (!dryRun) for (let k = i; k < end; k++) removed.add(k);
+        continue;
+      }
+      // Added again with what it already held, an entry is not named (add_to_index's was_same).
+      if (dryRun) {
+        // The walk kept only how the entry changed: its stat is taken again.
+        const now = st ?? await wrepo.fs.lstat(path);
+        const same = !unmerged && now !== null && modeFromStat(now, dc.mode(i), tree.filemode) === dc.mode(i)
+          && await worktreeBlobId(tree, path, now) === dc.oid(i);
+        if (show && !same) out += `add '${path}'\n`;
+        continue;
+      }
+      const entry = await indexEntryFor(wrepo, git, dc, path);
+      if (show && (unmerged || !(entry && entry.oid === dc.oid(i) && entry.mode === dc.mode(i)))) out += `add '${path}'\n`;
+      if (entry) added.push(entry);
+      else for (let k = i; k < end; k++) removed.add(k);
+    }
+    let advised = false;
+    for (const path of untracked) {
+      const repository = path.endsWith('/');
+      let entry: NewEntry | null = null;
+      if (repository || !dryRun) {
+        try {
+          entry = await indexEntryFor(wrepo, git, dc, repository ? path.slice(0, -1) : path);
+        } catch (error) {
+          if (!repository || !isNotFound(error)) throw error;
+          // A nested repository with no commit has nothing to add as a gitlink: nothing is staged.
+          if (show) await writeBinary(ctx.stdout, binaryPath(out));
+          await ctx.stderr.write(`error: '${path}' does not have a commit checked out\nerror: unable to index file '${path}'\n`
+            + 'fatal: adding files failed\n');
+          return 128;
+        }
+      }
+      if (show) out += `add '${path}'\n`;
+      if (repository) {
+        const name = path.slice(0, -1);
+        let text = `warning: adding embedded git repository: ${name}\n`;
+        if (!advised) {
+          advised = true;
+          text += ["You've added another git repository inside your current repository.",
+            'Clones of the outer repository will not contain the contents of',
+            'the embedded repository and will not know how to obtain it.',
+            'If you meant to add a submodule, use:', '', `\tgit submodule add <url> ${name}`, '',
+            'If you added this path by mistake, you can remove it from the', 'index with:', '', `\tgit rm --cached ${name}`, '',
+            'See "git help submodule" for more information.',
+            'Disable this message with "git config set advice.addEmbeddedRepo false"',
+          ].map((line) => (line ? `hint: ${line}\n` : 'hint:\n')).join('');
+        }
+        await ctx.stderr.write(text);
+      }
+      if (entry && !dryRun) added.push(entry);
+    }
+    if (show) await writeBinary(ctx.stdout, binaryPath(out));
+    // Its stat refreshes ride in the one index write that stages (git add writes once).
+    if (!dryRun && (removed.size || added.length || dc.refreshed)) await wrepo.writeIndex(dc, { removed, added });
+    return ignored.length ? 1 : 0;
+  });
 }
 
 const TAG_USAGE = 'usage: git tag [-a] [-f] [-m <msg> | -F <file>] <tagname> [<commit>]\n'
@@ -1129,20 +1248,6 @@ function cleanupMessage(text: string, stripComments = true): string {
   return out.length ? `${out.join('\n')}\n` : '';
 }
 
-/**
- * Commit the index with exactly `message`, git's cleanup already applied:
- * one object, written byte for byte (the tracked cf-git patch's rawMessage;
- * cf-git's own rendering would normalize the newlines of a verbatim message
- * and refuse an empty one), and the branch, or a detached HEAD, moved by
- * cf-git.
- */
-async function writeCommit(
-  git: CfGit, fs: unknown, dir: string, message: string,
-  idents: { author: GitIdent; committer: GitIdent },
-): Promise<string> {
-  return git.commit({ fs, dir, message, ...idents, rawMessage: true });
-}
-
 /** A tag pattern (fnmatch: `*`, `?`, `[...]`) as a whole-name regular expression. */
 function tagPattern(pattern: string): RegExp {
   let source = '';
@@ -1318,15 +1423,16 @@ async function tagCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, arg
   return 0;
 }
 
-const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-o | --others] [-m | --modified] [-d | --deleted] '
+const LS_FILES_USAGE = 'usage: git ls-files [-c | --cached] [-s | --stage] [-o | --others] [-m | --modified] [-d | --deleted] '
   + '[--exclude-standard] [-z] [--] [<path>...]\n';
 
-async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function lsFiles(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[]): Promise<number> {
   let cached = false;
   let others = false;
   let modified = false;
   let deleted = false;
   let excludeStandard = false;
+  let stage = false;
   let z = false;
   let dashdash = false;
   const pathArgs: string[] = [];
@@ -1347,14 +1453,15 @@ async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: 
         case '-d': case '--deleted': deleted = true; break;
         case '-z': z = true; break;
         case '--exclude-standard': excludeStandard = true; break;
+        case '-s': case '--stage': stage = true; break;
         default:
           await ctx.stderr.write(`error: unknown option '${flag.replace(/^-+/, '')}'\n${LS_FILES_USAGE}`);
           return 129;
       }
     }
   }
-  // With no selection ls-files shows the index.
-  if (!others && !modified && !deleted) cached = true;
+  // With no selection ls-files shows the index; --stage shows it with each entry's mode, id and stage.
+  if (!others && !modified && !deleted && !stage) cached = true;
   const repo = await discoverRepo(vfs, ctx.cwd);
   if (!repo) {
     await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -1367,75 +1474,62 @@ async function lsFiles(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: 
   }
   // Without pathspecs ls-files covers the cwd's subtree.
   const specs = pathArgs.length ? repoPaths(pathArgs, ctx.cwd, root) : [repo.prefix];
-  const readWorktree = others || modified || deleted;
-  const untracked: string[] = [];
-  const tracked: { path: string; deleted: boolean; modified: boolean }[] = [];
-  const trees = readWorktree ? [git.STAGE(), git.WORKDIR()] : [git.STAGE()];
-  const filemode = modified && await trustsFileMode(git, fs, root);
-  await walkScoped(git, fs, root, {}, trees, specs, async (path, [stage, work]) => {
-    const workType = work ? await work.type() : undefined;
-    if (stage) {
-      const stageType = await stage.type();
-      if (stageType === 'tree') {
-        // A file or link where the index has a directory is untracked; the directory's files are deleted.
-        if (others && workType && workType !== 'tree'
-          && !(excludeStandard && await git.isIgnored({ fs, dir: root, filepath: path }))) untracked.push(path);
-        return true;
-      }
-      const missing = readWorktree && !workType;
-      let changed = missing;
-      if (modified && !missing && stageType === 'blob') {
-        const stageMode = await stage.mode();
-        changed = !work || workType !== 'blob' || await work.oid() !== await stage.oid()
-          || worktreeMode(await work.mode(), stageMode, filemode) !== stageMode;
-      }
-      tracked.push({ path, deleted: missing, modified: changed });
-      // A file replaced by a directory leaves that directory untracked.
-      return others && stageType === 'blob' && workType === 'tree';
-    }
-    if (!others || !workType) return false;
-    const isDir = workType === 'tree';
-    if (excludeStandard && await git.isIgnored({ fs, dir: root, filepath: isDir ? `${path}/` : path })) return false;
-    if (!isDir) {
-      untracked.push(path);
-      return false;
-    }
-    // A nested repository is listed as the directory, never entered.
-    if (!await vfs.exists(normalizeVfsPath(`${root}/${path}/.git`))) return true;
-    untracked.push(`${path}/`);
-    return false;
-  });
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
+  const dc = await wrepo.readIndex();
+  const scan = others || modified || deleted
+    ? await scanWorktree(await wrepo.worktree(), dc, {
+      specs,
+      untracked: others ? 'all' : 'no',
+      excludes: excludeStandard ? await wrepo.excludes(dc) : null,
+    })
+    : null;
+  for (const line of [...scan?.errors.tracked ?? [], ...scan?.errors.untracked ?? []]) await ctx.stderr.write(`${line}\n`);
   let out = '';
-  for (const path of untracked.sort(comparePaths)) out += pathLine(relativeTo(path, repo.prefix), z);
-  for (const entry of tracked.sort((a, b) => comparePaths(a.path, b.path))) {
-    const line = pathLine(relativeTo(entry.path, repo.prefix), z);
-    if (cached) out += line;
-    if (deleted && entry.deleted) out += line;
-    if (modified && entry.modified) out += line;
+  const flush = async () => {
+    await writeBinary(ctx.stdout, out);
+    out = '';
+  };
+  for (const path of (scan?.untracked ?? []).sort(comparePaths)) out += pathLine(relativeTo(path, repo.prefix), z);
+  let previous: string | null = null;
+  for (const i of entriesInSpecs(dc, specs)) {
+    const path = dc.path(i);
+    const line = pathLine(relativeTo(path, repo.prefix), z);
+    if (stage) out += `${dc.mode(i).toString(8).padStart(6, '0')} ${dc.oid(i)} ${dc.stage(i)}\t${line}`;
+    // Otherwise a path once, however many stages it has.
+    if (path === previous) continue;
+    previous = path;
+    const dirty = scan?.dirty.get(i);
+    if (cached && !stage) out += line;
+    // A directory where the file was is modified, not deleted: lstat finds something there.
+    if (deleted && dirty?.change === 'D' && !dirty.directory) out += line;
+    if (modified && dirty) out += line;
+    if (out.length >= 1 << 16) await flush();
   }
-  await writeBinary(ctx.stdout, out);
+  await flush();
   return 0;
 }
 
 /**
  * The index entries that restoring `restored` replaces (add_index_entry_with_check):
  * a file at one of a restored path's leading directories, or anything below a
- * restored path.
+ * restored path. Each restored path costs lookups, not a pass over the index.
  */
-export function replacedIndexEntries(index: readonly string[], restored: ReadonlySet<string>): string[] {
-  // Every leading directory of a restored path, once: an entry there is a file in its way.
-  const leading = new Set<string>();
+export function replacedIndexEntries(dc: DirCache, restored: ReadonlySet<string>): Set<number> {
+  const replaced = new Set<number>();
+  const take = (lo: number, hi: number) => {
+    for (let i = lo; i < hi; i++) if (!restored.has(dc.path(i))) replaced.add(i);
+  };
   for (const path of restored) {
-    for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) leading.add(path.slice(0, at));
-  }
-  return index.filter((path) => {
-    if (restored.has(path)) return false;
-    if (leading.has(path)) return true;
     for (let at = path.indexOf('/'); at >= 0; at = path.indexOf('/', at + 1)) {
-      if (restored.has(path.slice(0, at))) return true;
+      const lo = dc.find(path.slice(0, at));
+      if (lo < 0) continue;
+      let hi = lo + 1;
+      while (hi < dc.count && dc.path(hi) === dc.path(lo)) hi++;
+      take(lo, hi);
     }
-    return false;
-  });
+    take(...dc.rangeUnder(path));
+  }
+  return replaced;
 }
 
 /**
@@ -1444,9 +1538,90 @@ export function replacedIndexEntries(index: readonly string[], restored: Readonl
  * after it and exit 2. Anything else propagates.
  */
 async function refusal(ctx: Ctx, error: unknown, strategy?: string): Promise<number> {
-  if (!(error instanceof Error) || !('code' in error) || error.code !== 'CheckoutConflictError') throw error;
-  await ctx.stderr.write(`${error.message}\n${strategy ? `Merge with strategy ${strategy} failed.\n` : ''}`);
+  if (error instanceof UnmergedIndex) {
+    await writeBinary(ctx.stdout, binaryPath(error.paths.map((path) => `${path}: needs merge\n`).join('')));
+    await ctx.stderr.write(error.message);
+    return 1;
+  }
+  if (!(error instanceof CheckoutRefused)) throw error;
+  await ctx.stderr.write(`${error.message}${strategy ? `Merge with strategy ${strategy} failed.\n` : ''}`);
   return strategy ? 2 : 1;
+}
+
+/** createGitFs's worktree rule (a link or file in a directory's way is replaced), as the checkout writer. */
+function checkoutWriter(vfs: ProjectFs, root: string): CheckoutWriter {
+  const fs = createGitFs(vfs, root);
+  return {
+    writeFile: (path, data) => fs.promises.writeFile(path, data),
+    symlink: (target, path) => fs.promises.symlink(target, path),
+    unlink: (path) => fs.promises.unlink(path),
+    rmdir: (path) => fs.promises.rmdir(path),
+    mkdir: (path) => fs.promises.mkdir(path),
+    chmod: async (path, mode) => { await vfs.chmod(normalizeVfsPath(path), mode); },
+  };
+}
+
+/**
+ * Move the worktree and index to commit `oid`: unforced as a branch switch
+ * (or, `operation` 'merge', a merge's fast-forward) refuses what git refuses,
+ * forced as reset --hard. HEAD is not touched; a refusal throws
+ * CheckoutRefused or UnmergedIndex, whose messages are git's.
+ */
+async function moveWorktree(
+  ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, repo: GitRepo, oid: string,
+  { force = false, operation = 'checkout' }: { force?: boolean; operation?: 'checkout' | 'merge' } = {},
+): Promise<void> {
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree!);
+  await wrepo.withIndexLock(async () => {
+    const dc = await wrepo.readIndex();
+    const head = force ? null : await wrepo.headTree();
+    const edit = await switchTrees({
+      store: wrepo.store,
+      tree: await wrepo.worktree(),
+      dc,
+      excludes: await wrepo.excludes(dc),
+      root: repo.worktree!,
+      writer: checkoutWriter(vfs, repo.worktree!),
+      operation,
+    }, head === EMPTY_TREE ? null : head, await treeOf(wrepo.store, oid), force);
+    await wrepo.writeIndex(dc, edit);
+  });
+}
+
+/**
+ * `git checkout <branch>`: the worktree moved to the branch's commit, then
+ * HEAD to the branch, or detached at a commit for any other revision. A name
+ * only origin has as a branch becomes a local branch that tracks it, as
+ * git's checkout DWIM makes one.
+ */
+async function switchBranch(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, dir: string, ref: string): Promise<void> {
+  const repo = await discoverRepo(vfs, dir);
+  if (!repo?.worktree) throw new Error('this operation must be run in a work tree');
+  const { gitdir } = repo;
+  let oid: string;
+  try {
+    oid = await git.resolveRef({ fs, gitdir, ref });
+  } catch (error) {
+    if (!isNotFound(error)) throw error;
+    try { oid = await git.resolveRef({ fs, gitdir, ref: `origin/${ref}` }); } catch { throw error; }
+    await git.setConfig({ fs, gitdir, path: `branch.${ref}.remote`, value: 'origin' });
+    await git.setConfig({ fs, gitdir, path: `branch.${ref}.merge`, value: `refs/heads/${ref}` });
+    await git.writeRef({ fs, dir, ref: `refs/heads/${ref}`, value: oid, force: true });
+  }
+  await moveWorktree(ctx, git, vfs, fs, repo, oid);
+  let full = '';
+  try { full = await git.expandRef({ fs, gitdir, ref }); } catch { /* a commit, not a ref */ }
+  if (full.startsWith('refs/heads/')) {
+    await git.writeRef({ fs, dir, ref: 'HEAD', value: full, force: true, symbolic: true });
+    return;
+  }
+  // Detached, at the commit: an annotated tag's own object is not one.
+  for (;;) {
+    const { type, object } = await git.readObject({ fs, dir, oid, cache: {}, format: 'parsed' });
+    if (type !== 'tag') break;
+    oid = (object as { object: string }).object;
+  }
+  await git.writeRef({ fs, dir, ref: 'HEAD', value: oid, force: true });
 }
 
 /**
@@ -1460,6 +1635,7 @@ async function checkoutPaths(
   ctx: Ctx,
   git: CfGit,
   vfs: ProjectFs,
+  fs: GitFs,
   source: string | null,
   pathArgs: readonly string[],
 ): Promise<number> {
@@ -1476,116 +1652,137 @@ async function checkoutPaths(
   const specs = repoPaths(pathArgs, ctx.cwd, root);
   // A pathspec ending in '/' names a directory: it matches what is below it, never a file or link there.
   const dirOnly = pathArgs.map((arg, i) => arg.endsWith('/') && specs[i] !== '');
-  const fs = createGitFs(vfs, root);
-  const cache = {};
-  let tree = git.STAGE();
-  if (source !== null) {
-    const oid = await resolveRevision(git, fs, repo.gitdir, source, cache);
-    if (!oid) {
-      await ctx.stderr.write(`fatal: invalid reference: ${source}\n`);
-      return 128;
-    }
-    tree = git.TREE({ ref: oid });
-  }
-  const files: { path: string; oid: string; mode: number }[] = [];
-  const matched = new Set<number>();
-  await walkScoped(git, fs, root, cache, [tree], specs, async (path, [entry]) => {
-    const type = entry ? await entry.type() : undefined;
-    if (type === 'tree') return true;
-    // A gitlink is never checked out.
-    if (!entry || type !== 'blob') return false;
-    const matching = specs.flatMap((spec, i) =>
-      spec === '' || path.startsWith(`${spec}/`) || (path === spec && !dirOnly[i]) ? [i] : []);
-    if (matching.length === 0) return false;
-    for (const i of matching) matched.add(i);
-    files.push({ path, oid: await entry.oid(), mode: await entry.mode() });
-    return false;
-  });
-  let unmatched = '';
-  pathArgs.forEach((arg, i) => {
-    if (!matched.has(i)) unmatched += `error: pathspec '${arg}' did not match any file(s) known to git\n`;
-  });
-  if (unmatched) {
-    await ctx.stderr.write(unmatched);
-    return 1;
-  }
-  for (const { path, oid, mode } of files) {
-    const file = `${root}/${path}`;
-    const { blob } = await git.readBlob({ fs, dir: root, oid, cache });
-    if (mode === 0o120000) {
-      await fs.promises.symlink(dec.decode(blob), file);
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
+  return await wrepo.withIndexLock(async () => {
+    const dc = await wrepo.readIndex();
+    const files: { path: string; oid: string; mode: number }[] = [];
+    const matched = new Set<number>();
+    const take = (path: string, oid: string, mode: number) => {
+      // A gitlink is never checked out.
+      if ((mode & 0o170000) === 0o160000) return;
+      const matching = specs.flatMap((spec, i) =>
+        spec === '' || path.startsWith(`${spec}/`) || (path === spec && !dirOnly[i]) ? [i] : []);
+      if (matching.length === 0) return;
+      for (const i of matching) matched.add(i);
+      files.push({ path, oid, mode });
+    };
+    if (source === null) {
+      for (const i of entriesInSpecs(dc, specs)) if (dc.stage(i) === 0) take(dc.path(i), dc.oid(i), dc.mode(i));
     } else {
-      await fs.promises.writeFile(file, blob);
-      await vfs.chmod(normalizeVfsPath(file), mode === 0o100755 ? 0o755 : 0o644);
+      const oid = await resolveRevision(git, wrepo.gitFs, repo.gitdir, source, {});
+      if (!oid) {
+        await ctx.stderr.write(`fatal: invalid reference: ${source}\n`);
+        return 128;
+      }
+      const within = (dir: string) => inSpecs(specs, dir) || specs.some((spec) => spec.startsWith(`${dir}/`));
+      for await (const leaf of treeLeaves(wrepo.store, await treeOf(wrepo.store, oid), '', within)) {
+        if (inSpecs(specs, leaf.path)) take(leaf.path, leaf.oid, leaf.mode);
+      }
     }
-  }
-  // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
-  // restored path replaces goes first, as add_index_entry_with_check replaces it: a file at
-  // one of its leading directories, or anything below it.
-  const restored = new Set(files.map(({ path }) => path));
-  const replaced = replacedIndexEntries(await git.listFiles({ fs, dir: root, cache }), restored);
-  if (replaced.length) await git.remove({ fs, dir: root, filepath: replaced, cache });
-  if (files.length) await git.add({ fs, dir: root, filepath: [...restored], parallel: false, force: true, cache });
-  return 0;
-}
-
-interface PendingSide {
-  path: string;
-  oid: string;
-  mode: number;
-  /** Content lives in the worktree rather than the object store. */
-  worktree: boolean;
-}
-
-/** What the worktree (or, `cached`, the index) is compared against. */
-type DiffBase = { kind: 'index' } | { kind: 'tree'; ref: string; cached: boolean };
-
-/** diff-files, diff-index and diff-index --cached, as file pairs in path order. */
-async function changedPairs(
-  git: CfGit,
-  fs: unknown,
-  dir: string,
-  cache: object,
-  base: DiffBase,
-  specs: readonly string[],
-): Promise<QueuedPair<PendingSide>[]> {
-  const pairs: QueuedPair<PendingSide>[] = [];
-  const filemode = await trustsFileMode(git, fs, dir);
-  // A worktree side is read against its index entry's mode.
-  const blob = async (path: string, entry: WalkerEntry | null, index?: WalkerEntry): Promise<PendingSide | null> => {
-    if (!entry || (await entry.type()) !== 'blob') return null;
-    const mode = await entry.mode();
-    return index
-      ? { path, oid: await entry.oid(), mode: worktreeMode(mode, await index.mode(), filemode), worktree: true }
-      : { path, oid: await entry.oid(), mode, worktree: false };
-  };
-  const record = (one: PendingSide | null, two: PendingSide | null) => {
-    if (!one && !two) return;
-    if (one && two && one.oid === two.oid && one.mode === two.mode) return;
-    pairs.push({ one, two });
-  };
-  const trees = base.kind === 'index'
-    ? [git.STAGE(), git.WORKDIR()]
-    : base.cached ? [git.TREE({ ref: base.ref }), git.STAGE()] : [git.TREE({ ref: base.ref }), git.STAGE(), git.WORKDIR()];
-  await walkScoped(git, fs, dir, cache, trees, specs, async (path, entries) => {
-    if (base.kind === 'index') {
-      const [stage, work] = entries;
-      const stageType = stage ? await stage.type() : undefined;
-      if (stageType !== 'blob') return stageType === 'tree';
-      // A missing file, or a directory where the file was, is a deletion.
-      record(await blob(path, stage), await blob(path, work, stage!));
-      return false;
+    let unmatched = '';
+    pathArgs.forEach((arg, i) => {
+      if (!matched.has(i)) unmatched += `error: pathspec '${arg}' did not match any file(s) known to git\n`;
+    });
+    if (unmatched) {
+      await ctx.stderr.write(unmatched);
+      return 1;
     }
-    const [head, stage, work] = entries;
-    const headType = head ? await head.type() : undefined;
-    const stageType = stage ? await stage.type() : undefined;
-    // diff-index: a path the index lacks is deleted whatever the worktree holds.
-    const two = stageType !== 'blob' ? null : base.cached ? await blob(path, stage) : await blob(path, work, stage!);
-    record(await blob(path, head), two);
-    return headType === 'tree' || stageType === 'tree';
+    const writer = checkoutWriter(vfs, root);
+    await wrepo.store.prefetch(files.map(({ oid }) => oid));
+    const added: NewEntry[] = [];
+    for (const { path, oid, mode } of files) {
+      const file = `${root}/${path}`;
+      const { data } = await wrepo.store.read(oid);
+      if (mode === 0o120000) {
+        await writer.symlink(dec.decode(data), file);
+      } else {
+        await writer.writeFile(file, data);
+        await writer.chmod(file, mode === 0o100755 ? 0o755 : 0o644);
+      }
+      added.push({ path, mode, oid, stat: await wrepo.fs.lstat(path) });
+    }
+    // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
+    // restored path replaces goes, as add_index_entry_with_check replaces it: a file at
+    // one of its leading directories, or anything below it.
+    const removed = replacedIndexEntries(dc, new Set(files.map(({ path }) => path)));
+    if (added.length || removed.size) await wrepo.writeIndex(dc, { removed, added });
+    return 0;
   });
-  const pathOf = (pair: QueuedPair<PendingSide>) => (pair.one ?? pair.two)!.path;
-  return pairs.sort((a, b) => comparePaths(pathOf(a), pathOf(b)));
+}
+
+/** What the worktree (or, `cached`, the index) is compared against: the index, or a tree. */
+type DiffBase = { kind: 'index' } | { kind: 'tree'; tree: string; cached: boolean };
+
+/**
+ * diff-files, diff-index and diff-index --cached, as git's diff queue in
+ * columns: the worktree walk for the worktree side, the tree and index walked
+ * together for a tree. Only changed paths are held.
+ */
+async function changedPairs(
+  wrepo: WorktreeRepo, dc: DirCache, base: DiffBase, specs: readonly string[], errors: OutputStream,
+): Promise<PairList> {
+  const pairs = new PairList();
+  const tree = await wrepo.worktree();
+  const indexSide = (i: number) => ({ oid: dc.oid(i), mode: dc.mode(i), worktree: false });
+  // The worktree's side of entry i: its blob (hashed only if it changed) at the mode it is read with.
+  const worktreeSide = async (i: number, dirty: Dirty | undefined) => {
+    if (!dirty) return { ...indexSide(i), worktree: true };
+    // The walk kept only how the entry changed: its stat is taken again.
+    const st = dirty.change === 'D' ? null : await tree.fs.lstat(dc.path(i));
+    // A missing file, or a directory where the file was, is a deletion.
+    if (st === null || st.type === 'directory' || st.type === 'other') return null;
+    const oid = dirty.oid ?? await worktreeBlobId(tree, dc.path(i), st);
+    return { oid, mode: modeFromStat(st, dc.mode(i), tree.filemode), worktree: true };
+  };
+  const scan = base.kind === 'tree' && base.cached ? null : await scanWorktree(tree, dc, { specs, untracked: 'no', excludes: null });
+  for (const line of scan?.errors.tracked ?? []) await errors.write(`${line}\n`);
+  const dirty = scan?.dirty ?? new DirtySet(0);
+  if (base.kind === 'index') {
+    for (const [i, change] of dirty) pairs.add(dc.path(i), indexSide(i), await worktreeSide(i, change));
+    return pairs;
+  }
+  // Where the cache tree vouches for a subtree, the tree and the index agree there and the walk skips it;
+  // a worktree change below it is then the index's side against the worktree's.
+  const seen = new Set<number>();
+  await walkTreeAndIndex(wrepo.store, base.tree, dc, specs, async (path, leaf, lo, hi) => {
+    // diff-index: a path the index lacks (or holds unmerged) is deleted whatever the worktree holds.
+    const entry = hi - lo === 1 && dc.stage(lo) === 0 ? lo : -1;
+    if (dirty.has(entry)) seen.add(entry);
+    const two = entry < 0 ? null : base.cached ? indexSide(entry) : await worktreeSide(entry, dirty.get(entry));
+    pairs.add(path, leaf, two);
+  }, { cacheTree: dc.cacheTree() });
+  for (const [i, change] of dirty) if (!seen.has(i) && dc.stage(i) === 0) pairs.add(dc.path(i), indexSide(i), await worktreeSide(i, change));
+  return pairs;
+}
+
+/**
+ * The diff queue in git's order after rename detection, one pair at a time.
+ * Modifications pass through as they are; the additions and deletions, the
+ * only pairs renames are found among, are taken out as objects, matched, and
+ * put back where git's diffcore_rename puts them: a rename at its
+ * destination, an unused deletion at its own path.
+ */
+async function* diffQueue(
+  pairs: PairList, minimumScore: number | null, read: (side: PairSide) => Promise<Uint8Array>,
+  noted: { neededRenameLimit: number },
+): AsyncGenerator<QueuedPair<PairSide>> {
+  const order = pairs.order();
+  let others: QueuedPair<PairSide>[] = [];
+  for (const k of order) if (!pairs.modified(k)) others.push(pairs.pair(k));
+  if (minimumScore !== null && others.some((pair) => pair.one) && others.some((pair) => pair.two)) {
+    const found = await detectRenames(others, read, { minimumScore });
+    others = found.queue;
+    noted.neededRenameLimit = found.neededRenameLimit;
+  }
+  const anchor = (pair: QueuedPair<PairSide>) => (pair.two ?? pair.one)!.path;
+  let next = 0;
+  for (const k of order) {
+    if (!pairs.modified(k)) continue;
+    const pair = pairs.pair(k);
+    while (next < others.length && comparePaths(anchor(others[next]), pair.one!.path) < 0) yield others[next++];
+    yield pair;
+  }
+  while (next < others.length) yield others[next++];
 }
 
 type DiffFormat = 'patch' | 'stat' | 'name-only' | 'name-status';
@@ -1598,10 +1795,10 @@ interface DiffOutput {
 }
 
 /** Print pairs one at a time, each loaded only while it is rendered. */
-async function writeDiff(ctx: Ctx, pairs: Iterable<() => Promise<DiffPair>>, output: DiffOutput): Promise<void> {
-  const stats: StatFile[] = [];
+async function writeDiff(ctx: Ctx, pairs: Iterable<() => Promise<DiffPair>> | AsyncIterable<() => Promise<DiffPair>>, output: DiffOutput): Promise<void> {
+  const stats = new StatList();
   let out = '';
-  for (const load of pairs) {
+  for await (const load of pairs) {
     const pair = await load();
     if (output.format === 'stat') stats.push(statFile(pair));
     else if (output.format === 'name-only') out += formatNameOnly(pair, output.z);
@@ -1612,7 +1809,15 @@ async function writeDiff(ctx: Ctx, pairs: Iterable<() => Promise<DiffPair>>, out
       out = '';
     }
   }
-  if (output.format === 'stat') out += formatStat(stats, output.columns);
+  if (output.format === 'stat') {
+    for (const line of formatStat(stats, output.columns)) {
+      out += line;
+      if (out.length >= 1 << 16) {
+        await writeBinary(ctx.stdout, out);
+        out = '';
+      }
+    }
+  }
   await writeBinary(ctx.stdout, out);
 }
 
@@ -1671,7 +1876,9 @@ const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
   + '   or: git diff --no-index [--] <path> <path>\n'
   + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
 
-async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, args: readonly string[]): Promise<number> {
+async function diffCommand(
+  ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, args: readonly string[], partial: (gitdir: string) => Promise<boolean>,
+): Promise<number> {
   let cached = false;
   let noIndex = false;
   let dashdash = false;
@@ -1773,34 +1980,379 @@ async function diffCommand(ctx: Ctx, git: CfGit, fs: unknown, vfs: ProjectFs, ar
     await ctx.stderr.write('fatal: diff between two commits is not supported; compare one commit with the worktree or the index\n');
     return 128;
   }
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
+  const dc = await wrepo.readIndex();
   const base: DiffBase = cached
-    ? { kind: 'tree', ref: revs[0] ?? 'HEAD', cached: true }
-    : revs.length ? { kind: 'tree', ref: revs[0], cached: false } : { kind: 'index' };
-  const pending = await changedPairs(git, fs, root, cache, base, repoPaths(pathArgs, ctx.cwd, root));
-  const read = async (side: PendingSide): Promise<Uint8Array> => {
-    if (!side.worktree) return (await git.readBlob({ fs, dir: root, oid: side.oid, cache })).blob;
-    const key = normalizeVfsPath(`${root}/${side.path}`);
-    return side.mode === 0o120000 ? enc.encode(await vfs.readlink(key)) : vfs.readFile(key);
-  };
-  const { queue, neededRenameLimit } = minimumScore === null
-    ? { queue: pending, neededRenameLimit: 0 }
-    : await detectRenames(pending, read, { minimumScore });
+    ? { kind: 'tree', tree: revs.length ? await treeOf(wrepo.store, revs[0]) : await wrepo.headTree(), cached: true }
+    : revs.length ? { kind: 'tree', tree: await treeOf(wrepo.store, revs[0]), cached: false } : { kind: 'index' };
+  const pending = await changedPairs(wrepo, dc, base, repoPaths(pathArgs, ctx.cwd, root), ctx.stderr);
+  // git diff writes back the stat it found stale on files whose content had not changed.
+  await wrepo.updateIndexIfAble(dc);
+  // The blobs this diff reads, fetched together where a partial clone lacks them (git's diff_queued_diff_prefetch).
+  if ((output.format === 'patch' || output.format === 'stat' || minimumScore !== null) && await partial(repo.gitdir)) {
+    await wrepo.store.prefetch(pending.storeOids());
+  }
+  const tree = await wrepo.worktree();
+  const read = async (side: PairSide): Promise<Uint8Array> => side.worktree
+    ? await worktreeBlob(tree, side.path, side.mode === 0o120000 ? 'symlink' : 'file')
+    : (await wrepo.store.read(side.oid)).data;
+  const noted = { neededRenameLimit: 0 };
   const withData = output.format === 'patch' || output.format === 'stat';
-  const spec = async (side: PendingSide): Promise<DiffSpec> => ({
+  const spec = async (side: PairSide): Promise<DiffSpec> => ({
     path: side.path,
     valid: true,
     oid: side.oid,
     mode: side.mode,
     data: withData ? await read(side) : new Uint8Array(0),
   });
-  await writeDiff(ctx, queue.map(({ one, two, renameScore }) => async () => ({
-    one: one ? await spec(one) : absentSpec(two!.path),
-    two: two ? await spec(two) : absentSpec(one!.path),
-    renameScore,
-  })), output);
+  await writeDiff(ctx, (async function* () {
+    for await (const { one, two, renameScore } of diffQueue(pending, minimumScore, read, noted)) {
+      yield async () => ({
+        one: one ? await spec(one) : absentSpec(two!.path),
+        two: two ? await spec(two) : absentSpec(one!.path),
+        renameScore,
+      });
+    }
+  })(), output);
+  const { neededRenameLimit } = noted;
   if (neededRenameLimit) {
     await ctx.stderr.write('warning: exhaustive rename detection was skipped due to too many files.\n'
       + `warning: you may want to set your diff.renameLimit variable to at least ${neededRenameLimit} and retry the command.\n`);
+  }
+  return 0;
+}
+
+// ── status, commit, reset ────────────────────────────────────────────────
+
+const STATUS_USAGE = 'usage: git status [-s | --short] [--porcelain[=v1]] [-z] [-u[<mode>] | --untracked-files[=<mode>]]\n'
+  + '                  [--renames | --no-renames] [--] [<pathspec>...]\n';
+/** git status's options this git does not do: they are git's, so they are refused as unsupported, not unknown. */
+const STATUS_UNSUPPORTED = new Set(['b', 'v', '--branch', '--long', '--verbose', '--show-stash', '--ignored', '--ignore-submodules',
+  '--column', '--no-column', '--ahead-behind', '--no-ahead-behind', '--find-renames', '-M']);
+
+/**
+ * `git status`. The short form (-s) and porcelain v1 (--porcelain, or -z)
+ * are git's byte for byte. With neither, the form is Nimbus's own: the short
+ * lines, colored (staged-only green, the rest red), and "nothing to commit,
+ * working tree clean" when there is nothing to show. Like git, it writes the
+ * index back when it refreshed stat data or the index has racy entries.
+ */
+async function statusCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[]): Promise<number> {
+  let format: 'nimbus' | 'short' | 'porcelain' = 'nimbus';
+  let z = false;
+  let untracked: 'no' | 'normal' | 'all' | null = null;
+  let renames: boolean | null = null;
+  let dashdash = false;
+  const pathArgs: string[] = [];
+  const unsupported = async (flag: string) => {
+    await ctx.stderr.write(`fatal: git status ${flag.length === 1 ? `-${flag}` : flag} is not supported here\n`);
+    return 128;
+  };
+  const untrackedMode = async (mode: string) => {
+    if (mode === 'no' || mode === 'normal' || mode === 'all') {
+      untracked = mode;
+      return true;
+    }
+    await ctx.stderr.write(`fatal: Invalid untracked files mode '${mode}'\n`);
+    return false;
+  };
+  for (const arg of args) {
+    if (dashdash || arg === '-' || !arg.startsWith('-')) {
+      pathArgs.push(arg);
+      continue;
+    }
+    if (arg === '--') {
+      dashdash = true;
+      continue;
+    }
+    if (arg.startsWith('--')) {
+      const [flag, value] = arg.includes('=') ? [arg.slice(0, arg.indexOf('=')), arg.slice(arg.indexOf('=') + 1)] : [arg, null];
+      if (flag === '--short') format = 'short';
+      else if (flag === '--porcelain' && (value === null || value === 'v1' || value === '1')) format = 'porcelain';
+      else if (flag === '--porcelain') return await unsupported(arg);
+      else if (flag === '--null') z = true;
+      else if (flag === '--untracked-files') {
+        if (!await untrackedMode(value ?? 'all')) return 128;
+      } else if (flag === '--renames') renames = true;
+      else if (flag === '--no-renames') renames = false;
+      else if (STATUS_UNSUPPORTED.has(flag)) return await unsupported(flag);
+      else {
+        await ctx.stderr.write(`error: unknown option \`${arg.slice(2)}'\n${STATUS_USAGE}`);
+        return 129;
+      }
+      continue;
+    }
+    for (let i = 1; i < arg.length; i++) {
+      const flag = arg[i];
+      if (flag === 's') format = 'short';
+      else if (flag === 'z') z = true;
+      else if (flag === 'u') {
+        if (!await untrackedMode(arg.slice(i + 1) || 'all')) return 128;
+        break;
+      } else if (STATUS_UNSUPPORTED.has(flag)) return await unsupported(flag);
+      else {
+        await ctx.stderr.write(`error: unknown switch \`${flag}'\n${STATUS_USAGE}`);
+        return 129;
+      }
+    }
+  }
+  // -z alone is porcelain v1.
+  if (z && format === 'nimbus') format = 'porcelain';
+  const repo = await discoverRepo(vfs, ctx.cwd);
+  if (!repo) {
+    await ctx.stderr.write(NOT_A_REPOSITORY);
+    return 128;
+  }
+  const root = repo.worktree;
+  if (!root) {
+    await ctx.stderr.write(NOT_A_WORK_TREE);
+    return 128;
+  }
+  const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
+  if (untracked === null) {
+    const configured = await wrepo.config('status.showuntrackedfiles');
+    const flag = configBool(configured);
+    untracked = flag === false ? 'no' : configured === 'all' ? 'all' : 'normal';
+  }
+  if (renames === null) {
+    const configured = await wrepo.config('status.renames') ?? await wrepo.config('diff.renames');
+    renames = configured === 'copies' || configured === 'copy' || (configBool(configured) ?? true);
+  }
+  const dc = await wrepo.readIndex();
+  const status = await collectStatus(wrepo.store, await wrepo.worktree(), dc, await wrepo.headTree(), {
+    specs: repoPaths(pathArgs, ctx.cwd, root),
+    untracked,
+    excludes: untracked === 'no' ? null : await wrepo.excludes(dc),
+    renames,
+  });
+  for (const line of status.errors) await ctx.stderr.write(`${line}\n`);
+  await wrepo.updateIndexIfAble(dc);
+  const prefix = repo.prefix ? `${repo.prefix}/` : '';
+  // Lines go out as they are made, 64 KiB at a time: a status of every file is never one string.
+  let out = '';
+  const emit = async (text: string) => {
+    out += text;
+    if (out.length >= 1 << 16) {
+      await writeBinary(ctx.stdout, out);
+      out = '';
+    }
+  };
+  if (format !== 'nimbus') {
+    for (const text of shortStatusLines({ changes: status.changes(), untracked: status.untracked }, { prefix: format === 'short' && !z ? prefix : '', z })) {
+      await emit(text);
+    }
+    await writeBinary(ctx.stdout, out);
+    return 0;
+  }
+  if (status.count === 0 && status.untracked.length === 0) {
+    await ctx.stdout.write('nothing to commit, working tree clean\n');
+    return 0;
+  }
+  // Nimbus's own form: the short lines, staged-only green, the rest red.
+  const color = (change: StatusChange | null, text: string) =>
+    `${change !== null && !change.unmerged && change.worktree === ' ' ? '\x1b[32m' : '\x1b[31m'}${text.slice(0, -1)}\x1b[0m\n`;
+  for (const change of status.changes()) {
+    for (const text of shortStatusLines({ changes: [change], untracked: [] }, { prefix, z: false })) await emit(color(change, text));
+  }
+  for (const text of shortStatusLines({ changes: [], untracked: status.untracked }, { prefix, z: false })) await emit(color(null, text));
+  await writeBinary(ctx.stdout, out);
+  return 0;
+}
+
+/**
+ * `git merge <theirs>` into the current branch (or HEAD when detached): the
+ * merged tree from cf-git, then the worktree and index moved to it by the
+ * one checkout policy, the branch last, so a merge git refuses ("would be
+ * overwritten by merge") changes nothing. `git pull` merges through here.
+ */
+async function mergeCommand(
+  ctx: Ctx, git: CfGit, fs: GitFs, vfs: ProjectFs, dir: string, theirs: string, quiet: boolean,
+  partial: (gitdir: string) => Promise<boolean>,
+): Promise<number> {
+  const ours = await git.currentBranch({ fs, gitdir: `${dir}/.git`, fullname: true }) ?? 'HEAD';
+  const repo = await discoverRepo(vfs, dir);
+  if (!repo?.worktree) {
+    await ctx.stderr.write(NOT_A_WORK_TREE);
+    return 128;
+  }
+  if ((await worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree).readIndex()).unmergedPaths().length) {
+    await ctx.stderr.write(unmergedRefusal('Merging'));
+    return 128;
+  }
+  const idents = await commitIdents(ctx, git, fs, dir);
+  if ('error' in idents) {
+    await ctx.stderr.write(idents.error);
+    return 128;
+  }
+  if (await partial(repo.gitdir)) {
+    const theirsOid = await git.resolveRef({ fs, gitdir: repo.gitdir, ref: theirs });
+    const oursOid = await git.resolveRef({ fs, gitdir: repo.gitdir, ref: ours });
+    const bases = await git.findMergeBase({ fs, dir, oids: [oursOid, theirsOid] });
+    await prefetchCommits(git, fs, repo.gitdir, [theirsOid, ...bases], partial);
+  }
+  const merged = await git.merge({ fs, dir, ours, theirs, ...idents, noUpdateBranch: true });
+  if (!merged.alreadyMerged) {
+    try {
+      await moveWorktree(ctx, git, vfs, fs, repo, merged.oid, { operation: 'merge' });
+    } catch (e) {
+      return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
+    }
+    await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
+  }
+  if (!quiet) await ctx.stdout.write(`Merged ${theirs}\n`);
+  return 0;
+}
+
+/** die_resolve_conflict: what git says when unmerged entries stop a commit or a merge. */
+function unmergedRefusal(action: 'Committing' | 'Merging'): string {
+  return `error: ${action} is not possible because you have unmerged files.\n`
+    + "hint: Fix them up in the work tree, and then use 'git add/rm <file>'\n"
+    + 'hint: as appropriate to mark resolution and make a commit.\n'
+    + 'fatal: Exiting because of an unresolved conflict.\n';
+}
+
+/**
+ * `git commit`'s tree and commit object: the index written as trees (only
+ * those the repository lacks), the commit on HEAD's commit, and the branch
+ * (or a detached HEAD) moved to it. Unmerged entries refuse, as git does.
+ */
+async function commitIndex(
+  ctx: Ctx, git: CfGit, wrepo: WorktreeRepo, message: string, idents: { author: GitIdent; committer: GitIdent },
+): Promise<string | null> {
+  const dc = await wrepo.readIndex();
+  for (let i = 0; i < dc.count; i++) {
+    if (dc.stage(i) === 0) continue;
+    await ctx.stderr.write(unmergedRefusal('Committing'));
+    return null;
+  }
+  const { oid: tree, cacheTree } = await writeTreeFromIndex(wrepo.store, dc);
+  let parent = '';
+  try { parent = `parent ${await git.resolveRef({ fs: wrepo.gitFs, gitdir: wrepo.gitdir, ref: 'HEAD' })}\n`; } catch { /* the first commit */ }
+  const object = `tree ${tree}\n${parent}author ${identLine(idents.author)}\ncommitter ${identLine(idents.committer)}\n\n${message}`;
+  const oid = await wrepo.store.write('commit', enc.encode(object));
+  const branch = await git.currentBranch({ fs: wrepo.gitFs, gitdir: wrepo.gitdir, fullname: true });
+  await git.writeRef({ fs: wrepo.gitFs, dir: wrepo.root, ref: branch ?? 'HEAD', value: oid, force: true });
+  // The index keeps the trees it was written as (update_main_cache_tree), as git's commit writes it.
+  dc.setCacheTree(cacheTree);
+  if (dc.cacheTreeChanged) await wrepo.writeIndex(dc);
+  return oid;
+}
+
+/**
+ * reset_index: index entries for `specs` ('' everything) become `tree`'s,
+ * then the whole index is refreshed and what still differs from the worktree
+ * printed under "Unstaged changes after reset:", unless `quiet`, and the
+ * index written once.
+ */
+async function resetIndex(ctx: Ctx, wrepo: WorktreeRepo, tree: string, specs: readonly string[], quiet: boolean): Promise<void> {
+  await wrepo.withIndexLock(async () => {
+    const dc = await indexFromTree(wrepo, tree, specs);
+    const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null });
+    for (const line of scan.errors.tracked) await ctx.stderr.write(`${line}\n`);
+    if (!quiet && scan.dirty.size) {
+      let out = 'Unstaged changes after reset:\n';
+      for (const [i, dirty] of scan.dirty) out += `${dirty.change}\t${dc.path(i)}\n`;
+      await writeBinary(ctx.stdout, binaryPath(out));
+    }
+    await wrepo.writeIndex(dc);
+  });
+}
+
+/**
+ * read_from_tree: the index with `tree`'s entries for `specs`, an unchanged
+ * one keeping its stat. The index read is dropped here, so a reset holds one
+ * index, not two.
+ */
+async function indexFromTree(wrepo: WorktreeRepo, tree: string, specs: readonly string[]): Promise<DirCache> {
+  const old = await wrepo.readIndex();
+  const removed = new Set<number>();
+  const added: NewEntry[] = [];
+  await walkTreeAndIndex(wrepo.store, tree, old, specs, (path, leaf, lo, hi) => {
+    if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode) return;
+    for (let i = lo; i < hi; i++) removed.add(i);
+    if (leaf) added.push({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
+  }, { cacheTree: old.cacheTree() });
+  return removed.size || added.length ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
+}
+
+const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>]\n'
+  + '   or: git reset [-q] [<tree-ish>] [--] <pathspec>...\n';
+
+/** `git reset`: --soft moves HEAD, --mixed (the default) the index with it, --hard the worktree too; paths reset index entries. */
+async function resetCommand(
+  ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[],
+  prefetch: (gitdir: string, commits: string[]) => Promise<void>,
+): Promise<number> {
+  let mode = 'mixed' as 'soft' | 'mixed' | 'hard';
+  let quiet = false;
+  const dashdash = args.indexOf('--');
+  const words: string[] = [];
+  for (const [at, arg] of args.entries()) {
+    if (dashdash >= 0 && at >= dashdash) break;
+    if (arg === '--soft' || arg === '--mixed' || arg === '--hard') mode = arg === '--soft' ? 'soft' : arg === '--hard' ? 'hard' : 'mixed';
+    else if (arg === '-q' || arg === '--quiet') quiet = true;
+    else if (arg.startsWith('-')) {
+      await ctx.stderr.write(`error: unknown option \`${arg.replace(/^-+/, '')}'\n${RESET_USAGE}`);
+      return 129;
+    } else words.push(arg);
+  }
+  const repo = await discoverRepo(vfs, ctx.cwd);
+  if (!repo) {
+    await ctx.stderr.write(NOT_A_REPOSITORY);
+    return 128;
+  }
+  // Before `--` the first word is a revision when it names one; the rest are paths.
+  let rev = 'HEAD';
+  let oid = words.length ? await resolveRevision(git, fs, repo.gitdir, words[0], {}) : null;
+  const pathArgs = [...(dashdash >= 0 ? args.slice(dashdash + 1) : [])];
+  if (oid !== null) rev = words[0];
+  else if (dashdash >= 0 && words.length) {
+    await ctx.stderr.write(`fatal: bad revision '${words[0]}'\n`);
+    return 128;
+  }
+  pathArgs.unshift(...(oid === null ? words : words.slice(1)));
+  oid ??= await resolveRevision(git, fs, repo.gitdir, 'HEAD', {});
+  if (oid === null) {
+    await ctx.stderr.write("fatal: ambiguous argument 'HEAD': unknown revision or path not in the working tree.\n");
+    return 128;
+  }
+  const root = repo.worktree;
+  if (pathArgs.length) {
+    if (mode !== 'mixed') {
+      await ctx.stderr.write(`fatal: Cannot do ${mode} reset with paths.\n`);
+      return 128;
+    }
+    if (!root) {
+      await ctx.stderr.write(NOT_A_WORK_TREE);
+      return 128;
+    }
+    const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root);
+    await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), repoPaths(pathArgs, ctx.cwd, root), quiet);
+    return 0;
+  }
+  if (mode !== 'soft' && !root) {
+    await ctx.stderr.write(NOT_A_WORK_TREE);
+    return 128;
+  }
+  const { type, object } = await git.readObject({ fs, dir: root ?? repo.gitdir, oid, cache: {}, format: 'parsed' });
+  if (type !== 'commit') {
+    await ctx.stderr.write(`fatal: Could not parse object '${rev}'.\n`);
+    return 128;
+  }
+  // The index and worktree become the target's (a forced checkout, type changes included) before the branch moves.
+  if (mode === 'hard') {
+    await prefetch(repo.gitdir, [oid]);
+    await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
+  }
+  else if (mode === 'mixed') {
+    const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, root!);
+    await resetIndex(ctx, wrepo, await treeOf(wrepo.store, oid), [], quiet);
+  }
+  const branch = await git.currentBranch({ fs, gitdir: repo.gitdir, fullname: true });
+  await git.writeRef({ fs, dir: root ?? repo.gitdir, ref: branch ?? 'HEAD', value: oid, force: true });
+  if (mode === 'hard' && !quiet) {
+    const subject = String((object as { message?: unknown }).message ?? '').split('\n')[0];
+    await writeBinary(ctx.stdout, binaryPath(`HEAD is now at ${oid.slice(0, 7)} ${subject}\n`));
   }
   return 0;
 }
@@ -1854,6 +2406,8 @@ export async function runGitCommand(
   // Note: http transport isn't loaded here — network ops (clone/fetch/pull)
   // run inside the git-network-facet which imports its own http transport.
   let git: any;
+  // This command's filesystem, once made: what its worktree work cost is kept by it.
+  let commandFs: GitFs | null = null;
   try {
     git = await getGit();
   } catch (e: any) {
@@ -1869,7 +2423,40 @@ export async function runGitCommand(
     // The repository through the command's view of the namespace, as its
     // credential: SQLite paths reach the engine, mounted ones their mount.
     const repoVfs = projectFs(ctx.vfs);
-    const fs = createGitFs(repoVfs);
+    // A partial clone's promisor remote, by git directory, read once per command.
+    const promisorRemotes = new Map<string, Promise<{ name: string; url: string } | null>>();
+    const promisorRemote = (gitdir: string): Promise<{ name: string; url: string } | null> => {
+      let found = promisorRemotes.get(gitdir);
+      if (found === undefined) {
+        promisorRemotes.set(gitdir, found = (async () => {
+          for (const { remote, url } of await git.listRemotes({ fs, gitdir })) {
+            const promisor = await git.getConfig({ fs, gitdir, path: `remote.${remote}.promisor` });
+            if (promisor === true || promisor === 'true') return { name: remote, url };
+          }
+          return null;
+        })());
+      }
+      return found;
+    };
+    const partial = async (gitdir: string): Promise<boolean> => doCtx !== undefined && await promisorRemote(gitdir) !== null;
+    const promisor: PromisorFetch = async (gitdir, oids) => {
+      const remote = await promisorRemote(gitdir);
+      if (remote === null || !doCtx || !doEnv) return false;
+      const top = gitdir.endsWith('/.git') ? gitdir.slice(0, -'/.git'.length) : gitdir;
+      const target = await onEngine(top || '/');
+      if (target === null) return false;
+      await fetchMissingObjects(doCtx, doEnv, {
+        pid: ctx.pid,
+        dir: target,
+        remote: remote.name,
+        url: remote.url,
+        oids,
+        auth: { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' },
+      });
+      return true;
+    };
+    const fs = createGitFs(repoVfs, null, promisor);
+    commandFs = fs;
     // The network commands write through the engine's streamed batches, at
     // the repository's engine key; a mounted repository has none.
     const onEngine = async (target: string): Promise<string | null> => {
@@ -1877,6 +2464,16 @@ export async function runGitCommand(
       if (key === null) await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
       return key === null ? null : '/' + key;
     };
+    // A clone still running owns its repository: git would not show one
+    // half-made, and a command reading it now would take its shallow or
+    // partial state for the finished clone's.
+    if (sub !== 'init' && sub !== 'clone') {
+      const repo = await discoverRepo(repoVfs, dir);
+      if (repo !== null && await repoVfs.exists(`${repo.gitdir}/${GIT_CLONE_JOB_MARKER}`)) {
+        await ctx.stderr.write(`fatal: '${repo.worktree ?? repo.gitdir}' is still being cloned\n`);
+        return 128;
+      }
+    }
     switch (sub) {
       case 'init': {
         if (initPath) {
@@ -1892,7 +2489,7 @@ export async function runGitCommand(
       }
 
       case 'clone': {
-        const { url, dest: destArg, depth, isBg, branch, quiet } = parseCloneArgs(subArgs);
+        const { url, dest: destArg, depth, isBg, branch, quiet, filter } = parseCloneArgs(subArgs);
         const progress = quiet ? { write() {} } : ctx.stdout;
         if (!url) { ctx.stderr.write(CLONE_USAGE + '\n'); return 1; }
         // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
@@ -1928,6 +2525,9 @@ export async function runGitCommand(
         const mutationLease = vfs.as(ctx.cred).acquireExclusiveMutation(target, {
           includeMissingAncestors: true,
         });
+        // A piece of the clone that hung may still write: the facet runner
+        // hands the lease to a new owner before it runs the piece again.
+        let mutationOwner = mutationLease.owner;
 
         // Delegate to git-network-facet: heavy packfile processing runs in
         // a dynamic worker with its own CPU budget, not the supervisor DO.
@@ -1940,16 +2540,21 @@ export async function runGitCommand(
               url,
               ref: branch,
               depth,
+              filter,
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
-              mutationOwner: mutationLease.owner,
-              // Verification/tuning knob: force a small per-chunk entry bound
-              // so ordinary repos exercise the multi-invocation chunked
-              // checkout path. Unset in production → the 10k default applies.
-              checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
-                ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
-                : undefined,
+              mutationOwner,
+              rotateMutationOwner: () => (mutationOwner = vfs.rotateExclusiveMutation(mutationOwner)),
+              // Verification/tuning knobs: smaller pieces make ordinary repos
+              // exercise many batches, history pieces and continuations.
+              blobsPerBatch: Number(ctx.env.NIMBUS_GIT_BLOBS_PER_BATCH) || undefined,
+              batchConcurrency: Number(ctx.env.NIMBUS_GIT_BATCH_CONCURRENCY) || undefined,
+              historyBlobsPerBatch: Number(ctx.env.NIMBUS_GIT_HISTORY_BLOBS_PER_BATCH) || undefined,
+              historyCommitsPerChunk: Number(ctx.env.NIMBUS_GIT_HISTORY_COMMITS_PER_CHUNK) || undefined,
+              historyBudgetUnits: Number(ctx.env.NIMBUS_GIT_HISTORY_BUDGET_UNITS) || undefined,
+              pieceTimeoutMs: Number(ctx.env.NIMBUS_GIT_PIECE_TIMEOUT_MS) || undefined,
+              historyConcurrency: Number(ctx.env.NIMBUS_GIT_HISTORY_CONCURRENCY) || undefined,
               auth: {
                 username: ctx.env.GIT_USERNAME || '',
                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
@@ -1965,7 +2570,7 @@ export async function runGitCommand(
             }
             return result.success;
           } finally {
-            vfs.releaseExclusiveMutation(mutationLease.owner);
+            vfs.releaseExclusiveMutation(mutationOwner);
           }
         };
 
@@ -1979,26 +2584,11 @@ export async function runGitCommand(
         }
       }
 
-      case 'status': {
-        const matrix = await git.statusMatrix({ fs, dir });
-        let clean = true;
-        for (const [filepath, head, workdir, stage] of matrix) {
-          if (head === workdir && workdir === stage) continue;
-          clean = false;
-          if (head === 0 && workdir === 2 && stage === 0) ctx.stdout.write(`\x1b[31m?? ${filepath}\x1b[0m\n`);
-          else if (head === 0 && stage === 2) ctx.stdout.write(`\x1b[32mA  ${filepath}\x1b[0m\n`);
-          else if (head === 1 && workdir === 2 && stage === 2) ctx.stdout.write(`\x1b[32mM  ${filepath}\x1b[0m\n`);
-          else if (head === 1 && workdir === 2 && stage === 1) ctx.stdout.write(`\x1b[31m M ${filepath}\x1b[0m\n`);
-          else if (head === 1 && workdir === 0) ctx.stdout.write(`\x1b[31m D ${filepath}\x1b[0m\n`);
-          else if (head === 1 && stage === 0) ctx.stdout.write(`\x1b[32mD  ${filepath}\x1b[0m\n`);
-          else ctx.stdout.write(`   ${filepath} [${head},${workdir},${stage}]\n`);
-        }
-        if (clean) ctx.stdout.write('nothing to commit, working tree clean\n');
-        return 0;
-      }
+      case 'status':
+        return await statusCommand(ctx, git, repoVfs, fs, subArgs);
 
       case 'add':
-        return await addCommand(ctx, git, fs, repoVfs, subArgs);
+        return await addCommand(ctx, git, repoVfs, fs, subArgs);
 
       case 'commit': {
         const { messages, quiet, all, cleanup, allowEmptyMessage } = parseCommitArgs(subArgs);
@@ -2016,10 +2606,18 @@ export async function runGitCommand(
           await ctx.stderr.write('Aborting commit due to empty commit message.\n');
           return 1;
         }
-        if (all) await stageTracked(git, fs, dir);
+        const repo = await discoverRepo(repoVfs, dir);
+        if (!repo) { await ctx.stderr.write(NOT_A_REPOSITORY); return 128; }
+        if (!repo.worktree) { await ctx.stderr.write(NOT_A_WORK_TREE); return 128; }
+        const wrepo = worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree);
         const idents = await commitIdents(ctx, git, fs, dir);
         if ('error' in idents) { await ctx.stderr.write(idents.error); return 128; }
-        const sha = await writeCommit(git, fs, dir, message, idents);
+        // -a's staging and the commit of what it staged, under one hold of the index lock.
+        const sha = await wrepo.withIndexLock(async () => {
+          if (all) await stageTracked(ctx, wrepo, git);
+          return await commitIndex(ctx, git, wrepo, message, idents);
+        });
+        if (sha === null) return 128;
         if (!quiet) ctx.stdout.write(`[${sha.slice(0, 7)}] ${message.split('\n')[0]}\n`);
         return 0;
       }
@@ -2028,7 +2626,7 @@ export async function runGitCommand(
         return await revParse(ctx, git, fs, repoVfs, subArgs);
 
       case 'ls-files':
-        return await lsFiles(ctx, git, fs, repoVfs, subArgs);
+        return await lsFiles(ctx, git, repoVfs, fs, subArgs);
 
       case 'log': {
         const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
@@ -2091,18 +2689,19 @@ export async function runGitCommand(
         const options = dashdash >= 0 ? subArgs.slice(0, dashdash) : subArgs;
         if (dashdash >= 0 && dashdash < subArgs.length - 1) {
           const source = options.find(a => !a.startsWith('-'));
-          return await checkoutPaths(ctx, git, repoVfs, source ?? null, subArgs.slice(dashdash + 1));
+          return await checkoutPaths(ctx, git, repoVfs, fs, source ?? null, subArgs.slice(dashdash + 1));
         }
         const quiet = options.includes('-q') || options.includes('--quiet');
         const ref = options.find(a => !a.startsWith('-'));
         // `git checkout` and `git checkout HEAD` switch to where HEAD already is: nothing changes.
         if ((!ref || ref === 'HEAD') && !options.includes('-b')) return 0;
         if (!ref) { ctx.stderr.write("error: switch `b' requires a value\n"); return 129; }
-        const worktreeFs = createGitFs(repoVfs, dir);
         const create = options.includes('-b');
         if (create) await git.branch({ fs, dir, ref });
         try {
-          await git.checkout({ fs: worktreeFs, dir, ref });
+          const target = await resolveRevision(git, fs, `${dir}/.git`, ref, {});
+          if (target !== null) await prefetchCommits(git, fs, `${dir}/.git`, [target], partial);
+          await switchBranch(ctx, git, repoVfs, fs, dir, ref);
         } catch (e) {
           return await refusal(ctx, e);
         }
@@ -2111,7 +2710,7 @@ export async function runGitCommand(
       }
 
       case 'diff':
-        return await diffCommand(ctx, git, fs, repoVfs, subArgs);
+        return await diffCommand(ctx, git, fs, repoVfs, subArgs, partial);
 
       case 'remote': {
         if (subArgs[0] === 'add' && subArgs[1] && subArgs[2]) {
@@ -2132,7 +2731,16 @@ export async function runGitCommand(
       case 'fetch': {
         const target = await onEngine(dir);
         if (target === null) return 128;
-        const { quiet, rest } = takeQuiet(subArgs);
+        const { quiet, rest: fetchArgs } = takeQuiet(subArgs);
+        let deepen: { depth: number; relative: boolean } | undefined;
+        try {
+          deepen = parseFetchDepth(fetchArgs);
+        } catch (e) {
+          ctx.stderr.write(`fatal: ${(e as Error).message}\n`);
+          return 128;
+        }
+        const rest = fetchArgs.filter((arg, i) => !FETCH_DEPTH_FLAGS.includes(arg.split('=')[0]) &&
+          !(i > 0 && ['--depth', '--deepen'].includes(fetchArgs[i - 1])));
         const remote = rest[0] || 'origin';
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] fetch requires DO ctx + env (internal configuration error)\n');
@@ -2145,6 +2753,8 @@ export async function runGitCommand(
           dir: target,
           remote,
           quiet,
+          depth: deepen?.depth,
+          relative: deepen?.relative,
           auth: {
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
@@ -2160,6 +2770,8 @@ export async function runGitCommand(
       }
 
       case 'pull': {
+        // git pull is a fetch of the branch, then a merge of it: the merge through the session's one
+        // checkout policy, as `git merge` runs it.
         const target = await onEngine(dir);
         if (target === null) return 128;
         const { quiet, rest } = takeQuiet(subArgs);
@@ -2172,26 +2784,26 @@ export async function runGitCommand(
         const pullIdents = await commitIdents(ctx, git, fs, dir);
         if ('error' in pullIdents) { await ctx.stderr.write(pullIdents.error); return 128; }
         if (!quiet) ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
+        const started = Date.now();
         const result = await execGitNetwork(doCtx, doEnv, {
-          op: 'pull',
+          op: 'fetch',
           pid: ctx.pid,
           dir: target,
           remote,
           ref: branch,
           quiet,
-          ...pullIdents,
           auth: {
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
           },
         });
-        if (result.success) {
-          if (!quiet) ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
-          return 0;
-        } else {
+        if (!result.success) {
           ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
           return 1;
         }
+        const merged = await mergeCommand(ctx, git, fs, repoVfs, dir, `${remote}/${branch}`, true, partial);
+        if (merged === 0 && !quiet) ctx.stdout.write(`\n[git] pull complete (${((Date.now() - started) / 1000).toFixed(1)}s)\n`);
+        return merged;
       }
 
       case 'push': {
@@ -2229,55 +2841,12 @@ export async function runGitCommand(
       case 'merge': {
         const theirs = subArgs.find(a => !a.startsWith('-'));
         if (!theirs) { ctx.stderr.write('usage: git merge <branch>\n'); return 1; }
-        // Into the current branch, or HEAD when detached. The branch moves only once the worktree
-        // and index have: a checkout git refuses ("would be overwritten by merge") changes nothing.
-        const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
-        const mergeIdents = await commitIdents(ctx, git, fs, dir);
-        if ('error' in mergeIdents) { await ctx.stderr.write(mergeIdents.error); return 128; }
-        const merged = await git.merge({
-          fs, dir, ours, theirs,
-          ...mergeIdents,
-          noUpdateBranch: true,
-        });
-        if (!merged.alreadyMerged) {
-          try {
-            await git.checkout({ fs: createGitFs(repoVfs, dir), dir, ref: merged.oid, noUpdateHead: true, conflictOperation: 'merge' });
-          } catch (e) {
-            return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
-          }
-          await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
-        }
-        if (!subArgs.includes('-q') && !subArgs.includes('--quiet')) ctx.stdout.write(`Merged ${theirs}\n`);
-        return 0;
+        const quiet = subArgs.includes('-q') || subArgs.includes('--quiet');
+        return await mergeCommand(ctx, git, fs, repoVfs, dir, theirs, quiet, partial);
       }
 
-      case 'reset': {
-        const hard = subArgs.includes('--hard');
-        const soft = subArgs.includes('--soft');
-        const ref = subArgs.find(a => !a.startsWith('-')) || 'HEAD';
-        const oid = await git.resolveRef({ fs, dir, ref });
-
-        if (hard) {
-          // The index and worktree become the target's, as a forced checkout from the old index
-          // makes them (type changes included), before the branch moves: a failed write leaves it.
-          await git.checkout({ fs: createGitFs(repoVfs, dir), dir, ref: oid, force: true, noUpdateHead: true });
-        }
-
-        // Move the current branch, or a detached HEAD, to the target OID
-        const branch = await git.currentBranch({ fs, dir });
-        await git.writeRef({ fs, dir, ref: branch ? `refs/heads/${branch}` : 'HEAD', value: oid, force: true });
-
-        if (!hard && !soft) {
-          // Reset index (--mixed)
-          const matrix = await git.statusMatrix({ fs, dir });
-          for (const [filepath] of matrix) {
-            try { await git.resetIndex({ fs, dir, filepath }); } catch {}
-          }
-        }
-
-        ctx.stdout.write(`HEAD is now at ${oid.slice(0, 7)}\n`);
-        return 0;
-      }
+      case 'reset':
+        return await resetCommand(ctx, git, repoVfs, fs, subArgs, (gitdir, commits) => prefetchCommits(git, fs, gitdir, commits, partial));
 
       case 'tag':
         return await tagCommand(ctx, git, fs, repoVfs, subArgs);
@@ -2310,5 +2879,8 @@ export async function runGitCommand(
     if (e?.code === 'EPIPE') return 141;
     ctx.stderr.write(`fatal: ${e?.message || e}\n`);
     return 128;
+  } finally {
+    const counters = commandFs && commandCounters.get(commandFs);
+    if (counters && ctx.env.NIMBUS_GIT_COUNTERS) await ctx.stderr.write(`[git] ${JSON.stringify(counters)}\n`);
   }
 }

@@ -1,4 +1,4 @@
-import type { ChildExit, CommandRunAsHost, RunAsOptions, TerminalInputStream } from '../substrate/lifo/commands/types.js';
+import type { ChildExit, CommandInputStream, CommandRunAsHost, RunAsOptions, TerminalInputStream } from '../substrate/lifo/commands/types.js';
 import type { VfsCred } from '../runtime/os-contracts.js';
 import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { type ShellInvocationOptions } from './shell-invocation.js';
@@ -26,7 +26,7 @@ export type ShellEntrypointExecutor = {
         env?: Record<string, string>;
         onStdout?: (data: Uint8Array) => void | Promise<void>;
         onStderr?: (data: Uint8Array) => void | Promise<void>;
-        stdin?: string;
+        stdin?: string | CommandInputStream;
         terminalStdin?: TerminalInputStream;
         runExitTrap?: boolean;
         isolateShellState?: boolean;

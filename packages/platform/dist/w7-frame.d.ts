@@ -24,15 +24,31 @@ export interface BatchChunkEntry {
     chunkId: number;
     data: Uint8Array;
 }
+/**
+ * A file whose bytes are read from `source` while the stream is drained, never
+ * held whole: its inode (in `inodes`) carries the size, and the source must
+ * yield exactly that many bytes, in pieces of any size.
+ */
+export interface BatchStreamEntry {
+    path: string;
+    source: AsyncIterable<Uint8Array>;
+}
 /** Payload for writeBatch() — all inodes + chunks written in ONE transactionSync(). */
 export interface BatchWritePayload {
     inodes: BatchInodeEntry[];
     chunks: BatchChunkEntry[];
     /** Paths to delete before writing (for clean reinstall). */
     deletePaths?: string[];
+    /** Files streamed from a source rather than given as chunks; encoder only. */
+    streams?: BatchStreamEntry[];
 }
 export declare const W7_MAGIC: Uint8Array<ArrayBuffer>;
-export declare const W7_MAX_PATHS_PER_BATCH = 128;
+/**
+ * A batch's owned paths. Each stream costs the receiver a round trip and a
+ * publication's fixed work, so a batch is as wide as its byte budget allows;
+ * ownership is a set of names, small beside the bytes.
+ */
+export declare const W7_MAX_PATHS_PER_BATCH = 1024;
 export declare const W7_MAX_OWNED_PATH_BYTES: number;
 export declare const W7_MAX_RECORD_BYTES: number;
 declare const MODE: "path-atomic-committed-prefix";
@@ -95,7 +111,13 @@ export interface W7DecodedStream {
     readonly mode: typeof MODE;
     readonly records: AsyncIterable<W7DecodedRecord>;
 }
-/** Encode one bounded record per pull; no batch-sized metadata header exists. */
+/**
+ * Encode the records a pull reaches into one enqueued chunk of about
+ * ENCODER_PULL_BYTES (a record never splits; a file's chunk is at most
+ * CHUNK_SIZE), so a wave crosses the RPC boundary in a few writes rather than
+ * one per record. The bytes are the same records either way; no batch-sized
+ * metadata header exists.
+ */
 export declare function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array>;
 /**
  * Parse the v3 preamble eagerly, then expose validated operation records

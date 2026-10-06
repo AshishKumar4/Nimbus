@@ -60,10 +60,6 @@ export declare const git: Omit<typeof Upstream, 'add' | 'remove' | 'commit' | 's
   stage(options: Pick<Add, 'fs' | 'dir' | 'gitdir' | 'cache' | 'force' | 'parallel'> & {
     add?: string[]; remove?: string[];
   }): Promise<void>;
-  checkoutFreshChunk(options: Pick<Checkout, 'fs' | 'dir' | 'gitdir' | 'ref' | 'cache' | 'onProgress'> & {
-    cursor?: object | null; maxEntries: number; maxDecodedBytes: number; maxWallMs: number;
-    deferIndexFragmentCleanup?: boolean;
-  }): Promise<{ nextCursor: object | null; files: number; decodedBytes: number; treeEntriesVisited: number; indexEntries: number }>;
 };
 export * as gitHttp from './git-http.generated.js';
 `;

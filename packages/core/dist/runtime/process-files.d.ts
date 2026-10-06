@@ -99,6 +99,8 @@ export declare class ProcessFiles implements NimbusFilesystemAuthority {
     /** Host work over a credentialed lease released when the work settles. */
     withHost<T>(cred: Readonly<VfsCred>, use: (fs: RuntimeFsBridge) => Promise<T>): Promise<T>;
     releaseProcess(pid: number): Promise<void>;
+    /** See NimbusFilesystemAuthority.rewindProcess. */
+    rewindProcess(pid: number): Promise<void>;
     /**
      * The process died without closing its descriptors: nothing is flushed,
      * and what that loses is reported, the descriptors whose buffered writes

@@ -420,7 +420,7 @@ export class SessionProcessSupervisor {
   }
 
   /** Queue input bytes exactly as given (a pipe or redirect). */
-  writeInputBytes(pid: number, data: Uint8Array): { ok: boolean } {
+  writeInputBytes(pid: number, data: Uint8Array): { ok: boolean; full?: boolean } {
     return this.input.writeBytes(pid, data);
   }
 
@@ -441,6 +441,11 @@ export class SessionProcessSupervisor {
 
   readInput(pid: number, waitMs?: number): Promise<ProcessInputPacket> {
     return this.input.read(pid, waitMs);
+  }
+
+  /** See ProcessInputStore.unread: input taken back to the front of the queue. */
+  unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void {
+    this.input.unread(pid, packets);
   }
 
   resize(pid: number, columns: number, rows: number): { ok: boolean } {

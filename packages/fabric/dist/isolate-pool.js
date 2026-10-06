@@ -24,8 +24,9 @@
  * and binding types used by this implementation.
  */
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { supervisorEntrypoint } from './composition.js';
-import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
+import { supervisorEntrypoint, hostRoute } from './composition.js';
+import { supervisorLoaderKey } from './supervisor-props.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import { beginLoaderFetch, beginLoaderFetchWhenFree, claimAdmission, withDynamicWorkerCapNamed, } from './budgets.js';
@@ -34,6 +35,12 @@ import { recordFailure, setLastFacetId, getLastRpcFrame } from '@nimbus-sh/platf
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { BindingError, ExecutionError, RetryExhaustedError, TimeoutError, } from './vendor/errors.js';
 import { hostWasmIdentity } from './host-wasm.js';
+// The only no-run supervisor constructor: local to the infrastructure factory.
+function infrastructureSupervisorProps(ctx, pid, options) {
+    const own = ctx.id.toString(), doId = options.doId ?? own;
+    return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
+        ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure' };
+}
 /**
  * How long one call waits, in all, on the Dynamic Worker ledger after
  * "Dynamic worker concurrency limit exceeded" before the refusal surfaces
@@ -255,7 +262,7 @@ export class IsolatePool {
                 // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
                 // to the user's session DO, not the peer DO. Default to the
                 // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
-                const supervisor = supervisorBindingProps(ctx, opts?.supervisorPid ?? 0, {
+                const supervisor = infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
                     doId: opts?.supervisorDoIdOverride,
                     route: opts?.supervisorRoute,
                 });

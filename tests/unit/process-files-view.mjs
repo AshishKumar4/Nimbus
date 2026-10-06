@@ -156,4 +156,25 @@ assert.deepEqual((await vfs.readdir('/mnt/s')).map((e) => e.name), ['f']);
   assert.equal(pulled, 0, 'a refused write reads nothing from its source');
 }
 
+// rewindProcess: a run of a live process ends and another starts in its
+// place (worker runtime/stop-replay.ts). The run's descriptors close, their
+// writes flushed; the pid stays live, and the next run's descriptors are
+// numbered from the first again, as the run before's were.
+{
+  const errno = async (run) => { try { await run(); return 'ok'; } catch (error) { return error.code; } };
+  const before = files.bind({ pid: 40, cred: USER });
+  const first = before.open('/home/user/rewound', { read: true, write: true, create: true });
+  before.write(first.id, null, enc.encode('kept'));
+  await files.rewindProcess(40);
+  assert.equal(await errno(async () => before.read(first.id, 0, 4)), 'EBADF', 'the run before\'s descriptor is closed');
+  const after = files.bind({ pid: 40, cred: USER });
+  const again = after.open('/home/user/rewound', { read: true });
+  assert.equal(again.id, first.id, 'numbered as the run before\'s were');
+  assert.equal(new TextDecoder().decode(after.read(again.id, 0, 4)), 'kept', 'its write was flushed');
+  after.close(again.id);
+  await files.releaseProcess(40);
+  await files.rewindProcess(40);
+  assert.equal(await errno(async () => files.bind({ pid: 40, cred: USER }).open('/home/user/rewound', { read: true })), 'ESTALE', 'a released pid is not brought back');
+}
+
 console.log('process-files-view: ok');

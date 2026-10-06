@@ -51,7 +51,10 @@ export declare class SupervisorAllocationBudget {
      * stops a large read overlapping a large write.
      */
     acquireWithoutLifecycle(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+    /** Reserve bytes now or not at all, driving the lifecycle as acquire does. */
+    tryAcquire(bytes: number): ResizableCreditLease | null;
     private _acquire;
+    private wrap;
 }
 /**
  * A registered observer (typically a SqliteVFS) receives shrink/restore
@@ -77,6 +80,8 @@ export declare function registerAllocObserver(o: AllocObserver): () => void;
  * Reserve an exact number of supervisor-resident bytes.
  */
 export declare function acquireSupervisorAllocation(bytes: number, signal?: AbortSignal): Promise<ResizableCreditLease>;
+/** Reserve bytes now if they can be granted without waiting, else null. */
+export declare function tryAcquireSupervisorAllocation(bytes: number): ResizableCreditLease | null;
 /**
  * Reserve bytes for a filesystem READ. Takes the same byte credit as any
  * other owner but does not shrink the disposable VFS cache, which reads are

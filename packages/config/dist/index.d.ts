@@ -15,6 +15,8 @@
  *   compatibilityDate: '2026-09-26',
  *   r2BucketPrefix: 'my-nimbus',
  *   runtimeCache: 'shared',
+ *   // What `nimbus runtime sync` printed for the bucket above.
+ *   runtimeCatalogSha256: '<64 hex>',
  * });
  * writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
  * ```
@@ -80,6 +82,14 @@ export interface BuildWranglerOptions {
         mode: 'shared' | 'byoa';
         bucket?: string;
     };
+    /**
+     * The SHA-256 of the runtime catalog in that bucket, which
+     * `nimbus runtime sync` prints after filling it. Carried as the
+     * `NIMBUS_RUNTIME_CATALOG_SHA256` var: `nimbus install` reads the catalog by
+     * this digest and nothing else, so without it every install fails, saying
+     * so. Run `nimbus runtime sync` again after adding runtimes, and update it.
+     */
+    runtimeCatalogSha256?: string;
     /**
      * Set true to opt into legacy single-tenant mode (no JWT verification).
      * Mirrors `NIMBUS_LEGACY_PUBLIC=1` env var. Default `false`.

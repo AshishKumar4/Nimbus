@@ -30,6 +30,8 @@ assert.deepEqual(result, {
   committedPathCount: 0,
   inodes: 0,
   chunks: 0,
+  // The committed prefix's receipts: none, since nothing committed.
+  receipts: [],
   error: {
     code: 'ERR_WRITE_BATCH_STREAM',
     phase: 'decode',

@@ -152,7 +152,6 @@ function patched(fs: Parameters<typeof git.add>[0]['fs']) {
  void git.remove({fs, dir:'/repo', filepath:['c','d']});
  void git.statusMatrix({fs, dir:'/repo', deferRefresh:true});
  void git.commit({fs, dir:'/repo', message:'message', rawMessage:true});
- void git.checkoutFreshChunk({fs, dir:'/repo', maxEntries:1, maxDecodedBytes:1024, maxWallMs:20});
 }
 void patched;
 export function request(options: Parameters<typeof gitHttp.request>[0]) {

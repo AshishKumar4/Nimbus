@@ -9,9 +9,10 @@
  * session's Dynamic Worker headroom, or across sibling DOs when there are
  * more shards than that.
  *
- * The shared producer wave pre-flushes before 4 MiB or 128 paths. One
- * oversize file may occupy a wave by itself; the supervisor's weighted
- * credit pool and transaction builder remain the authoritative hard bounds.
+ * The shard writes through one wave writer (@nimbus-sh/platform
+ * wave-writer.ts), which cuts waves at W7's path and byte bounds; the
+ * supervisor's weighted credit pool and transaction builder remain the
+ * authoritative hard bounds.
  *
  * The per-package logic (fetch + integrity-verify + gunzip + tar-parse +
  * writeBatch flush) stays in this function because cloudflare-parallel
@@ -23,10 +24,11 @@
  *   - No closure capture other than args + preamble names.
  *   - Preamble symbols (streamPackageEntries, streamTarEntries,
  *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
- *     @ts-ignore.
+ *     @ts-ignore; __nimbusWaveWriter declared below.
  */
 import type { FacetPackageSpec } from './install-facet.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 export interface InstallBatchSpec {
     /** All packages to install in this batch. ≈456 entries × ~200 B = ~90 KB,
      *  well under workerd's 32 MiB RPC arg cap. */
@@ -75,11 +77,10 @@ export interface InstallBatchResult {
          *  network work the cache tier made redundant. */
         r2WaitMsMax: number;
         speculativeFetches: number;
-        /** writeBatchStream waves this shard issued, and the cumulative ms it
-         *  spent awaiting them. Waves never overlap within a shard and the
-         *  shared-mutation mutex is held across a flush, so `sharedWaveMs` is
-         *  time during which the shard's tar pipelines are fully stopped —
-         *  the term that separates write cost from download cost. */
+        /** Write waves this shard published, and the ms its writes waited for
+         *  the wave in flight to publish: time the shard's tar pipelines were
+         *  stopped on writing — the term that separates write cost from
+         *  download cost. */
         sharedWaves: number;
         sharedWaveMs: number;
     };
@@ -107,7 +108,8 @@ export interface InstallBatchResult {
 }
 export declare const installPackagesInFacet: (batch: InstallBatchSpec, env: {
     SUPERVISOR: {
-        writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<WriteBatchStreamResult>;
+        writeBatchStream: (stream: ReadableStream<Uint8Array>, fence?: WaveFence) => Promise<WriteBatchStreamResult>;
+        openWaveWriter?: () => Promise<string | null>;
         getCachedTarball?: (integrity: string) => Promise<{
             bytes: Uint8Array | null;
             events: Array<{

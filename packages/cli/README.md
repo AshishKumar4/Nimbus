@@ -122,6 +122,10 @@ Exit codes: 0 success, 65 token-validation failure, 78 env missing.
 
 Uploads runtime blobs and manifests, then updates the runtime catalog. This
 is the user-facing path for the Python, Ruby, and clang runtime caches.
+The catalog is written under its own SHA-256 (`catalog/sha256/<digest>.json`),
+and the command ends by printing that digest: set it as the
+`NIMBUS_RUNTIME_CATALOG_SHA256` var of the Worker that binds the bucket, and
+redeploy. The Worker reads the catalog by that digest and nothing else.
 
 ```bash
 CLOUDFLARE_ACCOUNT_ID=<id> nimbus runtime sync --bucket nimbus-runtime-cache-public clang

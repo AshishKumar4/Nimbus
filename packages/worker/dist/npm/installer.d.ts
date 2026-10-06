@@ -246,7 +246,6 @@ export declare class NpmInstaller {
      * principal's view (`fs`) for a mounted project.
      */
     private linkBins;
-    private writeStreamPayload;
     private updatePackageJson;
     /**
      * Pre-bundle ESM modules that are actually imported by the project source.

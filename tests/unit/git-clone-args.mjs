@@ -13,6 +13,7 @@ assert.deepEqual(parseCloneArgs(['--depth', '1', url]), {
   isBg: false,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs(['--depth', '1', url, 'checkout']), {
@@ -23,6 +24,7 @@ assert.deepEqual(parseCloneArgs(['--depth', '1', url, 'checkout']), {
   isBg: false,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs(['--depth=1', url]), {
@@ -33,6 +35,7 @@ assert.deepEqual(parseCloneArgs(['--depth=1', url]), {
   isBg: false,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs(['--depth', '3', url]), {
@@ -43,6 +46,7 @@ assert.deepEqual(parseCloneArgs(['--depth', '3', url]), {
   isBg: false,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs([url]), {
@@ -53,6 +57,7 @@ assert.deepEqual(parseCloneArgs([url]), {
   isBg: false,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs([url, 'mydir']), {
@@ -63,6 +68,7 @@ assert.deepEqual(parseCloneArgs([url, 'mydir']), {
   isBg: false,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs(['--no-shallow', url]), {
@@ -73,6 +79,7 @@ assert.deepEqual(parseCloneArgs(['--no-shallow', url]), {
   isBg: false,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs(['--bg', url, 'background-checkout']), {
@@ -83,6 +90,7 @@ assert.deepEqual(parseCloneArgs(['--bg', url, 'background-checkout']), {
   isBg: true,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs([url, 'background-checkout', '&']), {
@@ -93,6 +101,7 @@ assert.deepEqual(parseCloneArgs([url, 'background-checkout', '&']), {
   isBg: true,
   branch: undefined,
   quiet: false,
+  filter: undefined,
 });
 
 // --branch takes a value: the value must never be eaten as the URL.
@@ -104,6 +113,7 @@ assert.deepEqual(parseCloneArgs(['--branch', 'dev', url]), {
   isBg: false,
   branch: 'dev',
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs(['--branch=dev', url, 'mydir']), {
@@ -114,6 +124,7 @@ assert.deepEqual(parseCloneArgs(['--branch=dev', url, 'mydir']), {
   isBg: false,
   branch: 'dev',
   quiet: false,
+  filter: undefined,
 });
 
 assert.deepEqual(parseCloneArgs(['-b', 'release/2.0', url]), {
@@ -124,6 +135,7 @@ assert.deepEqual(parseCloneArgs(['-b', 'release/2.0', url]), {
   isBg: false,
   branch: 'release/2.0',
   quiet: false,
+  filter: undefined,
 });
 
 // A value-taking flag with no value is a loud error, not a silent default.
@@ -132,16 +144,16 @@ assert.throws(
   /option '--branch' requires a value/,
 );
 
-// --filter is refused loudly, naming the limitation — never a silent no-op
-// that pretends a blobless clone happened.
-assert.throws(
-  () => parseCloneArgs(['--filter=blob:none', url]),
-  /does not support '--filter'.*partial-clone/s,
-);
-assert.throws(
-  () => parseCloneArgs(['--filter', 'blob:none', url]),
-  /does not support '--filter'/,
-);
+// --filter is a partial clone, its spec normalized as git stores it in
+// remote.origin.partialclonefilter; a filter Nimbus cannot fetch with is
+// refused by name, never ignored.
+assert.equal(parseCloneArgs(['--filter=blob:none', url]).filter, 'blob:none');
+assert.equal(parseCloneArgs(['--filter', 'blob:none', url]).url, url);
+assert.equal(parseCloneArgs(['--filter=blob:limit=1k', url]).filter, 'blob:limit=1024');
+assert.equal(parseCloneArgs(['--filter=blob:limit=2M', url]).filter, 'blob:limit=2097152');
+assert.equal(parseCloneArgs(['--filter=tree:0', url]).filter, 'tree:0');
+assert.throws(() => parseCloneArgs(['--filter=sparse:oid=abc', url]), /invalid filter-spec 'sparse:oid=abc'/);
+assert.throws(() => parseCloneArgs(['--filter=blob:limit=', url]), /invalid filter-spec/);
 
 // Any other unknown flag is a loud error listing what is supported.
 assert.throws(
@@ -156,7 +168,7 @@ assert.throws(
 assert.equal(parseCloneArgs(['-q', url]).quiet, true);
 assert.equal(parseCloneArgs(['--quiet', '--depth', '1', url, 'dir']).quiet, true);
 assert.deepEqual(parseCloneArgs(['--quiet', '--depth', '1', url, 'dir']), {
-  url, dest: 'dir', depth: 1, noShallow: false, isBg: false, branch: undefined, quiet: true,
+  url, dest: 'dir', depth: 1, noShallow: false, isBg: false, branch: undefined, quiet: true, filter: undefined,
 });
 assert.equal(parseCloneArgs(['-v', url]).quiet, false);
 assert.throws(() => parseCloneArgs(['--porcelain', url]), /unknown option '--porcelain'/);

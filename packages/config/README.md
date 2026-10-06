@@ -36,6 +36,7 @@ const config = buildNimbusWranglerConfig({
   name: 'my-nimbus',
   r2BucketPrefix: 'my-nimbus',
   runtimeCache: 'shared',          // or 'byoa' / { mode, bucket }
+  runtimeCatalogSha256: '<64 hex>', // what `nimbus runtime sync` printed
   // legacyPublic: true,           // single-tenant mode, no JWT verify
   agent: {
     model: '@cf/moonshotai/kimi-k2.6',
@@ -63,6 +64,7 @@ writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
 | `placement` | `'smart' \| undefined` | `'smart'` | Cloudflare Smart Placement. |
 | `r2BucketPrefix` | `string` | `name` | Prefix for `${prefix}-npm-cache`, etc. |
 | `runtimeCache` | `'shared' \| 'byoa' \| { mode, bucket? }` | `'shared'` | Bind `NIMBUS_RUNTIME_CACHE` to the standard account-local bucket `nimbus-runtime-cache-public`, `${prefix}-runtime-cache`, or an explicit bucket. Seed the bucket with `nimbus setup cloudflare` or `nimbus runtime sync`. |
+| `runtimeCatalogSha256` | `string` | unset | The digest `nimbus runtime sync` printed for the runtime cache bucket, carried as the `NIMBUS_RUNTIME_CATALOG_SHA256` var. `nimbus install` reads the catalog by it; without it every install fails, saying so. |
 | `legacyPublic` | `boolean` | `false` | Adds `NIMBUS_LEGACY_PUBLIC=1` to vars (single-tenant mode). |
 | `extraAliases` | `Record<string, string>` | `{}` | Extra entries merged into the alias map. |
 | `agent` | `object` | unset | Emits non-secret Agent vars for Cloudflare OAuth, Workers AI model, AI Gateway, and owner-account fallback. |

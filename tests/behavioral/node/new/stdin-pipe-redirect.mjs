@@ -10,9 +10,9 @@
 //   every read saw empty stdin and readFileSync(0) threw ENOENT for a file
 //   named "0". It streams: a program that ignores a pipe that never ends
 //   (`yes`, `tail -f`) exits at once instead of waiting for its end, while
-//   a program whose code reads stdin synchronously gets all of a pipe first
-//   (within the read ahead), however slow its writer, and all of a
-//   `< file`, which is the file itself.
+//   a synchronous read of stdin waits for all of a pipe (within the bound),
+//   however slow its writer, and gets all of a `< file`, which is the file
+//   itself.
 
 import { BASE, makeAsserter, mintSession, deleteSession, Terminal, writeFileViaShell, fetchPort, sleep } from '../../_driver.mjs';
 
@@ -59,12 +59,12 @@ try {
     }
     a.check(`${label} into a program that ignores stdin exits`, line(out, 'IGNORED') === 'IGNORED 1', out.slice(-400));
   }
-  // A program that reads stdin synchronously gets all of it before it starts,
-  // however slow its writer (stdin-read.ts).
+  // A synchronous read of stdin gets all of it, however slow its writer: the
+  // read waits for it (runtime/stop-replay.ts).
   const slow = (await t.run(`(sleep 1; echo '{"a":1}') | node -e 'console.log("SLOW " + JSON.parse(require("fs").readFileSync(0)).a)'`, 90_000)).output;
   a.check('a slow writer into a synchronous readFileSync(0)', line(slow, 'SLOW') === 'SLOW 1', slow.slice(-400));
   // A synchronous read that never runs, and a server: neither is held for an
-  // endless pipe (the read ahead is bounded; a session isolate has 128 MB).
+  // endless pipe (only a read that runs waits, within its bound).
   await writeFileViaShell((cmd) => t.run(cmd, 60_000), `${DIR}/fp.js`, 'if (process.argv[2]) require("fs").readFileSync(0); console.log("RAN");');
   const unrun = (await t.run(`cd ${DIR} && yes | node fp.js`, 90_000)).output;
   a.check('an unrun sync read does not hold `yes | node fp.js`', /^RAN\r?$/m.test(unrun), unrun.slice(-400));
@@ -105,10 +105,12 @@ try {
   // A pipe: a partial synchronous read leaves the rest to process.stdin.
   const mixed = (await t.run(`echo hi | node -e 'const b = Buffer.alloc(2); const n = require("fs").readSync(0, b, 0, 2); let s = ""; process.stdin.on("data", (d) => { s += d; }).on("end", () => console.log("MIX " + JSON.stringify([b.subarray(0, n).toString(), s])))'`, 90_000)).output;
   a.check('a pipe: readSync then process.stdin continue at one position', line(mixed, 'MIX') === 'MIX ["hi","\\n"]', mixed.slice(-400));
-  // Past the read ahead, a synchronous read of a pipe names the bound and the redirect.
+  // Past the bound, a synchronous read of a pipe that never ends names the bound
+  // and both ways round it: process.stdin, and a `< file` redirect.
   let over;
   try { over = (await t.run(`yes | node -e 'require("fs").readFileSync(0)'`, 120_000)).output; } catch (e) { over = `TIMEOUT ${String(e.message).slice(-300)}`; t.send('\x03'); }
-  a.check('a pipe past the read ahead fails naming the bound and < file', /first \d+ MiB[\s\S]*< file/.test(over), over.slice(-600));
+  a.check('a pipe past the bound fails naming the bound, process.stdin and < file',
+    /passed \d+ MiB[\s\S]*process\.stdin[\s\S]*< file/.test(over), over.slice(-600));
   const lines = (await t.run(`yes | head -3 | node -e '(async () => { const got = []; for await (const c of process.stdin) got.push(String(c)); console.log("LINES " + JSON.stringify(got.join(""))); })()'`, 90_000)).output;
   a.check('yes | head -3 streams three lines to for-await', line(lines, 'LINES') === 'LINES "y\\ny\\ny\\n"', lines.slice(-400));
 } finally {

@@ -284,6 +284,20 @@ export interface WriteBatchStreamProgress {
     committedPathCount: number;
     inodes: number;
     chunks: number;
+    /** Each published file and link, by the path the stream named, as stat will report it. */
+    receipts: WriteStreamReceipt[];
+}
+/** A streamed file's stat as published: what a producer's git index entry records. */
+export interface WriteStreamReceipt {
+    path: string;
+    ino: number;
+    mode: number;
+    size: number;
+    mtimeMs: number;
+    ctimeMs: number;
+    uid: number;
+    gid: number;
+    dev: number;
 }
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
@@ -597,6 +611,13 @@ export declare class SqliteVFS {
     private queueAbandonedStaging;
     private tableColumns;
     /** The cache's loader: the inode at `path`, read from SQLite. */
+    /**
+     * Fill `priors` with what stands at each of `paths` now: the cached inode,
+     * or one read of all the rest (bounded by the bound-parameter limit), each
+     * found row admitted to the cache like any lookup's and each absence
+     * recorded as undefined. Valid for the turn it is read in.
+     */
+    private readPriors;
     private loadInode;
     private inodeFromRow;
     /**
@@ -986,9 +1007,17 @@ export declare class SqliteVFS {
     private acquireExclusiveMutationAt;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
+    /**
+     * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
+     * now on a write that presents `owner` is ESTALE, while the new owner's go
+     * ahead. How work that may still be running under a lease (a facet whose
+     * answer timed out) loses its authority before the work is redone.
+     */
+    rotateExclusiveMutation(owner: string): string;
     hasExclusiveMutation(): boolean;
     private withMutationOwner;
-    assertMutationAllowed(path: string): void;
+    /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
+    assertMutationAllowed(path: string, owner?: string): void;
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
      * is its own file), is refused: another owner's exclusive-mutation lease
@@ -1731,6 +1760,21 @@ export declare class SqliteVFS {
      * edit manifests; upsert inodes; queue every reference a replaced or
      * removed row held and no row now holds; store the counters.
      */
+    /**
+     * The directories whose entries `plan` changes, which POSIX dates: a name
+     * created in one (a new path, or a path now naming another inode: a
+     * rename's or a link's target) or removed from it. A directory the plan
+     * itself writes or removes is dated by that row; a row moving with its
+     * parent (a moved subtree's) changes no entry; the root has no row.
+     * Rewriting a file in place keeps its name's inode, and dates only the file.
+     */
+    private entryChangedDirectories;
+    /** Before-images, for a snapshot at `pinGen`, of the rows at `paths` that generation `gen` replaces or removes. */
+    private recordBeforeImages;
+    /** Date `directories` at the transaction's commit time, in its generation: one statement per page. */
+    private touchDirectoryRows;
+    /** The cache and the publication learn what touchDirectoryRows committed. */
+    private touchedDirectoriesCommitted;
     private executeTransactionPlan;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**

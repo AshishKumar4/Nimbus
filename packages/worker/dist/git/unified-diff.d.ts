@@ -40,8 +40,21 @@ export interface StatFile {
     binary: boolean;
 }
 export declare function statFile(pair: DiffPair): StatFile;
-/** The --stat block for `columns` terminal columns (git's term_columns: $COLUMNS, else 80). */
-export declare function formatStat(files: readonly StatFile[], columns: number): string;
+/**
+ * The --stat rows of a diff, kept until its widths are known: a name each,
+ * and the counts in columns, no object a file (a diff of every file of a
+ * 96,000-file tree holds them all at once).
+ */
+export declare class StatList {
+    private readonly names;
+    private counts;
+    private binaries;
+    get length(): number;
+    push(file: StatFile): void;
+    [Symbol.iterator](): Generator<StatFile>;
+}
+/** The --stat block for `columns` terminal columns (git's term_columns: $COLUMNS, else 80), a line at a time. */
+export declare function formatStat(files: StatList, columns: number): Generator<string>;
 export declare const MAX_SCORE = 60000;
 export declare const DEFAULT_RENAME_SCORE = 30000;
 export declare function similarityIndex(score: number): number;

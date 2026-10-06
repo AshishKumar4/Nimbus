@@ -22,6 +22,12 @@
   },
   "preview_urls": false,
   "vars": {
+    // The SHA-256 of the runtime catalog in the NIMBUS_RUNTIME_CACHE bucket below:
+    // `nimbus install` reads catalog/sha256/<this>.json and nothing else
+    // (packages/worker/src/runtime/runtime-catalog.ts). Written by
+    // packages/worker/scripts/bundle-runtime.mjs into every vars block here;
+    // vars do not inherit, so each environment states its own.
+    "NIMBUS_RUNTIME_CATALOG_SHA256": "2827a7f7245403cb7644c27f0075423dd1ba00313b8c40f70f4dfa5bcd097ed0",
     // Where every resident process in this deployment runs: "facet" (a child
     // actor of the user's own session DO) or "peer" (a child actor of a
     // sibling DO — CPU independence at ~20x the spawn cost). One value for the
@@ -98,6 +104,7 @@
   // with its deployment (`--secrets-file`, `--ignore-base-config`).
   "previews": {
     "vars": {
+      "NIMBUS_RUNTIME_CATALOG_SHA256": "2827a7f7245403cb7644c27f0075423dd1ba00313b8c40f70f4dfa5bcd097ed0",
       "NIMBUS_PROCESS_HOST": "facet",
       "NIMBUS_AGENT_MODEL": "@cf/zai-org/glm-5.2",
       "NIMBUS_AGENT_GATEWAY_ID": "default",

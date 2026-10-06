@@ -673,6 +673,7 @@ export class NimbusSession extends CloudflareDurableObject {
     supervisorForgetBridge(pid) {
         this._supervisorOps?.forget(pid);
     }
+    supervisorRewindBridge(pid) { return this._supervisorOps?.rewind(pid) ?? Promise.resolve(); }
     // Supervisor RPC (file/log/HMR/batch): what host stubs call, so an answer
     // leaves the session here and is counted (answerSupervisorOp).
     supervisorOp(envelope) {
@@ -680,6 +681,8 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
     serveSupervisorOp(envelope) {
+        // The canonical handler journals logical answers downstream of its
+        // transport joins, not each attempt that brought the same request.
         const answer = this.supervisorOps().dispatch(envelope);
         if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number')
             return answer;
@@ -753,11 +756,22 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     async _rpcHmrRelay(clientId, msg) { return _rpc._rpcHmrRelay(this, clientId, msg); }
     async _rpcHmrNextEvent(timeoutMs) { return _rpc._rpcHmrNextEvent(this, timeoutMs); }
+    async _rpcReplayBoundary(pid, run) { return _rpc._rpcReplayBoundary(this, pid, run); }
+    async _rpcStdinPrepared(pid, run) { return _rpc._rpcStdinPrepared(this, pid, run); }
+    async _rpcGetCachedTarball(integrity, pid, run) { return _rpc._rpcGetCachedTarball(this, integrity, pid, run); }
+    async _rpcPutCachedTarball(integrity, bytes) { return _rpc._rpcPutCachedTarball(this, integrity, bytes); }
+    async _rpcGetPackument(name, options, pid, run) { return _rpc._rpcGetPackument(this, name, options, pid, run); }
+    async _rpcCacheResult(ticket, result, pid, run) { return _rpc._rpcCacheResult(this, ticket, result, pid, run); }
+    async _rpcStdinFileRead(path, offset, length, pid) {
+        return _rpc._rpcStdinFileRead(this, path, offset, length, pid);
+    }
+    async _rpcNetTls(action, token, payload, pid, run) { return _rpc._rpcNetTls(this, action, token, payload, pid, run); }
+    async _rpcOutbound(action, payload, pid, run) { return _rpc._rpcOutbound(this, action, payload, pid, run); }
     async _rpcWriteBatch(payload, pid) { return _rpc._rpcWriteBatch(this, payload, pid); }
     async _rpcPutRegistryEntries(entries) { return _rpc._rpcPutRegistryEntries(this, entries); }
     async _rpcRecordCacheStats(events) { return _rpc._rpcRecordCacheStats(this, events); }
-    async _rpcStdout(pid, data) { return _rpc._rpcStdout(this, pid, data); }
-    async _rpcStderr(pid, data) { return _rpc._rpcStderr(this, pid, data); }
+    async _rpcStdout(pid, data, at, run) { return _rpc._rpcStdout(this, pid, data, at, run); }
+    async _rpcStderr(pid, data, at, run) { return _rpc._rpcStderr(this, pid, data, at, run); }
     async _rpcReportExit(pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules) { return _rpc._rpcReportExit(this, pid, code, tail, dataReads, profileUnread, runtimeCode, executedModules); }
     async _rpcReportRuntimeCode(pid, entries, executedModules = [], dataReads = []) { return _rpc._rpcReportRuntimeCode(this, pid, entries, executedModules, dataReads); }
     // W3 emitters / external-exit / log janitor
@@ -801,7 +815,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpSpawn(req) { return _rpc._rpcCpSpawn(this, req); }
     async _rpcCpStdinWrite(childPid, data) { return _rpc._rpcCpStdinWrite(this, childPid, data); }
     async _rpcCpStdinEnd(childPid) { return _rpc._rpcCpStdinEnd(this, childPid); }
-    async _rpcCpReadStdin(childPid, waitMs, acquire, pid) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid); }
+    async _rpcCpReadStdin(childPid, waitMs, acquire, pid, writerId) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid, writerId); }
     async _rpcCpReadOutput(childPid, fd, sinceSeq, waitMs, acquire, pid) { return _rpc._rpcCpReadOutput(this, childPid, fd, sinceSeq, waitMs, acquire, pid); }
     async _rpcCpDrainOutput(childPid) { return _rpc._rpcCpDrainOutput(this, childPid); }
     async _rpcCpKill(childPid, signal) { return _rpc._rpcCpKill(this, childPid, signal); }

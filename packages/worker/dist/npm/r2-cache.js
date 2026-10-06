@@ -287,6 +287,7 @@ export function packumentKey(name, registry = NPM_REGISTRY_ORIGIN) {
 export class R2CacheClient {
     tarballBucket;
     packumentBucket;
+    readOnly;
     _l2HitsPackument = 0;
     _l3GetsPackument = 0;
     _l2HitsTarball = 0;
@@ -299,9 +300,10 @@ export class R2CacheClient {
      * without an explicit method call (saves an indirection).
      */
     _cacheEvents = [];
-    constructor(tarballBucket, packumentBucket) {
+    constructor(tarballBucket, packumentBucket, readOnly = false) {
         this.tarballBucket = tarballBucket;
         this.packumentBucket = packumentBucket;
+        this.readOnly = readOnly;
     }
     _recordHit(tier, cacheKind, bytes) {
         this._cacheEvents.push({ kind: 'hit', tier, cacheKind, bytes });
@@ -401,7 +403,8 @@ export class R2CacheClient {
         // Await the put so subsequent reads of the same key strictly
         // hit L2 (no double-fetch race during fill). See the matching
         // note in getPackument above.
-        await l2Put(l2Key, writeBack);
+        if (!this.readOnly)
+            await l2Put(l2Key, writeBack);
         return wb;
     }
     /**
@@ -525,7 +528,8 @@ export class R2CacheClient {
             // L3. The cost (~1-3 ms in workerd local; sub-ms at edge) is
             // bounded by the response size and only paid on cold reads.
             // Errors are swallowed by l2Put — failure is silent.
-            await l2Put(l2Key, writeBack);
+            if (!this.readOnly)
+                await l2Put(l2Key, writeBack);
         }
         return { json, ageMs, expired };
     }
@@ -584,7 +588,8 @@ export class R2CacheClient {
                     this._recordHit('L4', 'packument', json.length);
                     // Best-effort fill, awaited so a follow-up read in the same
                     // install sees it.
-                    await this.putPackument(name, json, registry);
+                    if (!this.readOnly)
+                        await this.putPackument(name, json, registry);
                     return { json, source: 'network' };
                 }
                 if (resp.status >= 400 && resp.status < 500) {

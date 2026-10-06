@@ -1,6 +1,7 @@
 import type { ITerminal } from '../terminal/ITerminal.js';
 import { ProcessView } from '../../../runtime/process-files.js';
 import { type CommandRegistry } from '../commands/registry.js';
+import type { CommandInputStream } from '../commands/types.js';
 import type { ChildExit, CommandRunAsHost } from '../commands/types.js';
 import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
@@ -22,7 +23,8 @@ export interface ExecuteOptions {
      */
     onStdout?: (data: Uint8Array) => void | Promise<void>;
     onStderr?: (data: Uint8Array) => void | Promise<void>;
-    stdin?: string;
+    /** The commands' stdin: text, read to its end, or a stream they read as it arrives. */
+    stdin?: string | CommandInputStream;
     terminalStdin?: TerminalInputStream;
     signal?: AbortSignal;
     runExitTrap?: boolean;

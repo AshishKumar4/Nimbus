@@ -46,7 +46,7 @@ function bound(pid) {
     idFromString: (id) => ({ toString: () => id }),
     get: () => ({ supervisorOp: (envelope) => ops.dispatch(envelope) }),
   };
-  return new SupervisorRPC({ props: { doId: 'session', pid } }, { NIMBUS_SESSION: namespace });
+  return new SupervisorRPC({ props: { doId: 'session', pid, writerId: 'permission-run' } }, { NIMBUS_SESSION: namespace });
 }
 
 await bound(user.pid).access('/user.txt', 0o4);

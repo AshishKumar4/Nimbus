@@ -153,7 +153,8 @@ try {
       + 'git config user.email a@b.c; git config user.name n; git add a.txt; echo add=$?; git commit -q -m one; echo commit=$?; '
       + 'git status --short; echo status=$?; git log --oneline');
     const oid = (text) => text.replace(/[0-9a-f]{7}/g, '<oid>');
-    assert.equal(oid(home.stdout), 'init=0\nuser.email=a@b.c\nuser.name=n\nadd=0\ncommit=0\nnothing to commit, working tree clean\nstatus=0\n\x1b[33m<oid>\x1b[0m one\n', home.stderr);
+    // status --short is git's: nothing at all for a clean tree.
+    assert.equal(oid(home.stdout), 'init=0\nuser.email=a@b.c\nuser.name=n\nadd=0\ncommit=0\nstatus=0\n\x1b[33m<oid>\x1b[0m one\n', home.stderr);
     assert.deepEqual({ stdout: oid(mount.stdout), stderr: mount.stderr }, { stdout: oid(home.stdout), stderr: home.stderr }, 'git on the mount, as in the home');
     assert.equal((await workspace.filesystem.vfs.stat('/m/g2/.git/HEAD'))?.type, 'file', '.git is on the mount');
     assert.equal(onEngine('m'), false, 'and nothing of it in SQLite');
@@ -168,7 +169,7 @@ try {
     const line = await runtime.exec('mkdir -p /home/user/lk && cd /home/user/lk && echo x > a.txt && git init -q && git config user.email a@b.c && git config user.name n '
       + '&& git add a.txt && git commit -q -m one && echo y > b.txt; ln -s /home/user/lk /m/link && cd /m/link && pwd && git status --short; echo status=$?; git log --oneline');
     assert.equal(line.stdout.replace(/[0-9a-f]{7}/g, '<oid>'),
-      'user.email=a@b.c\nuser.name=n\n/m/link\n\x1b[31m?? b.txt\x1b[0m\nstatus=0\n\x1b[33m<oid>\x1b[0m one\n', line.stderr);
+      'user.email=a@b.c\nuser.name=n\n/m/link\n?? b.txt\nstatus=0\n\x1b[33m<oid>\x1b[0m one\n', line.stderr);
     console.log('  git in a mount\'s link into SQLite works the repository the link names');
   }
 

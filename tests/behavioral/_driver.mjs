@@ -289,6 +289,9 @@ export class Terminal {
    */
   constructor(sid, options = {}) {
     this.sid = sid;
+    // Deploy readiness drives the freshly deployed target explicitly;
+    // it must not inherit BASE from another suite in the caller's env.
+    this.wsBase = (options.base ?? BASE).replace(/^http/, 'ws');
     this.wsOptions = options.wsOptions ?? wsHeaders();
     this.ws = null;
     this.buf = '';
@@ -298,7 +301,7 @@ export class Terminal {
   }
 
   async connect(timeoutMs = 15_000) {
-    this.ws = new WebSocket(`${WS_BASE}/s/${this.sid}/ws`, this.wsOptions);
+    this.ws = new WebSocket(`${this.wsBase}/s/${this.sid}/ws`, this.wsOptions);
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
@@ -333,23 +336,30 @@ export class Terminal {
   /** Wait until predicate(stripped buf) returns true. */
   async waitFor(predicate, timeoutMs = 30_000, label = 'pattern') {
     const t0 = Date.now();
-    while (Date.now() - t0 < timeoutMs) {
-      if (predicate(stripAnsi(this.buf))) return Date.now() - t0;
-      if (this.closed) {
-        // The tail matters most here, not least: the server dropping the
-        // terminal mid-command is the failure that carries a reason, and
-        // reporting it without the output the shell had already produced is
-        // what left `Terminal closed while waiting for …` unreadable for
-        // months. Same shape as the timeout branch below.
-        throw new Error(
-          `Terminal closed while waiting for ${label} after ${Date.now() - t0}ms `
-          + `(${this.closeDetail ?? 'no close frame'}); `
-          + `tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}`,
-        );
-      }
-      await sleep(50);
-    }
-    throw new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}`);
+    return new Promise((resolve, reject) => {
+      const cleanup = () => {
+        clearTimeout(timer);
+        this.ws?.off('message', check);
+        this.ws?.off('close', check);
+      };
+      const check = () => {
+        try {
+          if (predicate(stripAnsi(this.buf))) { cleanup(); resolve(Date.now() - t0); }
+          else if (this.closed) {
+            cleanup();
+            reject(new Error(`Terminal closed while waiting for ${label} after ${Date.now() - t0}ms `
+              + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}`));
+          }
+        } catch (error) { cleanup(); reject(error); }
+      };
+      const timer = setTimeout(() => {
+        cleanup();
+        reject(new Error(`waitFor(${label}) timeout after ${timeoutMs}ms; tail: ${JSON.stringify(stripAnsi(this.buf).slice(-300))}`));
+      }, timeoutMs);
+      this.ws?.on('message', check);
+      this.ws?.on('close', check);
+      check();
+    });
   }
 
   /** Wait until the most recent line ends with a shell prompt ($ or # or >). */

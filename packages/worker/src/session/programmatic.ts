@@ -402,6 +402,9 @@ function startShellJob(
             callerPid: pid,
             command: line,
             forceLongRunning: true,
+            // The caller writes its stdin (rpcWriteProcessInput) and ends
+            // it, and this call returns before the process boots.
+            stdinWriter: true,
           },
         }
         : {}),

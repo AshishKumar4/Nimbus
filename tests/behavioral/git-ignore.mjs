@@ -52,7 +52,12 @@ try {
   a.check('status honours the !keep.log negation', /\?\?\s+keep\.log/.test(status.output), status.output.slice(-400));
   a.check('status EXCLUDES everything under an ignored directory', !/node_modules/.test(status.output), status.output.slice(-400));
   a.check('status honours a nested sub/.gitignore', !/nested-ignored\.txt/.test(status.output), status.output.slice(-400));
-  a.check('a nested .gitignore does not swallow its siblings', /\?\?\s+sub\/nested-kept\.txt/.test(status.output), status.output.slice(-400));
+  // git collapses a wholly untracked directory to `sub/` (status.showUntrackedFiles=normal), as
+  // host git does here; -uall lists its files.
+  a.check('an untracked directory with a kept file is listed, as git lists it', /\?\?\s+sub\/(\s|$)/m.test(status.output), status.output.slice(-400));
+  const all = await t.run('git status -uall --porcelain', 60_000);
+  a.check('a nested .gitignore does not swallow its siblings', /\?\?\s+sub\/nested-kept\.txt/.test(all.output), all.output.slice(-400));
+  a.check('-uall honours the nested sub/.gitignore', !/nested-ignored\.txt/.test(all.output), all.output.slice(-400));
 
   await t.run('git add .', 60_000);
   // An explicit pathspec is a second, separate entry into the ignore

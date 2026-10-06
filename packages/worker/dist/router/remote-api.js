@@ -6,6 +6,7 @@ import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, 
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
+import { doUnavailableError } from './do-errors.js';
 const DEFAULT_REMOTE_BASE_PATH = '/api/nimbus/v1';
 const RemoteRpcBodySchema = z.object({
     profile: z.string().optional(),
@@ -93,6 +94,17 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
         return await useRpcResource(dispatchRemoteRpc(ctx), (result) => remoteJson(wantDiag ? { ok: true, result, rpcMs: Date.now() - t0 } : { ok: true, result }));
     }
     catch (e) {
+        const unavailable = doUnavailableError(e);
+        if (unavailable) {
+            return remoteJson({
+                ok: false,
+                error: unavailable.error,
+                code: unavailable.code,
+            }, 503, {
+                'Retry-After': unavailable.retryAfter,
+                'Access-Control-Expose-Headers': 'Retry-After',
+            });
+        }
         const err = remoteError(e);
         return remoteJson({
             ok: false,
@@ -466,9 +478,10 @@ function trimSlashes(value) {
         end--;
     return value.slice(start, end);
 }
-function remoteJson(value, status = 200) {
+function remoteJson(value, status = 200, headers = {}) {
     return corsResponse(JSON.stringify(WireEncoder.parse(value)), status, {
         'Content-Type': 'application/json',
+        ...headers,
     });
 }
 function corsResponse(body, status, headers = {}) {

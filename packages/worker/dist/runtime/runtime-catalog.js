@@ -8,7 +8,8 @@
  *
  * R2 layout:
  *
- *   catalog/v1.json                          ← top-level catalog
+ *   catalog/sha256/<sha256>.json             ← a catalog, by the digest of its bytes
+ *   catalog/v1.json                          ← the latest catalog, for deployments that predate the above
  *   manifests/<name>-<version>.json          ← per-version manifest
  *   blobs/<name>-<version>/<sha256>/<file>   ← content-addressed blobs
  *
@@ -36,18 +37,23 @@
  * re-hashed on the way out, so an entry can only ever be found under the
  * hash of what it contains: a writer cannot address another value's key and
  * a reader cannot be handed bytes it did not ask for. The digests chain from
- * a build-time root — RUNTIME_CATALOG_SHA256 pins catalog/v1.json, the
- * catalog pins each manifest, each manifest pins its blobs.
+ * the deployment's root: NIMBUS_RUNTIME_CATALOG_SHA256, a var each deployment
+ * carries, names the catalog its bucket holds by digest, the catalog pins
+ * each manifest, each manifest pins its blobs.
  *
- * A value whose digest we do not know in advance does not participate in L2
- * at all; it is read from R2 and not cached. Refusing to cache what cannot
- * be verified is the point, and `l2Address` returning null is the only way
- * that happens — there is no "trust the key instead" fallback. That also
- * makes a stale pin a cache miss rather than an outage.
+ * The catalog is read by that digest (catalog/sha256/<digest>.json) and
+ * served only when its bytes hash to it, so a publish for one deployment
+ * never changes what another reads. A missing var, a missing object or bytes
+ * that do not hash to the var fail the install loudly and say which; there is
+ * no unpinned read.
+ *
+ * A manifest or blob whose digest we do not know in advance does not
+ * participate in L2 at all; it is read from R2 and not cached. Refusing to
+ * cache what cannot be verified is the point, and `l2Address` returning null
+ * is the only way that happens — there is no "trust the key instead" fallback.
  */
 import { z } from 'zod/v4';
 import { sha256Hex, sha256Incremental } from '@nimbus-sh/core/_shared/crypto.js';
-import { RUNTIME_CATALOG_SHA256 } from '../runtime-catalog.generated.js';
 import { HexSha256Schema, parseRuntimeManifest, } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
 import { blobPieces, RuntimeBlobDigestMismatch, splitRuntimeSpec, SUPERSEDED_RUNTIMES, } from '@nimbus-sh/core/runtime/runtime-package.js';
@@ -69,8 +75,14 @@ export function parseRuntimeCatalog(value) {
     return RuntimeCatalogSchema.parse(value);
 }
 // ── L2 content addressing ────────────────────────────────────────────
-/** R2 key of the top-level catalog. */
-const CATALOG_R2_KEY = 'catalog/v1.json';
+/**
+ * R2 key of the catalog whose bytes hash to `sha256`. bundle-runtime.mjs
+ * writes the same key (catalogKey there); tests/unit/bundle-runtime-catalog-pin.mjs
+ * holds the two to one spelling.
+ */
+export function catalogKey(sha256) {
+    return `catalog/sha256/${sha256}.json`;
+}
 /** Synthetic L2 cache-key host. Reserved-invalid TLD so keys can never
  *  collide with a real user request. Bumped to `-v2` when the keyspace
  *  moved from R2 keys to content addresses: every `v1` entry was written
@@ -96,35 +108,39 @@ async function verifyBytes(address, bytes) {
     return await sha256Hex(bytes) === address.sha256 ? { address, bytes } : null;
 }
 // ── Fetchers ─────────────────────────────────────────────────────────
+/** What `nimbus install` says when the deployment does not name its catalog. */
+export const CATALOG_PIN_MISSING = 'NIMBUS_RUNTIME_CATALOG_SHA256 is not set on this Worker. It is the SHA-256 of the runtime ' +
+    'catalog in the NIMBUS_RUNTIME_CACHE bucket: `nimbus runtime sync` prints it after filling the ' +
+    'bucket; set it under "vars" in wrangler.jsonc and redeploy.';
 /**
- * Fetch the top-level catalog, verified against the build-time pin.
- *
- * A pin that has drifted behind a fresh publish is not an error: R2 is the
- * trusted tier, so the catalog is served from it and simply not cached.
- * The condition is logged once per isolate because a silently disabled
- * cache is otherwise invisible.
+ * Fetch the catalog the deployment names (NIMBUS_RUNTIME_CATALOG_SHA256),
+ * by its digest, and only if its bytes hash to it.
  */
 export async function fetchCatalog(env) {
-    const address = l2Address('catalog', RUNTIME_CATALOG_SHA256);
-    if (address) {
-        const cached = await l2Get(address);
-        if (cached)
-            return parseRuntimeCatalog(parseJsonBytes(cached));
+    const address = l2Address('catalog', env.NIMBUS_RUNTIME_CATALOG_SHA256);
+    if (!address) {
+        throw new Error(env.NIMBUS_RUNTIME_CATALOG_SHA256
+            ? `NIMBUS_RUNTIME_CATALOG_SHA256 is '${env.NIMBUS_RUNTIME_CATALOG_SHA256}', not a hex SHA-256. ${CATALOG_PIN_MISSING}`
+            : CATALOG_PIN_MISSING);
     }
+    const cached = await l2Get(address);
+    if (cached)
+        return parseRuntimeCatalog(parseJsonBytes(cached));
     const r2 = env.NIMBUS_RUNTIME_CACHE;
     if (!r2) {
         throw new Error('NIMBUS_RUNTIME_CACHE binding missing — catalog cannot be fetched');
     }
-    const obj = await r2.get(CATALOG_R2_KEY);
+    const key = catalogKey(address.sha256);
+    const obj = await r2.get(key);
     if (!obj) {
-        throw new Error(`${CATALOG_R2_KEY} not in R2 — bundle pipeline has not seeded the catalog`);
+        throw new Error(`${key} is not in NIMBUS_RUNTIME_CACHE: NIMBUS_RUNTIME_CATALOG_SHA256 names a catalog this bucket does not hold`);
     }
     const bytes = new Uint8Array(await obj.arrayBuffer());
-    const verified = address && await verifyBytes(address, bytes);
-    if (verified)
-        await l2Put(verified, 'application/json');
-    else
-        await warnCatalogPinUnusable(bytes);
+    const verified = await verifyBytes(address, bytes);
+    if (!verified) {
+        throw new Error(`${key} holds bytes whose SHA-256 is ${await sha256Hex(bytes)}, not ${address.sha256}: refusing an unverified catalog`);
+    }
+    await l2Put(verified, 'application/json');
     return parseRuntimeCatalog(parseJsonBytes(bytes));
 }
 /**
@@ -429,14 +445,4 @@ function l2Url(address) {
 }
 function parseJsonBytes(bytes) {
     return JSON.parse(new TextDecoder().decode(bytes));
-}
-let catalogPinWarned = false;
-async function warnCatalogPinUnusable(bytes) {
-    if (catalogPinWarned)
-        return;
-    catalogPinWarned = true;
-    console.warn(`[nimbus/runtime-catalog] RUNTIME_CATALOG_SHA256 is ${RUNTIME_CATALOG_SHA256 || '(unset)'} ` +
-        `but ${CATALOG_R2_KEY} hashes to ${await sha256Hex(bytes)}. Serving from R2 and skipping ` +
-        'the colo cache. Rerun `node scripts/bundle-runtime.mjs --pin-catalog`, commit ' +
-        'src/runtime-catalog.generated.ts, and redeploy.');
 }

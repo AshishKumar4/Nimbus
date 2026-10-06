@@ -32,6 +32,7 @@
  *     "ship-Nimbus-as-is" case — exactly what `apps/hosted-demo/` does.
  */
 import { generateSessionId, isValidSessionId, } from '../_shared/session-id.js';
+import { doUnavailableError } from './do-errors.js';
 import { buildPreviewHost, isPreviewHostSafeSid, parsePreviewHost, readPreviewHostSuffix, } from '../_shared/preview-host.js';
 import { ISOLATED_SHELL_HEADERS, isIsolatedShellUrl } from '../_shared/preview-isolation.js';
 import { parseSessionRoute, forwardToSession, renderInvalidSessionHtml, SESSION_ROUTE_PREFIX, LEGACY_PUBLIC_DO_SEGMENT, PREVIEW_CAPABILITY_HEADER, PUBLIC_BEARER_HEADER, } from '../_shared/session-router.js';
@@ -428,7 +429,21 @@ export function createNimbusHandler(options = {}) {
                 // With `run_worker_first`, this handler is the entry point for the
                 // marketing site and the docs as well as the app, so an uncaught
                 // throw would take the whole public surface down.
-                console.error('[nimbus] unhandled router error:', e?.stack || e);
+                console.error('[nimbus] unhandled router error:', e instanceof Error ? e.stack || e : e);
+                const unavailable = doUnavailableError(e);
+                if (unavailable) {
+                    return Response.json({
+                        ok: false,
+                        error: unavailable.error,
+                        code: unavailable.code,
+                    }, {
+                        status: 503,
+                        headers: {
+                            'Cache-Control': 'no-store',
+                            'Retry-After': unavailable.retryAfter,
+                        },
+                    });
+                }
                 return new Response('Internal error', {
                     status: 500,
                     headers: { 'Cache-Control': 'no-store' },

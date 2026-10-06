@@ -52,7 +52,8 @@ const build = await Bun.build({
             loader: 'js',
           }
         : { contents: 'export class WorkerEntrypoint {}', loader: 'js' });
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'workers', namespace: 'test' }));
+      // cloudflare:sockets too: SupervisorRPC.connect loads it, and nothing here calls that.
+      builder.onResolve({ filter: /^cloudflare:(workers|sockets)$/ }, () => ({ path: 'workers', namespace: 'test' }));
     },
   }],
 });

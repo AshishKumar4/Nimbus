@@ -139,14 +139,14 @@ class FacetProcessHost implements ProcessHost {
 
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId },
+      supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId }),
       params,
       consume,
     );
   }
 
   async open(params: ProcessHostParams): Promise<HostedProcess> {
-    const supervisor: ResidentSupervisorProps = { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId };
+    const supervisor: ResidentSupervisorProps = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId });
     const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
     return {
       ...facet,
@@ -356,7 +356,7 @@ class PeerProcessHost implements ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T> {
     return processes(this.ctx, this.env).run(
-      { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId },
+      supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId }),
       params,
       consume,
     );
@@ -383,7 +383,7 @@ class PeerProcessHost implements ProcessHost {
     // the peer dies under either.
     // The peer mints the process's binding from these, for THIS object: the
     // coordinator's doId, route and delivery instance.
-    const supervisor = supervisorBindingProps(this.ctx, params.pid);
+    const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId });
     const hostLeg = placement.stub._rpcHostProcess(params.boot, {
       coordinatorDoId: supervisor.doId,
       route: supervisor.route,

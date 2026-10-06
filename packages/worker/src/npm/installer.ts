@@ -27,12 +27,7 @@
 import type {
   SqliteVFS,
   CredentialedVfs,
-  WriteBatchStreamResult,
 } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import type {
-  BatchInodeEntry,
-  BatchWritePayload,
-} from '@nimbus-sh/platform/w7-frame.js';
 import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
@@ -62,10 +57,10 @@ import {
   emitRegistryEvent,
 } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
-import { encodeWriteBatchStream, W7_MAX_PATHS_PER_BATCH } from '@nimbus-sh/platform/w7-frame.js';
+import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 import type { BundlePool, BundlePoolProvider } from '../facets/prebundle-pool.js';
 import { Fanout, type FanoutRoute } from '@nimbus-sh/fabric/fanout.js';
-import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
+import { TAR_STREAM_PREAMBLE, W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 import type { FacetPackageSpec } from './install-facet.js';
 import {
   installPackagesInFacet,
@@ -96,7 +91,6 @@ import {
 } from './pre-bundle-facet.js';
 import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import {
-  CHUNK_SIZE,
   PRE_BUNDLE_CONCURRENCY,
   PRE_BUNDLE_SLICE_CAP_BYTES,
 } from '@nimbus-sh/platform/limits.js';
@@ -1152,7 +1146,6 @@ export class NpmInstaller {
         pkgDir: nmDir + '/' + placement,
         installRoot: nmDir,
         mtime,
-        chunkSize: CHUNK_SIZE,
       }));
 
     if (specs.length === 0) {
@@ -1217,7 +1210,7 @@ export class NpmInstaller {
       // W7: tar-stream + W7-frame preambles concatenated. Forwarded
       // to every facet (in-DO and per-peer) so each shard's facet
       // can encode its own write-batch stream.
-      preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE,
+      preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE,
       // Authorize each facet's writeBatchStream under the invoking
       // process credential; without a positive pid the supervisor
       // rejects the write (S2a cred enforcement).
@@ -1968,57 +1961,16 @@ export class NpmInstaller {
       return;
     }
 
-    // One W7 stream owns at most W7_MAX_PATHS_PER_BATCH paths: the shims go
-    // in waves, the directory with the first, the manifest with the last. A
-    // file is carried in CHUNK_SIZE chunks (a manifest of hundreds of bins
-    // outgrows one).
-    const mtime = Date.now();
-    for (let at = 0; at < files.length; at += BIN_WAVE_PATHS) {
-      const wave = files.slice(at, at + BIN_WAVE_PATHS);
-      const inodes: BatchInodeEntry[] = wave.map((file) => ({
-        path: file.path,
-        parentPath: binDir,
-        isDir: false,
-        size: file.data.length,
-        mtime,
-        mode: file.mode,
-        chunkCount: Math.ceil(file.data.length / CHUNK_SIZE),
-      }));
-      if (at === 0) {
-        inodes.push({
-          path: binDir,
-          parentPath: parentOf(binDir),
-          isDir: true,
-          size: 0,
-          mtime,
-          mode: 0o755,
-          chunkCount: 0,
-        });
-      }
-      const chunks: BatchWritePayload['chunks'] = [];
-      for (const file of wave) {
-        if (file.data.length <= CHUNK_SIZE) { chunks.push({ path: file.path, chunkId: 0, data: file.data }); continue; }
-        // Each chunk its own buffer: the byte stream detaches what it enqueues.
-        for (let chunkId = 0; chunkId * CHUNK_SIZE < file.data.length; chunkId++) {
-          chunks.push({ path: file.path, chunkId, data: file.data.slice(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
-        }
-      }
-      await this.writeStreamPayload(target.engine, { inodes, chunks });
-    }
-  }
-
-  private async writeStreamPayload(
-    vfs: CredentialedVfs,
-    payload: BatchWritePayload,
-  ): Promise<Extract<WriteBatchStreamResult, { ok: true }>> {
-    const result = await vfs.writeStream(encodeWriteBatchStream(payload));
-    if (!result.ok) {
-      throw new Error(
-        `writeBatchStream failed after group ${result.committedGroupSequence} ` +
-        `(${result.committedPathCount} committed paths): ${result.error.message}`,
-      );
-    }
-    return result;
+    // The shims and the manifest in waves the writer cuts at W7's path and
+    // byte bounds; the manifest goes last.
+    const engine = target.engine;
+    const writer = createWaveWriter({
+      supervisor: { writeBatchStream: (stream) => engine.writeStream(stream) },
+      root: binDir,
+      mtimeMs: Date.now(),
+    });
+    for (const file of files) await writer.file(file.path, file.mode, file.data);
+    await writer.flush();
   }
 
   // ── Package.json update ───────────────────────────────────────────────
@@ -2825,15 +2777,9 @@ export class NpmInstaller {
 // supervisor-heap estimator is the C'.1 replacement; see
 // NpmInstaller._estimateSupervisorHeapMiB.
 
-function parentOf(path: string): string {
-  return path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '';
-}
-
 /** What staging directories in /tmp and copies beside a mounted package are named. */
 const STAGE_PREFIX = '.npm-stage-';
 const COPY_PREFIX = '.nimbus-copy-';
-/** Bin shims one W7 stream carries: its path limit, less room for the directory. */
-const BIN_WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 
 /** `src`'s tree on the engine written into `dst` through `to`; with `packageJsonLast`, its own package.json goes last. */
 async function copyTreeInto(from: CredentialedVfs, src: string, to: ProcessView, dst: string, packageJsonLast: boolean): Promise<void> {

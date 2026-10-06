@@ -26,6 +26,7 @@ import {
   discoverConfigs,
   loadConfig,
   missingCapabilities,
+  missingCatalogPin,
   resolveWorkerName,
   sharedResourceIdentifiers,
 } from '../../scripts/deploy-isolation.mjs';
@@ -60,13 +61,15 @@ const PROD_D1 = {
     [],
     'a non-production deploy resolves a production resource',
   );
-  assert.equal(results.length, deployableTargets().length);
+  // Every deploy target, and each config's production block read for its pin.
+  const productionBlocks = DEPLOYABLE_CONFIGS.filter((c) => loadConfig(c).env?.production !== undefined).length;
+  assert.equal(results.length, deployableTargets().length + productionBlocks);
   assert.ok(results.length > DEPLOYABLE_CONFIGS.length, 'env blocks are enumerated, not just defaults');
   assert.ok(
     results.some((r) => r.config === 'apps/hosted-demo/wrangler.jsonc' && r.env === 'staging'),
     'the staging environment is one of the checked targets',
   );
-  console.log(`  [1] ${results.length} deploy targets: none reaches production`);
+  console.log(`  [1] ${deployableTargets().length} deploy targets: none reaches production; ${productionBlocks} production pin(s) read`);
 }
 
 // [1b] The three tiers of apps/hosted-demo name three different databases
@@ -355,6 +358,43 @@ const PROD_D1 = {
   assert.deepEqual(probe.violations, []);
   assert.deepEqual(probe.missing, []);
   console.log('  [12] previews: production/parent D1+R2, production services, workflows and script_name refused');
+}
+
+// ── 13. A block that binds the runtime cache names the catalog it reads ─────
+{
+  const cache = { r2_buckets: [{ binding: 'NIMBUS_RUNTIME_CACHE', bucket_name: 'nimbus-runtime-cache' }] };
+  const hex = 'a'.repeat(64);
+  assert.deepEqual(missingCatalogPin({ ...cache, vars: { NIMBUS_RUNTIME_CATALOG_SHA256: hex } }), []);
+  assert.deepEqual(missingCatalogPin({ vars: {} }), [], 'no cache bound, nothing to name');
+  assert.match(missingCatalogPin(cache)[0], /NIMBUS_RUNTIME_CATALOG_SHA256 is absent/);
+  assert.match(missingCatalogPin({ ...cache, vars: { NIMBUS_RUNTIME_CATALOG_SHA256: 'latest' } })[0], /"latest", not a hex SHA-256/);
+  // A violation, not a capability warning: the check refuses the deploy, production included.
+  const unpinned = { name: 'app', ...cache, env: { production: { name: 'app-prod', ...cache } } };
+  const root = fixture({ 'wrangler.jsonc': unpinned });
+  assert.ok(checkConfig('wrangler.jsonc', { root, configs: ['wrangler.jsonc'], workerName: 'app-throwaway' })
+    .violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256')), 'a throwaway without the pin is refused');
+  assert.ok(checkConfig('wrangler.jsonc', { root, configs: ['wrangler.jsonc'], envName: 'production' })
+    .violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256')), 'production without the pin is refused');
+  // The normal preflight (checkAll, the script's own run) reads production's
+  // pin too, though it never deploys it: a pin removed from production
+  // alone is caught before a production deploy is attempted.
+  const pinned = { ...cache, vars: { NIMBUS_RUNTIME_CATALOG_SHA256: hex } };
+  const productionOnly = fixture({ 'wrangler.jsonc': {
+    name: 'app', ...pinned,
+    env: { staging: { name: 'app-staging', ...pinned }, production: { name: 'app-prod', ...cache, vars: {} } },
+  } });
+  const preflight = checkAll({ root: productionOnly, configs: ['wrangler.jsonc'] });
+  assert.ok(preflight.some((r) => r.env === 'production' && r.violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256'))),
+    'production without the pin fails the normal preflight');
+  assert.ok(preflight.filter((r) => r.env !== 'production').every((r) => r.violations.length === 0), 'and only production');
+  // Every block of the repo's own configs carries it.
+  for (const result of checkAll()) {
+    assert.ok(!result.violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256')), `${result.config} ${result.env ?? ''}`);
+  }
+  for (const env of ['production']) {
+    assert.deepEqual(checkConfig('apps/hosted-demo/wrangler.jsonc', { envName: env }).violations, [], `hosted-demo ${env}`);
+  }
+  console.log('  [13] a block that binds the runtime cache without naming its catalog is refused');
 }
 
 console.log('deploy-isolation: all tests passed');

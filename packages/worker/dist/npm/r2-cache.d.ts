@@ -251,6 +251,7 @@ export interface R2CacheClientStats {
 export declare class R2CacheClient {
     private readonly tarballBucket;
     private readonly packumentBucket;
+    private readonly readOnly;
     private _l2HitsPackument;
     private _l3GetsPackument;
     private _l2HitsTarball;
@@ -263,7 +264,7 @@ export declare class R2CacheClient {
      * without an explicit method call (saves an indirection).
      */
     _cacheEvents: R2CacheStatEvent[];
-    constructor(tarballBucket: R2BucketLike, packumentBucket: R2BucketLike);
+    constructor(tarballBucket: R2BucketLike, packumentBucket: R2BucketLike, readOnly?: boolean);
     private _recordHit;
     private _recordMiss;
     /** Per-instance counter snapshot. Used by the L2 cache probes. */

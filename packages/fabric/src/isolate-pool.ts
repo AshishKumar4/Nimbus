@@ -25,8 +25,9 @@
  */
 
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { supervisorEntrypoint, type HostRoute } from './composition.js';
-import { supervisorBindingProps, supervisorLoaderKey } from './supervisor-props.js';
+import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
+import { supervisorLoaderKey } from './supervisor-props.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
 import {
@@ -49,6 +50,13 @@ import {
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { ModuleContent, WorkerLoader } from './vendor/types.js';
 import { hostWasmIdentity } from './host-wasm.js';
+
+// The only no-run supervisor constructor: local to the infrastructure factory.
+function infrastructureSupervisorProps(ctx: DurableObjectState, pid: number, options: { doId?: string; route?: HostRoute }) {
+  const own = ctx.id.toString(), doId = options.doId ?? own;
+  return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
+    ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure' as const };
+}
 
 /**
  * A function dispatched into a facet isolate, with the bindings that facet was
@@ -565,7 +573,7 @@ export class IsolatePool {
         // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
         // to the user's session DO, not the peer DO. Default to the
         // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
-        const supervisor = supervisorBindingProps(ctx, opts?.supervisorPid ?? 0, {
+        const supervisor = infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
           doId: opts?.supervisorDoIdOverride,
           route: opts?.supervisorRoute,
         });

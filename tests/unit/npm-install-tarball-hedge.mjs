@@ -35,6 +35,7 @@ globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
 globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
+globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
 globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 globalThis.DecompressionStream = class DecompressionStream {
   readable;

@@ -23,6 +23,8 @@ export interface SupervisorBindingProps {
     route?: HostRoute;
     /** The host instance that applies this binding's mutations once, when there is one. */
     hostIncarnation?: string;
+    bindingKind: 'process';
+    writerId: string;
 }
 /**
  * The props of a SUPERVISOR binding minted in the Durable Object whose state
@@ -33,10 +35,15 @@ export declare function supervisorBindingProps(ctx: {
     readonly id: {
         toString(): string;
     };
-}, pid: number, options?: {
+}, pid: number, options: {
+    writerId: string;
     doId?: string;
     route?: HostRoute;
 }): SupervisorBindingProps;
+/** The one mint for SUPERVISOR/outbound capabilities handed to a process. */
+export declare function mintProcessSupervisor<T>(mint: (options: {
+    props: SupervisorBindingProps;
+}) => T, props: SupervisorBindingProps): T;
 /**
  * `key`, for a loader cache entry whose worker holds a binding with `props`:
  * made specific to the host instance the binding names, since the loader

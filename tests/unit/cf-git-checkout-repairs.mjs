@@ -15,18 +15,17 @@ const cfGitDir = resolvePackageDir('isomorphic-git', { start: join(repoRoot, 'pa
 const sourcePath = resolve(process.env.CF_GIT_SOURCE || join(cfGitDir, 'index.js'));
 const source = readFileSync(sourcePath, 'utf8');
 const hasSeedHelper = /function seedPackfileCache\(/.test(source);
+// The patch's pack-reading hunks. Its checkout, walker and index hunks went with the
+// cf-git checkout, status and add paths: git/worktree/ does all of that now.
 const internalExports = [
   'GitPackIndex',
-  'GitWalkerFs',
   'PackfileCache',
-  'batchAllSettled',
   'readObjectPacked',
-  'worthWalking',
 ];
 if (hasSeedHelper) internalExports.push('seedPackfileCache');
 
 // Staged in this process's TMPDIR, never in node_modules (lib/cf-git-internals.mjs).
-const internals = await importCfGitInternals(source, [...internalExports, 'updateIndex as updateIndexInternal'], { cfGitDir, label: 'checkout-repairs' });
+const internals = await importCfGitInternals(source, internalExports, { cfGitDir, label: 'checkout-repairs' });
 
 function encodePackObjectHeader(type, size) {
   const bytes = [(type << 4) | (size & 0x0f)];
@@ -176,31 +175,6 @@ const cases = [
       }
     }
   }],
-  ['batchAllSettled rejects incomplete work', async () => {
-    await assert.rejects(
-      () => internals.batchAllSettled(
-        'Checkout files',
-        [() => Promise.resolve('ok'), () => Promise.reject(new Error('write failed'))],
-        undefined,
-        2,
-      ),
-      (error) => error?.code === 'InternalError'
-        && error.data?.message.includes('1 of 2')
-        && error.data.message.includes('write failed'),
-    );
-  }],
-  ['index insertion failures propagate', async () => {
-    const failure = new Error('index insert failed');
-    await assert.rejects(
-      () => internals.updateIndexInternal({
-        index: { insert: () => { throw failure; } },
-        fullpath: 'file.txt',
-        stats: {},
-        oid: '0'.repeat(40),
-      }),
-      (error) => error === failure,
-    );
-  }],
   ['fetched pack index seed matches packed-object lookup', async () => {
     assert.equal(hasSeedHelper, true, 'cf-git does not expose the _fetch cache seed seam');
     const gitdir = '/repo/.git';
@@ -230,26 +204,6 @@ const cases = [
 
     assert.deepEqual(result.object, fixture.target);
     assert.equal(packReloads, 0);
-  }],
-  ['checkout filepath pruning is path-component safe', () => {
-    assert.equal(internals.worthWalking('foo', 'foobar'), false);
-    assert.equal(internals.worthWalking('foobar', 'foo'), false);
-    assert.equal(internals.worthWalking('foo', 'foo/bar'), true);
-    assert.equal(internals.worthWalking('foo/bar', 'foo'), true);
-  }],
-  ['workdir walker prunes .git directories', async () => {
-    const directory = {
-      isDirectory: () => true, isFile: () => false, isSymbolicLink: () => false,
-      mode: 0o40755, size: 0, mtimeMs: 0, ctimeMs: 0, dev: 0, ino: 0, uid: 0, gid: 0,
-    };
-    const walker = new internals.GitWalkerFs({
-      fs: { readdir: async () => ['.git', 'src'], lstat: async () => directory },
-      dir: '/repo',
-      gitdir: '/repo/.git',
-      cache: {},
-    });
-    const names = await walker.readdir(new walker.ConstructEntry('.'));
-    assert.deepEqual(names, ['src']);
   }],
 ];
 

@@ -9,9 +9,10 @@
  * session's Dynamic Worker headroom, or across sibling DOs when there are
  * more shards than that.
  *
- * The shared producer wave pre-flushes before 4 MiB or 128 paths. One
- * oversize file may occupy a wave by itself; the supervisor's weighted
- * credit pool and transaction builder remain the authoritative hard bounds.
+ * The shard writes through one wave writer (@nimbus-sh/platform
+ * wave-writer.ts), which cuts waves at W7's path and byte bounds; the
+ * supervisor's weighted credit pool and transaction builder remain the
+ * authoritative hard bounds.
  *
  * The per-package logic (fetch + integrity-verify + gunzip + tar-parse +
  * writeBatch flush) stays in this function because cloudflare-parallel
@@ -23,7 +24,7 @@
  *   - No closure capture other than args + preamble names.
  *   - Preamble symbols (streamPackageEntries, streamTarEntries,
  *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
- *     @ts-ignore.
+ *     @ts-ignore; __nimbusWaveWriter declared below.
  */
 // ── Facet function ──────────────────────────────────────────────────────
 //
@@ -88,8 +89,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     let inFlightPeak = 0;
     let cumulativeBytesDecoded = 0; // bytes of tarball body successfully read
     let tarballsCompleted = 0;
-    let sharedWaves = 0;
-    let sharedWaveMs = 0;
     // [W4] Pipelined-RPC race outcomes, folded back into supervisor diag.
     let pipelinedTarballRaceWins = 0;
     let pipelinedTarballRaceLosses = 0;
@@ -104,280 +103,37 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     // singleton via recordCacheStatEvents — same pattern as
     // recordR2RaceCounters at installer.ts:1168.
     const cacheStatEvents = [];
-    // Shared-buffer flushes happen across packages, so smaller chunks keep
-    // individual write transactions short and avoid aging the parent RPC.
-    const SHARED_RPC_FLUSH_THRESHOLD = 4 * 1024 * 1024;
-    const SHARED_RPC_PATH_LIMIT = 128;
-    const INODE_OVERHEAD = 160;
-    const CHUNK_OVERHEAD = 96;
-    let sharedInodes = new Map();
-    let sharedChunks = [];
-    let sharedBufferedBytes = 0;
-    let sharedOwners = new Set();
-    // Directories staged into a wave, shard-wide. A directory is staged once
-    // per shard, not once per package — and a wave that fails removes its
-    // directories from this set so they are staged again (see doSharedFlush).
-    const landedDirs = new Set();
-    const ownerWaves = new Map();
-    const ownersWithCompletionMarker = new Set();
-    const completionMarkers = new Map();
-    // A wave RPC that workerd shed rather than ran is re-sendable: the
-    // coordinator's input gate rejected it because its queue was too deep or
-    // the object was reset mid-request, so none of the wave's writes landed.
-    // Re-sending is safe even if some did — writeBatchStream is keyed by path
-    // and the bytes are identical. Without this the first shed permanently
-    // failed every package that contributed to the wave, which is how a
-    // 119-package install came back with 88 packages.
-    // ~42s of absorption. The coordinator's own verdict is "requests queued
-    // for too long", so the schedule has to outlast a queue that deep; the
-    // whole-batch timeout is 10 minutes, which bounds it.
-    const WAVE_RETRY_BACKOFF_MS = [250, 1000, 3000, 6000, 12000, 20000];
-    // "Network connection lost" is the RPC transport between this shard and
-    // the coordinator DO dropping under load — the same class: the wave may
-    // or may not have run, and re-sending identical path-keyed bytes is safe
-    // either way. It was the dominant shard failure on a 629-package install
-    // (Markflow): one lost wave failed every package that had contributed to
-    // it, and the directories that wave carried never landed, so later waves
-    // of unrelated packages failed with ENOENT on those parents.
-    // A wave the transport drops without a word never settles at all. Measured
-    // on a throwaway (2026-09-28): a shard held one unanswered writeBatchStream
-    // for 160 s while the session had no stream, credit or transaction in
-    // progress, and the install waited out its 10-minute deadline, in 6 of 47
-    // 850-package installs whose shards ran in-DO (none of 12 on siblings).
-    // An attempt unanswered this long is taken as dropped and re-sent like
-    // the error cases above; a late answer to the abandoned attempt is
-    // ignored.
-    const WAVE_ATTEMPT_DEADLINE_MS = 60_000;
-    const WAVE_UNANSWERED = 'writeBatchStream unanswered';
-    const isSheddableWaveError = (message) => {
-        const m = message.toLowerCase();
-        return m.includes('overloaded')
-            || m.includes('reset because its code was updated')
-            || m.includes('starting up durable object storage')
-            || (m.includes('storage operation') && m.includes('reset'))
-            || m.includes('network connection lost')
-            || message.startsWith(WAVE_UNANSWERED);
-    };
-    // Mutex: only one flush runs at a time. Concurrent installs awaiting
-    // flush() will line up behind this promise and resolve in arrival
-    // order — the W7 frame is opaque to ordering so this is safe.
-    let sharedFlushInFlight = null;
-    let sharedMutationInFlight = Promise.resolve();
-    const withSharedMutation = async (action) => {
-        const prior = sharedMutationInFlight;
-        let release;
-        sharedMutationInFlight = new Promise((resolve) => { release = resolve; });
-        await prior;
-        try {
-            return await action();
+    // ── The shard's writes: one wave writer ─────────────────────────────
+    //
+    // Every package in the shard writes through one writer (the platform's
+    // wave writer, a preamble symbol), so a shard sends a few large W7 waves
+    // rather than one per package: an install that once sent 620+ write RPCs
+    // aged the coordinator's input-gate queue into overload. The writer
+    // derives each wave's directories up to the install root (never above it:
+    // those pre-exist, and re-staging them trips the write check on
+    // user-unwritable system directories), and re-sends a wave whose
+    // transport was lost. A wave the session refused fails the packages it
+    // carried: their later writes reject, and their records still buffered
+    // are not sent. Waves publish in order, so a package's package.json,
+    // written after its files, is durable only if they are: it is the
+    // package's completion marker for the next install's diff.
+    const installRoot = batch.packages[0]?.installRoot ?? '';
+    for (const spec of batch.packages) {
+        if (spec.installRoot !== installRoot || spec.mtime !== batch.packages[0].mtime) {
+            throw new Error('installPackagesInFacet: a batch has one install root and one mtime');
         }
-        finally {
-            release();
-        }
-    };
-    const doSharedFlush = async () => {
-        if (sharedInodes.size === 0 && sharedChunks.length === 0)
-            return;
-        // Snapshot current contents and reset the buffer BEFORE awaiting
-        // the RPC so a concurrent install can start filling the next batch.
-        const inodesNow = [...sharedInodes.values()];
-        const chunksNow = sharedChunks;
-        sharedInodes = new Map();
-        sharedChunks = [];
-        sharedBufferedBytes = 0;
-        const ownersNow = sharedOwners;
-        sharedOwners = new Set();
-        sharedWaves++;
-        const waveT0 = Date.now();
-        // One promise owns this exact wave. Register the SAME settled outcome
-        // with every contributing package before awaiting the RPC, so a package
-        // cannot report success while another package happens to be the caller
-        // that triggered its shared flush.
-        const sendWave = async () => {
-            for (let attempt = 0;; attempt++) {
-                try {
-                    // Each attempt encodes its OWN bytes. The encoder hands chunk
-                    // buffers straight to a byte stream and workerd transfers them on
-                    // enqueue, so `chunksNow` would be detached after the first send —
-                    // a retry re-encoding it fails validation ("chunk 0 must contain N
-                    // bytes") instead of re-sending the wave.
-                    // @ts-ignore — preamble symbol.
-                    const stream = encodeWriteBatchStream({
-                        inodes: inodesNow,
-                        chunks: chunksNow.map((c) => ({ ...c, data: c.data.slice() })),
-                    });
-                    // A typed non-ok result is the storage layer's verdict on these
-                    // exact bytes, so it is returned as-is: only a shed RPC retries.
-                    const answer = __nimbusUseRpcResult(env.SUPERVISOR.writeBatchStream(stream), (result) => {
-                        if (result.ok)
-                            return { ok: true };
-                        return {
-                            ok: false,
-                            message: `writeBatchStream failed after group ${result.committedGroupSequence} ` +
-                                `(${result.committedPathCount} committed paths): ${result.error.message}`,
-                        };
-                    });
-                    answer.catch(() => { });
-                    let deadline = null;
-                    try {
-                        return await Promise.race([
-                            answer,
-                            new Promise((_, reject) => {
-                                deadline = setTimeout(() => reject(new Error(`${WAVE_UNANSWERED} after ${WAVE_ATTEMPT_DEADLINE_MS} ms`)), WAVE_ATTEMPT_DEADLINE_MS);
-                            }),
-                        ]);
-                    }
-                    finally {
-                        clearTimeout(deadline);
-                    }
-                }
-                catch (error) {
-                    const message = error instanceof Error ? error.message : String(error);
-                    if (attempt >= WAVE_RETRY_BACKOFF_MS.length || !isSheddableWaveError(message)) {
-                        return { ok: false, message };
-                    }
-                    const base = WAVE_RETRY_BACKOFF_MS[attempt];
-                    const delayMs = Math.max(0, Math.round(base + (Math.random() * 2 - 1) * base * 0.25));
-                    await new Promise((rs) => setTimeout(rs, delayMs));
-                }
-            }
-        };
-        const dirsInWave = inodesNow.filter((inode) => inode.isDir).map((inode) => inode.path);
-        const wave = (async () => {
-            const outcome = await sendWave();
-            // A wave that did not land took its directory inodes with it. Every
-            // package that staged one of them into this wave believes it exists;
-            // forget them so the next file under such a directory re-stages the
-            // chain into its own wave instead of failing ENOENT on a parent that
-            // was never written.
-            if (!outcome.ok)
-                for (const dir of dirsInWave)
-                    landedDirs.delete(dir);
-            return outcome;
-        })();
-        for (const owner of ownersNow) {
-            let waves = ownerWaves.get(owner);
-            if (!waves) {
-                waves = new Set();
-                ownerWaves.set(owner, waves);
-            }
-            waves.add(wave);
-        }
-        await wave;
-        sharedWaveMs += Date.now() - waveT0;
-    };
-    const sharedFlush = async () => {
-        // Serialize: wait for any in-flight flush to complete first; then
-        // start ours. Subsequent waiters chain after this one. Promise
-        // chain is unbounded but each link is awaited once — no leaks.
-        const prior = sharedFlushInFlight;
-        const myFlush = (async () => {
-            if (prior) {
-                // The prior wave's outcome is already attached to every owner that
-                // contributed to it. Continue draining this independent buffer so its
-                // owners receive their own outcome as well.
-                try {
-                    await prior;
-                }
-                catch { /* owner reconciliation surfaces it */ }
-            }
-            await doSharedFlush();
-        })();
-        sharedFlushInFlight = myFlush;
-        try {
-            await myFlush;
-        }
-        finally {
-            // If we're still the head of the chain, clear the slot so memory
-            // doesn't grow unbounded over a long install.
-            if (sharedFlushInFlight === myFlush)
-                sharedFlushInFlight = null;
-        }
-    };
-    const preflushSharedMutation = async (path, additionalBytes) => {
-        if (sharedInodes.has(path)) {
-            throw new Error(`duplicate path in npm write wave: ${path}`);
-        }
-        while (sharedInodes.size > 0 && (sharedBufferedBytes + additionalBytes > SHARED_RPC_FLUSH_THRESHOLD
-            || sharedInodes.size + 1 > SHARED_RPC_PATH_LIMIT)) {
-            await sharedFlush();
-        }
-    };
-    const enqueueSharedFile = (ownerId, filePath, data, mtime, chunkSize) => withSharedMutation(async () => {
-        const size = data.length;
-        const chunkCount = size === 0 ? 0 : Math.ceil(size / chunkSize);
-        // Re-enqueue of the same path is last-write-wins. This happens both when
-        // two owners write the same shared file in a parallel install, and when a
-        // single package tarball carries the same canonical path twice — e.g.
-        // agent-base ships both "package/./dist/index.js" and
-        // "package/dist/index.js", which collapse to one path. npm's own semantics
-        // are last-entry-wins, so we replace rather than fail. Fully undo the prior
-        // enqueue: drop its chunks (sharedChunks is append-only, else the inode's
-        // chunkCount would disagree with the buffered chunks and the W7 encoder
-        // rejects the wave "expected N chunks, got M") AND delete its inode, so the
-        // preflushSharedMutation duplicate-path guard below doesn't trip on our own
-        // intentional replacement. Mirror the dedup enqueueSharedDirectory performs.
-        const existing = sharedInodes.get(filePath);
-        if (existing) {
-            if (existing.isDir)
-                throw new Error(`file/directory collision in npm write wave: ${filePath}`);
-            sharedBufferedBytes -= INODE_OVERHEAD + filePath.length * 2;
-            for (let i = sharedChunks.length - 1; i >= 0; i--) {
-                if (sharedChunks[i].path !== filePath)
-                    continue;
-                sharedBufferedBytes -= CHUNK_OVERHEAD + filePath.length + sharedChunks[i].data.length;
-                sharedChunks.splice(i, 1);
-            }
-            sharedInodes.delete(filePath);
-        }
-        const additionalBytes = INODE_OVERHEAD + filePath.length * 2
-            + size + (chunkCount * (CHUNK_OVERHEAD + filePath.length));
-        await preflushSharedMutation(filePath, additionalBytes);
-        sharedOwners.add(ownerId);
-        sharedInodes.set(filePath, {
-            path: filePath,
-            parentPath: filePath.includes('/') ? filePath.substring(0, filePath.lastIndexOf('/')) : '',
-            isDir: false,
-            size,
-            mtime,
-            mode: 0o644,
-            chunkCount,
-        });
-        sharedBufferedBytes += INODE_OVERHEAD + filePath.length * 2;
-        if (size <= 0)
-            return;
-        if (size <= chunkSize) {
-            sharedChunks.push({ path: filePath, chunkId: 0, data });
-            sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + data.length;
-            return;
-        }
-        for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
-            const slice = data.slice(chunkId * chunkSize, (chunkId + 1) * chunkSize);
-            sharedChunks.push({ path: filePath, chunkId, data: slice });
-            sharedBufferedBytes += CHUNK_OVERHEAD + filePath.length + slice.length;
-        }
-    });
-    const enqueueSharedDirectory = (ownerId, path, mtime) => withSharedMutation(async () => {
-        const existing = sharedInodes.get(path);
-        if (existing) {
-            if (!existing.isDir)
-                throw new Error(`file/directory collision in npm write wave: ${path}`);
-            sharedOwners.add(ownerId);
-            return;
-        }
-        const additionalBytes = INODE_OVERHEAD + path.length * 2;
-        await preflushSharedMutation(path, additionalBytes);
-        sharedOwners.add(ownerId);
-        sharedInodes.set(path, {
-            path,
-            parentPath: path.includes('/') ? path.substring(0, path.lastIndexOf('/')) : '',
-            isDir: true,
-            size: 0,
-            mtime,
-            mode: 0o755,
-            chunkCount: 0,
-        });
-        sharedBufferedBytes += additionalBytes;
+    }
+    // Records carry their package (meta, its index in the batch): a wave the
+    // session refused fails the packages it carried, the writer goes on for
+    // the rest, and it answers whether each package's writes all published.
+    const writer = __nimbusWaveWriter.createWaveWriter({
+        supervisor: env.SUPERVISOR,
+        root: installRoot,
+        mtimeMs: batch.packages[0]?.mtime,
+        failPerOwner: true,
+        onResend(lost) {
+            console.warn('[npm] write wave re-sent', JSON.stringify(lost));
+        },
     });
     // A tarball placed twice in this shard is acquired once: the first owner
     // publishes its bytes here, later owners of the URL wait for them. `null`
@@ -693,55 +449,22 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             const decompressed = bytesStream.pipeThrough(new DecompressionStream('gzip'));
             // @ts-ignore — preamble symbol.
             const asyncIter = readableStreamToAsyncIterable(decompressed);
-            // 4. Add entries to the shared producer wave. Ordinary waves pre-flush
-            //    before crossing 4 MiB or 128 paths; the receiver's transaction
-            //    limits and global credit pool remain the authoritative bounds.
+            // 4. Write the entries through the shard's writer. Per-package totals
+            //    stay local to the result object.
             const pkgDir = spec.pkgDir;
-            const installRoot = spec.installRoot;
-            // Use the shard-level inode/chunk buffer so flushes are per shard,
-            // not per package. Per-package totals stay local to the result object.
             let totalFileInodes = 0;
             let totalBytesWritten = 0;
             let completionMarker = null;
-            // Stage `installRoot` and every directory down to `dirPath` (inclusive),
-            // root-to-leaf, BEFORE any file that needs them. The credentialed
-            // writeBatch authorizes each staged path's parent per flush wave, so a
-            // file cannot land in a wave ahead of its parent dir inode (which used
-            // to surface as `ENOENT: .../node_modules`). Directories above the
-            // install root are left untouched — they pre-exist and re-staging them
-            // would trip the batch write-check on user-unwritable system dirs.
-            const enqueueDirsUpTo = async (dirPath) => {
-                if (dirPath.length < installRoot.length || !dirPath.startsWith(installRoot))
-                    return;
-                const suffix = dirPath === installRoot ? '' : dirPath.slice(installRoot.length + 1);
-                const segs = suffix ? suffix.split('/') : [];
-                for (let i = 0; i <= segs.length; i++) {
-                    const d = i === 0 ? installRoot : installRoot + '/' + segs.slice(0, i).join('/');
-                    if (landedDirs.has(d)) {
-                        // Staged by an earlier wave of this shard. This owner's files
-                        // depend on it, so this owner must see that wave's outcome too.
-                        sharedOwners.add(ownerId);
-                        continue;
-                    }
-                    landedDirs.add(d);
-                    await enqueueSharedDirectory(ownerId, d, spec.mtime);
-                }
-            };
             const enqueueFile = async (filePath, data) => {
-                const size = data.length;
-                await enqueueSharedFile(ownerId, filePath, data, spec.mtime, spec.chunkSize);
+                await writer.file(filePath, 0o644, data, ownerId);
                 totalFileInodes += 1;
-                totalBytesWritten += size;
+                totalBytesWritten += data.length;
             };
             const onSkip = (name, size, reason) => {
                 if (reason === 'too-large') {
                     warnings.push(`skipped "${name}" (${size} bytes) — exceeds per-file cap; file not installed`);
                 }
             };
-            // Ensure the package directory (and the install root above it) are
-            // staged before any file or the completion marker — covers empty
-            // packages whose only member is package.json.
-            await enqueueDirsUpTo(pkgDir);
             // @ts-ignore — preamble symbol.
             for await (const entry of streamPackageEntries(asyncIter, onSkip)) {
                 // entry.name is canonicalized (no "."/".." segments) and stripped of
@@ -749,8 +472,6 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
                 // so joining under the canonical pkgDir yields a canonical path the
                 // w7-frame writer accepts.
                 const filePath = pkgDir + '/' + entry.name;
-                // Stage this file's parent-dir chain before the file itself.
-                await enqueueDirsUpTo(filePath.substring(0, filePath.lastIndexOf('/')));
                 const data = entry.data;
                 if (entry.name === 'package.json') {
                     if (completionMarker) {
@@ -765,17 +486,13 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             // Wait for integrity verification before final flush.
             await integrityPromise;
             // package.json is the durable completion marker used by the installer
-            // diff path. Hold it outside every content wave. Batch reconciliation
-            // publishes it only after all of this owner's content waves succeed.
+            // diff path, written once the tarball verified and after every other
+            // file of the package: waves publish in order, so it is durable only
+            // if they are.
             if (!completionMarker) {
                 throw new Error(`package tarball missing root package.json: ${spec.name}@${spec.version}`);
             }
-            completionMarkers.set(ownerId, {
-                path: completionMarker.path,
-                data: completionMarker.data,
-                mtime: spec.mtime,
-                chunkSize: spec.chunkSize,
-            });
+            await writer.file(completionMarker.path, 0o644, completionMarker.data, ownerId);
             totalFileInodes += 1;
             totalBytesWritten += completionMarker.data.length;
             // Write tarballs to R2 only after a successful network install so the
@@ -825,56 +542,29 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
     };
     // ── Dispatch all packages with internal pLimit ───────────────────────
     const perPackage = await Promise.all(batch.packages.map((spec, ownerId) => limit(() => installOne(spec, ownerId))));
-    // [P0a wave-2] End-of-batch shared flush. Drains the last buffered
-    // contributions (the per-package flush is threshold-based — anything
-    // below the threshold sits here until end-of-batch).
+    // Everything written is published, or the writer stopped at a refused
+    // wave. A package succeeded only if every record it wrote was carried by
+    // a wave that published (a tarball naming one file twice wrote it twice:
+    // the second write superseded the first).
+    let flushError = null;
     try {
-        await sharedFlush();
+        await writer.flush();
     }
-    catch { /* owner reconciliation surfaces it */ }
-    // Wait for any chained flush still in-flight from the threshold path.
-    if (sharedFlushInFlight) {
-        try {
-            await sharedFlushInFlight;
-        }
-        catch { /* errored flushes already surfaced */ }
+    catch (error) {
+        flushError = error instanceof Error ? error.message : String(error);
     }
-    // Only owners whose complete content history succeeded may publish the
-    // package.json marker used by the next install's diff/skip decision.
-    for (const [ownerId, marker] of completionMarkers) {
-        const result = perPackage[ownerId];
-        if (result.errorText)
-            continue;
-        const outcomes = await Promise.all([...(ownerWaves.get(ownerId) ?? [])]);
-        if (outcomes.some((outcome) => !outcome.ok))
-            continue;
-        await enqueueSharedFile(ownerId, marker.path, marker.data, marker.mtime, marker.chunkSize);
-        ownersWithCompletionMarker.add(ownerId);
-    }
-    try {
-        await sharedFlush();
-    }
-    catch { /* owner reconciliation surfaces it */ }
-    const reconciledPerPackage = await Promise.all(perPackage.map(async (result, ownerId) => {
-        const outcomes = await Promise.all([...(ownerWaves.get(ownerId) ?? [])]);
-        const failedWave = outcomes.find((outcome) => !outcome.ok);
-        const errors = [];
-        if (result.errorText)
-            errors.push(result.errorText);
-        if (failedWave)
-            errors.push(failedWave.message);
-        if (!result.errorText && !ownersWithCompletionMarker.has(ownerId)) {
-            errors.push(`package completion marker was not queued: ${result.name}@${result.version}`);
-        }
-        if (errors.length === 0)
+    const reconciledPerPackage = perPackage.map((result, ownerId) => {
+        if (result.errorText || writer.published(ownerId))
             return result;
         return {
             ...result,
             fileCount: 0,
             bytesWritten: 0,
-            errorText: [...new Set(errors)].join('; '),
+            errorText: writer.failureOf(ownerId)?.message ?? flushError
+                ?? `package files were not published: ${result.name}@${result.version}`,
         };
-    }));
+    });
+    const waveStats = writer.stats();
     return {
         perPackage: reconciledPerPackage,
         elapsed: Date.now() - tBatchStart,
@@ -886,8 +576,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(batc
             pipelinedTarballRaceLosses,
             r2WaitMsMax,
             speculativeFetches,
-            sharedWaves,
-            sharedWaveMs,
+            sharedWaves: waveStats.waves,
+            sharedWaveMs: waveStats.producerWaitMs,
         },
         cacheStatEvents,
     };

@@ -8,7 +8,8 @@
  *
  * R2 layout:
  *
- *   catalog/v1.json                          ← top-level catalog
+ *   catalog/sha256/<sha256>.json             ← a catalog, by the digest of its bytes
+ *   catalog/v1.json                          ← the latest catalog, for deployments that predate the above
  *   manifests/<name>-<version>.json          ← per-version manifest
  *   blobs/<name>-<version>/<sha256>/<file>   ← content-addressed blobs
  *
@@ -36,14 +37,20 @@
  * re-hashed on the way out, so an entry can only ever be found under the
  * hash of what it contains: a writer cannot address another value's key and
  * a reader cannot be handed bytes it did not ask for. The digests chain from
- * a build-time root — RUNTIME_CATALOG_SHA256 pins catalog/v1.json, the
- * catalog pins each manifest, each manifest pins its blobs.
+ * the deployment's root: NIMBUS_RUNTIME_CATALOG_SHA256, a var each deployment
+ * carries, names the catalog its bucket holds by digest, the catalog pins
+ * each manifest, each manifest pins its blobs.
  *
- * A value whose digest we do not know in advance does not participate in L2
- * at all; it is read from R2 and not cached. Refusing to cache what cannot
- * be verified is the point, and `l2Address` returning null is the only way
- * that happens — there is no "trust the key instead" fallback. That also
- * makes a stale pin a cache miss rather than an outage.
+ * The catalog is read by that digest (catalog/sha256/<digest>.json) and
+ * served only when its bytes hash to it, so a publish for one deployment
+ * never changes what another reads. A missing var, a missing object or bytes
+ * that do not hash to the var fail the install loudly and say which; there is
+ * no unpinned read.
+ *
+ * A manifest or blob whose digest we do not know in advance does not
+ * participate in L2 at all; it is read from R2 and not cached. Refusing to
+ * cache what cannot be verified is the point, and `l2Address` returning null
+ * is the only way that happens — there is no "trust the key instead" fallback.
  */
 import { type ManifestFile, type RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.js';
 import { type RuntimeSource } from '@nimbus-sh/core/runtime/runtime-package.js';
@@ -59,6 +66,12 @@ type R2BucketLike = {
 /** Minimal env shape this module consumes. */
 export interface RuntimeCatalogEnv {
     NIMBUS_RUNTIME_CACHE?: R2BucketLike;
+    /**
+     * The SHA-256 of the catalog this deployment's NIMBUS_RUNTIME_CACHE holds:
+     * a var in its wrangler config. `nimbus runtime sync` prints it for the
+     * bucket it fills; Nimbus's own configs are written by bundle-runtime.mjs.
+     */
+    NIMBUS_RUNTIME_CATALOG_SHA256?: string;
 }
 export interface CatalogVersionEntry {
     manifest: string;
@@ -78,12 +91,16 @@ export interface RuntimeCatalog {
 }
 export declare function parseRuntimeCatalog(value: unknown): RuntimeCatalog;
 /**
- * Fetch the top-level catalog, verified against the build-time pin.
- *
- * A pin that has drifted behind a fresh publish is not an error: R2 is the
- * trusted tier, so the catalog is served from it and simply not cached.
- * The condition is logged once per isolate because a silently disabled
- * cache is otherwise invisible.
+ * R2 key of the catalog whose bytes hash to `sha256`. bundle-runtime.mjs
+ * writes the same key (catalogKey there); tests/unit/bundle-runtime-catalog-pin.mjs
+ * holds the two to one spelling.
+ */
+export declare function catalogKey(sha256: string): string;
+/** What `nimbus install` says when the deployment does not name its catalog. */
+export declare const CATALOG_PIN_MISSING: string;
+/**
+ * Fetch the catalog the deployment names (NIMBUS_RUNTIME_CATALOG_SHA256),
+ * by its digest, and only if its bytes hash to it.
  */
 export declare function fetchCatalog(env: RuntimeCatalogEnv): Promise<RuntimeCatalog>;
 /**

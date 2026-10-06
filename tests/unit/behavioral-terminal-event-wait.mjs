@@ -1,0 +1,23 @@
+#!/usr/bin/env bun
+import assert from 'node:assert/strict';
+import { EventEmitter } from 'node:events';
+import { Terminal } from '../behavioral/_driver.mjs';
+const terminal = new Terminal('test', { wsOptions: {} });
+terminal.ws = new EventEmitter();
+const nativeTimer = globalThis.setTimeout;
+const delays = [];
+globalThis.setTimeout = (callback, ms, ...args) => { delays.push(ms); return nativeTimer(callback, ms, ...args); };
+const wait = terminal.waitFor((text) => text.endsWith('$ '), 500, 'prompt');
+nativeTimer(() => { terminal.buf = 'done\n$ '; terminal.ws.emit('message', Buffer.from('{}')); }, 5);
+await wait;
+globalThis.setTimeout = nativeTimer;
+assert.deepEqual(delays, [500], 'only a deadline is armed: no 50 ms polling tick');
+assert.equal(terminal.ws.listenerCount('message'), 0, 'completed waits release listeners');
+terminal.buf = '';
+const ended = terminal.waitFor(() => false, 500, 'close');
+terminal.closed = true;
+terminal.closeDetail = 'test close';
+terminal.ws.emit('close');
+await assert.rejects(ended, /test close/);
+assert.equal(terminal.ws.listenerCount('close'), 0);
+console.log('behavioral-terminal-event-wait: prompt arrival resolves without polling');

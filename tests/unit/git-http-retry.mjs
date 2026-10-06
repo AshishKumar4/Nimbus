@@ -2,9 +2,9 @@
 
 import assert from 'node:assert/strict';
 
-import { createRetryingGitHttp } from '../../packages/worker/src/git/network-facet.ts';
+import { retryingGitHttp } from '../../packages/worker/src/git/pack/transport.ts';
 
-const retryOptions = { backoffMs: [1, 1], maxAttempts: 3 };
+const schedule = [1, 1];
 
 async function readBody(body) {
   if (!body) return [];
@@ -50,7 +50,7 @@ async function* uploadPackBody() {
   yield Uint8Array.of(0, 1, 2);
   yield Uint8Array.of(253, 254, 255);
 }
-const uploadPackResult = await createRetryingGitHttp(uploadPack, retryOptions).request({
+const uploadPackResult = await retryingGitHttp(uploadPack, schedule).request({
   method: 'POST',
   url: 'https://github.com/example/project.git/git-upload-pack',
   body: uploadPackBody(),
@@ -64,7 +64,7 @@ const discovery = queuedHttp([
   { statusCode: 522 },
   { statusCode: 200 },
 ]);
-const discoveryResult = await createRetryingGitHttp(discovery, retryOptions).request({
+const discoveryResult = await retryingGitHttp(discovery, schedule).request({
   method: 'GET',
   url: 'https://github.com/example/project.git/info/refs?service=git-upload-pack',
 });
@@ -74,7 +74,7 @@ assert.equal(discovery.calls.length, 2);
 const notFoundResponse = { statusCode: 404 };
 const notFound = queuedHttp([notFoundResponse]);
 assert.equal(
-  await createRetryingGitHttp(notFound, retryOptions).request({
+  await retryingGitHttp(notFound, schedule).request({
     method: 'GET',
     url: 'https://github.com/example/missing.git/info/refs?service=git-upload-pack',
   }),
@@ -89,7 +89,7 @@ const persistentResponses = [
 ];
 const persistent = queuedHttp(persistentResponses);
 assert.equal(
-  await createRetryingGitHttp(persistent, retryOptions).request({
+  await retryingGitHttp(persistent, schedule).request({
     method: 'GET',
     url: 'https://github.com/example/project.git/info/refs?service=git-upload-pack',
   }),
@@ -101,7 +101,7 @@ const networkFailure = queuedHttp([
   new Error('connection reset'),
   { statusCode: 200 },
 ]);
-const networkFailureResult = await createRetryingGitHttp(networkFailure, retryOptions).request({
+const networkFailureResult = await retryingGitHttp(networkFailure, schedule).request({
   method: 'GET',
   url: 'https://github.com/example/project.git/info/refs?service=git-upload-pack',
 });
@@ -111,7 +111,7 @@ assert.equal(networkFailure.calls.length, 2);
 const receivePackResponse = { statusCode: 522 };
 const receivePack = queuedHttp([receivePackResponse]);
 assert.equal(
-  await createRetryingGitHttp(receivePack, retryOptions).request({
+  await retryingGitHttp(receivePack, schedule).request({
     method: 'POST',
     url: 'https://github.com/example/project.git/git-receive-pack',
     body: [Uint8Array.of(1, 2, 3)],
@@ -123,7 +123,7 @@ assert.equal(receivePack.calls.length, 1);
 const receivePackFailure = new Error('push connection reset');
 const failingReceivePack = queuedHttp([receivePackFailure]);
 await assert.rejects(
-  createRetryingGitHttp(failingReceivePack, retryOptions).request({
+  retryingGitHttp(failingReceivePack, schedule).request({
     method: 'POST',
     url: 'https://github.com/example/project.git/git-receive-pack',
     body: [Uint8Array.of(1, 2, 3)],

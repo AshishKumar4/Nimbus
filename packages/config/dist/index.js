@@ -15,6 +15,8 @@
  *   compatibilityDate: '2026-09-26',
  *   r2BucketPrefix: 'my-nimbus',
  *   runtimeCache: 'shared',
+ *   // What `nimbus runtime sync` printed for the bucket above.
+ *   runtimeCatalogSha256: '<64 hex>',
  * });
  * writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
  * ```
@@ -114,6 +116,12 @@ export function buildNimbusWranglerConfig(opts) {
     }
     if (opts.legacyPublic) {
         config.vars = { NIMBUS_LEGACY_PUBLIC: '1' };
+    }
+    if (opts.runtimeCatalogSha256 !== undefined) {
+        if (!/^[a-f0-9]{64}$/.test(opts.runtimeCatalogSha256)) {
+            throw new Error(`runtimeCatalogSha256 must be the 64-hex digest \`nimbus runtime sync\` prints, not "${opts.runtimeCatalogSha256}"`);
+        }
+        config.vars = { ...(config.vars ?? {}), NIMBUS_RUNTIME_CATALOG_SHA256: opts.runtimeCatalogSha256 };
     }
     const agentVars = buildAgentVars(opts.agent);
     if (Object.keys(agentVars).length > 0) {

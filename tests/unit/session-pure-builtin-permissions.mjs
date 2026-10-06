@@ -32,7 +32,8 @@ try {
     plugins: [{
       name: 'cloudflare-workers-test-stub',
       setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
+        // cloudflare:sockets too: SupervisorRPC.connect loads it, and nothing here calls that.
+        builder.onResolve({ filter: /^cloudflare:(workers|sockets)$/ }, () => ({
           path: 'cloudflare-workers',
           namespace: 'test',
         }));
@@ -162,7 +163,7 @@ try {
     NIMBUS_SESSION: { idFromName: (name) => name, idFromString: (id) => id, get: () => sessionStub },
   };
   const supervisor = Object.create(SupervisorRPC.prototype);
-  supervisor.ctx = { props: { pid: userParent.pid, doId: 'session-do' } };
+  supervisor.ctx = { props: { pid: userParent.pid, doId: 'session-do', writerId: 'builtin-run' } };
   supervisor.env = sessionBinding;
   assert.deepEqual(
     await supervisor.cpSpawn({

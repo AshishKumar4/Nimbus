@@ -43,7 +43,7 @@ const DISK = {
   },
 };
 
-const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1' };
+const SUPERVISOR = { doId: 'coordinator-do-id', pid: 7, writerId: 'writer-1', bindingKind: 'process' };
 
 // The boot-spec union carries an explicit env through validation by
 // reference, or an embedder cannot hand an isolate the stubs it minted.

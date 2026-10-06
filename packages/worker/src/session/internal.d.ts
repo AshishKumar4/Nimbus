@@ -189,6 +189,13 @@ export interface SessionInternal {
   _emitExitDump(pid: number, code: number): void;
   _emitShellExecDone(pid: number, cmd: string, code: number, durationMs: number): void;
   _reportExternalExit(pid: number, code: number, reason: string): void;
+  // A process's output: `at` and `run` place a chunk in what its run printed
+  // (runtime/stop-replay.ts), so one a stopped run already delivered is not
+  // delivered again.
+  _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+  /** Close a live process's descriptors (a run of it that stopped goes with them). */
+  supervisorRewindBridge(pid: number): Promise<void>;
+  _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
 
   // Programmatic sandbox SDK RPC.
   _rpcReady(options?: { preinstall?: string[] }): Promise<{ ok: true; preinstalled: string[] }>;

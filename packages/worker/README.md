@@ -109,9 +109,19 @@ export default createNimbusHandler({
     { "binding": "NPM_TARBALL_CACHE",    "bucket_name": "my-nimbus-npm-cache" },
     { "binding": "NPM_PACKUMENT_CACHE",  "bucket_name": "my-nimbus-npm-packument-cache" },
     { "binding": "NIMBUS_RUNTIME_CACHE", "bucket_name": "nimbus-runtime-cache-public" }
-  ]
+  ],
+  "vars": {
+    // What `nimbus runtime sync` printed for the bucket above.
+    "NIMBUS_RUNTIME_CATALOG_SHA256": "<64 hex>"
+  }
 }
 ```
+
+`nimbus install` reads the runtime catalog in `NIMBUS_RUNTIME_CACHE` by its
+SHA-256, the `NIMBUS_RUNTIME_CATALOG_SHA256` var, and serves it only if its
+bytes hash to that value. `nimbus runtime sync` prints the value after it
+fills the bucket; every sync that adds a runtime changes it, so update the
+var and redeploy. Without the var, every `nimbus install` fails, saying so.
 
 The Worker needs `enhanced_error_serialization`. A process's filesystem errors
 reach it across workerd RPC, and only that flag carries their `code` across.

@@ -32,7 +32,7 @@ const DEFAULT_RUNTIME_VERSIONS = {
  * CLOUDFLARE_ACCOUNT_ID=… nimbus runtime sync --bucket my-runtime-cache python
  * ```
  */
-export async function syncRuntimes(args) {
+export async function syncRuntimes(args, options = {}) {
     const parsed = parseFlags(args);
     const bucket = parsed.bucket ?? 'nimbus-runtime-cache-public';
     const runtimes = parsed.runtimes.length > 0
@@ -42,13 +42,14 @@ export async function syncRuntimes(args) {
         process.stderr.write('nimbus runtime sync: CLOUDFLARE_ACCOUNT_ID env var required\n');
         return 78;
     }
-    // Locate the runtime sync helper in `@nimbus-sh/worker`.
-    const scriptPath = resolveBundleRuntimeScript();
+    // Locate the runtime sync helper in `@nimbus-sh/worker` (a test names its own copy).
+    const scriptPath = options.scriptPath ?? resolveBundleRuntimeScript();
     if (!scriptPath) {
         process.stderr.write('nimbus runtime sync: cannot locate Nimbus runtime sync helper\n');
         return 70;
     }
     process.stderr.write(`nimbus: syncing runtimes [${runtimes.join(', ')}] → r2://${bucket}\n`);
+    let catalogSha256 = null;
     for (const rt of runtimes) {
         const [name, explicitVersion] = rt.split('@');
         const version = explicitVersion || DEFAULT_RUNTIME_VERSIONS[name];
@@ -56,13 +57,22 @@ export async function syncRuntimes(args) {
             process.stderr.write(`nimbus runtime sync: unknown runtime "${rt}" (use name@version)\n`);
             return 64;
         }
-        const code = await runOne(scriptPath, [name, version, '--bucket', bucket]);
+        const { code, catalogSha256: published } = await runOne(scriptPath, [name, version, '--bucket', bucket]);
         if (code !== 0) {
             process.stderr.write(`nimbus runtime sync: ${rt} failed (exit ${code})\n`);
             return code;
         }
+        catalogSha256 = published;
     }
-    process.stdout.write(JSON.stringify({ ok: true, bucket, runtimes }) + '\n');
+    if (catalogSha256 === null) {
+        process.stderr.write('nimbus runtime sync: the publisher did not report the catalog it wrote\n');
+        return 70;
+    }
+    // Each publish rewrote the catalog: the last one is what the bucket holds now.
+    process.stderr.write(`nimbus: the Worker that binds r2://${bucket} must carry\n` +
+        `  "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "${catalogSha256}" }\n` +
+        '  (buildNimbusWranglerConfig: runtimeCatalogSha256). Redeploy it after changing the value.\n');
+    process.stdout.write(JSON.stringify({ ok: true, bucket, runtimes, catalogSha256 }) + '\n');
     return 0;
 }
 /** `nimbus runtime list` — print the catalog the SDK ships against. */
@@ -95,16 +105,27 @@ function resolveBundleRuntimeScript() {
         return null;
     }
 }
+/** The line bundle-runtime.mjs prints after every catalog it writes, whatever the bucket: the catalog it left there. */
+const CATALOG_PIN_LINE = /^NIMBUS_RUNTIME_CATALOG_SHA256=([a-f0-9]{64})$/m;
+/**
+ * Run the publisher for one runtime, its output passed through as it comes,
+ * and the catalog digest it reports (null if it reported none).
+ */
 function runOne(scriptPath, args) {
     return new Promise((resolveExit) => {
         const child = spawn('node', [scriptPath, ...args], {
-            stdio: 'inherit',
+            stdio: ['inherit', 'pipe', 'inherit'],
             env: process.env,
         });
-        child.on('exit', (code) => resolveExit(code ?? 1));
+        let output = '';
+        child.stdout.on('data', (chunk) => {
+            process.stdout.write(chunk);
+            output += chunk.toString('utf8');
+        });
+        child.on('close', (code) => resolveExit({ code: code ?? 1, catalogSha256: CATALOG_PIN_LINE.exec(output)?.[1] ?? null }));
         child.on('error', (e) => {
             process.stderr.write(`spawn error: ${e.message}\n`);
-            resolveExit(70);
+            resolveExit({ code: 70, catalogSha256: null });
         });
     });
 }

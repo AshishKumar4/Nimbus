@@ -329,6 +329,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     supervisorBridge(pid?: number): RuntimeFsBridge;
     /** Drop a dead pid's supervisor bridge — its credential stops being valid. */
     supervisorForgetBridge(pid: number): void;
+    supervisorRewindBridge(pid: number): Promise<void>;
     supervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
     /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
     serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown>;
@@ -368,6 +369,30 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     _rpcFsAppendAck(writerId: string, moduleId: string, operationId: string, pid?: number): Promise<void>;
     _rpcHmrRelay(clientId: string | null, msg: string): Promise<void>;
     _rpcHmrNextEvent(timeoutMs: number): Promise<HmrEvent[]>;
+    _rpcReplayBoundary(pid?: number, run?: string): Promise<void>;
+    _rpcStdinPrepared(pid?: number, run?: string): Promise<void>;
+    _rpcGetCachedTarball(integrity: string, pid?: number, run?: string): Promise<{
+        readOnly: boolean;
+    }>;
+    _rpcPutCachedTarball(integrity: string, bytes: Uint8Array | ArrayBuffer): Promise<void>;
+    _rpcGetPackument(name: string, options?: {
+        retries?: number;
+        timeoutMs?: number;
+        registry?: string;
+    }, pid?: number, run?: string): Promise<{
+        readOnly: boolean;
+    }>;
+    _rpcCacheResult(ticket: string, result: {
+        value?: unknown;
+        failure?: unknown;
+        failed?: boolean;
+    }, pid?: number, run?: string): Promise<void>;
+    _rpcStdinFileRead(path: string, offset: number, length: number, pid?: number): Promise<{
+        data: Uint8Array;
+        size: number;
+    }>;
+    _rpcNetTls(action: unknown, token: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
+    _rpcOutbound(action: unknown, payload: unknown, pid?: number, run?: string): Promise<unknown>;
     _rpcWriteBatch(payload: any, pid?: number): Promise<{
         inodes: number;
         chunks: number;
@@ -377,8 +402,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         failed: number;
     }>;
     _rpcRecordCacheStats(events: any[]): Promise<void>;
-    _rpcStdout(pid: number, data: Uint8Array): Promise<void>;
-    _rpcStderr(pid: number, data: Uint8Array): Promise<void>;
+    _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
+    _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;
     _rpcReportRuntimeCode(pid: number, entries: unknown[], executedModules?: string[], dataReads?: string[]): Promise<void>;
     _emitExitDump(pid: number, code: number): void;
@@ -428,7 +453,7 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         ok: boolean;
     }>;
     _rpcCpStdinEnd(childPid: number): Promise<void>;
-    _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number): Promise<{
+    _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string): Promise<{
         data: Uint8Array;
         ended: boolean;
         resize?: {

@@ -30,7 +30,6 @@
 import assert from 'node:assert/strict';
 import { createHash } from 'node:crypto';
 import { readFileSync } from 'node:fs';
-import { mock } from 'bun:test';
 
 const WORKER_SRC = new URL('../../packages/worker/src/', import.meta.url);
 const CATALOG_SRC = new URL('runtime/runtime-catalog.ts', WORKER_SRC);
@@ -96,11 +95,6 @@ const attackerCatalogText = JSON.stringify({
   },
 });
 
-// The build-time root of trust, injected before the module under test loads.
-mock.module(new URL('runtime-catalog.generated.ts', WORKER_SRC).pathname, () => ({
-  RUNTIME_CATALOG_SHA256: sha(honestCatalog),
-}));
-
 const { fetchCatalog, fetchManifest, fetchBlob } = await import(CATALOG_SRC.pathname);
 
 // The module keeps per-isolate state (the digests whose cached copy failed),
@@ -163,7 +157,7 @@ function installCache() {
 /** R2 holding the honest publish. Records every key read. */
 function honestR2() {
   const objects = new Map([
-    ['catalog/v1.json', honestCatalog],
+    [`catalog/sha256/${sha(honestCatalog)}.json`, honestCatalog],
     [MANIFEST_KEY, honestManifest],
     [HONEST_BLOB_KEY, HONEST_BLOB],
     [ATTACKER_BLOB_KEY, ATTACKER_BLOB],
@@ -190,7 +184,8 @@ function honestR2() {
   };
 }
 
-const envWith = (r2) => ({ NIMBUS_RUNTIME_CACHE: r2 });
+// The deployment's root of trust: the catalog its bucket holds, by digest.
+const envWith = (r2) => ({ NIMBUS_RUNTIME_CACHE: r2, NIMBUS_RUNTIME_CATALOG_SHA256: sha(honestCatalog) });
 const text = (bytes) => new TextDecoder().decode(bytes);
 const readAll = async (stream) => new Uint8Array(await new Response(stream).arrayBuffer());
 // The L2 fill runs beside the consumer and is not awaited by it.
@@ -353,7 +348,7 @@ for (const url of Object.values(keys)) {
     sha(honestManifest),
     'a poisoned L2 catalog was served: it would vouch for the attacker manifest',
   );
-  assert.ok(r2.reads.includes('catalog/v1.json'), 'the rejected cache entry did not fall through to R2');
+  assert.ok(r2.reads.includes(`catalog/sha256/${sha(honestCatalog)}.json`), 'the rejected cache entry did not fall through to R2');
 }
 
 // ── 5. A fully attacker-controlled L2 cannot change what is installed ───

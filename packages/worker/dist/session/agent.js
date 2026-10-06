@@ -16,6 +16,7 @@ import { ensureProgrammaticReady, rpcExec, rpcEnsureRuntimes, rpcInstallRuntime,
 import { resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { appendTextPart, interruptRunningTools, textFromParts, upsertStoredMessage, upsertToolPart, AGENT_OAUTH_RESULT_CHANNEL, } from './agent-contract.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 const MESSAGES_KEY = 'nimbus:agent:messages';
 const STATE_COOKIE = '__Host-nimbus_agent_oauth_state';
 const STATE_COOKIE_PURPOSE = 'nimbus-agent-oauth-state';
@@ -367,7 +368,7 @@ function agentChatStream(self, messages, userMessage) {
                 return parts.length > 0 ? enqueueStreamingPersistence() : persistenceQueue;
             };
             const scheduleTextFlush = (delta) => {
-                textBytesSinceFlush += encoder.encode(delta).byteLength;
+                textBytesSinceFlush += utf8Length(delta);
                 if (textBytesSinceFlush >= STREAMING_TEXT_FLUSH_BYTES)
                     return flushStreamingTurn();
                 if (textFlushTimer === null) {

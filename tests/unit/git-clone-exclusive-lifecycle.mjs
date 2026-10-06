@@ -159,14 +159,14 @@ function commandContext(args) {
 }
 
 {
-  // Unsupported flags fail the command loudly instead of silently no-opping.
+  // A filter Nimbus cannot fetch with fails the command loudly instead of silently no-opping.
   const harness = registerCloneHarness();
   const stderrLines = [];
-  const ctx = commandContext(['clone', '--filter=blob:none', 'https://example.invalid/repo.git']);
+  const ctx = commandContext(['clone', '--filter=sparse:oid=main:.sparse', 'https://example.invalid/repo.git']);
   ctx.stderr = { write(line) { stderrLines.push(line); } };
   const exitCode = await harness.gitCommand(ctx);
   assert.equal(exitCode, 128);
-  assert.match(stderrLines.join(''), /does not support '--filter'/);
+  assert.match(stderrLines.join(''), /invalid filter-spec 'sparse:oid=main:.sparse'/);
   assert.equal(harness.acquiredRoots.length, 0, 'refused clone must not acquire a mutation lease');
 }
 

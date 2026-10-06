@@ -17,6 +17,8 @@ globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
 globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
+globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
+const { WAVE_PATHS } = globalThis.__nimbusWaveWriter;
 globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 globalThis.DecompressionStream = class DecompressionStream {
   readable;
@@ -60,12 +62,14 @@ function tarFile(name, text) {
   return [header, padded];
 }
 
-function makeTarball() {
-  // package.json deliberately arrives first; the facet must hold it back as
-  // the owner's final completion mutation.
+// package.json deliberately arrives first; the facet must hold it back as
+// the owner's final completion mutation.
+function makeTarball(entries = [
+  ['package/package.json', '{"name":"fixture","version":"1.0.0"}'],
+  ['package/index.js', 'export default 1;'],
+]) {
   const parts = [
-    ...tarFile('package/package.json', '{"name":"fixture","version":"1.0.0"}'),
-    ...tarFile('package/index.js', 'export default 1;'),
+    ...entries.flatMap(([name, text]) => tarFile(name, text)),
     new Uint8Array(1024),
   ];
   const tar = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
@@ -125,17 +129,21 @@ const packages = ['a', 'b'].map((name) => ({
   pkgDir: `node_modules/${name}`,
   installRoot: 'node_modules',
   mtime: 1,
-  chunkSize: 65_536,
 }));
 
 const result = await installPackagesInFacet({ packages, concurrency: 2 }, env);
 assert.equal(result.perPackage.length, 2);
 assert.ok(result.perPackage.every((pkg) => pkg.errorText?.includes('injected wave failure')));
-assert.equal(
-  inodePaths.flat().some((path) => path.endsWith('/package.json')),
-  false,
-  'a failed content wave must prevent every participating owner marker from publishing',
-);
+// A marker may share a wave with its package's files, but always follows
+// them: a wave commits its records in order, so a refused wave that left
+// the files unpublished left the marker unpublished too.
+assert.equal(inodePaths.length, 1, 'a wave was sent after one the session refused');
+for (const name of ['a', 'b']) {
+  const order = inodePaths.flat();
+  const marker = order.indexOf(`node_modules/${name}/package.json`);
+  assert.ok(marker === -1 || marker > order.indexOf(`node_modules/${name}/index.js`),
+    `${name}'s completion marker was sent ahead of its files`);
+}
 
 const successfulWaves = [];
 const success = await installPackagesInFacet({ packages, concurrency: 2 }, {
@@ -180,10 +188,10 @@ for (const name of ['a', 'b']) {
   );
 }
 
-// Producer preflushes before 128 paths and never overlaps W7 RPCs even when
-// many package pipelines reach the shared wave concurrently.
+// The producer cuts waves at the W7 bound and never overlaps W7 RPCs even
+// when many package pipelines write concurrently.
 {
-  const manyPackages = Array.from({ length: 130 }, (_, index) => ({
+  const manyPackages = Array.from({ length: 700 }, (_, index) => ({
     name: `pkg-${index}`,
     version: '1.0.0',
     tarballUrl: `https://unused.invalid/pkg-${index}`,
@@ -191,8 +199,7 @@ for (const name of ['a', 'b']) {
     pkgDir: `node_modules/pkg-${index}`,
     installRoot: 'node_modules',
     mtime: 1,
-    chunkSize: 65_536,
-  }));
+    }));
   let active = 0;
   let peakActive = 0;
   const pathCounts = [];
@@ -224,7 +231,41 @@ for (const name of ['a', 'b']) {
   assert.ok(result.perPackage.every((pkg) => !pkg.errorText));
   assert.equal(peakActive, 1, 'npm producer started overlapping flush RPCs');
   assert.ok(pathCounts.length > 1, 'path-limit fixture did not produce multiple waves');
-  assert.ok(pathCounts.every((count) => count <= 128), `oversize wave paths: ${pathCounts}`);
+  assert.ok(pathCounts.every((count) => count <= WAVE_PATHS), `oversize wave paths: ${pathCounts}`);
+}
+
+// A tarball may name one file twice: agent-base@7.1.4 and
+// https-proxy-agent@7.0.6 ship both `package/./dist/index.js` and
+// `package/dist/index.js`, one path once canonical. The second write
+// supersedes the first in the buffered wave, and the package is published
+// with it (it was reported unpublished: two writes, one record cut).
+{
+  const duplicated = makeTarball([
+    ['package/./index.js', 'export default 0;'],
+    ['package/index.js', 'export default 1;'],
+    ['package/package.json', '{"name":"fixture","version":"1.0.0"}'],
+  ]);
+  const waves = [];
+  const result = await installPackagesInFacet({ packages: packages.slice(0, 1), concurrency: 1 }, {
+    SUPERVISOR: {
+      async getCachedTarball() {
+        return { bytes: duplicated.slice(), events: [] };
+      },
+      async writeBatchStream(stream) {
+        const decoded = await decodeWave(stream);
+        waves.push(decoded.paths);
+        return {
+          ok: true,
+          committedGroupSequence: decoded.paths.length,
+          committedPathCount: decoded.paths.length,
+          inodes: decoded.paths.length,
+          chunks: decoded.chunks,
+        };
+      },
+    },
+  });
+  assert.equal(result.perPackage[0].errorText, undefined, 'a duplicated tarball entry left its package unpublished');
+  assert.equal(waves.flat().filter((path) => path === 'node_modules/a/index.js').length, 1);
 }
 
 console.log('npm shared write wave ownership: ok');

@@ -109,10 +109,10 @@ class FacetProcessHost {
         this.coordDoId = ctx.id.toString();
     }
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run({ ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId }, params, consume);
+        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId }), params, consume);
     }
     async open(params) {
-        const supervisor = { ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId };
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId });
         const { name, ...facet } = processes(this.ctx, this.env).spawn(this.disk, supervisor, params);
         return {
             ...facet,
@@ -256,7 +256,7 @@ class PeerProcessHost {
      * worker of the coordinator here exactly as it does on `facet`.
      */
     runOnce(params, consume) {
-        return processes(this.ctx, this.env).run({ ...supervisorBindingProps(this.ctx, params.pid), writerId: params.writerId }, params, consume);
+        return processes(this.ctx, this.env).run(supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId }), params, consume);
     }
     async open(params) {
         if (params.facet) {
@@ -277,7 +277,7 @@ class PeerProcessHost {
         // the peer dies under either.
         // The peer mints the process's binding from these, for THIS object: the
         // coordinator's doId, route and delivery instance.
-        const supervisor = supervisorBindingProps(this.ctx, params.pid);
+        const supervisor = supervisorBindingProps(this.ctx, params.pid, { writerId: params.writerId });
         const hostLeg = placement.stub._rpcHostProcess(params.boot, {
             coordinatorDoId: supervisor.doId,
             route: supervisor.route,

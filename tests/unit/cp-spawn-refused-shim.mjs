@@ -26,6 +26,9 @@
 
 import assert from 'node:assert/strict';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
+import { FacetProcessManager } from '../../packages/worker/src/facets/process.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { DynamicWorkerDeadlockError } from '../../packages/fabric/src/budgets.ts';
 
 const make = (supervisor) => new Function('__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname', '__nimbusProcessId',
   'const __pendingIO = [];' + generateShimsCode() + '\nreturn { proc: __processMod, cp: builtins.child_process };')({}, {}, {}, supervisor, { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }, '/home/user', [], {}, '/home/user/main.js', '/home/user', 4321);
@@ -49,6 +52,48 @@ const supervisorFor = (answer) => ({
   cpDrainOutput: async () => ({ stdout: new Uint8Array(0), stderr: new Uint8Array(0), stdoutClosed: true, stderrClosed: true }),
   cpWait: async (_pid, waitMs, _acquire, knownStarted) => { await tick(); return answer(waitMs, knownStarted); },
 });
+
+// A real broker's refusal after READY is a crashed EXISTING child, not a
+// spawn that never ran. Both the start reply and its first bytes precede
+// the refusal; the parent sees stderr, exit and close, with the same pid.
+{
+  const processes = new SessionProcessSupervisor();
+  const root = processes.spawn('node root', [], '/');
+  let refuse;
+  const pending = new Promise((resolve) => { refuse = resolve; });
+  const broker = new FacetProcessManager({
+    processes, vfsForProcess() { throw new Error('no file'); },
+    commandRegistry: { async resolve() { return { kind: 'facet-direct' }; } },
+    facetMgr: { async execStream(payload, _opts, hooks) {
+      const { processPid } = JSON.parse(payload);
+      hooks.onStarted(); hooks.onStdout(new TextEncoder().encode('READY\n'));
+      await pending;
+      throw new DynamicWorkerDeadlockError(processPid, [root.pid]);
+    } },
+  });
+  const { cp } = make({
+    cpSpawn: (req) => broker.spawn({ ...req, parentPid: root.pid }),
+    cpStdinWrite: (pid, bytes) => broker.stdinWrite(pid, bytes),
+    cpStdinEnd: (pid) => broker.stdinEnd(pid),
+    cpReadOutput: (...args) => broker.readOutput(...args),
+    cpDrainOutput: (...args) => broker.drainOutput(...args),
+    cpWait: (pid, ms, _acquire, started) => broker.wait(pid, ms, started),
+  });
+  const child = cp.spawn('node', ['R']);
+  const events = watch(child);
+  let out = '', err = '';
+  child.stdout.on('data', (d) => { out += String(d); });
+  child.stderr.on('data', (d) => { err += String(d); });
+  for (let i = 0; i < 200 && out !== 'READY\n'; i++) await tick();
+  assert.equal(out, 'READY\n');
+  assert.deepEqual(events, [['spawn', child.pid]]);
+  const pid = child.pid;
+  refuse();
+  for (let i = 0; i < 200 && !events.some((e) => e[0] === 'close'); i++) await tick();
+  assert.deepEqual(events, [['spawn', pid], ['exit', 1, null], ['close', 1, null, pid]], 'a started child retains its pid and exits/closes without a spawn error');
+  assert.match(err, /EAGAIN.*Resource temporarily unavailable/s);
+  assert.equal(out, 'READY\n', 'READY is never repeated');
+}
 
 // ── refused, heard by the wait loop ────────────────────────────────────────
 {

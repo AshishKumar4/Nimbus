@@ -235,7 +235,7 @@ export async function runEsbuildCli(
   const mint = supervisorEntrypoint();
   if (!mint) throw new Error('Nimbus: no supervisor entrypoint is composed, so the esbuild facet cannot reach the files');
   const supervisor = mint<WasiSupervisorStub>({
-    props: supervisorBindingProps(ctx, pid),
+    props: supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID() }),
   });
   return onEsbuildFacet(ctx, env, (facet) => facet.cli(args, supervisor, output));
 }

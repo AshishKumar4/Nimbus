@@ -51,7 +51,7 @@
   },
   "dependencies": {
     "@nimbus-sh/core": "^0.15.0",
-    "@nimbus-sh/platform": "^0.7.0",
+    "@nimbus-sh/platform": "^0.7.2",
     "zod": "^4.4.3"
   },
   "devDependencies": {

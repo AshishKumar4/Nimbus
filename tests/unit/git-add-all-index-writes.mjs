@@ -42,11 +42,12 @@ let filesInFlight = 0;
 let peakFilesInFlight = 0;
 const observed = new Proxy(files.view({ pid: 1, cred: CRED_SESSION_USER }), {
   get(target, key) {
-    if (key === 'readFile') {
+    // git reads a file it stages past the content cache; either read counts.
+    if (key === 'readFile' || key === 'readFileUncached') {
       return (path) => {
         // The files being staged; .gitignore lookups are reads too, and write no object.
         if (/\/f\d+\.txt$/.test(path)) peakFilesInFlight = Math.max(peakFilesInFlight, ++filesInFlight);
-        return target.readFile(path);
+        return target[key](path);
       };
     }
     if (key === 'writeFile') {
@@ -89,7 +90,7 @@ indexWrites = 0;
 peakFilesInFlight = filesInFlight = 0;
 await git('add', '-A');
 assert.equal(indexWrites, 1, `add -A of ${FILES} new files wrote the index ${indexWrites} times`);
-assert.ok(peakFilesInFlight <= 2, `add -A held ${peakFilesInFlight} files at once`);
+assert.ok(peakFilesInFlight >= 1 && peakFilesInFlight <= 2, `add -A held ${peakFilesInFlight} files at once`);
 // Taken here: the reads later commands make keep the counter moving.
 const stagedAtOnce = peakFilesInFlight;
 await git('commit', '-qm', 'base');

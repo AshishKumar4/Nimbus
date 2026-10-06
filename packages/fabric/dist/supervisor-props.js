@@ -19,12 +19,21 @@ import { hostRoute } from './composition.js';
  * is `ctx`, for process `pid`, reaching `options.doId` (this object by
  * default) by `options.route` (this isolate's composition by default).
  */
-export function supervisorBindingProps(ctx, pid, options = {}) {
+export function supervisorBindingProps(ctx, pid, options) {
+    if (typeof options.writerId !== 'string' || options.writerId.length === 0)
+        throw new Error('a process supervisor binding requires a run');
     const own = ctx.id.toString();
     const doId = options.doId ?? own;
     const route = options.route ?? hostRoute() ?? undefined;
     const delivery = pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {};
-    return { doId, pid, route, ...delivery };
+    return { doId, pid, route, ...delivery, bindingKind: 'process', writerId: options.writerId };
+}
+/** The one mint for SUPERVISOR/outbound capabilities handed to a process. */
+export function mintProcessSupervisor(mint, props) {
+    if (props.bindingKind !== 'process' || typeof props.writerId !== 'string' || props.writerId.length === 0) {
+        throw new Error('cannot hand a process a supervisor binding without its run');
+    }
+    return mint({ props });
 }
 /**
  * `key`, for a loader cache entry whose worker holds a binding with `props`:

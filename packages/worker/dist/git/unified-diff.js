@@ -336,10 +336,43 @@ function scaleLinear(it, width, maxChange) {
     // At least one mark for any change: scale to one column less, then add one.
     return 1 + Math.floor(it * (width - 1) / maxChange);
 }
-/** The --stat block for `columns` terminal columns (git's term_columns: $COLUMNS, else 80). */
-export function formatStat(files, columns) {
+/**
+ * The --stat rows of a diff, kept until its widths are known: a name each,
+ * and the counts in columns, no object a file (a diff of every file of a
+ * 96,000-file tree holds them all at once).
+ */
+export class StatList {
+    names = [];
+    counts = new Float64Array(2 * 1024);
+    binaries = new Uint8Array(1024);
+    get length() {
+        return this.names.length;
+    }
+    push(file) {
+        const i = this.names.length;
+        if (i === this.binaries.length) {
+            const counts = new Float64Array(this.counts.length * 2);
+            counts.set(this.counts);
+            this.counts = counts;
+            const binaries = new Uint8Array(this.binaries.length * 2);
+            binaries.set(this.binaries);
+            this.binaries = binaries;
+        }
+        this.names.push(file.name);
+        this.counts[2 * i] = file.added;
+        this.counts[2 * i + 1] = file.deleted;
+        this.binaries[i] = file.binary ? 1 : 0;
+    }
+    *[Symbol.iterator]() {
+        for (let i = 0; i < this.names.length; i++) {
+            yield { name: this.names[i], added: this.counts[2 * i], deleted: this.counts[2 * i + 1], binary: this.binaries[i] === 1 };
+        }
+    }
+}
+/** The --stat block for `columns` terminal columns (git's term_columns: $COLUMNS, else 80), a line at a time. */
+export function* formatStat(files, columns) {
     if (files.length === 0)
-        return '';
+        return;
     let maxLen = 0;
     let maxChange = 0;
     let numberWidth = 0;
@@ -368,7 +401,6 @@ export function formatStat(files, columns) {
         else
             graphWidth = width - numberWidth - 6 - nameWidth;
     }
-    let out = '';
     let insertions = 0;
     let deletions = 0;
     for (const file of files) {
@@ -385,7 +417,7 @@ export function formatStat(files, columns) {
         }
         const lead = ` ${prefix}${name}${' '.repeat(Math.max(len - name.length, 0))} | `;
         if (file.binary) {
-            out += lead + 'Bin'.padStart(numberWidth)
+            yield lead + 'Bin'.padStart(numberWidth)
                 + (file.added || file.deleted ? ` ${file.deleted} -> ${file.added} bytes\n` : '\n');
             continue;
         }
@@ -407,14 +439,14 @@ export function formatStat(files, columns) {
                 add = marks - del;
             }
         }
-        out += `${lead}${String(total).padStart(numberWidth)}${total ? ' ' : ''}${'+'.repeat(add)}${'-'.repeat(del)}\n`;
+        yield `${lead}${String(total).padStart(numberWidth)}${total ? ' ' : ''}${'+'.repeat(add)}${'-'.repeat(del)}\n`;
     }
     let summary = files.length === 1 ? ` ${files.length} file changed` : ` ${files.length} files changed`;
     if (insertions || deletions === 0)
         summary += `, ${insertions} insertion${insertions === 1 ? '' : 's'}(+)`;
     if (deletions || insertions === 0)
         summary += `, ${deletions} deletion${deletions === 1 ? '' : 's'}(-)`;
-    return `${out}${summary}\n`;
+    yield `${summary}\n`;
 }
 // ── Renames (diffcore-rename.c, diffcore-delta.c) ───────────────────────
 export const MAX_SCORE = 60000;

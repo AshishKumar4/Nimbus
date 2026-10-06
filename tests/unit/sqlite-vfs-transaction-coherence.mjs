@@ -211,11 +211,15 @@ for (const [name, mutate] of [
   const { harness, raw, vfs } = open();
   vfs.writeFile('affected', 'stream original');
   const revision = vfs.revision();
-  harness.setFaultInjector((statement) => statement.sql.startsWith('INSERT OR REPLACE INTO file_chunks')
+  // The chunk insert of the replacement's own transaction. (The injector
+  // used to name a table the store no longer has; the stream failed anyway,
+  // on a chunk view whose shared buffer the encoder had transferred.)
+  harness.setFaultInjector((statement) => statement.sql.startsWith('INSERT INTO vfs_chunks')
     ? new Error('injected stream chunk failure') : null);
-  const result = await vfs.writeStream(encodeWriteBatchStream(batch('affected', replacement)));
+  const result = await vfs.writeStream(encodeWriteBatchStream(batch('affected', replacement.slice())));
   harness.clearFault();
   assert.equal(result.ok, false);
+  assert.match(result.error.message, /injected stream chunk failure/);
   assert.equal(vfs.readFileString('affected'), 'stream original');
   assert.equal(vfs.revision(), revision);
   assert.equal(raw._verifyCounters(), null);

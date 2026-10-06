@@ -17,6 +17,7 @@ import {
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
+import { doUnavailableError } from './do-errors.js';
 
 export type NimbusRuntimeName =
   | 'node'
@@ -249,6 +250,17 @@ export async function handleNimbusRemoteApi(
       (result) => remoteJson(wantDiag ? { ok: true, result, rpcMs: Date.now() - t0 } : { ok: true, result }),
     );
   } catch (e: unknown) {
+    const unavailable = doUnavailableError(e);
+    if (unavailable) {
+      return remoteJson({
+        ok: false,
+        error: unavailable.error,
+        code: unavailable.code,
+      }, 503, {
+        'Retry-After': unavailable.retryAfter,
+        'Access-Control-Expose-Headers': 'Retry-After',
+      });
+    }
     const err = remoteError(e);
     return remoteJson({
       ok: false,
@@ -658,9 +670,10 @@ function trimSlashes(value: string): string {
   return value.slice(start, end);
 }
 
-function remoteJson(value: unknown, status = 200): Response {
+function remoteJson(value: unknown, status = 200, headers: Record<string, string> = {}): Response {
   return corsResponse(JSON.stringify(WireEncoder.parse(value)), status, {
     'Content-Type': 'application/json',
+    ...headers,
   });
 }
 
