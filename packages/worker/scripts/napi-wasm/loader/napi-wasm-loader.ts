@@ -25,10 +25,13 @@
  *     failing with EAGAIN. Synchronous napi entries never suspend.
  *   - A host whose callers live in separate I/O contexts sharing one binding
  *     (workerd's Durable Objects, whose facets share an isolate) passes
- *     `contexts` (callLanes): each threadsafe function and async work then
- *     calls JavaScript in the context it was created in, and the pump runs
+ *     `contexts` (callLanes): each threadsafe function then calls JavaScript
+ *     in the context it was created in, the pump and emnapi's other work run
  *     in the contexts of the calls in flight, so no caller's callbacks run in
- *     another's context, nor wait on one that has ended.
+ *     another's context, nor wait on one that has ended; and what the binding
+ *     awaits in a context abandoned under it is refused, so its work ends.
+ *     Async work is refused there: emnapi queues it past its pool where no
+ *     wrapper sees, and no binding run that way uses it.
  */
 
 import { instantiateNapiModuleSync } from '@emnapi/core';
@@ -56,6 +59,10 @@ declare const __NIMBUS_NAPI_WASM_DISPATCHED__: readonly string[];
 
 type NodeFs = typeof NodeFsModule;
 type WasmFn = (...args: never[]) => unknown;
+/** A napi import as the binding calls it: wasm32 arguments, a status back. */
+type NapiImport = (...args: number[]) => number;
+const isNapiImport = (value: unknown): value is NapiImport => typeof value === 'function';
+const NAPI_PENDING_EXCEPTION = 10;
 
 export interface NapiWasmBindingHost {
   /** The calling process's `fs`. Nimbus's node-shims provide it in a guest. */
@@ -89,9 +96,10 @@ export interface NapiWasmBindingHost {
    * The I/O contexts the binding's callers run in, for a host where callers
    * in different contexts share this one binding and each may do I/O only in
    * its own (workerd: the Durable Objects whose facets share an isolate).
-   * Each threadsafe function and async work then calls JavaScript in the
-   * context it was created in, and the pump continues in the contexts of the
-   * calls in flight. Absent: every callback runs where it was scheduled.
+   * Each threadsafe function then calls JavaScript in the context it was
+   * created in, and the pump and emnapi's other work continue in the
+   * contexts of the calls in flight. Async work is refused. Absent: every
+   * callback runs where it was scheduled.
    */
   contexts?: BindingContexts;
 }
@@ -100,18 +108,35 @@ export interface NapiWasmBindingHost {
 export interface BindingContexts {
   /** The context of the JavaScript running now, or undefined (none of the host's). */
   current(): object | undefined;
-  /** Runs `fn` in `context`, soon; false when that context has ended (the caller runs it where it is). */
+  /** Runs `fn` in `context`, soon; false when that context has ended (the caller runs it elsewhere). */
   post(context: object, fn: () => void): boolean;
   /** The contexts with a call in flight. */
   live(): Iterable<object>;
+  /**
+   * Tells `listener` of each context as it ends: its call settled, or it was
+   * abandoned to `successor` (its owner is known gone with the call
+   * unsettled, so nothing awaited there will settle; what was left there is
+   * the successor's to run).
+   */
+  onEnded(listener: (context: object, successor: object | undefined) => void): void;
 }
 
 /** One call's context (callLanes): the loop that runs what is posted to it. */
-interface Lane {
-  jobs: Array<() => void>;
+class Lane {
+  readonly jobs: Array<() => void> = [];
   /** Wakes the loop: a resolver made in the lane's own context. */
-  ring: (() => void) | null;
-  closed: boolean;
+  ring: (() => void) | null = null;
+  closed = false;
+  constructor(
+    /** Called instead of the call's settling, if the lane is abandoned. */
+    readonly abandoned: (() => void) | undefined,
+  ) {}
+}
+
+/** The calls of one instance of an owner (callLanes `instance`). */
+export interface LaneOwner {
+  /** Runs `call` in a lane of its own, open until `call` settles; `abandoned` if the lane is abandoned first. */
+  run<T>(call: () => Promise<T>, abandoned?: () => void): Promise<T>;
 }
 
 /** What callLanes needs of `node:async_hooks`. */
@@ -130,16 +155,25 @@ interface AsyncLocalStorageClass {
  *
  * A lane's loop ends with its call: `run`'s settling closes the lane, the
  * loop runs what was already posted to it and returns, and a later post is
- * refused. A call whose context dies under it (its Durable Object aborted)
- * takes its loop with it; its lane stays listed as live, holding at most one
- * pending pump turn and its own call's undelivered callbacks.
+ * refused. A call whose context dies under it (its Durable Object reset)
+ * takes its loop and its `finally` with it, so its lane is ended from
+ * outside: calls run through an `instance` of their owner (a Durable Object,
+ * by id), an owner has at most one instance alive, and so the first call of
+ * a new instance abandons every lane an earlier one left open, to its own
+ * lane. Each abandoned lane's `abandoned` is called, `onEnded` listeners hear
+ * of it, and its undelivered jobs move to the new lane. An owner that never
+ * calls again leaves its lanes until the isolate goes, with the build state
+ * they belong to.
  */
 export function callLanes(AsyncLocalStorage: AsyncLocalStorageClass): BindingContexts & {
-  /** Runs `call` in a lane of its own, open until `call` settles. */
-  run<T>(call: () => Promise<T>): Promise<T>;
+  /** One instance of `owner` (undefined: one tracked by no owner, never abandoned). */
+  instance(owner: string | undefined): LaneOwner;
 } {
   const storage = new AsyncLocalStorage<Lane>();
   const live = new Set<Lane>();
+  const listeners: Array<(context: object, successor: object | undefined) => void> = [];
+  /** The open lanes of each owner's latest instance to call, while it has any. */
+  const latest = new Map<string, Set<Lane>>();
   const drain = (lane: Lane) => {
     while (lane.jobs.length > 0) {
       const job = lane.jobs.shift()!;
@@ -163,28 +197,57 @@ export function callLanes(AsyncLocalStorage: AsyncLocalStorageClass): BindingCon
       lane.ring = null;
     }
   };
+  const end = (lane: Lane, successor: Lane | undefined) => {
+    if (lane.closed) return;
+    lane.closed = true;
+    live.delete(lane);
+    for (const listener of listeners) listener(lane, successor);
+    if (successor === undefined) {
+      lane.ring?.();
+      return;
+    }
+    // Its loop is gone with its context: what it would have run is the successor's.
+    lane.ring = null;
+    lane.abandoned?.();
+    successor.jobs.push(...lane.jobs.splice(0));
+    successor.ring?.();
+  };
   return {
     current: () => storage.getStore(),
     post(context, fn) {
-      const lane = context as Lane;
-      if (lane.closed) return false;
-      lane.jobs.push(fn);
-      lane.ring?.();
+      if (!(context instanceof Lane) || context.closed) return false;
+      context.jobs.push(fn);
+      context.ring?.();
       return true;
     },
     live: () => live,
-    async run(call) {
-      const lane: Lane = { jobs: [], ring: null, closed: false };
-      live.add(lane);
-      const looping = storage.run(lane, () => loop(lane));
-      try {
-        return await storage.run(lane, call);
-      } finally {
-        live.delete(lane);
-        lane.closed = true;
-        lane.ring?.();
-        await looping;
-      }
+    onEnded(listener) {
+      listeners.push(listener);
+    },
+    instance(owner) {
+      const open = new Set<Lane>();
+      return {
+        async run(call, abandoned) {
+          const lane = new Lane(abandoned);
+          live.add(lane);
+          const looping = storage.run(lane, () => loop(lane));
+          if (owner !== undefined) {
+            const listed = latest.get(owner);
+            latest.set(owner, open);
+            // Another instance's: gone, since the owner has one at a time.
+            if (listed !== undefined && listed !== open) for (const left of listed) end(left, lane);
+          }
+          open.add(lane);
+          try {
+            return await storage.run(lane, call);
+          } finally {
+            end(lane, undefined);
+            open.delete(lane);
+            if (owner !== undefined && open.size === 0 && latest.get(owner) === open) latest.delete(owner);
+            await looping;
+          }
+        },
+      };
     },
   };
 }
@@ -673,36 +736,60 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   }
 
   // ── Contexts ──────────────────────────────────────────────────────────
+  const context = createContext();
   // Without host.contexts, everything happens in one context (`here`).
   const contexts = host.contexts;
   const here = {};
   const contextNow = (): object => contexts?.current() ?? here;
-  /** The context each threadsafe function and async work was created in, by handle. */
+  /** The context each threadsafe function was created in, by handle, while that context's call is open (or its successor's). */
   const owners = new Map<number, object>();
-  /** The owner of the threadsafe function (or async work) being sent now. */
+  /** The owner of the threadsafe function being sent or released now. */
   let sending: object | undefined;
-  // emnapi's own setImmediate, for what is not routed.
-  const immediate = (fn: () => void) => {
-    if (typeof setImmediate === 'function') {
-      setImmediate(fn);
-    } else if (typeof MessageChannel === 'function') {
-      const channel = new MessageChannel();
-      channel.port1.onmessage = () => {
-        channel.port1.onmessage = null;
+  /** The rejection handlers the binding gave the promises it awaits, by the context awaiting. */
+  const awaiting = new WeakMap<object, Set<(reason: unknown) => void>>();
+  /** Work scheduled while no call was in flight: the next call into the binding takes it. */
+  const homeless: Array<() => void> = [];
+  if (contexts) {
+    // emnapi schedules all its work with this, in place of its default. A
+    // threadsafe function's dispatch runs in the context its function was
+    // created in; anything else (a closing function's finalize, a finalizer)
+    // in the call it was scheduled from, else the first call in flight to get
+    // to it, else the next call. Never on a timer of no call's: workerd runs
+    // finalization callbacks in its global scope, where setting one throws.
+    context.features.setImmediate = (fn: () => void) => {
+      for (const owner of [sending, contexts.current()]) {
+        if (owner !== undefined && contexts.post(owner, fn)) return;
+      }
+      let ran = false;
+      const once = () => {
+        if (ran) return;
+        ran = true;
         fn();
       };
-      channel.port2.postMessage(null);
-    } else {
-      setTimeout(fn, 0);
-    }
-  };
-  // With host.contexts, emnapi schedules a threadsafe function's dispatch
-  // (and an async work's steps) with this: it runs in the context its
-  // function was created in, and what it schedules from there stays there.
-  const routedImmediate = (fn: () => void) => {
-    const owner = sending;
-    if (contexts && owner !== undefined && contexts.post(owner, fn)) return;
-    immediate(fn);
+      let posted = false;
+      for (const live of contexts.live()) posted = contexts.post(live, once) || posted;
+      if (!posted) homeless.push(fn);
+    };
+    contexts.onEnded((ended, successor) => {
+      for (const [handle, owner] of owners) {
+        if (owner !== ended) continue;
+        if (successor === undefined) owners.delete(handle);
+        else owners.set(handle, successor);
+      }
+      const rejections = awaiting.get(ended);
+      awaiting.delete(ended);
+      if (successor === undefined || rejections === undefined) return;
+      // Nothing awaited there will settle: refusing each, in the successor's
+      // context, lets the abandoned call's work end and its state go.
+      const reason = new Error(`napi-wasm: ${host.name}: the call awaiting this was abandoned (its context ended)`);
+      for (const reject of rejections) contexts.post(successor, () => reject(reason));
+    });
+  }
+  /** Posts the homeless work to the call running now, if any. */
+  const rehome = () => {
+    if (!contexts || homeless.length === 0) return;
+    const now = contexts.current();
+    while (now !== undefined && homeless.length > 0 && contexts.post(now, homeless[0])) homeless.shift();
   };
 
   // ── The pump ──────────────────────────────────────────────────────────
@@ -744,10 +831,11 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
       scheduled.add(now);
       setTimeout(() => runPump(now), 0);
     }
-    for (const context of contexts?.live() ?? []) {
-      if (scheduled.has(context)) continue;
-      scheduled.add(context);
-      if (!contexts!.post(context, () => setTimeout(() => runPump(context), 0))) scheduled.delete(context);
+    if (!contexts) return;
+    for (const live of contexts.live()) {
+      if (scheduled.has(live)) continue;
+      scheduled.add(live);
+      if (!contexts.post(live, () => setTimeout(() => runPump(live), 0))) scheduled.delete(live);
     }
   };
   function runPump(context: object): void {
@@ -799,8 +887,11 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
           return target.apply(this, args);
         } finally {
           depth--;
-          if (depth === 0 && !pumping && fatal === null && aliveTasks !== null && aliveTasks() > 0) {
-            requestPump();
+          if (depth === 0) {
+            rehome();
+            // Mid-turn too: a JSPI turn's poll loop may have returned with
+            // its `finished` still queued, so the wake-up is kept (pumpAgain).
+            if (fatal === null && aliveTasks !== null && aliveTasks() > 0) requestPump();
           }
         }
       };
@@ -809,47 +900,90 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
     return w;
   };
 
+  const promiseThen = Promise.prototype.then;
+  const promiseCatch = Promise.prototype.catch;
   /**
-   * Each threadsafe function and async work remembers the context it was
-   * created in (its handle, written to the call's result pointer), and each
-   * send or queue of it routes the dispatch emnapi schedules to that context.
+   * The binding called `func` on `recv` in context `now`: a then or catch on
+   * a promise is how a binding awaits one, so its rejection handler is noted
+   * as awaited there until the promise settles.
    */
-  const routeCallbacks = (napi: Record<string, unknown>) => {
-    const wrap = (name: string, around: (original: WasmFn, args: number[]) => unknown) => {
+  const noteAwait = (now: object, recv: number, func: number, argc: number, argv: number) => {
+    if (!recv || !func) return;
+    const promise: unknown = context.jsValueFromNapiValue(recv);
+    if (!(promise instanceof Promise)) return;
+    const method: unknown = context.jsValueFromNapiValue(func);
+    const at = method === promiseThen ? 1 : method === promiseCatch ? 0 : -1;
+    if (at < 0 || argc <= at || !argv) return;
+    const handler: unknown = context.jsValueFromNapiValue(new DataView(memory.buffer).getUint32(argv + 4 * at, true));
+    if (typeof handler !== 'function') return;
+    const reject = (reason: unknown) => {
+      Reflect.apply(handler, undefined, [reason]);
+    };
+    const rejections = awaiting.get(now) ?? new Set();
+    awaiting.set(now, rejections);
+    rejections.add(reject);
+    const settled = () => {
+      rejections.delete(reject);
+    };
+    promise.then(settled, settled);
+  };
+
+  /**
+   * With host.contexts: each threadsafe function remembers the context it
+   * was created in (its handle, written to the call's result pointer), and
+   * each send or release of it routes what emnapi schedules to that context;
+   * each then or catch the binding calls on a promise is noted as awaited in
+   * the calling context; async work is refused.
+   */
+  const routeCallbacks = (napi: Record<string, unknown>, contexts: BindingContexts) => {
+    const wrap = (name: string, around: (original: NapiImport, args: number[]) => number) => {
       const original = napi[name];
-      if (typeof original !== 'function') throw new Error(`napi-wasm: emnapi has no ${name} to route`);
-      napi[name] = (...args: number[]) => around(original as WasmFn, args);
+      if (!isNapiImport(original)) throw new Error(`napi-wasm: emnapi has no ${name} to route`);
+      napi[name] = (...args: number[]) => around(original, args);
     };
-    const created = (resultIndex: number) => (original: WasmFn, args: number[]) => {
-      const status = original(...(args as never[]));
-      if (status === 0) {
-        const handle = new DataView(memory.buffer).getUint32(args[resultIndex] >>> 0, true);
-        const owner = contexts!.current();
-        if (owner) owners.set(handle, owner);
-        else owners.delete(handle);
-      }
-      return status;
-    };
-    const sent = (handleIndex: number) => (original: WasmFn, args: number[]) => {
+    const sent = (original: NapiImport, args: number[]) => {
       const outer = sending;
-      sending = owners.get(args[handleIndex] >>> 0);
+      sending = owners.get(args[0] >>> 0);
       try {
-        return original(...(args as never[]));
+        return original(...args);
       } finally {
         sending = outer;
       }
     };
     // napi_create_threadsafe_function(env, func, resource, name, max_queue, threads, finalize_data, finalize_cb, context, call_js, result)
-    wrap('napi_create_threadsafe_function', created(10));
+    wrap('napi_create_threadsafe_function', (original, args) => {
+      const status = original(...args);
+      if (status === 0) {
+        const handle = new DataView(memory.buffer).getUint32(args[10] >>> 0, true);
+        const owner = contexts.current();
+        if (owner !== undefined) owners.set(handle, owner);
+        else owners.delete(handle);
+      }
+      return status;
+    });
     // napi_call_threadsafe_function(func, data, mode)
-    wrap('napi_call_threadsafe_function', sent(0));
-    // napi_create_async_work(env, resource, name, execute, complete, data, result)
-    wrap('napi_create_async_work', created(6));
-    // napi_queue_async_work(env, work)
-    wrap('napi_queue_async_work', sent(1));
+    wrap('napi_call_threadsafe_function', sent);
+    // napi_release_threadsafe_function(func, mode): the last release dispatches what is queued, then finalizes.
+    wrap('napi_release_threadsafe_function', sent);
+    // napi_call_function(env, recv, func, argc, argv, result)
+    wrap('napi_call_function', (original, args) => {
+      const status = original(...args);
+      const now = contexts.current();
+      if (status === 0 && now !== undefined) noteAwait(now, args[1] >>> 0, args[2] >>> 0, args[3] >>> 0, args[4] >>> 0);
+      return status;
+    });
+    // napi_create_async_work(env, resource, name, execute, complete, data, result): refused, as a
+    // pending exception. emnapi queues work past its pool from inside another
+    // work's step, where no wrapper sees it, so it could not keep to its caller's context.
+    const napiThrow = napi.napi_throw;
+    if (!isNapiImport(napiThrow)) throw new Error('napi-wasm: emnapi has no napi_throw');
+    wrap('napi_create_async_work', (_original, args) => {
+      const refused = new Error(`napi-wasm: ${host.name} created async work, which a binding shared across contexts does not run`);
+      napiThrow(args[0], Number(context.napiValueFromJsValue(refused)));
+      return NAPI_PENDING_EXCEPTION;
+    });
   };
 
-  const context = contexts ? createContext({ features: { setImmediate: routedImmediate } }) : createContext();
   // What the binding holds open (threadsafe functions, async work) holds a
   // Node host's event loop open until released; a dead binding releases
   // nothing, so a fatal error lets go of it all.
@@ -888,7 +1022,7 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
       });
     },
     overwriteImports(importObject: Record<string, Record<string, unknown>>) {
-      if (contexts) routeCallbacks(importObject.napi);
+      if (contexts) routeCallbacks(importObject.napi, contexts);
       importObject.env = { ...importObject.env, ...importObject.napi, ...importObject.emnapi, memory };
       importObject.wasi_snapshot_preview1 = wasi;
       importObject.nimbus_napi = { request_pump: requestPump };

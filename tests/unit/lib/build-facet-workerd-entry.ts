@@ -3,11 +3,52 @@
 // does, in one workerd process, so their facets share the facets' isolates.
 // Bundled by the test with esbuild (keepNames, as wrangler bundles the
 // worker); `GET /call?object=&method=&args=` calls one object's method.
+// The test gives the build facet a `stats()` (its lanes, calls and binding
+// memory), read through `facetStats`. The lanes probe is a facet of its own
+// on the staged loader's callLanes, shared by every object's probe the way
+// the build facet is: `probeHold` holds a lane open with a plugin of the
+// object's, and another object's `probeDeliver` calls that plugin, from a
+// job posted to that lane or directly.
 
-import { DurableObject } from 'cloudflare:workers';
+import { DurableObject, RpcTarget } from 'cloudflare:workers';
+import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
-import { buildFacetPrebundler, rolldownBuildHost } from '../../../packages/worker/src/facets/build-facet.ts';
+import { BUILD_FACET_WORKER_ID, buildFacetPrebundler, loadBuildFacet, rolldownBuildHost } from '../../../packages/worker/src/facets/build-facet.ts';
 import { esbuildBuildFallbackHost, esbuildStackFallbackHost } from '../../../packages/worker/src/facets/esbuild-transform.ts';
+import { NAPI_WASM_LOADER, fetchStagedBindingAsset } from '../../../packages/worker/src/runtime/staged-bindings.ts';
+
+const LANES_PROBE = [
+  'import { DurableObject } from "cloudflare:workers";',
+  'import { AsyncLocalStorage } from "node:async_hooks";',
+  'import { callLanes } from "napi-wasm-loader.js";',
+  'const lanes = callLanes(AsyncLocalStorage);',
+  'const held = new Map();',
+  'export class LanesProbe extends DurableObject {',
+  '  #calls = lanes.instance(String(this.ctx.id));',
+  '  hold(key, plugin) {',
+  '    return this.#calls.run(() => new Promise((resolve, reject) => held.set(key, { lane: lanes.current(), plugin, resolve, reject })));',
+  '  }',
+  '  deliver(key, direct) {',
+  '    const hold = held.get(key);',
+  '    if (!hold) return "not held";',
+  '    held.delete(key);',
+  '    const call = () => hold.plugin.ping().then(hold.resolve, hold.reject);',
+  '    if (!direct) return lanes.post(hold.lane, call) ? "posted" : "refused";',
+  '    try { call(); } catch (error) { hold.reject(error); }',
+  '    return "called here";',
+  '  }',
+  '}',
+].join('\n');
+
+/** What the lanes probe's holder answers with, from wherever its plugin is called. */
+class ProbePlugin extends RpcTarget {
+  constructor(private readonly tag: string) {
+    super();
+  }
+  ping(): string {
+    return `pong ${this.tag}`;
+  }
+}
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
@@ -115,6 +156,45 @@ export class Workspace extends DurableObject {
     }
   }
 
+  /** The build facet's own count of its lanes, calls in flight and binding memory. */
+  async facetStats() {
+    await loadBuildFacet(this.ctx, this.env);
+    const facets = (this.ctx as unknown as { facets: { get(name: string, make: () => never): { stats(): Promise<unknown> } } }).facets;
+    return facets.get(`${BUILD_FACET_WORKER_ID}:g0`, () => {
+      throw new Error('no build facet');
+    }).stats();
+  }
+
+  private lanesProbe() {
+    const env = this.env as { LOADER: { get(id: string, code: () => Promise<unknown>): { getDurableObjectClass(name: string): unknown } } };
+    const worker = env.LOADER.get(`lanes-probe:${NAPI_WASM_LOADER.sha256.slice(0, 16)}`, async () => ({
+      compatibilityDate: CF_COMPAT_DATE,
+      compatibilityFlags: [...GUEST_COMPAT_FLAGS],
+      mainModule: 'probe.js',
+      modules: {
+        'probe.js': LANES_PROBE,
+        'napi-wasm-loader.js': new TextDecoder().decode(await fetchStagedBindingAsset(this.env as never, NAPI_WASM_LOADER)),
+      },
+      globalOutbound: null,
+    }));
+    const facets = (this.ctx as unknown as { facets: { get(name: string, make: () => Promise<unknown>): { hold(key: string, plugin: ProbePlugin): Promise<string>; deliver(key: string, direct: boolean): Promise<string> } } }).facets;
+    return facets.get('lanes-probe', async () => ({ class: worker.getDurableObjectClass('LanesProbe') }));
+  }
+
+  /** Holds a lane of this object's probe open until another object calls `tag`'s plugin for it. */
+  async probeHold(key: string, tag: string) {
+    try {
+      return { ok: true, said: await this.lanesProbe().hold(key, new ProbePlugin(tag)) };
+    } catch (error) {
+      return { ok: false, error: String((error as Error)?.message ?? error).slice(0, 400) };
+    }
+  }
+
+  /** Calls the plugin `key`'s holder gave, from a job posted to its lane or (`direct`) here. */
+  probeDeliver(key: string, direct: boolean) {
+    return this.lanesProbe().deliver(key, direct);
+  }
+
   /** `modules` TypeScript modules transformed on the esbuild facet in one batch. */
   async transforms(tag: string, modules: number) {
     const started = Date.now();
@@ -142,7 +222,7 @@ export default {
     if (url.pathname === '/ready') return new Response('ready');
     if (url.pathname !== '/call') return new Response('not found', { status: 404 });
     const object = env.WS.get(env.WS.idFromName(url.searchParams.get('object') ?? ''));
-    const method = url.searchParams.get('method') as 'build' | 'prebundle' | 'transforms' | 'lateReads';
+    const method = url.searchParams.get('method') as 'build' | 'prebundle' | 'transforms' | 'lateReads' | 'facetStats' | 'probeHold' | 'probeDeliver';
     const args = JSON.parse(url.searchParams.get('args') ?? '[]');
     try {
       return Response.json(await (object[method] as (...a: unknown[]) => Promise<unknown>)(...args));

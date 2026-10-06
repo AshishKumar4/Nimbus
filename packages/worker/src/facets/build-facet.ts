@@ -48,7 +48,11 @@ const BUILD_BINDING_HIGH_WATER_BYTES = 64 * 1024 * 1024;
  * a lane of its own (napi-wasm-loader's callLanes): the binding's calls into
  * JavaScript (a plugin hook, through a threadsafe function) run in the lane
  * of the call that made the function, and its pump in the lanes of the calls
- * in flight, never in another object's.
+ * in flight, never in another object's. A call whose object is reset under
+ * it never settles, and neither does what the binding awaits for it: the
+ * first call of the object's next instance of this facet takes its lanes
+ * over, and the binding refuses those awaits, so the build ends and its
+ * state is freed.
  *
  * A binding that dies (a trap, or the stack overflowing inside it: a module
  * nested too deeply) holds promises that never settle. The loader says so
@@ -85,9 +89,10 @@ const BUILD_FACET_BODY = [
   '    ? "Nimbus\'s bundler ran out of stack: a module nests too deeply for it (" + crashed.message + ")"',
   '    : "Nimbus\'s bundler crashed: " + crashed.message;',
   '}',
-  // One call on the binding, answered by `crashedAnswer()` if the binding is
-  // or becomes dead, and marked `retire` once the binding has outgrown its mark.
-  'async function onBinding(call, crashedAnswer) {',
+  // One call on the binding, in a lane of `calls`, answered by `crashedAnswer()`
+  // if the binding is or becomes dead, and marked `retire` once the binding has
+  // outgrown its mark. An abandoned call is answered by no one.
+  'async function onBinding(calls, call, crashedAnswer) {',
   '  if (crashed) return crashedAnswer();',
   '  const loaded = await rolldownRuntime();',
   '  if (crashed) return crashedAnswer();',
@@ -95,22 +100,30 @@ const BUILD_FACET_BODY = [
   '    const answer = () => resolve(crashedAnswer());',
   '    inFlight.add(answer);',
   `    const outgrown = (value) => (memory.buffer.byteLength > ${BUILD_BINDING_HIGH_WATER_BYTES} ? { ...value, retire: true } : value);`,
-  '    lanes.run(() => call(loaded)).then((value) => resolve(outgrown(value)), reject).finally(() => inFlight.delete(answer));',
+  '    const done = () => inFlight.delete(answer);',
+  '    calls.run(() => call(loaded), done).then((value) => resolve(outgrown(value)), reject).finally(done);',
   '  });',
   '}',
   'export class BuildFacet extends DurableObject {',
+  // This facet's Durable Object has one instance at a time: a new one's
+  // first call takes over every call the last one left on the binding.
+  '  #calls;',
+  '  constructor(ctx, env) {',
+  '    super(ctx, env);',
+  '    this.#calls = lanes.instance(ctx.id ? String(ctx.id) : undefined);',
+  '  }',
   '  async warm() {',
   '    if (!crashed) await rolldownRuntime();',
   '  }',
   '  build(options, plugin) {',
-  '    return onBinding((loaded) => loaded.build(options, plugin), () => ({',
+  '    return onBinding(this.#calls, (loaded) => loaded.build(options, plugin), () => ({',
   '      outputFiles: [], warnings: [], failure: "Build failed with 1 error:\\nerror: " + crashText(),',
   '      errors: [{ id: "", pluginName: "", text: crashText(), location: null, notes: [], detail: undefined }],',
   '      crashed,',
   '    }));',
   '  }',
   '  prebundle(spec) {',
-  '    return onBinding((loaded) => loaded.prebundle(spec), () => ({',
+  '    return onBinding(this.#calls, (loaded) => loaded.prebundle(spec), () => ({',
   '      specifier: spec.specifier, ok: false, esmCode: "", errorText: crashText(), elapsed: 0, warnings: [], crashed,',
   '    }));',
   '  }',

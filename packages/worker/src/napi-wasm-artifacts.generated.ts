@@ -30,8 +30,8 @@ export interface StagedBindingArtifact {
   readonly wasm: NapiWasmAsset;
 }
 
-export const NAPI_WASM_LOADER: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/fcaca1655597a32a/napi-wasm-loader.mjs","sha256":"40fbb797b9254d6b4a83ceac63e1fbe1f7522a9aca19ddf7b170dda33634f865","bytes":204231};
-export const NAPI_WASM_TRAMPOLINE: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/fcaca1655597a32a/wasi-trampoline.wasm","sha256":"0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6","bytes":1961};
+export const NAPI_WASM_LOADER: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/5c92a91cca8e04ba/napi-wasm-loader.mjs","sha256":"3239ede6dd6bd86db3a46b391e4f61e70712240ef5efb53f5d3e5050fbbe2624","bytes":205966};
+export const NAPI_WASM_TRAMPOLINE: NapiWasmAsset = {"path":"/_assets/napi-wasm/loader/5c92a91cca8e04ba/wasi-trampoline.wasm","sha256":"0ad53da157e16656eee42877724d38aaa9876de20369f975f44b8a5e5d6f9cf6","bytes":1961};
 export const STAGED_BINDING_ARTIFACTS: readonly StagedBindingArtifact[] = [
   {
     "name": "rolldown",

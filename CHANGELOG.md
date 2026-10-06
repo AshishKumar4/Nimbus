@@ -13,12 +13,38 @@ published independently in the `@nimbus-sh` npm scope.
   object's plugin hooks in the first object's context. The binding still
   serves every object from one isolate (an isolate per object measured about
   46 MiB more per workspace that builds), but each facet call now runs in a
-  lane of its own (napi-wasm-loader's `callLanes`): a threadsafe function or
-  async work calls JavaScript in the lane of the call that created it, and
-  the pump runs in the lanes of the calls in flight and where it last ran,
-  so no hook runs in, or waits on, another object's context. A lane ends with
-  its call. The esbuild facet needed nothing: each call runs its own esbuild,
-  whose timers and callbacks are that call's.
+  lane of its own (napi-wasm-loader's `callLanes`): a threadsafe function
+  calls JavaScript in the lane of the call that created it, its release and
+  emnapi's other work (finalizers, a closing function's finalize) run in a
+  call's lane, and the pump runs in the lanes of the calls in flight and
+  where it last ran, so no hook runs in, or waits on, another object's
+  context. A lane ends with its call. Async work, which the facet never
+  queues, is refused there by name: emnapi queues work past its pool from
+  inside another work's step, where no wrapper sees it. The esbuild facet
+  needed nothing: each call runs its own esbuild, whose timers and callbacks
+  are that call's.
+- Fixed: a build whose Durable Object is reset under it no longer stays on the
+  shared binding for good. Workerd drops a reset object's continuations,
+  `finally` included, so its call never settles; each such build kept its
+  rolldown task, its share of the binding's memory and a call in the facet's
+  in-flight set until the isolate went (fifty resets of one object in workerd:
+  the binding grew from 6.3 to 34.3 MiB, with 50 calls in flight). The facet
+  now runs its calls through an instance of its Durable Object
+  (`callLanes().instance(id)`), of which there is one at a time, so the next
+  instance's first call takes over the lanes the last one left: the binding
+  refuses what it awaited there (the rejection handler it gave each promise's
+  `then` or `catch`), the task ends and its memory is reused. Fifty resets now
+  leave no lane or call behind, and the binding stays at 6.4 MiB. An object
+  that never builds again keeps its lanes until the isolate goes, as before.
+- Fixed: in workerd, emnapi stopped running finalizers once a garbage
+  collection first reached one. Workerd runs FinalizationRegistry callbacks in
+  its global scope, where setting a timer throws ("Disallowed operation called
+  within global scope", logged once per run), and emnapi had marked its
+  finalizer drain scheduled before the timer threw, so it scheduled none
+  again. The drain now runs in a call's lane, or the next call's.
+- Fixed a lost pump wake-up: a napi callback that woke a task while a JSPI
+  pump turn's result was still queued asked for no further turn, so the task
+  waited for some other event.
 - The staged napi-wasm loader is rebuilt through its recipe: it carries the
   lanes, and the WASI filesystem codec as it stands in core now (the staged
   one predated core's later filesystem changes).
