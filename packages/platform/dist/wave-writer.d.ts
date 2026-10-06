@@ -38,7 +38,11 @@
  * owners (their later records reject, their buffered ones are not sent)
  * while the writer goes on for the rest. Otherwise, and for a failed wave
  * carrying anything unowned (a directory or removal record, the pin, a
- * record without meta), the failed wave is the last one sent.
+ * record without meta), the failed wave is the last one sent. A write that
+ * supersedes a buffered record (the same path, written again before a cut)
+ * settles it: the wave carrying the later write publishes or fails the
+ * owners of both. An owner is published once every wave that carried its
+ * writes has (`published`).
  *
  * Admitting a record costs its own new directories, never a recount of the
  * wave: the owned set grows as records arrive, and a directory chain walk
@@ -179,6 +183,12 @@ export declare class WaveWriter<Meta = undefined> {
     private failure;
     /** Owners (records' `meta`) whose records a failed wave carried. */
     private readonly failedOwners;
+    /** With `failPerOwner`: owners with a write in the buffered wave, superseded ones included. */
+    private readonly bufferedOwners;
+    /** With `failPerOwner`: the last wave that carried each owner's writes. */
+    private readonly ownerWaves;
+    /** Waves publish in order: every wave up to this one has settled, this one published. */
+    private lastPublishedWave;
     private readonly counters;
     /** The session's epoch for this writer, and when it was opened (null: unfenced). */
     private epoch;
@@ -239,6 +249,12 @@ export declare class WaveWriter<Meta = undefined> {
     assertHealthy(): void;
     /** The failure of the wave that carried `owner`'s records, if one failed. */
     failureOf(owner: Meta): WaveFailure | undefined;
+    /**
+     * Whether every record written with `owner` (as `meta`, under
+     * `failPerOwner`) is durable: each wave that carried it, or a write
+     * superseding it, published.
+     */
+    published(owner: Meta): boolean;
     private assertOwnerHealthy;
     get failed(): WaveFailure | null;
     stats(): WaveStats;

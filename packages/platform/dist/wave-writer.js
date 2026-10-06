@@ -38,7 +38,11 @@
  * owners (their later records reject, their buffered ones are not sent)
  * while the writer goes on for the rest. Otherwise, and for a failed wave
  * carrying anything unowned (a directory or removal record, the pin, a
- * record without meta), the failed wave is the last one sent.
+ * record without meta), the failed wave is the last one sent. A write that
+ * supersedes a buffered record (the same path, written again before a cut)
+ * settles it: the wave carrying the later write publishes or fails the
+ * owners of both. An owner is published once every wave that carried its
+ * writes has (`published`).
  *
  * Admitting a record costs its own new directories, never a recount of the
  * wave: the owned set grows as records arrive, and a directory chain walk
@@ -143,6 +147,12 @@ export class WaveWriter {
     failure = null;
     /** Owners (records' `meta`) whose records a failed wave carried. */
     failedOwners = new Map();
+    /** With `failPerOwner`: owners with a write in the buffered wave, superseded ones included. */
+    bufferedOwners = new Set();
+    /** With `failPerOwner`: the last wave that carried each owner's writes. */
+    ownerWaves = new Map();
+    /** Waves publish in order: every wave up to this one has settled, this one published. */
+    lastPublishedWave = 0;
     counters = {
         waves: 0,
         files: 0,
@@ -309,6 +319,18 @@ export class WaveWriter {
     failureOf(owner) {
         return this.failedOwners.get(owner);
     }
+    /**
+     * Whether every record written with `owner` (as `meta`, under
+     * `failPerOwner`) is durable: each wave that carried it, or a write
+     * superseding it, published.
+     */
+    published(owner) {
+        if (this.options.failPerOwner !== true)
+            throw new Error('published(owner) needs failPerOwner');
+        return !this.failedOwners.has(owner)
+            && !this.bufferedOwners.has(owner)
+            && (this.ownerWaves.get(owner) ?? 0) <= this.lastPublishedWave;
+    }
     assertOwnerHealthy(owner) {
         this.assertHealthy();
         if (owner === undefined)
@@ -396,6 +418,8 @@ export class WaveWriter {
     }
     buffer(path, record) {
         this.drop(path);
+        if (this.options.failPerOwner === true && record.meta !== undefined)
+            this.bufferedOwners.add(record.meta);
         this.deletes.delete(path);
         this.records.set(path, record);
         if (record.kind === 'symlink')
@@ -448,6 +472,9 @@ export class WaveWriter {
                 if (record.meta !== undefined && this.failedOwners.has(record.meta))
                     this.drop(path);
             }
+            for (const owner of [...this.bufferedOwners])
+                if (this.failedOwners.has(owner))
+                    this.bufferedOwners.delete(owner);
         }
         this.bufferPin();
         if (!this.hasBuffered())
@@ -459,6 +486,9 @@ export class WaveWriter {
         }
         const wave = ++this.sequence;
         const sentPin = this.pin;
+        const owners = [...this.bufferedOwners];
+        for (const owner of owners)
+            this.ownerWaves.set(owner, wave);
         const mtime = this.options.mtimeMs ?? Date.now();
         const files = [];
         const directories = this.publishedDirectories();
@@ -506,6 +536,7 @@ export class WaveWriter {
         // The payload holds the wave's bytes now; the buffer lets go of them so
         // the facet holds one copy while the stream drains.
         this.records.clear();
+        this.bufferedOwners.clear();
         this.directories.clear();
         this.deletes.clear();
         this.owned.clear();
@@ -526,6 +557,7 @@ export class WaveWriter {
                 if (sentPin !== null && this.pin === sentPin)
                     sentPin.durable = true;
                 this.inFlightSymlinks = 0;
+                this.lastPublishedWave = wave;
                 this.counters.waves++;
                 this.counters.files += files.length;
                 this.counters.bytes += waveBytes;
@@ -539,13 +571,13 @@ export class WaveWriter {
         }).catch((error) => {
             const failure = error instanceof WaveFailure ? error : new WaveFailure(wave, error);
             this.inFlightSymlinks = 0;
-            // A wave whose every record has an owner fails those owners; the
-            // writer goes on for the rest. Anything unowned in it (a directory,
-            // a removal, the pin, a record without meta) fails the writer.
+            // A wave whose every record has an owner fails those owners, and
+            // the owners of writes its records superseded; the writer goes on
+            // for the rest. Anything unowned in it (a directory, a removal, the
+            // pin, a record without meta) fails the writer.
             if (ownedOnly) {
-                for (const file of files)
-                    if (file.meta !== undefined)
-                        this.failedOwners.set(file.meta, failure);
+                for (const owner of owners)
+                    this.failedOwners.set(owner, failure);
                 return;
             }
             if (this.failure === null)
