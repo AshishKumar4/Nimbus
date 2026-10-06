@@ -12,73 +12,40 @@
 //   it.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { VFS_BUNDLE_MAX_BYTES } from '../../packages/core/src/constants.ts';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
-import { writeModuleSet } from './lib/module-map-bundle.mjs';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-shot-runner.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const authority = createAuthority();
 const { host, rawVfs, kfs } = authority;
-const dec = new TextDecoder();
 
 // SUPERVISOR as the session serves it: every op for the process's own pid
 // through the session's supervisor-op handler. Output is collected per run.
 let out = '';
-adoptCtxExports({
-  SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
-    if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
-    if (name === 'reportExit') return;
-    return host.supervisorOp({ op: name, args, pid: props?.pid });
-  }),
-});
+adoptSessionSupervisor(host, (text) => { out += text; });
 
 // The Worker Loader stands in for workerd: the generated one-shot runner,
 // written out and imported, running the real shims and store.
-const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-one-shot-ns-'));
-process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));
-let runnerN = 0;
 let injectedStoreBudget = null;
-const env = {
-  LOADER: {
-    load(config) {
-      if (injectedStoreBudget !== null) {
-        config = { ...config, modules: { ...config.modules } };
-        config.modules['runner.js'] = config.modules['runner.js'].replace(/__residentBindInMemory\(\d+\)/, `__residentBindInMemory(${injectedStoreBudget})`);
-      }
-      const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
-      const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
-      return {
-        getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
-          [Symbol.dispose]() {},
-        }),
-        [Symbol.dispose]() {},
-      };
-    },
-    get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
+const loader = runnerLoader('one-shot-ns', {
+  rewrite(config) {
+    if (injectedStoreBudget === null) return config;
+    const modules = { ...config.modules };
+    modules['runner.js'] = modules['runner.js'].replace(/__residentBindInMemory\(\d+\)/, `__residentBindInMemory(${injectedStoreBudget})`);
+    return { ...config, modules };
   },
-  ASSETS: stagedAssets,
-};
+});
 
-const manager = new FacetManager(
-  createFacetCtx(createFacetWorld(() => ({})), 'one-shot-namespace'),
-  env, host.processes, new PortRegistry(), processHostFor, {},
-);
-manager.setVfs(rawVfs, processFiles(rawVfs));
+const env = { LOADER: loader, ASSETS: stagedAssets };
+const manager = oneShotManager('one-shot-namespace', { host, rawVfs, loader });
 
 kfs.mkdir('home/user/app', { recursive: true, mode: 0o755 });
 kfs.mkdir('home/user/elsewhere', { recursive: true, mode: 0o755 });

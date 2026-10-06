@@ -21,10 +21,7 @@
 //     revision to compare), so a relaunch reads what the mount holds now.
 
 import assert from 'node:assert/strict';
-import { mkdtempSync, readFileSync, rmSync } from 'node:fs';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
+import { readFileSync } from 'node:fs';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -42,10 +39,11 @@ import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { createFacetCtx, createFacetWorld, createProcessFacetCtx } from './facet-host-harness.mjs';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
-import { importModuleSet, writeModuleSet } from './lib/module-map-bundle.mjs';
+import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { facetSql } from './lib/resident-body.mjs';
 import { supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { runnerLoader } from './lib/one-shot-runner.mjs';
 
 const dec = new TextDecoder();
 const enc = new TextEncoder();
@@ -99,33 +97,13 @@ adoptCtxExports({ SupervisorRPC: ({ props }) => supervisorFor(props?.pid) });
 
 // The Worker Loader: a one-shot's runner is written out and imported; a
 // resident's module map boots in a facet of its own SQLite.
-const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-node-async-mount-'));
-process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));
-let runnerN = 0;
 let facetN = 0;
 const world = createFacetWorld(async (config, info) => {
   const generated = await importModuleSet(config.modules, 'worker.js');
   return new generated.NimbusProcess(createProcessFacetCtx(`${info.facetName}-${++facetN}`), { SUPERVISOR: config.env.SUPERVISOR });
 });
-const env = {
-  LOADER: {
-    load(config) {
-      const file = writeModuleSet(join(runnerDir, `runner-${runnerN++}`), config.modules, 'runner.js');
-      const loaded = import(pathToFileURL(file).href);
-      const supervisor = config.env?.SUPERVISOR;
-      return {
-        getEntrypoint: () => ({
-          async fetch(request) { return (await loaded).default.fetch(request, { SUPERVISOR: supervisor }); },
-          [Symbol.dispose]() {},
-        }),
-        [Symbol.dispose]() {},
-      };
-    },
-    get: (...args) => world.loader.get(...args),
-  },
-  ASSETS: stagedAssets,
-};
-const manager = new FacetManager(createFacetCtx(world, 'node-async-mount'), env, ws.processes, new PortRegistry(), processHostFor, {});
+const loader = runnerLoader('node-async-mount', { get: (...args) => world.loader.get(...args) });
+const manager = new FacetManager(createFacetCtx(world, 'node-async-mount'), { LOADER: loader, ASSETS: stagedAssets }, ws.processes, new PortRegistry(), processHostFor, {});
 manager.setVfs(ws.vfs, ws.filesystem);
 
 const real = { console: globalThis.console, process: globalThis.process, Buffer: globalThis.Buffer };
