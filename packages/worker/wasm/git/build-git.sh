@@ -41,7 +41,7 @@ rm -rf "git-$GIT_VERSION" && tar xf "git-$GIT_VERSION.tar.xz"
 cd "git-$GIT_VERSION"
 for patch in "$HERE"/patches/*.patch; do patch -p1 --quiet < "$patch"; done
 cp "$HERE/config.mak" config.mak
-cp "$HERE/git-wasi-compat.c" "$HERE/git-wasi-compat.h" compat/
+cp "$HERE/git-wasi-compat.c" "$HERE/git-wasi-compat.h" "$HERE/../nimbus-libc/nimbus-fs.c" compat/
 make -j"$(nproc)" GIT_WASI_DIR="$HERE" WASI_SDK="$WASI_SDK" SYSROOT_EXTRA="$BUILD/sysroot" \
   uname_S=WASI uname_M=wasm32 uname_O=WASI uname_R=1 uname_V=1 git
 "$WASI_SDK/bin/llvm-strip" -o "$HERE/git.wasm" git

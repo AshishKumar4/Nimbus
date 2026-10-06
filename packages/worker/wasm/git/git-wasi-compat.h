@@ -11,10 +11,6 @@
 #include <stdio.h>
 #include <signal.h>
 #include <time.h>
-uid_t geteuid(void);
-uid_t getuid(void);
-gid_t getgid(void);
-gid_t getegid(void);
 pid_t getppid(void);
 pid_t getpgid(pid_t);
 /*
@@ -71,23 +67,15 @@ struct sockaddr;
 int connect(int, const struct sockaddr *, unsigned int);
 int setsockopt(int, int, int, const void *, unsigned int);
 /*
- * A file's mode and owner, which WASI preview1's filestat leaves out, and
- * chmod, which it has no call for: the Nimbus filesystem extension (the
- * nimbus_fs imports, core runtime/wasi/types.ts NimbusFsImports). A file
- * created with execute bits gets them through it too (git_wasi_open).
+ * A file's mode and owner, which WASI preview1's filestat leaves out, chmod,
+ * which it has no call for, a created file's execute bits, and the
+ * process's credential: the shared Nimbus libc shim (wasm/nimbus-libc).
  */
-#include <fcntl.h>
-#include <sys/stat.h>
-int git_wasi_stat(const char *, struct stat *);
-int git_wasi_lstat(const char *, struct stat *);
-int git_wasi_fstat(int, struct stat *);
-int git_wasi_chmod(const char *, mode_t);
-int git_wasi_fchmod(int, mode_t);
-int git_wasi_open(const char *, int, ...);
-#define stat(path, buf) git_wasi_stat(path, buf)
-#define lstat git_wasi_lstat
-#define fstat git_wasi_fstat
-#define chmod git_wasi_chmod
-#define fchmod git_wasi_fchmod
-#define open(...) git_wasi_open(__VA_ARGS__)
+#include "nimbus-fs.h"
+#define stat(path, buf) nimbus_stat(path, buf)
+#define lstat nimbus_lstat
+#define fstat nimbus_fstat
+#define chmod nimbus_chmod
+#define fchmod nimbus_fchmod
+#define open(...) nimbus_open(__VA_ARGS__)
 #endif
