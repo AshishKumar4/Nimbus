@@ -12,7 +12,9 @@
 // Then every file changes, and status, diff, add -A and commit run over
 // all of them: each change may cost 256 bytes of heap, nothing more (as
 // objects, a diff's queue held ~700 a change: 71 MiB at Linux's size).
-// NIMBUS_GIT_SCALE_LARGE=96000 runs it at Linux's size.
+// NIMBUS_GIT_SCALE_LARGE=96000 runs it at Linux's size. The default, 20,000
+// (~7x SMALL), keeps the run near two minutes: at 30,000 it took 203 s alone
+// and passed the full suite's 300 s per file under load.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -27,7 +29,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 
 const SMALL = Number(process.env.NIMBUS_GIT_SCALE_SMALL) || 3_000;
-const LARGE = Number(process.env.NIMBUS_GIT_SCALE_LARGE) || 30_000;
+const LARGE = Number(process.env.NIMBUS_GIT_SCALE_LARGE) || 20_000;
 const MB = 1024 * 1024;
 
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-git-scale-'));
