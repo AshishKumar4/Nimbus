@@ -26,7 +26,7 @@ import { createNpmCommand } from '../../packages/core/src/substrate/lifo/command
 import { pickPackumentVersion } from '../../packages/core/src/_shared/npm-semver.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const VERSIONS = ['1.0.0', '1.1.0', '1.2.0-beta.1', '2.0.0-beta.1', '2.0.0', '3.0.0-rc.1'];
 const DIST_TAGS = { latest: '1.1.0', next: '2.0.0-beta.1', experimental: '3.0.0-rc.1' };
