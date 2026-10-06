@@ -10,8 +10,10 @@ published independently in the `@nimbus-sh` npm scope.
   (`[object process]`, the same `Symbol.toStringTag` descriptor), which is
   how axios picks its Node path; `fetch`/`Request` drop the cache modes
   Node accepts and workerd refuses (`default`, `reload`, `force-cache`);
-  and the child's stream classes are callable as Node's are
-  (`Writable.call(this)`, as follow-redirects inherits).
+  the child's stream classes are callable as Node's are
+  (`Writable.call(this)`, as follow-redirects inherits); and
+  `stream.pipeline` takes an array of streams, as axios passes a
+  compressed response and its decompressor.
 - The `ws` package works in a node child, for ws:// and wss://, through the
   workspace's egress when it has one: an `http(s).request` with
   `Upgrade: websocket` is answered over the supervisor's relayed socket

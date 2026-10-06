@@ -72,8 +72,9 @@ async function readRequestLine(readable: ReadableStream<Uint8Array>): Promise<st
 
 /**
  * A recording egress for tests (NIMBUS_TEST_EGRESS=1): it answers
- * EGRESS_TEST_HOST itself (HTTP, WebSocket upgrades and an echo server at
- * /ws-echo, a refused upgrade at /ws-refused, plain TCP on port 7, plain
+ * EGRESS_TEST_HOST itself (HTTP, encoded bodies at /encoded-<gzip|br|deflate>,
+ * WebSocket upgrades and an echo server at /ws-echo, a refused upgrade at
+ * /ws-refused, plain TCP on port 7, plain
  * HTTP over TCP on port 80) and PyPI's metadata for its canary project
  * (egress-canary.ts), and sends everything else on to the network, so a
  * session under it can still install packages. What an embedder supplies is
@@ -86,6 +87,14 @@ export class TestEgress extends WorkerEntrypoint {
       return Response.json(canaryPypiJson(`http://${EGRESS_TEST_HOST}/${CANARY_WHEEL}`));
     }
     if (url.hostname !== EGRESS_TEST_HOST) return fetch(request);
+    const encoding = /^\/encoded-(gzip|br|deflate)$/.exec(url.pathname)?.[1];
+    if (encoding !== undefined) {
+      // As a server compresses: the body encoded, sent as it is (encodeBody 'manual').
+      const zlib = await import('node:zlib');
+      const json = JSON.stringify({ encoding, accepted: request.headers.get('accept-encoding') });
+      const body = encoding === 'gzip' ? zlib.gzipSync(json) : encoding === 'br' ? zlib.brotliCompressSync(json) : zlib.deflateSync(json);
+      return new Response(body, { headers: { 'content-type': 'application/json', 'content-encoding': encoding }, encodeBody: 'manual' });
+    }
     if (url.pathname === '/ws-refused') {
       return Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer' } });
     }

@@ -15,7 +15,11 @@
 //     Node's (axios picks its http adapter by it);
 //   - axios against an HTTP server in another process (in the session a
 //     resident; on the host, a server of host Node's): GET with params, POST
-//     JSON, a 404 and the fetch adapter give the same results;
+//     JSON, a 404 and the fetch adapter give the same results; and against
+//     gzip, br and deflate bodies (which axios decompresses through
+//     stream.pipeline), from the egress in the session (an in-session hop
+//     asks its target for identity, port-registry.ts) and from that server
+//     on the host;
 //   - the ws package against an echo server (in the session the egress's
 //     /ws-echo; on the host its twin, a ws server answering alike): the
 //     subprotocol, text, binary and a 70000-byte message echoed, the
@@ -44,10 +48,17 @@ console.log('TAG ' + JSON.stringify([Object.prototype.toString.call(process), Ob
 
 /** An HTTP server answering with what it was asked, on `port`: its own process, as a session's servers are. */
 const ECHO_SERVER = (port) => String.raw`
+const zlib = require('zlib');
 require('http').createServer((req, res) => {
   let body = '';
   req.on('data', (chunk) => { body += chunk; });
   req.on('end', () => {
+    const encoded = { '/encoded-gzip': ['gzip', zlib.gzipSync], '/encoded-br': ['br', zlib.brotliCompressSync], '/encoded-deflate': ['deflate', zlib.deflateSync] }[req.url];
+    if (encoded) {
+      res.writeHead(200, { 'content-type': 'application/json', 'content-encoding': encoded[0] });
+      res.end(encoded[1](JSON.stringify({ encoding: encoded[0], accepted: req.headers['accept-encoding'] || null })));
+      return;
+    }
     if (req.url.startsWith('/missing')) {
       res.writeHead(404, { 'content-type': 'application/json' });
       res.end(JSON.stringify({ missing: true }));
@@ -59,10 +70,11 @@ require('http').createServer((req, res) => {
 }).listen(${port}, () => console.log('LISTENING'));
 `;
 
-/** axios against the echo server at `base`. */
+/** axios against the echo server at `base`, and encoded bodies from `encodedBase`. */
 const AXIOS = String.raw`
 const axios = require('axios');
 const base = process.argv[2];
+const encodedBase = process.argv[3];
 (async () => {
   const out = {};
   try {
@@ -74,6 +86,7 @@ const base = process.argv[2];
     catch (error) { out.missing = [error.response && error.response.status, error.response && error.response.data, error.message]; }
     const fetched = await axios.get(base + '/fetch-adapter', { adapter: 'fetch' });
     out.fetchAdapter = [fetched.status, fetched.data];
+    for (const encoding of ['gzip', 'br', 'deflate']) out[encoding] = (await axios.get(encodedBase + '/encoded-' + encoding)).data;
   } catch (error) {
     out.failed = String(error && error.message);
   }
@@ -302,8 +315,8 @@ try {
         assert.equal(ready, '200', 'the echo server serves in the session');
         const hostPort = await freePort();
         await host.serve('echo-server.js', ECHO_SERVER(hostPort));
-        const axios = [labelled((await terminal.run('cd /home/user/clients && node axios.js http://127.0.0.1:4555', 120_000)).stdout, 'AXIOS'),
-          labelled((await host.run('axios.js', AXIOS, [`http://127.0.0.1:${hostPort}`])).stdout, 'AXIOS')];
+        const axios = [labelled((await terminal.run('cd /home/user/clients && node axios.js http://127.0.0.1:4555 https://egress-test.invalid', 120_000)).stdout, 'AXIOS'),
+          labelled((await host.run('axios.js', AXIOS, [`http://127.0.0.1:${hostPort}`, `http://127.0.0.1:${hostPort}`])).stdout, 'AXIOS')];
         console.log('  axios: ' + JSON.stringify(axios[0]).slice(0, 300));
         assert.deepEqual(axios[0], axios[1], 'axios against a server of its own gives what host Node gives');
 
