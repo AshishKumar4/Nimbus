@@ -193,7 +193,9 @@ for (const [label, source] of Object.entries(CASES)) {
 // Live bindings, against real Node 22: an importer reads an exporter's
 // binding as it is now, not as it was when the import ran; through a named
 // import, a default import, an export of an import, a re-export and a
-// namespace, and across a cycle. A call through an import leaves `this`
+// namespace, and across cycles: a function another module reads while the
+// cycle is still evaluating is there, declarations being hoisted, as Node's
+// are and as esbuild installs its getters first. A call through an import leaves `this`
 // unbound, a write to an import throws, and a name a nested scope declares
 // again is that scope's.
 {
@@ -230,13 +232,16 @@ for (const [label, source] of Object.entries(CASES)) {
     ].join('\n'),
     'cycle-a.mjs': "import { readA } from './cycle-b.mjs'; export let a = 'early'; a = 'late'; export const seen = readA();",
     'cycle-b.mjs': "import { a } from './cycle-a.mjs'; export function readA() { return a; }",
+    'hoist-a.mjs': "import './hoist-b.mjs'; export function helper() { return 'h'; } export { early } from './hoist-b.mjs';",
+    'hoist-b.mjs': "import { helper } from './hoist-a.mjs'; export const early = helper();",
   };
   const PROGRAM = (load) => `
     const m = await ${load('importer.mjs')};
     const c = await ${load('counter.mjs')};
     c.increment();
     const cycle = await ${load('cycle-a.mjs')};
-    return { results: m.results, reexported: m.reexported, relayed: m.relayed, default: m.default, seen: cycle.seen };
+    const hoisted = await ${load('hoist-a.mjs')};
+    return { results: m.results, reexported: m.reexported, relayed: m.relayed, default: m.default, seen: cycle.seen, early: hoisted.early };
   `;
 
   const dir = mkdtempSync(join(tmpdir(), 'esm-live-'));
@@ -251,25 +256,25 @@ for (const [label, source] of Object.entries(CASES)) {
     if (process.env.ESM_LIVE_DEBUG) console.log(JSON.stringify(node));
 
     for (const body of ['sync', 'async']) {
-      // A CommonJS loader over the lowered files: one module per name, its
-      // exports object handed out while it runs, as require does in a cycle.
+      // require over the lowered files: one module per name, run when first
+      // required, its exports object handed out unfinished to a cycle.
       const modules = new Map();
+      const pending = [];
+      const require = (specifier) => {
+        const name = specifier.slice(2);
+        if (!modules.has(name)) {
+          const module = { exports: {} };
+          modules.set(name, module);
+          pending.push(new Function('module', 'exports', 'require', emitCommonJs(FILES[name], readEsmRecords(FILES[name]), { body }))(
+            module, module.exports, require,
+          ));
+        }
+        return modules.get(name).exports;
+      };
       const load = async (name) => {
-        if (modules.has(name)) return modules.get(name).exports;
-        const module = { exports: {} };
-        modules.set(name, module);
-        const code = emitCommonJs(FILES[name], readEsmRecords(FILES[name]), { body });
-        const require = (specifier) => {
-          const loaded = modules.get(specifier.slice(2)) ?? (() => { throw new Error(`${specifier} is not loaded`); })();
-          return loaded.exports;
-        };
-        // A body requires its imports synchronously, so they load first;
-        // except a module already loading (the cycle), which require hands
-        // out unfinished.
-        for (const record of readEsmRecords(FILES[name])) if (record.source) await load(record.source.slice(2));
-        const done = new Function('module', 'exports', 'require', code)(module, module.exports, require);
-        if (done && typeof done.then === 'function') await done;
-        return module.exports;
+        const exports = require(`./${name}`);
+        await Promise.all(pending);
+        return exports;
       };
       const lowered = await new Function('load', `return (async () => { ${PROGRAM((name) => `load(${JSON.stringify(name)})`)} })();`)(load);
       assert.deepEqual(JSON.parse(JSON.stringify(lowered)), node, `${body} body: imports are live bindings, as in Node`);
