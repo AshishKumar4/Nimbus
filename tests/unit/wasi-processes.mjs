@@ -57,6 +57,7 @@ function session() {
   });
   const sup = {
     spawned: [],
+    outputReads: [],
     refuse: null,
     async cpSpawn(req) {
       if (sup.refuse) throw acrossRpc(Object.assign(new Error(`${sup.refuse}: ${req.command}`), { code: sup.refuse }));
@@ -78,6 +79,7 @@ function session() {
     },
     async cpStdinEnd(pid) { children.get(pid).stdinEnded = true; },
     async cpReadOutput(pid, fd, since, waitMs) {
+      sup.outputReads.push({ pid, fd, since });
       const child = children.get(pid);
       await until(() => child.lost || child.closed[fd] || child.out[fd].some((c) => c.seq > since), waitMs);
       if (child.lost) throw acrossRpc(new Error('session reset'));
@@ -147,7 +149,7 @@ function session() {
 
 async function guest({ stdinRead } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-processes-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiSupervisorOutput };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiSupervisorOutput, fdTable };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
   const { sup, control } = session();
@@ -174,6 +176,7 @@ async function guest({ stdinRead } = {}) {
   };
   return {
     P, sup, control, stdout,
+    buffered: (fd) => P.fdTable.get(fd)?.pipe?.buffered,
     pipe() {
       const at = scratch();
       assert.equal(proc.pipe(at), E.SUCCESS);
@@ -345,7 +348,7 @@ let checks = 0;
   await settle();
   await g.write(w, 'xyz');
   assert.deepEqual(await ready, { errno: E.SUCCESS, events: [{ error: 0, nbytes: 3, hangup: false }] }, 'a poll wakes when bytes arrive');
-  assert.deepEqual((await g.poll(w, 'write')).events, [{ error: 0, nbytes: 0xFFFF_FFFF, hangup: false }]);
+  assert.deepEqual((await g.poll(w, 'write')).events, [{ error: 0, nbytes: 65533, hangup: false }]);
   assert.equal((await g.read(r)).text, 'xyz');
 
   assert.equal(await g.setFlags(r, NONBLOCK), E.SUCCESS);
@@ -371,6 +374,42 @@ let checks = 0;
 }
 
 // ── a child: what it is started with, its streams, how it ends ──────────
+{
+  const g = await guest();
+  const [r, w] = g.pipe();
+  assert.equal(await g.write(w, 'x'.repeat(65536)), E.SUCCESS);
+  let done = false;
+  const waiting = g.write(w, 'y').then((errno) => { done = true; return errno; });
+  await settle();
+  assert.equal(done, false, 'a standalone guest pipe blocks at the shared named capacity');
+  assert.equal((await g.read(r, 4)).text, 'xxxx');
+  assert.equal(await waiting, E.SUCCESS, 'reading makes room for the blocked writer');
+  await g.close(r); await g.close(w);
+  g.dispose();
+  checks++;
+}
+
+// A broker reader cannot acknowledge its way into an unbounded guest pipe.
+{
+  const g = await guest();
+  const [r, w] = g.pipe();
+  const child = await g.spawn(['producer'], { fdout: w });
+  await g.close(w);
+  g.control.print(child.pid, 1, 'q'.repeat(3 * 65536));
+  await settle();
+  assert.equal(g.buffered(r), 65536);
+  assert.equal(g.sup.outputReads.some((call) => call.pid === child.pid && call.fd === 1 && call.since > 0), false, 'no broker cursor advance before the chunk fits');
+  let received = 0;
+  while (received < 3 * 65536) {
+    received += (await g.read(r)).text.length;
+    assert.ok(g.buffered(r) <= 65536);
+  }
+  g.control.exit(child.pid, 0);
+  assert.equal((await g.wait(child.pid)).status, 0);
+  g.dispose();
+  checks++;
+}
+
 {
   const g = await guest();
   const [inR, inW] = g.pipe();
