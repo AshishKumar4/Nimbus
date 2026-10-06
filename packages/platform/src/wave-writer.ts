@@ -70,6 +70,7 @@ import {
   lostCallAttributes,
 } from './lost-call.js';
 import { disposeRpcResource } from './rpc-dispose.js';
+import { utf8Length } from './utf8.js';
 
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
 export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
@@ -499,7 +500,7 @@ export class WaveWriter<Meta = undefined> {
     this.counters.ownershipVisits++;
     if (this.owned.has(path)) return;
     tally.pathCount++;
-    tally.pathBytes += encoder.encode(path).byteLength;
+    tally.pathBytes += utf8Length(path);
     if (admit) this.owned.add(path);
   }
 
@@ -515,7 +516,7 @@ export class WaveWriter<Meta = undefined> {
       if (admit) this.ownedDirectories.add(current);
       if (!this.owned.has(current)) {
         tally.pathCount++;
-        tally.pathBytes += encoder.encode(current).byteLength;
+        tally.pathBytes += utf8Length(current);
         if (admit) this.owned.add(current);
       }
       if (current === root) break;

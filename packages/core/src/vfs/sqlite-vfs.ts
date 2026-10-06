@@ -50,6 +50,7 @@ import {
 } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import {
   acquireSupervisorAllocation,
   tryAcquireSupervisorAllocation,
@@ -10551,12 +10552,6 @@ export function pendingChunkError(path: string): Error & { code: string; nimbusP
  */
 const entryBytesBesidePath = new WeakMap<VfsListEntry, number>();
 
-const ASCII = /^[\x00-\x7f]*$/;
-
-/** The UTF-8 length of `text`: its length when it is ASCII, as a listing's JSON almost always is. */
-function utf8Length(text: string): number {
-  return ASCII.test(text) ? text.length : enc.encode(text).byteLength;
-}
 
 /**
  * The byte bound of one listing page (VfsListPage): the page's frame, each

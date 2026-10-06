@@ -64,3 +64,41 @@ assert.ok(reads <= blocks + 4,
   `${reads} stream reads decoded a ${wire.byteLength}-byte wave of ${FILES} files (${blocks} blocks)`);
 
 console.log(`w7 decode read-ahead: ok (${reads} reads for ${wire.byteLength} bytes)`);
+
+// ── No encoder or decoder made per record ───────────────────────────────
+// A small file is three records; measuring a name's bytes, or decoding a
+// record's text, made a TextEncoder or TextDecoder for each (red before: 3+
+// encoders per file decoded).
+{
+  const payloadOf = () => {
+    const inodes = [{ path: 'r', parentPath: '', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 }];
+    const chunks = [];
+    for (let index = 0; index < 120; index++) {
+      const data = new Uint8Array(2_000).fill(index);
+      inodes.push({ path: `r/f${index}`, parentPath: 'r', kind: 'file', isDir: false, size: data.byteLength, mtime: 1, mode: 0o644, chunkCount: 1 });
+      chunks.push({ path: `r/f${index}`, chunkId: 0, data });
+    }
+    return { inodes, chunks };
+  };
+  const bytes = new Uint8Array(await new Response(encodeWriteBatchStream(payloadOf())).arrayBuffer());
+  const RealEncoder = globalThis.TextEncoder;
+  const RealDecoder = globalThis.TextDecoder;
+  let made = 0;
+  globalThis.TextEncoder = class extends RealEncoder { constructor(...args) { super(...args); made++; } };
+  globalThis.TextDecoder = class extends RealDecoder { constructor(...args) { super(...args); made++; } };
+  try {
+    const decoded = await decodeWriteBatchStream(new ReadableStream({
+      type: 'bytes',
+      start(controller) {
+        controller.enqueue(bytes);
+        controller.close();
+      },
+    }));
+    for await (const record of decoded.records) if (record.type === 'file-chunk') record.retention.release();
+  } finally {
+    globalThis.TextEncoder = RealEncoder;
+    globalThis.TextDecoder = RealDecoder;
+  }
+  assert.ok(made <= 2, `decoding a 120-file wave made ${made} text encoders and decoders`);
+  console.log('w7 decode makes no encoder per record: ok');
+}
