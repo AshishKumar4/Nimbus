@@ -33,7 +33,7 @@
  */
 
 import { filesystemErrno } from './filesystem.js';
-import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub } from './types.js';
+import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
 
 /** WASI errno values these imports answer with. */
 const E = { SUCCESS: 0, AGAIN: 6, BADF: 8, CHILD: 12, INTR: 27, INVAL: 28, IO: 29, NOSYS: 52, PIPE: 64, SRCH: 71 } as const satisfies Record<string, Errno>;
@@ -130,8 +130,10 @@ export interface ProcessHostOptions {
   /** The supervisor the guest's facet holds, and the guest's own pid. */
   supervisor(): WasiSupervisorStub | null;
   pid: number;
+  /** An injected broker-bounded read of this process's stdin channel. */
+  input?: (maxBytes: number) => Promise<WasiInputPacket>;
   /** The guest's stdout and stderr, where a child's output that joins them goes. */
-  output(fd: 1 | 2, bytes: Uint8Array): void;
+  output(fd: 1 | 2, bytes: Uint8Array): void | Promise<void>;
   /** Before an observation: what the guest holds of its writes goes to the session. */
   release(): Promise<void>;
   /** After input: the guest's next filesystem answer takes the barrier. */
@@ -298,7 +300,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   };
 
   /** Move queued bytes into the guest's iovecs; how many. */
-  const scatter = (pipe: Pipe, iovs: number, iovsLen: number): number => {
+  const scatter = (pipe: Pick<Pipe, 'chunks'>, iovs: number, iovsLen: number): number => {
     const dv = view();
     const u8 = bytesAt();
     let moved = 0;
@@ -331,7 +333,7 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
         for (const chunk of out.chunks) {
           since = Math.max(since, chunk.seq);
           if (target === null) continue;
-          if (typeof target === 'number') opts.output(target, chunk.data);
+          if (typeof target === 'number') await opts.output(target, chunk.data);
           else if (target.pipe.readers > 0) { target.pipe.chunks.push(chunk.data); wake(target.pipe); }
         }
         // Applied once delivered: the bytes are where the guest reads them.
@@ -540,6 +542,23 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   };
 
   const read: ProcessHost['read'] = (fd, iovs, iovsLen, nread) => {
+    if (opts.fds.get(fd)?.kind === 'stdin' && opts.input) {
+      let room = 0;
+      for (let i = 0; i < iovsLen; i++) room += view().getUint32(iovs + i * 8 + 4, true);
+      if (room === 0) { view().setUint32(nread, 0, true); return E.SUCCESS; }
+      return opts.input(room).then((packet) => {
+        if (!(packet.data instanceof Uint8Array) || packet.data.byteLength > room) return E.IO;
+        if (packet.data.byteLength > 0) {
+          const moved = scatter({ chunks: [packet.data] }, iovs, iovsLen);
+          view().setUint32(nread, moved, true);
+          opts.inbound();
+          return E.SUCCESS;
+        }
+        if (packet.signal || !packet.ended) return E.INTR;
+        view().setUint32(nread, 0, true);
+        return E.SUCCESS;
+      }, () => E.IO);
+    }
     const entry = pipeEntry(fd);
     if (!entry) return null;
     if (entry.end !== 'read') return E.BADF;

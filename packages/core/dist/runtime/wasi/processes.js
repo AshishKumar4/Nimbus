@@ -216,7 +216,7 @@ export function processHost(opts) {
                     if (target === null)
                         continue;
                     if (typeof target === 'number')
-                        opts.output(target, chunk.data);
+                        await opts.output(target, chunk.data);
                     else if (target.pipe.readers > 0) {
                         target.pipe.chunks.push(chunk.data);
                         wake(target.pipe);
@@ -474,6 +474,29 @@ export function processHost(opts) {
         },
     };
     const read = (fd, iovs, iovsLen, nread) => {
+        if (opts.fds.get(fd)?.kind === 'stdin' && opts.input) {
+            let room = 0;
+            for (let i = 0; i < iovsLen; i++)
+                room += view().getUint32(iovs + i * 8 + 4, true);
+            if (room === 0) {
+                view().setUint32(nread, 0, true);
+                return E.SUCCESS;
+            }
+            return opts.input(room).then((packet) => {
+                if (!(packet.data instanceof Uint8Array) || packet.data.byteLength > room)
+                    return E.IO;
+                if (packet.data.byteLength > 0) {
+                    const moved = scatter({ chunks: [packet.data] }, iovs, iovsLen);
+                    view().setUint32(nread, moved, true);
+                    opts.inbound();
+                    return E.SUCCESS;
+                }
+                if (packet.signal || !packet.ended)
+                    return E.INTR;
+                view().setUint32(nread, 0, true);
+                return E.SUCCESS;
+            }, () => E.IO);
+        }
         const entry = pipeEntry(fd);
         if (!entry)
             return null;

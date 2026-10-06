@@ -145,7 +145,7 @@ function session() {
   return { sup, control };
 }
 
-async function guest() {
+async function guest({ stdinRead } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-processes-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiSupervisorOutput };`);
   let P;
@@ -157,6 +157,7 @@ async function guest() {
   P.__wasiAdoptSupervisor(sup);
   const bundle = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory,
+    stdinRead,
     stdoutBytes: (bytes) => stdout.push(dec.decode(bytes)), stderrBytes: () => {},
   });
   const wasi = bundle.wasiImport;
@@ -187,12 +188,13 @@ async function guest() {
       return wasi.fd_write(fd, at, 1, at + 8);
     },
     /** fd_read of up to 1 KiB: { errno, text }. */
-    async read(fd) {
+    async read(fd, maxBytes = 1024, raw = false) {
       const at = scratch();
       view().setUint32(at, at + 64, true);
-      view().setUint32(at + 4, 1024, true);
+      view().setUint32(at + 4, maxBytes, true);
       const errno = await wasi.fd_read(fd, at, 1, at + 8);
-      return { errno, text: errno === E.SUCCESS ? dec.decode(bytesAt().slice(at + 64, at + 64 + view().getUint32(at + 8, true))) : null };
+      const bytes = errno === E.SUCCESS ? bytesAt().slice(at + 64, at + 64 + view().getUint32(at + 8, true)) : null;
+      return raw ? { errno, bytes: bytes === null ? null : [...bytes] } : { errno, text: bytes === null ? null : dec.decode(bytes) };
     },
     close: (fd) => wasi.fd_close(fd),
     dup(fd) {
@@ -264,6 +266,29 @@ async function guest() {
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 let checks = 0;
+
+// A broker-bounded fd-0 read leaves the tail in the channel, not the guest.
+{
+  let queued = Uint8Array.of(0, 255, 195, 169, 65);
+  const requested = [];
+  let closed = false;
+  const g = await guest({ stdinRead: async (maxBytes) => {
+    requested.push(maxBytes);
+    const data = queued.slice(0, maxBytes);
+    queued = queued.slice(maxBytes);
+    return { data, ended: closed && queued.length === 0 };
+  } });
+  assert.deepEqual(await g.read(0, 3, true), { errno: E.SUCCESS, bytes: [0, 255, 195] });
+  assert.deepEqual([...queued], [169, 65], 'no hidden guest read-ahead to lose on inheritance');
+  assert.deepEqual(await g.read(g.dup(0), 2, true), { errno: E.SUCCESS, bytes: [169, 65] });
+  assert.equal((await g.read(0, 4)).errno, E.INTR, 'empty long-poll is not EOF');
+  closed = true;
+  assert.deepEqual(await g.read(0, 4), { errno: E.SUCCESS, text: '' });
+  assert.deepEqual(await g.read(0, 0), { errno: E.SUCCESS, text: '' });
+  assert.deepEqual(requested, [3, 2, 4, 4], 'zero-length reads take nothing');
+  g.dispose();
+  checks++;
+}
 
 // ── a wait that gives up consumes nothing ───────────────────────────────
 {
@@ -487,10 +512,19 @@ let checks = 0;
   void held.then(() => { settled = true; });
   await settle();
   assert.equal(settled, false);
+  await new Promise((resolve) => setTimeout(resolve, 5500));
+  assert.equal(settled, false, 'a timeout cannot release a writer into a full output window');
   release();
   await held;
   hold = null;
   assert.equal(await out.drain(), null);
+
+  const sizes = [];
+  const split = g.P.__wasiSupervisorOutput({ async stdout(bytes) { sizes.push(bytes.length); }, async stderr() {} });
+  await split.stdoutBytes(new Uint8Array(3 * 1024 * 1024 + 1));
+  assert.equal(await split.drain(), null);
+  assert.ok(sizes.every((size) => size <= 1024 * 1024), 'large writes are admitted in bounded pieces');
+  assert.equal(sizes.reduce((sum, size) => sum + size, 0), 3 * 1024 * 1024 + 1);
 
   const refused = g.P.__wasiSupervisorOutput({ async stdout() { throw new Error('session reset'); }, async stderr() {} });
   refused.stdoutBytes(enc.encode('lost'));

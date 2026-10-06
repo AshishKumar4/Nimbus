@@ -158,6 +158,12 @@ export interface WasiThreadScheduler {
 /** How an instance is permitted to block — a property of the caller, not of WASI. */
 export type WasiParking = 'jspi' | 'none';
 
+export interface WasiInputPacket {
+  data: Uint8Array;
+  ended: boolean;
+  signal?: string;
+}
+
 export interface WasiMakeImportsOptions {
   argv?: string[];
   env?: Record<string, string>;
@@ -177,6 +183,8 @@ export interface WasiMakeImportsOptions {
    */
   stdoutBytes?: (bytes: Uint8Array) => void | Promise<void>;
   stderrBytes?: (bytes: Uint8Array) => void | Promise<void>;
+  /** Read at most maxBytes from one process channel; excess stays there. */
+  stdinRead?: (maxBytes: number) => Promise<WasiInputPacket>;
 }
 
 /**
