@@ -18,7 +18,7 @@
  *   - every descriptor is the session's, so a directory's descriptor works
  *     for the session's calls (mkdirat, futimes) and lists the directory it
  *     opened, wherever that directory is now;
- *   - a revision of a file is one buffer however many times it is read;
+ *   - a revision pinned for several descriptors is one buffer, charged once;
  *   - the barrier stays owed until one lands.
  */
 
@@ -210,12 +210,19 @@ await check('a directory\'s descriptor is the session\'s: mkdirat, futimes, and 
   await fs.close(dir.id);
 });
 
-await check('a revision is one buffer however many times it is read', async () => {
+await check('a revision pinned for two descriptors is one buffer, charged once and given back once', async () => {
   const fs = residentFilesystem(authority, view);
-  const one = await fs.readFile(beneath('two.bin'));
-  const two = await fs.readFile(beneath('two.bin'));
-  assert.equal(one.byteLength, twoMiB.byteLength);
-  assert.equal(one, two, 'the same buffer');
+  const st = await fs.stat(beneath('two.bin'));
+  const one = await fs.pinContent(beneath('two.bin'), st);
+  const two = await fs.pinContent(beneath('two.bin'), st);
+  assert.equal(one.bytes.byteLength, twoMiB.byteLength);
+  assert.equal(one.bytes, two.bytes, 'the same buffer');
+  assert.equal(fs.stats().pinnedBytes, twoMiB.byteLength);
+  one.release();
+  one.release();
+  assert.equal(fs.stats().pinnedBytes, twoMiB.byteLength, 'held while a descriptor holds it, a second release of one changes nothing');
+  two.release();
+  assert.equal(fs.stats().pinnedBytes, 0);
 });
 
 await check('the barrier stays owed until one lands', async () => {

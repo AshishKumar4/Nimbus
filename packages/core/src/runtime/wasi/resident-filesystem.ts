@@ -12,8 +12,10 @@
  * bytes (which the codec holds for a read-only descriptor, its ResidentFd) are
  * answered from the store; anything that changes the filesystem, and anything
  * the store cannot vouch for, goes to the authority exactly as before. The
- * store is the process's one copy of file bytes: the codec keeps none of its
- * own beside it (`holdsContent`).
+ * store is the process's one copy of file bytes, under its one budget: a
+ * descriptor the codec answers itself pins the bytes it reads for its
+ * lifetime (`pinContent`), charged to that budget, and past it the codec
+ * opens the session's descriptor instead.
  *
  * What makes an answer from the store the authority's answer:
  *   - The walk is the authority's own (beneath-walk.ts walkBeneath), its
@@ -42,7 +44,6 @@ import type {
   RuntimeVfsStat,
 } from '../os-contracts.js';
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
-import { FACET_OWN_WRITE_MEMORY_BYTES } from '@nimbus-sh/platform/limits.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
@@ -90,11 +91,27 @@ export interface ResidentNamespace {
   fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
   /** The ACQUIRE barrier. */
   barrier(): Promise<boolean>;
+  /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
+  reserve(bytes: number): boolean;
+  /** Return what `reserve` charged. */
+  release(bytes: number): void;
+}
+
+/** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
+export interface PinnedContent {
+  bytes: Uint8Array;
+  release(): void;
 }
 
 export interface ResidentFilesystem extends RuntimeFsBridge {
-  /** File bytes are held here, by revision: a codec over this filesystem keeps no copies of its own. */
-  readonly holdsContent: true;
+  /**
+   * The bytes of the file `path` names, which `stat` describes, kept for a
+   * descriptor until it releases them: one buffer per revision however many
+   * descriptors read it, charged once to the store's budget. Null when they
+   * cannot be (the file changed, or the budget is spent): the caller opens
+   * the session's descriptor instead.
+   */
+  pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
   /** Input from outside the process arrived: the barrier is owed before the next answer. */
   inbound(): void;
   /** Whether writes are held that the session does not have yet. */
@@ -124,6 +141,9 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
 /** A held file the session refused part of: what a run reports, naming the file. */
 export interface UnsettledWrite {
   path: string;
+  /** The file's identity: an fsync through any descriptor of it reports the refusal too. */
+  dev: number;
+  ino: number;
   error: unknown;
 }
 
@@ -144,6 +164,9 @@ export interface ResidentFilesystemStats {
   barriers: number;
   /** Wall time the process spent waiting on the session for any of the above, in ms. */
   waitMs: number;
+  /** File bytes pinned for descriptors now, and how many buffers hold them. */
+  pinnedBytes: number;
+  pins: number;
 }
 
 /** A held write goes to the session in pieces of this size: each fits one call. */
@@ -174,13 +197,22 @@ interface HeldWrite {
   id: number;
   /** The descriptor's path, as the session names it in an error. */
   path: string;
-  /** The session's stat of the file at open, its size aside. */
-  stat: RuntimeVfsStat;
+  dev: number;
+  ino: number;
   /** Opened for reading too (O_RDWR): a read of a write-only descriptor is EBADF, as the session says. */
   readable: boolean;
   bytes: Uint8Array;
   length: number;
   position: number;
+  /** Bumped by every change, so a reader's copy is shared until the next one. */
+  generation: number;
+  snapshot: Uint8Array | null;
+}
+
+/** Bytes pinned for descriptors: one buffer per file revision (or held generation), and how many hold it. */
+interface Pin {
+  bytes: Uint8Array;
+  holders: number;
 }
 
 /** A directory the session opened for this process, read-only: listed here while its name still leads to it. */
@@ -188,12 +220,6 @@ interface OpenDirectory {
   key: string;
   dev: number;
   ino: number;
-}
-
-/** A file revision's bytes, shared by every descriptor opened on it. */
-interface Revision {
-  revision: number;
-  bytes: Uint8Array;
 }
 
 /** The root of the namespace as the walk asks about it (the authority's rootStat, for what the walk reads). */
@@ -246,7 +272,7 @@ function statOf(entry: ResidentEntry): RuntimeVfsStat {
 const identity = (dev: number, ino: number): string => `${dev}:${ino}`;
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem {
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
   // Every wait on the session is timed where it leaves: the authority's calls
   // and the store's listings, fills and barriers. A facet's clock moves only
   // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -274,13 +300,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     content: (key) => resident.content(key),
     fill: (key, entry) => timed(resident.fill(key, entry)),
     barrier: () => timed(resident.barrier()),
+    reserve: (bytes) => resident.reserve(bytes),
+    release: (bytes) => resident.release(bytes),
   };
   const delegated = (name: string): void => { counts.delegated[name] = (counts.delegated[name] ?? 0) + 1; };
   /** The barrier is owed: set by a change or by input, cleared only by a barrier that lands. */
   let owed = false;
-  /** Writes held for the session's descriptors, by descriptor; and their total, against FACET_OWN_WRITE_MEMORY_BYTES. */
+  /** Writes held for the session's descriptors, by descriptor; their buffers are charged to the store's budget. */
   const writes = new Map<number, HeldWrite>();
-  let heldBytes = 0;
   /** Held writes the session refused, by descriptor, until reported (by that descriptor's close or fsync, or by settle). */
   const unsettled = new Map<number, UnsettledWrite>();
   /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
@@ -288,31 +315,38 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /** Of those, the directories, and where their listing is, once their fstat named them. */
   const pendingDirectories = new Map<number, string>();
   const directories = new Map<number, OpenDirectory>();
-  /** File revisions handed out, by identity, so every descriptor on one shares one buffer; at most WASI_RESIDENT_FILE_CAP_BYTES in all. */
-  const revisions = new Map<string, Revision>();
-  let revisionBytes = 0;
+  /** The identity of every session descriptor this process has fstat'd: a sync through it reports the file's refusals. */
+  const identities = new Map<number, string>();
+  /** Bytes pinned for the codec's own descriptors (pinContent). */
+  const pins = new Map<string, Pin>();
 
   /** The held write of the file (dev, ino), if this process is writing it. */
   const heldFor = (dev: number, ino: number): HeldWrite | undefined => {
     let found: HeldWrite | undefined;
-    for (const held of writes.values()) if (held.stat.ino === ino && held.stat.dev === dev) found = held;
+    for (const held of writes.values()) if (held.ino === ino && held.dev === dev) found = held;
     return found;
   };
 
   /**
    * Room for `held` to reach `length` bytes, or false when that would pass
-   * what one held file or all of them may take: the file then goes to the
-   * session and is written there.
+   * what one held file may take or what the store's budget has left: the
+   * file then goes to the session and is written there.
    */
   const room = (held: HeldWrite, length: number): boolean => {
     if (length <= held.bytes.byteLength) return true;
-    const size = Math.max(length, Math.min(held.bytes.byteLength * 2, WASI_RESIDENT_FILE_CAP_BYTES), 4096);
-    if (length > WASI_RESIDENT_FILE_CAP_BYTES || heldBytes + size - held.bytes.byteLength > FACET_OWN_WRITE_MEMORY_BYTES) return false;
+    if (length > WASI_RESIDENT_FILE_CAP_BYTES) return false;
+    const size = Math.min(WASI_RESIDENT_FILE_CAP_BYTES, Math.max(length, held.bytes.byteLength * 2, 4096));
+    if (!store.reserve(size - held.bytes.byteLength)) return false;
     const next = new Uint8Array(size);
     next.set(held.bytes.subarray(0, held.length));
-    heldBytes += next.byteLength - held.bytes.byteLength;
     held.bytes = next;
     return true;
+  };
+
+  /** A held file changed: a reader's copy of the old content is no longer the file's. */
+  const changed = (held: HeldWrite): void => {
+    held.generation++;
+    held.snapshot = null;
   };
 
   /**
@@ -322,7 +356,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
    */
   const release = async (held: HeldWrite, closing = false): Promise<void> => {
     writes.delete(held.id);
-    heldBytes -= held.bytes.byteLength;
+    store.release(held.bytes.byteLength);
     try {
       for (let at = 0; at < held.length; at += WRITE_PIECE_BYTES) {
         await authority.write(held.id, at, held.bytes.slice(at, Math.min(held.length, at + WRITE_PIECE_BYTES)));
@@ -330,7 +364,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       // A descriptor about to close has no position to keep: one trip fewer per file.
       if (!closing && held.position !== 0) await authority.seek(held.id, held.position, 'set');
     } catch (error) {
-      unsettled.set(held.id, { path: held.path, error });
+      unsettled.set(held.id, { path: held.path, dev: held.dev, ino: held.ino, error });
     } finally {
       owed = true;
     }
@@ -347,6 +381,20 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (failure === undefined) return;
     unsettled.delete(handleId);
     throw failure.error;
+  };
+
+  /**
+   * A sync of the file (dev, ino) through any descriptor: what is held for it
+   * goes first, and a refusal any of its writers met is this sync's answer,
+   * as on Linux every descriptor of a file sees its writeback error. The
+   * writer's own close or the run's settle still reports it too.
+   */
+  const syncIdentity = (dev: number, ino: number): void | Promise<void> => {
+    const refusal = () => {
+      for (const failure of unsettled.values()) if (failure.dev === dev && failure.ino === ino) throw failure.error;
+    };
+    if (heldFor(dev, ino) === undefined) return refusal();
+    return flush((held) => held.dev === dev && held.ino === ino).then(refusal);
   };
 
   /**
@@ -436,36 +484,17 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   /**
-   * A file's bytes: what this process is writing to it, else the revision's
-   * shared buffer, else the store's (fetched into it). Undefined when only
-   * the authority can read them.
+   * A file's bytes: what this process is writing to it (one copy per held
+   * generation), else the store's, fetched into it. Undefined when only the
+   * authority can read them.
    */
   const contentOf = (key: string, entry: ResidentEntry): Uint8Array | undefined | Promise<Uint8Array | undefined> => {
     const writing = heldFor(entry.dev, entry.ino);
-    if (writing !== undefined) return writing.bytes.slice(0, writing.length);
-    const id = identity(entry.dev, entry.ino);
-    const shared = revisions.get(id);
-    if (shared !== undefined && shared.revision === entry.revision) {
-      revisions.delete(id);
-      revisions.set(id, shared);
-      return shared.bytes;
-    }
-    const keep = (bytes: Uint8Array | null | undefined): Uint8Array | undefined => {
-      if (bytes === null || bytes === undefined || bytes.byteLength !== entry.size) return undefined;
-      if (shared !== undefined) { revisions.delete(id); revisionBytes -= shared.bytes.byteLength; }
-      for (const [oldest, revision] of revisions) {
-        if (revisionBytes + bytes.byteLength <= WASI_RESIDENT_FILE_CAP_BYTES) break;
-        revisions.delete(oldest);
-        revisionBytes -= revision.bytes.byteLength;
-      }
-      if (revisionBytes + bytes.byteLength <= WASI_RESIDENT_FILE_CAP_BYTES) {
-        revisions.set(id, { revision: entry.revision, bytes });
-        revisionBytes += bytes.byteLength;
-      }
-      return bytes;
-    };
+    if (writing !== undefined) return (writing.snapshot ??= writing.bytes.slice(0, writing.length));
+    const keep = (bytes: Uint8Array | null | undefined): Uint8Array | undefined =>
+      (bytes === null || bytes === undefined || bytes.byteLength !== entry.size ? undefined : bytes);
     const held = store.content(key);
-    if (held !== undefined && held.byteLength === entry.size) return keep(held);
+    if (held !== undefined && held.byteLength === entry.size) return held;
     counts.fills++;
     counts.filledBytes += entry.size;
     return store.fill(key, entry).then(keep);
@@ -528,7 +557,6 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }
   Reflect.set(fs, 'synchronous', authority.synchronous);
 
-  Reflect.set(fs, 'holdsContent', true);
   fs.inbound = () => { owed = true; };
   fs.holding = () => writes.size > 0;
   fs.flush = () => flush();
@@ -538,19 +566,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     unsettled.clear();
     return failures;
   };
-  fs.syncInode = (dev, ino) => {
-    const ids = [...writes.values()].filter((held) => held.stat.dev === dev && held.stat.ino === ino).map((held) => held.id);
-    const refusal = () => {
-      // fsync(2) on any descriptor of a file reports what its writes met; the writer's own close still reports it too.
-      for (const id of ids) {
-        const failure = unsettled.get(id);
-        if (failure !== undefined) throw failure.error;
-      }
-    };
-    if (ids.length === 0) return;
-    return flush((held) => ids.includes(held.id)).then(refusal);
-  };
-  fs.stats = () => ({ ...counts, delegated: { ...counts.delegated } });
+  fs.syncInode = (dev, ino) => syncIdentity(dev, ino);
+  fs.stats = () => ({
+    ...counts,
+    delegated: { ...counts.delegated },
+    pins: pins.size,
+    pinnedBytes: [...pins.values()].reduce((total, pin) => total + pin.bytes.byteLength, 0),
+  });
 
   fs.stat = (path, options = {}) => answer<RuntimeVfsStat | null>('stat', () => {
     const follow = options.followSymlinks !== false;
@@ -577,8 +599,41 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   /** The session is to answer for this file: when this process holds writes to it, they go first. */
   const toSession = (entry: ResidentEntry): Delegate | Promise<Delegate> => {
     if (heldFor(entry.dev, entry.ino) === undefined) return DELEGATE;
-    return flush((held) => held.stat.dev === entry.dev && held.stat.ino === entry.ino).then(() => DELEGATE);
+    return flush((held) => held.dev === entry.dev && held.ino === entry.ino).then(() => DELEGATE);
   };
+
+  fs.pinContent = (path, stat) => answer<PinnedContent | null>('pinContent', () => after(resolve(path, true, true), (key) => {
+    if (key === DELEGATE || key === '' || key === null) return null;
+    const entry = entryAt(key);
+    // Only the file the caller stat'd, at the revision it stat'd: anything else is the session's to open.
+    if (!entry || entry.type !== 'file' || entry.dev !== stat.dev || entry.ino !== stat.ino || entry.size > WASI_RESIDENT_FILE_CAP_BYTES) return null;
+    if (!modeAllows(entry, 4, store.cred)) return null;
+    const writing = heldFor(entry.dev, entry.ino);
+    if (writing === undefined && entry.revision !== stat.revision) return null;
+    const pinKey = writing === undefined ? `${identity(entry.dev, entry.ino)}:${entry.revision}` : `${identity(entry.dev, entry.ino)}:held:${writing.generation}`;
+    const pinned = (pin: Pin): PinnedContent => {
+      pin.holders++;
+      let released = false;
+      return {
+        bytes: pin.bytes,
+        release: () => {
+          if (released) return;
+          released = true;
+          if (--pin.holders > 0) return;
+          pins.delete(pinKey);
+          store.release(pin.bytes.byteLength);
+        },
+      };
+    };
+    const existing = pins.get(pinKey);
+    if (existing !== undefined) return pinned(existing);
+    return after(contentOf(key, entry), (bytes) => {
+      if (bytes === undefined || !store.reserve(bytes.byteLength)) return null;
+      const pin: Pin = { bytes, holders: 0 };
+      pins.set(pinKey, pin);
+      return pinned(pin);
+    });
+  }), () => null);
 
   fs.readFile = (path, options = {}) => answer<Uint8Array | null>('readFile', () => after(resolve(path, options.followSymlinks !== false, true), (key) => {
     if (key === DELEGATE || key === '') return DELEGATE;
@@ -649,8 +704,12 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (!whole || !store.ready()) return opened;
       return after(opened, (handle) => after(authority.fstat(handle.id), (stat) => {
         delegated('fstat');
+        identities.set(handle.id, identity(stat.dev, stat.ino));
         if (stat.type === 'file' && stat.dev === store.device) {
-          writes.set(handle.id, { id: handle.id, path: handle.path, stat, readable: !!flags.read, bytes: new Uint8Array(0), length: 0, position: 0 });
+          writes.set(handle.id, {
+            id: handle.id, path: handle.path, dev: stat.dev, ino: stat.ino, readable: !!flags.read,
+            bytes: new Uint8Array(0), length: 0, position: 0, generation: 0, snapshot: null,
+          });
         }
         return handle;
       }));
@@ -667,13 +726,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   };
 
   fs.fstat = (handleId) => {
-    const held = writes.get(handleId);
-    if (held !== undefined) {
-      counts.local++;
-      return { ...held.stat, size: held.length };
-    }
     delegated('fstat');
     return after(authority.fstat(handleId), (stat) => {
+      identities.set(handleId, identity(stat.dev, stat.ino));
+      // The session's stat as it is now (a peer's unlink, chmod or rename
+      // shows), with what this process holds for the file as its size.
+      const held = writes.get(handleId);
+      if (held !== undefined) return { ...stat, size: held.length };
       // A directory opened read-only is listed here while its name still leads to it.
       const key = pendingDirectories.get(handleId);
       if (key !== undefined) {
@@ -718,6 +777,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       });
     }
     counts.local++;
+    changed(held);
     // A write past the end leaves zeros between, as the file would.
     if (start > held.length) held.bytes.fill(0, held.length, start);
     held.bytes.set(bytes, start);
@@ -736,11 +796,13 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       });
     }
     counts.local++;
+    changed(held);
     if (size > held.length) held.bytes.fill(0, held.length, size);
     held.length = size;
   };
 
   fs.close = (handleId) => {
+    identities.delete(handleId);
     const held = writes.get(handleId);
     // The descriptor closes either way; a write the session refused is the close's error, as on a network filesystem.
     const closing = () => after(changing('close', () => authority.close(handleId)), () => reportUnsettled(handleId));
@@ -762,10 +824,22 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   }, () => authority.readdirHandle(handleId));
 
   fs.fsync = (handleId) => {
-    if (handleId === undefined) return flush().then(() => authority.fsync());
+    if (handleId === undefined) {
+      // sync(2) over every file: whatever any writer met is its answer (and still its writer's).
+      return flush().then(() => {
+        const failure = unsettled.values().next();
+        if (!failure.done) throw failure.value.error;
+        return authority.fsync();
+      });
+    }
     // Synced means in the session: what is held goes now, and the descriptor writes through after.
     const held = writes.get(handleId);
-    const synced = () => { reportUnsettled(handleId); delegated('fsync'); return authority.fsync(handleId); };
+    const synced = () => {
+      reportUnsettled(handleId);
+      const known = identities.get(handleId);
+      const [dev, ino] = known === undefined ? [NaN, NaN] : known.split(':').map(Number);
+      return after(known === undefined ? undefined : syncIdentity(dev, ino), () => { delegated('fsync'); return authority.fsync(handleId); });
+    };
     return held === undefined ? synced() : release(held).then(synced);
   };
 
