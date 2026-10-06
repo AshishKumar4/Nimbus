@@ -8,6 +8,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
+import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 
 const build = await Bun.build({
   // A virtual entry re-exports the real entrypoint AND composeFabric, so the
@@ -166,6 +167,7 @@ const INPUTS = {
   fsTruncate: [truncPath, size],
   writeBatch: [payload],
   writeBatchStream: [stream],
+  openWaveWriter: [],
   putRegistryEntries: [entries],
   stdout: [data],
   stderr: [data],
@@ -227,6 +229,8 @@ const host = {
   ensureSqliteFs() {},
   _rpcStdout(p, d) { delegateCalls.push(['_rpcStdout', p, d]); },
   _rpcStderr(p, d) { delegateCalls.push(['_rpcStderr', p, d]); },
+  // Wave epochs are issued from the instance's delivery store.
+  supervisorDeliveries: new SupervisorDeliveries(),
 };
 for (const [, route] of cases) {
   if (route) {
@@ -419,6 +423,7 @@ const nativeAssert = {
     await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
   },
   writeBatchStream: (r) => assert.ok(r && typeof r === 'object', 'writeBatchStream returned its result'),
+  openWaveWriter: (r) => assert.match(r, /^[0-9a-f-]{36}$/, 'openWaveWriter answered an epoch'),
   stdout: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStdout', pid, data], 'stdout delegate args'),
   stderr: () => assert.deepEqual(delegateCalls.at(-1), ['_rpcStderr', pid, data], 'stderr delegate args'),
 };
@@ -451,7 +456,10 @@ for (const [op, route] of cases) {
   const droveDirect = typeof supervisor[op] !== 'function';
   try {
     if (!droveDirect) {
+      // An epoch is issued only through a binding that names its host instance.
+      if (op === 'openWaveWriter') supervisor.ctx.props.hostIncarnation = host.supervisorDeliveries.incarnation;
       result = await supervisor[op](...input);
+      delete supervisor.ctx.props.hostIncarnation;
       assert.equal(receivedEnvelope.op, op);
       // The envelope's args must carry the RPC's inputs — the route's numeric
       // slots are indexes into this array, so a dropped arg is a dropped arg.

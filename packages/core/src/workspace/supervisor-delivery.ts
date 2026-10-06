@@ -39,7 +39,7 @@ import type { SupervisorOpDispatch, SupervisorOpName } from './supervisor-op.js'
  *
  * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
  * first delivery: its writer re-sends a lost wave re-encoded, under a newer
- * fence the host checks instead — {@link SupervisorDeliveries.admitWave}),
+ * fence in an epoch the host issued — {@link SupervisorDeliveries.admitWave}),
  * the descriptor read `fsRead` (it advances the position and
  * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
  * append ledger's own writer/module/operation identity already makes them
@@ -99,6 +99,11 @@ export function supervisorJoinedReadOp(op: string): SupervisorJoinedReadOpName |
 interface WaveAttempt {
   readonly wave: number;
   readonly attempt: number;
+}
+
+/** An open write-wave epoch: the newest attempt admitted under it, and when it closes. */
+interface WaveEpoch extends WaveAttempt {
+  readonly expiresAt: number;
 }
 
 /** Whether `a` came after `b` from the same writer. */
@@ -256,10 +261,8 @@ export class SupervisorDeliveries {
   private rotatedAt = Number.NEGATIVE_INFINITY;
   private readonly running = new Map<string, Receipt>();
   private readonly readsInFlight = new Map<string, InFlightRead>();
-  /** The newest wave attempt seen from each writer, by `${pid}:${writer}`, in two generations. */
-  private waveFences = new Map<string, WaveAttempt>();
-  private olderWaveFences = new Map<string, WaveAttempt>();
-  private waveFencesSince = Number.NEGATIVE_INFINITY;
+  /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
+  private readonly waveEpochs = new Map<string, WaveEpoch>();
   private tombstones = new Set<number>();
   private olderTombstones = new Set<number>();
   private tombstonesSince = Number.NEGATIVE_INFINITY;
@@ -390,42 +393,51 @@ export class SupervisorDeliveries {
   }
 
   /**
-   * Admit attempt (`wave`, `attempt`) of a write wave from `writer`, a
-   * process's wave writer, and answer whether it may still commit: it may
-   * while no newer attempt from that writer has been admitted. An attempt
-   * older than one already admitted is refused at once, ESTALE: its writer
-   * gave up on it and re-sent the wave (or has moved on), so applying it
-   * now could only put back bytes a newer write replaced. `check` is asked
+   * Open a write-wave epoch for process `pid`: the only writer identity
+   * {@link admitWave} admits, for `ttlMs` from now. Its waves are refused
+   * once it expires or its process is forgotten, whatever arrives then.
+   */
+  openWaveWriter(pid: number, ttlMs: number): string {
+    const now = Date.now();
+    for (const [key, epoch] of this.waveEpochs) if (epoch.expiresAt <= now) this.waveEpochs.delete(key);
+    const writer = crypto.randomUUID();
+    this.waveEpochs.set(`${pid}:${writer}`, { wave: 0, attempt: 0, expiresAt: now + ttlMs });
+    return writer;
+  }
+
+  /**
+   * Admit attempt (`wave`, `attempt`) of a write wave from epoch `writer`,
+   * and answer whether it may still commit: it may while the epoch is open
+   * and no newer attempt under it has been admitted. Refused, ESTALE, by
+   * default: an epoch this instance did not open, or opened and has since
+   * expired or forgotten, admits nothing; and an attempt older than one
+   * already admitted is one its writer gave up on and re-sent, so applying
+   * it could only put back bytes a newer write replaced. `check` is asked
    * again before each of the attempt's commits, which is what stops an
-   * attempt overtaken while it runs.
-   *
-   * An attempt is held for at least the tombstone retention after it was
-   * last admitted (a call the platform lost was measured arriving up to
-   * 560 s late), and a writer forgotten by then has re-sent nothing for
-   * that long.
+   * attempt overtaken, or outlived by its epoch, while it runs.
    */
   admitWave(pid: number, writer: string, wave: number, attempt: number): { check(): void } {
-    const now = Date.now();
-    if (now - this.waveFencesSince >= this.tombstoneMs) {
-      this.olderWaveFences = now - this.waveFencesSince < 2 * this.tombstoneMs ? this.waveFences : new Map();
-      this.waveFences = new Map();
-      this.waveFencesSince = now;
-    }
     const key = `${pid}:${writer}`;
     const mine: WaveAttempt = { wave, attempt };
-    const check = (): void => {
-      const newest = this.waveFences.get(key) ?? this.olderWaveFences.get(key);
-      if (newest !== undefined && newerAttempt(newest, mine)) {
+    const check = (): WaveEpoch => {
+      const epoch = this.waveEpochs.get(key);
+      if (epoch === undefined || epoch.expiresAt <= Date.now()) {
         throw Object.assign(
-          new Error(`ESTALE: write wave ${wave} attempt ${attempt} was overtaken by wave ${newest.wave} attempt ${newest.attempt}`),
+          new Error(`ESTALE: write wave ${wave} attempt ${attempt} names a writer epoch this session does not hold open`),
           { code: 'ESTALE' },
         );
       }
+      if (newerAttempt(epoch, mine)) {
+        throw Object.assign(
+          new Error(`ESTALE: write wave ${wave} attempt ${attempt} was overtaken by wave ${epoch.wave} attempt ${epoch.attempt}`),
+          { code: 'ESTALE' },
+        );
+      }
+      return epoch;
     };
-    check();
-    this.olderWaveFences.delete(key);
-    this.waveFences.set(key, mine);
-    return { check };
+    const epoch = check();
+    this.waveEpochs.set(key, { wave, attempt, expiresAt: epoch.expiresAt });
+    return { check: () => { check(); } };
   }
 
   /** Reads being served, which repeats of them would join. */
@@ -433,8 +445,10 @@ export class SupervisorDeliveries {
     return this.readsInFlight.size;
   }
 
-  /** A process ended: its receipts answer nothing more, and their ids stay refused. */
+  /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
   forget(pid: number): void {
+    const prefix = `${pid}:`;
+    for (const key of this.waveEpochs.keys()) if (key.startsWith(prefix)) this.waveEpochs.delete(key);
     const now = Date.now();
     for (const generation of [this.current, this.previous]) {
       const receipts = generation.get(pid);

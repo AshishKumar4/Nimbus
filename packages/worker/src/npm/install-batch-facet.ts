@@ -130,7 +130,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // [W7] Streaming bulk-write RPC. Bypasses the 32 MiB structured-clone
       // cap by sending the batch as a type:'bytes' ReadableStream<Uint8Array>
       // (W7 wire protocol — see src/_shared/w7-frame.ts).
-      writeBatchStream: (stream: ReadableStream<Uint8Array>, fence: WaveFence) => Promise<WriteBatchStreamResult>;
+      writeBatchStream: (stream: ReadableStream<Uint8Array>, fence?: WaveFence) => Promise<WriteBatchStreamResult>;
+      openWaveWriter?: () => Promise<string | null>;
       // [W4] Optional R2-cache RPC, addressed by the tarball's npm
       // integrity digest. The supervisor re-hashes whatever the shared
       // bucket returned before handing it back, so `bytes` need no
