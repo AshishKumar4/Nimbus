@@ -7,6 +7,7 @@
 // Post-fix __nimbus_repl_finish explicitly emits repr(result)+'\\n'.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { pushLine } from './_push.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('repl/python-bare-expression');
@@ -50,11 +51,11 @@ for (const [input, expected, name] of [
   ["'hello'", /'hello'/, "'hello' prints its repr, quoted"],
   ['[1, 2, 3]', /\[1, 2, 3\]/, '[1, 2, 3] prints its repr'],
 ]) {
-  const out = stripAnsi((await t.run(input, 15_000)).output);
+  const out = await pushLine(t, input);
   a.check(name, expected.test(out), `output=${JSON.stringify(tail(out))}`);
 }
-await t.run('x = 99', 15_000);
-const persisted = stripAnsi((await t.run('x', 15_000)).output);
+await pushLine(t, 'x = 99');
+const persisted = await pushLine(t, 'x');
 a.check('x bound in one push prints 99 in the next', /\b99\b/.test(persisted), `output=${JSON.stringify(tail(persisted))}`);
 
 // exit() ends the REPL with status 0.
