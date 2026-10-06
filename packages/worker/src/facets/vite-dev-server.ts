@@ -56,7 +56,7 @@ import type { BundlePool, BundlePoolProvider } from './prebundle-pool.js';
 import { VITE_MODULE_CACHE_MAX_ENTRIES, ON_DEMAND_SLICE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import {
-  scanNamedImports,
+  scanProjectImports,
   namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
@@ -2033,7 +2033,7 @@ export class ViteDevServer {
     const fileCount = countPackageFiles(this.vfs, pkgDir);
     if (fileCount <= BARREL_PKG_FILE_THRESHOLD) return null;
 
-    const names = scanNamedImports(this.vfs, this.root).get(pkgName) ?? null;
+    const names = scanProjectImports(this.vfs, this.root).namedImports.get(pkgName) ?? null;
     return {
       pkgName,
       fileCount,

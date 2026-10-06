@@ -99,12 +99,11 @@ import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coo
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { packageRangeSeparator } from './package-spec.js';
 import {
-  scanNamedImports,
+  scanProjectImports,
   namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
-  type NamedImportMap,
 } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
@@ -1997,7 +1996,7 @@ export class NpmInstaller {
       return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
     };
 
-    const usedSpecifiers = this.scanBareImports(fs, projDir);
+    const { bareSpecifiers: usedSpecifiers, namedImports } = scanProjectImports(fs, projDir);
 
     // Vite plugins / postcss plugins / build-time tools NEVER ship to the
     // browser — they're invoked server-side by vite's own plugin
@@ -2080,8 +2079,6 @@ export class NpmInstaller {
       syntheticReferencedFiles?: string[];
     };
     const pending: PendingSpec[] = [];
-    // Scan once up front; reused across barrel packages.
-    const namedImports: NamedImportMap = scanNamedImports(fs, projDir);
     for (const specifier of toBuild) {
       const existing = this.cache.getEsmBundle(specifier);
 
@@ -2500,94 +2497,6 @@ export class NpmInstaller {
         try { console.error('[pre-bundle] final-progress threw:', e?.message || e); } catch {}
       }
     }
-  }
-
-  /**
-   * Scan project source files for bare import specifiers.
-   * Returns unique bare specifiers including subpaths (e.g., both `react`
-   * AND `react/jsx-runtime` so each can be pre-bundled separately with the
-   * correct externals for shared-runtime isolation).
-   *
-   * Also injects common JSX-runtime subpaths derived from esbuild's automatic
-   * JSX transform: if `react` is imported, we also queue `react/jsx-runtime`
-   * and `react/jsx-dev-runtime` because the compiled JSX output imports from
-   * them even if the source never wrote `import ... from "react/jsx-runtime"`.
-   */
-  private scanBareImports(fs: CredentialedVfs, projDir: string): string[] {
-    const imports = new Set<string>();
-    const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
-    // Files we deliberately skip at the project root: their imports run
-    // server-side (vite plugins, postcss/tailwind config, etc.), never in
-    // the browser, so pre-bundling their bare specifiers as if they were
-    // browser modules is wasted work that exposes us to esbuild fs-shim
-    // limits (e.g. @tailwindcss/vite triggers `readdir(".")` inside
-    // esbuild → "Cannot read directory '.': not implemented on js" → the
-    // ensuing combined heap pressure of 30+ pending pre-bundles + dev
-    // start has been observed crashing the supervisor on Mossaic-scale
-    // projects). The /preview/@modules/ path never serves these
-    // specifiers; vite's own plugin resolver loads them at server boot.
-    const isServerOnlyTopLevel = (name: string): boolean => {
-      // vite.config.ts/js/mjs/cjs and *.config.{ts,js,mjs,cjs} at the
-      // project root. Limited to depth 0 to avoid filtering legitimate
-      // browser code that happens to live under e.g. src/config/foo.ts.
-      return /^(?:vite|vitest|astro|rollup|tsup|tailwind|postcss|prettier|eslint|stylelint|rolldown)\.config\.[mc]?[jt]s$/.test(name)
-          || /\.config\.[mc]?[jt]s$/.test(name) && name.split('.').length === 3;
-    };
-
-    const walk = (dir: string, depth: number) => {
-      if (depth > 5) return;
-      try {
-        for (const entry of fs.readdir(dir)) {
-          if (entry.name === 'node_modules' || entry.name === '.git' ||
-              entry.name === 'dist' || entry.name === 'build') continue;
-          const path = dir + '/' + entry.name;
-          if (entry.type === 'directory') {
-            walk(path, depth + 1);
-            continue;
-          }
-          // Server-only config files at the project root (depth 0) are
-          // skipped — their imports are not browser modules.
-          if (depth === 0 && isServerOnlyTopLevel(entry.name)) continue;
-          const dotIdx = entry.name.lastIndexOf('.');
-          if (dotIdx < 0) continue;
-          const ext = entry.name.substring(dotIdx);
-          if (!scanExts.has(ext)) continue;
-
-          try {
-            const code = fs.readFileString(path);
-            const re = /(?:from\s+|import\s*\(?\s*)["']([^./][^"']*?)["']/g;
-            let m;
-            while ((m = re.exec(code)) !== null) {
-              const spec = m[1];
-              // Keep the full specifier (including subpaths) so each is
-              // pre-bundled separately with the appropriate externals.
-              // Strip any trailing query string (?v=... etc.)
-              const clean = spec.split('?')[0];
-              imports.add(clean);
-
-              // Also add the top-level package name so its main entry is
-              // pre-bundled even if only a subpath was imported.
-              imports.add(packageNameFromSpecifier(clean));
-            }
-
-            // If any .tsx/.jsx file is present and uses JSX automatic runtime
-            // (the default), esbuild injects imports from react/jsx-runtime
-            // even though the source never wrote them explicitly. Queue the
-            // runtime packages so they get pre-bundled with the correct
-            // externals.
-            if (ext === '.tsx' || ext === '.jsx') {
-              if (imports.has('react')) {
-                imports.add('react/jsx-runtime');
-                imports.add('react/jsx-dev-runtime');
-              }
-            }
-          } catch { /* skip unreadable files */ }
-        }
-      } catch { /* skip unreadable dirs */ }
-    };
-
-    walk(projDir, 0);
-    return [...imports];
   }
 
   /**
