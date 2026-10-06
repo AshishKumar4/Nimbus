@@ -42,16 +42,37 @@ export interface WorkspaceNetwork {
   fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
 
+/** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
+export const ISOLATE_NETWORK: WorkspaceNetwork = {
+  egress: undefined,
+  id: '',
+  fetch: (input, init) => globalThis.fetch(input, init),
+};
+
+/** The network each egress object stands for (workspaceNetwork). */
+const networks = new WeakMap<WorkspaceEgress, WorkspaceNetwork>();
+
+function egressNetwork(egress: WorkspaceEgress, id: string): WorkspaceNetwork {
+  return { egress, id, fetch: (input, init) => egress.fetch(new Request(input, init)) };
+}
+
 /**
- * The workspace network over `egress`, or over the isolate's own network
- * when there is none. `id` is given only where a network crosses to another
- * Durable Object (a peer that runs the workspace's work keeps its identity).
+ * The workspace network over `egress`, or the isolate's own network when
+ * there is none. One per egress object: whatever asks for it (the workspace,
+ * or a session re-driving a process before its workspace exists) holds the
+ * same network, under the same id. `id` is given only where a network
+ * crosses to another Durable Object: a peer that runs the workspace's work
+ * rebuilds it over the stub it received, under the coordinator's id.
  */
 export function workspaceNetwork(egress?: WorkspaceEgress, id?: string): WorkspaceNetwork {
-  if (egress === undefined) {
-    return { egress: undefined, id: '', fetch: (input, init) => globalThis.fetch(input, init) };
+  if (egress === undefined) return ISOLATE_NETWORK;
+  if (id !== undefined) return egressNetwork(egress, id);
+  let network = networks.get(egress);
+  if (network === undefined) {
+    network = egressNetwork(egress, 'egress-' + crypto.randomUUID());
+    networks.set(egress, network);
   }
-  return { egress, id: id ?? 'egress-' + crypto.randomUUID(), fetch: (input, init) => egress.fetch(new Request(input, init)) };
+  return network;
 }
 
 /** What crosses to another Durable Object for `network` (an egress stub crosses RPC; the network rebuilds there). */
@@ -63,9 +84,6 @@ export interface WorkspaceNetworkRef {
 export function networkRef(network: WorkspaceNetwork | undefined): WorkspaceNetworkRef | undefined {
   return network?.egress === undefined ? undefined : { egress: network.egress, id: network.id };
 }
-
-/** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
-export const ISOLATE_NETWORK: WorkspaceNetwork = workspaceNetwork();
 
 /**
  * The part of a Dynamic Worker's loader config that routes it through the

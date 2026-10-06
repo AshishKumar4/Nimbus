@@ -230,6 +230,9 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   }
   return {
     run,
+    /** The session's id, and its terminal as the driver holds it (raw input, waitFor). */
+    sid,
+    terminal,
     /** Write `content` to `path` in the session (base64 through node, no quoting hazards). */
     writeFile: async (path, content) => {
       const b64 = Buffer.from(content).toString('base64');

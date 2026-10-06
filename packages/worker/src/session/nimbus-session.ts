@@ -14,7 +14,7 @@ import * as runtimeServices from '../hosted/services.js';
  * `node` execution is delegated to dynamic workers via LOADER.load().
  * IPC between facets and the supervisor flows through SupervisorRPC.
  */
-import type { WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { workspaceNetwork, type WorkspaceEgress } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { Kernel, Shell } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { DurableObject as CloudflareDurableObject } from 'cloudflare:workers';
 import { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -514,11 +514,10 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
       armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
       filesystem: () => this.getFilesystemAuthority(),
-      network: () => {
-        // The network is the workspace's: nothing reaches it for the workspace before there is one.
-        if (!this.runtimeWorkspace) throw new Error('Nimbus: the workspace network was used before the workspace was created');
-        return this.runtimeWorkspace.network;
-      },
+      // The workspace's network is its egress's (workspaceNetwork: one per
+      // egress), so it is there before the workspace is: a launch re-driven
+      // by a cold alarm, or by the reconnect's recovery, goes out through it.
+      network: () => workspaceNetwork(this.egressForWorkspace()),
     });
     // In `wrangler dev`, the outer Worker and this DO share a single
     // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
@@ -769,15 +768,19 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
    * By default the `NIMBUS_EGRESS` service binding, when the embedder bound
    * one. An embedder that names the session to its egress overrides this,
    * e.g. `return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString() } })`.
-   * Called once, when the workspace is created.
+   * Called once per instance, by whatever needs the network first.
    */
   protected workspaceEgress(): WorkspaceEgress | undefined {
     return (this.env as { NIMBUS_EGRESS?: WorkspaceEgress }).NIMBUS_EGRESS;
   }
 
-  /** {@link workspaceEgress}, for the session's init (not part of the embedder surface). */
+  /** This instance's {@link workspaceEgress}, asked for once. */
+  #egress: { egress: WorkspaceEgress | undefined } | undefined;
+
+  /** {@link workspaceEgress}, for the session's init and processes (not part of the embedder surface). */
   egressForWorkspace(): WorkspaceEgress | undefined {
-    return this.workspaceEgress();
+    this.#egress ??= { egress: this.workspaceEgress() };
+    return this.#egress.egress;
   }
 
   /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
