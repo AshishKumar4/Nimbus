@@ -12,15 +12,14 @@
 // Driven off zig.ts's actual symbol table so symbol drift fails loudly.
 
 import assert from 'node:assert/strict';
-import { readFileSync, writeFileSync, rmSync } from 'node:fs';
-import os from 'node:os';
+import { readFileSync } from 'node:fs';
 import path from 'node:path';
-import { fileURLToPath, pathToFileURL } from 'node:url';
+import { fileURLToPath } from 'node:url';
 
 import { OPENTUI_WASM_ENTRY } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { OpenTUIWasmBackend } from '../../packages/core/src/runtime/opentui-wasm-backend.ts';
 import { ZIG_FFI_SYMBOLS } from './lib/opentui-zig-symbols.mjs';
+import { loadWasiPreamble } from './lib/wasi-authority.mjs';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
@@ -30,15 +29,7 @@ const bytes = readFileSync(path.join(workerRoot, 'public', OPENTUI_WASM_ENTRY.sl
 const module = new WebAssembly.Module(bytes);
 
 // ── WASI host: evaluate the real wasi-instance.ts preamble (reuse, not fork) ──
-const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports };`;
-const preamblePath = path.join(os.tmpdir(), `opentui-backend-wasi-preamble-${process.pid}.mjs`);
-writeFileSync(preamblePath, preambleSrc);
-let preamble;
-try {
-  preamble = await import(pathToFileURL(preamblePath).href);
-} finally {
-  rmSync(preamblePath, { force: true });
-}
+const preamble = await loadWasiPreamble();
 const wasiHost = {
   makeImports: (opts) => preamble.__wasiMakeImports(opts),
   initFS: (opts) => preamble.__wasiInitFS(opts),

@@ -19,17 +19,10 @@ import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { resolveOnePackumentInFacet } from '../../packages/worker/src/npm/resolve-one-facet.ts';
-import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
+import './lib/resolve-facet-scope.mjs';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
-const PREAMBLE_SYMBOLS = [
-  'SHOULD_SWAP', 'SHOULD_REJECT_FAIL',
-  'NATIVE_EXECUTABLE_REJECT', 'NATIVE_PLATFORM_REJECT', 'IS_OPTIONAL_NATIVE_BINDING', 'PARSE_SEMVER', 'COMPARE_SEMVER',
-  'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'STAGED_ARTIFACT', 'STAGED_ARTIFACT_APPLY',
-];
-Object.assign(globalThis, new Function(`${NPM_RESOLVE_PREAMBLE}\nreturn { ${PREAMBLE_SYMBOLS.join(', ')} };`)());
-globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 
 const PROJ = 'app';
 const NM = `${PROJ}/node_modules`;

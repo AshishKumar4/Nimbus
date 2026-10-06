@@ -16,12 +16,12 @@
 // preamble by `fn.toString()`.
 
 import assert from 'node:assert/strict';
-import { compareSemver, isSemverRange, parseSemver, resolveVersion, satisfiesRange } from '../../packages/worker/src/npm/semver.ts';
+import { compareSemver, isSemverRange, parseSemver, pickPackumentVersion, resolveVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
-import { parseRegistryRequest } from '../../packages/worker/src/npm/resolve-one-facet.ts';
+import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 
 const embedded = new Function(
-  `${NPM_RESOLVE_PREAMBLE}\nreturn { PARSE_SEMVER, COMPARE_SEMVER, SATISFIES_RANGE, RESOLVE_VERSION, IS_SEMVER_RANGE, parseRegistryRequest };`,
+  `${NPM_RESOLVE_PREAMBLE}\nreturn { PARSE_SEMVER, COMPARE_SEMVER, SATISFIES_RANGE, RESOLVE_VERSION, IS_SEMVER_RANGE, PICK_VERSION, parseRegistryRequest };`,
 )();
 
 // ── parse + compare: prerelease identifiers are part of the order ───────────
@@ -93,7 +93,7 @@ const embedded = new Function(
   // Byte-equivalence: the preamble carries the module's own source.
   assert.ok(NPM_RESOLVE_PREAMBLE.includes(resolveVersion.toString()), 'the preamble embeds resolveVersion verbatim');
   assert.ok(NPM_RESOLVE_PREAMBLE.includes(satisfiesRange.toString()), 'the preamble embeds satisfiesRange verbatim');
-  console.log('  parity: embedded preamble functions match npm/semver.ts');
+  console.log('  parity: embedded preamble functions match core _shared/npm-semver.ts');
 }
 
 // ── the preamble's spec parsing is the supervisor's ─────────────────────────
@@ -101,7 +101,17 @@ const embedded = new Function(
   for (const [name, range] of [['a', '^1.0.0'], ['alias', 'npm:@scope/pkg@^1.2.0'], ['alias', 'npm:lodash'], ['alias', 'npm:@scope/pkg'], ['x', '']]) {
     assert.deepEqual(embedded.parseRegistryRequest(name, range), parseRegistryRequest(name, range), `${name} ${range}`);
   }
-  console.log('  parity: embedded parseRegistryRequest matches resolve-one-facet.ts');
+  console.log('  parity: embedded parseRegistryRequest matches npm-spec.ts');
+}
+
+// ── the preamble's version pick is the module's ─────────────────────────────
+{
+  const versions = { '1.0.0': {}, '1.1.0': {}, '2.0.0-beta.1': {}, '2.0.0': {} };
+  const tags = { latest: '1.1.0', next: '2.0.0-beta.1' };
+  for (const range of [undefined, '', 'latest', '^1.0.0', '^2.0.0', 'next', 'nosuchtag', '^9', 'github:a/b', '2.0.0-beta.1', 'constructor']) {
+    assert.equal(embedded.PICK_VERSION(versions, tags, range), pickPackumentVersion(versions, tags, range), String(range));
+  }
+  console.log('  parity: embedded PICK_VERSION matches pickPackumentVersion');
 }
 
 console.log('npm-semver: ok');

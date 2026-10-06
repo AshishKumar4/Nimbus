@@ -35,7 +35,7 @@ import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { deriveResidentOwner } from '../../packages/worker/src/facets/resident-identity.ts';
 import { readPortReservation } from '../../packages/worker/src/session/port-capability.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';

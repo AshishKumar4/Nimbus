@@ -75,6 +75,7 @@ import {
   lostCallAttributes,
 } from './lost-call.js';
 import { disposeRpcResource } from './rpc-dispose.js';
+import { retryDelayMs } from './retry.js';
 import { utf8Length } from './utf8.js';
 
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
@@ -760,8 +761,7 @@ export class WaveWriter<Meta = undefined> {
           of: backoffMs.length,
           reason: error instanceof Error ? error.message : String(error),
         }));
-        const base = backoffMs[attempt]!;
-        await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(base * (0.75 + Math.random() * 0.5)))));
+        await new Promise((resolve) => setTimeout(resolve, retryDelayMs(backoffMs, attempt)));
       } finally {
         attemptStream.settle();
       }

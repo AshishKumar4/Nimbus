@@ -151,6 +151,14 @@ async function resolveInheritedStdin(
   if (program.kind === 'stdin') return { stdin: '' };
   if (ctx.isFdTerminal?.(0) !== false) return {};
   if (isInputStream(ctx.stdin)) return { stdin: ctx.stdin };
+  return await readShellStdin(shellName, ctx);
+}
+
+/** The command's stdin to its end, or the shell's refusal when it cannot be read. */
+async function readShellStdin(
+  shellName: ShellName,
+  ctx: ShellCommandContext,
+): Promise<{ stdin: string } | { error: string; exitCode: number }> {
   try {
     return { stdin: await readContextStdin(ctx.stdin) };
   } catch (e: unknown) {
@@ -166,13 +174,9 @@ async function parseShellProgram(
   const parsed = parseShellInvocation(shellName, ctx.args);
   if (!parsed.ok) {
     if (parsed.exitCode !== 0) return { error: parsed.error, exitCode: parsed.exitCode };
-    let stdin = '';
-    try {
-      stdin = await readContextStdin(ctx.stdin);
-    } catch (e: unknown) {
-      return { error: `${shellName}: failed to read stdin: ${formatError(e)}`, exitCode: 1 };
-    }
-    if (stdin.length > 0) return { kind: 'stdin', body: stdin, argv0: shellName, args: [], options: {} };
+    const read = await readShellStdin(shellName, ctx);
+    if ('error' in read) return read;
+    if (read.stdin.length > 0) return { kind: 'stdin', body: read.stdin, argv0: shellName, args: [], options: {} };
     return { error: parsed.error, exitCode: parsed.exitCode };
   }
 
@@ -200,13 +204,9 @@ async function parseShellProgram(
     );
   }
 
-  let stdin = '';
-  try {
-    stdin = await readContextStdin(ctx.stdin);
-  } catch (e: unknown) {
-    return { error: `${shellName}: failed to read stdin: ${formatError(e)}`, exitCode: 1 };
-  }
-  return { kind: 'stdin', body: stdin, argv0: shellName, args: parsed.invocation.args, options: parsed.invocation.options };
+  const read = await readShellStdin(shellName, ctx);
+  if ('error' in read) return read;
+  return { kind: 'stdin', body: read.stdin, argv0: shellName, args: parsed.invocation.args, options: parsed.invocation.options };
 }
 
 async function loadScript(
@@ -299,10 +299,6 @@ function stdinChunkToString(chunk: unknown): string {
   if (chunk instanceof Uint8Array) return new TextDecoder().decode(chunk);
   if (chunk instanceof ArrayBuffer) return new TextDecoder().decode(chunk);
   return String(chunk);
-}
-
-function normalizeArgs(args: string[] | undefined): string[] {
-  return Array.isArray(args) ? args.map(String) : [];
 }
 
 function formatError(error: unknown): string {

@@ -123,6 +123,61 @@
    "args": "-w0 l1",
    "stdout": "",
    "exit": 1
+  },
+  {
+   "args": "'-bp[[:upper:]]' words",
+   "stdout": "       b\n       a\n     1\tB\n     2\tA\n       _x\n       x\n       -x\n       zz\n     3\tZz\n       Ã©clair\n       eclair\n       foo bar\n       foo\n       foo10\n       foo2\n       .hidden\n       hidden\n         lead\n       lead\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp^[a-c]*$' words",
+   "stdout": "     1\tb\n     2\ta\n       B\n       A\n       _x\n       x\n       -x\n       zz\n       Zz\n       Ã©clair\n       eclair\n       foo bar\n       foo\n       foo10\n       foo2\n       .hidden\n       hidden\n         lead\n       lead\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bpa\\{2\\}' words",
+   "stdout": "       b\n       a\n       B\n       A\n       _x\n       x\n       -x\n       zz\n       Zz\n       Ã©clair\n       eclair\n       foo bar\n       foo\n       foo10\n       foo2\n       .hidden\n       hidden\n         lead\n       lead\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp\\(ab\\)\\+' words",
+   "stdout": "       b\n       a\n       B\n       A\n       _x\n       x\n       -x\n       zz\n       Zz\n       Ã©clair\n       eclair\n       foo bar\n       foo\n       foo10\n       foo2\n       .hidden\n       hidden\n         lead\n       lead\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bpx\\|y' words",
+   "stdout": "       b\n       a\n       B\n       A\n     1\t_x\n     2\tx\n     3\t-x\n       zz\n       Zz\n       Ã©clair\n       eclair\n       foo bar\n       foo\n       foo10\n       foo2\n       .hidden\n       hidden\n         lead\n       lead\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp.' nums",
+   "stdout": "     1\t10\n     2\t9\n     3\t-3\n     4\t1,000\n     5\t2.5\n     6\t1e3\n     7\t0x10\n     8\tabc\n       \n     9\t 7\n    10\t-0\n    11\t+4\n    12\t1.5K\n    13\t2M\n    14\t512\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp[0-9]\\{2,\\}' nums",
+   "stdout": "     1\t10\n       9\n       -3\n     2\t1,000\n       2.5\n       1e3\n     3\t0x10\n       abc\n       \n        7\n       -0\n       +4\n       1.5K\n       2M\n     4\t512\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp^$' nl2",
+   "stdout": "\n       h\n\n       b1\n     1\t\n       b2\n\n       f\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp+' kv",
+   "stdout": "       b 2 x\n       a 10 y\n       c 1 z\n       a 2 w\n       b  3 v\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp?' kv",
+   "stdout": "       b 2 x\n       a 10 y\n       c 1 z\n       a 2 w\n       b  3 v\n",
+   "exit": 0
+  },
+  {
+   "args": "'-bp\\.' nums",
+   "stdout": "       10\n       9\n       -3\n       1,000\n     1\t2.5\n       1e3\n       0x10\n       abc\n       \n        7\n       -0\n       +4\n     2\t1.5K\n       2M\n       512\n",
+   "exit": 0
   }
  ]
 }

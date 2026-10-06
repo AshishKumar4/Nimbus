@@ -9,6 +9,7 @@
  * namespace, as its credential: a repository on SQLite or on a mount alike.
  */
 
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS, VfsStat } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
@@ -2371,6 +2372,8 @@ export async function runGitCommand(
   vfs: SqliteVFS,
   doCtx?: DurableObjectState,
   doEnv?: any,
+  /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
+  network: WorkspaceNetwork = ISOLATE_NETWORK,
 ): Promise<number> {
   let globals: ParsedGitGlobals;
   try {
@@ -2453,7 +2456,7 @@ export async function runGitCommand(
         url: remote.url,
         oids,
         auth: { username: ctx.env.GIT_USERNAME || '', password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '' },
-      });
+      }, network);
       return true;
     };
     const fs = createGitFs(repoVfs, null, promisor);
@@ -2561,7 +2564,7 @@ export async function runGitCommand(
                 username: ctx.env.GIT_USERNAME || '',
                 password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
               },
-            });
+            }, network);
             if (result.success) {
               progress.write(
                 `\n[git] clone complete (${result.filesWritten} files, ` +
@@ -2761,7 +2764,7 @@ export async function runGitCommand(
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
           },
-        });
+        }, network);
         if (result.success) {
           if (!quiet) ctx.stdout.write(`\n[git] fetch complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
           return 0;
@@ -2798,7 +2801,7 @@ export async function runGitCommand(
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
           },
-        });
+        }, network);
         if (!result.success) {
           ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
           return 1;
@@ -2830,7 +2833,7 @@ export async function runGitCommand(
             username: ctx.env.GIT_USERNAME || '',
             password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
           },
-        });
+        }, network);
         if (result.success) {
           if (!quiet) ctx.stdout.write(`\n[git] push complete (${(result.elapsed / 1000).toFixed(1)}s)\n`);
           return 0;

@@ -21,6 +21,7 @@
  * HMR: VFS events → ViteDevServer detects changes → sends {type:'hmr'}
  *       messages through the DO WebSocket → frontend dispatches to iframe.
  */
+import { scanCjsExports } from '@nimbus-sh/core/runtime/cjs-export-names.js';
 import { parseTsconfig } from '@nimbus-sh/core/runtime/tsconfck.js';
 import { viteEsbuildPluginOptions, viteEsbuildSettings, viteTransformOptions, withJsxInject, } from '@nimbus-sh/core/runtime/vite-esbuild-options.js';
 import { getSharedRuntimeExternals, vfsBuildInputs } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -217,12 +218,10 @@ export function rewriteExternalRequires(code, basePath) {
  * Cloudflare Workers runtime disallows string-to-code generation outside of
  * module initialization.
  *
- * Patterns we detect (scanning the entire bundled text, not just the top level):
- *   - `exports.NAME = ...`
- *   - `exports["NAME"] = ...`
- *   - `Object.defineProperty(exports, "NAME", ...)`
- *   - `module.exports.NAME = ...`
- *   - `module.exports = { NAME, NAME2, ... }` (object literal)
+ * The names are the CJS scan's Vite policy over the entire bundled text:
+ * `exports.NAME =`, `exports["NAME"] =`, `module.exports.NAME =`, every
+ * `Object.defineProperty(exports, "NAME", ...)`, and every key of a
+ * `module.exports = { ... }` literal whatever its value.
  *
  * Input  (esbuild output):
  *   var require_X = __commonJS({ "...": function(exports) { exports.jsx = ...; exports.jsxs = ...; } });
@@ -271,74 +270,16 @@ export function synthesizeCjsNamedExports(code) {
     return rewritten;
 }
 /**
- * Statically extract named export names from a CJS bundle source. Scans the
- * entire text (not scoped — CJS exports appear throughout __commonJS wrappers)
- * for `exports.X =`, `exports["X"] =`, `Object.defineProperty(exports, "X", ...)`,
- * and `module.exports = { X, Y }` patterns.
- *
- * Returns a deduplicated array of valid ES identifier names, filtered to
- * exclude reserved keywords and `default` (which is already the default export).
+ * The names a CJS bundle source exports that can be ES named exports:
+ * runtime/cjs-export-names.ts's scan under its Vite policy (every key a
+ * module may put on module.exports, anywhere in the text: CJS exports appear
+ * throughout __commonJS wrappers; real Vite reads any named import off the
+ * default, so a name missed here is an import that fails), less `default`
+ * (already the default export), reserved words and anything that is not an
+ * ES identifier.
  */
 function extractCjsExportNames(code) {
-    const names = new Set();
-    // Pattern 1: exports.NAME = ...
-    // Matches `exports.createRoot = ...`, `exports . hydrateRoot = ...`
-    for (const m of code.matchAll(/(?:^|[^.\w$])exports\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g)) {
-        names.add(m[1]);
-    }
-    // Pattern 2: exports["NAME"] = ... or exports['NAME'] = ...
-    for (const m of code.matchAll(/(?:^|[^.\w$])exports\s*\[\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']\s*\]\s*=/g)) {
-        names.add(m[1]);
-    }
-    // Pattern 3: Object.defineProperty(exports, "NAME", ...)
-    for (const m of code.matchAll(/Object\.defineProperty\s*\(\s*exports\s*,\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']/g)) {
-        names.add(m[1]);
-    }
-    // Pattern 4: module.exports.NAME = ...
-    for (const m of code.matchAll(/module\s*\.\s*exports\s*\.\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*=/g)) {
-        names.add(m[1]);
-    }
-    // Pattern 5: module.exports = { NAME, NAME2: value, ... }
-    // Find `module.exports = {` then scan the balanced braces for keys.
-    const moduleExportsMatch = code.match(/module\s*\.\s*exports\s*=\s*\{/);
-    if (moduleExportsMatch) {
-        const startIdx = moduleExportsMatch.index + moduleExportsMatch[0].length;
-        // Find matching closing brace (simple depth tracking, ignoring strings/comments).
-        let depth = 1;
-        let i = startIdx;
-        while (i < code.length && depth > 0) {
-            const ch = code[i];
-            if (ch === '{')
-                depth++;
-            else if (ch === '}')
-                depth--;
-            else if (ch === '"' || ch === "'" || ch === '`') {
-                // Skip string literal
-                const quote = ch;
-                i++;
-                while (i < code.length && code[i] !== quote) {
-                    if (code[i] === '\\')
-                        i++;
-                    i++;
-                }
-            }
-            i++;
-        }
-        if (depth === 0) {
-            const objBody = code.substring(startIdx, i - 1);
-            // Extract keys from object literal (identifier before `:` or `,`/`}`).
-            for (const m of objBody.matchAll(/(?:^|[,{])\s*([A-Za-z_$][A-Za-z0-9_$]*)\s*(?=[,:}])/g)) {
-                names.add(m[1]);
-            }
-            // Also: quoted keys like "name": value
-            for (const m of objBody.matchAll(/(?:^|[,{])\s*["']([A-Za-z_$][A-Za-z0-9_$]*)["']\s*:/g)) {
-                names.add(m[1]);
-            }
-        }
-    }
-    // Filter: exclude `default` (already the default export), reserved words,
-    // and anything that's not a valid ES identifier.
-    return Array.from(names).filter(n => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
+    return scanCjsExports(code, 'vite').names.filter(n => /^[A-Za-z_$][A-Za-z0-9_$]*$/.test(n) &&
         n !== 'default' &&
         !RESERVED_ES_KEYWORDS.has(n));
 }

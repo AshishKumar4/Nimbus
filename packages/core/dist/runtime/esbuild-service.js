@@ -278,7 +278,8 @@ function hasUnscopedAwait(source) {
  * declarations, each `declarations[i]`'s range in `source`; null for a
  * declaration this bounded rewrite leaves to the full transform (an
  * exported declaration, a re-export, `export *`, `export default` of a
- * function or class).
+ * function or class). It reads no scopes, so an import's named bindings are
+ * read once (EsmImportBinding's null `references`).
  */
 function bundledModuleRecords(source, declarations) {
     const records = [];
@@ -319,14 +320,14 @@ function bundledModuleRecords(source, declarations) {
                 if (!local)
                     return null;
                 if (specifier.type === 'ImportDefaultSpecifier')
-                    bindings.push({ kind: 'named', local, imported: 'default' });
+                    bindings.push({ kind: 'named', local, imported: 'default', references: null });
                 else if (specifier.type === 'ImportNamespaceSpecifier')
                     bindings.push({ kind: 'namespace', local });
                 else if (specifier.type === 'ImportSpecifier') {
                     const imported = nodeName(nodeProp(specifier, 'imported'));
                     if (!imported)
                         return null;
-                    bindings.push({ kind: 'named', local, imported });
+                    bindings.push({ kind: 'named', local, imported, references: null });
                 }
                 else {
                     return null;

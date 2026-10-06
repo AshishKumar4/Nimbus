@@ -17,7 +17,7 @@
 import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { RecallRequired, SqliteVFS, withRecall } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';

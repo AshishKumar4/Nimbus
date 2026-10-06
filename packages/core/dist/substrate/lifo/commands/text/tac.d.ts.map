@@ -1,1 +1,1 @@
-{"version":3,"file":"tac.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/text/tac.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAU3C,QAAA,MAAM,OAAO,EAAE,OAmGd,CAAC;AAmBF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"tac.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/text/tac.ts"],"names":[],"mappings":"AACA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAe3C,QAAA,MAAM,OAAO,EAAE,OA0Ed,CAAC;AAmBF,eAAe,OAAO,CAAC"}

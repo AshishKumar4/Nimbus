@@ -14,13 +14,39 @@ import * as cryptoModule from './crypto.js';
 import * as zlibModule from './zlib.js';
 import * as stringDecoderModule from './string_decoder.js';
 import * as ttyModule from './tty.js';
-import * as dnsModule from './dns.js';
+import { createDns } from './dns.js';
 import { createModuleShim } from './module.js';
 import * as readlineModule from './readline.js';
 import { createRimraf } from './rimraf.js';
 import { createEsbuild } from './esbuild.js';
 import { assertEqualHolds } from './loose-equality.js';
 import { createHttp2Module } from '../../../_shared/http2-module.js';
+/**
+ * The net and tls stubs: a socket that accepts writes and goes nowhere, and a
+ * server that listens on nothing. Vite imports both and opens neither
+ * outside server mode.
+ */
+class StubSocket extends EventEmitter {
+    write() { return true; }
+    end() { return this; }
+    destroy() { return this; }
+    connect() { return this; }
+    unref() { return this; }
+    ref() { return this; }
+    setTimeout() { return this; }
+    setNoDelay() { return this; }
+    setKeepAlive() { return this; }
+}
+class StubTlsSocket extends StubSocket {
+    encrypted = true;
+}
+class StubServer extends EventEmitter {
+    listen(_port, _host, cb) { cb?.(); return this; }
+    close(cb) { cb?.(); return this; }
+    address() { return { port: 0, family: 'IPv4', address: '127.0.0.1' }; }
+    unref() { return this; }
+    ref() { return this; }
+}
 export function createModuleMap(ctx) {
     const map = {
         fs: () => createFs(ctx.filesystem(), ctx.cwd, ctx.stdin),
@@ -64,8 +90,8 @@ export function createModuleMap(ctx) {
         zlib: () => zlibModule,
         string_decoder: () => stringDecoderModule,
         tty: () => ttyModule,
-        dns: () => dnsModule,
-        'dns/promises': () => dnsModule.promises,
+        dns: () => createDns(ctx.dns),
+        'dns/promises': () => createDns(ctx.dns).promises,
         readline: () => readlineModule,
         'readline/promises': () => readlineModule.promises,
         constants: () => {
@@ -137,85 +163,27 @@ export function createModuleMap(ctx) {
         }),
         // net — stub (vite imports it but only uses it for actual TCP in server mode)
         net: () => ({
-            createServer: () => {
-                const s = new EventEmitter();
-                s.listen = (_port, _host, cb) => { cb?.(); return s; };
-                s.close = (cb) => { cb?.(); return s; };
-                s.address = () => ({ port: 0, family: 'IPv4', address: '127.0.0.1' });
-                s.unref = () => s;
-                s.ref = () => s;
-                return s;
-            },
-            createConnection: () => {
-                const s = new EventEmitter();
-                s.write = () => true;
-                s.end = () => s;
-                s.destroy = () => s;
-                s.connect = () => s;
-                s.unref = () => s;
-                s.ref = () => s;
-                s.setTimeout = () => s;
-                s.setNoDelay = () => s;
-                s.setKeepAlive = () => s;
-                return s;
-            },
+            createServer: () => new StubServer(),
+            createConnection: () => new StubSocket(),
             connect: (...args) => {
-                const s = new EventEmitter();
-                s.write = () => true;
-                s.end = () => s;
-                s.destroy = () => s;
-                s.unref = () => s;
-                s.ref = () => s;
-                s.setTimeout = () => s;
-                s.setNoDelay = () => s;
-                s.setKeepAlive = () => s;
+                const socket = new StubSocket();
                 // call connection callback if provided
                 const cb = typeof args[args.length - 1] === 'function' ? args[args.length - 1] : null;
                 if (cb)
                     queueMicrotask(cb);
-                return s;
+                return socket;
             },
-            Socket: class Socket extends EventEmitter {
-                write() { return true; }
-                end() { return this; }
-                destroy() { return this; }
-                connect() { return this; }
-                unref() { return this; }
-                ref() { return this; }
-                setTimeout() { return this; }
-                setNoDelay() { return this; }
-                setKeepAlive() { return this; }
-            },
-            Server: class Server extends EventEmitter {
-                listen(_port, _host, cb) { cb?.(); return this; }
-                close(cb) { cb?.(); return this; }
-                address() { return { port: 0, family: 'IPv4', address: '127.0.0.1' }; }
-                unref() { return this; }
-                ref() { return this; }
-            },
+            Socket: StubSocket,
+            Server: StubServer,
             isIP: (s) => /^\d+\.\d+\.\d+\.\d+$/.test(s) ? 4 : /^[0-9a-f:]+$/i.test(s) ? 6 : 0,
             isIPv4: (s) => /^\d+\.\d+\.\d+\.\d+$/.test(s),
             isIPv6: (s) => /^[0-9a-f:]+$/i.test(s),
         }),
         // tls — stub
         tls: () => ({
-            createServer: () => {
-                const s = new EventEmitter();
-                s.listen = (_port, _host, cb) => { cb?.(); return s; };
-                s.close = (cb) => { cb?.(); return s; };
-                s.address = () => ({ port: 0, family: 'IPv4', address: '127.0.0.1' });
-                return s;
-            },
-            connect: () => {
-                const s = new EventEmitter();
-                s.write = () => true;
-                s.end = () => s;
-                s.destroy = () => s;
-                s.encrypted = true;
-                return s;
-            },
-            TLSSocket: class TLSSocket extends EventEmitter {
-            },
+            createServer: () => new StubServer(),
+            connect: () => new StubTlsSocket(),
+            TLSSocket: StubTlsSocket,
             SERVER_METHODS: [],
         }),
         // worker_threads — stub (vite uses it for thread pool but can fall back)

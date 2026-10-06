@@ -48,6 +48,7 @@ import { devServerIdentity, persistedIdentity, startRealVite } from './start-rea
 import { withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { getLoadedCodesStats } from '@nimbus-sh/fabric/bindings.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { dynamicWorkerHeadroom, facetIdBudget, loaderLedgerStats } from '@nimbus-sh/fabric/budgets.js';
 import { HOSTED_WEBSOCKET_CAPABILITY_HEADER, HOSTED_WEBSOCKET_KEY_HEADER, } from '@nimbus-sh/fabric/process-host.js';
 import { routeHostedWebSocket } from './rpc.js';
@@ -1738,6 +1739,8 @@ async function handleFanoutTestEndpoint(self, url, request) {
         const n = Math.max(0, parseInt(url.searchParams.get('n') || '0', 10));
         const pool = new Fanout(env, self.ctx, {
             tag: 'fanout-bench',
+            // The fan-out benchmark is Nimbus's own work, not the workspace's.
+            network: ISOLATE_NETWORK,
             timeoutMs: 60_000,
         });
         return Response.json({
@@ -1753,6 +1756,8 @@ async function handleFanoutTestEndpoint(self, url, request) {
         const peerCount = Math.max(1, Math.min(parseInt(url.searchParams.get('n') || String(keys.length), 10), MAX_PEER_FANOUT));
         const pool = new Fanout(env, self.ctx, {
             tag: 'fanout-bench',
+            // The fan-out benchmark is Nimbus's own work, not the workspace's.
+            network: ISOLATE_NETWORK,
             timeoutMs: 60_000,
         });
         const placement = keys.map((k) => ({
@@ -1768,6 +1773,8 @@ async function handleFanoutTestEndpoint(self, url, request) {
         let route;
         const pool = new Fanout(env, self.ctx, {
             tag: 'fanout-bench',
+            // The fan-out benchmark is Nimbus's own work, not the workspace's.
+            network: ISOLATE_NETWORK,
             timeoutMs: 60_000,
             onRoute: (taken) => { route = taken; },
         });
@@ -1831,6 +1838,7 @@ async function handleFanoutTestEndpoint(self, url, request) {
             concurrency: 1,
             timeoutMs: 60_000,
             tag: 'fanout-serial',
+            network: ISOLATE_NETWORK,
         });
         const t0 = performance.now();
         try {

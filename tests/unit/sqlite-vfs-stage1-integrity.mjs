@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness, inodeTableScans } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness, inodeTableScans } from './lib/sqlite-vfs-test-harness.mjs';
 import { bytes, fileChunks, fileInode, openVfs } from './lib/staged-import.mjs';
 
 /** The chunk ids a path's content is stored in, in file order. */

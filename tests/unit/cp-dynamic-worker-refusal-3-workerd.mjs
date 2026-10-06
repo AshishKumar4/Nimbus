@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 27 s wall, 38 s CPU, 2.4 GiB peak (6 runs, 2026-10-06)
 // The Dynamic Worker ledger never refuses a wait while a shell line has a
 // step still to run (fabric budgets.ts, the interpreter's WorkThread), under
 // workerd. A parent and eight children, each waiting on a grandchild, fill
@@ -14,7 +15,8 @@
 // and `kill` not begun, its one unit of work was its await of pipe.cjs, the
 // whole family looked stuck for that instant, and the ledger refused the
 // newest grandchild (EAGAIN) on the synchronous path of `sleep`'s end. (The
-// rest of the ledger's refusals: cp-dynamic-worker-refusal-workerd, -2, -4.)
+// rest of the ledger's refusals: cp-dynamic-worker-refusal-workerd, -2, -4,
+// -5, -6, -7.)
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -84,10 +86,15 @@ try {
   const terminal = await localTerminal(probe, { install: [] });
   try {
     for (const [name, source] of Object.entries(SCENARIOS)) await terminal.writeFile(`/home/user/${name}.js`, source);
+    // A family here can take minutes on a loaded machine, one launch after
+    // another, and the session's own later turn (the ledger's refusal) came
+    // 1 to 23 s late under contention: what tells a hang from that is the
+    // session's Dynamic Worker ledger, which stops changing.
+    const ledger = async () => { const { loader } = await terminal.memory(); return [loader.holders, loader.waiters, loader.news]; };
     const run = async (name, { args = '' } = {}) => {
       // After the kill the grandchildren run as room frees, one launch after
       // another: 100 s on a loaded machine.
-      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 240_000);
+      const r = await terminal.run(`node /home/user/${name}.js ${args}`, 280_000, { progress: ledger, stalledMs: 120_000 });
       assert.equal(r.status, 0, `${name}: ${r.stdout.slice(-800)}`);
       return splitScenarioOutput(r.stdout);
     };

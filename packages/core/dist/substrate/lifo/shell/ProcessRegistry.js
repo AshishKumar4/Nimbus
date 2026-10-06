@@ -8,7 +8,6 @@ export class ProcessRegistry {
     processes = new Map();
     resolvers = new Map();
     nextPid = 2; // PID 1 reserved for shell
-    nextJobId = 1; // Job IDs for background processes
     shellAbortController = null;
     registerShell(cwd, env) {
         const existing = this.processes.get(1);
@@ -40,8 +39,6 @@ export class ProcessRegistry {
      */
     spawn(opts) {
         const pid = this.nextPid++;
-        // Assign job ID for background processes
-        const jobId = opts.isForeground ? undefined : this.nextJobId++;
         let resolveProcess = () => { };
         const trackedPromise = new Promise((resolve) => {
             resolveProcess = resolve;
@@ -59,7 +56,7 @@ export class ProcessRegistry {
             promise: trackedPromise,
             abortController: opts.abortController,
             exitCode: null,
-            jobId,
+            ...(opts.jobId === undefined ? {} : { jobId: opts.jobId }),
         };
         this.resolvers.set(pid, resolveProcess);
         this.processes.set(pid, process);
@@ -236,7 +233,6 @@ export class ProcessRegistry {
             this.processes.set(1, shell);
         }
         this.nextPid = 2;
-        this.nextJobId = 1;
         this.resolvers.clear();
     }
     finish(pid, code) {

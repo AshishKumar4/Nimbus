@@ -36,28 +36,8 @@ import {
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
 import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
+import './lib/install-facet-scope.mjs';
 
-globalThis.streamPackageEntries = streamPackageEntries;
-globalThis.streamTarEntries = streamTarEntries;
-globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
-globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
-globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
-globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
-globalThis.DecompressionStream = class DecompressionStream {
-  readable;
-  writable;
-
-  constructor(format) {
-    assert.equal(format, 'gzip');
-    const transform = new TransformStream({
-      transform(chunk, controller) {
-        controller.enqueue(gunzipSync(chunk));
-      },
-    });
-    this.readable = transform.readable;
-    this.writable = transform.writable;
-  }
-};
 
 // ── tar fixtures ────────────────────────────────────────────────────────
 
@@ -265,11 +245,13 @@ function stubFetch(byUrl) {
   }
   assert.equal(bucket.store.size, 0, 'an unverifiable package never touches the shared store');
 
-  // Every SRI algorithm npm emits is addressable.
-  for (const [algo, expected] of [['sha512', 'SHA-512'], ['sha384', 'SHA-384'], ['sha256', 'SHA-256'], ['sha1', 'SHA-1']]) {
-    const parsed = parseTarballAddress(`${algo}-${btoa('x'.repeat(20))}`);
+  // Every SRI algorithm npm emits is addressable, by a digest of its length;
+  // a digest of another length is not one of it.
+  for (const [algo, expected, bytes] of [['sha512', 'SHA-512', 64], ['sha384', 'SHA-384', 48], ['sha256', 'SHA-256', 32], ['sha1', 'SHA-1', 20]]) {
+    const parsed = parseTarballAddress(`${algo}-${btoa('x'.repeat(bytes))}`);
     assert.ok(parsed, `${algo} must be addressable`);
     assert.equal(parsed.digestAlgo, expected);
+    assert.equal(parseTarballAddress(`${algo}-${btoa('x'.repeat(bytes - 1))}`), null, `${algo} of ${bytes - 1} bytes is not addressable`);
   }
 }
 

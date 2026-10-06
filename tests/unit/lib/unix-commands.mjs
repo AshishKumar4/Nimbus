@@ -16,6 +16,12 @@ export function unixCommandRegistry(rawVfs) {
  * Run `name` from `registry` once, as `cred` over its view of `rawVfs`.
  * `pid`, `setUmask` and `runAs` reach the command only when given.
  *
+ * @param {any} registry
+ * @param {any} rawVfs
+ * @param {string} name
+ * @param {string[]} args
+ * @param {{ cred?: object, cwd?: string, env?: Record<string, string>, pid?: number,
+ *   setUmask?: (mask: number) => void, runAs?: (cred: object, argv: string[]) => Promise<{ status: number, signal: string | null }> }} [options]
  * @returns {Promise<{ exitCode: number, stdout: string, stderr: string }>}
  */
 export async function runCommand(registry, rawVfs, name, args, { cred, cwd = '/', env = {}, pid, setUmask, runAs } = {}) {

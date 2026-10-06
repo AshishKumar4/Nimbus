@@ -144,6 +144,13 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
     private _call;
     private _cacheRead;
     private _infrastructureCache;
+    /**
+     * The network this binding's process reaches out through: its workspace's
+     * egress when its host supplied one (SupervisorBindingProps.egress), else
+     * this isolate's own. Every request the binding makes for the process —
+     * its fetch, its sockets, its packument reads — goes through it.
+     */
+    private _network;
     private _pid;
     /** The run of the process this binding was minted for, when it has one. */
     private _runId;

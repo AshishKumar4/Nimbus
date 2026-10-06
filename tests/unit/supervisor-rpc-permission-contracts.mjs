@@ -8,7 +8,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import * as rpc from '../../packages/worker/src/session/rpc.ts';
 import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 mock.module('cloudflare:workers', () => ({
   WorkerEntrypoint: class {

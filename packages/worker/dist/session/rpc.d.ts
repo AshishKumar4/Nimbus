@@ -21,6 +21,7 @@
  * these ~3 sites would each need ctx threaded through; cast at boundary
  * is acceptable per plan §IX recommendation 1.
  */
+import { type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { InnerDoFetchAnswer } from '@nimbus-sh/fabric/bindings.js';
 import type { RuntimeVfsStat } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { HostRoute } from '@nimbus-sh/platform/composition.js';
@@ -521,6 +522,8 @@ export declare function _rpcFanoutExecute(self: RpcHost, fnSource: string, args:
      * credential (see IsolatePoolOptions.supervisorPid).
      */
     supervisorPid?: number;
+    /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
+    network?: WorkspaceNetworkRef;
 }): Promise<{
     results: unknown[];
 }>;

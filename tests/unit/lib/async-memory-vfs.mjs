@@ -6,6 +6,8 @@
 import { VfsError } from '../../../packages/core/src/vfs/vfs-error.ts';
 
 export function asyncMemoryVfs() {
+  /** @typedef {{ type: string, mode: number, mtimeMs: number, data?: Uint8Array, target?: string }} Node */
+  /** @type {Map<string, Node>} */
   const nodes = new Map([['/', { type: 'directory', mode: 0o40777, mtimeMs: Date.now() }]]);
   const tick = () => new Promise((resolve) => setTimeout(resolve, 0));
   const fail = (code, path) => { throw new VfsError(code, `${code}: ${path}`, path); };

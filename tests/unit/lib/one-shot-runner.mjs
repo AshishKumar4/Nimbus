@@ -23,6 +23,9 @@ import { supervisorDouble } from './supervisor-double.mjs';
  * generated runner (after `rewrite`, when given) to a fresh directory under
  * one tmpdir, removed at exit, and serves its fetch with the config's
  * SUPERVISOR. `get` is the keyed path, which a one-shot never takes.
+ *
+ * @param {string} name
+ * @param {{ rewrite?: (config: any) => any, get?: (...args: any[]) => any }} [options]
  */
 export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
   const dir = mkdtempSync(join(tmpdir(), `nimbus-${name}-`));
@@ -54,11 +57,12 @@ export function runnerLoader(name, { rewrite = (config) => config, get } = {}) {
 export function adoptSessionSupervisor(host, onOutput) {
   const dec = new TextDecoder();
   adoptCtxExports({
-    SupervisorRPC: ({ props }) => supervisorDouble(async (op, args) => {
-      if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(args[0])); return; }
+    // The binding's factory is generic over its stub; this one answers every op.
+    SupervisorRPC: /** @type {any} */ (({ props }) => supervisorDouble(async (op, args) => {
+      if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
       if (op === 'reportExit') return;
       return host.supervisorOp({ op, args, pid: props?.pid });
-    }),
+    })),
   });
 }
 

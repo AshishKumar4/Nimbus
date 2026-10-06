@@ -12,6 +12,7 @@
 
 import assert from 'node:assert/strict';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const ctx = {
   id: { toString: () => 'submit-request-test-do' },
@@ -54,7 +55,7 @@ const echoFn = async (request) => Response.json(await request.json());
   const seen = makeLoader({
     fetchImpl: async (request) => Response.json(await request.json()),
   });
-  const pool = new IsolatePool(seen.env, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   const ctl = new AbortController();
   const request = new Request('https://facet.internal/step', {
     method: 'POST',
@@ -87,7 +88,7 @@ const echoFn = async (request) => Response.json(await request.json());
         request.signal.addEventListener('abort', () => reject(new Error('aborted')));
       }),
   });
-  const pool = new IsolatePool(seen.env, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   const ctl = new AbortController();
   const pending = pool.submitRequest(
     echoFn,
@@ -121,7 +122,7 @@ const echoFn = async (request) => Response.json(await request.json());
       return Response.json({ attempt: calls });
     },
   });
-  const pool = new IsolatePool(seen.env, ctx, { omitSupervisor: true, timeoutMs: 0, retries: 1 });
+  const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0, retries: 1 });
   const response = await pool.submitRequest(
     echoFn,
     new Request('https://facet.internal/step', { method: 'POST', body: 'x' }),
@@ -134,7 +135,7 @@ const echoFn = async (request) => Response.json(await request.json());
 // ── 4. A consumed Request is refused before any dispatch ────────────────────
 {
   const seen = makeLoader();
-  const pool = new IsolatePool(seen.env, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   const request = new Request('https://facet.internal/step', { method: 'POST', body: 'x' });
   await request.text();
   await assert.rejects(
@@ -148,7 +149,7 @@ const echoFn = async (request) => Response.json(await request.json());
 // ── 5. A guest failure surfaces as a 500 response, not a transport abort ────
 {
   const seen = makeLoader();
-  const pool = new IsolatePool(seen.env, ctx, { omitSupervisor: true, timeoutMs: 0 });
+  const pool = new IsolatePool(seen.env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
   // The generated entrypoint wraps fn failures into a 500 — simulate it here
   // to pin the caller-side contract: 500s flow back as Responses, and the
   // adapter unwraps __nimbusFacetError.

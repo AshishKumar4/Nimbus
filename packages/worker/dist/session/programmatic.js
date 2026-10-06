@@ -29,6 +29,7 @@ import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/
 import { timers } from '@nimbus-sh/fabric/timers.js';
 import { parseShellState } from '@nimbus-sh/core/workspace';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
+import { singleQuote } from '@nimbus-sh/core/_shared/shell-quote.js';
 import { collectExecStream, createExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { _acquireForRoutedRequest } from './rpc.js';
 import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
@@ -426,10 +427,10 @@ export async function rpcRunCode(self, code, options = {}) {
     if (language === 'shell')
         return rpcExec(self, code, options);
     if (language === 'python')
-        return rpcExec(self, `python -c ${shellQuote(code)}`, options);
+        return rpcExec(self, `python -c ${singleQuote(code)}`, options);
     if (language === 'ruby')
-        return rpcExec(self, `ruby -e ${shellQuote(code)}`, options);
-    return rpcExec(self, `node -e ${shellQuote(code)}`, options);
+        return rpcExec(self, `ruby -e ${singleQuote(code)}`, options);
+    return rpcExec(self, `node -e ${singleQuote(code)}`, options);
 }
 export async function rpcInstallRuntime(self, spec, options = {}) {
     await ensureProgrammaticReady(self);
@@ -1272,7 +1273,4 @@ function serializePort(self, p) {
         capability: String(p.capability),
         ...execIdField(self.processes.get(p.pid)),
     };
-}
-function shellQuote(s) {
-    return `'${String(s).replace(/'/g, `'\\''`)}'`;
 }

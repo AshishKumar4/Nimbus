@@ -144,6 +144,7 @@ export async function expandGlob(pattern, cwd, vfs) {
     }
     return results.sort();
 }
-function hasGlobChars(s) {
+/** Whether `s` holds a glob's special characters (`*`, `?`, `[`). */
+export function hasGlobChars(s) {
     return s.includes('*') || s.includes('?') || s.includes('[');
 }

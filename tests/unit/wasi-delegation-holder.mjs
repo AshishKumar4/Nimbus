@@ -19,7 +19,7 @@ import { residentFilesystem } from '../../packages/core/src/runtime/wasi/residen
 import { MAX_DELEGATIONS_PER_PROCESS } from '../../packages/core/src/runtime/wasi/delegation-holder.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();

@@ -119,7 +119,7 @@ function recordBlobReads(r2) {
 }
 const { seedRuntimePackage } = await import('../../packages/core/src/runtime/runtime-package.ts');
 const { SqliteVFS } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
-const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+const { createSqliteVfsTestHarness } = await import('./lib/sqlite-vfs-test-harness.mjs');
 
 /** What `nimbus install` writes for `manifest`'s one blob, fetched from `env`. */
 async function installed(env, manifest, fetch = fetchBlob) {

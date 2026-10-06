@@ -22,6 +22,7 @@
  * is acceptable per plan §IX recommendation 1.
  */
 
+import { ISOLATE_NETWORK, workspaceNetwork, type WorkspaceEgress, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -1694,6 +1695,8 @@ export async function _rpcFanoutExecute(
      * credential (see IsolatePoolOptions.supervisorPid).
      */
     supervisorPid?: number;
+    /** The coordinator workspace's egress (FanoutOptions.network): the peer's facets go out through it. */
+    network?: WorkspaceNetworkRef;
   } = {},
 ): Promise<{ results: unknown[] }> {
   if (!Array.isArray(args)) {
@@ -1720,6 +1723,7 @@ export async function _rpcFanoutExecute(
     supervisorDoIdOverride: poolOpts.coordinatorDoId,
     supervisorRoute: poolOpts.coordinatorRoute,
     supervisorPid: poolOpts.supervisorPid,
+    network: poolOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(poolOpts.network.egress, poolOpts.network.id),
   });
   try {
     // mapSource accepts the pre-serialized fnSource forwarded by the
@@ -1766,6 +1770,12 @@ const HostProcessOptsSchema = z.object({
   writerId: z.string().uuid(),
   /** The coordinator instance's delivery incarnation, for the process's SUPERVISOR binding. */
   hostIncarnation: z.string().uuid().optional(),
+  /** The coordinator workspace's egress (a stub, crossed by RPC) and its id: the process's network. */
+  network: z.object({
+    egress: z.custom<WorkspaceEgress>((value) => value !== null && (typeof value === 'object' || typeof value === 'function')
+      && typeof (value as { fetch?: unknown }).fetch === 'function' && typeof (value as { connect?: unknown }).connect === 'function'),
+    id: z.string().min(1),
+  }).optional(),
   /** Keyed dynamic-worker identity on THIS peer's loader. */
   workerKey: z.string().min(1),
   /** Unforgeable capability for the fetch-semantic WebSocket hop. */
@@ -1932,7 +1942,10 @@ export async function _rpcHostProcess(
   const spec = ResidentBootSpecSchema.parse(boot);
   const { workerKey } = hostOpts;
   const supervisor: ResidentSupervisorProps = {
-    ...supervisorBindingProps(self.ctx, hostOpts.pid, { writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route }),
+    ...supervisorBindingProps(self.ctx, hostOpts.pid, {
+      writerId: hostOpts.writerId, doId: hostOpts.coordinatorDoId, route: hostOpts.route,
+      network: hostOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(hostOpts.network.egress, hostOpts.network.id),
+    }),
     ...(hostOpts.hostIncarnation === undefined ? {} : { hostIncarnation: hostOpts.hostIncarnation }),
   };
 

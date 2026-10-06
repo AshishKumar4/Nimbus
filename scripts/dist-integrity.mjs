@@ -239,6 +239,14 @@ export function readFixpointRecord({ root = REPO_ROOT } = {}) {
   return parsed;
 }
 
+/** A progress logger that drops its line: the default for every `log` option. */
+const silent = (_line) => {};
+
+/**
+ * The verified fixpoint as FIXPOINT_RECORD stores it.
+ * @typedef {{ version: number, fingerprint: string, toolchain: object, roots: string[], outputs: Record<string, string> }} FixpointRecord
+ */
+
 /**
  * Is the live tree byte-for-byte a state this gate already verified?
  * The inputs must fingerprint identically (same src, scripts, configs,
@@ -246,7 +254,10 @@ export function readFixpointRecord({ root = REPO_ROOT } = {}) {
  * (nothing hand-edited, nothing added or removed). Reuses diffSnapshots
  * so "what moved" reads the same as the rebuild drift.
  */
-export function verifyFixpointRecord({ root = REPO_ROOT, record, log = () => {} } = {}) {
+/**
+ * @param {{ root?: string, record: FixpointRecord, log?: (line: string) => void }} options
+ */
+export function verifyFixpointRecord({ root = REPO_ROOT, record, log = silent }) {
   const live = fingerprintBuildInputs({ root });
   if (live.fingerprint !== record.fingerprint) {
     return { ok: false, reason: 'build inputs changed since the recorded fixpoint' };
@@ -270,7 +281,10 @@ export function verifyFixpointRecord({ root = REPO_ROOT, record, log = () => {} 
  * byte-identical bytes. Written ONLY on the verified path — never after
  * drift, never after an asset violation.
  */
-export function writeFixpointRecord({ root = REPO_ROOT, fingerprint, outputs, log = () => {} } = {}) {
+/**
+ * @param {{ root?: string, fingerprint: ReturnType<typeof fingerprintBuildInputs>, outputs: Map<string, string>, log?: (line: string) => void }} options
+ */
+export function writeFixpointRecord({ root = REPO_ROOT, fingerprint, outputs, log = silent }) {
   const record = {
     version: FIXPOINT_RECORD_VERSION,
     fingerprint: fingerprint.fingerprint,
@@ -321,7 +335,7 @@ export function diffSnapshots(before, after) {
  * say what a change MEANS in its own terms.
  */
 export function rebuildDrift({
-  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = () => {},
+  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent,
 } = {}) {
   const before = snapshotBuildOutputs({ root, roots });
   log(`digested ${before.size} build outputs under ${roots.join(', ')}`);
@@ -329,7 +343,7 @@ export function rebuildDrift({
   return diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
 }
 
-export function runBuildFixpoint({ root = REPO_ROOT, steps = BUILD_FIXPOINT, log = () => {} } = {}) {
+export function runBuildFixpoint({ root = REPO_ROOT, steps = BUILD_FIXPOINT, log = silent } = {}) {
   for (const step of steps) {
     log(`${step.cwd} → ${step.script} (${step.why})`);
     const result = spawnSync('bun', ['run', '--cwd', step.cwd, step.script], {
@@ -499,7 +513,7 @@ export async function checkStagedAssets({ root = REPO_ROOT } = {}) {
  * entirely — they verify a different tree.
  */
 export async function assertDistMatchesSource({
-  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = () => {}, useCache = true,
+  root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent, useCache = true,
 } = {}) {
   const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
   // An output whose source is gone would ship, and load. The record cannot
@@ -547,7 +561,7 @@ export async function assertDistMatchesSource({
 }
 
 /** The staged-asset half of the gate. Throws on violation; shared by both paths. */
-async function checkFixpointAssets({ root = REPO_ROOT, log = () => {} } = {}) {
+async function checkFixpointAssets({ root = REPO_ROOT, log = silent } = {}) {
   const assets = await checkStagedAssets({ root });
   for (const note of assets.verified) log(`asset ok — ${note}`);
   for (const gap of assets.unverified) log(`asset unverified — ${gap}`);
@@ -561,7 +575,7 @@ async function checkFixpointAssets({ root = REPO_ROOT, log = () => {} } = {}) {
   return assets;
 }
 
-function logUncommittedOutputs({ root = REPO_ROOT, log = () => {} } = {}) {
+function logUncommittedOutputs({ root = REPO_ROOT, log = silent } = {}) {
   // Not a violation. dist is tracked, so a rebuild that legitimately
   // followed an uncommitted src change leaves output that wants
   // committing — but the deploy itself is correct, and refusing a dirty

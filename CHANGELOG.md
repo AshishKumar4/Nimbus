@@ -5,6 +5,51 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A workspace's network can go through its host's egress
+  (`NimbusWorkspaceOptions.egress`; for the session Durable Object a
+  `NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint
+  one per session). Every request made for the workspace's commands and
+  programs goes through it: git (every facet it loads), npm (the install
+  facets here and in peers; the shared packument cache is bypassed), curl,
+  wget, dig, ping, `npm view`/`search`, pip (metadata and downloads), gem,
+  a program's fetch, `http`/`https` (node-fetch, undici) and WebSocket, the
+  one-shot runtimes and REPLs, a plain TCP socket (the egress's
+  `connect()`), and the workers and dev servers a command starts; an inline
+  `node` program's fetch streams through it and follows redirects as Node
+  does. A program's TLS socket (`tls.connect`) is refused by name under an
+  egress (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain
+  TCP only (measured in workerd: `startTls()` on such a socket has no TLS
+  starter); so is an inline `node` program's WebSocket. Nimbus's own
+  traffic (R2, catalog, OAuth, AI, assets) is not routed. The egress is a
+  `Pick<Fetcher, 'fetch' | 'connect'>`. Process bindings carry the egress
+  (`supervisorBindingProps` now requires the workspace's network), and every
+  facet host, pool and fanout takes the network its facets go out through:
+  `loaderFacetHost(env, ctx, network)`, `localFacetHost(network)` (whose
+  facets' fetch crosses to the host and out through the egress),
+  `IsolatePoolOptions.network`, `FanoutOptions.network`; Nimbus's own work
+  states `ISOLATE_NETWORK`, exported with `workspaceNetwork` from
+  `@nimbus-sh/core`. See docs/sandbox-sdk.md.
+- npm: a malformed integrity value for a known algorithm (`sha512-` with an
+  empty, non-base64 or wrong-length digest) now refuses the tarball instead
+  of skipping the check. A packument whose body breaks mid-read is retried
+  with its fetch. `npx --package=p tool` runs only `tool`, and plain
+  `npx <pkg>` picks its bin by npm 10's rule. The shell's fallback npm reads
+  specs, picks versions and checks integrity as the worker's installer does,
+  and saves `npm:` aliases as written. One retry policy now serves npm, the
+  install facet and git's HTTP transport.
+- Shell: `diff` is a port of GNU diffutils 3.12's search, in linear memory
+  (two 10,000-line files no longer exhaust the session), with GNU's output
+  and exit status 2 for unreadable operands. `dirname`, `basename`, `seq`,
+  `printf %b`, `df -h`, `readlink` and `sort -R` match GNU; `grep` and `cut`
+  stream character devices; `type` and `command -v` report only builtins
+  that run. The simulated `ip`, `ifconfig`, `route` and `netstat`, which
+  were never registered, are deleted. 16 duplicate coreutils, two shell
+  histories and two job tables are merged into one each.
+- Node: `import()` of a CommonJS module or built-in returns one namespace
+  per module, with `default` and the named exports Node detects. The Vite
+  dev server again exposes every key of a CommonJS `module.exports = {...}`
+  literal as a named export (for example `color-name`'s `red`), checked
+  against Vite 7.3.6.
 - Removed the legacy synchronous filesystem methods on `NimbusSession`
   (`vfsReadFile`, `vfsReadFileString`, `vfsStat`, `vfsExists`, `vfsReaddir`,
   `vfsWriteFile`) and their functions in `@nimbus-sh/worker/session/rpc`.
@@ -24,6 +69,29 @@ too. platform, config and cli move because their sources changed since
 their last published versions; core, fabric and worker require platform
 ^0.7.2, and cli config ^0.2.4.
 
+- Fixed: `mkdir -p` through a directory that already exists no longer fails
+  with EBUSY when a process holds a lease on part of the tree. Making a
+  directory that is already there is not a mutation, so no lease refuses it.
+- Fixed: a named, default or re-exported import of a module lowered to
+  CommonJS is now a live binding, as in Node: `import { count }` sees a later
+  `count++` in the exporting module. Writing to an imported binding throws a
+  TypeError. In an import cycle, a hoisted `export function` is callable while
+  the other module evaluates.
+- The Markflow probes run in every release gate again; they had been skipped
+  since 2026-08-04. The unit suite runs sharded on Cloudflare Containers
+  (`bun scripts/ci-run.mjs <commit>`), and `bun run typecheck` also checks the
+  repo's JavaScript scripts and test helpers.
+- A pre-bundle's slice plugin resolves through the one bundler resolver the
+  VFS plugin uses, awaiting each answer, again; the synchronous driver added
+  as a workaround (`createSyncBundlerResolver`) is gone. Its stall (Markflow's
+  background pre-bundles waiting past 120 s once the resolver awaited) was the
+  lost pump wake-up fixed in the last release: a resolve hook that awaited
+  settled after a JSPI pump turn's poll loop returned but before its result
+  was handled, and the loader asked for no further turn while one was in
+  flight. On throwaways with the awaited resolver, Markflow failed its
+  navigation 2 of 2 times with the loader before that fix, and passed 3 of 3
+  with it (the one line apart); on this tree, two Markflow sessions at once
+  passed 6 of 6.
 - Added `CompositeVFS.route(path, { follow })` (Kinu's ask 23). It answers
   `{ point, source, path, absentReason? }`: the mount an operation on that path
   lands on, the backend view that operation uses, and the path inside the

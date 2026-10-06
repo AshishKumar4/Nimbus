@@ -53,6 +53,7 @@
 // [sdk-phase-1] Large blobs now ship via the ASSETS binding instead
 // of inline. We import async getters here; start() became async so it
 // can await them before assembling the dynamic Worker module graph.
+import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { REAL_VITE_VERSION, VITE_CLIENT_MJS, VITE_ENV_MJS, getRealViteBundle, getRollupWasmBase64, } from '../real-vite-bundle.generated.js';
 import { CIRRUS_PLUGIN_REACT_VERSION, getCirrusPluginReactBundle, } from '../cirrus-plugin-react.generated.js';
 import { CIRRUS_NPM_CJS_VERSIONS, getCirrusNpmCjsBundles } from '../cirrus-npm-cjs.generated.js';
@@ -543,6 +544,7 @@ export default class CirrusRealStateless extends WorkerEntrypoint {
 }
 // ── Supervisor-side controller class ──────────────────────────────────
 export class CirrusReal {
+    network;
     env;
     port;
     root;
@@ -584,6 +586,7 @@ export class CirrusReal {
     _vfsUnsub = null;
     constructor(opts) {
         this.env = opts.env;
+        this.network = opts.network;
         this.port = opts.port;
         this.root = opts.root;
         this.basePath = opts.basePath;
@@ -716,7 +719,7 @@ export class CirrusReal {
             viteEnvMjs: VITE_ENV_MJS,
         });
         const ctxExports = getCtxExports();
-        const supervisorProps = supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID() });
+        const supervisorProps = supervisorBindingProps(ctx, pid, { writerId: crypto.randomUUID(), network: this.network });
         const supervisorBinding = ctxExports?.SupervisorRPC
             ? ctxExports.SupervisorRPC({ props: supervisorProps })
             : undefined;
@@ -746,7 +749,7 @@ export class CirrusReal {
         //   persist across supervisor reconnects.
         // The loader outlives this instance, and a warm worker keeps the
         // SUPERVISOR binding in its env.
-        const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}`, supervisorProps);
+        const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}${this.network.id ? `:${this.network.id}` : ''}`, supervisorProps);
         const facetName = 'cirrus-real-vite';
         try {
             const worker = this.env.LOADER.get(stableLoaderId, async () => ({
@@ -782,6 +785,7 @@ export class CirrusReal {
                     ...(supervisorBinding ? { SUPERVISOR: supervisorBinding } : {}),
                     ...(hmrBinding ? { CIRRUS_HMR: hmrBinding } : {}),
                 },
+                ...loaderOutbound(this.network),
             }));
             // [d1-fix] Two-path bind:
             //

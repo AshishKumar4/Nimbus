@@ -85,6 +85,10 @@ async function resolveInheritedStdin(shellName, program, ctx) {
         return {};
     if (isInputStream(ctx.stdin))
         return { stdin: ctx.stdin };
+    return await readShellStdin(shellName, ctx);
+}
+/** The command's stdin to its end, or the shell's refusal when it cannot be read. */
+async function readShellStdin(shellName, ctx) {
     try {
         return { stdin: await readContextStdin(ctx.stdin) };
     }
@@ -97,15 +101,11 @@ async function parseShellProgram(shellName, ctx, vfs) {
     if (!parsed.ok) {
         if (parsed.exitCode !== 0)
             return { error: parsed.error, exitCode: parsed.exitCode };
-        let stdin = '';
-        try {
-            stdin = await readContextStdin(ctx.stdin);
-        }
-        catch (e) {
-            return { error: `${shellName}: failed to read stdin: ${formatError(e)}`, exitCode: 1 };
-        }
-        if (stdin.length > 0)
-            return { kind: 'stdin', body: stdin, argv0: shellName, args: [], options: {} };
+        const read = await readShellStdin(shellName, ctx);
+        if ('error' in read)
+            return read;
+        if (read.stdin.length > 0)
+            return { kind: 'stdin', body: read.stdin, argv0: shellName, args: [], options: {} };
         return { error: parsed.error, exitCode: parsed.exitCode };
     }
     if (parsed.invocation.kind === 'usage') {
@@ -124,14 +124,10 @@ async function parseShellProgram(shellName, ctx, vfs) {
     if (parsed.invocation.kind === 'script') {
         return loadScript(shellName, parsed.invocation.path, parsed.invocation.args, parsed.invocation.options, ctx.cwd, vfs);
     }
-    let stdin = '';
-    try {
-        stdin = await readContextStdin(ctx.stdin);
-    }
-    catch (e) {
-        return { error: `${shellName}: failed to read stdin: ${formatError(e)}`, exitCode: 1 };
-    }
-    return { kind: 'stdin', body: stdin, argv0: shellName, args: parsed.invocation.args, options: parsed.invocation.options };
+    const read = await readShellStdin(shellName, ctx);
+    if ('error' in read)
+        return read;
+    return { kind: 'stdin', body: read.stdin, argv0: shellName, args: parsed.invocation.args, options: parsed.invocation.options };
 }
 async function loadScript(shellName, script, args, options, cwd, vfs) {
     const path = resolveVfsPath(script, cwd || '/home/user');
@@ -212,9 +208,6 @@ function stdinChunkToString(chunk) {
     if (chunk instanceof ArrayBuffer)
         return new TextDecoder().decode(chunk);
     return String(chunk);
-}
-function normalizeArgs(args) {
-    return Array.isArray(args) ? args.map(String) : [];
 }
 function formatError(error) {
     return error instanceof Error ? error.message : String(error);

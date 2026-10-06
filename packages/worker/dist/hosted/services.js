@@ -1,4 +1,5 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
+import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { composeFacetManager } from "../facets/compose.js";
 import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
@@ -81,6 +82,7 @@ export function ensureFacetManager(self, runtimeContext) {
             portRegistry: self.portRegistry,
             vfs: filesystem.engine,
             filesystem,
+            network: runtimeContext.network,
             ...(self.esbuildService ? { esbuild: self.esbuildService } : {}),
             hooks: {
                 onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
@@ -143,7 +145,7 @@ export function ensureFacetManager(self, runtimeContext) {
 }
 export function _ensureWebSocketRelay(self, runtimeContext) {
     if (!self.webSocketRelay)
-        self.webSocketRelay = new WebSocketRelay();
+        self.webSocketRelay = new WebSocketRelay(runtimeContext.network);
     return self.webSocketRelay;
 }
 export function _ensureFacetProcessManager(self, runtimeContext) {
@@ -475,6 +477,8 @@ export function ensureFetchProxy(self, runtimeContext, log) {
             compatibilityFlags: [...GUEST_COMPAT_FLAGS],
             mainModule: 'fetch-proxy.js',
             modules: { 'fetch-proxy.js': proxyCode },
+            // The registry is reached through the workspace's egress, when it has one.
+            ...loaderOutbound(runtimeContext.network()),
         });
         self.fetchProxyEntrypoint = worker.getEntrypoint();
         log?.('Fetch proxy worker created (singleton)');
@@ -538,6 +542,7 @@ export async function ensureNpmInstaller(self, runtimeContext, onProgress) {
         env: runtimeContext.env,
         onProgress,
         fetchFn,
+        network: runtimeContext.network(),
     });
     return self.npmInstaller;
 }

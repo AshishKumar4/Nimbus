@@ -178,6 +178,41 @@
    "args": "words",
    "stdout": "19 20 87 words\n",
    "exit": 0
+  },
+  {
+   "args": "--li l1",
+   "stdout": "5 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "--total",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--total=only l1",
+   "stdout": "5 5 29\n",
+   "exit": 0
+  },
+  {
+   "args": "--x",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "--l1=3 l1",
+   "stdout": "",
+   "exit": 1
+  },
+  {
+   "args": "-l -- l1",
+   "stdout": "5 l1\n",
+   "exit": 0
+  },
+  {
+   "args": "l1 -w",
+   "stdout": "5 l1\n",
+   "exit": 0
   }
  ]
 }

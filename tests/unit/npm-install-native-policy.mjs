@@ -33,7 +33,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { kernelInstaller, makeFanoutEnv } from './npm-fanout-test-env.mjs';
 
 const PROJ = 'app';

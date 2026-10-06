@@ -13,6 +13,7 @@ import type {
 import { resolveVfsPath } from '../vfs/path.js';
 import { statOrThrow } from '../vfs/vfs.js';
 import { strerror } from '../vfs/vfs-error.js';
+import { humanReadable } from '../substrate/lifo/utils/size-units.js';
 
 /** The mount `path` (absolute, normalized) lives on: the longest mount point
  *  containing it; of equal ones the later, which shadows the earlier. */
@@ -36,43 +37,6 @@ export function formatProcMounts(entries: readonly NimbusMountEntry[]): string {
   return entries
     .map((entry) => `${procField(entry.source)} ${procField(entry.mountPoint)} ${procField(entry.type)} ${procField(entry.options?.join(',') || 'rw')} 0 0\n`)
     .join('');
-}
-
-const HUMAN_UNITS = 'KMGTPEZYRQ';
-
-/**
- * gnulib's human_readable with df -h's options: powers of 1024, rounded up,
- * one decimal below 10.
- */
-function humanSize(bytes: number): string {
-  const base = 1024;
-  let amount = bytes;
-  let tenths = 0;
-  let rounding = 0;
-  let exponent = 0;
-  if (amount >= base) {
-    do {
-      const r10 = (amount % base) * 10 + tenths;
-      const r2 = (r10 % base) * 2 + (rounding >> 1);
-      amount = Math.floor(amount / base);
-      tenths = Math.floor(r10 / base);
-      rounding = r2 < base ? (r2 !== 0 ? 1 : 0) : 2 + (base < r2 ? 1 : 0);
-      exponent++;
-    } while (base <= amount && exponent < HUMAN_UNITS.length);
-    if (amount < 10) {
-      if (rounding > 0) {
-        tenths++;
-        rounding = 0;
-        if (tenths === 10) { amount++; tenths = 0; }
-      }
-      if (amount < 10) return `${amount}.${tenths}${HUMAN_UNITS[exponent - 1]}`;
-    }
-  }
-  if (tenths + rounding > 0) {
-    amount++;
-    if (amount === base && exponent < HUMAN_UNITS.length) return `1.0${HUMAN_UNITS[exponent]}`;
-  }
-  return exponent === 0 ? String(amount) : `${amount}${HUMAN_UNITS[exponent - 1]}`;
 }
 
 interface DfOptions { all: boolean; human: boolean; printType: boolean; operands: string[] }
@@ -126,7 +90,7 @@ function renderTable(rows: readonly (readonly string[])[], minimums: readonly nu
 }
 
 function dfRow(entry: NimbusMountEntry, usage: NimbusMountUsage | null, options: DfOptions): string[] {
-  const amount = (bytes: number): string => options.human ? humanSize(bytes) : String(Math.ceil(bytes / 1024));
+  const amount = (bytes: number): string => options.human ? humanReadable(bytes, 1024) : String(Math.ceil(bytes / 1024));
   const row = [entry.source];
   if (options.printType) row.push(entry.type);
   if (usage === null) {

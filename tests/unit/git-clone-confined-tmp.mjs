@@ -23,8 +23,8 @@ import { ProcessFiles, ProcessView } from '../../packages/core/src/runtime/proce
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { getSymlinkRegistry, LEGACY_SYMLINK_REGISTRY_PATH } from '../../packages/core/src/vfs/symlink-registry.ts';
-import { attachSupervisorOps } from './session-supervisor-ops.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });

@@ -324,11 +324,12 @@ npm install @nimbus-sh/runtime-bash @nimbus-sh/runtime-cpython
 ```ts
 import bash from '@nimbus-sh/runtime-bash';
 import cpython from '@nimbus-sh/runtime-cpython';
-import { localFacetHost } from '@nimbus-sh/core';
+import { ISOLATE_NETWORK, localFacetHost } from '@nimbus-sh/core';
 
 const ws = await NimbusWorkspace.create({
   sql, transactions, generation: 1,
-  facets: localFacetHost(),
+  // The workspace's network: ISOLATE_NETWORK, or workspaceNetwork(egress) beside `egress`.
+  facets: localFacetHost(ISOLATE_NETWORK),
   runtimes: [bash, cpython],
 });
 

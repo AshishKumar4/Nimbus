@@ -15,7 +15,7 @@ import { createSupervisorOpHandler } from '../../packages/core/src/workspace/sup
 import { serveEditorFs } from '../../packages/worker/src/session/editor-fs.ts';
 import { rpcDeleteFile } from '../../packages/worker/src/session/programmatic.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';

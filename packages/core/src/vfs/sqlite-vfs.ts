@@ -3862,8 +3862,11 @@ export class SqliteVFS {
 
   private mkdir(path: string, options: { recursive?: boolean; mode?: number } | undefined, cred: VfsCred): void {
     const normalized = this.storageKey(path, cred);
-    this.assertMutationsAllowed([normalized]);
+    // A directory that is there is made already: no mutation, so no lease
+    // refuses it (a session's mkdir -p of its home while a lease holds a
+    // repository under it). Each one made is checked as it is made.
     if (this.exists(normalized, cred)) return;
+    this.assertMutationsAllowed([normalized]);
     // A directory is created where its name resolves with the last component
     // unfollowed, as mkdir(2) does: under a link to a directory, inside that
     // directory. The storage key alone would put the row under the link

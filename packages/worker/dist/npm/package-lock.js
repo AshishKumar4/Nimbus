@@ -3,8 +3,8 @@
  * read for `npm ci`: the `packages` map keyed by install path, and the check
  * that the lock still describes what package.json declares.
  */
-import { isSemverRange, satisfiesRange } from './semver.js';
-import { parseRegistryRequest } from './resolve-one-facet.js';
+import { isSemverRange, satisfiesRange } from '@nimbus-sh/core/_shared/npm-semver.js';
+import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 /** A parsed JSON object or array: a value whose fields can be read and set. */
 export function isJsonObject(value) {
     return value !== null && typeof value === 'object';

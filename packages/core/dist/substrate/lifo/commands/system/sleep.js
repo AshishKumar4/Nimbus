@@ -1,3 +1,5 @@
+import { waitForAbortOrTimeout } from '../signal.js';
+import { exitCodeForAbortSignal } from '../../shell/signals.js';
 const command = async (ctx) => {
     if (ctx.args.length === 0) {
         await ctx.stderr.write('sleep: missing operand\n');
@@ -9,19 +11,10 @@ const command = async (ctx) => {
         return 1;
     }
     const ms = Math.round(seconds * 1000);
-    if (ctx.signal.aborted) {
-        return 130;
+    // An abort ends the sleep with its signal's status: 130 for Ctrl-C, 143 for SIGTERM.
+    if (ctx.signal.aborted || (await waitForAbortOrTimeout(ctx.signal, ms)) === 'aborted') {
+        return exitCodeForAbortSignal(ctx.signal);
     }
-    await new Promise((resolve) => {
-        let timer;
-        const finish = () => {
-            clearTimeout(timer);
-            ctx.signal.removeEventListener('abort', finish);
-            resolve();
-        };
-        timer = setTimeout(finish, ms);
-        ctx.signal.addEventListener('abort', finish, { once: true });
-    });
-    return ctx.signal.aborted ? 130 : 0;
+    return 0;
 };
 export default command;

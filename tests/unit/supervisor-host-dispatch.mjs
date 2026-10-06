@@ -6,7 +6,7 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
 import { SupervisorDeliveries, supervisorDeliveredOp, supervisorJoinedReadOp } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { SUPERVISOR_OP_TABLE } from '../../packages/core/src/workspace/supervisor-ops.ts';

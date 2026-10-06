@@ -38,9 +38,6 @@ import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 type InitHost = SessionInternal & { readonly ctx: any; readonly env: any };
 
 
-function quoteShellArgument(value: string): string {
-  return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 
 
 /**
@@ -220,6 +217,7 @@ export async function initSession(
       terminal: self.terminal,
       processes: self.processes,
       runtimeSource: runtimeCatalogSource(self.env),
+      egress: self.egressForWorkspace(),
     });
     self.runtimeWorkspace = workspace;
     self.shellProcessPid = workspace.shellProcessPid;

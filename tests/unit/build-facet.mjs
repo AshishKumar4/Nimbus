@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — large; CI median 14 s wall, 18 s CPU, 1.3 GiB peak (6 runs, 2026-10-06)
 // A Durable Object's builds run in its build facet (facets/build-facet.ts):
 // the staged threadless rolldown binding and its runtime, as production loads
 // them (lib/build-facet-harness.mjs), behind rolldownBuildHost. Overlapping
@@ -25,6 +26,11 @@ import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } fr
 
 const MiB = 1024 * 1024;
 const PAGE = 64 * 1024;
+// A sum of this many terms nests past the binding's stack. 10,000 was at the
+// edge: under load it built, without overflowing, 3 times in 80 (a pre-bundle
+// answered ok); 50,000 overflowed every time in 100, and esbuild still
+// builds it.
+const DEEP_TERMS = 50_000;
 const rolldownNative = await import(createRequire(new URL('../../packages/worker/package.json', import.meta.url)).resolve('rolldown'));
 const pages = STAGED_BINDING_ARTIFACTS.find((b) => b.name === 'rolldown').memoryPages;
 
@@ -176,7 +182,7 @@ try {
     // A module nested past the stack: that pre-bundle fails saying so, and the next one runs on a fresh isolate.
     const deep = specOf({ specifier: 'deep-sum', entry: 'deep-sum/index.js' }, {
       'home/user/app/node_modules/deep-sum/package.json': '{"name":"deep-sum","main":"index.js"}',
-      'home/user/app/node_modules/deep-sum/index.js': `const t = 1; exports.x = ${Array.from({ length: 10_000 }, () => 't').join(' + ')};`,
+      'home/user/app/node_modules/deep-sum/index.js': `const t = 1; exports.x = ${Array.from({ length: DEEP_TERMS }, () => 't').join(' + ')};`,
     });
     const warn = console.warn;
     console.warn = () => {};
@@ -223,13 +229,13 @@ try {
   }
 
   // ── A binding that dies answers every build, and the next one is fresh ──────
-  // A 10,000-term sum overflows the stack inside the binding; esbuild builds it.
+  // A DEEP_TERMS-term sum overflows the stack inside the binding; esbuild builds it.
   {
     const fromCore = createRequire(new URL('../../packages/core/package.json', import.meta.url));
     globalThis.self ??= globalThis;
     const esbuild = await import(fromCore.resolve('esbuild-wasm/esm/browser.js'));
     await esbuild.initialize({ wasmModule: await WebAssembly.compile(await readFile(fromCore.resolve('esbuild-wasm/esbuild.wasm'))), worker: false });
-    const deep = memoryFs('deep', { 'a.js': `const t = 1; export const x = ${Array.from({ length: 10_000 }, () => 't').join(' + ')};` });
+    const deep = memoryFs('deep', { 'a.js': `const t = 1; export const x = ${Array.from({ length: DEEP_TERMS }, () => 't').join(' + ')};` });
     const fine = memoryFs('fine', { 'b.js': 'export const y = 2;' });
     // esbuild's builds of what a dead binding left, each counted while it runs.
     let esbuildBuilds = 0;

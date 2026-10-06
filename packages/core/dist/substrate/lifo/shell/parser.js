@@ -144,8 +144,8 @@ class Parser {
             switch (token.value) {
                 case 'if': return this.parseIf();
                 case 'for': return this.parseFor();
-                case 'while': return this.parseWhile();
-                case 'until': return this.parseUntil();
+                case 'while':
+                case 'until': return this.parseLoop(token.value);
                 case 'case': return this.parseCase();
             }
             // Check for function definition: name () { ... }
@@ -268,23 +268,14 @@ class Parser {
         const redirections = this.parseTrailingRedirections();
         return { type: 'for', variable, words, body, redirections };
     }
-    parseWhile() {
-        this.expectWord('while');
+    parseLoop(keyword) {
+        this.expectWord(keyword);
         const condition = this.parseCompoundList(['do']);
         this.expectWord('do');
         const body = this.parseCompoundList(['done']);
         this.expectWord('done');
         const redirections = this.parseTrailingRedirections();
-        return { type: 'while', condition, body, redirections };
-    }
-    parseUntil() {
-        this.expectWord('until');
-        const condition = this.parseCompoundList(['do']);
-        this.expectWord('do');
-        const body = this.parseCompoundList(['done']);
-        this.expectWord('done');
-        const redirections = this.parseTrailingRedirections();
-        return { type: 'until', condition, body, redirections };
+        return { type: keyword, condition, body, redirections };
     }
     parseCase() {
         this.expectWord('case');

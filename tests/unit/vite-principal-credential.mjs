@@ -12,6 +12,7 @@
 // its caller too; a dev server persisted for a restore records who it ran
 // as; and real-vite finds and bundles the user's vite.config as the caller.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -19,7 +20,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createRequire } from 'node:module';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
@@ -97,6 +98,8 @@ const storage = {
   }),
 };
 const host = {
+  // The session's workspace, for what it hands a dev server: its network (no egress here).
+  runtimeWorkspace: { network: ISOLATE_NETWORK },
   ensureSqliteFs() {},
   getFilesystemAuthority() { return files; },
   ensureBundlePool() { return null; },

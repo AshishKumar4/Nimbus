@@ -16,7 +16,7 @@ import { SqliteRuntimeFsBridge } from '../../../packages/core/src/runtime/sqlite
 import { adoptCtxExports } from '../../../packages/fabric/src/composition.ts';
 import { runGitCommand } from '../../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../../packages/worker/src/git/network-facet.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './staged-assets.mjs';
 
 export function hostGitEnv(home) {
@@ -98,7 +98,8 @@ export async function createFacetSession(work, { realGit = false } = {}) {
         if (requests.loseRename?.(from, to)) requests.withhold.add(from.slice(from.lastIndexOf('/') + 1));
         return result;
       },
-      async unlink(path) { return refused(async () => bridge.unlink(path, lease)); },
+      // unlink carries no lease: the session's supervisor op has none for it either (supervisor-op.ts).
+      async unlink(path) { return refused(async () => bridge.unlink(path)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {
           await stream.cancel();
@@ -114,7 +115,7 @@ export async function createFacetSession(work, { realGit = false } = {}) {
     };
   };
   const supervisor = supervisorFor(undefined);
-  adoptCtxExports({ SupervisorRPC: ({ props }) => supervisorFor(props.mutationOwner) });
+  adoptCtxExports({ SupervisorRPC: /** @type {any} */ (({ props }) => supervisorFor(props.mutationOwner)) });
 
   const tempDir = mkdtempSync(join(work, 'facet-'));
   writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());

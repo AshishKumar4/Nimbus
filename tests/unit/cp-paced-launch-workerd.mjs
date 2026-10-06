@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 13 s wall, 11 s CPU, 0.9 GiB peak (6 runs, 2026-10-06)
 // A launch too large for one Durable Object turn is paced across turns
 // (turn-budget.ts): it suspends, and a fresh turn (the session's launch
 // alarm) resumes it. A parent whose own launch was paced, and which then

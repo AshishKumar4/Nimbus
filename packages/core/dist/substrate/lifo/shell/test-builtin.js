@@ -1,5 +1,5 @@
 import { expandWord } from './expander.js';
-import { globMatch } from '../utils/glob.js';
+import { globMatch, hasGlobChars } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
@@ -35,7 +35,7 @@ export async function evaluateDoubleBracketWords(words, expandCtx, vfs, stderr, 
             const value = await expandWord(word, expandCtx);
             const arg = {
                 value,
-                canUseAsPattern: hasUnquotedPart(word) && hasPatternSyntax(value),
+                canUseAsPattern: hasUnquotedPart(word) && hasGlobChars(value),
             };
             expanded.set(i, arg);
             return arg;
@@ -248,9 +248,6 @@ function literalArg(value) {
 }
 function hasUnquotedPart(word) {
     return word.some((part) => part.quoted === 'none');
-}
-function hasPatternSyntax(value) {
-    return value.includes('*') || value.includes('?') || value.includes('[');
 }
 /**
  * File tests resolve their operand against the working directory, the way

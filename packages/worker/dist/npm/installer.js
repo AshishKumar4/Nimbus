@@ -23,9 +23,9 @@
  *     mounted project's packages are put there through the view (see
  *     fetchIntoMount)
  */
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
-import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
@@ -36,7 +36,7 @@ import { hoistPlacements, } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
-import { satisfiesRange, isSemverRange } from './semver.js';
+import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
 import { npmAddedLine, npmHttpCacheLine, npmHttpFetchLine, npmTitleLine, } from '@nimbus-sh/core/substrate/lifo/commands/system/npm-log.js';
 import { applySwaps, findRejects, lookupSwap, lookupReject, swapCoversVersion, isOptionalNativeBinding, lookupStagedArtifact, applyStagedArtifact, policyNativePlatformReject, PACKAGE_ABI_POLICY, formatSwapNotice, emitRegistryEvent, } from '../facets/wasm-swap-registry.js';
 import { resolvePackageEntry } from '@nimbus-sh/core/_shared/exports-resolver.js';
@@ -48,18 +48,18 @@ import { setInstallPhase, recordInstallFacetCounters, recordPreBundleSummary, re
 import { recordCacheStatEvents } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { estimateSupervisorHeap } from '@nimbus-sh/platform/heap-estimate.js';
 import { describeError } from '@nimbus-sh/platform/oom-classify.js';
-import { resolveOnePackumentInFacet, parseRegistryRequest, } from './resolve-one-facet.js';
+import { resolveOnePackumentInFacet, } from './resolve-one-facet.js';
 import { NPM_RESOLVE_PREAMBLE } from '../loaders/npm-resolve-preamble.js';
+import { NPM_INSTALL_PREAMBLE } from '../loaders/npm-install-preamble.js';
 import { buildSliceForSpecifierWithCap, } from './pre-bundle-facet.js';
 import { PREBUNDLE_DEFINE, sliceSources } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import { PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
-import { packageRangeSeparator } from './package-spec.js';
+import { packageRangeSeparator, parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 import { scanProjectImports, transformParser, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
-import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
-import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
+import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, declaredPackageBins, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
 export class NpmInstaller {
     /** The session's namespace: the project is reached through it as the invoking principal. */
@@ -82,6 +82,8 @@ export class NpmInstaller {
      * when the feature flag is on, using the facet's own global fetch.
      */
     fetchFn;
+    /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
+    network;
     /**
      * npm-protocol log sink for the install in flight. Set per invocation
      * because `--loglevel` is a per-invocation flag; the no-op default is
@@ -98,6 +100,7 @@ export class NpmInstaller {
         this.env = opts?.env;
         this.onProgress = opts?.onProgress;
         this.fetchFn = opts?.fetchFn;
+        this.network = opts?.network ?? ISOLATE_NETWORK;
     }
     /** Expose cache for external use (e.g., serveModule in vite-dev-server). */
     get npmCache() { return this.cache; }
@@ -358,8 +361,7 @@ export class NpmInstaller {
         const keptBins = opts?.packages && await project.exists(npmBinManifestPath(nmDir))
             ? Object.values(parseNpmBinManifest(await project.readFileString(npmBinManifestPath(nmDir)))?.bins ?? {})
             : [];
-        // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
-        await withRecall(() => this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins));
+        await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins);
         phases['link-bins'] = Date.now() - phaseStart;
         // ── Write lockfile ──────────────────────────────────────────────
         if (!usedLockfile || opts?.packages || pruned > 0) {
@@ -407,7 +409,7 @@ export class NpmInstaller {
             // through this invocation's `log`, which turns to the console once the
             // command has returned, so a late line never lands on the redrawn
             // prompt or in another install's output.
-            void withRecall(() => this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log))
+            void this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log)
                 .catch((e) => log(`pre-bundle skipped: ${errorText(e)}`));
             phases['bundle'] = Date.now() - phaseStart;
         }
@@ -559,6 +561,7 @@ export class NpmInstaller {
         // pool is stateless across submitMany calls.
         const fanoutPool = new Fanout(this.env, this.ctx, {
             tag: 'npm-resolve-fanout',
+            network: this.network,
             // 5 minutes per layer is generous; typical layers complete in
             // 1-3 s. Per-task this gates each packument fetch + R2 race.
             timeoutMs: 5 * 60_000,
@@ -958,6 +961,7 @@ export class NpmInstaller {
         const phaseProfile = [];
         const fanoutPool = new Fanout(this.env, this.ctx, {
             tag: 'npm-install-batch',
+            network: this.network,
             // Whole-batch timeout. With per-shard parallelism of N=8 peer
             // DOs each running pLimit(3), Mossaic-class 456 packages
             // typical 30-60 s wall clock. 10 min covers pathological cases.
@@ -965,7 +969,7 @@ export class NpmInstaller {
             // W7: tar-stream + W7-frame preambles concatenated. Forwarded
             // to every facet (in-DO and per-peer) so each shard's facet
             // can encode its own write-batch stream.
-            preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE,
+            preamble: TAR_STREAM_PREAMBLE + '\n' + W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + NPM_INSTALL_PREAMBLE,
             // Authorize each facet's writeBatchStream under the invoking
             // process credential; without a positive pid the supervisor
             // rejects the write (S2a cred enforcement).
@@ -1106,8 +1110,7 @@ export class NpmInstaller {
         }
         const staging = this.store.as(principal.cred);
         const stage = `${tmp}/${STAGE_PREFIX}${principal.pid}-${Date.now().toString(36)}`;
-        // The engine's own calls here wait for a delegation they meet (withRecall): each is repeatable.
-        await withRecall(() => staging.mkdir(stage, { recursive: true }));
+        staging.mkdir(stage, { recursive: true });
         this.placing.add(stage);
         try {
             const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, principal.pid);
@@ -1128,7 +1131,7 @@ export class NpmInstaller {
             const swept = new Set();
             for (const placement of tops) {
                 const from = `${stage}/node_modules/${placement}`;
-                if (!await withRecall(() => staging.exists(from)))
+                if (!staging.exists(from))
                     continue;
                 const dst = `/${nmDir}/${placement}`;
                 const parent = dst.slice(0, dst.lastIndexOf('/'));
@@ -1451,7 +1454,7 @@ export class NpmInstaller {
             const inRemoved = removed.some((parent) => placement.startsWith(parent + '/node_modules/'));
             if (!inRemoved && await project.exists(key)) {
                 if (!placement.includes('/node_modules/'))
-                    for (const name of await this.declaredBins(project, key))
+                    for (const name of await declaredPackageBins(project, key))
                         unlinked.add(name);
                 await project.removeRecursive(key);
             }
@@ -1480,19 +1483,6 @@ export class NpmInstaller {
         }
         log(`removed ${removed.length} extraneous ${removed.length === 1 ? 'package' : 'packages'}: ${removed.join(', ')}`);
         return removed.length;
-    }
-    /** The names the package at `dir` links in `.bin`, from its package.json as npm reads it (npmBinMap). */
-    async declaredBins(project, dir) {
-        let manifest = null;
-        try {
-            manifest = safeJsonParse(await project.readFileString(`${dir}/package.json`), null);
-        }
-        catch {
-            return [];
-        }
-        if (manifest === null || typeof manifest.name !== 'string')
-            return [];
-        return [...npmBinMap(manifest.name, manifest.bin).keys()];
     }
     /**
      * npm ci: the placements package-lock.json (or npm-shrinkwrap.json)
@@ -2369,15 +2359,10 @@ export class NpmInstaller {
 /** What staging directories in /tmp and copies beside a mounted package are named. */
 const STAGE_PREFIX = '.npm-stage-';
 const COPY_PREFIX = '.nimbus-copy-';
-/**
- * `src`'s tree on the engine written into `dst` through `to`; with
- * `packageJsonLast`, its own package.json goes last. Each read of the engine
- * waits for a delegation it meets (withRecall); the writes go through the
- * view, which waits itself.
- */
+/** `src`'s tree on the engine written into `dst` through `to`; with `packageJsonLast`, its own package.json goes last. */
 async function copyTreeInto(from, src, to, dst, packageJsonLast) {
     await to.mkdir(dst, { recursive: true });
-    const entries = await withRecall(() => from.readdir(src));
+    const entries = from.readdir(src);
     if (packageJsonLast)
         entries.sort((a, b) => Number(a.name === 'package.json') - Number(b.name === 'package.json'));
     for (const entry of entries) {
@@ -2389,11 +2374,10 @@ async function copyTreeInto(from, src, to, dst, packageJsonLast) {
         else if (entry.type === 'symlink') {
             if ((await to.stat(target, { follow: false })) !== null)
                 await to.unlink(target);
-            await to.symlink(await withRecall(() => from.readlink(source)), target);
+            await to.symlink(from.readlink(source), target);
         }
         else {
-            const [bytes, mode] = await withRecall(() => [from.readFile(source), from.stat(source).mode & 0o7777]);
-            await to.writeFile(target, bytes, { mode });
+            await to.writeFile(target, from.readFile(source), { mode: from.stat(source).mode & 0o7777 });
         }
     }
 }

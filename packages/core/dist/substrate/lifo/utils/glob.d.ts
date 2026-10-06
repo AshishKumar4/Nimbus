@@ -11,4 +11,6 @@ export declare function globMatch(pattern: string, text: string): boolean;
  * Returns sorted matching paths, or [pattern] if no matches.
  */
 export declare function expandGlob(pattern: string, cwd: string, vfs: ProcessView): Promise<string[]>;
+/** Whether `s` holds a glob's special characters (`*`, `?`, `[`). */
+export declare function hasGlobChars(s: string): boolean;
 //# sourceMappingURL=glob.d.ts.map

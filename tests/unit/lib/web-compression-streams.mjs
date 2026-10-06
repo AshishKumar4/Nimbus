@@ -39,14 +39,15 @@ function webTransform(factories, format) {
 export function installCompressionStreams() {
   if (typeof globalThis.DecompressionStream === 'function') return false;
 
-  globalThis.CompressionStream = class CompressionStream {
+  const host = /** @type {any} */ (globalThis);
+  host.CompressionStream = class CompressionStream {
     constructor(format) {
       const { readable, writable } = webTransform(TRANSFORMS, format);
       this.readable = readable;
       this.writable = writable;
     }
   };
-  globalThis.DecompressionStream = class DecompressionStream {
+  host.DecompressionStream = class DecompressionStream {
     constructor(format) {
       const { readable, writable } = webTransform(INVERSES, format);
       this.readable = readable;
