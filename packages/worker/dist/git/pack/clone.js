@@ -16,7 +16,8 @@
  * nothing reads it back but a delta whose base has left the cache.
  */
 import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
-import { encodeIdxV2, ENTRY_BYTES, entryOffset } from './idx.js';
+import { ENTRY_BYTES, entryOffset } from './idx.js';
+import { installPack, RangedPackFile, readRange, resumeInstall } from './install.js';
 import { ByteLru } from './byte-lru.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries } from '../worktree/dircache.js';
@@ -25,6 +26,16 @@ import { oidFromHex, oidToHex, PACK_TRAILER_BYTES, PackFormatError } from './for
 import { PackStreamProcessor } from './processor.js';
 import { discover, requestPack } from './upload-pack.js';
 import { PackObjectStore } from './store.js';
+/** The tags the remote advertises (refs/tags/*, peeled through "<name>^{}"). */
+function advertisedTags(advertisement) {
+    const tags = [];
+    for (const [name, oid] of advertisement.refs) {
+        if (!name.startsWith('refs/tags/') || name.endsWith('^{}'))
+            continue;
+        tags.push({ name, oid, peeled: advertisement.refs.get(name + '^{}') ?? oid });
+    }
+    return tags;
+}
 export const STAGE_DIR = '.git/nimbus-clone';
 export const PACK_DIR = '.git/objects/pack';
 /** Blobs per batch, and at most this many batches. */
@@ -47,45 +58,28 @@ const STREAM_CACHE_BYTES = 8 * 1024 * 1024;
 const STREAM_RECENT_BYTES = 24 * 1024 * 1024;
 /** Blobs held while a filtered pack's trees are still arriving. */
 const HELD_BLOB_BYTES = 16 * 1024 * 1024;
-const READ_PIECE_BYTES = 4 * 1024 * 1024;
 const decoder = new TextDecoder();
 const encoder = new TextEncoder();
-/** A pack stored as it arrives, by ranged writes the clone's lease covers. */
-class SupervisorPackStore {
-    supervisor;
-    path;
-    size = 0;
-    constructor(supervisor, path) {
-        this.supervisor = supervisor;
-        this.path = path;
-    }
-    async append(bytes) {
-        const at = this.size;
-        this.size += bytes.byteLength;
-        await this.supervisor.fsWriteRange(this.path, at, bytes);
-    }
-    async writeAt(offset, bytes) {
-        await this.supervisor.fsWriteRange(this.path, offset, bytes);
-    }
-    async truncate(size) {
-        this.size = size;
-        await this.supervisor.fsTruncate(this.path, size);
-    }
-    async read(offset, length) {
-        return await readRange(this.supervisor, this.path, offset, length);
-    }
+export { readRange };
+/** A resumed step run again after its answer was lost: its recorded outcome, its pack's naming finished; or null. */
+export async function settledBefore(context, tmpName, recordName) {
+    return await resumeInstall(packFiles(context), join(context.dir, PACK_DIR), tmpName, join(context.dir, STAGE_DIR + '/' + recordName));
 }
-export async function readRange(supervisor, path, offset, length) {
-    const out = new Uint8Array(length);
-    for (let at = 0; at < length; at += READ_PIECE_BYTES) {
-        const want = Math.min(READ_PIECE_BYTES, length - at);
-        const piece = await supervisor.fsReadRange(path, offset + at, want);
-        if (piece === null || piece.byteLength !== want) {
-            throw new PackFormatError(path + ': range ' + (offset + at) + '+' + want + ' came back ' + (piece === null ? 'missing' : piece.byteLength + ' bytes'));
-        }
-        out.set(piece, at);
-    }
-    return out;
+/** The clone's ranged file calls (its lease covers them); a removal is a wave of the clone's writer. */
+function packFiles(context) {
+    const supervisor = context.supervisor;
+    return {
+        fsWriteRange: (path, offset, bytes) => supervisor.fsWriteRange(path, offset, bytes),
+        fsTruncate: (path, size) => supervisor.fsTruncate(path, size),
+        fsReadRange: (path, offset, length) => supervisor.fsReadRange(path, offset, length),
+        rename: (from, to) => supervisor.rename(from, to),
+        readdir: (path) => supervisor.readdir(path),
+        async remove(path) {
+            const writer = context.writer();
+            await writer.remove(path.slice(context.dir.length + 1));
+            await writer.flush();
+        },
+    };
 }
 export function join(dir, path) {
     return dir + '/' + path;
@@ -148,7 +142,7 @@ async function storePack(context, writer, stream, tmpName, options) {
 }
 /** storePack, or where its decoding stopped when the budget ran out first (see resumePack). */
 export async function storePackResumable(context, writer, stream, tmpName, options) {
-    const store = new SupervisorPackStore(context.supervisor, join(context.dir, PACK_DIR + '/' + tmpName));
+    const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + tmpName));
     const result = await new PackStreamProcessor({
         store,
         cacheBytes: options.cacheBytes,
@@ -157,11 +151,11 @@ export async function storePackResumable(context, writer, stream, tmpName, optio
         maxStoreReads: options.maxStoreReads ?? MAX_STORE_READS,
         onObject: options.onObject,
     }).run(stream);
-    return await settlePack(context, writer, tmpName, result, options.promisor);
+    return await settlePack(context, writer, tmpName, result, options.promisor, options.record);
 }
 /** Continue decoding a pending pack from its stored bytes; it may stop at the budget again. */
 export async function resumePack(context, writer, pending, options) {
-    const store = new SupervisorPackStore(context.supervisor, join(context.dir, PACK_DIR + '/' + pending.tmpName));
+    const store = new RangedPackFile(packFiles(context), join(context.dir, PACK_DIR + '/' + pending.tmpName));
     store.size = pending.packBytes;
     const records = await readRange(context.supervisor, join(context.dir, STAGE_DIR + '/ckpt-' + pending.tmpName), 0, pending.recordsBytes);
     const result = await new PackStreamProcessor({
@@ -172,10 +166,10 @@ export async function resumePack(context, writer, pending, options) {
         maxStoreReads: options.maxStoreReads ?? MAX_STORE_READS,
         onObject: options.onObject,
     }).resume({ offset: pending.offset, decoded: pending.decoded, records, externalBases: pending.externalBases }, pending.packBytes);
-    return await settlePack(context, writer, pending.tmpName, result, pending.promisor);
+    return await settlePack(context, writer, pending.tmpName, result, pending.promisor, options.record);
 }
 /** Name a fully decoded pack and write its idx (and .promisor); or checkpoint it. */
-async function settlePack(context, writer, tmpName, result, promisor) {
+async function settlePack(context, writer, tmpName, result, promisor, record) {
     if (result.checkpoint !== null || result.entries === null) {
         const checkpoint = result.checkpoint;
         const recordsBytes = checkpoint.records.byteLength;
@@ -193,17 +187,19 @@ async function settlePack(context, writer, tmpName, result, promisor) {
             },
         };
     }
-    const packSha = oidToHex(result.packSha);
-    await context.supervisor.rename(join(context.dir, PACK_DIR + '/' + tmpName), join(context.dir, PACK_DIR + '/pack-' + packSha + '.pack'));
-    if (promisor !== undefined) {
-        await writer.file(PACK_DIR + '/pack-' + packSha + '.promisor', 0o644, encoder.encode(promisor));
-    }
-    const pieces = [];
-    const entries = result.entries;
-    for await (const piece of encodeIdxV2(result.objects, result.packSha, async function* () { yield entries; }))
-        pieces.push(piece);
-    await writer.file(PACK_DIR + '/pack-' + packSha + '.idx', 0o644, concat(pieces));
-    return { result, summary: { packSha, packBytes: result.packBytes, objects: result.objects, work: result.work } };
+    // What the step writes besides is durable before its pack is named.
+    const extra = record === undefined ? undefined : await record.publish();
+    await writer.flush();
+    const summary = await installPack(packFiles(context), {
+        dir: join(context.dir, PACK_DIR),
+        tmpName,
+        result,
+        promisor,
+        record: record === undefined ? undefined : { path: join(context.dir, STAGE_DIR + '/' + record.name), extra },
+    });
+    if (summary === null)
+        throw new PackFormatError('pack ' + tmpName + ' holds no objects');
+    return { result, summary };
 }
 /** The tree id a commit object names. */
 export function commitTree(commit, oid) {
@@ -455,6 +451,7 @@ export async function cloneFast(context, request, advertisement) {
         cacheTreeBytes: staged.cacheTreeBytes,
         partial,
         packs,
+        tags: advertisedTags(advertisement),
     };
 }
 /**
@@ -544,6 +541,7 @@ async function cloneStream(context, request, advertisement, transport) {
             headRef: fullRef.startsWith('refs/heads/') ? fullRef : null,
             pending: 'pending' in stored ? stored.pending : null,
             pack: 'pending' in stored ? null : stored.summary,
+            tags: advertisedTags(advertisement),
         },
     };
 }
@@ -571,6 +569,7 @@ async function cloneEmpty(context, advertisement, filter) {
         cacheTreeBytes: 0,
         partial: filter !== undefined,
         packs: [],
+        tags: [],
     };
 }
 /** Every tree under `root`, read from the repository's packs. */
@@ -628,6 +627,7 @@ export async function clonePlanFromStore(context, request) {
         cacheTreeBytes: staged.cacheTreeBytes,
         partial: false,
         packs: [],
+        tags: [],
     };
 }
 export function concat(parts) {
@@ -737,6 +737,18 @@ export async function cloneFinish(context, request) {
     // With its history fetched (history.ts) the clone is no longer shallow.
     if (request.full === true)
         await writer.remove('.git/shallow');
+    // git clone follows tags: a tag whose object it fetched (include-tag sent
+    // the annotated ones with their commits) is written, as a loose ref.
+    let tags = 0;
+    if ((request.tags ?? []).length > 0) {
+        const store = supervisorStore(context);
+        for (const tag of request.tags) {
+            if (!await store.has(tag.peeled) || (tag.oid !== tag.peeled && !await store.has(tag.oid)))
+                continue;
+            await writer.file('.git/' + tag.name, 0o644, encoder.encode(tag.oid + '\n'));
+            tags++;
+        }
+    }
     // The staged files one record each: a write group holds a bounded number
     // of rows, and one recursive delete of a full clone's staging (vscode:
     // ~200 files) passes it ("logicalRows limit: 326 > 256").
@@ -745,7 +757,7 @@ export async function cloneFinish(context, request) {
     }
     await writer.remove(STAGE_DIR, true);
     await writer.flush();
-    return { indexEntries: entries.length, indexBytes };
+    return { indexEntries: entries.length, indexBytes, tags };
 }
 export { oidFromHex };
 /**

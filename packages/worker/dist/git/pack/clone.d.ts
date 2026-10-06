@@ -15,9 +15,10 @@
  * Every pack arrives once, is decoded once, and is stored as it arrives;
  * nothing reads it back but a delta whose base has left the cache.
  */
+import { readRange, type PackSummary } from './install.js';
 import { type EntryStat } from '../worktree/dircache.js';
 import { oidFromHex } from './format.js';
-import { PackStreamProcessor, type PackProcessResult, type WorkTally } from './processor.js';
+import { PackStreamProcessor, type PackProcessResult } from './processor.js';
 import { type Advertisement, type GitTransportAuth } from './upload-pack.js';
 /** The supervisor calls a clone makes beyond its wave writer's. */
 export interface CloneSupervisor {
@@ -97,13 +98,16 @@ export interface ClonePrepared {
     /** A partial clone (--filter): every pack it stores is a promisor pack. */
     partial: boolean;
     packs: PackSummary[];
+    /** The remote's tags: finish writes those whose objects the clone holds (cloneFinish). */
+    tags: CloneTag[];
 }
-export interface PackSummary {
-    packSha: string;
-    packBytes: number;
-    objects: number;
-    work: WorkTally;
+/** An advertised tag: its ref, the id it names, and what that peels to. */
+export interface CloneTag {
+    name: string;
+    oid: string;
+    peeled: string;
 }
+export type { PackSummary };
 export interface CloneBatchResult {
     index: number;
     blobs: number;
@@ -120,11 +124,17 @@ export interface CloneStreamed {
         /** Decoding stopped at the budget: continue it (historyResume, kind 'snapshot'). */
         pending: PendingPack | null;
         pack: PackSummary | null;
+        tags: CloneTag[];
     };
 }
 export declare const STAGE_DIR = ".git/nimbus-clone";
 export declare const PACK_DIR = ".git/objects/pack";
-export declare function readRange(supervisor: CloneSupervisor, path: string, offset: number, length: number): Promise<Uint8Array>;
+export { readRange };
+/** A resumed step run again after its answer was lost: its recorded outcome, its pack's naming finished; or null. */
+export declare function settledBefore(context: CloneContext, tmpName: string, recordName: string): Promise<{
+    summary: PackSummary;
+    extra: unknown;
+} | null>;
 export declare function join(dir: string, path: string): string;
 export interface StorePackOptions {
     cacheBytes?: number;
@@ -133,6 +143,16 @@ export interface StorePackOptions {
     maxStoreReads?: number;
     onObject?: ConstructorParameters<typeof PackStreamProcessor>[0]['onObject'];
     promisor?: string;
+    /**
+     * For a step that may run again after its answer is lost: what else it
+     * writes once the pack is decoded (publish, with the step's writer; its
+     * value is recorded with the pack's summary), and the record's name in
+     * STAGE_DIR (install.ts resumeInstall).
+     */
+    record?: {
+        name: string;
+        publish(): Promise<unknown>;
+    };
 }
 /**
  * A pack whose decoding ran past the invocation's budget: stored whole as
@@ -205,9 +225,11 @@ export declare function cloneFinish(context: CloneContext, request: {
     }[];
     full?: boolean;
     cacheTreeBytes?: number;
+    tags?: readonly CloneTag[];
 }): Promise<{
     indexEntries: number;
     indexBytes: number;
+    tags: number;
 }>;
 export { oidFromHex };
 export interface FetchObjectsResult {

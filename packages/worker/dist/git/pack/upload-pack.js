@@ -8,11 +8,12 @@
  * fast as its consumer pulls, so nothing between the network and the pack
  * processor buffers more than one side-band packet.
  */
+import { RETRY_ATTEMPTS, STALL_MS, TRANSIENT_HTTP_STATUSES, UPLOAD_PACK_ERROR_PREFIX, retryDelay } from './transport.js';
 import { PackFormatError } from './format.js';
 export class UploadPackError extends Error {
     status;
     constructor(message, status) {
-        super('git upload-pack: ' + message);
+        super(UPLOAD_PACK_ERROR_PREFIX + message);
         this.status = status;
         this.name = 'UploadPackError';
     }
@@ -20,8 +21,6 @@ export class UploadPackError extends Error {
 const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-const TRANSIENT_STATUSES = { 502: true, 503: true, 504: true, 522: true, 523: true, 524: true, 525: true };
-const RETRY_BACKOFF_MS = [400, 1200];
 function pktLine(text) {
     const body = encoder.encode(text);
     const out = new Uint8Array(body.byteLength + 4);
@@ -39,11 +38,11 @@ function headers(options, extra) {
 function repoUrl(url) {
     return url.endsWith('/') ? url.slice(0, -1) : url;
 }
-/** A request whose transient failures (connection, 5xx at the edge) are retried before any byte is read. */
+/** A request whose transient failures are retried before any byte is read (transport.ts). */
 async function send(options, path, init) {
     const doFetch = options.fetch ?? fetch;
     for (let attempt = 0;; attempt++) {
-        const last = attempt >= RETRY_BACKOFF_MS.length;
+        const last = attempt + 1 >= RETRY_ATTEMPTS;
         let response;
         // Headers that do not come within the stall time are a stall too.
         const stallMs = options.stallMs ?? STALL_MS;
@@ -57,29 +56,20 @@ async function send(options, path, init) {
         catch (error) {
             if (last)
                 throw error instanceof UploadPackError ? error : new UploadPackError('the request failed: ' + (error instanceof Error ? error.message : String(error)));
-            await backoff(attempt);
+            await retryDelay(attempt);
             continue;
         }
         finally {
             if (timer !== null)
                 clearTimeout(timer);
         }
-        if (!TRANSIENT_STATUSES[response.status] || last)
+        if (!TRANSIENT_HTTP_STATUSES.has(response.status) || last)
             return response;
         await response.body?.cancel();
-        await backoff(attempt);
+        await retryDelay(attempt);
     }
 }
-function backoff(attempt) {
-    // The executor form: the worker's ES2022 lib has no Promise.withResolvers.
-    return new Promise((resolve) => setTimeout(resolve, RETRY_BACKOFF_MS[attempt]));
-}
-/**
- * A response that sends nothing for this long has stalled: git's own
- * http.lowSpeedTime is the same idea. Measured: a GitHub batch on react
- * hung 240 s with no bytes; a healthy one never pauses for more than a few.
- */
-export const STALL_MS = 45_000;
+export { STALL_MS };
 /** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
 class PktReader {
     reader;
@@ -212,7 +202,8 @@ export async function discover(options) {
 }
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised, request) {
-    const capabilities = ['side-band-64k', 'ofs-delta'].filter((capability) => advertised.has(capability));
+    // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
+    const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
     if (!advertised.has('side-band-64k'))
         throw new UploadPackError('the server does not offer side-band-64k');
     if (request.thin && advertised.has('thin-pack'))

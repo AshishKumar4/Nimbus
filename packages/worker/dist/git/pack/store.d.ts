@@ -53,11 +53,12 @@ export declare class PackObjectStore {
     private page;
     private fetch;
     /**
-     * A short pack range from cached PACK_PAGE_BYTES pages: objects a command
-     * reads together sit together in a pack (a checkout reads in tree order,
-     * which git writes in), so a page serves many of them. Where every read is
-     * an RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
-     * not one per object.
+     * A pack range from cached PACK_PAGE_BYTES pages: objects a command reads
+     * together sit together in a pack (a checkout reads in tree order, which
+     * git writes in), so a page serves many of them. Where every read is an
+     * RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
+     * not one per object; and no read is longer than a page, so an object of
+     * any size crosses an RPC that refuses large reads.
      */
     private fromPackPages;
     /** A ref-delta's base in a stored pack: in the same pack, which on disk is self-contained. */
@@ -69,9 +70,10 @@ export interface GitPacksSeam {
     has(gitdir: string, oid: string): Promise<boolean>;
     expand(gitdir: string, prefix: string): Promise<string[]>;
     /**
-     * Fetch, in one request, those of `oids` a partial clone lacks (git batches
-     * a checkout's, a diff's, a merge's); a no-op where nothing is missing or
-     * the repository has no promisor remote.
+     * Fetch, in one request, those of `oids` a partial clone lacks, in its
+     * packs and as loose objects (git batches a checkout's, a diff's, a
+     * merge's); a no-op where nothing is missing or the repository has no
+     * promisor remote.
      */
     prefetch(gitdir: string, oids: Iterable<string>): Promise<void>;
     /** Forget `gitdir`'s pack list: a pack was added. */

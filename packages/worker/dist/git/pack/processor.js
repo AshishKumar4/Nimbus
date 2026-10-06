@@ -19,7 +19,7 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib';
 import { ByteLru } from './byte-lru.js';
 import { OBJ_OFS_DELTA, OBJ_REF_DELTA, PACK_HEADER_BYTES, PACK_TRAILER_BYTES, PackFormatError, applyDelta, deflateBound, inflateChunkSize, encodeObjectHeader, encodePackHeader, objectIdPrefix, oidFromHex, oidToHex, parseObjectHeader, parsePackHeader, typeCode, typeName, } from './format.js';
 import { ENTRY_BYTES, entryOffset, sortEntries, writeEntry } from './idx.js';
-import { MissingBaseError, PackObjectResolver, runAsync, } from './reader.js';
+import { ENTRY_PROBE_BYTES, MissingBaseError, PackObjectResolver, runAsync, } from './reader.js';
 /**
  * Work units. One unit is the CPU of SHA-1 over one byte in bulk; each other
  * step is weighed against it.
@@ -59,6 +59,8 @@ const APPEND_PIECE_BYTES = 512 * 1024 - 64 * 1024;
  * 39,950 base reads reach further back than 8 MiB, 9,620 past 16 MiB.
  */
 const DEFAULT_RECENT_BYTES = 2 * 1024 * 1024;
+/** Entries' first bytes a run keeps, for a delta chain walked down and applied back up. */
+const PROBE_CACHE_BYTES = 1024 * 1024;
 /** A continuation reads the stored pack ahead in windows this long. */
 const READ_AHEAD_BYTES = 8 * 1024 * 1024;
 /** A growable byte buffer whose front is consumed. */
@@ -124,6 +126,12 @@ class PackOutput {
     /** Recently sent pieces, oldest first, with their pack offsets. */
     sent = [];
     window = null;
+    /**
+     * Entries' leading bytes, read with their headers, by offset: a delta
+     * chain's walk reads each link's header alone (reader.ts objectAt), and
+     * its entry when the chain is applied back up. Packed bytes, a chain's worth.
+     */
+    probes = new ByteLru(PROBE_CACHE_BYTES);
     constructor(store, written = 0, recentBytes = DEFAULT_RECENT_BYTES, readAheadBytes = READ_AHEAD_BYTES) {
         this.store = store;
         this.recentBytes = recentBytes;
@@ -174,8 +182,16 @@ class PackOutput {
         if (window !== null && offset >= window.offset && offset + length <= window.offset + window.bytes.byteLength) {
             return window.bytes.subarray(offset - window.offset, offset - window.offset + length);
         }
+        const probe = this.probes.get(offset);
+        if (probe !== undefined && length <= probe.byteLength)
+            return probe.bytes.subarray(0, length);
         await this.flush();
         this.storeReads++;
+        if (length <= ENTRY_PROBE_BYTES) {
+            const bytes = await this.store.read(offset, Math.min(ENTRY_PROBE_BYTES, this.written - offset));
+            this.probes.set(offset, { bytes, byteLength: bytes.byteLength });
+            return bytes.subarray(0, length);
+        }
         return await this.store.read(offset, length);
     }
     /** Sequential access, for a continuation's walk: read ahead a window at a time. */

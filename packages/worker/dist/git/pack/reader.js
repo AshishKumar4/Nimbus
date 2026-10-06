@@ -24,7 +24,7 @@ export class MissingBaseError extends Error {
  * A first read this long holds a typical entry whole; a longer one is read
  * again at its deflate bound. Pages of the page-cached drivers are larger.
  */
-const ENTRY_PROBE_BYTES = 16 * 1024;
+export const ENTRY_PROBE_BYTES = 16 * 1024;
 if (ENTRY_PROBE_BYTES <= MAX_OBJECT_HEADER_BYTES)
     throw new Error('entry probe must hold any object header');
 export class PackObjectResolver {
@@ -64,7 +64,12 @@ export class PackObjectResolver {
             packed: bytes.subarray(0, header.headerBytes + inflated.engine.bytesWritten),
         };
     }
-    /** The object at `offset`, its delta chain applied, cached at every link. */
+    /**
+     * The object at `offset`, its delta chain applied, cached at every link.
+     * The walk to the base reads only headers; the deltas are then applied
+     * outward, each inflated as it is applied, so a long chain of large
+     * deltas holds one of them, never all.
+     */
     *objectAt(offset) {
         const chain = [];
         let base = null;
@@ -75,20 +80,21 @@ export class PackObjectResolver {
                 base = cached;
                 break;
             }
-            const entry = yield* this.entryAt(at);
-            if (entry.header.type === OBJ_OFS_DELTA) {
-                chain.push({ offset: at, delta: entry.payload });
-                at = entry.header.baseOffset;
+            const header = yield* this.headerOf(at);
+            if (header.type === OBJ_OFS_DELTA) {
+                chain.push(at);
+                at = header.baseOffset;
             }
-            else if (entry.header.type === OBJ_REF_DELTA) {
-                chain.push({ offset: at, delta: entry.payload });
-                const found = yield* this.options.refBase(entry.header.baseOid);
+            else if (header.type === OBJ_REF_DELTA) {
+                chain.push(at);
+                const found = yield* this.options.refBase(header.baseOid);
                 if ('object' in found)
                     base = found.object;
                 else
                     at = found.offset;
             }
             else {
+                const entry = yield* this.entryAt(at);
                 base = { type: typeName(entry.header.type), data: entry.payload };
                 this.remember(at, base);
             }
@@ -96,10 +102,21 @@ export class PackObjectResolver {
                 throw new PackFormatError('delta chain at ' + offset + ' is longer than 10000');
         }
         for (let i = chain.length - 1; i >= 0; i--) {
-            base = { type: base.type, data: applyDelta(base.data, chain[i].delta) };
-            this.remember(chain[i].offset, base);
+            const delta = yield* this.entryAt(chain[i]);
+            base = { type: base.type, data: applyDelta(base.data, delta.payload) };
+            this.remember(chain[i], base);
         }
         return base;
+    }
+    /** The header of the entry at `offset`, its payload unread. */
+    *headerOf(offset) {
+        if (offset < 0 || offset >= this.dataEnd)
+            throw new PackFormatError('object offset ' + offset + ' is outside the pack');
+        const bytes = yield { file: this.options.file, offset, length: Math.min(MAX_OBJECT_HEADER_BYTES, this.dataEnd - offset) };
+        const header = parseObjectHeader(bytes, 0, offset);
+        if (header === null)
+            throw new PackFormatError('object header at ' + offset + ' runs past the pack');
+        return header;
     }
     /** An object's type and size, inflating no more than each delta's leading sizes. */
     *headerAt(offset) {

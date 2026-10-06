@@ -174,18 +174,19 @@ export class PackObjectStore {
         return out;
     }
     async fetch(range) {
-        if (range.file.endsWith('.pack') && range.length <= PACK_PAGE_BYTES)
+        if (range.file.endsWith('.pack'))
             return await this.fromPackPages(range);
         // A read may end early where the file does: page() checks what an idx
         // read uses, and an entry cut short fails to inflate.
         return await this.fs.readRange(range.file, range.offset, range.length);
     }
     /**
-     * A short pack range from cached PACK_PAGE_BYTES pages: objects a command
-     * reads together sit together in a pack (a checkout reads in tree order,
-     * which git writes in), so a page serves many of them. Where every read is
-     * an RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
-     * not one per object.
+     * A pack range from cached PACK_PAGE_BYTES pages: objects a command reads
+     * together sit together in a pack (a checkout reads in tree order, which
+     * git writes in), so a page serves many of them. Where every read is an
+     * RPC, a checkout chunk of 10,000 entries costs pack bytes / page reads,
+     * not one per object; and no read is longer than a page, so an object of
+     * any size crosses an RPC that refuses large reads.
      */
     async fromPackPages(range) {
         const first = Math.floor(range.offset / PACK_PAGE_BYTES);
@@ -236,6 +237,30 @@ class CacheView {
         this.shared.set(this.pack + ':' + offset, object);
     }
 }
+/**
+ * Those of `oids` that are not loose objects of `gitdir`: what a command
+ * stages or commits in a partial clone is written loose, and the promisor
+ * never had it. One listing of objects/, then one of each fan-out directory
+ * an id names, only where it exists.
+ */
+async function withoutLoose(fs, gitdir, oids) {
+    if (oids.length === 0)
+        return oids;
+    const fanout = new Set(await fs.readdir(gitdir + '/objects'));
+    const listed = new Map();
+    const missing = [];
+    for (const oid of oids) {
+        const dir = oid.slice(0, 2);
+        let names = listed.get(dir);
+        if (names === undefined) {
+            names = fanout.has(dir) ? new Set(await fs.readdir(gitdir + '/objects/' + dir)) : new Set();
+            listed.set(dir, names);
+        }
+        if (!names.has(oid.slice(2)))
+            missing.push(oid);
+    }
+    return missing;
+}
 export function packsSeam(fs, options = {}) {
     const stores = new Map();
     const store = (gitdir) => {
@@ -263,11 +288,11 @@ export function packsSeam(fs, options = {}) {
         has: (gitdir, oid) => store(gitdir).has(oid),
         expand: (gitdir, prefix) => store(gitdir).expand(prefix),
         async prefetch(gitdir, oids) {
-            const missing = [];
+            const unpacked = [];
             for (const oid of new Set(oids))
                 if (!await store(gitdir).has(oid))
-                    missing.push(oid);
-            await fetchMissing(gitdir, missing);
+                    unpacked.push(oid);
+            await fetchMissing(gitdir, await withoutLoose(fs, gitdir, unpacked));
         },
         refresh: (gitdir) => store(gitdir).refresh(),
     };

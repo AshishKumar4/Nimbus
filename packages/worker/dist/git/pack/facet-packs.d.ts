@@ -7,7 +7,8 @@
  * pack whole. ingest takes a fetched pack as it arrives (cf-git's _fetch
  * hands over its side-band stream, paced by the reader): stored by ranged
  * appends, indexed in the same pass (processor.ts), thin bases completed
- * from the repository, then named as git names it, pack before idx.
+ * from the repository, then installed (install.ts) as git names it, pack
+ * before idx; a fetch that fails leaves no temporary file behind.
  */
 import { type GitPacksSeam } from './store.js';
 /** The supervisor calls the seam makes. */
@@ -17,7 +18,6 @@ export interface FacetPacksSupervisor {
     fsTruncate(path: string, size: number): Promise<unknown>;
     rename(from: string, to: string): Promise<unknown>;
     unlink(path: string): Promise<unknown>;
-    size(path: string): Promise<number | null>;
     readdir(path: string): Promise<string[]>;
     /** Make `dir` exist durably (a clone's objects/pack may not yet). */
     ensureDirectory(dir: string): Promise<void>;

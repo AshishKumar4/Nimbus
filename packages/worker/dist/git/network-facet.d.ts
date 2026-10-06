@@ -73,6 +73,12 @@ export interface GitNetworkOpts {
     exclusiveMutationRoot?: string;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;
+    /**
+     * Trusted supervisor-only: hand the clone's lease to a new owner and return
+     * it (SqliteVFS.rotateExclusiveMutation), so every write the old owner's
+     * facets may still make is refused. Never sent to the dynamic worker.
+     */
+    rotateMutationOwner?: () => string;
     /** fetch: `depth` counts from the current shallow boundary (git fetch --deepen). */
     relative?: boolean;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
@@ -175,31 +181,10 @@ export interface GitCloneBudgetDiagnostic {
     elapsedMs: number;
     limitMs: number;
 }
-interface GitHttpRequest {
-    url: unknown;
-    method?: string;
-    body?: AsyncIterable<Uint8Array> | Iterable<Uint8Array> | null;
-    [key: string]: unknown;
-}
-interface GitHttpResponse {
-    statusCode: number;
-    body?: {
-        cancel?: () => unknown;
-    } | null;
-    [key: string]: unknown;
-}
-interface GitHttp {
-    request(req: GitHttpRequest): Promise<GitHttpResponse>;
-}
-interface GitHttpRetryOptions {
-    maxAttempts?: number;
-    backoffMs?: readonly number[];
-}
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
 export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: GitNetworkOpts): Promise<GitNetworkResult>;
-export declare function createRetryingGitHttp(baseHttp: GitHttp, opts?: GitHttpRetryOptions): GitHttp;
 /**
  * Generate the dynamic worker code for the git network facet.
  *
@@ -208,5 +193,4 @@ export declare function createRetryingGitHttp(baseHttp: GitHttp, opts?: GitHttpR
  * fs adapter, and flushes writes through W7 v3.
  */
 export declare function assembleGitNetworkFacetSource(): string;
-export {};
 //# sourceMappingURL=network-facet.d.ts.map

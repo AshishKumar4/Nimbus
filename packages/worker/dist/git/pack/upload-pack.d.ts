@@ -8,6 +8,7 @@
  * fast as its consumer pulls, so nothing between the network and the pack
  * processor buffers more than one side-band packet.
  */
+import { STALL_MS } from './transport.js';
 export interface GitTransportAuth {
     username: string;
     password: string;
@@ -54,12 +55,7 @@ export declare class UploadPackError extends Error {
     readonly status?: number | undefined;
     constructor(message: string, status?: number | undefined);
 }
-/**
- * A response that sends nothing for this long has stalled: git's own
- * http.lowSpeedTime is the same idea. Measured: a GitHub batch on react
- * hung 240 s with no bytes; a healthy one never pauses for more than a few.
- */
-export declare const STALL_MS = 45000;
+export { STALL_MS };
 export declare function discover(options: UploadPackOptions): Promise<Advertisement>;
 /** One request, and the pack it answers with. */
 export declare function requestPack(options: UploadPackOptions, advertised: Set<string>, request: PackRequest): Promise<PackResponse>;

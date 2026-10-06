@@ -22,7 +22,7 @@
  */
 import { decodeBatch, parseTree, MODE_GITLINK, MODE_TREE } from './plan.js';
 import { OID_BYTES, oidToHex, PackFormatError } from './format.js';
-import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, storePackResumable, } from './clone.js';
+import { STAGE_DIR, commitTree, concat, join, readRange, resumePack, settledBefore, storePackResumable, } from './clone.js';
 import { requestPack } from './upload-pack.js';
 /** Root trees per trees request. */
 export const COMMITS_PER_CHUNK = 5_000;
@@ -140,16 +140,27 @@ export async function historyStep(context, request) {
 }
 /** A piece whose decoding stopped at the budget, continued from its stored pack. */
 export async function historyResume(context, request) {
+    // A resumed pack cannot be fetched again: a step run again after its
+    // answer was lost finds the outcome it recorded before naming its pack.
+    const recordName = 'settled-' + request.pending.tmpName;
+    const settled = await settledBefore(context, request.pending.tmpName, recordName);
+    if (settled !== null)
+        return { kind: request.kind, pack: settled.summary, pending: null, lists: settled.extra };
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
     const list = new ListWriter();
+    const listName = 'list-' + request.piece + '-' + request.part;
+    let lists = [];
     const stored = await resumePack(context, writer, request.pending, {
         cacheBytes: HISTORY_CACHE_BYTES,
         recentBytes: HISTORY_RECENT_BYTES,
         budgetUnits: request.budgetUnits,
         onObject: lister(request.kind, list),
+        record: { name: recordName, publish: async () => (lists = await list.write(writer, listName)) },
     });
-    return await settle(writer, request.kind, stored, list, 'list-' + request.piece + '-' + request.part);
+    if ('pending' in stored)
+        return await settle(writer, request.kind, stored, list, listName);
+    return { kind: request.kind, pack: stored.summary, pending: null, lists };
 }
 /** An open-addressing set of 20-byte ids, each with a basename: the plan's only large structure. */
 class BlobTable {

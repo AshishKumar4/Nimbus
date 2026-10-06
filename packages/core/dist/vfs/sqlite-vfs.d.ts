@@ -1000,6 +1000,13 @@ export declare class SqliteVFS {
     private acquireExclusiveMutationAt;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
+    /**
+     * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
+     * now on a write that presents `owner` is ESTALE, while the new owner's go
+     * ahead. How work that may still be running under a lease (a facet whose
+     * answer timed out) loses its authority before the work is redone.
+     */
+    rotateExclusiveMutation(owner: string): string;
     hasExclusiveMutation(): boolean;
     private withMutationOwner;
     /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */

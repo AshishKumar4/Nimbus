@@ -36,6 +36,7 @@ import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import { COMMITS_PER_CHUNK, treeSlices } from './pack/history.js';
+import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
 /**
  * The clone's job marker, in its git directory from prepare until the clone
  * is whole: the proof an abort needs that the destination is the clone's,
@@ -390,36 +391,26 @@ async function runPool(items, concurrency, run) {
         throw failure;
 }
 /**
- * Attempts at a batch or history piece that failed in transit: its request
- * to the git server (UploadPackError); its write waves to the session
- * ("Network connection lost": the batch facet's writeBatchStream through
- * SupervisorRPC to the session's Durable Object, seen live on Linux,
- * TypeScript and vscode, while the session stayed up, since the clone it
- * orchestrates carried on and GraphQL counts no reset: an infrastructure
- * network error, which the Durable Objects docs say to retry, with backoff,
- * when the request is idempotent); or the piece as a whole, hung (react's
- * first batch, three times in five clones, with no stall from its request).
- * Objects are addressed by content: a piece run again writes the same files
- * and the same pack, its earlier attempt's temporary pack discarded first.
+ * A batch or history piece that failed in transit, or hung, is tried again
+ * under the one lost-transport policy (pack/transport.ts): seen live as a
+ * request to the git server failing (UploadPackError), a write wave to the
+ * session lost ("Network connection lost", on Linux, TypeScript and vscode,
+ * the session up throughout), and a piece hung (react's first batch, three
+ * times in five clones). Its earlier attempt's temporary pack is discarded.
  */
-const CLONE_PIECE_ATTEMPTS = 3;
-const CLONE_PIECE_BACKOFF_MS = [1_000, 3_000];
+const CLONE_PIECE_ATTEMPTS = RETRY_ATTEMPTS;
 /** A piece takes seconds (Linux's batches ~17 s, react's largest history piece 51 s): one hung this long is retried. */
 const CLONE_PIECE_TIMEOUT_MS = 150_000;
-function sleepMs(ms) {
-    return new Promise((resolve) => setTimeout(resolve, ms));
-}
 function transientPieceFailure(diagnostic, error) {
-    return diagnostic.outcome === 'timeout' ||
-        error.startsWith('git upload-pack: ') ||
-        error.includes('Network connection lost');
+    return diagnostic.outcome === 'timeout' || isLostTransport(error);
 }
 /** One fast-clone facet invocation after prepare; its failure is the clone's. */
-async function invokeClonePhase(entrypoint, phase, opts, run) {
+async function invokeClonePhase(phase, opts, run) {
     let invocation;
     for (let attempt = 1; attempt <= CLONE_PIECE_ATTEMPTS; attempt++) {
+        const epoch = run.facets.epoch;
         try {
-            invocation = await invokeFacet(entrypoint, phase, crypto.randomUUID(), { ...opts, attempt }, run.outerDeadline, phase === 'clone-finish'
+            invocation = await invokeFacet(run.facets.entrypoint, phase, crypto.randomUUID(), { ...opts, attempt }, run.outerDeadline, phase === 'clone-finish'
                 ? CLONE_PHASE_TIMEOUT_MS
                 : positiveSafeInteger(opts.pieceTimeoutMs, CLONE_PIECE_TIMEOUT_MS, 'piece timeout'), run.budgetContext);
         }
@@ -430,23 +421,33 @@ async function invokeClonePhase(entrypoint, phase, opts, run) {
                 !transientPieceFailure(error.diagnostic, error.message)) {
                 throw error;
             }
+            if (error.diagnostic.outcome === 'timeout') {
+                // It may still be running: its writes lose their authority first.
+                if (run.facets.fence === null)
+                    throw error;
+                if (run.facets.epoch === epoch)
+                    run.facets.fence();
+            }
             run.phases.push(error.diagnostic);
             if (run.progress) {
                 await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error.message}\n`);
             }
-            await sleepMs(CLONE_PIECE_BACKOFF_MS[attempt - 1]);
+            await retryDelay(attempt - 1);
             continue;
         }
         run.phases.push(invocation.diagnostic);
         run.accountResult(invocation.result);
         const error = typeof invocation.result.error === 'string' ? invocation.result.error : '';
-        if (invocation.result.success === true || phase === 'clone-finish' || !transientPieceFailure(invocation.diagnostic, error))
+        // A fence for another piece revoked this one's writes while it ran.
+        const fenced = run.facets.epoch !== epoch;
+        if (invocation.result.success === true || phase === 'clone-finish' ||
+            !(fenced || transientPieceFailure(invocation.diagnostic, error)))
             break;
         if (run.progress) {
             await writeCloneProgressLine(run.progress, `\n[git] ${phase} attempt ${attempt} failed: ${error}\n`);
         }
         if (attempt < CLONE_PIECE_ATTEMPTS)
-            await sleepMs(CLONE_PIECE_BACKOFF_MS[attempt - 1]);
+            await retryDelay(attempt - 1);
     }
     if (invocation.result.success !== true) {
         throw new GitClonePhaseError(phase, typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed', invocation.diagnostic);
@@ -454,14 +455,14 @@ async function invokeClonePhase(entrypoint, phase, opts, run) {
     return invocation;
 }
 /** The fast clone after prepare: its blob batches, CLONE_BATCH_CONCURRENCY at a time. Returns the index shares. */
-async function runCloneBatches(entrypoint, facetOpts, identity, fast, run, 
+async function runCloneBatches(facetOpts, identity, fast, run, 
 /** A streamed clone's batches read their blobs from its stored pack. */
 local = false) {
     const shares = [...fast.shares];
     let completed = 0;
     const concurrency = positiveSafeInteger(facetOpts.batchConcurrency, CLONE_BATCH_CONCURRENCY, 'batch concurrency');
     await runPool(fast.batches, concurrency, async (batch) => {
-        const invocation = await invokeClonePhase(entrypoint, 'clone-batch', {
+        const invocation = await invokeClonePhase('clone-batch', {
             ...facetOpts, ...identity, batch: { index: batch.index, bytes: batch.bytes }, capabilities: fast.capabilities, partial: fast.partial,
             local: local === true,
         }, run);
@@ -487,12 +488,12 @@ local = false) {
  */
 const CLONE_HISTORY_CONCURRENCY = 1;
 /** A full clone's history (git/pack/history.ts): commits, then trees, then blobs. */
-async function runCloneHistory(entrypoint, facetOpts, identity, fast, run) {
+async function runCloneHistory(facetOpts, identity, fast, run) {
     const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
     let pieces = 0;
     let packBytes = 0;
     const invoke = async (history) => {
-        const invocation = await invokeClonePhase(entrypoint, 'clone-history', { ...base, history }, run);
+        const invocation = await invokeClonePhase('clone-history', { ...base, history }, run);
         const step = invocation.result.history;
         if (step === undefined)
             throw new GitClonePhaseError('clone-history', 'clone-history returned nothing', invocation.diagnostic);
@@ -521,7 +522,7 @@ async function runCloneHistory(entrypoint, facetOpts, identity, fast, run) {
     await runPool(treeSlices(roots, commitsPerChunk), concurrency, async (source, index) => {
         blobLists.push(...await piece('trees', 'trees-' + index, { source }));
     });
-    const plan = await invokeClonePhase(entrypoint, 'clone-history', {
+    const plan = await invokeClonePhase('clone-history', {
         ...base,
         history: { step: 'plan', lists: blobLists, present: fast.batches.map((batch) => ({ name: 'batch-' + batch.index, bytes: batch.bytes })) },
     }, run);
@@ -538,11 +539,11 @@ async function runCloneHistory(entrypoint, facetOpts, identity, fast, run) {
  * stored bytes while it stops at a budget, then the checkout planned from
  * the pack (clone.ts clonePlanFromStore).
  */
-async function runCloneSnapshot(entrypoint, facetOpts, identity, stream, run) {
+async function runCloneSnapshot(facetOpts, identity, stream, run) {
     const base = { ...facetOpts, ...identity, capabilities: [] };
     let pending = stream.pending;
     for (let part = 1; pending !== null; part++) {
-        const invocation = await invokeClonePhase(entrypoint, 'clone-history', {
+        const invocation = await invokeClonePhase('clone-history', {
             ...base, history: { step: 'resume', kind: 'snapshot', piece: 'snapshot', part, pending },
         }, run);
         const step = invocation.result.history;
@@ -550,7 +551,7 @@ async function runCloneSnapshot(entrypoint, facetOpts, identity, stream, run) {
             throw new GitClonePhaseError('clone-history', 'clone-history returned nothing', invocation.diagnostic);
         pending = step.pending;
     }
-    const plan = await invokeClonePhase(entrypoint, 'clone-history', {
+    const plan = await invokeClonePhase('clone-history', {
         ...base, history: { step: 'checkout-plan', commit: stream.commit },
     }, run);
     const planned = plan.result.history;
@@ -559,8 +560,8 @@ async function runCloneSnapshot(entrypoint, facetOpts, identity, stream, run) {
     return planned;
 }
 /** The index from the shares; a full clone's shallow file goes; then the marker. */
-async function runCloneFinish(entrypoint, facetOpts, identity, shares, full, cacheTreeBytes, run) {
-    const finish = await invokeClonePhase(entrypoint, 'clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes }, run);
+async function runCloneFinish(facetOpts, identity, shares, full, cacheTreeBytes, tags, run) {
+    const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags }, run);
     if (run.progress)
         await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
@@ -596,13 +597,12 @@ export async function execGitNetwork(ctx, env, opts) {
                 metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
             };
         }
-        const { mutationOwner, ...facetOpts } = opts;
+        const { mutationOwner, rotateMutationOwner, ...facetOpts } = opts;
         const ctxExports = getCtxExports();
-        const supervisorBinding = ctxExports?.SupervisorRPC
-            ? ctxExports.SupervisorRPC({
-                props: { ...supervisorBindingProps(ctx, opts.pid), mutationOwner },
-            })
-            : undefined;
+        const bindingFor = (owner) => ctxExports.SupervisorRPC({
+            props: { ...supervisorBindingProps(ctx, opts.pid), mutationOwner: owner },
+        });
+        const supervisorBinding = ctxExports?.SupervisorRPC ? bindingFor(mutationOwner) : undefined;
         if (!supervisorBinding) {
             return {
                 success: false,
@@ -616,13 +616,15 @@ export async function execGitNetwork(ctx, env, opts) {
         }
         let worker;
         let entrypoint;
+        // Facets a clone's fences loaded after the first (CloneFacets).
+        const fencedLoads = [];
         // The unkeyed git worker is one distinct Dynamic Worker in flight on the
         // session's ledger from load to teardown — bracketed, never wrapped (see
         // beginLoaderFetch).
         const endFetch = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
         try {
             const gitBundleSource = await fetchGitBundleSource(env);
-            const loadedWorker = env.LOADER.load({
+            const facetCode = (binding) => ({
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: [...GUEST_COMPAT_FLAGS],
                 mainModule: 'git-network-worker.js',
@@ -640,8 +642,9 @@ export async function execGitNetwork(ctx, env, opts) {
                     'git-network-worker.js': assembleGitNetworkFacetSource(),
                     'git-bundle.js': gitBundleSource,
                 },
-                env: { SUPERVISOR: supervisorBinding },
+                env: { SUPERVISOR: binding },
             });
+            const loadedWorker = env.LOADER.load(facetCode(supervisorBinding));
             worker = loadedWorker;
             entrypoint = loadedWorker.getEntrypoint();
             if (opts.op === 'clone') {
@@ -657,6 +660,19 @@ export async function execGitNetwork(ctx, env, opts) {
                     limitMs: timeoutMs,
                     batchesCompleted: 0,
                     filesWritten: 0,
+                };
+                const facets = {
+                    entrypoint,
+                    epoch: 0,
+                    fence: rotateMutationOwner === undefined ? null : () => {
+                        const binding = bindingFor(rotateMutationOwner());
+                        const endLoad = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
+                        const loaded = env.LOADER.load(facetCode(binding));
+                        const fresh = loaded.getEntrypoint();
+                        fencedLoads.push({ binding, worker: loaded, entrypoint: fresh, endFetch: endLoad });
+                        facets.entrypoint = fresh;
+                        facets.epoch++;
+                    },
                 };
                 const accountResult = (result) => {
                     filesWritten += nonNegativeCounter(result.filesWritten);
@@ -683,6 +699,7 @@ export async function execGitNetwork(ctx, env, opts) {
                         await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
                     const prepared = prepare.result.prepared;
                     const run = {
+                        facets,
                         outerDeadline,
                         budgetContext,
                         phases,
@@ -693,16 +710,17 @@ export async function execGitNetwork(ctx, env, opts) {
                     let fast = prepared.fast;
                     if (prepared.stream !== undefined) {
                         // A server without wants by id sent one pack: finish decoding it, then plan the checkout from it.
-                        fast = await runCloneSnapshot(entrypoint, facetOpts, identity, prepared.stream, run);
+                        fast = await runCloneSnapshot(facetOpts, identity, prepared.stream, run);
                     }
                     if (fast === undefined)
                         throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
-                    const shares = await runCloneBatches(entrypoint, facetOpts, identity, fast, run, prepared.stream !== undefined);
+                    const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
                     const full = facetOpts.depth === undefined;
                     if (full && prepared.fast !== undefined && fast.commit !== null) {
-                        await runCloneHistory(entrypoint, facetOpts, identity, fast, run);
+                        await runCloneHistory(facetOpts, identity, fast, run);
                     }
-                    await runCloneFinish(entrypoint, facetOpts, identity, shares, full, fast.cacheTreeBytes, run);
+                    const tags = prepared.fast?.tags ?? prepared.stream?.tags ?? [];
+                    await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, run);
                     return {
                         success: true,
                         elapsed: Date.now() - start,
@@ -735,7 +753,10 @@ export async function execGitNetwork(ctx, env, opts) {
                         phaseError.mutated === false;
                     if (!preMutationPrepareFailure) {
                         try {
-                            const abort = await invokeFacet(entrypoint, 'clone-abort', crypto.randomUUID(), { ...facetOpts, jobId, optionsHash }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
+                            // A piece of this clone may still be running: its writes lose
+                            // their authority before the abort removes what it wrote.
+                            facets.fence?.();
+                            const abort = await invokeFacet(facets.entrypoint, 'clone-abort', crypto.randomUUID(), { ...facetOpts, jobId, optionsHash }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
                             phases.push(abort.diagnostic);
                             accountResult(abort.result);
                             if (!opts.quiet)
@@ -839,6 +860,12 @@ export async function execGitNetwork(ctx, env, opts) {
             disposeRpcResource(entrypoint);
             disposeRpcResource(worker);
             disposeRpcResource(supervisorBinding);
+            for (const load of fencedLoads) {
+                disposeRpcResource(load.entrypoint);
+                disposeRpcResource(load.worker);
+                disposeRpcResource(load.binding);
+                load.endFetch();
+            }
             endFetch();
         }
     }
@@ -853,59 +880,6 @@ export async function execGitNetwork(ctx, env, opts) {
             metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
         };
     }
-}
-export function createRetryingGitHttp(baseHttp, opts) {
-    const transientStatuses = new Set([502, 503, 504, 522, 523, 524, 525]);
-    const maxAttempts = Math.max(1, Math.floor(opts?.maxAttempts ?? 3));
-    const backoffMs = opts?.backoffMs?.length ? opts.backoffMs : [400, 1200];
-    const waitBeforeRetry = async (attempt) => {
-        const baseMs = backoffMs[Math.min(attempt, backoffMs.length - 1)] ?? 0;
-        const span = baseMs * 0.25;
-        const delayMs = Math.max(0, Math.round(baseMs + (Math.random() * 2 - 1) * span));
-        await new Promise((resolve) => setTimeout(resolve, delayMs));
-    };
-    const collectBody = async (body) => {
-        const chunks = [];
-        for await (const chunk of body)
-            chunks.push(chunk);
-        return chunks;
-    };
-    return {
-        async request(req) {
-            const method = req.method ?? 'GET';
-            const idempotent = method === 'GET' || String(req.url).includes('git-upload-pack');
-            const body = idempotent && method !== 'GET' && req.body
-                ? await collectBody(req.body)
-                : undefined;
-            const request = body ? { ...req, body } : req;
-            let attempt = 0;
-            while (true) {
-                const lastAttempt = attempt + 1 >= maxAttempts;
-                let response;
-                try {
-                    response = await baseHttp.request(request);
-                }
-                catch (error) {
-                    if (!idempotent || lastAttempt)
-                        throw error;
-                    await waitBeforeRetry(attempt);
-                    attempt++;
-                    continue;
-                }
-                if (!idempotent || !transientStatuses.has(response.statusCode) || lastAttempt) {
-                    return response;
-                }
-                try {
-                    if (response.body && typeof response.body.cancel === 'function') {
-                        await response.body.cancel();
-                    }
-                }
-                catch { }
-                await waitBeforeRetry(attempt);
-                attempt++;
-            }
-        },
-    };
 }
 /**
  * Generate the dynamic worker code for the git network facet.
@@ -931,7 +905,6 @@ const METADATA_ENTRY_OVERHEAD_BYTES = 256;
 const CLONE_JOB_MARKER = ${JSON.stringify(GIT_CLONE_JOB_MARKER)};
 const OID_PATTERN = /^[0-9a-f]{40}(?:[0-9a-f]{24})?$/;
 
-${createRetryingGitHttp.toString()}
 
 function protocolError(message) {
   return new Error('git clone protocol: ' + message);
@@ -1142,7 +1115,10 @@ async function discardEarlierAttempts(context, opts, prefix, suffix) {
   const writer = context.writer();
   writer.setPin(context.marker.path, context.marker.text, true);
   for (let attempt = 1; attempt < opts.attempt; attempt++) {
-    await writer.remove('.git/objects/pack/' + prefix + opts.jobId + (attempt > 1 ? '_' + attempt : '') + suffix);
+    const name = opts.jobId + (attempt > 1 ? '_' + attempt : '') + suffix;
+    await writer.remove('.git/objects/pack/' + prefix + name);
+    // Its idx, if it reached install.ts.
+    await writer.remove('.git/objects/pack/tmp_idx_' + name);
   }
   await writer.flush();
 }
@@ -1163,11 +1139,6 @@ function facetPacksSupervisor(supervisor, stats, ensureDirectory) {
     rename: (from, to) => counted('rename', () => supervisor.rename(normalizePath(from), normalizePath(to))),
     unlink: (path) => counted('rename', () => supervisor.unlink(normalizePath(path))),
     ensureDirectory,
-    async size(path) {
-      stats.supervisorRpc.stat++;
-      const stat = await useRpcResult(supervisor.stat(normalizePath(path)), (result) => result);
-      return stat && stat.type === 'file' ? stat.size : null;
-    },
     async readdir(path) {
       stats.supervisorRpc.readdir++;
       try {
@@ -1191,12 +1162,19 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
     stats.supervisorRpc[name]++;
     return useRpcResult(call(), (result) => result);
   };
+  // A pack's ranged writes, as its waves (the wave writer's deadline), stop at the phase deadline.
+  const mutation = (name, call) => {
+    if (deadline !== null && Date.now() >= deadline) {
+      return Promise.reject(new Error('git ' + (opts.phase || opts.op) + ' passed its phase deadline'));
+    }
+    return counted(name, call);
+  };
   return {
     supervisor: {
-      fsWriteRange: (path, offset, bytes) => counted('fsWriteRange', () => supervisor.fsWriteRange(path, offset, bytes)),
-      fsTruncate: (path, size) => counted('fsWriteRange', () => supervisor.fsTruncate(path, size)),
+      fsWriteRange: (path, offset, bytes) => mutation('fsWriteRange', () => supervisor.fsWriteRange(path, offset, bytes)),
+      fsTruncate: (path, size) => mutation('fsWriteRange', () => supervisor.fsTruncate(path, size)),
       fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(path, offset, length)),
-      rename: (from, to) => counted('rename', () => supervisor.rename(from, to)),
+      rename: (from, to) => mutation('rename', () => supervisor.rename(from, to)),
       async readdir(path) {
         stats.supervisorRpc.readdir++;
         try {
@@ -1900,7 +1878,7 @@ export default {
       // http/web has both { request } named and { default: { request } };
       // the namespace bundle.gitHttp exposes request directly, which is
       // what isomorphic-git looks for.
-      http = createRetryingGitHttp(bundle.gitHttp);
+      http = __nimbusGitPack.retryingGitHttp(bundle.gitHttp);
     } catch (e) {
       return respond(false, {
         error: 'Failed to load bundled isomorphic-git: ' + (e && e.message),
@@ -2002,6 +1980,7 @@ export default {
           shares: opts.shares,
           full: opts.full === true,
           cacheTreeBytes: opts.cacheTreeBytes,
+          tags: opts.tags,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
         const writer = context.writer();

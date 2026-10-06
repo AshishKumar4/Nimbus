@@ -48,6 +48,11 @@ export type RefBase = {
 } | {
     object: ResolvedObject;
 };
+/**
+ * A first read this long holds a typical entry whole; a longer one is read
+ * again at its deflate bound. Pages of the page-cached drivers are larger.
+ */
+export declare const ENTRY_PROBE_BYTES: number;
 export interface PackObjectResolverOptions {
     /** The pack's path, which every range this resolver asks for names. */
     file: string;
@@ -64,8 +69,15 @@ export declare class PackObjectResolver {
     constructor(options: PackObjectResolverOptions);
     /** The entry at `offset`: one probe, and one more read only when its stream is longer. */
     entryAt(offset: number): PackRead<PackEntry>;
-    /** The object at `offset`, its delta chain applied, cached at every link. */
+    /**
+     * The object at `offset`, its delta chain applied, cached at every link.
+     * The walk to the base reads only headers; the deltas are then applied
+     * outward, each inflated as it is applied, so a long chain of large
+     * deltas holds one of them, never all.
+     */
     objectAt(offset: number): PackRead<ResolvedObject>;
+    /** The header of the entry at `offset`, its payload unread. */
+    private headerOf;
     /** An object's type and size, inflating no more than each delta's leading sizes. */
     headerAt(offset: number): PackRead<{
         type: GitObjectType;

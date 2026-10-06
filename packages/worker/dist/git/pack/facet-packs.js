@@ -7,47 +7,13 @@
  * pack whole. ingest takes a fetched pack as it arrives (cf-git's _fetch
  * hands over its side-band stream, paced by the reader): stored by ranged
  * appends, indexed in the same pass (processor.ts), thin bases completed
- * from the repository, then named as git names it, pack before idx.
+ * from the repository, then installed (install.ts) as git names it, pack
+ * before idx; a fetch that fails leaves no temporary file behind.
  */
-import { encodeIdxV2 } from './idx.js';
-import { oidToHex, PackFormatError } from './format.js';
+import { oidToHex } from './format.js';
+import { installPack, RangedPackFile } from './install.js';
 import { PackStreamProcessor } from './processor.js';
 import { packsSeam } from './store.js';
-/** Pieces of a whole-file write: the session appends a piece in place below 512 KiB. */
-const WRITE_PIECE_BYTES = 448 * 1024;
-const READ_PIECE_BYTES = 4 * 1024 * 1024;
-class SupervisorFileStore {
-    supervisor;
-    path;
-    size = 0;
-    constructor(supervisor, path) {
-        this.supervisor = supervisor;
-        this.path = path;
-    }
-    async append(bytes) {
-        const at = this.size;
-        this.size += bytes.byteLength;
-        await this.supervisor.fsWriteRange(this.path, at, bytes);
-    }
-    async writeAt(offset, bytes) {
-        await this.supervisor.fsWriteRange(this.path, offset, bytes);
-    }
-    async truncate(size) {
-        this.size = size;
-        await this.supervisor.fsTruncate(this.path, size);
-    }
-    async read(offset, length) {
-        const out = new Uint8Array(length);
-        for (let at = 0; at < length; at += READ_PIECE_BYTES) {
-            const want = Math.min(READ_PIECE_BYTES, length - at);
-            const piece = await this.supervisor.fsReadRange(this.path, offset + at, want);
-            if (piece === null || piece.byteLength !== want)
-                throw new PackFormatError(this.path + ': short read at ' + (offset + at));
-            out.set(piece, at);
-        }
-        return out;
-    }
-}
 async function* chunks(queue) {
     for (;;) {
         const { value, done } = await queue.next();
@@ -72,7 +38,9 @@ export function facetPacks(supervisor) {
         async ingest(gitdir, packfile, readExternal) {
             const dir = gitdir + '/objects/pack';
             await supervisor.ensureDirectory(dir);
-            const tmp = new SupervisorFileStore(supervisor, dir + '/tmp_pack_' + crypto.randomUUID());
+            const files = { ...supervisor, remove: (path) => supervisor.unlink(path) };
+            const tmpName = 'tmp_pack_' + crypto.randomUUID();
+            const tmp = new RangedPackFile(files, dir + '/' + tmpName);
             const external = {
                 async read(oid) {
                     try {
@@ -84,31 +52,23 @@ export function facetPacks(supervisor) {
                     }
                 },
             };
-            // Within one invocation: a fetch's refs follow its pack in this call.
-            const result = await new PackStreamProcessor({ store: tmp, external, budgetUnits: Number.POSITIVE_INFINITY }).run(chunks(packfile));
-            if (result.entries === null)
-                throw new PackFormatError('a fetched pack was not indexed');
-            if (result.objects === 0) {
-                await supervisor.unlink(tmp.path);
-                return null;
+            try {
+                // Within one invocation: a fetch's refs follow its pack in this call.
+                const result = await new PackStreamProcessor({ store: tmp, external, budgetUnits: Number.POSITIVE_INFINITY }).run(chunks(packfile));
+                const summary = await installPack(files, { dir, tmpName, result });
+                if (summary !== null)
+                    seam.refresh(gitdir);
+                return summary?.packSha ?? null;
             }
-            const packSha = oidToHex(result.packSha);
-            const name = dir + '/pack-' + packSha;
-            if (await supervisor.size(name + '.idx') !== null) {
-                // The same pack again: git keeps the one it has.
-                await supervisor.unlink(tmp.path);
-                return packSha;
+            catch (error) {
+                // A failed fetch leaves no temporary pack or idx behind (git's tmp_pack_ and tmp_idx_).
+                for (const name of await supervisor.readdir(dir).catch(() => [])) {
+                    if (name === tmpName || name === 'tmp_idx_' + tmpName.slice('tmp_pack_'.length)) {
+                        await supervisor.unlink(dir + '/' + name).catch(() => undefined);
+                    }
+                }
+                throw error;
             }
-            await supervisor.rename(tmp.path, name + '.pack');
-            const idx = new SupervisorFileStore(supervisor, dir + '/tmp_idx_' + crypto.randomUUID());
-            const entries = result.entries;
-            for await (const piece of encodeIdxV2(result.objects, result.packSha, async function* () { yield entries; })) {
-                for (let at = 0; at < piece.byteLength; at += WRITE_PIECE_BYTES)
-                    await idx.append(piece.slice(at, at + WRITE_PIECE_BYTES));
-            }
-            await supervisor.rename(idx.path, name + '.idx');
-            seam.refresh(gitdir);
-            return packSha;
         },
     };
 }
