@@ -747,12 +747,14 @@ export class WaveWriter<Meta = undefined> {
    * never sent under an epoch about to close.
    */
   private async currentEpoch(): Promise<string | null> {
-    const open = this.options.supervisor.openWaveWriter;
-    if (open === undefined) return null;
+    const supervisor = this.options.supervisor;
+    if (supervisor.openWaveWriter === undefined) return null;
     const now = Date.now();
     const held = this.epoch === null ? null : await this.epoch;
     if (held === null || (held.writer !== null && now - held.openedAt >= WAVE_EPOCH_TTL_MS / 2)) {
-      this.epoch = open.call(this.options.supervisor).then((writer) => ({ writer, openedAt: now }));
+      // Called as a method of the supervisor, never through .call/.apply:
+      // on an RPC stub those are remote method names too.
+      this.epoch = supervisor.openWaveWriter().then((writer) => ({ writer, openedAt: now }));
     }
     return (await this.epoch!).writer;
   }
