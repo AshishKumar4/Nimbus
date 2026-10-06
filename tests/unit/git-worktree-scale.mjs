@@ -11,6 +11,7 @@
 // Clean, `status` reads no file; after edits, only the same-size ones.
 // Then every file changes, and status, diff, add -A and commit run over
 // all of them: each change may cost ~1 KiB of heap, nothing more.
+// NIMBUS_GIT_SCALE_LARGE=96000 runs it at Linux's size.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -260,10 +261,12 @@ for (const { count, indexBytes, costs } of [small, large]) {
     console.log(`  ${command.padEnd(32)} ${String(ms).padStart(6)} ms  peak +${peakMB.toFixed(1).padStart(6)} MiB  ${reads} files read`);
   }
 }
-// The heap may grow with the index (held as its bytes, and written as a copy) and little else: not
-// with the directories (a cache tree of objects held 14 MiB more at 15,000 directories than at 1,500).
-// With every file changed, each change may hold a little more: its line, its pair, its new entry.
-const allowance = (2 * (large.indexBytes - small.indexBytes)) / MB + 4;
+// The heap may grow with the index and little else: a command that changes the index holds the one
+// it read and the one it writes, while the pack store's page cache (bounded at 4 MiB) fills with a
+// pack that grows with the repository; not with the directories (a cache tree of objects held 14 MiB
+// more at 15,000 directories than at 1,500). With every file changed, each change may hold a little
+// more: its line, its pair, its new entry.
+const allowance = (3 * (large.indexBytes - small.indexBytes)) / MB + 4;
 const perChange = Number(process.env.NIMBUS_GIT_SCALE_PER_CHANGE) || 1024;
 const changeAllowance = allowance + ((LARGE - SMALL) * perChange) / MB;
 for (const [i, { command, peakMB }] of large.costs.entries()) {

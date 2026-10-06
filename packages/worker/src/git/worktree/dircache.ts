@@ -425,6 +425,14 @@ export class DirCache {
    */
   encode(edit: IndexEdit = {}, smudged: ReadonlySet<number> = new Set()): Uint8Array {
     const removed = edit.removed ?? new Set<number>();
+    // Nothing but stat refreshes, which patched these bytes where they lie: the file is these bytes
+    // with a new checksum, and no second copy of the index is made (a status refresh at 96,000 entries).
+    if (removed.size === 0 && (edit.added ?? []).length === 0 && smudged.size === 0 && !this.cacheTreeChanged
+      && this.version !== 4 && this.trailer !== null && this.extensions.every(({ signature }) => signature === 'TREE' || signature === 'REUC')) {
+      const end = this.bytes.length - OID_BYTES;
+      this.bytes.set(createHash('sha1').update(this.bytes.subarray(0, end)).digest(), end);
+      return this.bytes;
+    }
     const added = (edit.added ?? []).map((entry) => ({ entry, key: encoder.encode(entry.path), stage: entry.stage ?? 0 }));
     added.sort((a, b) => compareBytes(a.key, b.key) || a.stage - b.stage);
     for (let i = 1; i < added.length; i++) {
