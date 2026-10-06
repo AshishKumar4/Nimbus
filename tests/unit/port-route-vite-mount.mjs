@@ -12,38 +12,13 @@
 // `handleFetch`, the DO's public entrypoint.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-port-mount-test-'));
-const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cloudflare-workers-test-stub',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
-        path: 'cloudflare-workers',
-        namespace: 'test',
-      }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-        loader: 'js',
-      }));
-    },
-  }],
-});
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const entry = build.outputs.find((output) => output.path.endsWith('/routes.js'));
-assert.ok(entry, 'the routes bundle was emitted');
-const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } = await import(pathToFileURL(entry.path).href);
+const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } =
+  await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'] });
 
 const SID = 'nimble-otter-4271';
 const BASE_PATH = `/s/${SID}`;
@@ -384,6 +359,5 @@ function pathRequest(path) {
   console.log('  [7] two cold builds never hold slices beside each other under the supervisor budget');
 }
 
-await rm(outputDir, { recursive: true, force: true });
 
 console.log('port-route-vite-mount OK: the dev-server mount base follows the door the request came through');

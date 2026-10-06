@@ -10,42 +10,24 @@
 // entrypoint, with only the heavy facet internals stubbed.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-real-vite-restore-test-'));
-const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cirrus-real-test-stubs',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'stub' }));
-      builder.onResolve({ filter: /facets\/cirrus-real\.js$/ }, () => ({ path: 'cirrus', namespace: 'stub' }));
-      builder.onResolve({ filter: /observability\/heavy-alloc-coord\.js$/ }, () => ({ path: 'heavy', namespace: 'stub' }));
-      builder.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => {
-        if (args.path === 'cf') {
-          return { contents: 'export class DurableObject {}; export class WorkerEntrypoint {};', loader: 'js' };
-        }
-        if (args.path === 'heavy') {
-          return {
-            contents: 'export const acquireHeavyAlloc = async () => () => {};\n'
-              + 'export const acquireSupervisorReadAllocation = async () => () => {};\n',
-            loader: 'js',
-          };
-        }
-        // A fake real-vite controller: no facet, no ASSETS, just enough shape
-        // for start-real-vite.ts to register it and for the port proxy to serve.
-        return {
-          loader: 'js',
-          contents: `
+const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer, acceptCirrusHmrWs: sessionAcceptCirrusHmrWs } =
+  await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer', 'acceptCirrusHmrWs'] }, {
+    stubs: [
+      {
+        filter: /observability\/heavy-alloc-coord\.js$/,
+        contents: 'export const acquireHeavyAlloc = async () => () => {};\n'
+          + 'export const acquireSupervisorReadAllocation = async () => () => {};\n',
+      },
+      // A fake real-vite controller: no facet, no ASSETS, just enough shape
+      // for start-real-vite.ts to register it and for the port proxy to serve.
+      {
+        filter: /facets\/cirrus-real\.js$/,
+        contents: `
             export function shouldUseRealVite() { return true; }
             export class CirrusReal {
               constructor(opts) { this.opts = opts; this._running = false; }
@@ -61,15 +43,9 @@ const build = await Bun.build({
               get stats() { return { snapshot: null, viteVersion: 'test' }; }
             }
           `,
-        };
-      });
-    },
-  }],
-});
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const entry = build.outputs.find((o) => o.path.endsWith('/routes.js'));
-assert.ok(entry, 'the routes bundle was emitted');
-const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer, acceptCirrusHmrWs: sessionAcceptCirrusHmrWs } = await import(pathToFileURL(entry.path).href);
+      },
+    ],
+  });
 
 const SID = 'nimble-otter-4271';
 const BASE_PATH = `/s/${SID}`;
@@ -220,6 +196,5 @@ function pathRequest(path, init = {}) {
   console.log('  [6] /preview/ reports its document policy; ?port=N and subresources do not');
 }
 
-await rm(outputDir, { recursive: true, force: true });
 
 console.log('port-route-real-vite-restore OK: real-vite persists, restores everywhere, and serves HMR in-DO');

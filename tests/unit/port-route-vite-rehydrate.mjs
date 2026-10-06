@@ -9,43 +9,18 @@
 // restore it. Driven through `handleFetch`, the DO's public entrypoint.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 // `session/routes.ts` reaches `cloudflare:workers` through its bindings
 // module, which bun cannot resolve outside workerd. Same stub-and-bundle
 // harness the other session unit tests use.
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-port-rehydrate-test-'));
-const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cloudflare-workers-test-stub',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
-        path: 'cloudflare-workers',
-        namespace: 'test',
-      }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-        loader: 'js',
-      }));
-    },
-  }],
-});
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const entry = build.outputs.find((output) => output.path.endsWith('/routes.js'));
-assert.ok(entry, 'the routes bundle was emitted');
-const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } = await import(pathToFileURL(entry.path).href);
+const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } =
+  await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'] });
 
 const SID = 'nimble-otter-4271';
 const BASE_PATH = `/s/${SID}`;
@@ -294,6 +269,5 @@ function request(path) {
   console.log('  [10] a restored server\'s reloads reach the session terminal');
 }
 
-await rm(outputDir, { recursive: true, force: true });
 
 console.log('port-route-vite-rehydrate OK: every route back to the dev server restores it');
