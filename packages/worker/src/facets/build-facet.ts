@@ -42,6 +42,14 @@ const BUILD_BINDING_HIGH_WATER_BYTES = 64 * 1024 * 1024;
  * caller's plugin, so the binding's WASI filesystem is the facet's own empty
  * node:fs.
  *
+ * The binding is the isolate's: every Durable Object whose build facet runs
+ * this code in this isolate (one loader id for all of them) calls the one
+ * binding, and each may do I/O only in its own context. So each call runs in
+ * a lane of its own (napi-wasm-loader's callLanes): the binding's calls into
+ * JavaScript (a plugin hook, through a threadsafe function) run in the lane
+ * of the call that made the function, and its pump in the lanes of the calls
+ * in flight, never in another object's.
+ *
  * A binding that dies (a trap, or the stack overflowing inside it: a module
  * nested too deeply) holds promises that never settle. The loader says so
  * (`onFatal`), and every build or pre-bundle on it, in flight or later, is
@@ -49,6 +57,7 @@ const BUILD_BINDING_HIGH_WATER_BYTES = 64 * 1024 * 1024;
  * imported, so only a fresh isolate (the host's next generation) builds again.
  */
 const BUILD_FACET_BODY = [
+  'const lanes = callLanes(AsyncLocalStorage);',
   // One load for every caller, overlapping ones included.
   'let runtime = null;',
   'let crashed = null;',
@@ -59,7 +68,7 @@ const BUILD_FACET_BODY = [
   `    memory = new WebAssembly.Memory({ initial: ${ROLLDOWN.memoryPages}, maximum: 65536 });`,
   '    globalThis.__nimbusRolldownBinding = createNapiWasmBinding({',
   '      fs, env: {}, writeStdout() {}, writeStderr() {},',
-  `      binding: rolldownWasm, trampoline: trampolineWasm, memoryPages: ${ROLLDOWN.memoryPages}, memory, name: "rolldown",`,
+  `      binding: rolldownWasm, trampoline: trampolineWasm, memoryPages: ${ROLLDOWN.memoryPages}, memory, name: "rolldown", contexts: lanes,`,
   '      onFatal(error) {',
   '        crashed = { stackExhausted: error instanceof RangeError, message: String((error && error.message) || error) };',
   '        for (const answer of inFlight) answer();',
@@ -86,7 +95,7 @@ const BUILD_FACET_BODY = [
   '    const answer = () => resolve(crashedAnswer());',
   '    inFlight.add(answer);',
   `    const outgrown = (value) => (memory.buffer.byteLength > ${BUILD_BINDING_HIGH_WATER_BYTES} ? { ...value, retire: true } : value);`,
-  '    call(loaded).then((value) => resolve(outgrown(value)), reject).finally(() => inFlight.delete(answer));',
+  '    lanes.run(() => call(loaded)).then((value) => resolve(outgrown(value)), reject).finally(() => inFlight.delete(answer));',
   '  });',
   '}',
   'export class BuildFacet extends DurableObject {',
@@ -164,7 +173,8 @@ export function buildFacetWorkerCode(parts: BuildFacetParts): WorkerCode {
   const source = [
     'import { DurableObject } from "cloudflare:workers";',
     'import * as fs from "node:fs";',
-    'import { createNapiWasmBinding } from "napi-wasm-loader.js";',
+    'import { AsyncLocalStorage } from "node:async_hooks";',
+    'import { callLanes, createNapiWasmBinding } from "napi-wasm-loader.js";',
     'import rolldownWasm from "rolldown.wasm";',
     'import trampolineWasm from "trampoline.wasm";',
     BUILD_FACET_BODY,

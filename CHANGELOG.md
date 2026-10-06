@@ -5,6 +5,24 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: two Durable Objects building at once could fail each other's builds
+  with "Cannot perform I/O on behalf of a different Durable Object", or leave
+  one waiting forever (Kinu's ask 22). Every object's build facet runs in one
+  isolate on one rolldown binding, and the binding ran its work where it was
+  last woken: its pump, started by one object's build, dispatched another
+  object's plugin hooks in the first object's context. The binding still
+  serves every object from one isolate (an isolate per object measured about
+  46 MiB more per workspace that builds), but each facet call now runs in a
+  lane of its own (napi-wasm-loader's `callLanes`): a threadsafe function or
+  async work calls JavaScript in the lane of the call that created it, and
+  the pump runs in the lanes of the calls in flight and where it last ran,
+  so no hook runs in, or waits on, another object's context. A lane ends with
+  its call. The esbuild facet needed nothing: each call runs its own esbuild,
+  whose timers and callbacks are that call's.
+- The staged napi-wasm loader is rebuilt through its recipe: it carries the
+  lanes, and the WASI filesystem codec as it stands in core now (the staged
+  one predated core's later filesystem changes).
+
 ## 2026-10-05: core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 loom moves only its fabric range.
