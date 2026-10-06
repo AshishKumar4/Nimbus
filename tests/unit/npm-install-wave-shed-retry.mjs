@@ -30,24 +30,17 @@ import {
 globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
 globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
-// Workerd hands each enqueued chunk buffer to the RPC byte stream by
-// transfer, so the caller's arrays are detached once the stream has been
-// read. Model that here: the encoder records the payload it was given and
-// `detachLastPayload()` (called by the fake RPC after it drains the
-// stream) detaches exactly what a real send would have taken. Without it
-// this test would pass on code that cannot actually re-send a wave.
-let lastEncodedPayload = null;
-globalThis.encodeWriteBatchStream = (payload) => {
-  lastEncodedPayload = payload;
-  return encodeWriteBatchStream(payload);
-};
-function detachLastPayload() {
-  for (const chunk of lastEncodedPayload?.chunks ?? []) {
-    const buffer = chunk.data.buffer;
-    if (buffer.byteLength === 0) continue;
-    structuredClone(buffer, { transfer: [buffer] });
-  }
-}
+globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
+// The shard writes through the platform's wave writer, whose lost-transport
+// policy is what these cases exercise. It re-sends from the records it
+// holds: the encoder copies a chunk's bytes into buffers it builds, so a
+// payload is never detached by sending it (w7-encode-coalesce pins that).
+globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
+const { WAVE_PATHS, WAVE_RETRY_BACKOFF_MS } = globalThis.__nimbusWaveWriter;
+// The policy's backoffs (~42 s) and attempt deadline (60 s) run a thousand
+// times faster here.
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, Math.ceil((ms ?? 0) / 1000), ...rest);
 globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
 globalThis.DecompressionStream = class DecompressionStream {
   readable;
@@ -131,7 +124,6 @@ const packages = ['a', 'b', 'c'].map((name) => ({
   pkgDir: `node_modules/${name}`,
   installRoot: 'node_modules',
   mtime: 1,
-  chunkSize: 65_536,
 }));
 
 /** Run the batch facet against a writeBatchStream with scripted behaviour. */
@@ -163,7 +155,6 @@ function okResult(decoded) {
     attempts++;
     // Drain first: a shed happens after workerd has taken the bytes.
     const decoded = await decodeWave(stream);
-    detachLastPayload();
     if (attempts === 1) throw new Error('Durable Object is overloaded.');
     return okResult(decoded);
   });
@@ -185,7 +176,6 @@ function okResult(decoded) {
   const result = await runBatch(async (stream) => {
     attempts++;
     const decoded = await decodeWave(stream);
-    detachLastPayload();
     if (attempts === 1) throw new Error('Durable Object reset because its code was updated.');
     return okResult(decoded);
   });
@@ -200,12 +190,10 @@ function okResult(decoded) {
   const result = await runBatch(async (stream) => {
     attempts++;
     await decodeWave(stream);
-    detachLastPayload();
     throw new Error('Durable Object is overloaded.');
   });
 
-  assert.ok(attempts >= 7, `the retry budget must be bounded and spent (attempts=${attempts})`);
-  assert.ok(attempts < 40, `the retry budget must be BOUNDED (attempts=${attempts})`);
+  assert.equal(attempts, WAVE_RETRY_BACKOFF_MS.length + 1, `the retry budget must be bounded and spent (attempts=${attempts})`);
   for (const pkg of result.perPackage) {
     assert.match(
       pkg.errorText ?? '',
@@ -222,7 +210,6 @@ function okResult(decoded) {
   const result = await runBatch(async (stream) => {
     attempts++;
     const decoded = await decodeWave(stream);
-    detachLastPayload();
     return {
       ok: false,
       committedGroupSequence: 1,
@@ -256,7 +243,6 @@ function okResult(decoded) {
   const result = await runBatch(async (stream) => {
     attempts++;
     const decoded = await decodeWave(stream);
-    detachLastPayload();
     if (attempts === 1) throw new Error('Network connection lost.');
     return okResult(decoded);
   });
@@ -275,11 +261,11 @@ function okResult(decoded) {
 // lost (sass-embedded) was reported separately. The next wave must carry
 // the directories again.
 {
-  // A package with more files than one wave carries (SHARED_RPC_PATH_LIMIT
-  // = 128), so its install root and package dir flush in its FIRST wave and
-  // its remaining files, plus b and c, follow in later waves.
+  // A package with more files than one wave carries (WAVE_PATHS), so its
+  // first wave holds only its files, and its remaining files, plus b and c,
+  // follow in later waves.
   const wideParts = [...tarFile('package/package.json', '{"name":"a","version":"1.0.0"}')];
-  for (let i = 0; i < 200; i++) wideParts.push(...tarFile(`package/lib/f${i}.js`, `export const f${i} = ${i};`));
+  for (let i = 0; i < WAVE_PATHS + 100; i++) wideParts.push(...tarFile(`package/lib/f${i}.js`, `export const f${i} = ${i};`));
   wideParts.push(new Uint8Array(1024));
   const wideTar = new Uint8Array(wideParts.reduce((sum, part) => sum + part.length, 0));
   { let offset = 0; for (const part of wideParts) { wideTar.set(part, offset); offset += part.length; } }
@@ -293,8 +279,7 @@ function okResult(decoded) {
       async writeBatchStream(stream) {
         attempts++;
         const decoded = await decodeWave(stream);
-        detachLastPayload();
-        decodedWaves.push(decoded.paths);
+            decodedWaves.push(decoded.paths);
         // The first wave is lost for good (retry budget spent immediately by
         // returning the storage layer's own verdict on the re-send).
         if (attempts === 1) throw new Error('Network connection lost.');
@@ -330,8 +315,6 @@ function okResult(decoded) {
 // shard's own deadline passes in milliseconds; a batch that never settles
 // fails the case instead of hanging the suite.
 {
-  const realSetTimeout = globalThis.setTimeout;
-  globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, Math.ceil((ms ?? 0) / 1000), ...rest);
   let attempts = 0;
   let result;
   try {
@@ -339,8 +322,7 @@ function okResult(decoded) {
       runBatch(async (stream) => {
         attempts++;
         const decoded = await decodeWave(stream);
-        detachLastPayload();
-        if (attempts === 1) return new Promise(() => {});
+            if (attempts === 1) return new Promise(() => {});
         return okResult(decoded);
       }),
       new Promise((_, reject) => realSetTimeout(
@@ -349,7 +331,7 @@ function okResult(decoded) {
       )),
     ]);
   } finally {
-    globalThis.setTimeout = realSetTimeout;
+    // Timers stay fast to the end of the file.
   }
   assert.ok(attempts >= 2, `an unanswered wave must be re-sent (attempts=${attempts})`);
   assert.ok(result.perPackage.every((pkg) => !pkg.errorText), 'every package installs once the re-sent wave lands');

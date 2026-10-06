@@ -2,7 +2,7 @@
  * git/wave-bench.ts — how fast the session takes a clone's writes, with N producers.
  *
  * NIMBUS_DEBUG only (POST /api/_test/w7-bench). Each producer is a Dynamic
- * Worker running the clone's own wave writer (git/wave-writer.ts) over
+ * Worker running the clone's own wave writer (platform wave-writer.ts) over
  * synthetic files, publishing through SupervisorRPC.writeBatchStream exactly
  * as a clone's facet does, so the measured path is the production one:
  * producer → SupervisorRPC → session → SQLite. Contents are random, so
@@ -16,7 +16,7 @@ import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
+import { WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 
 /**
  * Where a producer's waves go, to tell the costs on the way apart:
@@ -111,7 +111,7 @@ interface BenchEnv {
 // wave's stream is observed where it leaves the producer: when it was sent,
 // when the transport first and last pulled from it, and when its answer
 // came back.
-const PRODUCER_SOURCE = GIT_WAVE_WRITER_SRC + `
+const PRODUCER_SOURCE = WAVE_WRITER_PREAMBLE + `
 function observed(send, waves) {
   return {
     writeBatchStream(stream) {
@@ -161,7 +161,7 @@ export class Producer extends WorkerEntrypoint {
     const { root, base, files, sizes, pings, mode } = params;
     const env = this.env;
     const waves = [];
-    const writer = __nimbusGitWaveWriter.createWaveWriter({ supervisor: observed(sender(mode, env, sink), waves), root, base });
+    const writer = __nimbusWaveWriter.createWaveWriter({ supervisor: observed(sender(mode, env, sink), waves), root, base });
     const pingStarted = Date.now();
     for (let index = 0; index < pings; index++) {
       await writer.file('ping/p' + index, 0o644, new Uint8Array([index & 0xff]));

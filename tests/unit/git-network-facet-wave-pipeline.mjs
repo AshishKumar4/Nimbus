@@ -140,7 +140,7 @@ export const git = {
     const { supervisor, record } = supervisorFor({ failWave: 3 });
     const result = await prepare(supervisor, 'failing');
     assert.equal(result.success, false, 'a failed wave reported success');
-    assert.match(result.error, /git write wave 3 failed/);
+    assert.match(result.error, /write wave 3 failed/);
     assert.match(result.error, /injected wave failure/);
     assert.equal(record.calls, 3, `a wave was sent after wave 3 failed (${record.calls} sent)`);
     assert.ok(result.filesWritten < FILES, 'the failed wave and its successors counted as written');

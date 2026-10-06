@@ -31,10 +31,10 @@ import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
-import { W7_FRAME_PREAMBLE } from '../loaders/generated-workers.js';
+import { W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
+import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push';
 
@@ -116,32 +116,20 @@ export interface GitNetworkPhaseDiagnostic {
   /** Whether clone-checkout started without module-local job state. */
   cold?: boolean;
   /** The invocation's wave writer: what it published and how long it waited. */
-  waves?: GitWaveDiagnostic;
-}
-
-/** The facet's wave writer counters (git/wave-writer.ts WaveStats). */
-export interface GitWaveDiagnostic {
-  waves: number;
-  files: number;
-  bytes: number;
-  rpcWallMs: number;
-  maxRpcWallMs: number;
-  producerWaitMs: number;
-  ownershipVisits: number;
-  maxWavePaths: number;
-  maxWaveBytes: number;
+  waves?: WaveStats;
 }
 
 const WAVE_DIAGNOSTIC_FIELDS = [
   'waves', 'files', 'bytes', 'rpcWallMs', 'maxRpcWallMs', 'producerWaitMs',
-  'ownershipVisits', 'maxWavePaths', 'maxWaveBytes',
-] as const;
+  'ownershipVisits', 'maxWavePaths', 'maxWaveBytes', 'retries',
+] as const satisfies readonly (keyof WaveStats)[];
 
-function parseWaveDiagnostic(value: unknown): GitWaveDiagnostic | undefined {
+/** The facet's wave writer counters, as it reported them. */
+function parseWaveDiagnostic(value: unknown): WaveStats | undefined {
   if (!value || typeof value !== 'object') return undefined;
-  const parsed: GitWaveDiagnostic = {
+  const parsed: WaveStats = {
     waves: 0, files: 0, bytes: 0, rpcWallMs: 0, maxRpcWallMs: 0, producerWaitMs: 0,
-    ownershipVisits: 0, maxWavePaths: 0, maxWaveBytes: 0,
+    ownershipVisits: 0, maxWavePaths: 0, maxWaveBytes: 0, retries: 0,
   };
   for (const field of WAVE_DIAGNOSTIC_FIELDS) {
     parsed[field] = nonNegativeCounter(Reflect.get(value, field));
@@ -1099,7 +1087,7 @@ export function createRetryingGitHttp(
  * fs adapter, and flushes writes through W7 v3.
  */
 export function assembleGitNetworkFacetSource(): string {
-  return W7_FRAME_PREAMBLE + '\n' + GIT_WAVE_WRITER_SRC + '\n' + generateGitNetworkFacetCode();
+  return W7_FRAME_PREAMBLE + '\n' + WAVE_WRITER_PREAMBLE + '\n' + generateGitNetworkFacetCode();
 }
 
 function generateGitNetworkFacetCode(): string {
@@ -1543,8 +1531,8 @@ function emptyMetadataOverlayStats() {
  * Create the buffered fs adapter isomorphic-git will use.
  * Writes buffer in-memory; reads check buffer then fall back to supervisor.
  *
- * Every write is a record for the wave writer (__nimbusGitWaveWriter, from
- * src/git/wave-writer.ts), which publishes them in W7 waves, one in flight
+ * Every write is a record for the wave writer (__nimbusWaveWriter, from
+ * @nimbus-sh/platform src/wave-writer.ts), which publishes them in W7 waves, one in flight
  * while the next buffers. The adapter keeps the closed-world metadata
  * overlay a clone reads back; the writer keeps the buffered bytes.
  *
@@ -1586,7 +1574,7 @@ function createBufferedFs(
   // Each record carries its overlay metadata (fetch and pull have no other
   // record of a buffered file); a cut stamps the wave's mtime on it, so the
   // overlay's stat agrees with what the wave publishes.
-  const writer = __nimbusGitWaveWriter.createWaveWriter({
+  const writer = __nimbusWaveWriter.createWaveWriter({
     supervisor: {
       writeBatchStream(stream) {
         stats.supervisorRpc.writeBatchStream++;
