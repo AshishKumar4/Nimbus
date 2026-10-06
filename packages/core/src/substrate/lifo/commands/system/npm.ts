@@ -279,6 +279,30 @@ async function writeProjectPackageJson(vfs: VFS, cwd: string, pkg: PackageJson):
 }
 
 /** A package's bins, name -> target inside the package, as npm installs them (npmBinMap). */
+/**
+ * The packages in a node_modules directory, by name (`pkg` or `@scope/pkg`):
+ * each entry that is a directory or a link (an `npm link`ed or workspace
+ * package), a scope's entries in its place. Names starting with `.` (`.bin`,
+ * `.package-lock.json`) are npm's own files, not packages; a directory that
+ * cannot be read holds none.
+ */
+export async function* packagesIn(vfs: VFS, modulesDir: string): AsyncGenerator<string> {
+	const read = async (dir: string) => {
+		try { return await vfs.readdir(dir); } catch { return []; }
+	};
+	for (const entry of await read(modulesDir)) {
+		if (entry.name.startsWith('.')) continue;
+		const type = await direntTypeIn(vfs, modulesDir, entry);
+		if (type !== 'directory' && type !== 'symlink') continue;
+		if (!entry.name.startsWith('@')) { yield entry.name; continue; }
+		const scopeDir = join(modulesDir, entry.name);
+		for (const child of await read(scopeDir)) {
+			const childType = await direntTypeIn(vfs, scopeDir, child);
+			if (childType === 'directory' || childType === 'symlink') yield `${entry.name}/${child.name}`;
+		}
+	}
+}
+
 export function getBinEntries(pkg: PackageJson): Record<string, string> {
 	return Object.fromEntries(npmBinMap(pkg.name ?? '', pkg.bin));
 }
@@ -661,27 +685,9 @@ async function npmList(ctx: CommandContext): Promise<number> {
 		return 0;
 	}
 
-	const entries = (await ctx.vfs.readdir(modulesDir));
 	const packages: { name: string; version: string }[] = [];
-
-	for (const entry of entries) {
-		if ((await direntTypeIn(ctx.vfs, modulesDir, entry)) !== 'directory') continue;
-
-		if (entry.name.startsWith('@')) {
-			// Scoped packages
-			try {
-				const scopeDir = join(modulesDir, entry.name);
-				const scopeEntries = (await ctx.vfs.readdir(scopeDir));
-				for (const se of scopeEntries) {
-					if ((await direntTypeIn(ctx.vfs, scopeDir, se)) !== 'directory') continue;
-					const v = (await readPkgVersion(ctx.vfs, join(modulesDir, entry.name, se.name)));
-					packages.push({ name: `${entry.name}/${se.name}`, version: v });
-				}
-			} catch { /* ignore */ }
-		} else {
-			const v = (await readPkgVersion(ctx.vfs, join(modulesDir, entry.name)));
-			packages.push({ name: entry.name, version: v });
-		}
+	for await (const name of packagesIn(ctx.vfs, modulesDir)) {
+		packages.push({ name, version: await readPkgVersion(ctx.vfs, join(modulesDir, name)) });
 	}
 
 	if (packages.length === 0) {
@@ -777,29 +783,8 @@ async function npmRun(ctx: CommandContext, shellExecute?: ShellExecuteFn, regist
 /** Scan node_modules for packages with bin entries and register them as commands */
 async function registerLocalBins(vfs: VFS, cwd: string, registry: CommandRegistry, kernel?: Kernel): Promise<number> {
 	const nmDir = join(cwd, 'node_modules');
-	if (!(await vfs.exists(nmDir))) return 0;
-
 	let count = 0;
-	try {
-		const entries = (await vfs.readdir(nmDir));
-		for (const dirent of entries) {
-			const name = dirent.name;
-			if (name.startsWith('.')) continue;
-
-			if (name.startsWith('@')) {
-				// Scoped packages: read @scope/pkg
-				const scopeDir = join(nmDir, name);
-				try {
-					const scopeEntries = (await vfs.readdir(scopeDir));
-					for (const scopeEntry of scopeEntries) {
-						count += (await registerPkgBins(vfs, join(scopeDir, scopeEntry.name), registry, kernel));
-					}
-				} catch { /* ignore */ }
-			} else {
-				count += (await registerPkgBins(vfs, join(nmDir, name), registry, kernel));
-			}
-		}
-	} catch { /* ignore */ }
+	for await (const name of packagesIn(vfs, nmDir)) count += await registerPkgBins(vfs, join(nmDir, name), registry, kernel);
 	return count;
 }
 

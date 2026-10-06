@@ -10,6 +10,7 @@ import { synchronousFilesystem } from '../node-compat/filesystem.js';
  */
 
 import type { Command, CommandContext } from '../commands/types.js';
+import type { CommandRegistry } from '../commands/registry.js';
 import type { ProcessView as VFS } from '../../../runtime/process-files.js';
 import { resolve, dirname, join } from '../utils/path.js';
 import { createProcess } from '../node-compat/process.js';
@@ -472,4 +473,28 @@ export async function readLifoManifest(vfs: VFS, pkgDir: string): Promise<LifoPa
   } catch {
     return null;
   }
+}
+
+/**
+ * Register each command a lifo manifest declares, its entry under `pkgDir`.
+ * `requireEntry` skips a command whose entry file is not there (an install,
+ * a boot restore); a dev link registers every declared command, so a
+ * missing entry fails when it runs. Returns the names registered, in the
+ * manifest's order.
+ */
+export async function registerLifoManifestCommands(
+  vfs: VFS,
+  registry: CommandRegistry,
+  pkgDir: string,
+  manifest: LifoPackageManifest,
+  options: { requireEntry: boolean },
+): Promise<string[]> {
+  const registered: string[] = [];
+  for (const [cmdName, entryRelPath] of Object.entries(manifest.commands)) {
+    const entryPath = join(pkgDir, entryRelPath);
+    if (options.requireEntry && !(await vfs.exists(entryPath))) continue;
+    registry.register(cmdName, createLifoCommand(entryPath, vfs));
+    registered.push(cmdName);
+  }
+  return registered;
 }
