@@ -141,11 +141,10 @@ const JOBS = flagValue('--jobs', 'NIMBUS_PROBE_JOBS') !== undefined
 // every browser it launches is identifiable as this run's and as its own.
 
 // _driver.mjs appends each session a probe mints, and each DELETE of it, here.
+// It is made only once this run holds the run lock and the ledger's own
+// (below): a run refused either never touches a ledger another run writes.
 const KEEP_LEDGER = flagValue('--ledger', 'NIMBUS_PROBE_LEDGER_KEEP');
 const LEDGER_PATH = KEEP_LEDGER ? resolvePath(KEEP_LEDGER) : join(tmpdir(), `nimbus-probe-ledger-${RUN_ID}.jsonl`);
-rmSync(LEDGER_PATH, { force: true }); // a pid-derived RUN_ID can repeat a kept ledger's name; a kept one is this run's
-if (KEEP_LEDGER) writeFileSync(LEDGER_PATH, ''); // kept even when no probe mints
-process.env.NIMBUS_PROBE_LEDGER = LEDGER_PATH;
 
 // ── Run lock ─────────────────────────────────────────────────────────
 
@@ -169,9 +168,9 @@ function readLock() {
   }
 }
 
-/** Take the lock, or null when another process holds it. */
-function tryHold() {
-  const db = new Database(HOLD_PATH, { create: true });
+/** Take the lock held in `path`, or null when another process holds it. */
+function tryHold(path = HOLD_PATH) {
+  const db = new Database(path, { create: true });
   try {
     db.exec('BEGIN EXCLUSIVE');
     return db;
@@ -241,6 +240,30 @@ if (ALLOW_CONCURRENT) {
 } else {
   acquireRunLock();
 }
+
+// ── Session ledger ───────────────────────────────────────────────────
+
+// A ledger is one run's. Its lock is an exclusive SQLite lock beside it,
+// held for the run's life whatever the run lock (--allow-concurrent runs
+// alongside another): a second run given the same --ledger path refuses
+// before it touches the file, where it would have emptied the leaks the
+// first run recorded.
+const LEDGER_HOLD_PATH = `${LEDGER_PATH}.lock`;
+const ledgerHeld = tryHold(LEDGER_HOLD_PATH);
+if (ledgerHeld === null) {
+  console.error(
+    `FATAL: another behavioral run is writing its session ledger at ${LEDGER_PATH}.\n`
+    + `Give this run a --ledger path of its own.`,
+  );
+  process.exit(3);
+}
+process.on('exit', () => {
+  ledgerHeld.close();
+  rmSync(LEDGER_HOLD_PATH, { force: true });
+});
+rmSync(LEDGER_PATH, { force: true }); // a pid-derived RUN_ID can repeat a kept ledger's name; a kept one is this run's
+if (KEEP_LEDGER) writeFileSync(LEDGER_PATH, ''); // kept even when no probe mints
+process.env.NIMBUS_PROBE_LEDGER = LEDGER_PATH;
 
 /**
  * Recursively walk `root`, yielding absolute paths of files whose
