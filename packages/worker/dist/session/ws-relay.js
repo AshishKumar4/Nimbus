@@ -39,6 +39,51 @@
  * small fraction of that, because a session can hold several.
  */
 export const WS_RELAY_MAX_BACKLOG_BYTES = 4 * 1024 * 1024;
+/**
+ * The most of a refused upgrade's body the facet is handed (an HTTP 401's
+ * JSON, say): enough to read why, never a download through the relay.
+ */
+export const WS_RELAY_REFUSAL_BODY_MAX_BYTES = 64 * 1024;
+/**
+ * Request headers the relay owns, never the facet's: the handshake's own
+ * (the upgrade is the relay's fetch; Sec-WebSocket-Protocol is the
+ * subprotocols it is given) and the hop-by-hop ones.
+ */
+const RELAY_OWNED_HEADERS = new Set([
+    'connection', 'upgrade', 'host', 'content-length', 'transfer-encoding', 'keep-alive', 'te', 'trailer',
+    'proxy-authorization', 'proxy-connection',
+    'sec-websocket-key', 'sec-websocket-version', 'sec-websocket-extensions', 'sec-websocket-accept', 'sec-websocket-protocol',
+]);
+/** At most `limit` bytes of `response`'s body, and whether there was more. */
+async function boundedBody(response, limit) {
+    if (!response.body)
+        return { body: new Uint8Array(0), truncated: false };
+    const reader = response.body.getReader();
+    const pieces = [];
+    let length = 0;
+    for (;;) {
+        const { done, value } = await reader.read();
+        if (done)
+            return { body: concat(pieces, length), truncated: false };
+        const room = limit - length;
+        if (value.byteLength > room) {
+            pieces.push(value.subarray(0, room));
+            await reader.cancel().catch(() => { });
+            return { body: concat(pieces, limit), truncated: true };
+        }
+        pieces.push(value);
+        length += value.byteLength;
+    }
+}
+function concat(pieces, length) {
+    const all = new Uint8Array(length);
+    let at = 0;
+    for (const piece of pieces) {
+        all.set(piece, at);
+        at += piece.byteLength;
+    }
+    return all;
+}
 /** Longest a facet's poll may park before returning empty. */
 const WS_RELAY_MAX_WAIT_MS = 5_000;
 function eventBytes(event) {
@@ -72,22 +117,35 @@ export class WebSocketRelay {
      * Open the real socket and start buffering for the facet.
      *
      * Workers has no client `new WebSocket(url)` inside a Durable Object; the
-     * upgrade is an ordinary fetch whose response carries the socket. No header
-     * from the facet is forwarded — the facet supplies a URL and subprotocols
-     * and nothing else, so the supervisor cannot be used to attach its own
-     * ambient credentials to a request the facet chose the destination of.
+     * upgrade is an ordinary fetch, through the workspace's network, whose
+     * response carries the socket. The facet's own request headers go with it
+     * (an Authorization, an Origin, a Cookie: what `ws` and Node's WebSocket
+     * send), but those the relay owns (RELAY_OWNED_HEADERS); the supervisor
+     * adds none of its own, so the request is the one the program could have
+     * sent itself, to the destination it chose, through the same egress. A
+     * destination that does not upgrade is answered as it answered: its
+     * status, headers and the head of its body.
      */
-    async open(pid, url, protocols) {
-        const headers = { Upgrade: 'websocket' };
+    async open(pid, url, protocols, requestHeaders = []) {
+        const headers = new Headers();
+        for (const [name, value] of requestHeaders) {
+            if (!RELAY_OWNED_HEADERS.has(name.toLowerCase()))
+                headers.append(name, value);
+        }
+        headers.set('Upgrade', 'websocket');
         if (protocols.length > 0)
-            headers['Sec-WebSocket-Protocol'] = protocols.join(', ');
+            headers.set('Sec-WebSocket-Protocol', protocols.join(', '));
         const response = await this.network().fetch(upgradeUrl(url), { headers });
         const socket = response.webSocket;
         if (!socket) {
-            throw new Error(`websocket relay: ${url} did not upgrade (HTTP ${response.status}); ` +
-                'the supervisor terminates a facet’s sockets so inbound frames arrive through it');
+            const { body, truncated } = await boundedBody(response, WS_RELAY_REFUSAL_BODY_MAX_BYTES);
+            return { refused: { status: response.status, statusText: response.statusText, headers: [...response.headers], body, truncated } };
         }
         socket.accept();
+        // A binary frame as bytes: workerd's WebSocket gives a Blob by default
+        // (the standard binaryType, compat date 2026-09-26, measured), which no
+        // view reads, so every binary frame reached the facet empty.
+        socket.binaryType = 'arraybuffer';
         const id = this.nextId++;
         const protocol = response.headers.get('sec-websocket-protocol') ?? '';
         const entry = {
@@ -109,7 +167,7 @@ export class WebSocketRelay {
             entry.closed = true;
         });
         this.deliver(id, { kind: 'open', protocol });
-        return { id, protocol };
+        return { id, protocol, headers: [...response.headers] };
     }
     /**
      * The facet's long poll. Returns whatever has arrived, or parks until

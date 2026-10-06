@@ -56,6 +56,27 @@ export type WsRelayEvent = {
  * small fraction of that, because a session can hold several.
  */
 export declare const WS_RELAY_MAX_BACKLOG_BYTES: number;
+/**
+ * The most of a refused upgrade's body the facet is handed (an HTTP 401's
+ * JSON, say): enough to read why, never a download through the relay.
+ */
+export declare const WS_RELAY_REFUSAL_BODY_MAX_BYTES: number;
+/** A header list as it crosses to and from a facet: in order, a name once per value. */
+export type WsRelayHeaders = [string, string][];
+/** What `open` answers: the socket, or the destination's refusal to upgrade, as it answered. */
+export type WsRelayOpened = {
+    id: number;
+    protocol: string;
+    headers: WsRelayHeaders;
+} | {
+    refused: {
+        status: number;
+        statusText: string;
+        headers: WsRelayHeaders;
+        body: Uint8Array;
+        truncated: boolean;
+    };
+};
 export declare class WebSocketRelay {
     private readonly network;
     private entries;
@@ -66,15 +87,16 @@ export declare class WebSocketRelay {
      * Open the real socket and start buffering for the facet.
      *
      * Workers has no client `new WebSocket(url)` inside a Durable Object; the
-     * upgrade is an ordinary fetch whose response carries the socket. No header
-     * from the facet is forwarded — the facet supplies a URL and subprotocols
-     * and nothing else, so the supervisor cannot be used to attach its own
-     * ambient credentials to a request the facet chose the destination of.
+     * upgrade is an ordinary fetch, through the workspace's network, whose
+     * response carries the socket. The facet's own request headers go with it
+     * (an Authorization, an Origin, a Cookie: what `ws` and Node's WebSocket
+     * send), but those the relay owns (RELAY_OWNED_HEADERS); the supervisor
+     * adds none of its own, so the request is the one the program could have
+     * sent itself, to the destination it chose, through the same egress. A
+     * destination that does not upgrade is answered as it answered: its
+     * status, headers and the head of its body.
      */
-    open(pid: number, url: string, protocols: string[]): Promise<{
-        id: number;
-        protocol: string;
-    }>;
+    open(pid: number, url: string, protocols: string[], requestHeaders?: WsRelayHeaders): Promise<WsRelayOpened>;
     /**
      * The facet's long poll. Returns whatever has arrived, or parks until
      * something does. Every event it returns is a supervisor reply, which is
