@@ -13,18 +13,12 @@
 
 import assert from 'node:assert/strict';
 
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { BASE_PATH, HIBERNATED, PREVIEW_BASE, ROOT, VITE_PORT, hostRequest, makeWokenSession as wakeSession, pathRequest } from './lib/vite-route-rig.mjs';
 
-const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer } =
+const routes =
   await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'] });
-
-const SID = 'nimble-otter-4271';
-const BASE_PATH = `/s/${SID}`;
-const PREVIEW_BASE = `${BASE_PATH}/preview`;
-const VITE_PORT = 5173;
-const ROOT = 'home/user/example-app';
+const { handleFetch } = routes;
 
 const INDEX_HTML =
   '<!DOCTYPE html><html><head><title>mount app</title>' +
@@ -115,67 +109,7 @@ function makeParkedBundlePool() {
 }
 
 function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool = null } = {}) {
-  const store = new Map(Object.entries(storage));
-  let nextPid = 100;
-  const self = {
-    env: {},
-    sqliteFs: null,
-    esbuildService: null,
-    // The namespace as host code reads it: this fake session's one filesystem.
-    getFilesystemAuthority() { this.ensureSqliteFs?.(); return { namespaceFs: (cred) => this.sqliteFs.as(cred) }; },
-    bundlePool,
-    viteDevServer: null,
-    cirrusReal: null,
-    _viteShimPid: null,
-    _viteShimPort: null,
-    sessionBasePath: BASE_PATH,
-    sessionBasePathHydrated: true,
-    portRegistry: new PortRegistry(),
-    processes: {
-      // An entry as the process table makes one: under the credential asked for, else the session user's.
-      spawn: (command, argv, cwd, opts = {}) => ({ pid: nextPid++, command, argv, cwd, cred: opts.cred ?? CRED_SESSION_USER }),
-      appendOutput: () => {},
-    },
-    ctx: {
-      storage: {
-        async get(key) { return store.get(key); },
-        async put(key, value) { store.set(key, value); },
-        async delete(key) { store.delete(key); },
-        // The reservation paths run read-modify-write inside one unit; the
-        // stub serializes them the way the DO storage does.
-        async transaction(body) { return body(this); },
-      },
-    },
-    get nimbusDebug() { return false; },
-    get viteBasePath() { return (this.sessionBasePath || '') + '/preview'; },
-    async hydrateSessionBasePath() {},
-    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs({ faults, extraFiles, reads }); },
-    ensureBundlePool() { return this.bundlePool; },
-    restorePersistedDevServer: (onlyPort) => sessionRestorePersistedDevServer(self, onlyPort),
-  };
-  self.store = store;
-  return self;
-}
-
-const HIBERNATED = {
-  'vite-config': { root: ROOT, basePath: PREVIEW_BASE, port: VITE_PORT,
-    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
-  },
-};
-
-// A request through the `<port>--<sid>` host: the router forwards it as
-// `/port/<n>/…` with the base header set to '' (mounted at the origin root).
-function hostRequest(path) {
-  return new Request(`https://nimbus-os.dev${path}`, {
-    headers: { 'X-Nimbus-Base': '' },
-  });
-}
-
-// A request through a `/s/<sid>/…` path: the base header carries `/s/<sid>`.
-function pathRequest(path) {
-  return new Request(`https://nimbus-os.dev${path}`, {
-    headers: { 'X-Nimbus-Base': BASE_PATH },
-  });
+  return wakeSession(storage, { vfs: () => makeVfs({ faults, extraFiles, reads }), routes, bundlePool });
 }
 
 // 1. The `<port>--<sid>` host serves at the root: NO <base href>, and nothing
