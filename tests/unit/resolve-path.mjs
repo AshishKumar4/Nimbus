@@ -192,6 +192,9 @@ assert.deepEqual(await run(main, 'PATH=/custom/bin command -v tool'), ['/custom/
   assert.deepEqual(await run(main, 'command -v echo; command -V echo; type echo'), ['echo\necho is a shell builtin\necho is a shell builtin\n', '', 0]);
   // A builtin the shell runs itself, which no registry entry names: bash 5's answers.
   assert.deepEqual(await run(main, 'command -v cd; command -V cd; type cd export'), ['cd\ncd is a shell builtin\ncd is a shell builtin\nexport is a shell builtin\n', '', 0]);
+  // One of bash's builtins this shell does not run is no builtin here: it is not found, as running it is.
+  assert.deepEqual(await run(main, 'command -v bind; echo v=$?; type bind; echo t=$?; bind; echo r=$?'),
+    ['v=1\nt=1\nr=127\n', 'type: bind: not found\nbind: command not found\n', 0]);
 }
 
 // ── A shell builtin is the builtin whatever PATH holds of its name ───────

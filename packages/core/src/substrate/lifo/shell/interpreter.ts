@@ -1188,6 +1188,7 @@ export class Interpreter {
         : undefined,
       isFdTerminal: spec.isFdTerminal,
       isFdPipe: spec.isFdPipe,
+      isShellBuiltin: (builtin) => this.config.builtins.has(builtin),
       setUmask: identity.setUmask,
       runAs: async (cred, argv, options) => spec.runAs
         ? (await spec.runAs(options?.parent ?? ctx, cred, argv))

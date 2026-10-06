@@ -109,6 +109,8 @@ type Ctx = {
   setUmask(mask: number): void;
   runAs(cred: VfsCred, argv: string[], options?: RunAsOptions): Promise<ChildExit>;
   execInterpreterDepth?: number;
+  /** Whether the running shell runs `name` itself (Shell's builtins). */
+  isShellBuiltin?: (name: string) => boolean;
 };
 
 type CmdFn = (ctx: Ctx) => number | Promise<number>;
@@ -391,8 +393,9 @@ async function _whichLookup(
  * file a user sees. A program a search of PATH found is that file
  * (executable or not, as bash reports either); a path is itself; a command
  * that is one of bash's builtins is a shell builtin, whatever PATH holds of
- * its name and whether or not the registry has it (cd is the shell's alone),
- * as bash classifies builtins before files; any other command the
+ * its name, as bash classifies builtins before files: a registered one, or
+ * one the running shell runs itself (`shellBuiltin`: cd, export), never a
+ * name of bash's this shell does not run (bind); any other command the
  * workspace knows (external, runtime, npm or gem) is where
  * `_knownCommandPath` puts it, or else a shell builtin (a runtime's install
  * hint with no bin is not found). A resolution that failed is not found.
@@ -401,9 +404,10 @@ async function _describeCommand(
   registry: UnixCommandRegistry,
   name: string,
   from: ResolveContext,
+  shellBuiltin: (name: string) => boolean,
 ): Promise<{ kind: 'file'; path: string } | { kind: 'builtin' } | null> {
   const resolved = await _registryResolved(registry, name, from, { includeInstallHints: true });
-  if (resolved === null) return !name.includes('/') && BASH_BUILTINS.has(name) ? { kind: 'builtin' } : null;
+  if (resolved === null) return !name.includes('/') && shellBuiltin(name) ? { kind: 'builtin' } : null;
   const resolution = resolutionOf(resolved);
   if (resolution?.kind === 'failed') return null;
   if (resolution?.kind === 'program') return { kind: 'file', path: resolution.path };
@@ -524,7 +528,7 @@ function mkCommand(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     const from = resolveContext(ctx.cwd, ctx.env, vfs);
     if (mode === '-v' || mode === '-V') {
       const name = args[0];
-      const described = await _describeCommand(registry, name, from);
+      const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
       if (mode === '-v') {
         if (described === null) return 1;
         (await ctx.stdout.write(`${described.kind === 'file' ? described.path : name}\n`));
@@ -580,7 +584,7 @@ function mkType(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
     let exit = 0;
     const from = resolveContext(ctx.cwd, ctx.env, vfs);
     for (const name of ctx.args) {
-      const described = await _describeCommand(registry, name, from);
+      const described = await _describeCommand(registry, name, from, (builtin) => ctx.isShellBuiltin?.(builtin) ?? false);
       if (described === null) {
         (await ctx.stderr.write(`type: ${name}: not found\n`));
         exit = 1;
