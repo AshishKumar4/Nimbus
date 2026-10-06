@@ -635,8 +635,8 @@ export class CompositeVFS {
      * writes (subscribed), else here. Here, what the path held before and
      * after is read through the same backend view, with the operation's own
      * leaf-follow policy (content only where an observer wants it); the
-     * backend's observed mutations take turns, capture to capture, so none
-     * reads another's (writeDomain); and the guard is asked right before the
+     * mounted source's observed mutations take turns, capture to capture, so
+     * none reads another's (writeDomain); and the guard is asked right before the
      * write, after the reads it waited on. `landed` says where the mutation actually landed
      * (default: its path): a compare-and-write that lost, or an rm -r that
      * kept its operand, did not land there.
@@ -704,10 +704,14 @@ export class CompositeVFS {
         }
         return this.takeTurn(writes, domain, report);
     }
-    /** The backend `mount` holds for this view, as itself (before `as`): what an observed mutation takes its turn on. */
+    /**
+     * What an observed mutation on `mount` takes its turn on: its source, as
+     * mounted (the backend, or the function resolving it), which is stable
+     * while a resolved view need not be (a factory may answer a fresh adapter
+     * over one store on every lookup). One source mounted twice is one domain.
+     */
     writeDomain(mount) {
-        const source = mount.source;
-        return (typeof source === 'function' ? source(this.viewer) : source) ?? source;
+        return mount.source;
     }
     /** `run` once every observed mutation of `domain` queued before it is done; those after it wait for it. */
     async takeTurn(writes, domain, run) {
