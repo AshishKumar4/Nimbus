@@ -1,4 +1,5 @@
 import { isPendingChunkError, type SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { withRecall } from '../vfs/recall.js';
 import { SUPERVISOR_OPS, type SupervisorOpName } from './supervisor-ops.js';
 import { z } from 'zod';
 import { traced, type SpanRecorder } from '@nimbus-sh/platform/tracing.js';
@@ -578,8 +579,11 @@ export function createSupervisorOpHandler(
     const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
     return Reflect.apply(method, host, args);
   };
+  // A process's call that meets another holder's delegation waits for its
+  // recall and runs again (withRecall): this dispatch is asynchronous, so no
+  // process call is refused for one.
   const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => deps.observe
-    ? deps.observe(envelope, async () => perform(op, envelope)) : perform(op, envelope);
+    ? deps.observe(envelope, () => withRecall(() => perform(op, envelope))) : withRecall(() => perform(op, envelope));
   /**
    * A mutation delivered exactly once (supervisor-delivery.ts), checked in
    * the order that makes a repeat safe: the delivery was minted for THIS

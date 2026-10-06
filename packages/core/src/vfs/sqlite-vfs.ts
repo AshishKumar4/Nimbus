@@ -73,6 +73,8 @@ import {
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
+import { RecallRequired } from './recall.js';
+export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource, type Principal, type VfsContentRef, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import {
@@ -180,36 +182,6 @@ export interface DelegationTerms {
    * joins concurrent recalls of one delegation into one.
    */
   recall(kind: 'share' | 'revoke'): Promise<void>;
-}
-
-/**
- * An access meets a delegation another holder has (ExclusiveMutationOptions
- * .delegation): what the holder decided may not be stored yet. A caller that
- * can wait awaits `recall()` and tries again (withRecall); one that cannot is
- * refused (EAGAIN), the recall started, so its retry finds the subtree current.
- */
-export class RecallRequired extends Error {
-  readonly code = 'EAGAIN';
-  readonly recalling = true;
-  constructor(readonly root: string, readonly kind: 'share' | 'revoke', readonly path: string, readonly recall: () => Promise<void>) {
-    super(`EAGAIN: ${path}: delegated at /${root}; recalling it`);
-    this.name = 'RecallRequired';
-  }
-}
-
-/**
- * `run` again for as long as what it meets is a delegation to recall (at most
- * `attempts` times): the one way a caller that can wait passes a delegation.
- */
-export async function withRecall<T>(run: () => T | Promise<T>, attempts = 8): Promise<T> {
-  for (let attempt = 1; ; attempt++) {
-    try {
-      return await run();
-    } catch (error) {
-      if (!(error instanceof RecallRequired) || attempt >= attempts) throw error;
-      await error.recall();
-    }
-  }
 }
 
 /** A lease: its root, and its terms when it is a delegation. */
@@ -3636,6 +3608,17 @@ export class SqliteVFS {
       if (lease.delegation === null || !lease.delegation.reads || lease.shared || owner === holder) continue;
       const { root } = lease;
       if (root === '' || key === root || key.startsWith(`${root}/`)) throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
+    }
+  }
+
+  /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
+  private async recallDelegationsAt(key: string, owner: string | undefined): Promise<void> {
+    for (;;) {
+      const normalized = normalizeVfsPath(key);
+      const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (
+        lease.delegation !== null && id !== owner && pathsOverlap(normalized, lease.root)));
+      if (met === undefined) return;
+      await this.recallRequired(met[0], met[1], 'revoke', normalized).recall();
     }
   }
 
@@ -8705,6 +8688,14 @@ export class SqliteVFS {
           throw new Error('w7-frame: stream ended without batch-end');
         }
         const record = next.value;
+        // A record that lands in another holder's delegation waits for it to
+        // be given up first, here between records, where the stream may wait:
+        // its group's commit would otherwise be refused.
+        if (this.exclusiveMutationLeases.size > 0) {
+          const lands = record.type === 'delete' ? record.path
+            : record.type === 'directory' || record.type === 'file-begin' ? record.inode.path : null;
+          if (lands !== null) await this.recallDelegationsAt(lands, options.mutationOwner);
+        }
         switch (record.type) {
           case 'delete': {
             // A delete observes everything the stream wrote before it.

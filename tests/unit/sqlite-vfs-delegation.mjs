@@ -18,6 +18,12 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { RecallRequired, SqliteVFS, withRecall } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
+import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
+import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
+import { recallOf } from '../../packages/core/src/vfs/recall.ts';
+import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 
 const dec = new TextDecoder();
 
@@ -155,6 +161,56 @@ function open() {
   assert.deepEqual(holder.recalls, ['share'], 'the refusal did not start the recall');
   await new Promise((resolve) => setTimeout(resolve, 10));
   assert.equal(dec.decode(kernel.readFile('work/d/a')), 'sent on recall', "a retry after the recall did not find the holder's write");
+}
+
+// ── Through a namespace: its asynchronous calls wait for the recall; its
+//    synchronous face reports EAGAIN for its own call, the recall its cause ──
+{
+  const { raw } = open();
+  const vfs = new CompositeVFS(sqliteFiles(raw, CRED_KERNEL));
+  const holder = delegate(raw, 'work/d');
+  holder.decide('work/d/a', 'from the holder');
+  assert.throws(() => vfs.sync.readFile('/work/d/a'), (error) => error.code === 'EAGAIN' && /open '\/work\/d\/a'/.test(error.message) && recallOf(error) !== null);
+  assert.equal(dec.decode(await vfs.readFile('/work/d/a')), 'from the holder');
+  await vfs.writeFile('/work/d/a', new TextEncoder().encode('embedder'));
+  assert.deepEqual(holder.recalls, ['share', 'revoke']);
+  assert.equal(dec.decode(await vfs.readFile('/work/d/a')), 'embedder');
+}
+
+// ── A process's call through the supervisor waits for the recall: no process
+//    call is refused for a delegation ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });
+  const kernel = ws.vfs.as(CRED_KERNEL);
+  kernel.mkdir('work/d', { recursive: true });
+  kernel.writeFile('work/d/a', 'stored');
+  kernel.chmod('work/d', 0o777);
+  const holder = delegate(ws.vfs, 'work/d');
+  holder.decide('work/d/a', 'decided');
+  const op = createSupervisorOpHandler({ vfs: ws.vfs, filesystem: ws.filesystem });
+  const pid = ws.shell.pid ?? 1;
+  assert.equal(dec.decode(await op({ op: 'readFileBytes', args: ['/work/d/a'], pid })), 'decided');
+  await op({ op: 'writeFile', args: ['/work/d/b', 'from a process'], pid });
+  assert.deepEqual(holder.recalls, ['share', 'revoke']);
+  assert.equal(dec.decode(kernel.readFile('work/d/b')), 'from a process');
+}
+
+// ── A W7 stream landing in a delegation waits for it to be given up, between
+//    records, and then applies whole ──
+{
+  const { raw, kernel } = open();
+  const holder = delegate(raw, 'work/d');
+  holder.decide('work/d/held', 'the holder\'s');
+  const data = new TextEncoder().encode('from a wave');
+  const result = await kernel.writeStream(encodeWriteBatchStream({
+    inodes: [{ path: 'work/d/w', parentPath: 'work/d', kind: 'file', isDir: false, size: data.length, mtime: 1, mode: 0o644, chunkCount: 1 }],
+    chunks: [{ path: 'work/d/w', chunkId: 0, data }],
+  }));
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.deepEqual(holder.recalls, ['revoke']);
+  assert.equal(dec.decode(kernel.readFile('work/d/w')), 'from a wave');
+  assert.equal(dec.decode(kernel.readFile('work/d/held')), "the holder's");
 }
 
 console.log('sqlite-vfs delegation: ok');
