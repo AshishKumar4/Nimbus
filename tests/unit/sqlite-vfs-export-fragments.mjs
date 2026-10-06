@@ -39,7 +39,7 @@ try {
   assert.equal(oracle.raw.importPage('', tail, seed.raw.exportChunks(oracle.raw.wantChunks(tail)).chunks).done, true);
   assert.equal(oracle.fs.stat('shared/huge').size, size);
   assert.equal(oracle.fs.contentKey('shared/huge'), key);
-  assert.equal(oracle.h.sql.exec('SELECT SUM(size) AS b FROM vfs_chunks')[0].b, chunk.length + 'tail'.length, 'one shared chunk plus the tail file');
+  assert.equal(oracle.h.sql.exec('SELECT SUM(LENGTH(data)) AS b FROM vfs_chunks')[0].b, chunk.length + 'tail'.length, 'one shared chunk plus the tail file');
   oracle.raw.snapshot('big');
 
   // Export the whole tree in bounded pages; measure the maximum frame.
