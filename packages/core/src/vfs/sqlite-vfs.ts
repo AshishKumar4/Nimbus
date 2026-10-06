@@ -731,14 +731,6 @@ interface TransactionPlanMetrics {
   affectedPaths: number;
 }
 
-function withCommitRowMetrics(metrics: TransactionPlanMetrics): TransactionPlanMetrics {
-  return {
-    ...metrics,
-    logicalRows: metrics.logicalRows + 1,
-    sqlExecs: metrics.sqlExecs + 1,
-  };
-}
-
 const VFS_APPEND_INCARNATION_PATTERN =
   /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
 
@@ -984,7 +976,9 @@ class TransactionPlanBuilder {
       stagingCreated: this.stagingCreated,
       affectedPaths: this.affectedPaths,
       entryParents: this.entryParents,
-      metrics: this.metricsWith({}, false),
+      // The checkpoint row a commit callback writes is the plan's: checked
+      // and admitted under the one accounting it commits under.
+      metrics: this.metricsWith({}),
     };
   }
 
@@ -4920,14 +4914,13 @@ export class SqliteVFS {
     madeAt?: number,
     ifFits = false,
   ): boolean {
-    const builder = this.newPlan();
+    const builder = this.newPlan(onCommit !== undefined);
     builder.addInode(this.rewrittenEntry(node, path, newSize, content, madeAt));
     const plan = builder.build();
-    const metrics = onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics;
     if (ifFits) {
-      if (exceededTransactionLimit(metrics) !== null) return false;
+      if (exceededTransactionLimit(plan.metrics) !== null) return false;
     } else {
-      this.assertTransactionFits(metrics);
+      this.assertTransactionFits(plan.metrics);
     }
     this.commitRewrite(node, path, plan, onCommit);
     return true;
@@ -7407,7 +7400,7 @@ export class SqliteVFS {
       this.sql.exec('UPDATE vfs_jobs SET args = ?, cursor = ? WHERE id = ?', JSON.stringify(state), progress ?? '', jobId);
     };
     const commit = (plan: TransactionPlan): void => {
-      this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
+      this.assertTransactionFits(plan.metrics);
       if (plan.inodes.length) this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, save);
       else this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, save);
     };
@@ -7442,7 +7435,7 @@ export class SqliteVFS {
           if (part.empty) return;
           const plan = part.build(); part = this.newPlan(true);
           const prior = state.pending;
-          this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
+          this.assertTransactionFits(plan.metrics);
           this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
             state.pending = { path: row.path, meta: importRowMeta(row), content: staging.id, offset: staging.size, count: staging.count };
             progress = exportCursor(row.path, staging.size);
@@ -8325,10 +8318,10 @@ export class SqliteVFS {
     staging: StagingContent,
     onCommit?: () => void,
   ): { inodes: number; chunks: number } {
-    const builder = this.newPlan();
+    const builder = this.newPlan(onCommit !== undefined);
     builder.addInode(this.fileEntry(inode, { type: 'staged', content: staging }));
     const plan = builder.build();
-    this.assertTransactionFits(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics);
+    this.assertTransactionFits(plan.metrics);
     const result = this._writeBatchOnce(
       { plan, deletedInodes: [] },
       { source: 'content-publish', limitMode: 'bounded' },
@@ -8941,13 +8934,9 @@ export class SqliteVFS {
     enforceLimits: boolean,
     onCommit?: () => void,
   ): { inodes: number; chunks: number } {
-    const prepared = this.prepareBatchTransaction(payload);
+    const prepared = this.prepareBatchTransaction(payload, onCommit !== undefined);
     if (prepared.plan.inodes.length === 0 && prepared.plan.deletes.length === 0) return { inodes: 0, chunks: 0 };
-    if (enforceLimits) {
-      this.assertTransactionFits(
-        onCommit ? withCommitRowMetrics(prepared.plan.metrics) : prepared.plan.metrics,
-      );
-    }
+    if (enforceLimits) this.assertTransactionFits(prepared.plan.metrics);
     const chunks = payload.chunks.length;
     try {
       return { inodes: this._writeBatchOnce(prepared, execution, onCommit).inodes, chunks };
@@ -10344,10 +10333,11 @@ export class SqliteVFS {
    * joined, cut and hashed here, before the transaction; the hashes resolve
    * to chunk ids inside it.
    */
-  private prepareBatchTransaction(payload: BatchWritePayload): PreparedBatchTransaction {
+  /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
+  private prepareBatchTransaction(payload: BatchWritePayload, commitRow = false): PreparedBatchTransaction {
     const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? []);
     const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
-    const builder = this.newPlan();
+    const builder = this.newPlan(commitRow);
     const deletedPaths = new Set(payload.deletePaths ?? []);
     for (const inode of deletedInodes) deletedPaths.add(inode.path);
     for (const path of deletedPaths) builder.addDeletedPath(path, deletedInodesByPath.get(path));
