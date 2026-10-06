@@ -315,6 +315,7 @@ export class ProcessLogStore {
         }
         return out;
     }
+    /** Index of the oldest chunk in the last N lines/bytes, walking newest → oldest. */
     _tailStartIndex(state, opts) {
         if (opts.lines === undefined && opts.bytes === undefined)
             return 0;

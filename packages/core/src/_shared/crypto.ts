@@ -1,8 +1,8 @@
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+import { dec, enc } from './bytes.js';
+
 const SEALED_JSON_V2 = 'v2.';
 const SEALED_JSON_V1 = 'v1.';
-const HKDF_SALT = textEncoder.encode('nimbus-sh sealed-json v2');
+const HKDF_SALT = enc.encode('nimbus-sh sealed-json v2');
 const BASE64URL_RE = /^[A-Za-z0-9_-]*$/;
 
 export interface SealedJsonOptions {
@@ -17,7 +17,7 @@ export function randomBase64Url(byteLength: number): string {
 }
 
 export async function sha256Base64Url(input: string): Promise<string> {
-  const digest = await crypto.subtle.digest('SHA-256', textEncoder.encode(input));
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(input));
   return base64Url(new Uint8Array(digest));
 }
 
@@ -29,7 +29,7 @@ export async function pkceChallenge(verifier: string): Promise<string> {
 export async function sha256Hex(input: BufferSource | string): Promise<string> {
   return hex(await crypto.subtle.digest(
     'SHA-256',
-    typeof input === 'string' ? textEncoder.encode(input) : input,
+    typeof input === 'string' ? enc.encode(input) : input,
   ));
 }
 
@@ -81,7 +81,7 @@ export async function sealJson(
   const key = await hkdfAesGcmKey(secret, purpose, options.minSecretLength);
   const iv = new Uint8Array(12);
   crypto.getRandomValues(iv);
-  const plaintext = textEncoder.encode(JSON.stringify(value));
+  const plaintext = enc.encode(JSON.stringify(value));
   const ciphertext = new Uint8Array(await crypto.subtle.encrypt(
     { name: 'AES-GCM', iv, additionalData: aad(purpose) },
     key,
@@ -110,7 +110,7 @@ export async function unsealJson<T>(
       key,
       ciphertext,
     );
-    return JSON.parse(textDecoder.decode(plaintext)) as T;
+    return JSON.parse(dec.decode(plaintext)) as T;
   }
 
   // Backward compatibility for the original agent OAuth cookie format.
@@ -122,51 +122,56 @@ export async function unsealJson<T>(
     const ciphertext = packed.slice(12);
     const key = await legacyShaAesGcmKey(secret, options.minSecretLength);
     const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
-    return JSON.parse(textDecoder.decode(plaintext)) as T;
+    return JSON.parse(dec.decode(plaintext)) as T;
   }
 
   return null;
 }
 
 export function encodeJsonBase64Url(value: unknown): string {
-  return base64Url(textEncoder.encode(JSON.stringify(value)));
+  return base64Url(enc.encode(JSON.stringify(value)));
 }
 
 export function decodeJsonBase64Url<T>(value: string): T {
-  return JSON.parse(textDecoder.decode(base64UrlDecode(value))) as T;
+  return JSON.parse(dec.decode(base64UrlDecode(value))) as T;
 }
 
-export function base64Url(bytes: Uint8Array): string {
-  let binary = '';
-  const chunk = 0x8000;
-  for (let i = 0; i < bytes.length; i += chunk) {
-    binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-  }
-  return btoa(binary)
-    .replace(/\+/g, '-')
-    .replace(/\//g, '_')
-    .replace(/=+$/g, '');
-}
-
-export function base64UrlDecode(value: string): Uint8Array {
-  if (!BASE64URL_RE.test(value) || value.length % 4 === 1) {
-    throw new Error('Invalid base64url input');
-  }
-  const padded = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
-  const binary = atob(padded);
-  const bytes = new Uint8Array(binary.length);
-  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
-  return bytes;
-}
-
-export function base64Utf8(value: string): string {
-  const bytes = textEncoder.encode(value);
+/** Standard base64 (with padding) of `bytes`, in chunks so a large array never overflows the call stack. */
+export function base64(bytes: Uint8Array): string {
   let binary = '';
   const chunk = 0x8000;
   for (let i = 0; i < bytes.length; i += chunk) {
     binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
   }
   return btoa(binary);
+}
+
+/** The bytes standard base64 `value` encodes; throws what `atob` throws. */
+export function base64Decode(value: string): Uint8Array {
+  const binary = atob(value);
+  const bytes = new Uint8Array(binary.length);
+  for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+  return bytes;
+}
+
+/** base64url, unpadded (RFC 4648 §5, as JWTs and PKCE carry it). */
+export function base64Url(bytes: Uint8Array): string {
+  return base64(bytes)
+    .replace(/\+/g, '-')
+    .replace(/\//g, '_')
+    .replace(/=+$/g, '');
+}
+
+/** The bytes unpadded base64url `value` encodes; throws on any other alphabet or a length no encoding has. */
+export function base64UrlDecode(value: string): Uint8Array {
+  if (!BASE64URL_RE.test(value) || value.length % 4 === 1) {
+    throw new Error('Invalid base64url input');
+  }
+  return base64Decode(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '='));
+}
+
+export function base64Utf8(value: string): string {
+  return base64(enc.encode(value));
 }
 
 async function hkdfAesGcmKey(
@@ -177,7 +182,7 @@ async function hkdfAesGcmKey(
   assertSecret(secret, minSecretLength);
   const material = await crypto.subtle.importKey(
     'raw',
-    textEncoder.encode(secret),
+    enc.encode(secret),
     'HKDF',
     false,
     ['deriveKey'],
@@ -187,7 +192,7 @@ async function hkdfAesGcmKey(
       name: 'HKDF',
       hash: 'SHA-256',
       salt: HKDF_SALT,
-      info: textEncoder.encode(purpose),
+      info: enc.encode(purpose),
     },
     material,
     { name: 'AES-GCM', length: 256 },
@@ -198,7 +203,7 @@ async function hkdfAesGcmKey(
 
 async function legacyShaAesGcmKey(secret: string, minSecretLength = 32): Promise<CryptoKey> {
   assertSecret(secret, minSecretLength);
-  const digest = await crypto.subtle.digest('SHA-256', textEncoder.encode(secret));
+  const digest = await crypto.subtle.digest('SHA-256', enc.encode(secret));
   return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['decrypt']);
 }
 
@@ -215,5 +220,5 @@ function normalizePurpose(purpose: string | undefined): string {
 }
 
 function aad(purpose: string): Uint8Array {
-  return textEncoder.encode(`nimbus-sh:${purpose}:sealed-json:v2`);
+  return enc.encode(`nimbus-sh:${purpose}:sealed-json:v2`);
 }

@@ -43,7 +43,7 @@
  * and how large; a source past it, or one the parser cannot read, starts
  * nothing.
  */
-import { forEachChild, forEachNode, parseJavaScriptProgram } from './javascript-ast.js';
+import { forEachChild, forEachNode, parseJavaScriptProgram, unwrapCallee } from './javascript-ast.js';
 /** Calls that create a server, as a member (`http.createServer`) or a bare name. */
 const CREATORS = new Set(['createServer', 'createSecureServer', 'serve']);
 /** Argument parsers that answer a query themselves and exit, and dispatch commands. */
@@ -82,20 +82,6 @@ function isFunction(node) {
 function isClass(node) {
     return !!node && (node.type === 'ClassDeclaration' || node.type === 'ClassExpression');
 }
-/** Parentheses, `(0, f)`, `await` and `?.` do not change what is called. */
-function unwrap(node) {
-    let at = node;
-    for (;;) {
-        if (at.type === 'ParenthesizedExpression' || at.type === 'ChainExpression')
-            at = at.expression;
-        else if (at.type === 'SequenceExpression')
-            at = at.expressions[at.expressions.length - 1];
-        else if (at.type === 'AwaitExpression')
-            at = at.argument;
-        else
-            return at;
-    }
-}
 function keyName(key, computed) {
     if (!computed && key.type === 'Identifier')
         return key.name;
@@ -107,7 +93,7 @@ function propertyName(member) {
     return member.type === 'MemberExpression' ? keyName(member.property, member.computed) : null;
 }
 function isNamed(node, object, property) {
-    const n = unwrap(node);
+    const n = unwrapCallee(node);
     return n.type === 'MemberExpression' && n.object.type === 'Identifier' && n.object.name === object
         && propertyName(n) === property;
 }
@@ -124,7 +110,7 @@ const INTEROP_WRAPPER_RE = /^_*(?:toESM|toCommonJS|importDefault|importStar|inte
  * CommonJS writes an import).
  */
 function interopSpecifier(node) {
-    const n = unwrap(node);
+    const n = unwrapCallee(node);
     const direct = requiredSpecifier(n);
     if (direct !== null)
         return direct;
@@ -136,7 +122,7 @@ function interopSpecifier(node) {
 }
 /** `require('<literal>')`'s or `import('<literal>')`'s specifier. */
 function requiredSpecifier(node) {
-    const n = unwrap(node);
+    const n = unwrapCallee(node);
     if (n.type === 'CallExpression' && n.callee.type === 'Identifier' && n.callee.name === 'require'
         && n.arguments.length >= 1 && n.arguments[0].type === 'Literal' && typeof n.arguments[0].value === 'string') {
         return n.arguments[0].value;
@@ -179,7 +165,7 @@ export async function resolveOwnModules(ast, path, dir, packageRoot, host) {
 }
 /** `exports` or `module.exports`: the object exports are assigned on. */
 function isExportsObject(node) {
-    const n = unwrap(node);
+    const n = unwrapCallee(node);
     return (n.type === 'Identifier' && n.name === 'exports') || isNamed(n, 'module', 'exports');
 }
 class ModuleGraph {
@@ -277,7 +263,7 @@ class ModuleGraph {
         if (depth > 8)
             return false;
         const scope = this.scope(record);
-        let v = unwrap(value);
+        let v = unwrapCallee(value);
         for (;;) {
             const ref = moduleOf(record, scope, v);
             if (ref !== null && this.exportIsParser(ref, depth + 1))
@@ -286,9 +272,9 @@ class ModuleGraph {
             if (specifier !== null)
                 return CLI_PARSERS.has(specifier);
             if (v.type === 'MemberExpression')
-                v = unwrap(v.object);
+                v = unwrapCallee(v.object);
             else if (v.type === 'CallExpression' || v.type === 'NewExpression')
-                v = unwrap(v.callee);
+                v = unwrapCallee(v.callee);
             else
                 break;
         }
@@ -379,7 +365,7 @@ function buildScope(record) {
     };
     const moduleRef = (value) => moduleOf(record, scope, value);
     const bindValue = (name, value) => {
-        const v = unwrap(value);
+        const v = unwrapCallee(value);
         if (isFunction(v) || isClass(v)) {
             push(scope.functions, name, v);
             if (isClass(v))
@@ -406,8 +392,8 @@ function buildScope(record) {
             return;
         }
         // `const make = http.createServer` / `server.listen.bind(server)`.
-        const callee = v.type === 'CallExpression' ? unwrap(v.callee) : null;
-        const bound = callee?.type === 'MemberExpression' && propertyName(callee) === 'bind' ? unwrap(callee.object) : v;
+        const callee = v.type === 'CallExpression' ? unwrapCallee(v.callee) : null;
+        const bound = callee?.type === 'MemberExpression' && propertyName(callee) === 'bind' ? unwrapCallee(callee.object) : v;
         const created = propertyName(bound);
         if (created !== null && CREATORS.has(created))
             scope.creators.add(name);
@@ -465,7 +451,7 @@ function buildScope(record) {
         }
     };
     const exportValue = (name, value) => {
-        const v = unwrap(value);
+        const v = unwrapCallee(value);
         if (v.type === 'ObjectExpression' && name === 'default') {
             // `module.exports = { start, serve: require('./serve') }`: each property is an export.
             for (const prop of v.properties) {
@@ -568,12 +554,12 @@ function buildScope(record) {
                     exportValue(name, n.right);
                     break;
                 }
-                const right = unwrap(n.right);
+                const right = unwrapCallee(n.right);
                 if (isFunction(right)) {
                     // `Owner.prototype.method = function` / `Owner.method = function`.
-                    let owner = unwrap(left.object);
+                    let owner = unwrapCallee(left.object);
                     if (owner.type === 'MemberExpression' && propertyName(owner) === 'prototype')
-                        owner = unwrap(owner.object);
+                        owner = unwrapCallee(owner.object);
                     if (name !== null && owner.type === 'Identifier')
                         addMember(owner.name, name, right);
                 }
@@ -594,7 +580,7 @@ function buildScope(record) {
  * name bound to one, or an instance of one. Null otherwise.
  */
 function moduleOf(record, scope, node) {
-    const at = unwrap(node);
+    const at = unwrapCallee(node);
     const specifier = requiredSpecifier(at);
     if (specifier !== null) {
         const path = record.deps.get(specifier) ?? null;
@@ -699,7 +685,7 @@ class Walk {
         switch (s.type) {
             case 'ExpressionStatement': {
                 this.expression(s.expression);
-                const e = unwrap(s.expression);
+                const e = unwrapCallee(s.expression);
                 return e.type === 'CallExpression' && isNamed(e.callee, 'process', 'exit') ? 'abrupt' : 'normal';
             }
             case 'VariableDeclaration':
@@ -841,7 +827,7 @@ class Walk {
         }
     }
     call(node) {
-        const callee = unwrap(node.callee);
+        const callee = unwrapCallee(node.callee);
         if (this.startsServer(callee, node.arguments)) {
             this.launches = true;
             return;
@@ -858,7 +844,7 @@ class Walk {
         }
         // The callee runs: an inline function, a local function or method, or a
         // value of one of the program's modules.
-        const receiver = callee.type === 'MemberExpression' ? unwrap(callee.object) : null;
+        const receiver = callee.type === 'MemberExpression' ? unwrapCallee(callee.object) : null;
         const applied = receiver !== null && ['call', 'apply'].includes(propertyName(callee) ?? '') ? receiver : null;
         if (isFunction(callee) || isClass(callee))
             this.run(callee);
@@ -877,7 +863,7 @@ class Walk {
         for (const argument of node.arguments) {
             if (this.launches || this.exited)
                 return;
-            const a = unwrap(argument.type === 'SpreadElement' ? argument.argument : argument);
+            const a = unwrapCallee(argument.type === 'SpreadElement' ? argument.argument : argument);
             if (!logs)
                 handed.push(a);
             if (!isFunction(a))
@@ -945,12 +931,12 @@ class Walk {
             return undefined;
         let registration = method === 'command' ? args : null;
         // `.command('serve').option(...).action(fn)`: the nearest command down the chain.
-        for (let at = unwrap(callee.object); registration === null && at.type === 'CallExpression';) {
-            const inner = unwrap(at.callee);
+        for (let at = unwrapCallee(callee.object); registration === null && at.type === 'CallExpression';) {
+            const inner = unwrapCallee(at.callee);
             if (propertyName(inner) === 'command')
                 registration = at.arguments;
             else if (inner.type === 'MemberExpression')
-                at = unwrap(inner.object);
+                at = unwrapCallee(inner.object);
             else
                 break;
         }
@@ -958,7 +944,7 @@ class Walk {
             return null;
         const names = [];
         const addNames = (node) => {
-            const n = node ? unwrap(node) : null;
+            const n = node ? unwrapCallee(node) : null;
             if (n?.type === 'Literal' && typeof n.value === 'string')
                 names.push(n.value.trim().split(/\s+/)[0]);
             else if (n?.type === 'ArrayExpression')
@@ -968,7 +954,7 @@ class Walk {
                     else if (n !== null)
                         names.push('*');
         };
-        const first = unwrap(registration[0]);
+        const first = unwrapCallee(registration[0]);
         if (first.type === 'ObjectExpression') {
             for (const prop of first.properties) {
                 if (prop.type !== 'Property')
@@ -982,7 +968,7 @@ class Walk {
             addNames(first);
         }
         const isDefault = registration.some((arg) => {
-            const a = unwrap(arg);
+            const a = unwrapCallee(arg);
             return a.type === 'ObjectExpression'
                 && a.properties.some((p) => p.type === 'Property' && keyName(p.key, p.computed) === 'isDefault');
         });
@@ -1005,7 +991,7 @@ class Walk {
      * walked when called, it is not a bind in itself.
      */
     ownsListen(receiver) {
-        const r = unwrap(receiver);
+        const r = unwrapCallee(receiver);
         if (moduleOf(this.record, this.scope, r) !== null)
             return true;
         if (r.type !== 'Identifier')
@@ -1021,10 +1007,10 @@ class Walk {
      * port (`3000`, `const p = 3000`, `process.env.PORT || 3000`, a parameter).
      */
     notAPort(arg, depth = 0) {
-        const a = unwrap(arg);
+        const a = unwrapCallee(arg);
         if (isFunction(a) || a.type === 'ThisExpression')
             return true;
-        if (a.type === 'CallExpression' && propertyName(unwrap(a.callee)) === 'bind')
+        if (a.type === 'CallExpression' && propertyName(unwrapCallee(a.callee)) === 'bind')
             return true;
         const known = this.evaluate(a);
         if (known !== undefined)
@@ -1043,7 +1029,7 @@ class Walk {
     }
     /** Whatever calling a value runs: local functions and methods, a module's exports. */
     invoke(value) {
-        const v = unwrap(value);
+        const v = unwrapCallee(value);
         const ref = moduleOf(this.record, this.scope, v);
         if (ref !== null) {
             this.use(ref);
@@ -1066,7 +1052,7 @@ class Walk {
     }
     /** Calling `owner.method`: the local methods of that name, or a module's export's. */
     invokeMember(owner, method) {
-        const o = unwrap(owner);
+        const o = unwrapCallee(owner);
         const ref = moduleOf(this.record, this.scope, o);
         if (ref !== null) {
             this.use({ path: ref.path, members: [...ref.members, method] });
@@ -1122,7 +1108,7 @@ class Walk {
     evaluate(node, depth = 0) {
         if (depth > 16)
             return undefined;
-        const e = unwrap(node);
+        const e = unwrapCallee(node);
         switch (e.type) {
             case 'Literal':
                 return 'regex' in e ? undefined : { value: e.value };
@@ -1151,7 +1137,7 @@ class Walk {
                 return undefined;
             }
             case 'CallExpression': {
-                const callee = unwrap(e.callee);
+                const callee = unwrapCallee(e.callee);
                 if (callee.type !== 'MemberExpression')
                     return undefined;
                 const method = propertyName(callee);
@@ -1186,7 +1172,7 @@ class Walk {
             case 'BinaryExpression': {
                 // `require.main === module`: true for the entry, false for a module it loads.
                 const mainTest = (a, b) => {
-                    const other = unwrap(b);
+                    const other = unwrapCallee(b);
                     return isNamed(a, 'require', 'main') && other.type === 'Identifier' && other.name === 'module';
                 };
                 if (mainTest(e.left, e.right) || mainTest(e.right, e.left)) {

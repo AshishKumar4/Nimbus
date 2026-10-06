@@ -15,6 +15,8 @@ import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { modelessBackend } from './lib/composite-backends.mjs';
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/beneath.json', import.meta.url), 'utf8'));
 const enc = new TextEncoder();
@@ -50,16 +52,9 @@ function backend(spec) {
     }, spec.entries, true);
     return engine;
   }
-  // A backend that keeps no modes: its stats carry none.
   const memory = new MemoryVFS();
   populate(memory, spec.entries, false);
-  const bare = (stat) => { if (stat === null) return null; const { mode, uid, gid, ...rest } = stat; return rest; };
-  const vfs = Object.assign(Object.create(memory), {
-    stat: (path, options) => bare(memory.stat(path, options)),
-    readdir: (path) => memory.readdir(path).map((e) => ({ ...e, stat: e.stat && bare(e.stat) })),
-  });
-  vfs.sync = vfs;
-  return vfs;
+  return modelessBackend(memory);
 }
 
 // What the process observes of the resolution: the stat it reaches (a
@@ -67,19 +62,6 @@ function backend(spec) {
 // model path must be the same entry, by identity, as the kernel's own stat of
 // that path; where it exists and the last link is followed, realpath beneath
 // must also name it.
-// A mount with no synchronous face: every call answers a promise.
-const asyncOnly = (vfs) => new Proxy(vfs, {
-  get(target, key) {
-    if (key === 'sync') return undefined;
-    const value = target[key];
-    if (typeof value !== 'function') return value;
-    // A view as a principal is built at once, and is as asynchronous.
-    if (key === 'as') return (...args) => asyncOnly(value.apply(target, args));
-    return (...args) => Promise.resolve().then(() => value.apply(target, args));
-  },
-  has: (target, key) => key !== 'sync' && key in target,
-});
-
 const identity = (stat) => (stat === null ? null : `${stat.dev}:${stat.ino}:${stat.type}`);
 async function answer(proc, kernel, step) {
   const beneath = { root: step.root, path: step.path, beneath: true };
@@ -116,7 +98,7 @@ for (const face of ['synchronous', 'awaiting']) for (const [index, testCase] of 
   files.vfs.unmount('/proc');
   files.vfs.unmount('/dev');
   for (const mount of testCase.mounts) {
-    files.vfs.mount(mount.point, face === 'synchronous' ? source(mount.backend) : asyncOnly(source(mount.backend)), { resolvesPaths: mount.resolvesPaths === true });
+    files.vfs.mount(mount.point, face === 'synchronous' ? source(mount.backend) : asyncOnly(source(mount.backend), { deep: true }), { resolvesPaths: mount.resolvesPaths === true });
   }
   const bind = (binding) => (face === 'synchronous' ? files.bind(binding).synchronous : files.bind(binding));
   const kernel = bind({ pid: 1, cred: CRED_KERNEL });

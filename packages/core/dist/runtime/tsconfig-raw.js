@@ -30,6 +30,7 @@
  * sloppy script may contain is an error, and CommonJS and IIFE output begins
  * with `"use strict"`.
  */
+import { isJsonRecord, jsoncToJson } from './jsonc.js';
 /** A tsconfig field the engine cannot honour; its message names the field. */
 export class TsconfigRefusal extends Error {
 }
@@ -82,52 +83,6 @@ function memberExpression(text, warnings) {
     warnings.push(`Invalid JSX member expression: ${JSON.stringify(text)}`);
     return null;
 }
-/** What ends a `//` comment, as esbuild's lexer reads one: any line terminator. */
-const LINE_TERMINATOR = /[\n\r\u2028\u2029]/;
-/**
- * JSON as esbuild reads a tsconfig: comments and trailing commas allowed.
- * Strings are walked so neither is looked for inside one. A block comment
- * left open is esbuild's error, in its words.
- */
-function parseJsonc(text) {
-    let out = '';
-    for (let i = 0; i < text.length; i++) {
-        const c = text[i];
-        if (c === '"') {
-            const start = i;
-            for (i++; i < text.length && text[i] !== '"'; i++)
-                if (text[i] === '\\')
-                    i++;
-            out += text.slice(start, i + 1);
-        }
-        else if (c === '/' && text[i + 1] === '/') {
-            while (i < text.length && !LINE_TERMINATOR.test(text[i]))
-                i++;
-            out += '\n';
-        }
-        else if (c === '/' && text[i + 1] === '*') {
-            const end = text.indexOf('*/', i + 2);
-            if (end < 0)
-                throw new Error('Expected "*/" to terminate multi-line comment');
-            i = end + 1;
-            out += ' ';
-        }
-        else {
-            out += c;
-        }
-    }
-    // A comma before a closing bracket, outside strings: rewrite the text with
-    // strings blanked to find them, then drop them from the real text.
-    const blanked = out.replace(/"(?:[^"\\]|\\.)*"/g, (s) => '"' + ' '.repeat(s.length - 2) + '"');
-    let result = '';
-    for (let i = 0; i < out.length; i++) {
-        if (blanked[i] === ',' && /^\s*[}\]]/.test(blanked.slice(i + 1)))
-            continue;
-        result += out[i];
-    }
-    return JSON.parse(result);
-}
-const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 /** The keys esbuild warns about when they sit beside, not inside, compilerOptions. */
 const COMPILER_OPTION_KEYS = [
     'alwaysStrict', 'baseUrl', 'experimentalDecorators', 'importsNotUsedAsValues', 'jsx', 'jsxFactory',
@@ -178,7 +133,7 @@ export function resolveTsSettings(inputs, call) {
     let config;
     if (typeof raw === 'string') {
         try {
-            config = parseJsonc(raw);
+            config = JSON.parse(jsoncToJson(raw, 'esbuild'));
         }
         catch (error) {
             throw new Error(`tsconfigRaw is not valid JSON: ${error instanceof Error ? error.message : String(error)}`);
@@ -187,7 +142,7 @@ export function resolveTsSettings(inputs, call) {
     else {
         config = raw;
     }
-    if (!isObject(config))
+    if (!isJsonRecord(config))
         return finish(settings);
     for (const key of Object.keys(config)) {
         if (COMPILER_OPTION_KEYS.includes(key)) {
@@ -203,7 +158,7 @@ export function resolveTsSettings(inputs, call) {
         throw new TsconfigRefusal('tsconfigRaw "extends" is not supported: a build reads no tsconfig file it names');
     }
     const options = config.compilerOptions;
-    if (!isObject(options))
+    if (!isJsonRecord(options))
         return finish(settings);
     const string = (key) => (typeof options[key] === 'string' ? options[key] : undefined);
     const boolean = (key) => (typeof options[key] === 'boolean' ? options[key] : undefined);

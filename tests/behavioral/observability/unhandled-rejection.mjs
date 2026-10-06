@@ -40,10 +40,6 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('observability/unhandled-rejection');
 
-async function writeFile(path, contents) {
-  await t.run(`cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${contents}\nNIMBUS_HEREDOC_EOF`, 10_000);
-}
-
 // ── Check 1: synthetic-rejection-loud ──────────────────────────────
 //
 // Promise.reject(...) with no .catch. Pre-fix the facet silently exits
@@ -52,7 +48,7 @@ async function writeFile(path, contents) {
 //   exitCode: 1
 
 await t.run('rm -rf /home/user/unhrej && mkdir -p /home/user/unhrej', 5_000);
-await writeFile('/home/user/unhrej/rej.mjs', `
+await t.writeFile('/home/user/unhrej/rej.mjs', `
 console.log('BEFORE');
 Promise.reject(new Error('synthetic-boom-42'));
 console.log('AFTER_KICKOFF');
@@ -76,7 +72,7 @@ A.check(
 // Promise.reject — the listener fires.
 
 await t.run('rm -rf /home/user/aff && mkdir -p /home/user/aff', 5_000);
-await writeFile('/home/user/aff/aff.mjs', `
+await t.writeFile('/home/user/aff/aff.mjs', `
 async function failing() { throw new Error('async-fire-forget-99'); }
 console.log('BEFORE');
 failing();
@@ -101,7 +97,7 @@ A.check(
 // event → listener doesn't fire. Process exits cleanly with code 0.
 
 await t.run('rm -rf /home/user/handled && mkdir -p /home/user/handled', 5_000);
-await writeFile('/home/user/handled/handled.mjs', `
+await t.writeFile('/home/user/handled/handled.mjs', `
 Promise.reject(new Error('caught-101')).catch(() => { console.log('CAUGHT_OK'); });
 `);
 // SHELL-FOLLOWUPS-R5 (2026-05-11) suppressed the inline "exited with
@@ -134,8 +130,8 @@ A.check(
 // should still print mod's export and exit cleanly.
 
 await t.run('rm -rf /home/user/dyn-reg && mkdir -p /home/user/dyn-reg', 5_000);
-await writeFile('/home/user/dyn-reg/mod.mjs', "export const X = 'REG_OK';");
-await writeFile('/home/user/dyn-reg/entry.mjs', `import('./mod.mjs').then(m => console.log('RESULT=' + m.X));`);
+await t.writeFile('/home/user/dyn-reg/mod.mjs', "export const X = 'REG_OK';");
+await t.writeFile('/home/user/dyn-reg/entry.mjs', `import('./mod.mjs').then(m => console.log('RESULT=' + m.X));`);
 // Same SHELL-FOLLOWUPS-R5 adaptation as check 3 — sample $? for exit
 // code instead of pattern-matching the (now-suppressed) inline dump.
 const regR = await t.run('cd /home/user/dyn-reg && node entry.mjs; echo NIMBUS_EXIT=$?', 30_000);

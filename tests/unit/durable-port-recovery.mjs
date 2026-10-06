@@ -11,11 +11,6 @@
 // 503 the page re-asks on its own refresh.
 
 import assert from 'node:assert/strict';
-import { rmSync } from 'node:fs';
-import { mkdtemp } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -34,39 +29,17 @@ import {
 } from './facet-host-harness.mjs';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
-// routes.ts transitively imports `cloudflare:workers`; bundle it with a stub,
-// the same as the other route tests.
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-durable-port-test-'));
-// Removed however the test ends: its assertions run at top level.
-process.on('exit', () => rmSync(outputDir, { recursive: true, force: true }));
-const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/port-capability.ts', './packages/worker/src/facets/compose.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cloudflare-workers-test-stub',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({
-        path: 'cloudflare-workers',
-        namespace: 'test',
-      }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-        loader: 'js',
-      }));
-    },
-  }],
+// port-capability.ts and compose.ts reach `cloudflare:workers`; bundle them
+// with a stub, the same as the other route tests.
+const { routeToSessionPort, composeFacetManager } = await importWorkerBundle({
+  'packages/worker/src/session/port-capability.ts': ['routeToSessionPort'],
+  'packages/worker/src/facets/compose.ts': ['composeFacetManager'],
 });
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const entry = build.outputs.find((output) => output.path.endsWith('/port-capability.js'));
-assert.ok(entry, 'the routes bundle was emitted');
-const { routeToSessionPort } = await import(pathToFileURL(entry.path).href);
-const composeEntry = build.outputs.find((output) => output.path.endsWith('/compose.js'));
-const { composeFacetManager } = await import(pathToFileURL(composeEntry.path).href);
 
 const NONE = new Set();
 
@@ -86,20 +59,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk } = {}) {
   const ctx = createFacetCtx(world, 'durable-port-do', storage);
   const env = {
     LOADER: world.loader,
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        try {
-          const { readFile } = await import('node:fs/promises');
-          return new Response(
-            await readFile(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-            { status: 200 },
-          );
-        } catch {
-          return new Response('', { status: 404 });
-        }
-      },
-    },
+    ASSETS: stagedAssets,
   };
   const processes = new SessionProcessSupervisor();
   const portRegistry = new PortRegistry();

@@ -26,95 +26,46 @@
 //     a few seconds of meaningful activity.
 
 import WebSocket from 'ws';
-import { mintSession, wsHeaders, requestHeaders } from '../_driver.mjs';
+import {
+  BASE, WS_BASE, Terminal, deleteSession, makeAsserter, mintSession, requestHeaders, sleep, stripAnsi, wsHeaders,
+} from '../_driver.mjs';
 
-const BASE = process.env.BASE;
-if (!BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
-const WS_BASE = BASE.replace(/^http/, 'ws');
-
-const sleep = (ms) => new Promise((r) => setTimeout(r, ms));
-const stripAnsi = (s) => s.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\x1b[\(\)][AB012]/g, '');
-
-let pass = 0, fail = 0;
-function check(name, ok, detail = '') {
-  if (ok) { console.log(`  ✓ ${name}`); pass++; }
-  else { console.log(`  ✗ ${name}${detail ? ' — ' + detail : ''}`); fail++; }
-}
+if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
+const a = makeAsserter('process-logs-stream');
 
 // ── mint session + connect terminal ──
 const sid = await mintSession();
 console.log(`behavioral/preview/process-logs-stream — BASE=${BASE} sid=${sid}`);
-
-const ws = new WebSocket(`${WS_BASE}/s/${sid}/ws`, wsHeaders());
-let buf = '';
-const spawnEvents = [];
-let tConn = false, tClosed = false;
-ws.on('open', () => { tConn = true; });
-ws.on('close', () => { tClosed = true; });
-ws.on('error', () => {});
-ws.on('message', (data) => {
-  try {
-    const m = JSON.parse(data.toString('utf8'));
-    if (m.type === 'output' && typeof m.data === 'string') buf += m.data;
-    else if (m.type === 'spawn') spawnEvents.push(m);
-  } catch {}
-});
-{
-  const t0 = Date.now();
-  while (!tConn && Date.now() - t0 < 15_000) await sleep(50);
-  if (!tConn) { console.error('terminal connect timeout'); process.exit(2); }
-}
-
-const cmd = (line) => ws.send(JSON.stringify({ type: 'input', data: line + '\r' }));
-async function waitFor(predicate, timeoutMs, label) {
-  const t0 = Date.now();
-  while (Date.now() - t0 < timeoutMs) {
-    if (predicate(stripAnsi(buf))) return Date.now() - t0;
-    if (tClosed) throw new Error(`terminal closed waiting for ${label}`);
-    await sleep(50);
-  }
-  throw new Error(`waitFor(${label}) timeout ${timeoutMs}ms; tail=${JSON.stringify(stripAnsi(buf).slice(-300))}`);
-}
-async function run(line, timeoutMs = 60_000) {
-  const before = buf.length;
-  cmd(line);
-  await waitFor((b) => buf.length > before && /[$#>]\s*$/.test(b.trimEnd().slice(-3)),
-    timeoutMs, `prompt after ${line}`);
-}
-
-await sleep(1500);
-await waitFor((b) => /[$#>]\s*$/.test(b.trimEnd().slice(-3)), 10_000, 'initial prompt');
+const t = new Terminal(sid);
+await t.connect();
+await t.waitForPrompt(10_000);
 
 // ── scaffold a tiny vite project (no npm install needed; vite is a builtin) ──
-const writeFile = (path, content) => {
-  const b64 = Buffer.from(content, 'utf8').toString('base64');
-  return `node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}','base64').toString('utf8'))"`;
-};
 
-await run('cd /home/user', 5000);
-await run('mkdir -p /home/user/logs-test/src', 5000);
-await run(writeFile('/home/user/logs-test/package.json',
-  JSON.stringify({ name: 'logs-test', type: 'module', scripts: { dev: 'vite --host 0.0.0.0 --port 5173' } })),
+await t.run('cd /home/user', 5000);
+await t.run('mkdir -p /home/user/logs-test/src', 5000);
+await t.writeFile('/home/user/logs-test/package.json',
+  JSON.stringify({ name: 'logs-test', type: 'module', scripts: { dev: 'vite --host 0.0.0.0 --port 5173' } }),
   10_000);
-await run(writeFile('/home/user/logs-test/index.html',
-  '<!doctype html><html><body><script type="module" src="/src/main.js"></script></body></html>'), 10_000);
-await run(writeFile('/home/user/logs-test/src/main.js', 'document.body.textContent = "hello-from-logs-probe";'), 10_000);
+await t.writeFile('/home/user/logs-test/index.html',
+  '<!doctype html><html><body><script type="module" src="/src/main.js"></script></body></html>', 10_000);
+await t.writeFile('/home/user/logs-test/src/main.js', 'document.body.textContent = "hello-from-logs-probe";', 10_000);
 
-await run('cd /home/user/logs-test', 5000);
+await t.run('cd /home/user/logs-test', 5000);
 
 // ── start vite ──
-buf = '';
-cmd('npm run dev');
+t.reset();
+t.cmd('npm run dev');
 // Banner contains "Nimbus Vite Dev Server".
-await waitFor((b) => /Nimbus Vite Dev Server/i.test(b), 30_000, 'vite banner');
+await t.waitFor((b) => /Nimbus Vite Dev Server/i.test(b), 30_000, 'vite banner');
 
 // Discover the vite pid from the banner's `pid=N` print.
-const pidMatch = stripAnsi(buf).match(/pid=(\d+)/);
+const pidMatch = stripAnsi(t.buf).match(/pid=(\d+)/);
 if (!pidMatch) { console.error('FATAL: could not extract vite pid from banner'); process.exit(2); }
 const vitePid = parseInt(pidMatch[1], 10);
 console.log(`  detected vite pid=${vitePid}`);
-const viteSpawn = spawnEvents.find((event) => event.pid === vitePid);
-check('plain dev-server spawn is explicitly non-attached-TTY',
+const viteSpawn = t.spawns.find((event) => event.pid === vitePid);
+a.check('plain dev-server spawn is explicitly non-attached-TTY',
   viteSpawn?.attachedTty === false,
   `spawn=${JSON.stringify(viteSpawn)}`);
 
@@ -151,16 +102,14 @@ logsWs.on('message', (data) => {
   const t0 = Date.now();
   while (!backlogSeen && Date.now() - t0 < 10_000 && !logsClosed) await sleep(50);
 }
-check('Process-tab WS receives backlog frame', backlogSeen, `closed=${logsClosed}`);
+a.check('Process-tab WS receives backlog frame', backlogSeen, `closed=${logsClosed}`);
 const backlogLfChunks = (backlogFrame?.chunks || []).filter((chunk) =>
   typeof chunk.data === 'string' && chunk.data.includes('\n'));
-check('backlog preserves raw LF bytes without terminal conversion',
+a.check('backlog preserves raw LF bytes without terminal conversion',
   backlogLfChunks.length > 0 && backlogLfChunks.every((chunk) => !chunk.data.includes('\r')),
   `chunksWithLf=${backlogLfChunks.length}`);
 
-// Quiesce — no more chunks expected without activity.
 const chunksBefore = chunksSeen;
-await sleep(800);
 
 // ── Trigger dev-server work ──
 //   1. Hit /preview/  → serves index.html
@@ -183,10 +132,10 @@ await sleep(800);
     await sleep(100);
   }
 }
-check('post-banner chunk arrives within 8 s of dev-server activity',
+a.check('post-banner chunk arrives within 8 s of dev-server activity',
   postBacklogChunks.length > 0,
   `postBacklogChunks=${postBacklogChunks.length}; chunksBefore=${chunksBefore}; chunksSeen=${chunksSeen}`);
-check('live chunks preserve raw LF bytes without terminal conversion',
+a.check('live chunks preserve raw LF bytes without terminal conversion',
   postBacklogChunks.some((chunk) =>
     typeof chunk.data === 'string' && chunk.data.endsWith('\n') && !chunk.data.includes('\r')),
   `postBacklogChunks=${postBacklogChunks.length}`);
@@ -199,8 +148,6 @@ if (postBacklogChunks.length > 0) {
 
 // ── teardown ──
 try { logsWs.close(); } catch {}
-try { ws.close(); } catch {}
-await sleep(200);
-
-console.log(`\n  ──── [process-logs-stream] ${pass} pass / ${fail} fail`);
-process.exit(fail === 0 ? 0 : 1);
+await t.close();
+await deleteSession(sid);
+process.exit(a.summary().fail === 0 ? 0 : 1);

@@ -22,6 +22,7 @@
 // 70 bytes including the `name` custom section.
 
 import { mintSession, Terminal, sleep, stripAnsi, BASE } from '../_driver.mjs';
+import { ADD_WASM_B64, writeWasm } from './_fixtures.mjs';
 
 const sid = await mintSession();
 console.log(`[wasm-runner] sid=${sid} BASE=${BASE}`);
@@ -34,15 +35,7 @@ await t.waitForPrompt(60_000);
 await t.run('mkdir -p /home/user/wr-add', 10_000);
 await t.run('cd /home/user/wr-add', 10_000);
 
-// 70-byte AssemblyScript-compiled add(i32,i32) → i32. Hand-typed once,
-// verified via WebAssembly.instantiate(buf).exports.add(3, 4) === 7.
-const ADD_WASM_B64 =
-  'AGFzbQEAAAABBwFgAn9/AX8DAgEABQMBAAAHEAIDYWRkAAAGbWVtb3J5AgAKCQEHACAAIAFqCwANBG5hbWUBBgEAA2FkZA==';
-
-await t.run(
-  `node -e "require('fs').writeFileSync('add.wasm', Buffer.from('${ADD_WASM_B64}','base64'))"`,
-  30_000,
-);
+await writeWasm(t, 'add.wasm', ADD_WASM_B64);
 
 // Verify the file lives in VFS (ls is supervisor-visible; statSync
 // inside facets returns 0 for fresh writes — see the multi-runtime

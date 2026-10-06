@@ -52,6 +52,7 @@ import { resolveVfsPath } from '../vfs/path.js';
 import { RUBY_SOCKET_SHIM } from './ruby-socket-shim.js';
 import { RUBY_GREEN_THREADS } from './ruby-green-threads.js';
 import { gemHomeFor, installRubyBundle, installRubyGems, installedGemBins, installedGemLibRoots, parseRubyGemRequirements, } from './ruby-gems.js';
+import { errorText } from '../_shared/error-text.js';
 const RUBY_RUNTIME_BIN_NAMES = new Set(['ruby', 'ruby3', 'gem', 'bundle', 'bundler']);
 const RUBY_VERSION_FLAGS = new Set(['--version', '-v']);
 /**
@@ -164,7 +165,7 @@ export function makeRubyRunnerFactory(deps) {
                     userCode = new TextDecoder('utf-8').decode((await vfs.readFile(absPath)));
                 }
                 catch (e) {
-                    ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorMessage(e)}\n`);
+                    ctx.stderr.write(`${binName}: ${parsed.scriptPath}: ${errorText(e)}\n`);
                     return 1;
                 }
                 progName = parsed.scriptPath;
@@ -237,9 +238,8 @@ export function makeRubyRunnerFactory(deps) {
     };
 }
 async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx) {
-    const isGem = binKind === 'gem' || binName === 'gem';
-    const isBundle = binKind === 'bundle' || binName === 'bundle' || binName === 'bundler';
-    if (isGem && argv[0] === 'install') {
+    const tool = rubyPackageTool(binKind, binName);
+    if (tool === 'gem' && argv[0] === 'install') {
         const parsed = parseGemInstallArgs(argv.slice(1));
         if (parsed.error) {
             ctx.stderr.write(`gem install: ${parsed.error}\n`);
@@ -247,35 +247,45 @@ async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, 
         }
         try {
             const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true });
-            for (const name of report.installed)
-                ctx.stdout.write(`Successfully installed ${name}\n`);
-            for (const name of report.alreadyInstalled)
-                ctx.stdout.write(`${name} is already installed\n`);
-            ctx.stdout.write(`${report.installed.length + report.alreadyInstalled.length} gem(s) processed\n`);
+            const processed = writeInstallReport(ctx, report);
+            ctx.stdout.write(`${processed} gem(s) processed\n`);
             return { handled: true, exitCode: 0 };
         }
         catch (e) {
-            ctx.stderr.write(`gem install: ${errorMessage(e)}\n`);
+            ctx.stderr.write(`gem install: ${errorText(e)}\n`);
             return { handled: true, exitCode: 1 };
         }
     }
-    if (isBundle && argv[0] === 'install') {
+    if (tool === 'bundle' && argv[0] === 'install') {
         try {
             const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home) });
-            for (const name of report.installed)
-                ctx.stdout.write(`Successfully installed ${name}\n`);
-            for (const name of report.alreadyInstalled)
-                ctx.stdout.write(`${name} is already installed\n`);
-            ctx.stdout.write(`Bundle complete! ${requests.length} Gemfile dependency(s), ${report.installed.length + report.alreadyInstalled.length} gem(s) now installed.\n`);
+            const processed = writeInstallReport(ctx, report);
+            ctx.stdout.write(`Bundle complete! ${requests.length} Gemfile dependency(s), ${processed} gem(s) now installed.\n`);
             ctx.stdout.write(`Bundled lockfile written to /${lockfilePath}\n`);
             return { handled: true, exitCode: 0 };
         }
         catch (e) {
-            ctx.stderr.write(`bundle install: ${errorMessage(e)}\n`);
+            ctx.stderr.write(`bundle install: ${errorText(e)}\n`);
             return { handled: true, exitCode: 1 };
         }
     }
     return { handled: false, exitCode: 0 };
+}
+/** Which RubyGems tool a bin is: `gem`, `bundle`/`bundler`, or neither. */
+function rubyPackageTool(binKind, binName) {
+    if (binKind === 'gem' || binName === 'gem')
+        return 'gem';
+    if (binKind === 'bundle' || binName === 'bundle' || binName === 'bundler')
+        return 'bundle';
+    return null;
+}
+/** Print an install's per-gem lines; returns how many gems it processed. */
+function writeInstallReport(ctx, report) {
+    for (const name of report.installed)
+        ctx.stdout.write(`Successfully installed ${name}\n`);
+    for (const name of report.alreadyInstalled)
+        ctx.stdout.write(`${name} is already installed\n`);
+    return report.installed.length + report.alreadyInstalled.length;
 }
 function parseGemInstallArgs(argv) {
     const names = [];
@@ -309,11 +319,10 @@ function parseGemInstallArgs(argv) {
     return { requests };
 }
 function buildRubyToolInvocation(binKind, binName, argv) {
-    const isGem = binKind === 'gem' || binName === 'gem';
-    const isBundle = binKind === 'bundle' || binName === 'bundle' || binName === 'bundler';
-    if (!isGem && !isBundle)
+    const tool = rubyPackageTool(binKind, binName);
+    if (tool === null)
         return { mode: 'none', code: '', exitCode: 0 };
-    if (isGem) {
+    if (tool === 'gem') {
         if (argv.length === 0 || argv.includes('--help') || argv.includes('-h')) {
             return {
                 mode: 'tool',
@@ -500,9 +509,6 @@ function formatRubyCommand(binName, argv) {
         return JSON.stringify(part);
     }).join(' ');
 }
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
-}
 const RubyFacetResultSchema = z.object({
     exitCode: z.number().optional(),
     stdout: z.string().optional(),
@@ -598,7 +604,7 @@ async function dispatchRubyFacet(facets, vfs, args, image, pid, signal) {
             exitCode: 1,
             stdout: '',
             stderr: '',
-            error: `ruby-runner dispatch failed: ${errorMessage(e)}`,
+            error: `ruby-runner dispatch failed: ${errorText(e)}`,
         };
     }
     finally {

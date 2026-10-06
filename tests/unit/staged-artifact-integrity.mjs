@@ -251,7 +251,7 @@ try {
     {
       const entries = persistentCache();
       const fetchSources = await freshIsolate();
-      await rejects(() => fetchSources(nodeAssets(entry)), new RegExp(`${label} asset integrity mismatch`),
+      await rejects(() => fetchSources(nodeAssets(entry)), new RegExp(`${label} integrity check failed`),
         `${label}: truncated ASSETS body`);
       assertCachesOnlyStaged(entries, `${label}: after a truncated ASSETS body`);
       assertServesStaged(await fetchSources(nodeAssets(null)), `${label}: the retry after a truncated body`);
@@ -276,7 +276,7 @@ try {
       const [key] = [...entries.keys()].filter((url) => new URL(url).pathname === entry);
       entries.set(key, new TextDecoder().decode(POISON));
       await rejects(() => freshIsolate().then((fetchSources) => fetchSources(nodeAssets(entry))),
-        new RegExp(`${label} asset integrity mismatch`), `${label}: poisoned L2 entry and truncated ASSETS body`);
+        new RegExp(`${label} integrity check failed`), `${label}: poisoned L2 entry and truncated ASSETS body`);
       assertCachesOnlyStaged(entries, `${label}: after both tiers were bad`);
     }
   }
@@ -298,7 +298,7 @@ try {
     {
       const entries = persistentCache();
       const fetchGit = await freshGitFetcher();
-      await rejects(() => fetchGit(nodeAssets(GIT_BUNDLE_ENTRY)), /git-bundle asset integrity mismatch/,
+      await rejects(() => fetchGit(nodeAssets(GIT_BUNDLE_ENTRY)), /git-bundle integrity check failed/,
         'git-bundle: truncated ASSETS body');
       assert.deepEqual(cachedFor(entries, GIT_BUNDLE_ENTRY), [], 'git-bundle: a truncated body is never cached');
       assert.equal(await fetchGit(nodeAssets(null)), vendorText, 'git-bundle: the retry after a truncated body');

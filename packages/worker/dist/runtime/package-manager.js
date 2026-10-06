@@ -11,8 +11,7 @@
  *   - the programmatic entry points the SDK surface calls;
  *   - the command-not-found hint resolver init.ts wires into exec dispatch.
  */
-import { fetchCatalog, fetchManifest, runtimeCatalogSource, } from './runtime-catalog.js';
-import { runtimeEntrypoints } from '@nimbus-sh/core/runtime/installed-runtimes.js';
+import { catalogCommandIndex, runtimeCatalogSource, } from './runtime-catalog.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { runNimbusInstall, } from '@nimbus-sh/core/runtime/nimbus-command.js';
 export { runtimeCatalogSource };
@@ -68,31 +67,10 @@ export async function ensureRuntimesProgrammatic(deps, specs, opts = {}) {
 export function createRuntimeCommandHintResolver(env) {
     let hintsPromise = null;
     const loadHints = async () => {
-        const catalog = await fetchCatalog(env);
         const hints = new Map();
-        const add = (command, runtimeName) => {
-            if (!command || command.includes('/'))
-                return;
-            if (!hints.has(command)) {
+        for (const [command, runtimeName] of await catalogCommandIndex(env)) {
+            if (command && !command.includes('/'))
                 hints.set(command, { command, runtimeName, installSpec: command });
-            }
-        };
-        for (const runtimeName of Object.keys(catalog.runtimes)) {
-            add(runtimeName, runtimeName);
-        }
-        for (const [runtimeName, entry] of Object.entries(catalog.runtimes)) {
-            const versionEntry = entry.versions[entry.default];
-            if (!versionEntry)
-                continue;
-            try {
-                const manifest = await fetchManifest(env, versionEntry);
-                for (const ep of runtimeEntrypoints(manifest))
-                    add(ep.binName, runtimeName);
-            }
-            catch {
-                // Hints are best-effort UX. Install itself still surfaces the
-                // manifest/catalog error through the normal package-manager path.
-            }
         }
         return hints;
     };

@@ -17,10 +17,6 @@
 //   (4) a child killed before its program started never starts it.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -32,30 +28,15 @@ import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { exitCodeForSignal } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-cp-broker-session-'));
 const decoder = new TextDecoder();
 
-try {
-  const build = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/nimbus-session.ts', './packages/worker/src/hosted/services.ts'],
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-          loader: 'js',
-        }));
-      },
-    }],
+{
+  const { NimbusSession, bindRuntimeServices } = await importWorkerBundle({
+    'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+    'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
   });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  const { NimbusSession } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/nimbus-session.js')).path).href);
-  const { bindRuntimeServices } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/services.js')).path).href);
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -214,8 +195,6 @@ try {
     assert.deepEqual(launched, [], 'its program never ran');
     assert.deepEqual(await session._rpcCpWait(child, 1_000), { done: true, exitCode: null, signal: 'SIGKILL' });
   }
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
 }
 
 console.log('ok - cp-broker-session (sh children each with their own shell, eleven at once, the full kill path, no launch after a kill)');

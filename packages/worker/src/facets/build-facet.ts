@@ -10,7 +10,7 @@ import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
-import { fetchStagedText, type StagedSourceEnv } from '../runtime/staged-source.js';
+import { fetchStagedText, stagedAsset, type StagedSourceEnv } from '../runtime/staged-source.js';
 import type { PrebundleResult, PrebundleSpec } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 import {
   NAPI_WASM_LOADER,
@@ -143,18 +143,15 @@ export async function fetchBuildFacetParts(env: StagedSourceEnv): Promise<BuildF
     fetchStagedBindingAsset(env, NAPI_WASM_LOADER).then((bytes) => new TextDecoder().decode(bytes)),
     fetchStagedBindingAsset(env, NAPI_WASM_TRAMPOLINE),
     fetchStagedBindingAsset(env, ROLLDOWN.wasm),
-    fetchStagedText(env, {
+    fetchStagedText(env, stagedAsset({
+      label: 'build facet runtime',
       path: ROLLDOWN_FACET_ASSET_PATH,
       l2Key: `https://nimbus-cache.invalid${ROLLDOWN_FACET_ASSET_PATH}`,
       sha256: ROLLDOWN_FACET_SHA256,
       contentType: 'text/javascript; charset=utf-8',
-      poisonedCache: 'reject',
-      missingBinding: `Nimbus: the build facet requires an env.ASSETS binding (serves ${ROLLDOWN_FACET_ASSET_PATH})`,
-      fetchFailed: (res) => `build facet runtime asset fetch failed: ${res.status} ${res.statusText} for ${ROLLDOWN_FACET_ASSET_PATH} — deploy is missing the asset`,
-      integrityFailed: (digest, from) =>
-        `build facet runtime integrity check failed: expected ${ROLLDOWN_FACET_SHA256}, got ${digest} (${from}) for ` +
-        `${ROLLDOWN_FACET_ASSET_PATH} — the staged asset is corrupt or out of sync; rerun scripts/bundle-facet-workers.mjs and redeploy`,
-    }),
+      requiredBy: 'the build facet',
+      stagedBy: 'scripts/bundle-facet-workers.mjs',
+    })),
   ]);
   return { loader, trampoline, rolldown, runtime };
 }

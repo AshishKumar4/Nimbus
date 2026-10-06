@@ -22,6 +22,7 @@ import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ResolvedPackage } from './resolver.js';
 import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
+import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 
 export type { PrebundleResult, PrebundleSpec, SlicedDir, SlicedFile, SliceEntry } from '@nimbus-sh/core/runtime/prebundle-slice.js';
 
@@ -47,10 +48,6 @@ export function buildSliceForSpecifierWithCap(
   const slice: SliceEntry[] = [];
   let totalBytes = 0;
   const visitedPkgs = new Set<string>();
-
-  // Bare-specifier → top-level package name (handles @scope/pkg).
-  const pkgNameFor = (spec: string): string =>
-    spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
 
   const addFile = (path: string): boolean => {
     try {
@@ -136,7 +133,7 @@ export function buildSliceForSpecifierWithCap(
     return true;
   };
 
-  const pkgName = pkgNameFor(specifier);
+  const pkgName = packageNameFromSpecifier(specifier);
   if (!visitPkg(pkgName, true)) {
     // Cap exceeded — caller bails out. Empty caller = caller will fall
     // back to legacy in-supervisor path or skip pre-bundling entirely.

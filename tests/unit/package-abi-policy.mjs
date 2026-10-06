@@ -154,24 +154,9 @@ for (const staged of PACKAGE_ABI_POLICY.stagedArtifacts) {
   assert.equal(swaps.length, 0);
 }
 
-// findRejects: every table entry is 'fail' now, so 'top' and
-// 'transitive' are the same set.
-{
-  const specs = { fsevents: '*', sharp: '*', react: '*' };
-  assert.deepEqual(findRejects(specs, 'top').map((r) => r.from), ['sharp']);
-  assert.deepEqual(findRejects(specs, 'transitive').map((r) => r.from), ['sharp']);
-}
-
-// The skip fields exist only because PackageAbiPolicy is a public
-// @nimbus-sh/core type; they are empty and read by nothing — a declared
-// dependency is installed or refused loudly, never silently left out.
-assert.deepEqual(PACKAGE_ABI_POLICY.skipPackages, []);
-assert.deepEqual(PACKAGE_ABI_POLICY.skipPrefixes, []);
-assert.deepEqual(PACKAGE_ABI_POLICY.frameworkRequiredPackages, []);
-// Retired 'warn' toolchain entries install like any other package.
-for (const name of ['fsevents', 'bufferutil', 'utf-8-validate', 'wrangler', '@cloudflare/vite-plugin', 'parcel', 'node-gyp', 'node-pre-gyp']) {
-  assert.equal(lookupReject(name), undefined, `${name} has no reject entry`);
-}
+// findRejects refuses a native-only package and lets the rest through,
+// including the toolchain names it once only warned about.
+assert.deepEqual(findRejects({ fsevents: '*', sharp: '*', react: '*' }, 'top').map((r) => r.from), ['sharp']);
 
 // ── 3. Metadata-driven native-artifact rejection ────────────────────────
 

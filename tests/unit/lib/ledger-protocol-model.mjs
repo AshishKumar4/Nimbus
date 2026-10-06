@@ -620,6 +620,53 @@ export function childSets(n, kinds = ['q', 'b', 's']) {
 }
 
 /**
+ * Two guest holders, one under the other, each with up to two children:
+ * half `half` (0 or 1) of the upper holder's child sets, each against every
+ * child set of the lower holder. Two halves, because the whole does not fit
+ * one test file's time budget.
+ */
+export function nestedCases(half) {
+  const sets = childSets(2);
+  const cases = [];
+  for (const [i, a] of sets.entries()) {
+    if (i % 2 !== half) continue;
+    for (const b of sets) cases.push([{ parent: 'R', children: a }, { parent: 0, children: b }]);
+  }
+  return cases;
+}
+
+/**
+ * The child sets three-holder families rotate through: a queued child; a
+ * queued child and a builtin; a queued child and a shell line over a queued
+ * program.
+ */
+export const THREE_HOLDER_ROTATIONS = Object.freeze([
+  [['q'], ['q', 'b'], ['q', 's']],
+  [['q', 'b'], ['q', 's'], ['q']],
+  [['q', 's'], ['q'], ['q', 'b']],
+]);
+
+const THREE_HOLDER_PARENTS = { side: ['R', 'R', 'R'], chain: ['R', 0, 1], fork: ['R', 0, 0] };
+
+/**
+ * Three-holder families of `shape` ('side', 'chain', 'fork') over every
+ * rotation; in a chain or a fork, each holder in turn the one whose news and
+ * reports race (focus 10/20/30). `skip(rotation, focus)` drops a run past a
+ * file's budget.
+ */
+export function threeHolderCases(shape, { skip = () => false } = {}) {
+  const parents = THREE_HOLDER_PARENTS[shape];
+  const cases = [];
+  for (const [r, children] of THREE_HOLDER_ROTATIONS.entries()) {
+    const family = children.map((c, i) => ({ parent: parents[i], children: c }));
+    for (const focus of shape === 'side' ? [null] : [10, 20, 30]) {
+      if (!skip(r, focus)) cases.push([family, focus]);
+    }
+  }
+  return cases;
+}
+
+/**
  * Explore every case (a family, or [family, focus]) under production;
  * fail on the first violation, with its path. Returns the states explored.
  */

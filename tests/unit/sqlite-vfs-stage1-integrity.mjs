@@ -5,44 +5,7 @@ import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness, inodeTableScans } from './sqlite-vfs-test-harness.mjs';
-
-function openVfs(harness = createSqliteVfsTestHarness()) {
-  const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-  // Load the running counters now, so _verifyCounters judges how every later
-  // mutation maintained them rather than a fresh aggregate.
-  rawVfs.getStats();
-  return { harness, rawVfs, vfs: rawVfs.as(CRED_KERNEL) };
-}
-
-function fileInode(path, size, mtime = Date.now()) {
-  return {
-    path,
-    parentPath: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '',
-    isDir: false,
-    size,
-    mtime,
-    mode: 0o644,
-    chunkCount: size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE),
-  };
-}
-
-function bytes(length, seed = 0) {
-  const data = new Uint8Array(length);
-  for (let i = 0; i < length; i++) data[i] = (i + seed) % 251;
-  return data;
-}
-
-function chunks(path, data) {
-  const result = [];
-  for (let chunkId = 0; chunkId * CHUNK_SIZE < data.length; chunkId++) {
-    result.push({
-      path,
-      chunkId,
-      data: data.slice(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-    });
-  }
-  return result;
-}
+import { bytes, fileChunks, fileInode, openVfs } from './lib/staged-import.mjs';
 
 /** The chunk ids a path's content is stored in, in file order. */
 function durableChunkIds(harness, path) {
@@ -86,7 +49,7 @@ const strictCreateStatementCount = (() => {
   const data = bytes(5, 1);
   vfs.writeBatch({
     inodes: [fileInode('strict-count.bin', data.length)],
-    chunks: chunks('strict-count.bin', data),
+    chunks: fileChunks('strict-count.bin', data),
   });
   return latestTransactionStatementCount(harness, start);
 })();
@@ -101,7 +64,7 @@ for (let statement = 1; statement <= strictCreateStatementCount; statement++) {
   harness.failOnTransactionStatement(statement);
   assert.throws(() => vfs.writeBatch({
     inodes: [fileInode('rollback.bin', data.length)],
-    chunks: chunks('rollback.bin', data),
+    chunks: fileChunks('rollback.bin', data),
   }), /injected SQL fault/);
   assert.equal(vfs.revision(), revision);
   assert.equal(vfs.exists('rollback.bin'), false);
@@ -129,7 +92,7 @@ const strictReplaceStatementCount = (() => {
   const data = bytes(5, 2);
   vfs.writeBatch({
     inodes: [fileInode('replace-count.bin', data.length)],
-    chunks: chunks('replace-count.bin', data),
+    chunks: fileChunks('replace-count.bin', data),
   });
   return latestTransactionStatementCount(harness, start);
 })();
@@ -145,7 +108,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   harness.failOnTransactionStatement(statement);
   assert.throws(() => vfs.writeBatch({
     inodes: [fileInode('atomic-replace.bin', newData.length)],
-    chunks: chunks('atomic-replace.bin', newData),
+    chunks: fileChunks('atomic-replace.bin', newData),
   }), /injected SQL fault/);
   assert.equal(vfs.revision(), revision);
   assert.deepEqual(vfs.readFile('atomic-replace.bin'), oldData);
@@ -166,7 +129,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   const revision = vfs.revision();
   assert.throws(() => vfs.writeBatch({
     inodes: [fileInode('never-visible.bin', data.length)],
-    chunks: chunks('never-visible.bin', data),
+    chunks: fileChunks('never-visible.bin', data),
   }), /SQLITE_NOMEM/);
   assert.equal(vfs.revision(), revision);
   assert.equal(vfs.exists('never-visible.bin'), false);
@@ -194,7 +157,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   const revision = vfs.revision();
   const result = vfs.writeBatch({
     inodes: [fileInode('a.bin', a.length), fileInode('b.bin', b.length)],
-    chunks: [...chunks('a.bin', a), ...chunks('b.bin', b)],
+    chunks: [...fileChunks('a.bin', a), ...fileChunks('b.bin', b)],
   });
   assert.deepEqual(result, { inodes: 2, chunks: 2 });
   assert.equal(vfs.revision(), revision + 1, 'successful strict retry must tick once');
@@ -217,7 +180,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   const revision = vfs.revision();
   assert.deepEqual(vfs.writeBatch({
     inodes: [fileInode('one.bin', data.length)],
-    chunks: chunks('one.bin', data),
+    chunks: fileChunks('one.bin', data),
   }), { inodes: 1, chunks: 2 });
   assert.equal(vfs.revision(), revision + 1);
   assert.deepEqual(vfs.readFile('one.bin'), data);
@@ -236,7 +199,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   harness.failOnTransactionStatement(1);
   assert.throws(() => vfs.writeBatch({
     inodes: [fileInode('race.bin', replacement.length)],
-    chunks: chunks('race.bin', replacement),
+    chunks: fileChunks('race.bin', replacement),
   }), /injected SQL fault/);
   assert.deepEqual(vfs.readFile('race.bin'), accepted);
   const { vfs: reconstructed } = openVfs(createSqliteVfsTestHarness(harness.db));
@@ -258,7 +221,7 @@ for (let statement = 1; statement <= strictReplaceStatementCount; statement++) {
   });
   assert.throws(() => vfs.writeBatch({
     inodes: [fileInode('race-nomem.bin', replacement.length)],
-    chunks: chunks('race-nomem.bin', replacement),
+    chunks: fileChunks('race-nomem.bin', replacement),
   }), /SQLITE_NOMEM/);
   assert.deepEqual(vfs.readFile('race-nomem.bin'), accepted);
   harness.clearFault();
@@ -401,7 +364,7 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   const oldChunks = durableChunkIds(harness, 'replace.bin');
   vfs.writeBatch({
     inodes: [fileInode('replace.bin', newData.length)],
-    chunks: chunks('replace.bin', newData),
+    chunks: fileChunks('replace.bin', newData),
   });
   assert.equal(durableChunkIds(harness, 'replace.bin').length, 1);
   assert.ok(oldChunks.every((id) => !chunkExists(harness, id)), 'the replaced content is collected');
@@ -485,7 +448,7 @@ for (let statement = 1; statement <= recursiveDeleteStatementCount; statement++)
   const data = bytes(3, 5);
   vfs.writeBatch({
     inodes: [fileInode('watched.bin', data.length)],
-    chunks: chunks('watched.bin', data),
+    chunks: fileChunks('watched.bin', data),
   });
   assert.equal(vfs.revision(), before + 1);
   assert.equal(observedRevision, vfs.revision('watched.bin'));

@@ -20,7 +20,7 @@ import { fileURLToPath, pathToFileURL } from 'node:url';
 import { OPENTUI_WASM_ENTRY } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
 import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { OpenTUIWasmBackend } from '../../packages/core/src/runtime/opentui-wasm-backend.ts';
-import { ZIG_FFI_SYMBOLS } from './opentui-zig-symbols.mjs';
+import { ZIG_FFI_SYMBOLS } from './lib/opentui-zig-symbols.mjs';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),

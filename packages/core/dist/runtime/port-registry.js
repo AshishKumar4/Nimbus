@@ -28,6 +28,7 @@
  *   so a compressed body is decoded here. See `decodeContentCoding`.
  */
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf } from './document-policy.js';
 /**
  * Content codings this hop can undo. `DecompressionStream` decodes exactly
@@ -414,7 +415,7 @@ export class PortRegistry {
             // Server-side triage — users see only the 502 body, operators
             // see the full error + stack in Worker logs.
             console.error('[port-registry] routeRequest failed for port', port, ':', error);
-            return new Response(JSON.stringify({ error: errorMessage(error) }), {
+            return new Response(JSON.stringify({ error: errorText(error) }), {
                 status: 502,
                 headers: { 'Content-Type': 'application/json' },
             });
@@ -477,7 +478,4 @@ function routeableFacetTarget(value) {
             ? { handleWebSocketRequest: webSocketMethod.bind(value) }
             : {}),
     };
-}
-function errorMessage(error) {
-    return error instanceof Error ? error.message : String(error);
 }

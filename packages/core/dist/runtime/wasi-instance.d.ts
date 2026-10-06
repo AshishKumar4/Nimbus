@@ -142,8 +142,6 @@ export interface WasiFsSnapshot {
         wasiPath: string;
         vfsPath: string;
     }>;
-    /** Largest regular file the codec answers from a resident copy. Defaults to 8 MiB. */
-    residentFileCap?: number;
 }
 /**
  * Names of the WASI imports implemented by this shim.

@@ -4,28 +4,7 @@ import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
-import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-
-const USER = Object.freeze({ uid: 1000, gid: 1000, groups: Object.freeze([1000]), umask: 0o022 });
-
-/** A session whose runtime blobs are installed, as the supervisor installs them. */
-function installedRuntime(files) {
-  const harness = createSqliteVfsTestHarness();
-  const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const root = raw.as(CRED_KERNEL);
-  root.mkdir('home/user', { recursive: true, mode: 0o755 });
-  root.chown('home/user', USER.uid, USER.gid);
-  for (const [path, bytes] of Object.entries(files)) {
-    const clean = path.replace(/^\/+/, '');
-    root.mkdir(clean.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
-    root.writeFile(clean, bytes, { mode: 0o644 });
-  }
-  return new ProcessFiles(raw);
-}
+import { installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
 
 function loaderHarness() {
   const calls = [];
@@ -49,23 +28,11 @@ function loaderHarness() {
   return { calls, env, ctx, facetMgr: { env, ctx } };
 }
 
-function commandContext(filesystem, env, cred = USER) {
-  return {
-    pid: 41,
-    cred,
-    vfs: new ProcessView(filesystem.bind({ pid: 41, cred })),
-    args: ['-e', 'puts ENV["HOME"]'],
-    cwd: '/home/user',
-    env,
-    stdin: '',
-    stdout: { write() {} },
-    stderr: { write() {} },
-  };
-}
+const commandContext = (filesystem, env) => runtimeContext(filesystem, { args: ['-e', 'puts ENV["HOME"]'], env }).ctx;
 
 {
   const harness = loaderHarness();
-  const filesystem = installedRuntime({
+  const { filesystem } = installedRuntime({
     '/runtime/python/share/cpython/python.wasm': new Uint8Array([0]),
     '/runtime/python/lib/python313.zip': new Uint8Array(),
   });
@@ -101,7 +68,7 @@ function commandContext(filesystem, env, cred = USER) {
 
 {
   const harness = loaderHarness();
-  const filesystem = installedRuntime({
+  const { filesystem } = installedRuntime({
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
   });
   const manifest = {
@@ -132,7 +99,7 @@ function commandContext(filesystem, env, cred = USER) {
 // take the name over for everyone.
 {
   const harness = loaderHarness();
-  const filesystem = installedRuntime({
+  const { filesystem } = installedRuntime({
     '/runtime/ruby/share/ruby/ruby+stdlib.wasm': new Uint8Array([0]),
     '/home/session/.gem/bin/rake': new TextEncoder().encode('# session rake\n'),
     '/home/other/.gem/bin/rake': new TextEncoder().encode('# other rake\n'),

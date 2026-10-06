@@ -7,7 +7,7 @@
 // Brace expansion is owned by the shell substrate expander, before
 // glob expansion and after the lexer preserves quoted literals.
 
-import { deleteSession, mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
+import { deleteSession, mintSession, Terminal, makeAsserter, termBody } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/brace-expansion');
@@ -19,25 +19,17 @@ try {
 await t.connect();
 await t.waitForPrompt(60_000);
 
-function body(raw) {
-  const ansi = stripAnsi(raw);
-  const lines = ansi.split(/\r?\n/);
-  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
-  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
-  return lines.join('\n');
-}
-
 await t.run('mkdir -p /tmp/r3be && touch /tmp/r3be/a.js /tmp/r3be/b.ts /tmp/r3be/c.md', 5_000);
 
 const r1 = await t.run('echo a{1,2,3}b', 5_000);
 a.check(
   'echo a{1,2,3}b → a1b a2b a3b',
-  body(r1.output) === 'a1b a2b a3b',
-  `body=${JSON.stringify(body(r1.output))}`,
+  termBody(r1.output) === 'a1b a2b a3b',
+  `body=${JSON.stringify(termBody(r1.output))}`,
 );
 
 const r2 = await t.run('ls /tmp/r3be/*.{js,ts}', 5_000);
-const b2 = body(r2.output);
+const b2 = termBody(r2.output);
 a.check(
   'ls /tmp/r3be/*.{js,ts} finds both files',
   /a\.js/.test(b2) && /b\.ts/.test(b2),
@@ -47,15 +39,15 @@ a.check(
 const r3 = await t.run("echo 'a{1,2}b'", 5_000);
 a.check(
   "single-quoted '{...}' preserved literal",
-  body(r3.output) === 'a{1,2}b',
-  `body=${JSON.stringify(body(r3.output))}`,
+  termBody(r3.output) === 'a{1,2}b',
+  `body=${JSON.stringify(termBody(r3.output))}`,
 );
 
 const r4 = await t.run('FOO=hello && echo "${FOO}"', 5_000);
 a.check(
   '${VAR} parameter expansion still works (not brace-expanded)',
-  body(r4.output) === 'hello',
-  `body=${JSON.stringify(body(r4.output))}`,
+  termBody(r4.output) === 'hello',
+  `body=${JSON.stringify(termBody(r4.output))}`,
 );
 
 } finally {

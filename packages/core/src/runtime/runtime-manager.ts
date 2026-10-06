@@ -268,9 +268,7 @@ export class RuntimeManager {
    *  commands — and cannot resurrect a corrupt one. */
   async uninstall(spec: string): Promise<void> {
     const home = this.getHome();
-    const atIdx = spec.indexOf('@');
-    const name = atIdx >= 0 ? spec.slice(0, atIdx) : spec;
-    const versionOverride = atIdx >= 0 ? spec.slice(atIdx + 1) : null;
+    const { name, versionOverride } = splitRuntimeSpec(spec);
     const nameKey = `${home}/${name}`;
 
     // Wait for resolutions still open — their canonical key is not

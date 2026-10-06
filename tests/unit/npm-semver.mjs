@@ -18,9 +18,10 @@
 import assert from 'node:assert/strict';
 import { compareSemver, isSemverRange, parseSemver, resolveVersion, satisfiesRange } from '../../packages/worker/src/npm/semver.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
+import { parseRegistryRequest } from '../../packages/worker/src/npm/resolve-one-facet.ts';
 
 const embedded = new Function(
-  `${NPM_RESOLVE_PREAMBLE}\nreturn { PARSE_SEMVER, COMPARE_SEMVER, SATISFIES_RANGE, RESOLVE_VERSION, IS_SEMVER_RANGE };`,
+  `${NPM_RESOLVE_PREAMBLE}\nreturn { PARSE_SEMVER, COMPARE_SEMVER, SATISFIES_RANGE, RESOLVE_VERSION, IS_SEMVER_RANGE, parseRegistryRequest };`,
 )();
 
 // ── parse + compare: prerelease identifiers are part of the order ───────────
@@ -93,6 +94,14 @@ const embedded = new Function(
   assert.ok(NPM_RESOLVE_PREAMBLE.includes(resolveVersion.toString()), 'the preamble embeds resolveVersion verbatim');
   assert.ok(NPM_RESOLVE_PREAMBLE.includes(satisfiesRange.toString()), 'the preamble embeds satisfiesRange verbatim');
   console.log('  parity: embedded preamble functions match npm/semver.ts');
+}
+
+// ── the preamble's spec parsing is the supervisor's ─────────────────────────
+{
+  for (const [name, range] of [['a', '^1.0.0'], ['alias', 'npm:@scope/pkg@^1.2.0'], ['alias', 'npm:lodash'], ['alias', 'npm:@scope/pkg'], ['x', '']]) {
+    assert.deepEqual(embedded.parseRegistryRequest(name, range), parseRegistryRequest(name, range), `${name} ${range}`);
+  }
+  console.log('  parity: embedded parseRegistryRequest matches resolve-one-facet.ts');
 }
 
 console.log('npm-semver: ok');

@@ -3,25 +3,11 @@
 // Worker-side sandbox handle over a Durable Object binding.
 
 import { makeAsserter } from '../../_driver.mjs';
-import { createExecStream, encodeExecStream } from '../../../../packages/core/src/runtime/exec-stream.ts';
+import { FakeNamespace, succeededExecStream } from '../_fake-session.mjs';
 
 const a = makeAsserter('sdk/new/programmatic-sdk');
 const { Nimbus } = await import('../../../../packages/sdk/src/index.ts');
 const { defineNimbusConfig } = await import('../../../../packages/config/src/index.ts');
-
-class FakeNamespace {
-  constructor(stub) {
-    this.stub = stub;
-    this.names = [];
-  }
-  idFromName(name) {
-    this.names.push(name);
-    return { name };
-  }
-  get(_id) {
-    return this.stub;
-  }
-}
 
 const calls = [];
 const processLogChunks = [];
@@ -33,10 +19,7 @@ const stub = {
   },
   async _rpcExecStream(command, options) {
     calls.push(['exec', command, options]);
-    const writer = createExecStream(() => {});
-    await writer.write('stdout', new TextEncoder().encode('ok\n'));
-    writer.end({ command, exitCode: 0, success: true, duration: 1, timestamp: 1 });
-    return encodeExecStream(writer.stream);
+    return succeededExecStream(command);
   },
   async _rpcStartProcess(command, options) {
     calls.push(['startProcess', command, options]);

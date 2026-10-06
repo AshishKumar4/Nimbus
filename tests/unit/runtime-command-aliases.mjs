@@ -91,27 +91,34 @@ const catalog = {
   },
 };
 
-// The deployment names its catalog by digest; the bucket holds it under that digest.
-const catalogText = JSON.stringify(catalog);
-const catalogSha256 = createHash('sha256').update(catalogText).digest('hex');
-const fakeEnv = {
-  NIMBUS_RUNTIME_CATALOG_SHA256: catalogSha256,
-  NIMBUS_RUNTIME_CACHE: {
-    async get(key) {
-      let body = null;
-      if (key === `catalog/sha256/${catalogSha256}.json`) body = catalogText;
-      else if (manifests[key]) body = JSON.stringify(manifests[key]);
-      else if (key.startsWith('blobs/')) body = blobBytes;
-      if (body === null) return null;
-      const bytes = typeof body === 'string' ? encoder.encode(body) : body;
-      return {
-        async text() { return new TextDecoder().decode(bytes); },
-        async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); },
-        get body() { return new Response(bytes).body; },
-      };
+/**
+ * An R2 binding serving `catalogJson` and `manifestsByKey`, with the
+ * deployment's pin: it names its catalog by digest, and the bucket holds it
+ * under that digest.
+ */
+const catalogEnv = (catalogJson, manifestsByKey) => {
+  const catalogText = JSON.stringify(catalogJson);
+  const catalogSha256 = createHash('sha256').update(catalogText).digest('hex');
+  return {
+    NIMBUS_RUNTIME_CATALOG_SHA256: catalogSha256,
+    NIMBUS_RUNTIME_CACHE: {
+      async get(key) {
+        let body = null;
+        if (key === `catalog/sha256/${catalogSha256}.json`) body = catalogText;
+        else if (manifestsByKey[key]) body = JSON.stringify(manifestsByKey[key]);
+        else if (key.startsWith('blobs/')) body = blobBytes;
+        if (body === null) return null;
+        const bytes = typeof body === 'string' ? encoder.encode(body) : body;
+        return {
+          async text() { return new TextDecoder().decode(bytes); },
+          async arrayBuffer() { return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength); },
+          get body() { return new Response(bytes).body; },
+        };
+      },
     },
-  },
+  };
 };
+const fakeEnv = catalogEnv(catalog, manifests);
 
 {
   const hint = createRuntimeCommandHintResolver(fakeEnv);
@@ -129,6 +136,45 @@ const fakeEnv = {
   assert.equal(await hint('./pip'), null);
   // Ruby is not in this catalog, so its extra commands must not hint.
   assert.equal(await hint('gem'), null);
+}
+
+// ── 2b. A superseded runtime answers hints as it answers installs ──────
+// The shared catalog still lists Pyodide's `python` beside `cpython`. A bare
+// `python` installs cpython, and a command only `python` provides installs
+// nothing, so neither may be hinted at otherwise.
+{
+  const withPyodide = {
+    ...catalog,
+    runtimes: {
+      python: { default: '0.27.0', versions: { '0.27.0': { manifest: 'manifests/python-0.27.0.json', size_bytes: blobBytes.length, license: 'MPL-2.0' } } },
+      ...catalog.runtimes,
+    },
+  };
+  const pyodideManifest = {
+    name: 'python',
+    version: '0.27.0',
+    license: 'MPL-2.0',
+    wasi_namespace: 'wasi_snapshot_preview1',
+    files: [{ path: 'bin/python', content: 'blobs/python-0.27.0/bin', sha256: blobSha, size: blobBytes.length, mode: 'exec' }],
+    entrypoints: [
+      { binName: 'python', runner: 'python-runner', args: [] },
+      { binName: 'python3', runner: 'python-runner', args: [] },
+      { binName: 'pyodide-only', runner: 'python-runner', args: [] },
+    ],
+  };
+  const env = catalogEnv(withPyodide, { ...manifests, 'manifests/python-0.27.0.json': pyodideManifest });
+  const hint = createRuntimeCommandHintResolver(env);
+  const source = runtimeCatalogSource(env);
+  for (const command of ['python', 'python3', 'pip', 'wasm-ld', 'pyodide-only']) {
+    const resolved = await source.resolve(command);
+    const hinted = await hint(command);
+    assert.equal(hinted?.runtimeName ?? null, resolved?.manifest.name ?? null,
+      `'${command}' is hinted at ${hinted?.runtimeName ?? 'nothing'} but installs ${resolved?.manifest.name ?? 'nothing'}`);
+  }
+  assert.equal((await hint('python'))?.runtimeName, 'cpython');
+  assert.equal(await hint('pyodide-only'), null);
+  // An explicit version is a deliberate request for the superseded runtime.
+  assert.equal((await source.resolve('pyodide-only@0.27.0'))?.manifest.name, 'python');
 }
 
 // ── 3. `nimbus install <alias>` installs the providing runtime ─────────

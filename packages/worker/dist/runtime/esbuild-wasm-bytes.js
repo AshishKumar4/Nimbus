@@ -32,7 +32,7 @@
  */
 import { ESBUILD_JS_ASSET_PATH, ESBUILD_JS_SHA256, ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_SHA256, } from '../esbuild-wasm-bundle.generated.js';
 import { ESBUILD_CLI_ASSET_PATH, ESBUILD_CLI_SHA256 } from '../esbuild-cli-artifact.generated.js';
-import { fetchStagedBytes, fetchStagedText } from './staged-source.js';
+import { fetchStagedBytes, fetchStagedText, stagedAsset } from './staged-source.js';
 /**
  * Synthetic L2 cache keys for the staged esbuild artifacts. Versioned via
  * the asset paths so each esbuild upgrade lands fresh entries and old ones
@@ -42,26 +42,18 @@ export const ESBUILD_JS_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_JS_ASSET
 export const ESBUILD_WASM_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_WASM_ASSET_PATH}`;
 /** The CLI runner's key names its build id, so each rebuild lands a fresh entry. */
 export const ESBUILD_CLI_L2_KEY = `https://nimbus-cache.invalid${ESBUILD_CLI_ASSET_PATH}`;
-/** One esbuild artifact, verified against its pin (runtime/staged-source.ts). */
-function esbuildAsset(label, path, l2Key, sha256, contentType, stagedBy) {
-    return {
-        path,
-        l2Key,
-        sha256,
-        contentType,
-        poisonedCache: 'reject',
-        missingBinding: `Nimbus: the esbuild facet requires an env.ASSETS binding (serves ${path})`,
-        fetchFailed: (res) => `${label} asset fetch failed: ${res.status} ${res.statusText} ` +
-            `for ${path} — deploy is missing the asset`,
-        integrityFailed: (digest, from) => `${label} integrity check failed: expected ${sha256}, got ` +
-            `${digest} (${from}) for ${path} — ` +
-            'the staged asset is corrupt or out of sync; rerun ' +
-            `${stagedBy} and redeploy`,
-    };
-}
-const ESBUILD_JS_ASSET = esbuildAsset('esbuild-wasm JS adapter', ESBUILD_JS_ASSET_PATH, ESBUILD_JS_L2_KEY, ESBUILD_JS_SHA256, 'text/javascript; charset=utf-8', 'scripts/bundle-esbuild-wasm.mjs');
-const ESBUILD_WASM_ASSET = esbuildAsset('esbuild-wasm wasm', ESBUILD_WASM_ASSET_PATH, ESBUILD_WASM_L2_KEY, ESBUILD_WASM_SHA256, 'application/wasm', 'scripts/bundle-esbuild-wasm.mjs');
-const ESBUILD_CLI_ASSET = esbuildAsset('esbuild CLI runner', ESBUILD_CLI_ASSET_PATH, ESBUILD_CLI_L2_KEY, ESBUILD_CLI_SHA256, 'text/javascript; charset=utf-8', 'scripts/bundle-facet-workers.mjs');
+const ESBUILD_JS_ASSET = stagedAsset({
+    label: 'esbuild-wasm JS adapter', path: ESBUILD_JS_ASSET_PATH, l2Key: ESBUILD_JS_L2_KEY, sha256: ESBUILD_JS_SHA256,
+    contentType: 'text/javascript; charset=utf-8', requiredBy: 'the esbuild facet', stagedBy: 'scripts/bundle-esbuild-wasm.mjs',
+});
+const ESBUILD_WASM_ASSET = stagedAsset({
+    label: 'esbuild-wasm wasm', path: ESBUILD_WASM_ASSET_PATH, l2Key: ESBUILD_WASM_L2_KEY, sha256: ESBUILD_WASM_SHA256,
+    contentType: 'application/wasm', requiredBy: 'the esbuild facet', stagedBy: 'scripts/bundle-esbuild-wasm.mjs',
+});
+const ESBUILD_CLI_ASSET = stagedAsset({
+    label: 'esbuild CLI runner', path: ESBUILD_CLI_ASSET_PATH, l2Key: ESBUILD_CLI_L2_KEY, sha256: ESBUILD_CLI_SHA256,
+    contentType: 'text/javascript; charset=utf-8', requiredBy: 'the esbuild facet', stagedBy: 'scripts/bundle-facet-workers.mjs',
+});
 /**
  * Fetch esbuild's wasm, for the facet's module map to compile. Verified
  * before it is handed over.

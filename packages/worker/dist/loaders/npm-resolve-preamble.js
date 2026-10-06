@@ -35,6 +35,7 @@
 import { PACKAGE_ABI_POLICY, policyApplyStagedArtifact, policyIsOptionalNativeBinding, policyLookupReject, policyLookupStagedArtifact, policyLookupSwap, policyNativeBinAdvisory, policyNativePlatformReject, STAGED_ARTIFACT_BIN_PREFIX, } from '../facets/wasm-swap-registry.js';
 import { compareSemver, isSemverRange, parseSemver, resolveVersion, satisfiesRange, semverComparators, } from '../npm/semver.js';
 import { parseRegistryRequest } from '../npm/resolve-one-facet.js';
+import { packageRangeSeparator } from '../npm/package-spec.js';
 export const NPM_RESOLVE_PREAMBLE = `
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
@@ -86,6 +87,7 @@ ${resolveVersion.toString()}
 // ── Spec parsing (embedded from src/npm/resolve-one-facet.ts) ───────────
 // Generated the same way — the facet body references the bare
 // parseRegistryRequest binding.
+${packageRangeSeparator.toString()}
 ${parseRegistryRequest.toString()}
 function PARSE_SEMVER(v) { return parseSemver(v); }
 function COMPARE_SEMVER(a, b) { return compareSemver(a, b); }

@@ -17,33 +17,15 @@
 //      modules, text modules and main module.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { facetImageDigest, facetImagePath } from '../../packages/fabric/src/process-fabric.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
-import { processFiles } from './lib/process-bridge.mjs';
+import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
-
-const env = (world) => ({
-  LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-    },
-  },
-});
 
 /**
  * The program the facet world evaluates: it reports the module map it was
@@ -56,26 +38,18 @@ const evaluate = (config, { facetName }) => ({
   },
 });
 
-/** One session's durable half: storage rows and filesystem, shared across instances. */
-function createSession() {
-  const storage = new Map();
-  const disk = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(disk.sql, disk.ctx);
-  return { storage, vfs };
-}
+const createSession = () => launchSession();
 
 /** One instance of the session over `session`, at pid generation `generation`. */
 function createInstance(session, generation, label) {
-  const world = createFacetWorld(evaluate);
-  const processes = new SessionProcessSupervisor();
-  processes.setPidBase(generation * PID_GEN_STRIDE);
-  const ctx = createFacetCtx(world, label, session.storage);
   const notices = [];
-  const manager = new FacetManager(ctx, env(world), processes, new PortRegistry(), processHostFor, {
-    notify: (line) => { notices.push(line); },
-    resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(session.vfs, recipe),
+  const { ctx, world, processes, manager } = launchManager(label, {
+    evaluate, session, generation,
+    hooks: {
+      notify: (line) => { notices.push(line); },
+      resolveWorkerLaunchFallback: (recipe) => resolveDurableWorkerImage(session.vfs, recipe),
+    },
   });
-  manager.setVfs(session.vfs, processFiles(session.vfs));
   return { ctx, world, processes, manager, notices };
 }
 

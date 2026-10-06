@@ -9,39 +9,13 @@
 // session's `handleFetch`, over a real process table.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-exec-id-listing-'));
-let handleFetch;
-try {
-  const build = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/routes.ts'],
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  ({ handleFetch } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/routes.js')).path).href));
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+const { handleFetch } = await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch'] });
 
 const processes = new SessionProcessSupervisor();
 processes.setPidBase(PID_GEN_STRIDE);

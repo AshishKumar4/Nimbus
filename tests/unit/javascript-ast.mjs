@@ -17,6 +17,9 @@ export function strip(input) {
 assert.equal(hasTopLevelModuleSyntax('const text = "export function nope() {}";'), false);
 assert.equal(hasTopLevelModuleSyntax('async function load() { return import("x"); }'), false);
 assert.equal(hasTopLevelModuleSyntax('const url = import.meta.url;'), false);
+// A member named import or export is not module syntax, after `?.` as after `.`.
+assert.equal(hasTopLevelModuleSyntax('const x = a.import; a.export = 1;'), false);
+assert.equal(hasTopLevelModuleSyntax('const x = a?.import; const y = a?.export;'), false);
 
 // Pi 0.84.3 changed its executable from dist/cli.js to a split ESM bundle
 // whose largest chunk is 3.7 MiB. The old detector built a complete Acorn AST

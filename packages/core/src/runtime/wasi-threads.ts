@@ -115,6 +115,8 @@
  * see `wasiThreadsLoadError`. It is never run in a way that would corrupt.
  */
 
+import { WASM_EXTERN, wasmInterface } from './wasm-binary.js';
+
 /** The import namespace the wasi-threads proposal defines. */
 export const WASI_THREADS_NAMESPACE = 'wasi';
 /** The import namespace carrying Nimbus's software futex. */
@@ -145,93 +147,26 @@ export interface WasmThreadsInfo {
   threadStart: boolean;
 }
 
-function readVarU32(bytes: Uint8Array, at: number): [number, number] {
-  let result = 0;
-  let shift = 0;
-  let i = at;
-  for (;;) {
-    if (i >= bytes.length) throw new Error('wasm: truncated LEB128');
-    const b = bytes[i++];
-    result |= (b & 0x7f) << shift;
-    if ((b & 0x80) === 0) return [result >>> 0, i];
-    shift += 7;
-    if (shift > 35) throw new Error('wasm: LEB128 too long');
-  }
-}
-
 /**
- * Read the import and export sections of a wasm binary.
+ * What a module asks of the host for threads, from its import and export
+ * sections (wasm-binary.ts).
  *
  * The JS API exposes `WebAssembly.Module.imports()` but not the TYPE of an
  * imported memory, and the host has to create that memory with the exact
  * initial/maximum the module declares or instantiation fails. So the limits
  * are read from the binary, supervisor-side, where the bytes already are.
- * Only the two sections that matter are decoded; every other section is
- * skipped by its declared length.
  */
 export function inspectWasmThreads(bytes: Uint8Array): WasmThreadsInfo {
+  const { imports, exports } = wasmInterface(bytes);
   const info: WasmThreadsInfo = { spawns: false, futex: false, memory: null, threadStart: false };
-  if (bytes.length < 8) return info;
-  if (bytes[0] !== 0x00 || bytes[1] !== 0x61 || bytes[2] !== 0x73 || bytes[3] !== 0x6d) return info;
-  const utf8 = new TextDecoder();
-  let i = 8;
-  while (i < bytes.length) {
-    const id = bytes[i++];
-    let size: number;
-    [size, i] = readVarU32(bytes, i);
-    const end = i + size;
-    if (end > bytes.length) break;
-    if (id === 2) {
-      let count: number;
-      let p = i;
-      [count, p] = readVarU32(bytes, p);
-      for (let n = 0; n < count; n++) {
-        let len: number;
-        [len, p] = readVarU32(bytes, p);
-        const mod = utf8.decode(bytes.subarray(p, p + len));
-        p += len;
-        [len, p] = readVarU32(bytes, p);
-        const name = utf8.decode(bytes.subarray(p, p + len));
-        p += len;
-        const kind = bytes[p++];
-        if (kind === 0x00) {
-          [, p] = readVarU32(bytes, p);  // type index
-          if (mod === WASI_THREADS_NAMESPACE && name === 'thread-spawn') info.spawns = true;
-          if (mod === NIMBUS_THREADS_NAMESPACE && name === 'futex_wait') info.futex = true;
-        } else if (kind === 0x01) {
-          p++;                            // reftype
-          const flags = bytes[p++];
-          [, p] = readVarU32(bytes, p);   // initial
-          if (flags & 0x01) [, p] = readVarU32(bytes, p);
-        } else if (kind === 0x02) {
-          const flags = bytes[p++];
-          let initial: number;
-          [initial, p] = readVarU32(bytes, p);
-          let maximum: number | null = null;
-          if (flags & 0x01) [maximum, p] = readVarU32(bytes, p);
-          info.memory = { module: mod, name, initial, maximum, shared: (flags & 0x02) !== 0 };
-        } else if (kind === 0x03) {
-          p += 2;                         // valtype + mutability
-        } else {
-          return info;                    // unknown import kind: stop, report what is known
-        }
-      }
-    } else if (id === 7) {
-      let count: number;
-      let p = i;
-      [count, p] = readVarU32(bytes, p);
-      for (let n = 0; n < count; n++) {
-        let len: number;
-        [len, p] = readVarU32(bytes, p);
-        const name = utf8.decode(bytes.subarray(p, p + len));
-        p += len;
-        const kind = bytes[p++];
-        [, p] = readVarU32(bytes, p);
-        if (kind === 0x00 && name === WASI_THREAD_START_EXPORT) info.threadStart = true;
-      }
+  for (const { module, name, kind, memory } of imports) {
+    if (kind === WASM_EXTERN.func && module === WASI_THREADS_NAMESPACE && name === 'thread-spawn') info.spawns = true;
+    if (kind === WASM_EXTERN.func && module === NIMBUS_THREADS_NAMESPACE && name === 'futex_wait') info.futex = true;
+    if (memory) {
+      info.memory = { module, name, initial: memory.min, maximum: memory.max, shared: (memory.flags & 0x02) !== 0 };
     }
-    i = end;
   }
+  info.threadStart = exports.some(({ name, kind }) => kind === WASM_EXTERN.func && name === WASI_THREAD_START_EXPORT);
   return info;
 }
 

@@ -29,10 +29,6 @@
 //  11. apps.list reports every stamped identity in its shape.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { FENCED_WORK_MAX_ATTEMPT } from '../../packages/fabric/src/fenced-work.ts';
@@ -64,38 +60,21 @@ import {
   PUBLIC_BEARER_HEADER,
   PREVIEW_CAPABILITY_HEADER,
 } from '../../packages/worker/src/_shared/session-router.ts';
+import { stagedAssets } from './lib/staged-assets.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
 // routes.ts transitively imports `cloudflare:workers`; bundle it with a stub.
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-universal-durability-'));
-const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts', './packages/worker/src/session/port-capability.ts', './packages/worker/src/session/programmatic.ts', './packages/worker/src/facets/compose.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cloudflare-workers-test-stub',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'test' }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-        contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-        loader: 'js',
-      }));
-    },
-  }],
-});
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const routesEntry = build.outputs.find((o) => o.path.endsWith('/routes.js'));
-const programmaticEntry = build.outputs.find((o) => o.path.endsWith('/programmatic.js'));
-const composeEntry = build.outputs.find((o) => o.path.endsWith('/compose.js'));
-const portCapEntry = build.outputs.find((o) => o.path.endsWith('/port-capability.js'));
-const { routeToSessionPort } = await import(pathToFileURL(portCapEntry.path).href);
-const { routeToSessionApp } = await import(pathToFileURL(routesEntry.path).href);
-const { composeFacetManager } = await import(pathToFileURL(composeEntry.path).href);
 const {
+  routeToSessionPort, routeToSessionApp, composeFacetManager,
   rpcExposeApp, rpcExposePort, rpcListApps, rpcRotateLink, rpcRemoveApp, rpcStartProcess, rpcListPorts,
-} = await import(pathToFileURL(programmaticEntry.path).href);
+} = await importWorkerBundle({
+  'packages/worker/src/session/port-capability.ts': ['routeToSessionPort'],
+  'packages/worker/src/session/routes.ts': ['routeToSessionApp'],
+  'packages/worker/src/facets/compose.ts': ['composeFacetManager'],
+  'packages/worker/src/session/programmatic.ts': ['rpcExposeApp', 'rpcExposePort', 'rpcListApps', 'rpcRotateLink', 'rpcRemoveApp', 'rpcStartProcess', 'rpcListPorts'],
+});
 
 const SID = 'nimble-otter-4271';
 const SUFFIX = 'nimbus-os.dev';
@@ -133,17 +112,7 @@ function setup({ hooks = {}, storage = new Map(), world, disk, directory = fakeD
     LOADER: world.loader,
     NIMBUS_PREVIEW_HOST_SUFFIX: SUFFIX,
     NIMBUS_PUBLIC_DIRECTORY: directory.namespace,
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        try {
-          const { readFile } = await import('node:fs/promises');
-          return new Response(await readFile(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-        } catch {
-          return new Response('', { status: 404 });
-        }
-      },
-    },
+    ASSETS: stagedAssets,
   };
   const processes = new SessionProcessSupervisor();
   const portRegistry = new PortRegistry();
@@ -795,4 +764,3 @@ async function waitFor(probe, budgetMs) {
 }
 
 console.log('ok - universal durability (unconditional stamp + re-drive without reservation, derived identity, ephemeral duplicate, lazy expose, capability bound to identity, rotate, remove, name hosts, $PORT injection + mismatch, restart policy, apps.list)');
-await rm(outputDir, { recursive: true, force: true });

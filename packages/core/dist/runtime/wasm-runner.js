@@ -52,6 +52,7 @@ import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
 import { inspectWasmThreads, wasiThreadsLoadError } from './wasi-threads.js';
 import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory.js';
+import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
 export const WASM_RUNNER_VERSION = '0.3.0';
 export const WASM_RUNNER_HELP = 'Usage: wasm-runner [options] <file.wasm> [exportName] [int args...]\n' +
@@ -101,43 +102,26 @@ export function formatWasmRunnerWasiInfo() {
     }, null, 2) + '\n';
 }
 /**
- * Cheap supervisor-side WASI-detect: scan the wasm import section
- * header bytes for the literal `wasi_snapshot_preview1` module name.
- * No full parser — we just walk the import section and check the
- * module-name string of each entry. False positives are not possible
- * because import-section module names are length-prefixed UTF-8
- * blocks; a substring match against the raw bytes is sufficient
- * (the literal "wasi_snapshot_preview1" doesn't appear inside any
- * other section's well-formed payload at the import position).
+ * The WASI ABI a module binds, from the module names in its import section:
+ * `wasi_snapshot_preview1` is preview1 and `wasi_unstable` (what
+ * binji-linked binaries import) preview0; null for a module that imports
+ * neither. Which one matters: the two share every function name and every
+ * signature but disagree on fd_seek's whence constants and on the filestat
+ * layout, so binding the wrong one never traps — it silently returns wrong
+ * offsets and wrong file sizes. A module importing both is preview1. The
+ * namespace's text anywhere else in the binary (a custom section, a string
+ * in a data segment) decides nothing.
  *
- * This avoids `WebAssembly.Module.imports(mod)` which can only run
- * inside a context that holds a precompiled Module — we don't yet
- * have one in the supervisor (CSP blocks request-time compile).
+ * Read from the binary because `WebAssembly.Module.imports(mod)` needs a
+ * compiled module, which the supervisor does not have (CSP blocks
+ * request-time compile).
  */
 function detectWasiAbi(bytes) {
-    // Recognise BOTH 'wasi_snapshot_preview1' (modern) AND 'wasi_unstable'
-    // (preview0, what binji-linked binaries import). Which one matters: the two
-    // share every function name and every signature but disagree on fd_seek's
-    // whence constants and on the filestat layout, so binding the wrong one
-    // never traps — it silently returns wrong offsets and wrong file sizes.
-    // 'wasi_unstable' is not a substring of 'wasi_snapshot_preview1', so the
-    // two needles cannot be confused; a module carrying both is preview1.
-    const enc = new TextEncoder();
-    const needles = [
-        [enc.encode('wasi_snapshot_preview1'), 'preview1'],
-        [enc.encode('wasi_unstable'), 'preview0'],
-    ];
-    for (const [needle, abi] of needles) {
-        if (bytes.length < needle.length)
-            continue;
-        outer: for (let i = 0; i <= bytes.length - needle.length; i++) {
-            for (let j = 0; j < needle.length; j++) {
-                if (bytes[i + j] !== needle[j])
-                    continue outer;
-            }
-            return abi;
-        }
-    }
+    const modules = new Set(wasmInterface(bytes).imports.map((entry) => entry.module));
+    if (modules.has(WASI_ABI_NAMESPACE.preview1))
+        return 'preview1';
+    if (modules.has(WASI_ABI_NAMESPACE.preview0))
+        return 'preview0';
     return null;
 }
 /**

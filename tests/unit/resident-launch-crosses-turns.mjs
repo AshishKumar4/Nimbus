@@ -18,18 +18,11 @@
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
-import { processFiles } from './lib/process-bridge.mjs';
 import { moduleMapText } from './lib/module-map-bundle.mjs';
+import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -40,28 +33,10 @@ adoptCtxExports({
 });
 
 function makeManager(label, turns) {
-  const world = createFacetWorld(() => ({
-    async startProcess() { return { ok: true }; },
-    async handleHttpRequest() { return new Response('ok'); },
-  }));
-  const ctx = createFacetCtx(world, label);
-  const env = {
-    LOADER: world.loader,
+  const { manager, world, vfs } = launchManager(label, {
     // Force a bound an ordinary program crosses many times over.
-    NIMBUS_LAUNCH_CHUNK_BYTES: '2048',
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        return new Response(
-          readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-          { status: 200 },
-        );
-      },
-    },
-  };
-  const manager = new FacetManager(
-    ctx, env, new SessionProcessSupervisor(), new PortRegistry(), processHostFor,
-    {
+    env: { NIMBUS_LAUNCH_CHUNK_BYTES: '2048' },
+    hooks: {
       // Stand in for the session's alarm. Counting the grants is how we see
       // that the launch really did suspend rather than run straight through.
       requestLaunchTurn: () => {
@@ -69,10 +44,7 @@ function makeManager(label, turns) {
         setTimeout(() => { void manager.pumpResidentLaunches(); }, 0);
       },
     },
-  );
-  const harness = createSqliteVfsTestHarness();
-  const vfs = new SqliteVFS(harness.sql, harness.ctx);
-  manager.setVfs(vfs, processFiles(vfs));
+  });
   return { manager, world, vfs };
 }
 

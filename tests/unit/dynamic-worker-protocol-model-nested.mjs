@@ -9,13 +9,8 @@
 // may take); the rest of the two-holder scope, and the mutants:
 // dynamic-worker-protocol-model.
 
-import { checkFamilies, childSets } from './lib/ledger-protocol-model.mjs';
+import { checkFamilies, nestedCases } from './lib/ledger-protocol-model.mjs';
 
-const sets = childSets(2);
-const cases = [];
-for (const [i, a] of sets.entries()) {
-  if (i % 2 !== 0) continue;
-  for (const b of sets) cases.push([{ parent: 'R', children: a }, { parent: 0, children: b }]);
-}
+const cases = nestedCases(0);
 await checkFamilies(cases);
 console.log('ok - dynamic-worker-protocol-model-nested (two holders, one under the other: no refusal while one can progress, and one whenever all are stuck)');

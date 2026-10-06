@@ -4,6 +4,7 @@
 // dynamically instantiate at request time.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { installPython, pipInstall } from './_setup.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'python/flask-markupsafe-fallback';
@@ -16,18 +17,8 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
-await t.run('nimbus install python', 180_000);
-
-{
-  const { output } = await t.run('pip install flask', 240_000);
-  const stripped = stripAnsi(output);
-  a.check('pip install flask completes',
-    /Successfully installed flask/.test(stripped),
-    JSON.stringify(stripped.slice(-1500)));
-  a.check('pip install flask does not try to load MarkupSafe extension wasm',
-    !/Failed to load MarkupSafe|Failed to load dynamic library|Wasm code generation disallowed/i.test(stripped),
-    JSON.stringify(stripped.slice(-1500)));
-}
+await installPython(t, a, { timeoutMs: 180_000 });
+await pipInstall(t, a, 'flask', { timeoutMs: 240_000 });
 
 {
   const { output } = await t.run(

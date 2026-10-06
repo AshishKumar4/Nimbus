@@ -14,7 +14,6 @@
 // facet stubbed and the clock reap() reads moved by hand.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
@@ -27,6 +26,7 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 // The clock the process table's reap reads; moved forward the way a minute passes.
 const realNow = Date.now;
@@ -54,12 +54,7 @@ const processes = new SessionProcessSupervisor();
 processes.setPidBase(PID_GEN_STRIDE);
 const env = {
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const manager = new FacetManager(createFacetCtx(world, 'exec-id-staged'), env, processes, new PortRegistry(), processHostFor, {
   requestLaunchTurn: () => { setTimeout(() => { void manager.pumpResidentLaunches(); }, 0); },
