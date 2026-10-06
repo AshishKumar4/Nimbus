@@ -5,6 +5,39 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
+
+core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
+published; they ship with this release and carry the 2026-10-05 entries
+too. platform, config and cli move because their sources changed since
+their last published versions; core, fabric and worker require platform
+^0.7.2, and cli config ^0.2.4.
+
+- Added `CompositeVFS.route(path, { follow })` (Kinu's ask 23). It answers
+  `{ point, source, path, absentReason? }`: the mount an operation on that path
+  lands on, the backend view that operation uses, and the path inside the
+  mount. It is the same lookup every operation makes, root links and lexical
+  `..` included. An absent mount answers `source: null` with its reason.
+- Added `observeWrites(observer, { wants? })` on `CompositeVFS` and `SqliteVFS`
+  (Kinu's ask 24). It reports each landed mutation once, as
+  `{ type, path, oldPath?, before, after, principal }`, in commit order:
+  writes, creates, deletes, renames (both paths), truncates, copies and
+  attribute changes. `before` and `after` can be read until the observer's
+  callback settles. A refused or rolled-back write reports nothing. Writes on
+  backends that do not report their own take one turn per namespace while
+  someone observes; unobserved writes cost the same as before.
+- Fixed: the bundled React Fast Refresh plugin shipped react-refresh with
+  `$$typeof` rewritten to `$typeof`, so a `memo` or `forwardRef` component
+  lost its state on every edit. The plugin is now built from the lockfile's
+  pinned inputs inside `bun run bundle`, and checked like every other asset.
+- Fixed: `http://[::1]:<port>` from a node program now reaches the session's
+  own server, as `localhost` does.
+- Fixed: `os.constants` and `node:constants` now come from one errno, signal and
+  priority table, so the two agree with each other and with Node.
+- Fixed: ES module lowering treated a string export named `"*"` as the whole
+  namespace, and a pre-bundle could miss an import that followed JSX or a TSX
+  generic function type. Modules are now read by one JSX/TS-aware import lexer;
+  a file it cannot decide is parsed in full.
 - Fixed: two Durable Objects building at once could fail each other's builds
   with "Cannot perform I/O on behalf of a different Durable Object", or leave
   one waiting forever (Kinu's ask 22). Every object's build facet runs in one
@@ -49,14 +82,6 @@ published independently in the `@nimbus-sh` npm scope.
 - The staged napi-wasm loader is rebuilt through its recipe: it carries the
   lanes, and the WASI filesystem codec as it stands in core now (the staged
   one predated core's later filesystem changes).
-
-## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
-
-core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
-published; they ship with this release and carry the 2026-10-05 entries
-too. platform, config and cli move because their sources changed since
-their last published versions; core, fabric and worker require platform
-^0.7.2, and cli config ^0.2.4.
 
 ### Git at scale
 
