@@ -134,19 +134,34 @@ export class Session extends NimbusSession {
 }
 ```
 
+The egress is a Fetcher's `fetch` and `connect` (`Pick<Fetcher, 'fetch' |
+'connect'>`); on a host without Fetchers, an object with those two methods.
+An egress that carries no TCP refuses in its `connect`. A host that composes
+a workspace with Dynamic Worker facets gives them the same network:
+`facets: loaderFacetHost(env, ctx, workspaceNetwork(egress))`
+(`workspaceNetwork` from `@nimbus-sh/core/_shared/workspace-network.js`; one
+network per egress object, so it is the workspace's own).
+
 | Traffic | Through the egress |
 |---|---|
 | git clone, fetch, pull, push, on-demand object fetches | yes |
 | npm install (registry and tarballs, every install facet and peer) | yes; the shared packument cache is not used |
-| curl, wget, dig, ping, `npm view`/`search`, pip, gem/bundle | yes |
-| a program's fetch, `http`/`https` and clients over them (node-fetch, undici), WebSocket | yes |
-| a plain TCP socket a program opens through the session | yes, to the egress's `connect()`; refused if it has none |
-| a program's TLS socket (`tls.connect`) | refused by name (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain TCP only |
+| curl, wget, dig, ping, `npm view`/`search`, gem/bundle | yes |
+| pip: PyPI metadata, and the wheel and source downloads (made inside CPython) | yes |
+| a node or bun program's fetch, `http`/`https` and clients over them (node-fetch, undici), WebSocket | yes |
+| one-shot Python, Ruby, Bash, Clang and WASI programs, and the Node, Bun, Python and Ruby REPLs | yes: every facet a session or a `loaderFacetHost` opens goes out through it |
+| a plain TCP socket a program opens | yes, to the egress's `connect()` |
+| TLS a runtime makes itself over a plain socket (CPython's `ssl`: pip's downloads, `urllib` over https) | yes: the egress's `connect()` carries the encrypted stream |
+| a node program's TLS socket (`tls.connect`) | refused by name (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain TCP only, so the TLS session could only be made off the egress |
 | a worker or dev server a command starts (wrangler dev, vite) | yes |
+| an inline `node` program (a host without Dynamic Workers: Bun, Node): fetch, `http`/`https` | yes, as Node's fetch: the response streams, an unread body is not read, the program's redirect mode is honored and each hop is its own request through the egress |
+| an inline `node` program's WebSocket | refused by name: a WebSocket cannot cross the inline program's realm to the host |
 | Nimbus's own traffic (R2, runtime catalog, OAuth, AI, static assets, its Durable Objects) | no |
 
 HTTPS made by fetch or `https` is unaffected by the TLS limit: it is a
-request, not a socket.
+request, not a socket. A session's processes keep their network across an
+instance reset: a launch the reset interrupted is re-driven through the same
+egress, before or without a reconnect.
 
 ## Proteus-Style Tool Provider
 
