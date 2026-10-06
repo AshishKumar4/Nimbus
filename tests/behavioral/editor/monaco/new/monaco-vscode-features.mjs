@@ -57,7 +57,7 @@ const required = [
   { name: 'tabSize 2',               re: /tabSize:\s*2\b/ },
   { name: 'insertSpaces true',       re: /insertSpaces:\s*true/ },
   // Font (Menlo/Monaco/Consolas first per real VSCode default).
-  { name: 'fontFamily Menlo',        re: /fontFamily:\s*["'][^"']*\bMenlo\b/ },
+  { name: 'fontFamily Menlo first, then Monaco', re: /fontFamily:\s*["']Menlo[^"']*Monaco/ },
   { name: 'fontSize 14',             re: /fontSize:\s*14\b/ },
   // automaticLayout (REQUIRED for split-pane resize — without this
   // the editor sees its initial container size forever).
