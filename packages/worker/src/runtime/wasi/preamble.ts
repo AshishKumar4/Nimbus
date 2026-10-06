@@ -73,8 +73,10 @@ declare const __wasiCreateChildNews: (send: (report: { blocked: boolean; frontie
 // the store a node process reads its synchronous calls from, here listed on demand.
 declare const __wasiResidentStore: {
   __residentBindInMemory(budget: number): unknown;
-  __residentSetStorage(storage: undefined, supervisor: unknown): void;
+  __residentBind(ctx: { storage: { sql: unknown } }): unknown;
+  __residentSetStorage(storage: WasiStorage['grant'] | undefined, supervisor: unknown): void;
   __residentBootLazy(supervisor: unknown): Promise<boolean>;
+  __residentResumeLazy(supervisor: unknown, cred: WasiCred): Promise<boolean>;
   __residentNamespaceView(supervisor: unknown, device: number, cred: WasiCred): ResidentNamespace;
 };
 
@@ -224,18 +226,42 @@ let __wasiSup: WasiSupervisorStub | null = null;
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
 let __wasiResident: { sup: WasiSupervisorStub; fs: ResidentFilesystem } | null = null;
 
+/**
+ * The facet's own SQLite, where it has one (a named one-shot, whose storage
+ * outlives the run): the process's store lives there, and the next process
+ * of the same name and credential starts from what this one read, its pages
+ * included. Its growth is the session's storage ledger's to admit (`grant`,
+ * N18). Absent, the store is the run's heap.
+ */
+interface WasiStorage {
+  sql: unknown;
+  grant?: { facet: string; grant: number };
+}
+let __wasiStorage: WasiStorage | null = null;
+
+/** Adopt the facet's SQLite for the next process's store (before its first filesystem call). */
+export function __wasiAdoptStorage(storage: WasiStorage | null): void {
+  __wasiStorage = storage;
+  __wasiResident = null;
+}
+
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
 function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentFilesystem {
   const supervisor = answeringSupervisor(sup);
   const authority = supervisorFilesystem(sup);
   const store = __wasiResidentStore;
-  store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
-  store.__residentSetStorage(undefined, supervisor);
+  const storage = __wasiStorage;
+  if (storage !== null) store.__residentBind({ storage: { sql: storage.sql } });
+  else store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+  store.__residentSetStorage(storage?.grant, supervisor);
   let view: ResidentNamespace | null = null;
   void (async () => {
     // The session's own filesystem is the one the store answers for: its root reports its device.
     const root = await authority.stat('/');
-    if (root === null || !(await store.__residentBootLazy(supervisor))) return;
+    if (root === null) return;
+    // A kept store resumes from what an earlier process read; the heap starts from nothing.
+    const booted = storage !== null ? await store.__residentResumeLazy(supervisor, cred) : await store.__residentBootLazy(supervisor);
+    if (!booted) return;
     view = store.__residentNamespaceView(supervisor, root.dev, cred);
   })().catch(() => { view = null; });
   const booting: ResidentNamespace = {
@@ -249,6 +275,8 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
     listTree: (key: string) => (view === null ? Promise.resolve(false) : view.listTree(key)),
     content: (key: string) => (view === null ? undefined : view.content(key)),
     fill: (key: string, entry: ResidentEntry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
+    pages: (key: string, revision: number, size: number, first: number, last: number) =>
+      (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
     barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
     reserve: (bytes: number) => view !== null && view.reserve(bytes),
     release: (bytes: number) => { view?.release(bytes); },

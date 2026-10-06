@@ -9,7 +9,9 @@
 //
 // The one thing allowed to differ is bytes(): SQLite counts pages, the
 // heap counts its rows and payload. The in-memory backing's own count is
-// checked against a direct sum of what it holds.
+// checked against a direct sum of what it holds. Pages of big files (the
+// page table: put, use, delete, the least recently used first) are among
+// the operations.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -83,8 +85,10 @@ const reads = (t, rand) => {
     meta: [t.metaGet('epoch'), t.metaGet('ns')],
     ns: t.nsGet(parent, NAMES[Math.floor(rand() * NAMES.length)]), children: t.nsChildren(parent),
     keys: t.nsKeys(), links: t.nsOfKind(2), count: t.nsCount(),
+    page: t.pageGet(path, pick3(rand), Math.floor(rand() * 3)), oldest: t.pageOldest(4), pageBytes: t.pageBytes(), pageUsed: t.pageMaxUsed(),
   };
 };
+const pick3 = (rand) => [3, 7, 9][Math.floor(rand() * 3)];
 
 function step(t, op) {
   switch (op[0]) {
@@ -107,6 +111,9 @@ function step(t, op) {
     case 'nsDeleteChildren': t.nsDeleteChildren(op[1]); break;
     case 'nsDeleteParents': t.nsDeleteParents(op[1], op[2]); break;
     case 'nsClear': t.nsClear(); break;
+    case 'pagePut': return t.pagePut(op[1], op[2], op[3], op[4], op[5]);
+    case 'pageUse': t.pageUse(op[1], op[2], op[3], op[4]); break;
+    case 'pageDelete': t.pageDelete(op[1], op[2], op[3]); break;
     default: throw new Error(`unknown op ${op[0]}`);
   }
 }
@@ -133,8 +140,12 @@ function randomOp(rand) {
   if (r < 0.82) return ['nsPut', pick(DIRS), pick(NAMES), pick([0, 1, 2]), 7, 0o644, 1000, 1000, 1.5, 2.5, 3.5, 11, pick([0, 4]), rand() < 0.3 ? 'target' : null];
   if (r < 0.88) return ['nsDelete', pick(DIRS), pick(NAMES)];
   if (r < 0.92) return ['nsDeleteChildren', pick(DIRS)];
-  if (r < 0.97) { const prefix = `${pick(DIRS)}/`; return ['nsDeleteParents', prefix, store.prefixEnd(prefix)]; }
-  return ['nsClear'];
+  if (r < 0.96) { const prefix = `${pick(DIRS)}/`; return ['nsDeleteParents', prefix, store.prefixEnd(prefix)]; }
+  if (r < 0.965) return ['nsClear'];
+  // Stamps from a small range, so ties in 'used' are ordered by key as SQLite orders them.
+  if (r < 0.985) return ['pagePut', path, pick3(rand), Math.floor(rand() * 3), bytes(), Math.floor(rand() * 6)];
+  if (r < 0.993) return ['pageUse', path, pick3(rand), Math.floor(rand() * 3), Math.floor(rand() * 6)];
+  return ['pageDelete', path, pick3(rand), Math.floor(rand() * 3)];
 }
 
 /** What the in-memory backing holds, summed directly: its bytes() must equal it. */
@@ -147,6 +158,7 @@ function heldBytes(t) {
     const row = t.nsGet(parent, name);
     total += store.ROW + 2 * (parent.length + name.length + (row.target?.length ?? 0));
   }
+  for (const row of t.pageOldest(1 << 20)) total += store.ROW + row.size;
   return total;
 }
 
@@ -163,10 +175,13 @@ for (let seed = 1; seed <= SEQUENCES; seed++) {
     ops.push(op);
     let sqlError = null;
     let heapError = null;
-    try { step(sql, op); } catch (error) { sqlError = String(error.message).includes('UNIQUE') ? 'unique' : String(error.message).includes('CHECK') ? 'check' : error.message; }
-    try { step(heap, op); } catch (error) { heapError = String(error.message).includes('UNIQUE') ? 'unique' : String(error.message).includes('CHECK') ? 'check' : error.message; }
+    let sqlAnswer;
+    let heapAnswer;
+    try { sqlAnswer = step(sql, op); } catch (error) { sqlError = String(error.message).includes('UNIQUE') ? 'unique' : String(error.message).includes('CHECK') ? 'check' : error.message; }
+    try { heapAnswer = step(heap, op); } catch (error) { heapError = String(error.message).includes('UNIQUE') ? 'unique' : String(error.message).includes('CHECK') ? 'check' : error.message; }
     const where = () => `seed ${seed} step ${i}: ${JSON.stringify(ops.slice(-6), (_k, v) => (v instanceof Uint8Array ? [...v] : v))}`;
     assert.equal(heapError, sqlError, `${where()}: the backings fail differently`);
+    assert.equal(heapAnswer, sqlAnswer, `${where()}: the backings answer the step differently`);
     const readSeed = Math.floor(rand() * 2 ** 31);
     const fromHeap = plain(reads(heap, prng(readSeed)));
     const fromSql = plain(reads(sql, prng(readSeed)));

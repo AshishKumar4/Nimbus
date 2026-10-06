@@ -45,6 +45,7 @@ import type {
 } from '../os-contracts.js';
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
+import { RESIDENT_PAGE_BYTES } from '@nimbus-sh/platform/limits.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -89,6 +90,13 @@ export interface ResidentNamespace {
   content(key: string): Uint8Array | undefined;
   /** Fetch file `key`'s bytes (at `entry`'s revision) into the store; null when they could not be fetched. */
   fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
+  /**
+   * Pages `first`..`last` (RESIDENT_PAGE_BYTES each) of file `key`, `size`
+   * bytes at revision `revision`: held ones from the store, the rest read
+   * pinned to that revision and held, with how many were read. Null when
+   * the file is no longer at `revision` or a read failed.
+   */
+  pages(key: string, revision: number, size: number, first: number, last: number): Promise<{ pages: Uint8Array[]; fetched: number } | null>;
   /** The ACQUIRE barrier. */
   barrier(): Promise<boolean>;
   /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
@@ -167,6 +175,9 @@ export interface ResidentFilesystemStats {
   /** File bytes pinned for descriptors now, and how many buffers hold them. */
   pinnedBytes: number;
   pins: number;
+  /** Reads of files too big to hold whole answered through the store's pages, and the pages the session was asked for. */
+  pagedReads: number;
+  pagesFetched: number;
 }
 
 /** A held write goes to the session in pieces of this size: each fits one call. */
@@ -276,7 +287,7 @@ function statOf(entry: ResidentEntry): RuntimeVfsStat {
 const identity = (dev: number, ino: number): string => `${dev}:${ino}`;
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem {
-  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0 };
+  const counts: ResidentFilesystemStats = { local: 0, delegated: {}, lookups: 0, listings: 0, treeListings: 0, fills: 0, filledBytes: 0, barriers: 0, waitMs: 0, pinnedBytes: 0, pins: 0, pagedReads: 0, pagesFetched: 0 };
   // Every wait on the session is timed where it leaves: the authority's calls
   // and the store's listings, fills and barriers. A facet's clock moves only
   // across I/O, so this is the part of a run's wall time the filesystem cost.
@@ -303,6 +314,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     listTree: (key) => timed(resident.listTree(key)),
     content: (key) => resident.content(key),
     fill: (key, entry) => timed(resident.fill(key, entry)),
+    pages: (key, revision, size, first, last) => timed(resident.pages(key, revision, size, first, last)),
     barrier: () => timed(resident.barrier()),
     reserve: (bytes) => resident.reserve(bytes),
     release: (bytes) => resident.release(bytes),
@@ -316,9 +328,18 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
   const unsettled = new Map<number, UnsettledWrite>();
   /** The session's descriptors this process opened read-only: closing one changes nothing, so it owes no barrier. */
   const readers = new Set<number>();
-  /** Of those, the directories, and where their listing is, once their fstat named them. */
+  /** Of those, where each was opened, until its fstat says what it is: a directory, or a file too big to hold whole. */
   const pendingDirectories = new Map<number, string>();
   const directories = new Map<number, OpenDirectory>();
+  /**
+   * The session's read-only descriptors of files too big to hold whole (a
+   * pack, a deep history's .idx), by the name and file (dev, ino) each
+   * opened: a positional read of one is answered from the store's pages of
+   * that file at the revision the name says it has, read a batch at a time
+   * and kept for the next reader. Once the name leads elsewhere, or a read
+   * cannot be answered, the descriptor reads through the session.
+   */
+  const paged = new Map<number, { key: string; dev: number; ino: number }>();
   /** The identity of every session descriptor this process has fstat'd: a sync through it reports the file's refusals. */
   const identities = new Map<number, string>();
   /** Bytes pinned for the codec's own descriptors (pinContent). */
@@ -745,12 +766,46 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       if (key !== undefined) {
         pendingDirectories.delete(handleId);
         if (stat.type === 'directory' && stat.dev === store.device) directories.set(handleId, { key, dev: stat.dev, ino: stat.ino });
+        if (stat.type === 'file' && stat.dev === store.device && stat.size > WASI_RESIDENT_FILE_CAP_BYTES) {
+          paged.set(handleId, { key, dev: stat.dev, ino: stat.ino });
+        }
       }
       return stat;
     });
   };
 
   fs.read = (handleId, offset, length) => {
+    const file = paged.get(handleId);
+    // Positional reads only: a read at the descriptor's offset is the descriptor's to advance.
+    if (file !== undefined && offset !== null && length > 0) {
+      return answer('read', () => after(resolve('/' + file.key, false), (resolved) => {
+        // The file as this process has learned of it (a barrier forgets a
+        // name it changed, and the walk learns it again). Once the name leads
+        // to another file, the pages are not this descriptor's bytes.
+        const now = resolved === DELEGATE ? undefined : entryAt(file.key);
+        if (now === undefined || now === null || now.type !== 'file' || now.dev !== file.dev || now.ino !== file.ino) {
+          paged.delete(handleId);
+          return DELEGATE;
+        }
+        if (offset >= now.size) return new Uint8Array(0);
+        const end = Math.min(now.size, offset + length);
+        const first = Math.floor(offset / RESIDENT_PAGE_BYTES);
+        const last = Math.floor((end - 1) / RESIDENT_PAGE_BYTES);
+        return after(store.pages(file.key, now.revision, now.size, first, last), (found) => {
+          if (found === null) { paged.delete(handleId); return DELEGATE; }
+          counts.pagedReads++;
+          counts.pagesFetched += found.fetched;
+          const out = new Uint8Array(end - offset);
+          found.pages.forEach((page, i) => {
+            const start = (first + i) * RESIDENT_PAGE_BYTES;
+            const from = Math.max(offset, start);
+            const to = Math.min(end, start + page.byteLength);
+            out.set(page.subarray(from - start, to - start), from - offset);
+          });
+          return out;
+        });
+      }), () => authority.read(handleId, offset, length));
+    }
     const held = writes.get(handleId);
     if (held === undefined) { delegated('read'); return authority.read(handleId, offset, length); }
     if (!held.readable) throw fsError('EBADF', 'read', held.path);
@@ -818,6 +873,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (readers.delete(handleId)) {
       pendingDirectories.delete(handleId);
       directories.delete(handleId);
+      paged.delete(handleId);
       delegated('close');
       return authority.close(handleId);
     }

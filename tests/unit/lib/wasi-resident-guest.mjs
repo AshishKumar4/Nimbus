@@ -5,7 +5,9 @@
  * supervisor that dispatches each op as the session does. The guest's imports
  * are called from the test as a guest calls them, with its memory laid out by
  * hand. `refuse(path)` makes the session refuse every write to a file whose
- * path it matches with ENOSPC, as a full store does.
+ * path it matches with ENOSPC, as a full store does. `storage` gives the
+ * process a facet's SQLite (ctx.storage.sql's shape) for its store, and
+ * `world` runs it as a new process in an earlier guest's session.
  *
  * Directory note: under tests/unit/lib/ so the suite does not run it as a test.
  */
@@ -32,22 +34,26 @@ const enc = new TextEncoder();
 /** Whether this engine can park a guest: without JSPI a guest answers from the session, and these tests have nothing to test. */
 export const canPark = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
 
-export async function residentGuest({ refuse = () => false } = {}) {
+export async function residentGuest({ refuse = () => false, storage = null, world = null } = {}) {
   const modulePath = path.join(os.tmpdir(), `wasi-resident-guest-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
-  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiFsStats, __wasiSettleWrites };`);
+  writeFileSync(modulePath, `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiAdoptStorage, __wasiFsStats, __wasiSettleWrites };`);
   let P;
   try { P = await import(pathToFileURL(modulePath).href); } finally { rmSync(modulePath, { force: true }); }
 
-  const harness = createSqliteVfsTestHarness();
-  const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const kernel = raw.as(CRED_KERNEL);
-  kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
-  kernel.chown('home/user', USER.uid, USER.gid);
-  const processes = new SessionProcessSupervisor();
+  const session = world ?? (() => {
+    const harness = createSqliteVfsTestHarness();
+    const raw = new SqliteVFS(harness.sql, harness.ctx);
+    const kernel = raw.as(CRED_KERNEL);
+    kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
+    kernel.chown('home/user', USER.uid, USER.gid);
+    const processes = new SessionProcessSupervisor();
+    const authority = new ProcessFiles(raw);
+    const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
+    const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {} });
+    return { harness, raw, kernel, processes, authority, bridge, dispatch };
+  })();
+  const { harness, raw, kernel, processes, authority, bridge, dispatch } = session;
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
-  const authority = new ProcessFiles(raw);
-  const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-  const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {} });
   const own = authority.bind({ pid, cred: USER });
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
@@ -71,7 +77,8 @@ export async function residentGuest({ refuse = () => false } = {}) {
     for (const request of requests) {
       try {
         if (!('length' in request)) out.push({ stat: (await own.stat(request.path, { followSymlinks: false })) ?? null });
-        else out.push({ bytes: await own.readRange(request.path, request.offset, request.length) });
+        // As session/rpc.ts reads a range: pinned to the epoch and revision it names.
+        else out.push({ bytes: await own.readRange(request.path, request.offset, request.length, { expectedEpoch: request.expectedEpoch, expectedRevision: request.expectedRevision }) });
       } catch (error) { out.push({ error }); }
     }
     return out;
@@ -80,6 +87,7 @@ export async function residentGuest({ refuse = () => false } = {}) {
   const memory = new WebAssembly.Memory({ initial: 16 });
   P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: USER });
   P.__wasiAdoptSupervisor(supervisor);
+  if (storage !== null) P.__wasiAdoptStorage({ sql: storage });
   const { wasiImport, fsImport } = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory, stdoutWrite: () => {}, stderrWrite: () => {},
   });
@@ -90,7 +98,7 @@ export async function residentGuest({ refuse = () => false } = {}) {
   const RIGHTS_ALL = 0x1fffffffn;
 
   const guest = {
-    P, kernel, raw, wasiImport, fsImport, memory, stats: () => P.__wasiFsStats(),
+    P, kernel, raw, wasiImport, fsImport, memory, world: session, stats: () => P.__wasiFsStats(),
     /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
     async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
       const n = putPath(name);
@@ -152,7 +160,11 @@ export async function residentGuest({ refuse = () => false } = {}) {
       if (errno !== 0) throw Object.assign(new Error(`fd_filestat_get: errno ${errno}`), { errno });
       return { nlink: Number(view().getBigUint64(OUT + 24, true)), size: Number(view().getBigUint64(OUT + 32, true)) };
     },
-    async dispose() { await bridge.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
+    /** This process ends; the session ends with it unless it was another guest's (`world`). */
+    async dispose() {
+      await authority.releaseProcess(pid);
+      if (world === null) { await bridge.dispose(); harness.db.close(); }
+    },
   };
   // The store boots on the first call; wait until it answers.
   await guest.open('home/user', { directory: true }).then((fd) => guest.close(fd));
