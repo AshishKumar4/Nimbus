@@ -5,6 +5,26 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
+
+core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
+published; they ship with this release and carry the 2026-10-05 entries
+too. platform, config and cli move because their sources changed since
+their last published versions; core, fabric and worker require platform
+^0.7.2, and cli config ^0.2.4.
+
+- Fixed: `mkdir -p` through a directory that already exists no longer fails
+  with EBUSY when a process holds a lease on part of the tree. Making a
+  directory that is already there is not a mutation, so no lease refuses it.
+- Fixed: a named, default or re-exported import of a module lowered to
+  CommonJS is now a live binding, as in Node: `import { count }` sees a later
+  `count++` in the exporting module. Writing to an imported binding throws a
+  TypeError. In an import cycle, a hoisted `export function` is callable while
+  the other module evaluates.
+- The Markflow probes run in every release gate again; they had been skipped
+  since 2026-08-04. The unit suite runs sharded on Cloudflare Containers
+  (`bun scripts/ci-run.mjs <commit>`), and `bun run typecheck` also checks the
+  repo's JavaScript scripts and test helpers.
 - A pre-bundle's slice plugin resolves through the one bundler resolver the
   VFS plugin uses, awaiting each answer, again; the synchronous driver added
   as a workaround (`createSyncBundlerResolver`) is gone. Its stall (Markflow's
@@ -16,15 +36,6 @@ published independently in the `@nimbus-sh` npm scope.
   navigation 2 of 2 times with the loader before that fix, and passed 3 of 3
   with it (the one line apart); on this tree, two Markflow sessions at once
   passed 6 of 6.
-
-## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
-
-core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
-published; they ship with this release and carry the 2026-10-05 entries
-too. platform, config and cli move because their sources changed since
-their last published versions; core, fabric and worker require platform
-^0.7.2, and cli config ^0.2.4.
-
 - Added `CompositeVFS.route(path, { follow })` (Kinu's ask 23). It answers
   `{ point, source, path, absentReason? }`: the mount an operation on that path
   lands on, the backend view that operation uses, and the path inside the
