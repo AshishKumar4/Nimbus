@@ -10,6 +10,7 @@
 import { detectRenames, quotePath } from '../unified-diff.js';
 import { encodeNode } from './cachetree.js';
 import { comparePaths, compareBytes, decodePath, S_IFMT } from './dircache.js';
+import { PairList } from './pairs.js';
 import { S_IFDIR, readTree } from './tree.js';
 import { scanWorktree } from './walk.js';
 const encoder = new TextEncoder();
@@ -111,19 +112,21 @@ export async function walkTreeAndIndex(store, tree, dc, specs, visit, { cacheTre
     return (await walk('', tree, 0, dc.count, cacheTree === null ? -1 : cacheTree.root)).built?.bytes ?? null;
 }
 const UNMERGED = ['', 'DD', 'AU', 'UD', 'UA', 'DU', 'AA', 'UU'];
-/** wt_status_collect: every changed path, then the untracked ones, each list in git's order. */
+// The index column's code per index entry: a letter, or (8 + mask) for an unmerged path.
+const CODE_LETTERS = ['', 'M', 'T', 'A', 'R'];
+const UNMERGED_CODE = 8;
+/**
+ * wt_status_collect: every changed path, then the untracked ones, each in
+ * git's order. Held as a byte a index entry for the index column, the
+ * worktree walk's DirtySet for the other, and the staged deletions (paths
+ * the index no longer has) in columns; additions and deletions become
+ * objects only to be matched as renames. A line is made as it is printed.
+ */
 export async function collectStatus(store, tree, dc, head, options) {
-    const changes = new Map();
-    const change = (path) => {
-        let found = changes.get(path);
-        if (!found) {
-            found = { path, index: ' ', worktree: ' ' };
-            changes.set(path, found);
-        }
-        return found;
-    };
-    // diff-index --cached HEAD, adds and deletes queued for rename detection.
-    const queue = [];
+    const codes = new Uint8Array(dc.count);
+    const renamedFrom = new Map();
+    // diff-index --cached HEAD: additions and deletions in columns, for rename detection.
+    const addsAndDeletes = new PairList();
     // An index with no cache tree (one a clone or cf-git wrote) gets the one the whole tree's walk
     // answers against HEAD: kept, the next status skips what agrees. One it has is git's to keep.
     const whole = options.specs.length === 0 && dc.cacheTree() === null;
@@ -133,46 +136,83 @@ export async function collectStatus(store, tree, dc, head, options) {
             for (let i = lo; i < hi; i++)
                 if (dc.stage(i))
                     mask |= 1 << (dc.stage(i) - 1);
-            change(path).unmerged = UNMERGED[mask];
+            codes[lo] = UNMERGED_CODE + mask;
             return;
         }
-        const entry = hi > lo && !dc.intentToAdd(lo) ? { path, oid: dc.oid(lo), mode: dc.mode(lo) } : null;
-        if (leaf && entry && leaf.oid === entry.oid && leaf.mode === entry.mode)
+        const entry = hi > lo && !dc.intentToAdd(lo) ? lo : -1;
+        if (leaf && entry >= 0 && leaf.oid === dc.oid(entry) && leaf.mode === dc.mode(entry))
             return;
-        if (leaf && entry) {
-            change(path).index = (leaf.mode & S_IFMT) !== (entry.mode & S_IFMT) ? 'T' : 'M';
+        if (leaf && entry >= 0) {
+            codes[entry] = (leaf.mode & S_IFMT) !== (dc.mode(entry) & S_IFMT) ? 2 : 1;
             return;
         }
-        if (leaf || entry)
-            queue.push({ one: leaf, two: entry });
+        if (leaf || entry >= 0)
+            addsAndDeletes.add(path, leaf, entry >= 0 ? { oid: dc.oid(entry), mode: dc.mode(entry), worktree: false } : null);
     }, { cacheTree: dc.cacheTree(), build: whole });
     if (built)
         dc.setCacheTree(built);
-    let paired = queue;
-    if (options.renames && queue.some((pair) => pair.one) && queue.some((pair) => pair.two)) {
-        // Rename detection reads the blobs on both sides: a partial clone fetches them in one request.
-        await store.prefetch(queue.flatMap((pair) => [pair.one?.oid, pair.two?.oid].filter((oid) => oid !== undefined)));
-        paired = (await detectRenames(queue, async (side) => (await store.read(side.oid)).data)).queue;
+    const order = addsAndDeletes.order();
+    let hasAdd = false;
+    let hasDelete = false;
+    for (const k of order) {
+        if (addsAndDeletes.pair(k).two)
+            hasAdd = true;
+        else
+            hasDelete = true;
     }
-    for (const pair of paired) {
-        if (pair.one && pair.two) {
-            const found = change(pair.two.path);
-            found.index = 'R';
-            found.from = pair.one.path;
-        }
-        else if (pair.two) {
-            change(pair.two.path).index = 'A';
+    let pairs = [];
+    if (options.renames && hasAdd && hasDelete) {
+        const queue = [...order].map((k) => addsAndDeletes.pair(k));
+        // Rename detection reads the blobs on both sides: a partial clone fetches them in one request.
+        await store.prefetch(addsAndDeletes.storeOids());
+        pairs = (await detectRenames(queue, async (side) => (await store.read(side.oid)).data)).queue;
+    }
+    else {
+        pairs = [...order].map((k) => addsAndDeletes.pair(k));
+    }
+    // Additions and renames are index entries; deletions are not, and are kept in path order.
+    const deleted = [];
+    for (const pair of pairs) {
+        if (pair.two) {
+            const at = dc.find(pair.two.path);
+            codes[at] = pair.one ? 4 : 3;
+            if (pair.one)
+                renamedFrom.set(at, pair.one.path);
         }
         else {
-            change(pair.one.path).index = 'D';
+            deleted.push(pair.one.path);
         }
     }
+    pairs = [];
     // diff-files, and the untracked files.
     const scan = await scanWorktree(tree, dc, { specs: options.specs, untracked: options.untracked, excludes: options.excludes });
-    for (const [i, dirty] of scan.dirty)
-        change(dc.path(i)).worktree = dirty.change;
+    let count = deleted.length;
+    for (let i = 0; i < dc.count; i++)
+        if (codes[i] !== 0 || scan.dirty.has(i))
+            count++;
+    const changes = function* () {
+        let d = 0;
+        for (let i = 0; i < dc.count; i++) {
+            const code = codes[i];
+            const dirty = scan.dirty.get(i);
+            if (code === 0 && !dirty)
+                continue;
+            const path = dc.path(i);
+            while (d < deleted.length && comparePaths(deleted[d], path) < 0)
+                yield { path: deleted[d++], index: 'D', worktree: ' ' };
+            if (code >= UNMERGED_CODE) {
+                yield { path, index: ' ', worktree: ' ', unmerged: UNMERGED[code - UNMERGED_CODE] };
+                continue;
+            }
+            const from = renamedFrom.get(i);
+            yield { path, index: code ? CODE_LETTERS[code] : ' ', worktree: dirty ? dirty.change : ' ', ...(from === undefined ? {} : { from }) };
+        }
+        while (d < deleted.length)
+            yield { path: deleted[d++], index: 'D', worktree: ' ' };
+    };
     return {
-        changes: [...changes.values()].sort((a, b) => comparePaths(a.path, b.path)),
+        count,
+        changes,
         untracked: scan.untracked.sort(comparePaths),
         // diff-files reports first, then read_directory.
         errors: [...scan.errors.tracked, ...scan.errors.untracked],
@@ -245,27 +285,26 @@ function statusQuote(path) {
     return quoted[0] !== '"' && path.includes(' ') ? `"${quoted}"` : quoted;
 }
 /**
- * wt_shortstatus_print as a binary string. `prefix` (the cwd below the top,
- * ending in '/', or '') makes paths relative, as short status does and
- * porcelain does not; `z` ends entries with NUL and prints paths as they are.
+ * wt_shortstatus_print as binary strings, one line at a time. `prefix` (the
+ * cwd below the top, ending in '/', or '') makes paths relative, as short
+ * status does and porcelain does not; `z` ends entries with NUL and prints
+ * paths as they are.
  */
-export function formatShortStatus(status, { prefix, z }) {
+export function* shortStatusLines(status, { prefix, z }) {
     const bin = (path) => String.fromCharCode(...encoder.encode(path));
     const show = (path) => (z ? bin(path) : statusQuote(relativePath(path, prefix)));
     const end = z ? '\0' : '\n';
-    let out = '';
     for (const entry of status.changes) {
         if (entry.unmerged) {
-            out += `${entry.unmerged} ${show(entry.path)}${end}`;
+            yield `${entry.unmerged} ${show(entry.path)}${end}`;
         }
         else if (z) {
-            out += `${entry.index}${entry.worktree} ${show(entry.path)}\0${entry.from === undefined ? '' : `${show(entry.from)}\0`}`;
+            yield `${entry.index}${entry.worktree} ${show(entry.path)}\0${entry.from === undefined ? '' : `${show(entry.from)}\0`}`;
         }
         else {
-            out += `${entry.index}${entry.worktree} ${entry.from === undefined ? '' : `${show(entry.from)} -> `}${show(entry.path)}\n`;
+            yield `${entry.index}${entry.worktree} ${entry.from === undefined ? '' : `${show(entry.from)} -> `}${show(entry.path)}\n`;
         }
     }
     for (const path of status.untracked)
-        out += `?? ${show(path)}${end}`;
-    return out;
+        yield `?? ${show(path)}${end}`;
 }

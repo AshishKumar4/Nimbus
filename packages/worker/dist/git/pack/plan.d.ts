@@ -26,6 +26,8 @@ export interface TreeEntry {
 }
 /** A tree object's entries, in the tree's own order. */
 export declare function parseTree(tree: Uint8Array): TreeEntry[];
+/** `bytes` copied into a longer buffer. */
+export declare function growBytes(bytes: Uint8Array, length: number): Uint8Array;
 export declare class CheckoutPlan {
     readonly count: number;
     private readonly oids;

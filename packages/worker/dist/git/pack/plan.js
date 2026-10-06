@@ -57,7 +57,7 @@ class Columns {
     add(path, mode, oid, oidAt) {
         if (this.count === this.modes.length) {
             const capacity = this.count * 2;
-            this.oids = grow(this.oids, capacity * OID_BYTES);
+            this.oids = growBytes(this.oids, capacity * OID_BYTES);
             const modes = new Uint32Array(capacity);
             modes.set(this.modes);
             this.modes = modes;
@@ -67,7 +67,7 @@ class Columns {
         }
         const start = this.pathStarts[this.count];
         if (start + path.byteLength > this.pathBytes.byteLength) {
-            this.pathBytes = grow(this.pathBytes, Math.max(this.pathBytes.byteLength * 2, start + path.byteLength));
+            this.pathBytes = growBytes(this.pathBytes, Math.max(this.pathBytes.byteLength * 2, start + path.byteLength));
         }
         this.pathBytes.set(path, start);
         this.oids.set(oid.subarray(oidAt, oidAt + OID_BYTES), this.count * OID_BYTES);
@@ -75,7 +75,8 @@ class Columns {
         this.pathStarts[++this.count] = start + path.byteLength;
     }
 }
-function grow(bytes, length) {
+/** `bytes` copied into a longer buffer. */
+export function growBytes(bytes, length) {
     const grown = new Uint8Array(length);
     grown.set(bytes);
     return grown;

@@ -108,6 +108,52 @@ export function matchStat(dc, i, st, filemode) {
         changed |= DATA;
     return changed;
 }
+const KIND_M = 1;
+const KIND_D = 2;
+const KIND_T = 3;
+const KIND_D_DIRECTORY = 4;
+/**
+ * The entries that differ from the worktree, by entry number: one byte an
+ * index entry, and the ids of the files the walk hashed. With every file of
+ * a 96,000-file tree changed, this is 96 KB and the hashed half's ids, where
+ * an object (and its lstat) per entry held about 30 MiB. A consumer that
+ * needs a changed file's stat takes it again.
+ */
+export class DirtySet {
+    kinds;
+    oids = new Map();
+    size = 0;
+    constructor(entries) {
+        this.kinds = new Uint8Array(entries);
+    }
+    set(i, dirty) {
+        if (this.kinds[i] === 0)
+            this.size++;
+        this.kinds[i] = dirty.change === 'M' ? KIND_M : dirty.change === 'T' ? KIND_T : dirty.directory ? KIND_D_DIRECTORY : KIND_D;
+        if (dirty.oid)
+            this.oids.set(i, dirty.oid);
+    }
+    has(i) {
+        return i >= 0 && i < this.kinds.length && this.kinds[i] !== 0;
+    }
+    get(i) {
+        const kind = this.has(i) ? this.kinds[i] : 0;
+        if (kind === 0)
+            return undefined;
+        const change = kind === KIND_M ? 'M' : kind === KIND_T ? 'T' : 'D';
+        return { change, oid: this.oids.get(i), directory: kind === KIND_D_DIRECTORY || undefined };
+    }
+    /** The entries in index order. */
+    *keys() {
+        for (let i = 0; i < this.kinds.length; i++)
+            if (this.kinds[i] !== 0)
+                yield i;
+    }
+    *[Symbol.iterator]() {
+        for (const i of this.keys())
+            yield [i, this.get(i)];
+    }
+}
 /**
  * refresh_cache_ent for one entry the worktree holds: null when it matches
  * (its stat refreshed in `dc` when the content had to decide), else how it
@@ -116,9 +162,9 @@ export function matchStat(dc, i, st, filemode) {
 export async function compareEntry(tree, dc, i, path, st, uncleanIsDirty = false) {
     const changed = matchStat(dc, i, st, tree.filemode);
     if (changed & TYPE)
-        return { change: 'T', stat: st };
+        return { change: 'T' };
     if (changed & MODE)
-        return { change: 'M', stat: st };
+        return { change: 'M' };
     if ((dc.mode(i) & S_IFMT) === S_IFGITLINK) {
         dc.markUptodate(i);
         return null;
@@ -136,10 +182,10 @@ export async function compareEntry(tree, dc, i, path, st, uncleanIsDirty = false
     // The size moved on an entry that recorded one: modified, with nothing read. And, for git add,
     // any entry whose stat does not prove it clean: add_files_to_cache (DIFF_RACY_IS_MODIFIED) adds it again.
     if (((changed & DATA) && dc.size(i) !== 0) || uncleanIsDirty)
-        return { change: 'M', stat: st };
+        return { change: 'M' };
     const oid = await worktreeBlobId(tree, path, st);
     if (oid !== dc.oid(i))
-        return { change: 'M', stat: st, oid: oid || undefined };
+        return { change: 'M', oid: oid || undefined };
     dc.refresh(i, st);
     return null;
 }
@@ -157,7 +203,7 @@ export async function scanWorktree(tree, dc, options) {
     const specs = (options.specs ?? []).includes('') ? [] : options.specs ?? [];
     const inScope = (path) => specs.length === 0 || specs.some((spec) => path === spec || path.startsWith(`${spec}/`));
     const onTheWay = (dir) => specs.some((spec) => spec.startsWith(`${dir}/`));
-    const result = { dirty: new Map(), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
+    const result = { dirty: new DirtySet(dc.count), untracked: [], unmerged: [], errors: { tracked: [], untracked: [] } };
     const join = (dir, name) => (dir ? `${dir}/${name}` : name);
     const list = async (dir) => {
         tree.counters.readdirs++;
@@ -245,7 +291,7 @@ export async function scanWorktree(tree, dc, options) {
             if (dc.stage(i) !== 0 || dc.skipWorktree(i) || dc.assumeValid(i))
                 continue;
             if (inScope(dc.path(i)))
-                result.dirty.set(i, { change: 'D', stat: null });
+                result.dirty.set(i, { change: 'D' });
         }
     };
     /** Entries [lo, hi) below a directory the walk could not reach: each one's lstat failed as the directory's did. */
@@ -317,13 +363,13 @@ export async function scanWorktree(tree, dc, options) {
             else if (!dc.skipWorktree(i) && !dc.assumeValid(i) && inScope(path)) {
                 const type = listing === null ? undefined : listing.get(name);
                 if (listing !== null && (type === undefined || (type === 'directory' && !gitlink))) {
-                    result.dirty.set(i, type === undefined ? { change: 'D', stat: null } : { change: 'D', stat: null, directory: true });
+                    result.dirty.set(i, type === undefined ? { change: 'D' } : { change: 'D', directory: true });
                 }
                 else {
                     const st = await lstat(path);
                     if (st !== undefined) {
-                        const dirty = st === null ? { change: 'D', stat: null }
-                            : st.type === 'directory' && !gitlink ? { change: 'D', stat: null, directory: true }
+                        const dirty = st === null ? { change: 'D' }
+                            : st.type === 'directory' && !gitlink ? { change: 'D', directory: true }
                                 : await compareEntry(tree, dc, i, path, st, options.uncleanIsDirty);
                         if (dirty)
                             result.dirty.set(i, dirty);

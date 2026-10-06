@@ -15,13 +15,14 @@ import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
-import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, } from './unified-diff.js';
+import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
 import { DirCache, comparePaths } from './worktree/dircache.js';
+import { PairList } from './worktree/pairs.js';
 import { WorktreeRepo, configBool } from './worktree/repo.js';
-import { collectStatus, formatShortStatus, inSpecs, walkTreeAndIndex } from './worktree/status.js';
+import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
-import { modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId } from './worktree/walk.js';
+import { DirtySet, modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId, } from './worktree/walk.js';
 // ── Lazy-loaded isomorphic-git (avoid ~1MB load on every cold start) ────
 // NOTE: local git ops (init, status, add, commit, log, branch, checkout,
 // diff, ls-files, rev-parse, remote, merge, reset, tag, config) run here in the supervisor DO.
@@ -887,7 +888,7 @@ async function addCommand(ctx, git, vfs, fs, args) {
         const tracked = [];
         for (const [i, dirty] of scan.dirty) {
             if (dirty.change !== 'D')
-                tracked.push({ at: i, end: i + 1, action: 'add', stat: dirty.stat, unmerged: false });
+                tracked.push({ at: i, end: i + 1, action: 'add', stat: null, unmerged: false });
             else if (all !== false)
                 tracked.push({ at: i, end: i + 1, action: 'remove', stat: null, unmerged: false });
         }
@@ -924,7 +925,10 @@ async function addCommand(ctx, git, vfs, fs, args) {
             }
             // Added again with what it already held, an entry is not named (add_to_index's was_same).
             if (dryRun) {
-                const same = !unmerged && modeFromStat(st, dc.mode(i), tree.filemode) === dc.mode(i) && await worktreeBlobId(tree, path, st) === dc.oid(i);
+                // The walk kept only how the entry changed: its stat is taken again.
+                const now = st ?? await wrepo.fs.lstat(path);
+                const same = !unmerged && now !== null && modeFromStat(now, dc.mode(i), tree.filemode) === dc.mode(i)
+                    && await worktreeBlobId(tree, path, now) === dc.oid(i);
                 if (show && !same)
                     out += `add '${path}'\n`;
                 continue;
@@ -1875,65 +1879,87 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
     });
 }
 /**
- * diff-files, diff-index and diff-index --cached, as file pairs in path
- * order: the worktree walk for the worktree side, the tree and index walked
+ * diff-files, diff-index and diff-index --cached, as git's diff queue in
+ * columns: the worktree walk for the worktree side, the tree and index walked
  * together for a tree. Only changed paths are held.
  */
 async function changedPairs(wrepo, dc, base, specs, errors) {
-    const pairs = [];
+    const pairs = new PairList();
     const tree = await wrepo.worktree();
-    const record = (one, two) => {
-        if (!one && !two)
-            return;
-        if (one && two && one.oid === two.oid && one.mode === two.mode)
-            return;
-        pairs.push({ one, two });
-    };
-    const indexSide = (i) => ({ path: dc.path(i), oid: dc.oid(i), mode: dc.mode(i), worktree: false });
+    const indexSide = (i) => ({ oid: dc.oid(i), mode: dc.mode(i), worktree: false });
     // The worktree's side of entry i: its blob (hashed only if it changed) at the mode it is read with.
     const worktreeSide = async (i, dirty) => {
         if (!dirty)
             return { ...indexSide(i), worktree: true };
-        const st = dirty.stat;
+        // The walk kept only how the entry changed: its stat is taken again.
+        const st = dirty.change === 'D' ? null : await tree.fs.lstat(dc.path(i));
         // A missing file, or a directory where the file was, is a deletion.
         if (st === null || st.type === 'directory' || st.type === 'other')
             return null;
-        const path = dc.path(i);
-        const oid = dirty.oid ?? await worktreeBlobId(tree, path, st);
-        return { path, oid, mode: modeFromStat(st, dc.mode(i), tree.filemode), worktree: true };
+        const oid = dirty.oid ?? await worktreeBlobId(tree, dc.path(i), st);
+        return { oid, mode: modeFromStat(st, dc.mode(i), tree.filemode), worktree: true };
     };
     const scan = base.kind === 'tree' && base.cached ? null : await scanWorktree(tree, dc, { specs, untracked: 'no', excludes: null });
     for (const line of scan?.errors.tracked ?? [])
         await errors.write(`${line}\n`);
-    const dirty = scan?.dirty ?? new Map();
+    const dirty = scan?.dirty ?? new DirtySet(0);
     if (base.kind === 'index') {
         for (const [i, change] of dirty)
-            record(indexSide(i), await worktreeSide(i, change));
+            pairs.add(dc.path(i), indexSide(i), await worktreeSide(i, change));
+        return pairs;
     }
-    else {
-        // Where the cache tree vouches for a subtree, the tree and the index agree there and the walk skips it;
-        // a worktree change below it is then the index's side against the worktree's.
-        const seen = new Set();
-        await walkTreeAndIndex(wrepo.store, base.tree, dc, specs, async (path, leaf, lo, hi) => {
-            // diff-index: a path the index lacks (or holds unmerged) is deleted whatever the worktree holds.
-            const entry = hi - lo === 1 && dc.stage(lo) === 0 ? lo : -1;
-            if (dirty.has(entry))
-                seen.add(entry);
-            const two = entry < 0 ? null : base.cached ? indexSide(entry) : await worktreeSide(entry, dirty.get(entry));
-            record(leaf && { path, oid: leaf.oid, mode: leaf.mode, worktree: false }, two);
-        }, { cacheTree: dc.cacheTree() });
-        for (const [i, change] of dirty)
-            if (!seen.has(i) && dc.stage(i) === 0)
-                record(indexSide(i), await worktreeSide(i, change));
+    // Where the cache tree vouches for a subtree, the tree and the index agree there and the walk skips it;
+    // a worktree change below it is then the index's side against the worktree's.
+    const seen = new Set();
+    await walkTreeAndIndex(wrepo.store, base.tree, dc, specs, async (path, leaf, lo, hi) => {
+        // diff-index: a path the index lacks (or holds unmerged) is deleted whatever the worktree holds.
+        const entry = hi - lo === 1 && dc.stage(lo) === 0 ? lo : -1;
+        if (dirty.has(entry))
+            seen.add(entry);
+        const two = entry < 0 ? null : base.cached ? indexSide(entry) : await worktreeSide(entry, dirty.get(entry));
+        pairs.add(path, leaf, two);
+    }, { cacheTree: dc.cacheTree() });
+    for (const [i, change] of dirty)
+        if (!seen.has(i) && dc.stage(i) === 0)
+            pairs.add(dc.path(i), indexSide(i), await worktreeSide(i, change));
+    return pairs;
+}
+/**
+ * The diff queue in git's order after rename detection, one pair at a time.
+ * Modifications pass through as they are; the additions and deletions, the
+ * only pairs renames are found among, are taken out as objects, matched, and
+ * put back where git's diffcore_rename puts them: a rename at its
+ * destination, an unused deletion at its own path.
+ */
+async function* diffQueue(pairs, minimumScore, read, noted) {
+    const order = pairs.order();
+    let others = [];
+    for (const k of order)
+        if (!pairs.modified(k))
+            others.push(pairs.pair(k));
+    if (minimumScore !== null && others.some((pair) => pair.one) && others.some((pair) => pair.two)) {
+        const found = await detectRenames(others, read, { minimumScore });
+        others = found.queue;
+        noted.neededRenameLimit = found.neededRenameLimit;
     }
-    const pathOf = (pair) => (pair.one ?? pair.two).path;
-    return pairs.sort((a, b) => comparePaths(pathOf(a), pathOf(b)));
+    const anchor = (pair) => (pair.two ?? pair.one).path;
+    let next = 0;
+    for (const k of order) {
+        if (!pairs.modified(k))
+            continue;
+        const pair = pairs.pair(k);
+        while (next < others.length && comparePaths(anchor(others[next]), pair.one.path) < 0)
+            yield others[next++];
+        yield pair;
+    }
+    while (next < others.length)
+        yield others[next++];
 }
 /** Print pairs one at a time, each loaded only while it is rendered. */
 async function writeDiff(ctx, pairs, output) {
-    const stats = [];
+    const stats = new StatList();
     let out = '';
-    for (const load of pairs) {
+    for await (const load of pairs) {
         const pair = await load();
         if (output.format === 'stat')
             stats.push(statFile(pair));
@@ -1948,8 +1974,15 @@ async function writeDiff(ctx, pairs, output) {
             out = '';
         }
     }
-    if (output.format === 'stat')
-        out += formatStat(stats, output.columns);
+    if (output.format === 'stat') {
+        for (const line of formatStat(stats, output.columns)) {
+            out += line;
+            if (out.length >= 1 << 16) {
+                await writeBinary(ctx.stdout, out);
+                out = '';
+            }
+        }
+    }
     await writeBinary(ctx.stdout, out);
 }
 /** `git diff --no-index`: two paths, either of them /dev/null; exits 1 when they differ. */
@@ -2002,7 +2035,7 @@ async function diffNoIndex(ctx, git, vfs, paths, output) {
 const DIFF_USAGE = 'usage: git diff [--cached] [<commit>] [--] [<path>...]\n'
     + '   or: git diff --no-index [--] <path> <path>\n'
     + 'options: --stat | --name-only | --name-status, -z, -U<n>, -M[<n>] | --no-renames\n';
-async function diffCommand(ctx, git, fs, vfs, args) {
+async function diffCommand(ctx, git, fs, vfs, args, partial) {
     let cached = false;
     let noIndex = false;
     let dashdash = false;
@@ -2128,16 +2161,14 @@ async function diffCommand(ctx, git, fs, vfs, args) {
     // git diff writes back the stat it found stale on files whose content had not changed.
     await wrepo.updateIndexIfAble(dc);
     // The blobs this diff reads, fetched together where a partial clone lacks them (git's diff_queued_diff_prefetch).
-    if (output.format === 'patch' || output.format === 'stat' || minimumScore !== null) {
-        await wrepo.store.prefetch(pending.flatMap(({ one, two }) => [one, two]).flatMap((side) => side && !side.worktree ? [side.oid] : []));
+    if ((output.format === 'patch' || output.format === 'stat' || minimumScore !== null) && await partial(repo.gitdir)) {
+        await wrepo.store.prefetch(pending.storeOids());
     }
     const tree = await wrepo.worktree();
     const read = async (side) => side.worktree
         ? await worktreeBlob(tree, side.path, side.mode === 0o120000 ? 'symlink' : 'file')
         : (await wrepo.store.read(side.oid)).data;
-    const { queue, neededRenameLimit } = minimumScore === null
-        ? { queue: pending, neededRenameLimit: 0 }
-        : await detectRenames(pending, read, { minimumScore });
+    const noted = { neededRenameLimit: 0 };
     const withData = output.format === 'patch' || output.format === 'stat';
     const spec = async (side) => ({
         path: side.path,
@@ -2146,11 +2177,16 @@ async function diffCommand(ctx, git, fs, vfs, args) {
         mode: side.mode,
         data: withData ? await read(side) : new Uint8Array(0),
     });
-    await writeDiff(ctx, queue.map(({ one, two, renameScore }) => async () => ({
-        one: one ? await spec(one) : absentSpec(two.path),
-        two: two ? await spec(two) : absentSpec(one.path),
-        renameScore,
-    })), output);
+    await writeDiff(ctx, (async function* () {
+        for await (const { one, two, renameScore } of diffQueue(pending, minimumScore, read, noted)) {
+            yield async () => ({
+                one: one ? await spec(one) : absentSpec(two.path),
+                two: two ? await spec(two) : absentSpec(one.path),
+                renameScore,
+            });
+        }
+    })(), output);
+    const { neededRenameLimit } = noted;
     if (neededRenameLimit) {
         await ctx.stderr.write('warning: exhaustive rename detection was skipped due to too many files.\n'
             + `warning: you may want to set your diff.renameLimit variable to at least ${neededRenameLimit} and retry the command.\n`);
@@ -2277,24 +2313,34 @@ async function statusCommand(ctx, git, vfs, fs, args) {
         await ctx.stderr.write(`${line}\n`);
     await wrepo.updateIndexIfAble(dc);
     const prefix = repo.prefix ? `${repo.prefix}/` : '';
+    // Lines go out as they are made, 64 KiB at a time: a status of every file is never one string.
+    let out = '';
+    const emit = async (text) => {
+        out += text;
+        if (out.length >= 1 << 16) {
+            await writeBinary(ctx.stdout, out);
+            out = '';
+        }
+    };
     if (format !== 'nimbus') {
-        await writeBinary(ctx.stdout, formatShortStatus(status, { prefix: format === 'short' && !z ? prefix : '', z }));
+        for (const text of shortStatusLines({ changes: status.changes(), untracked: status.untracked }, { prefix: format === 'short' && !z ? prefix : '', z })) {
+            await emit(text);
+        }
+        await writeBinary(ctx.stdout, out);
         return 0;
     }
-    if (status.changes.length === 0 && status.untracked.length === 0) {
+    if (status.count === 0 && status.untracked.length === 0) {
         await ctx.stdout.write('nothing to commit, working tree clean\n');
         return 0;
     }
-    const line = (change, path) => {
-        const text = formatShortStatus({ changes: change ? [change] : [], untracked: path === null ? [] : [path] }, { prefix, z: false });
-        const staged = change !== null && !change.unmerged && change.worktree === ' ';
-        return `${staged ? '\x1b[32m' : '\x1b[31m'}${text.slice(0, -1)}\x1b[0m\n`;
-    };
-    let out = '';
-    for (const change of status.changes)
-        out += line(change, null);
-    for (const path of status.untracked)
-        out += line(null, path);
+    // Nimbus's own form: the short lines, staged-only green, the rest red.
+    const color = (change, text) => `${change !== null && !change.unmerged && change.worktree === ' ' ? '\x1b[32m' : '\x1b[31m'}${text.slice(0, -1)}\x1b[0m\n`;
+    for (const change of status.changes()) {
+        for (const text of shortStatusLines({ changes: [change], untracked: [] }, { prefix, z: false }))
+            await emit(color(change, text));
+    }
+    for (const text of shortStatusLines({ changes: [], untracked: status.untracked }, { prefix, z: false }))
+        await emit(color(null, text));
     await writeBinary(ctx.stdout, out);
     return 0;
 }
@@ -2875,7 +2921,7 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 return 0;
             }
             case 'diff':
-                return await diffCommand(ctx, git, fs, repoVfs, subArgs);
+                return await diffCommand(ctx, git, fs, repoVfs, subArgs, partial);
             case 'remote': {
                 if (subArgs[0] === 'add' && subArgs[1] && subArgs[2]) {
                     await git.addRemote({ fs, dir, remote: subArgs[1], url: subArgs[2] });
