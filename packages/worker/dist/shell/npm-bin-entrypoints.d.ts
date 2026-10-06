@@ -3,7 +3,8 @@ import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-p
 import type { FacetManager } from '../facets/manager.js';
 import { type ResolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 type Output = {
-    write(data: string): void;
+    write(data: string): void | Promise<void>;
+    writeBytes?(data: Uint8Array): void | Promise<void>;
 };
 /** Whether `command` is the stub a known runtime that is not installed resolves to: no registered command. */
 export declare function isRuntimeInstallHint(command: object): boolean;

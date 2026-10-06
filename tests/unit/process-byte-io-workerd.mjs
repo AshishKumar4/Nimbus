@@ -1,7 +1,9 @@
+// @tier slow — drives a local workerd for byte-exact stdin and stdout
 // @serial
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import wabtInit from 'wabt';
+import { createNpmBinShim, createNpmBinManifest, npmBinManifestPath } from '../../packages/worker/src/npm/bin-links.ts';
 const repo = process.env.NIMBUS_BYTE_BASELINE_REPO ?? new URL('../..', import.meta.url).pathname;
 const { startLocalProbe, localTerminal } = await import(`${repo}/tests/unit/lib/workerd-probe.mjs`);
 const wat = `(module
@@ -48,10 +50,23 @@ try {
  await write('inherit-echo.wasm',inheritedWasm);
  await write('byte-script.sh', '#!/bin/sh\ncat\n');
  await terminal.run('chmod 755 /home/user/byte-script.sh /home/user/byte-echo.wasm /home/user/inherit-echo.wasm');
+ const binEntry = { name: 'byte-tool', packageName: 'byte-tool', packageVersion: '1.0.0', packagePath: 'home/user/node_modules/byte-tool', targetPath: 'home/user/node_modules/byte-tool/cli.js' };
+ await terminal.run('mkdir -p /home/user/node_modules/byte-tool /home/user/node_modules/.bin');
+ await write('node_modules/byte-tool/package.json', JSON.stringify({ name: 'byte-tool', version: '1.0.0', bin: { 'byte-tool': 'cli.js' } }));
+ await write('node_modules/byte-tool/cli.js', 'if(process.argv.includes("--version"))console.log("1.0.0");else if(process.argv.includes("--bytes"))process.stdout.write(Buffer.from([255,254]));else process.stdin.pipe(process.stdout);');
+ await write('node_modules/.bin/byte-tool', createNpmBinShim(binEntry, 'home/user/node_modules/.bin'));
+ await write(npmBinManifestPath('home/user/node_modules').slice('home/user/'.length), JSON.stringify(createNpmBinManifest([binEntry])));
+ await terminal.run('chmod 755 /home/user/node_modules/.bin/byte-tool');
  const raw = await terminal.run(`node -e "process.stdout.write(Buffer.from([0xff,0xfe]))" | xxd -p`);
  assert.match(raw.stdout, new RegExp('^'+hostBytes.stdout.toString('hex')+'\\s*$','m'), 'Node foreground output matches host Node through a shell pipe');
+ const binBytes = await terminal.run('./node_modules/.bin/byte-tool --bytes | xxd -p');
+ assert.equal(binBytes.status, 0, binBytes.stdout);
+ assert.match(binBytes.stdout, /^fffe\s*$/m, 'an npm-bin foreground fd forwards bytes without decoding or feeding its own log back');
+ const binCapture = await terminal.run('value=$(./node_modules/.bin/byte-tool --version); printf "BIN_CAPTURE<%s>\\n" "$value"');
+ assert.equal(binCapture.status, 0, binCapture.stdout);
+ assert.match(binCapture.stdout, /^BIN_CAPTURE<1\.0\.0>\s*$/m, 'the installer-style bin command substitution returns one version line');
  const program = `const {spawn}=require('child_process');
- (async()=>{for(const [name,command,args] of [['registry','cat',[]],['shebang','/home/user/byte-script.sh',[]],['node','node',['-e','process.stdin.pipe(process.stdout)']],['wasi','/home/user/byte-echo.wasm',[]],['inherited-wasi','/home/user/inherit-echo.wasm',[]]]){
+ (async()=>{for(const [name,command,args] of [['registry','cat',[]],['shebang','/home/user/byte-script.sh',[]],['node','node',['-e','process.stdin.pipe(process.stdout)']],['npm-bin','/home/user/node_modules/.bin/byte-tool',[]],['wasi','/home/user/byte-echo.wasm',[]],['inherited-wasi','/home/user/inherit-echo.wasm',[]]]){
  const result=await new Promise((resolve,reject)=>{const c=spawn(command,args);let out=Buffer.alloc(0),first=false;
  const one=Buffer.from([255,254,0,128]),two=Buffer.from([195,40,240,159]);const timer=setTimeout(()=>{c.kill();reject(new Error(name+' did not answer while stdin remained open'));},15000);
  c.stdout.on('data',d=>{out=Buffer.concat([out,d]);if(!first&&out.length>=one.length){if(!out.equals(one)){reject(new Error(name+' changed its first bytes'));return;}first=true;c.stdin.end(two);}});
@@ -60,7 +75,7 @@ try {
  const actual = await terminal.run('node /home/user/byte-parent.js', 180000);
  assert.equal(actual.status, 0, actual.stdout);
  const rows = [...actual.stdout.matchAll(/^BYTES (.+)$/gm)].map(m => JSON.parse(m[1]));
- assert.deepEqual(rows, ['registry','shebang','node','wasi','inherited-wasi'].map(name => ({name,hex:'fffe0080c328f09f',code:0,signal:null,first:true})), 'all child kinds, including inherited WASI fd0, answer before EOF and close after their final bytes');
+ assert.deepEqual(rows, ['registry','shebang','node','npm-bin','wasi','inherited-wasi'].map(name => ({name,hex:'fffe0080c328f09f',code:0,signal:null,first:true})), 'all child kinds, including inherited WASI fd0, answer before EOF and close after their final bytes');
  const wasi = await terminal.run(`node -e "process.stdout.write(Buffer.from([255,254,0,128]))" | /home/user/byte-echo.wasm | xxd -p`);
  assert.match(wasi.stdout, /^fffe0080\s*$/m, 'a foreground WASI fd 0 and fd 1 are byte-exact');
 } finally { if (terminal) await terminal.close(); await probe.stop(); }

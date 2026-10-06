@@ -14,6 +14,7 @@
  */
 import { z } from 'zod/v4';
 import { enc } from '../_shared/bytes.js';
+import { afterTurn } from '../_shared/after-turn.js';
 /** Output a writer may run ahead of its reader before its writes wait. */
 export const EXEC_STREAM_HIGH_WATER_BYTES = 64 * 1024;
 // Consecutive writes to one stream are joined up to this size, or until the
@@ -34,10 +35,9 @@ export function createExecStream(onCancel) {
     let pending = [];
     let pendingBytes = 0;
     let pendingStream = 'stdout';
-    let flushTimer = null;
+    let flushScheduled = false;
     const flush = () => {
-        clearTimeout(flushTimer);
-        flushTimer = null;
+        flushScheduled = false;
         if (settled || pendingBytes === 0)
             return;
         let data = pending[0];
@@ -55,7 +55,7 @@ export function createExecStream(onCancel) {
     };
     const settle = () => {
         settled = true;
-        clearTimeout(flushTimer);
+        flushScheduled = false;
         pending = [];
         pendingBytes = 0;
         openRoom();
@@ -88,8 +88,11 @@ export function createExecStream(onCancel) {
             pendingBytes += data.byteLength;
             if (pendingBytes >= COALESCE_BYTES)
                 flush();
-            else
-                flushTimer ??= setTimeout(flush, 0);
+            else if (!flushScheduled) {
+                flushScheduled = true;
+                afterTurn(() => { if (flushScheduled)
+                    flush(); });
+            }
             if ((controller.desiredSize ?? 0) > 0)
                 return;
             room ??= new Promise((resolve) => { release = resolve; });

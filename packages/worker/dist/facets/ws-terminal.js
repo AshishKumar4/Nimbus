@@ -1,3 +1,4 @@
+import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 export class WebSocketTerminal {
     /** Null while the terminal is headless (composed before any attach). */
     ws;
@@ -95,7 +96,7 @@ export class WebSocketTerminal {
             // A file/pipe reader can keep RPC turns arriving continuously; a
             // timer then runs only when it ends. A microtask flush is part of the
             // write's own turn, so echo and progress are not withheld meanwhile.
-            queueMicrotask(() => { if (this.flushScheduled)
+            afterTurn(() => { if (this.flushScheduled)
                 this.flush(); });
         }
     }

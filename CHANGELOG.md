@@ -11,7 +11,14 @@ published independently in the `@nimbus-sh` npm scope.
   children stream byte-exact stdout/stderr, and foreground output no longer
   passes through a decoded log or binary placeholder. Logs persist bytes and
   derive their text view on read. Missing/nonexecutable children fail spawn
-  with ENOENT/EACCES, and a vanished reader releases a blocked writer.
+  with ENOENT/EACCES, and a vanished reader releases a blocked writer. npm-bin
+  entrypoints retain their broker-owned pid/fd0 and forward logged bytes
+  without feeding the same foreground subscriber back into itself.
+- Fixed: echo, progress, replay wakeups and impossible-child refusals use a
+  timer-independent continuation fence, so incoming filesystem RPC traffic
+  cannot withhold their bookkeeping. Fresh CPU turns still use the session's
+  alarm-backed paced-work scheduler. Complete-file stdin reads use bounded
+  1 MiB windows rather than one RPC per small stream chunk.
 
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 

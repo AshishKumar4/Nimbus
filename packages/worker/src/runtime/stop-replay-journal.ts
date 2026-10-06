@@ -2,6 +2,7 @@ import { REPLAY_FETCH_MAX_BYTES, REPLAY_JOURNAL_MAX_ENTRIES, REPLAY_STALL_MS, ty
 export type { RecordedResponse } from './stop-replay-contracts.js';
 
 import { operationPolicy } from './stop-replay-policy.js';
+import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 export { SUPERVISOR_CALLS_WITHOUT_EFFECTS } from './stop-replay-policy.js';
 
@@ -363,7 +364,7 @@ export class ReplayJournal {
     if (expected !== undefined) await this.hold(expected.completion);
     if (this.run !== asking) throw new Error('this run of the process has stopped');
     // The next answer in the run before's order goes once this one has.
-    if (expected !== undefined && expected.completion !== null) setTimeout(() => this.advance(), 0);
+    if (expected !== undefined && expected.completion !== null) afterTurn(() => this.advance());
     if (entry !== null && this.entries !== null && this.entries === entries) {
       entry.digest = digest;
       entry.completion = this.completions++;

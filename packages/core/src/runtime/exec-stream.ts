@@ -15,6 +15,7 @@
 
 import { z } from 'zod/v4';
 import { enc } from '../_shared/bytes.js';
+import { afterTurn } from '../_shared/after-turn.js';
 
 export type ExecStreamName = 'stdout' | 'stderr';
 
@@ -72,10 +73,9 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   let pending: Uint8Array[] = [];
   let pendingBytes = 0;
   let pendingStream: ExecStreamName = 'stdout';
-  let flushTimer: ReturnType<typeof setTimeout> | null = null;
+  let flushScheduled = false;
   const flush = () => {
-    clearTimeout(flushTimer);
-    flushTimer = null;
+    flushScheduled = false;
     if (settled || pendingBytes === 0) return;
     let data = pending[0];
     if (pending.length > 1) {
@@ -92,7 +92,7 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
   };
   const settle = () => {
     settled = true;
-    clearTimeout(flushTimer);
+    flushScheduled = false;
     pending = [];
     pendingBytes = 0;
     openRoom();
@@ -123,7 +123,10 @@ export function createExecStream(onCancel: (reason: unknown) => void): ExecStrea
       pending.push(data);
       pendingBytes += data.byteLength;
       if (pendingBytes >= COALESCE_BYTES) flush();
-      else flushTimer ??= setTimeout(flush, 0);
+      else if (!flushScheduled) {
+        flushScheduled = true;
+        afterTurn(() => { if (flushScheduled) flush(); });
+      }
       if ((controller.desiredSize ?? 0) > 0) return;
       room ??= new Promise<void>((resolve) => { release = resolve; });
       await room;

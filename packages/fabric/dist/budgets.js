@@ -28,6 +28,7 @@
  * that still exists.
  */
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { hostWasmIdentity } from './host-wasm.js';
 /**
@@ -81,6 +82,7 @@ function ledger(ctx) {
         entry = {
             inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined,
             schedule: decideOnALaterTurn, deciding: false,
+            turnDelays: [], decisionDelays: [], turnProbePending: false,
             claims: new Set(), peak: 0,
             waiters: [], pauseMs: 0, pauseTimer: undefined, epoch: 0, refusals: 0,
         };
@@ -220,15 +222,19 @@ function admitWaiters(entry) {
     // continuations pending now have run, and taken on the state as it is then.
     if (!entry.deciding && deadlocked(entry) !== undefined) {
         entry.deciding = true;
+        const scheduledAt = Date.now();
         entry.schedule(() => {
             entry.deciding = false;
+            entry.decisionDelays.push(Math.max(0, Date.now() - scheduledAt));
+            if (entry.decisionDelays.length > 128)
+                entry.decisionDelays.shift();
             decide(entry);
         });
     }
 }
-/** The default schedule for a refusal's decision: a later turn of the event loop. */
+/** Defer a refusal until queued bookkeeping has settled, without a timer. */
 function decideOnALaterTurn(decide) {
-    setTimeout(decide, 0);
+    afterTurn(decide);
 }
 /**
  * A refusal put off by admitWaiters, decided on the ledger as it stands now:
@@ -629,10 +635,29 @@ export function claimDynamicWorkers(ctx, width) {
     claimEntries.set(handle, { ledger: entry, entry: claim });
     return handle;
 }
-/** Snapshot for the diag surface. Pure read; no I/O. */
-export function loaderLedgerStats(ctx) {
+/** Snapshot for diagnostics; the opt-in probe samples a continuation, not I/O. */
+export function loaderLedgerStats(ctx, probeTurn = false) {
     const entry = ledger(ctx);
+    if (probeTurn && !entry.turnProbePending) {
+        entry.turnProbePending = true;
+        const at = Date.now();
+        afterTurn(() => {
+            entry.turnProbePending = false;
+            entry.turnDelays.push(Math.max(0, Date.now() - at));
+            if (entry.turnDelays.length > 128)
+                entry.turnDelays.shift();
+        });
+    }
+    const sorted = [...entry.turnDelays].sort((a, b) => a - b);
+    const decisions = [...entry.decisionDelays].sort((a, b) => a - b);
+    const percentile = (values, p) => values.length ? values[Math.min(values.length - 1, Math.ceil(values.length * p) - 1)] : null;
     return {
+        scheduling: {
+            samples: sorted.length, lastMs: entry.turnDelays.at(-1) ?? null,
+            p50Ms: percentile(sorted, .5), p95Ms: percentile(sorted, .95), maxMs: sorted.at(-1) ?? null,
+            decisions: decisions.length,
+            decisionP50Ms: percentile(decisions, .5), decisionP95Ms: percentile(decisions, .95),
+        },
         limit: DO_DYNAMIC_WORKER_LIMIT,
         inFlightWorkers: [...entry.inFlight.keys()],
         holders: Object.fromEntries([...entry.holders].map(([key, owners]) => [key, [...owners]])),

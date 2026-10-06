@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd and streams 48 MiB through each stdin route
 // @serial
 import assert from 'node:assert/strict';
 const repo=process.env.NIMBUS_BYTE_BASELINE_REPO??new URL('../..',import.meta.url).pathname;

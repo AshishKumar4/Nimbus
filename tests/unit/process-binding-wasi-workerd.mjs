@@ -1,3 +1,4 @@
+// @tier slow — drives a local workerd for WASI stdout binding
 // @serial
 import assert from 'node:assert/strict';
 import wabtInit from 'wabt';

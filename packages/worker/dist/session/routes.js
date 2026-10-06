@@ -770,7 +770,7 @@ async function routeFetch(self, request) {
             // Per-DO Dynamic Worker accounting: distinct workers in flight now,
             // fan-out claims, remaining headroom against the platform limit,
             // and the peak.
-            loader: loaderLedgerStats(self.ctx),
+            loader: loaderLedgerStats(self.ctx, self.env.NIMBUS_DIAG_TURN === '1'),
             rpc: {
                 lastFrame: getLastRpcFrame(),
             },
@@ -977,11 +977,12 @@ async function routeFetch(self, request) {
             }
         }
         // Where a session's write time goes, phase by phase, without RPC: the
-        // clock only moves across I/O, so each phase ends on a timer turn.
+        // clock only moves across I/O, so each phase ends after a real 1 ms
+        // clock deadline. An afterTurn continuation is not a clock tick.
         if (url.pathname === '/api/_test/sql-bench' && request.method === 'POST') {
             const body = await parseJsonBody(request, SqlBenchBodySchema);
             const tick = async () => {
-                await new Promise((resolve) => setTimeout(resolve, 0));
+                await new Promise((resolve) => setTimeout(resolve, 1));
                 return Date.now();
             };
             const sql = self.ctx.storage.sql;

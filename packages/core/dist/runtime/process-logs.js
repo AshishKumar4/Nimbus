@@ -289,31 +289,8 @@ export class ProcessLogStore {
         const state = this._maybeHydrateRead(pid);
         if (!state)
             return [];
-        const rendered = this._render(state).map(({ seq, ...chunk }) => chunk);
-        if (opts.lines === undefined && opts.bytes === undefined)
-            return rendered;
-        if (opts.lines === 0 || opts.bytes === 0)
-            return [];
-        // Walk from newest → oldest, accumulate until we hit the limit.
-        const out = [];
-        let lines = 0;
-        let bytes = 0;
-        for (let i = rendered.length - 1; i >= 0; i--) {
-            const c = rendered[i];
-            out.unshift(c);
-            bytes += c.data.length;
-            if (opts.lines !== undefined) {
-                // Count \n in chunk + 1 if chunk doesn't end with \n but has content.
-                for (let j = 0; j < c.data.length; j++)
-                    if (c.data.charCodeAt(j) === 10)
-                        lines++;
-                if (lines >= opts.lines)
-                    break;
-            }
-            if (opts.bytes !== undefined && bytes >= opts.bytes)
-                break;
-        }
-        return out;
+        const cutoff = state.nextSeq - state.chunks.length + this._tailStartIndex(state, opts);
+        return this._render(state).filter(chunk => chunk.seq >= cutoff).map(({ seq, ...chunk }) => chunk);
     }
     /** Index of the oldest chunk in the last N lines/bytes, walking newest → oldest. */
     _tailStartIndex(state, opts) {

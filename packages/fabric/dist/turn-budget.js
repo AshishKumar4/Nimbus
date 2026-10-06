@@ -33,6 +33,7 @@
  * bytes and treats its wall guard as coarse.
  */
 import { runColdStart } from './generation.js';
+import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 /**
  * Bytes of launch work one turn may perform before it must yield.
  *
@@ -165,7 +166,11 @@ export class PacedWork {
                 });
                 return;
             }
-            setTimeout(() => { void this.pump(); }, Math.max(0, notBefore - Date.now()));
+            const delay = Math.max(0, notBefore - Date.now());
+            if (delay > 0)
+                setTimeout(() => { void this.pump(); }, delay); // A real not-before deadline.
+            else
+                afterTurn(() => { void this.pump(); });
         });
     }
     /**

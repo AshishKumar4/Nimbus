@@ -259,8 +259,8 @@ export declare function dynamicWorkerHeadroom(ctx: object): number;
  * dispatches, held under the claim, count inside it.
  */
 export declare function claimDynamicWorkers(ctx: object, width: number): DynamicWorkerClaim | null;
-/** Snapshot for the diag surface. Pure read; no I/O. */
-export declare function loaderLedgerStats(ctx: object): {
+/** Snapshot for diagnostics; the opt-in probe samples a continuation, not I/O. */
+export declare function loaderLedgerStats(ctx: object, probeTurn?: boolean): {
     limit: number;
     inFlightWorkers: string[];
     claimed: number;
@@ -270,6 +270,16 @@ export declare function loaderLedgerStats(ctx: object): {
     waiting: number;
     /** Length of the pause a limit refusal started, while it lasts; 0 when admitting. */
     pauseMs: number;
+    scheduling: {
+        samples: number;
+        lastMs: number | null;
+        p50Ms: number | null;
+        p95Ms: number | null;
+        maxMs: number | null;
+        decisions: number;
+        decisionP50Ms: number | null;
+        decisionP95Ms: number | null;
+    };
     /** In-flight worker → the process each hold on it is for (null: no process's). */
     holders: Record<string, Array<number | null>>;
     /** Waits not yet admitted, in order: the worker each waits for, and the process it is for. */

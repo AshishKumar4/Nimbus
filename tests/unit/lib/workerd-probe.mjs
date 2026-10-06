@@ -113,7 +113,7 @@ async function putObjects(puts, persist, work) {
  * its config vars (`wrangler dev --var`).
  * @returns {Promise<{ base: string, token: string, stop: () => Promise<void> }>}
  */
-export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {} } = {}) {
+export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
   const persist = join(work, 'state');
   let child = null;
@@ -141,12 +141,15 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     const deadline = Date.now() + bootTimeoutMs;
     let log = '';
     let base = null;
+    let inspectorBase = null;
     // The free port can be taken by another test's server before wrangler
     // binds it. That server would answer a probe of the port, and wrangler
     // exits on the bind: so the address is the one wrangler says it is ready
     // on, and a lost bind is retried on another port.
     for (let attempt = 1; base === null; attempt++) {
       const port = await freePort();
+      const inspectorPort = inspector ? await freePort() : null;
+      inspectorBase = inspectorPort===null?null:`http://127.0.0.1:${inspectorPort}`;
       console.log('workerd-probe: starting wrangler dev');
       log = '';
       child = spawn(WRANGLER, [
@@ -154,6 +157,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
         '--var', `NIMBUS_RUNTIME_CATALOG_SHA256:${catalogSha256}`,
         ...Object.entries(vars).flatMap(([key, value]) => ['--var', `${key}:${value}`]),
+        ...(inspectorPort===null?[]:['--inspector-port',String(inspectorPort)]),
       ], { cwd: PROBE_APP, stdio: ['ignore', 'pipe', 'pipe'], detached: true, env: { ...process.env, TMPDIR: work } });
       // wrangler dev rebuilds and reloads the worker when a file it bundles
       // changes, which resets every session it serves: a test running then
@@ -190,7 +194,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     }
     const token = await mintProbeToken(secret, 3_600_000);
     // pid: the wrangler dev process group, whose members serve the probe.
-    return { base, token, stop, log: () => log, pid: child.pid };
+    return { base, token, stop, log: () => log, pid: child.pid, inspectorBase };
   } catch (error) {
     await stop();
     throw error;

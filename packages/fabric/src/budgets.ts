@@ -29,6 +29,7 @@
  */
 
 import { AsyncLocalStorage } from 'node:async_hooks';
+import { afterTurn } from '@nimbus-sh/core/_shared/after-turn.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { hostWasmIdentity } from './host-wasm.js';
 
@@ -122,6 +123,10 @@ interface LoaderLedger {
   /** How a refusal is put off to a later turn (bindProcessWaitGraph); a decision is pending while set. */
   schedule: (decide: () => void) => void;
   deciding: boolean;
+  /** Bounded diagnostic continuation latencies (workerd's I/O clock: lower bounds). */
+  turnDelays: number[];
+  decisionDelays: number[];
+  turnProbePending: boolean;
   /** Claims not yet released. */
   claims: Set<ClaimEntry>;
   /** The most distinct workers (holds plus claims) ever counted at once. */
@@ -154,6 +159,7 @@ function ledger(ctx: object): LoaderLedger {
     entry = {
       inFlight: new Map(), holders: new Map(), processHolds: new Map(), news: new Map(), graph: undefined,
       schedule: decideOnALaterTurn, deciding: false,
+      turnDelays: [], decisionDelays: [], turnProbePending: false,
       claims: new Set(), peak: 0,
       waiters: [], pauseMs: 0, pauseTimer: undefined, epoch: 0, refusals: 0,
     };
@@ -278,16 +284,19 @@ function admitWaiters(entry: LoaderLedger): void {
   // continuations pending now have run, and taken on the state as it is then.
   if (!entry.deciding && deadlocked(entry) !== undefined) {
     entry.deciding = true;
+    const scheduledAt = Date.now();
     entry.schedule(() => {
       entry.deciding = false;
+      entry.decisionDelays.push(Math.max(0, Date.now() - scheduledAt));
+      if (entry.decisionDelays.length > 128) entry.decisionDelays.shift();
       decide(entry);
     });
   }
 }
 
-/** The default schedule for a refusal's decision: a later turn of the event loop. */
+/** Defer a refusal until queued bookkeeping has settled, without a timer. */
 function decideOnALaterTurn(decide: () => void): void {
-  setTimeout(decide, 0);
+  afterTurn(decide);
 }
 
 /**
@@ -761,8 +770,8 @@ export function claimDynamicWorkers(ctx: object, width: number): DynamicWorkerCl
   return handle;
 }
 
-/** Snapshot for the diag surface. Pure read; no I/O. */
-export function loaderLedgerStats(ctx: object): {
+/** Snapshot for diagnostics; the opt-in probe samples a continuation, not I/O. */
+export function loaderLedgerStats(ctx: object, probeTurn = false): {
   limit: number;
   inFlightWorkers: string[];
   claimed: number;
@@ -772,6 +781,11 @@ export function loaderLedgerStats(ctx: object): {
   waiting: number;
   /** Length of the pause a limit refusal started, while it lasts; 0 when admitting. */
   pauseMs: number;
+  scheduling: {
+    samples: number; lastMs: number | null; p50Ms: number | null;
+    p95Ms: number | null; maxMs: number | null; decisions: number;
+    decisionP50Ms: number | null; decisionP95Ms: number | null;
+  };
   /** In-flight worker → the process each hold on it is for (null: no process's). */
   holders: Record<string, Array<number | null>>;
   /** Waits not yet admitted, in order: the worker each waits for, and the process it is for. */
@@ -780,7 +794,26 @@ export function loaderLedgerStats(ctx: object): {
   news: Record<number, { issued: number; reportSeq: number; blockedAt: number | null }>;
 } {
   const entry = ledger(ctx);
+  if (probeTurn && !entry.turnProbePending) {
+    entry.turnProbePending = true;
+    const at = Date.now();
+    afterTurn(() => {
+      entry.turnProbePending = false;
+      entry.turnDelays.push(Math.max(0, Date.now() - at));
+      if (entry.turnDelays.length > 128) entry.turnDelays.shift();
+    });
+  }
+  const sorted = [...entry.turnDelays].sort((a, b) => a - b);
+  const decisions = [...entry.decisionDelays].sort((a, b) => a - b);
+  const percentile = (values: number[], p: number): number | null =>
+    values.length ? values[Math.min(values.length - 1, Math.ceil(values.length * p) - 1)] : null;
   return {
+    scheduling: {
+      samples: sorted.length, lastMs: entry.turnDelays.at(-1) ?? null,
+      p50Ms: percentile(sorted, .5), p95Ms: percentile(sorted, .95), maxMs: sorted.at(-1) ?? null,
+      decisions: decisions.length,
+      decisionP50Ms: percentile(decisions, .5), decisionP95Ms: percentile(decisions, .95),
+    },
     limit: DO_DYNAMIC_WORKER_LIMIT,
     inFlightWorkers: [...entry.inFlight.keys()],
     holders: Object.fromEntries([...entry.holders].map(([key, owners]) => [key, [...owners]])),
