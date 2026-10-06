@@ -30,7 +30,6 @@
 import {
   METADATA_CANDIDATE_WORK,
   resolveRequireEx,
-  strip,
   type PkgJsonSink,
   type RequireFs,
   type ResolveSubpathResult,
@@ -38,6 +37,7 @@ import {
 } from './require-resolution.js';
 
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
+import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
@@ -521,7 +521,7 @@ export async function prefetchForRequire(
   // loader resolves it the same way, core/_shared/esm-resolver.ts): the
   // "import" conditions, no extension probing. The package.json files it
   // reads are staged too, since the loader reads the same ones.
-  const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(strip(path)));
+  const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(stripLeadingSlashes(path)));
   async function resolveStaticDependency(specifier: string, fromDir: string): Promise<ResolveSubpathResult | null> {
     // Vite's generated config names dependencies by absolute file URL.
     if (specifier.startsWith('file:')) {
@@ -543,7 +543,7 @@ export async function prefetchForRequire(
    * enclosing-package piggyback is needed.
    */
   async function addPkgJson(pkgJsonPath: string): Promise<string | null> {
-    const k = strip(pkgJsonPath);
+    const k = stripLeadingSlashes(pkgJsonPath);
     const content = await stageCell(k, 'metadata');
     visited.add(k);
     return content;
@@ -562,24 +562,24 @@ export async function prefetchForRequire(
   // entryCode (no file context) — covers the `node -e '<code>'`
   // path where opts.filename is '<eval>'.
   async function walk(): Promise<DependencyClosureOutcome> {
-    const cwdStripped = strip(cwd);
+    const cwdStripped = stripLeadingSlashes(cwd);
     let entryFromDir = cwdStripped;
     if (entryFile) {
-      const stripped = strip(entryFile);
+      const stripped = stripLeadingSlashes(entryFile);
       const slash = stripped.lastIndexOf('/');
       if (slash > 0) entryFromDir = stripped.substring(0, slash);
     }
     await parseAndResolve(entryCode, entryFromDir, policy === undefined);
 
     // If there's an entry file, add it (and recurse).
-    if (entryFile) await addFile(strip(entryFile), policy === undefined);
+    if (entryFile) await addFile(stripLeadingSlashes(entryFile), policy === undefined);
     const entryPaths = requiredRoots ? new Set(Object.keys(bundle)) : undefined;
     // Modules a previous launch actually tried to execute are required roots,
     // not speculative dynamic-import subtrees. Walk their static imports in
     // this same visited set and byte budget before any optional enrichment.
     // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
     for (const root of requiredRoots ?? []) {
-      const path = strip(root.path);
+      const path = stripLeadingSlashes(root.path);
       if (root.config && root.text === undefined) {
         configRoots.add(path);
         defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
@@ -652,7 +652,7 @@ function isFacetProvided(id: string): boolean {
 function walkEsmResolver(vfs: RequireFs, progress: WalkProgress | undefined, readText: (path: string) => Promise<string | null>) {
   return createEsmResolver({
     async kind(path) {
-      const key = strip(path);
+      const key = stripLeadingSlashes(path);
       if (progress) await progress(METADATA_CANDIDATE_WORK + key.length);
       if (!(await vfs.exists(key))) return null;
       return (await vfs.isDirectory(key)) ? 'directory' : 'file';
@@ -668,7 +668,7 @@ async function resolveImportWith(esm: ReturnType<typeof walkEsmResolver>, specif
   const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
   try {
     const resolution = await esm.resolve(specifier, parentUrl);
-    return resolution.path === undefined ? null : strip(resolution.path);
+    return resolution.path === undefined ? null : stripLeadingSlashes(resolution.path);
   } catch (error) {
     if (error instanceof WalkControlFailure) throw error;
     return null;
@@ -686,7 +686,7 @@ export async function resolveDeferredImport(vfs: RequireFs, deferral: DeferredIm
     try { await progress(work); } catch (cause) { throw new WalkControlFailure('Dependency walk interrupted', { cause }); }
   });
   const esm = walkEsmResolver(vfs, paced, async (path) => {
-    try { return await vfs.readFileString(strip(path)); } catch { return null; }
+    try { return await vfs.readFileString(stripLeadingSlashes(path)); } catch { return null; }
   });
   try { return await resolveImportWith(esm, deferral.specifier, deferral.fromDir); }
   catch (error) {
