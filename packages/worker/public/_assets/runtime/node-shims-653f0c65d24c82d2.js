@@ -8816,8 +8816,9 @@ const __tlsMod = (() => {
     for (const b of crypto.getRandomValues(new Uint8Array(16))) token += (b < 16 ? '0' : '') + b.toString(16);
     __nimbusReplay?.effect('tls.connect ' + host + ':' + port);
     const notice = __nimbusReplay && __nimbusReplay.afterBoundary();
+    let cancelled = false;
     const registration = notice
-      ? Promise.resolve(notice).then(() => __supervisor.netTls('open', token, { host, port }))
+      ? Promise.resolve(notice).then(() => cancelled ? undefined : __supervisor.netTls('open', token, { host, port }))
       : Promise.resolve(__supervisor.netTls('open', token, { host, port }));
     let raw, socket;
     const fail = (error) => {
@@ -8839,12 +8840,26 @@ const __tlsMod = (() => {
       __nimbusCarrierFailure = null;
     }
     const name = () => {
+      // workerd's empty-parent _start listener adopts raw._handle on this
+      // same event. Its TLS socket must leave the placeholder connecting
+      // state first; native TLS then emits its own connect after upgrading,
+      // which releases the native Socket's existing write/end buffers.
+      if (notice && socket && !socket.destroyed) socket.connecting = false;
       const native = raw._handle && raw._handle.socket;
       if (native) { tokens.set(native, token); carriers.set(native, raw); if (note) notes.set(native, note); patchStartTls(native); }
     };
     name();
     raw.once('connect', name);
     socket = real.connect({ ...options, host, port, socket: raw, servername: options.servername ?? host }, cb);
+    if (notice && raw.connecting && !socket.destroyed) socket.connecting = true;
+    // The returned TLS socket owns the carrier, including while its native
+    // handle has not been created. Cancelling it cancels that pending work.
+    const destroy = socket.destroy;
+    socket.destroy = function(...args) {
+      cancelled = true;
+      raw.destroy();
+      return Reflect.apply(destroy, this, args);
+    };
     return socket;
   };
   const connect = (...args) => {

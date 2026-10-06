@@ -43,7 +43,7 @@ function fixture(proxied) {
 }
 
 for (const kind of ['plain', 'tls']) {
-  for (const state of ['delayed', 'refused']) {
+  for (const state of ['delayed', 'refused', 'cancel-before-notice', 'cancel-before-registration']) {
     const name = `${kind}-${state}`;
     if (process.env.NIMBUS_SOCKET_BOUNDARY_CASE && process.env.NIMBUS_SOCKET_BOUNDARY_CASE !== name) continue;
     const f = fixture(kind === 'tls');
@@ -53,7 +53,16 @@ for (const kind of ['plain', 'tls']) {
     if (kind === 'plain') assert.equal(socket.connect({ host: 'example.test', port: 80 }), socket, 'connect returns its Socket at once');
     await tick();
     assert.equal(f.calls.length, 0, `${name}: no native connect before the boundary acknowledgement`);
-    if (state === 'delayed') {
+    if (state.startsWith('cancel-')) {
+      if (state === 'cancel-before-registration') { f.notice.resolve(); await tick(); }
+      socket.destroy(); await tick();
+      assert.equal(socket.destroyed, true);
+      if (kind === 'tls') assert.equal(socket.carrier.destroyed, true, 'destroying the returned TLS socket also cancels its deferred carrier');
+      f.notice.resolve(); f.registration.resolve(); await tick();
+      assert.equal(f.calls.length, kind === 'plain' && state === 'cancel-before-registration' ? 1 : 0,
+        `${name}: no pending transport opens after its owner has been destroyed`);
+      assert.deepEqual(errors, []);
+    } else if (state === 'delayed') {
       f.notice.resolve(); await tick();
       if (kind === 'tls') {
         assert.equal(f.calls.length, 0, 'the TLS carrier also waits for its target registration');

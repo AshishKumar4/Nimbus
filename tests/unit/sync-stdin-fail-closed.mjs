@@ -3,6 +3,11 @@
 import assert from 'node:assert/strict';
 import { mock } from 'bun:test';
 import { ReplayJournal } from '../../packages/worker/src/runtime/stop-replay-journal.ts';
+import { buildSessionSupervisorOps } from '../../packages/worker/src/session/supervisor-op.ts';
+import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
+import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 mock.module('cloudflare:workers', () => ({ WorkerEntrypoint: class {
   constructor(ctx, env) { this.ctx = ctx; this.env = env; }
@@ -62,6 +67,45 @@ cases.boundary = async () => {
   deliver({ size: 1 }); await observation; await notice; await effect;
   assert.equal(changed, true);
   ordered.close();
+};
+cases.joinedRead = async () => {
+  // A transport hedge is another envelope for the SAME read, not a second
+  // program observation. Hold the authority's answer so the two envelopes
+  // necessarily join; no timer, network latency or scheduler luck is needed.
+  const h = createSqliteVfsTestHarness();
+  const processes = new SessionProcessSupervisor();
+  const pid = processes.spawn('reader', ['reader'], '/').pid;
+  const j = new ReplayJournal(() => {}, 1500); j.start('a');
+  let complete, served = 0;
+  const host = {
+    ensureSqliteFs() {}, sqliteFs: new SqliteVFS(h.sql, h.ctx), processes,
+    supervisorDeliveries: new SupervisorDeliveries(),
+    facetManager: { journalCall: (op, args, _pid, run, dispatch) => j.handle(op, args, run, dispatch) },
+    _rpcFsAcquire: () => { served++; return new Promise((resolve) => { complete = resolve; }); },
+  };
+  const ops = buildSessionSupervisorOps(host);
+  const args = ['epoch', 0, { namespace: true }];
+  const reply = { epoch: 'epoch', rev: 0, paths: [], more: false };
+  const ask = (run, readId) => ops.dispatch({ op: 'fsAcquire', args, pid, run, readId });
+  const [firstId, replayId, thirdId, extraId] = Array.from({ length: 4 }, () => crypto.randomUUID());
+  const tick = async () => { for (let i = 0; i < 20; i++) await null; };
+  try {
+    const first = ask('a', firstId), hedge = ask('a', firstId);
+    await tick(); assert.equal(served, 1, 'two pending transport attempts join one authority read');
+    complete(reply); await Promise.all([first, hedge]);
+    j.stopped();
+    assert.deepEqual(j.observations, { fsAcquire: 1 }, 'journal the joined logical reply exactly once');
+    j.start('b');
+    const replay = ask('b', replayId), replayHedge = ask('b', replayId);
+    await tick(); assert.equal(served, 2, 'the replay hedge also joins rather than consuming another occurrence');
+    const notice = j.boundary('b');
+    complete(reply); await Promise.all([replay, replayHedge, notice]);
+    assert.equal(j.diverged, null);
+    // A different read identity is a real extra observation and MUST stray.
+    j.stopped(); j.start('c');
+    const replayAgain = ask('c', thirdId); await tick(); complete(reply); await replayAgain;
+    await assert.rejects(ask('c', extraId), /which the run before it did not ask for there/);
+  } finally { j.close(); await ops.dispose(); }
 };
 cases.redirect = async () => {
   const j = journal();

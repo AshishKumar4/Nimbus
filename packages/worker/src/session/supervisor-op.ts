@@ -31,6 +31,7 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { recordSupervisorAnswer } from '@nimbus-sh/platform/diag-counters.js';
 import { withReadAllocation } from './rpc.js';
+import type { FacetManager } from '../facets/manager.js';
 
 /**
  * The supervisor surface a session exposes to the handler: the `_rpc*`
@@ -50,6 +51,7 @@ export interface SessionSupervisorHost {
    * spawned. Absent, the session serves no delivered mutation.
    */
   readonly supervisorDeliveries?: SupervisorDeliveries;
+  readonly facetManager?: Pick<FacetManager, 'journalCall'> | null;
   _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
   _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
   /**
@@ -131,6 +133,11 @@ export function buildSessionSupervisorOps(
     readLease: withReadAllocation,
     extend,
     deliveries: host.supervisorDeliveries,
+    // Joining is part of the canonical handler, BEFORE this logical-answer
+    // seam. A transport hedge must not consume another journal occurrence.
+    observe: (envelope, dispatch) => host.facetManager
+      ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
+      : dispatch(),
   });
   const forget: SessionSupervisorOps['forget'] = (pid) => {
     host.supervisorDeliveries?.forget(pid);

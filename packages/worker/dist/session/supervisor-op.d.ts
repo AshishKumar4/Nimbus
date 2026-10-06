@@ -20,6 +20,7 @@ import type { RuntimeFsBridge, NimbusFilesystemAuthority } from '@nimbus-sh/core
 import type { SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
+import type { FacetManager } from '../facets/manager.js';
 /**
  * The supervisor surface a session exposes to the handler: the `_rpc*`
  * methods SUPERVISOR_OP_ROUTES can name plus the filesystem and process
@@ -40,6 +41,7 @@ export interface SessionSupervisorHost {
      * spawned. Absent, the session serves no delivered mutation.
      */
     readonly supervisorDeliveries?: SupervisorDeliveries;
+    readonly facetManager?: Pick<FacetManager, 'journalCall'> | null;
     _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     /**

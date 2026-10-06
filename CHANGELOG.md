@@ -15,6 +15,10 @@ published independently in the `@nimbus-sh` npm scope.
   refusal on stderr and exits; only an initial admission can fail its spawn.
   Native sockets and TLS carriers also wait for the replay boundary; a
   refused notice destroys the socket with the original error before connecting.
+  Immediate TLS writes and ends remain buffered until the carrier is adopted;
+  destroying its returned socket cancels the pending carrier and registration.
+  Repeated in-flight read attempts join before journaling, so a transport
+  hedge cannot be mistaken for an extra pre-read observation.
 
 - Fixed: synchronous-stdin replay is fail-closed at the session boundary.
   Every supervisor operation has an explicit observation, effect, or

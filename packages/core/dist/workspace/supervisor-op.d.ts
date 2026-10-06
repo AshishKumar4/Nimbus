@@ -82,6 +82,13 @@ export interface SupervisorOpDeps {
      * predates delivery does not, and mints no binding that would send one.
      */
     readonly deliveries?: SupervisorDeliveries;
+    /**
+     * Observe one logical answer, after transport read attempts have joined or
+     * delivered mutations have found their receipt. A repeated pending read
+     * observes the SAME answer, never a second program request. Used by the
+     * session's replay journal; omitted by hosts without stoppable processes.
+     */
+    readonly observe?: (envelope: SupervisorOpEnvelope, dispatch: () => Promise<unknown>) => Promise<unknown>;
 }
 /**
  * One slot in an op's argument plan: a number takes `envelope.args[n]`, a

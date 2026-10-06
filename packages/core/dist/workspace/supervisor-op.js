@@ -354,7 +354,7 @@ export function createSupervisorOpHandler(deps) {
         hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
     };
     const extend = deps.extend ?? {};
-    const serve = (op, envelope) => {
+    const perform = (op, envelope) => {
         // Priority: the embedder's own handler → the native filesystem op → the
         // canonical route table onto the host's _rpc* methods. An op in none of
         // these is not served by this host.
@@ -378,6 +378,8 @@ export function createSupervisorOpHandler(deps) {
         const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
         return Reflect.apply(method, host, args);
     };
+    const serve = (op, envelope) => deps.observe
+        ? deps.observe(envelope, async () => perform(op, envelope)) : perform(op, envelope);
     /**
      * A mutation delivered exactly once (supervisor-delivery.ts), checked in
      * the order that makes a repeat safe: the delivery was minted for THIS

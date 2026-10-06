@@ -78,6 +78,11 @@ export function buildSessionSupervisorOps(host, store, methods) {
         readLease: withReadAllocation,
         extend,
         deliveries: host.supervisorDeliveries,
+        // Joining is part of the canonical handler, BEFORE this logical-answer
+        // seam. A transport hedge must not consume another journal occurrence.
+        observe: (envelope, dispatch) => host.facetManager
+            ? host.facetManager.journalCall(envelope.op, envelope.args, envelope.pid, envelope.run, dispatch)
+            : dispatch(),
     });
     const forget = (pid) => {
         host.supervisorDeliveries?.forget(pid);

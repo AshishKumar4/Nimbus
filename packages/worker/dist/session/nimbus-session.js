@@ -48,7 +48,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 // S8: Supervisor RPC + W8 cp* + legacy VFS impls extracted.
 import * as _rpc from './rpc.js';
 import { answerSupervisorOp, buildSessionSupervisorOps } from './supervisor-op.js';
-import { openSupervisorDeliveries, SUPERVISOR_DELIVER_OP } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 // S9: HTTP fetch routing extracted (combined S9a + S9b).
 import * as _routes from './routes.js';
@@ -681,13 +681,9 @@ export class NimbusSession extends CloudflareDurableObject {
     }
     /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
     serveSupervisorOp(envelope) {
-        // A process that can stop at a read of stdin is answered through its
-        // journal, which is where what it does and sees is counted and checked
-        // (worker runtime/stop-replay.ts ReplayJournal).
-        const op = envelope.op === SUPERVISOR_DELIVER_OP ? (envelope.delivery?.op ?? envelope.op) : envelope.op;
-        const answer = this.facetManager
-            ? this.facetManager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope))
-            : this.supervisorOps().dispatch(envelope);
+        // The canonical handler journals logical answers downstream of its
+        // transport joins, not each attempt that brought the same request.
+        const answer = this.supervisorOps().dispatch(envelope);
         if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number')
             return answer;
         // What this session served a process is the read profile's only evidence (read-profile.ts).

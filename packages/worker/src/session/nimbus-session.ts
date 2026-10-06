@@ -117,7 +117,7 @@ import { wsMessage as _wsDoMessage, wsClose as _wsDoClose, wsError as _wsDoError
 import * as _rpc from './rpc.js';
 import { answerSupervisorOp, buildSessionSupervisorOps, type SessionSupervisorOps } from './supervisor-op.js';
 import type { SupervisorOpEnvelope } from '@nimbus-sh/core/workspace/supervisor-op.js';
-import { openSupervisorDeliveries, SUPERVISOR_DELIVER_OP, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { openSupervisorDeliveries, type SupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import type { HostedHttpRequest, HostedHttpResponse } from '@nimbus-sh/fabric/process-host.js';
 // The supervisor terminates a facet's outbound sockets so inbound frames
 // arrive as supervisor replies (VFS coherence witness 3).
@@ -788,13 +788,9 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
 
   /** `envelope` answered, for the session itself: a call inside another answer (session/rpc.ts _rpcFsAcquired). */
   serveSupervisorOp(envelope: SupervisorOpEnvelope): Promise<unknown> {
-    // A process that can stop at a read of stdin is answered through its
-    // journal, which is where what it does and sees is counted and checked
-    // (worker runtime/stop-replay.ts ReplayJournal).
-    const op = envelope.op === SUPERVISOR_DELIVER_OP ? (envelope.delivery?.op ?? envelope.op) : envelope.op;
-    const answer = this.facetManager
-      ? this.facetManager.journalCall(op, envelope.args, envelope.pid, envelope.run, () => this.supervisorOps().dispatch(envelope))
-      : this.supervisorOps().dispatch(envelope);
+    // The canonical handler journals logical answers downstream of its
+    // transport joins, not each attempt that brought the same request.
+    const answer = this.supervisorOps().dispatch(envelope);
     if (!SERVED_READ_OPS.has(envelope.op) || typeof envelope.pid !== 'number') return answer;
     // What this session served a process is the read profile's only evidence (read-profile.ts).
     return answer.then((value) => {

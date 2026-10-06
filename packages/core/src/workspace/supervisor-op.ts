@@ -115,6 +115,13 @@ export interface SupervisorOpDeps {
    * predates delivery does not, and mints no binding that would send one.
    */
   readonly deliveries?: SupervisorDeliveries;
+  /**
+   * Observe one logical answer, after transport read attempts have joined or
+   * delivered mutations have found their receipt. A repeated pending read
+   * observes the SAME answer, never a second program request. Used by the
+   * session's replay journal; omitted by hosts without stoppable processes.
+   */
+  readonly observe?: (envelope: SupervisorOpEnvelope, dispatch: () => Promise<unknown>) => Promise<unknown>;
 }
 
 function stringArg(envelope: SupervisorOpEnvelope, index: number): string {
@@ -518,7 +525,7 @@ export function createSupervisorOpHandler(
     hydrated: (path) => (deps.filesystem instanceof ProcessFiles ? deps.filesystem.hydrated(path) : Promise.resolve()),
   };
   const extend = deps.extend ?? {};
-  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {
+  const perform = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => {
     // Priority: the embedder's own handler → the native filesystem op → the
     // canonical route table onto the host's _rpc* methods. An op in none of
     // these is not served by this host.
@@ -541,6 +548,8 @@ export function createSupervisorOpHandler(
     const args = route.args.map((slot) => typeof slot === 'number' ? envelope.args?.[slot] : envelope[slot]);
     return Reflect.apply(method, host, args);
   };
+  const serve = (op: SupervisorOpName, envelope: SupervisorOpEnvelope): unknown => deps.observe
+    ? deps.observe(envelope, async () => perform(op, envelope)) : perform(op, envelope);
   /**
    * A mutation delivered exactly once (supervisor-delivery.ts), checked in
    * the order that makes a repeat safe: the delivery was minted for THIS

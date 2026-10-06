@@ -82,6 +82,13 @@ const tlsOpts = (ca) => ({ ...creds(ca), ALPNProtocols: ['x-test', 'http/1.1'], 
 (async () => {
   const ports = {};
   ports.good = await listen(tls.createServer(tlsOpts('good'), serve));
+  let cancelledConnections = 0;
+  const cancelled = tls.createServer(tlsOpts('good'), serve);
+  cancelled.on('connection', () => cancelledConnections++);
+  ports.cancelled = await listen(cancelled);
+  require('readline').createInterface({ input: process.stdin }).on('line', (line) => {
+    if (line === 'COUNTS') console.log('COUNTS ' + cancelledConnections);
+  });
   ports.other = await listen(tls.createServer(tlsOpts('other'), serve));
   // A WebSocket echo: the handshake by hand, then unmasked text frames back.
   const wss = https.createServer(creds('good'), (q, s) => s.end('no'));
@@ -118,11 +125,23 @@ const tlsOpts = (ca) => ({ ...creds(ca), ALPNProtocols: ['x-test', 'http/1.1'], 
   console.log('PORTS ' + JSON.stringify(ports));
 })();
 `;
-const fixtures = spawn('node', ['-e', FIXTURES], { stdio: ['ignore', 'pipe', 'inherit'] });
+const fixtures = spawn('node', ['-e', FIXTURES], { stdio: ['pipe', 'pipe', 'inherit'] });
 const ports = await new Promise((resolve, reject) => {
   let out = '';
   fixtures.stdout.on('data', (d) => { out += d; const m = /PORTS (.*)/.exec(out); if (m) resolve(JSON.parse(m[1])); });
   fixtures.on('exit', (code) => reject(new Error('fixtures exited ' + code)));
+});
+const cancelledConnections = () => new Promise((resolve, reject) => {
+  let out = '';
+  const answer = (d) => {
+    out += d;
+    const match = /COUNTS (\d+)/.exec(out);
+    if (!match) return;
+    clearTimeout(timeout); fixtures.stdout.off('data', answer); resolve(Number(match[1]));
+  };
+  const timeout = setTimeout(() => { fixtures.stdout.off('data', answer); reject(new Error('TLS fixture did not answer its connection counter')); }, 2000);
+  fixtures.stdout.on('data', answer);
+  fixtures.stdin.write('COUNTS\n');
 });
 let redis = null;
 if (spawnSync('redis-server', ['--version']).status === 0) {
@@ -160,6 +179,9 @@ const CASES = {
   // tls.connect is issued immediately after fd 0, with its boundary notice
   // still in flight: exercise the real native carrier's deferred setup.
   afterStdin: 'console.log("STDIN READY"); require("fs").readFileSync(0); (async () => done(await talk({ host: HOST, port: PORTS.good }, "INFO")))();',
+  earlyWrite: 'console.log("STDIN READY"); require("fs").readFileSync(0); (() => { const s = tls.connect({ host: HOST, port: PORTS.good }); let data = ""; s.on("data", (d) => data += d); s.on("error", (e) => done({ error: e.code || e.message })); s.on("end", () => { s.destroy(); done({ data }); }); s.write("INFO\\n"); })();',
+  earlyEnd: 'console.log("STDIN READY"); require("fs").readFileSync(0); (() => { const s = tls.connect({ host: HOST, port: PORTS.good }); let data = ""; s.on("data", (d) => data += d); s.on("error", (e) => done({ error: e.code || e.message })); s.on("end", () => { s.destroy(); done({ data }); }); s.end("HALF\\n"); })();',
+  destroyBeforeAck: 'console.log("STDIN READY"); require("fs").readFileSync(0); (() => { const s = tls.connect({ host: HOST, port: PORTS.cancelled }); let connects = 0; s.on("secureConnect", () => connects++); s.on("error", () => {}); s.destroy(); setTimeout(() => done({ connects, destroyed: s.destroyed }), 250); })();',
   sni: '(async () => done(await talk({ host: HOST, port: PORTS.good, servername: "fixture.nimbus.test" }, "INFO")))();',
   alpn: '(async () => done(await talk({ host: HOST, port: PORTS.good, ALPNProtocols: ["x-test"] }, "INFO")))();',
   // A private CA named by the program.
@@ -305,6 +327,7 @@ try {
   if (ports.redis) assert.deepEqual(node.redis.plain, { reply: ['+OK', '+PONG'], authorized: true });
 
   // ── Nimbus ───────────────────────────────────────────────────────────────
+  const cancelledBeforeNimbus = await cancelledConnections();
   console.log('tls-stoppable-workerd: starting local workerd');
   probe = await startLocalProbe({ runtimes: [] });
   process.env.BASE = probe.base;
@@ -323,6 +346,8 @@ try {
     await put('parent.js', PARENT);
     const { output } = await t.run(`cd ${W} && node parent.js; echo __TLS_DONE__`, 900_000);
     nimbus = results(strip(output));
+    check(await cancelledConnections() === cancelledBeforeNimbus,
+      'destroyBeforeAck: no cancelled carrier reached the TLS server');
     // From the terminal, with no stdin to wait for: it cannot stop.
     for (const name of Object.keys(CASES)) {
       await put(`${name}.js`, head + '\n' + CASES[name]);
@@ -349,6 +374,12 @@ try {
     `basic: connected and authorized both ways (the address sent as SNI, as workerd does)${show('basic')}`);
   check(JSON.stringify(nimbus.afterStdin?.stoppable) === JSON.stringify(ipNamed) && JSON.stringify(nimbus.afterStdin?.plain) === JSON.stringify(ipNamed),
     `afterStdin: the real native TLS carrier opens behind the replay boundary${show('afterStdin')}`);
+  check(JSON.stringify(nimbus.earlyWrite?.stoppable) === JSON.stringify(nimbus.earlyWrite?.plain) && nimbus.earlyWrite?.stoppable?.data === ipNamed.got + '\n',
+    `earlyWrite: write/end before secureConnect stay buffered through carrier adoption${show('earlyWrite')}`);
+  check(JSON.stringify(nimbus.earlyEnd?.stoppable) === JSON.stringify(node.earlyEnd?.stoppable) && nimbus.earlyEnd?.stoppable?.data === 'after-end\n',
+    `earlyEnd: end before secureConnect half-closes only after carrier adoption${show('earlyEnd')}`);
+  check(nimbus.destroyBeforeAck?.stoppable?.connects === 0 && nimbus.destroyBeforeAck?.stoppable?.destroyed === true,
+    `destroyBeforeAck: a cancelled returned TLS socket never upgrades its carrier${show('destroyBeforeAck')}`);
   // A server name other than the host: the session sends it, as Node does;
   // workerd's own node:tls checks the certificate against it but sends the
   // host.
