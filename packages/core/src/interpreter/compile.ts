@@ -21,7 +21,7 @@
  * analysis left with what a later one needs (scope.ts releaseScopes).
  */
 import type {
-  AnyNode, ArrayExpression, ArrayPattern, ArrowFunctionExpression, AssignmentExpression, AwaitExpression,
+  AnyNode, ArrayExpression, ArrayPattern, ArrowFunctionExpression, AssignmentExpression, AssignmentPattern, AwaitExpression,
   BinaryExpression, BlockStatement, CallExpression, CatchClause, ClassBody, ClassExpression, ExportDefaultDeclaration, Expression,
   ForInStatement, ForOfStatement, ForStatement, FunctionDeclaration, FunctionExpression, Identifier, ImportExpression,
   Literal, LogicalExpression, MemberExpression, MetaProperty, ModuleDeclaration, NewExpression,
@@ -143,6 +143,11 @@ function expectedArgumentCount(params: readonly Pattern[]): number {
     n++;
   }
   return n;
+}
+
+/** What a pattern element binds: the element itself, or an AssignmentPattern's left. */
+function patternTarget(element: Pattern): Pattern {
+  return element.type === 'AssignmentPattern' ? element.left : element;
 }
 
 /** An element of a suspending destructuring pattern (Compiler.elementGen). */
@@ -1517,13 +1522,23 @@ export class Compiler {
       }
       case 'AssignmentPattern': {
         const inner = this.patternBinder(pattern.left, init);
-        const dflt = pattern.left.type === 'Identifier' ? this.named(pattern.right, pattern.left.name).s : this.expr(pattern.right).s;
+        const dflt = this.patternDefault(pattern).s;
         return (env, value) => inner(env, value === undefined ? dflt(env) : value);
       }
       case 'ObjectPattern': return this.objectPatternBinder(pattern, init);
       case 'ArrayPattern': return this.arrayPatternBinder(pattern, init);
       case 'RestElement': return this.patternBinder(pattern.argument, init);
     }
+  }
+
+  /**
+   * The value a pattern element's default gives an undefined value, planned
+   * once for both flavors (patternBinder, patternBinderGen): an anonymous
+   * function or class default takes an identifier target's name, as
+   * `const { f = function () {} } = o` names it `f`.
+   */
+  private patternDefault(element: AssignmentPattern): Code {
+    return element.left.type === 'Identifier' ? this.named(element.right, element.left.name) : this.expr(element.right);
   }
 
   /** A member expression as an assignment target: evaluates its reference, then returns its setter. */
@@ -1597,12 +1612,9 @@ export class Compiler {
       };
     }
     const key = this.propertyKey(p.key, p.computed);
-    const value = p.value;
-    const bind = this.patternBinder(value.type === 'AssignmentPattern' ? value.left : value, init);
-    const target = value.type === 'AssignmentPattern' ? value.left : value;
-    const dflt = value.type === 'AssignmentPattern'
-      ? (value.left.type === 'Identifier' ? this.named(value.right, value.left.name).s : this.expr(value.right).s)
-      : null;
+    const target = patternTarget(p.value);
+    const bind = this.patternBinder(target, init);
+    const dflt = p.value.type === 'AssignmentPattern' ? this.patternDefault(p.value).s : null;
     const member = target.type === 'MemberExpression' ? this.memberTarget(target) : null;
     return (env, source, used) => {
       const k = key(env);
@@ -1620,10 +1632,8 @@ export class Compiler {
     if (e.type === 'RestElement') {
       return { kind: 'rest', bind: this.patternBinder(e.argument, init), member: e.argument.type === 'MemberExpression' ? this.memberTarget(e.argument) : null };
     }
-    const target = e.type === 'AssignmentPattern' ? e.left : e;
-    const dflt = e.type === 'AssignmentPattern'
-      ? (e.left.type === 'Identifier' ? this.named(e.right, e.left.name).s : this.expr(e.right).s)
-      : null;
+    const target = patternTarget(e);
+    const dflt = e.type === 'AssignmentPattern' ? this.patternDefault(e).s : null;
     return { kind: 'one', bind: this.patternBinder(target, init), dflt, member: target.type === 'MemberExpression' ? this.memberTarget(target) : null };
   }
 
@@ -1779,10 +1789,8 @@ export class Compiler {
    * value, and the binding or assignment.
    */
   private elementGen(element: Pattern, init: boolean): ElementGen {
-    const target = element.type === 'AssignmentPattern' ? element.left : element;
-    const dflt = element.type === 'AssignmentPattern'
-      ? asGen(element.left.type === 'Identifier' ? this.named(element.right, element.left.name) : this.expr(element.right))
-      : null;
+    const target = patternTarget(element);
+    const dflt = element.type === 'AssignmentPattern' ? asGen(this.patternDefault(element)) : null;
     if (target.type === 'MemberExpression') {
       const ref = this.memberTargetGen(target);
       return {

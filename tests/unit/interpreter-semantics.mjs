@@ -244,6 +244,23 @@ async function runCases(interpreterFile, opsFile) {
     function* g() { let x; [x = yield] = iterable; }
     const it = g(); it.next(); it.return();
     return closed`)(), 1);
+  {
+    // A default names an anonymous function after its identifier target, in a
+    // pattern that never suspends and in one that does, in every position.
+    const program = () => {
+      const { f = function () {}, g = () => {}, h = class {} } = {};
+      const [i = function () {}, , [j = () => {}] = []] = [];
+      let k; ({ k = function () {} } = {});
+      function* gen() {
+        const { [yield 'key']: x = function () {}, l = function () {} } = {};
+        const [m = function () {}, n = (yield 'n', function () {})] = [];
+        return [x.name, l.name, m.name, n.name];
+      }
+      const it = gen(); it.next(); it.next('x'); const suspended = it.next().value;
+      return [f.name, g.name, h.name, i.name, j.name, k.name, ...suspended];
+    };
+    check('a destructuring default names its function, suspending or not', F(`return (${program})()`)(), program());
+  }
   check('yield inside a destructuring target', F('function* g() { const o = {}; [o[yield "k"]] = [7]; return o } const it = g(); it.next(); return it.next("key").value')(), { key: 7 });
 
   // ── Async ──
