@@ -548,6 +548,12 @@ export function installAuthorityFilesystem(imports, options) {
                 fail('ENOTSUP');
             return after(fs.chmod(at(fd, path(p, n)), mode & 0o7777), () => 0);
         });
+        ext.path_access = guard(ext.path_access, (fs, fd, flags, p, n, mode) => {
+            pathRight(fd, 18);
+            // Linux's faccessat has no AT_SYMLINK_NOFOLLOW check of a link's own bits: it follows.
+            void flags;
+            return after(fs.access(at(fd, path(p, n)), mode & 7), () => 0);
+        });
         // A read-only copy (a resident descriptor) has no descriptor on the
         // authority to change it through.
         ext.fd_chmod = guard(ext.fd_chmod, (fs, fd, mode) => {

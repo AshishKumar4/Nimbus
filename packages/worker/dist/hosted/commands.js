@@ -2,7 +2,7 @@ import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopComma
 import { createKillCommand } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
-import { BASH_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { BASH_RUNNER, CPYTHON_RUNNER, CRED_KERNEL, requireVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { makeEsbuildCommand } from '@nimbus-sh/core/runtime/esbuild-cli.js';
@@ -136,7 +136,7 @@ export async function registerHostedCommands(self, workspace) {
     // no flags that would consume args) drops into an interactive
     // REPL. The wrap is purely additive — args-bearing invocations
     // pass through to the existing handler unchanged.
-    workspace.runtimes.registerRunner('cpython-runner', (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
+    const cpythonRunner = (manifest, installRoot, binName, binKind) => async function pythonReplOrOneShot(ctx) {
         const argv = ctx.args || [];
         // No args at all → REPL session. Hand off to runPythonRepl
         // which builds its own IsolatePool (separate from the
@@ -169,7 +169,10 @@ export async function registerHostedCommands(self, workspace) {
             facets: facetHostForManager(facetMgr),
             startResident: cpythonResidentStart(facetMgr),
         })(manifest, installRoot, binName, binKind)(ctx);
-    });
+    };
+    // The stock build, and the one importing the Nimbus extensions (CPYTHON_RUNNER): one runner.
+    workspace.runtimes.registerRunner('cpython-runner', cpythonRunner);
+    workspace.runtimes.registerRunner(CPYTHON_RUNNER, cpythonRunner);
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
     // as python-runner: ruby+stdlib.wasm rides via LOADER modules-map,
     // bootstrap runs at child-facet module-init time, per-call
