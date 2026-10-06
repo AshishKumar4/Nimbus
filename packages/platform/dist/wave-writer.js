@@ -57,6 +57,7 @@
 import { encodeWriteBatchStream, W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, w7ChunkCount, w7Chunks, } from './w7-frame.js';
 import { LOST_CALL_RESEND_BACKOFF_MS, LOST_STREAM_ANSWER_MS, LOST_STREAM_STALL_MS, WAVE_EPOCH_TTL_MS, isLostFencedCall, lostCallAttributes, } from './lost-call.js';
 import { disposeRpcResource } from './rpc-dispose.js';
+import { retryDelayMs } from './retry.js';
 import { utf8Length } from './utf8.js';
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
 export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
@@ -616,8 +617,7 @@ export class WaveWriter {
                     of: backoffMs.length,
                     reason: error instanceof Error ? error.message : String(error),
                 }));
-                const base = backoffMs[attempt];
-                await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(base * (0.75 + Math.random() * 0.5)))));
+                await new Promise((resolve) => setTimeout(resolve, retryDelayMs(backoffMs, attempt)));
             }
             finally {
                 attemptStream.settle();
