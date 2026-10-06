@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "9be5fbc7fa86e7d1e9fbcd5a16b1c0d2dd935c1d84b5617b3ae52d38d3ed009b",
+  "fingerprint": "a20ae286e6821dce2ac44e871e270913a9bb563ef2259dbbfef80f20059d892d",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2375,7 +2375,7 @@
     "packages/worker/scripts/bundle-plugin-react.mjs": "fe16668909e911b4ad06e85b9b33545abb7803a200e0a6c4abb4b8a7fbd4836e",
     "packages/worker/scripts/bundle-preview-isolation.mjs": "e012d7e8fd18a527943204a44ffda3a2c490e7681ed0e611ca39428ee7f94ad7",
     "packages/worker/scripts/bundle-real-vite.mjs": "9dec37042e380a0b5f191b8a39bffa58c7fa4a7e8b9eb44d6cc7045bed17ee08",
-    "packages/worker/scripts/bundle-runtime.mjs": "8f36aa34bae7ed62fe943874dba115b0b1627143007d8a71371bc4b5f9b979ee",
+    "packages/worker/scripts/bundle-runtime.mjs": "d4752ea53a3e5ed700f98de9fe188b8f3ac0f9b7bae138c243ff9afb355b4fdc",
     "packages/worker/scripts/bundle-sqlite-wasm.mjs": "f5a7299e50c572a6f567a9bc6619f28d7d26af223600c557eff6865a99843f46",
     "packages/worker/scripts/bundle-tailwind-play.mjs": "7e364d37acfd22db218e2f5717aa00a44c9e5d20d61ad96cc45ced67e9a17849",
     "packages/worker/scripts/cf-git-patch.mjs": "f4539f526a13bd975e0120c92074597178dcac014f7880a9ed454a07aab98675",
