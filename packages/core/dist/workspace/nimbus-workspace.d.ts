@@ -124,9 +124,11 @@ export interface NimbusWorkspaceOptions {
      * and `wasm-runner` joins them, which is what makes a `\0asm` file on the
      * PATH executable (see shell/exec-dispatch.ts).
      *
-     * A plain process passes `localFacetHost()`. A Durable Object passes nothing
-     * here and registers its own runners instead, because the ones it needs
-     * carry REPLs and a resident-process substrate this cannot reach.
+     * A plain process passes `localFacetHost(network)`, its network the
+     * workspace's: `workspaceNetwork(egress)` beside `egress`, else
+     * `ISOLATE_NETWORK`. A Durable Object passes nothing here and registers its
+     * own runners instead, because the ones it needs carry REPLs and a
+     * resident-process substrate this cannot reach.
      */
     readonly facets?: FacetHost;
     /**
@@ -180,14 +182,16 @@ export interface NimbusWorkspaceOptions {
      * a process's fetch, http/https, WebSocket and plain TCP
      * sockets; the one-shot runtimes and REPLs, whose facets go out through it
      * (with `facets`, bind them to this network: `loaderFacetHost(env, ctx,
-     * workspaceNetwork(egress))`), TLS CPython makes itself included; an inline
+     * workspaceNetwork(egress))`, `localFacetHost(workspaceNetwork(egress))`),
+     * TLS CPython makes itself included; an inline
      * `node` program's fetch and http/https, streamed and redirected as Node's
      * fetch does; a worker or dev server a command starts.
      *
      * Refused: a process's TLS socket (`tls.connect`), because a Fetcher's
      * `connect()` carries plain TCP only and the TLS session could only be
-     * made off the egress (HTTPS by fetch or `https` is not affected); an
-     * inline `node` program's WebSocket, which cannot cross its realm.
+     * made off the egress (HTTPS by fetch or `https` is not affected); the
+     * WebSocket of an inline `node` program or a `localFacetHost` facet, which
+     * cannot cross its realm.
      *
      * Not covered: responses from Nimbus's shared npm packument cache are not
      * used under an egress, so the egress sees every registry read, but

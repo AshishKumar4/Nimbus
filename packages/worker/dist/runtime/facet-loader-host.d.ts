@@ -12,7 +12,7 @@
  * out through the workspace's (its egress, when it has one), so no runtime
  * opening a facet can leave it out.
  */
-import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetHost } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { FacetManager } from '../facets/manager.js';
 /**

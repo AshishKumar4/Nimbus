@@ -10,9 +10,9 @@
  *      concurrency=N keeps at most N warm isolates rather than one per job.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = GUEST_COMPAT_FLAGS,
- *      globalOutbound = the workspace's egress for a pool given its
- *      `network`, else absent (the parent's network, which reaches
- *      https://registry.npmjs.org without a proxy binding).
+ *      globalOutbound = the egress of the pool's `network` when it has
+ *      one, else absent (`ISOLATE_NETWORK`: the parent's network, which
+ *      reaches https://registry.npmjs.org without a proxy binding).
  *   3. **Supervisor autoinjection**. The pool grabs the embedder's
  *      registered supervisor entrypoint stub (see `supervisorEntrypoint` in
  *      composition.ts) and forwards it as `env.SUPERVISOR` to every facet,
@@ -90,14 +90,15 @@ export interface IsolatePoolOptions {
      */
     cacheScope?: 'session' | 'global';
     /**
-     * The network the pool's facets use, for a pool that runs work on behalf
-     * of a workspace (its registry fetches, a program's requests): the
+     * The network the pool's facets use. For a pool that runs work on behalf
+     * of a workspace (its registry fetches, a program's requests), the
      * workspace's (`workspace.network`), whose egress becomes each facet's
      * globalOutbound and whose id is baked into the loader id, so a warm
-     * isolate made under one egress never serves another. Absent, facets keep
-     * the parent's network.
+     * isolate made under one egress never serves another. Nimbus's own work
+     * states `ISOLATE_NETWORK`: the facets keep the parent's network. Required,
+     * so each pool's network is chosen where it is made.
      */
-    network?: WorkspaceNetwork;
+    network: WorkspaceNetwork;
     /**
      * Baked into the loader id. Two pools sharing tag, preamble, wasm and
      * supervisor but differing in `scope` never reuse each other's warm
@@ -261,6 +262,7 @@ export declare function assembleLoaderWorkerModuleSource(options: LoaderWorkerMo
  *   const pool = new IsolatePool(env, ctx, {
  *     concurrency: 2,
  *     tag: 'npm-install',
+ *     network: workspace.network,
  *   });
  *   const results = await pool.map(
  *     async (pkg, env) => env.SUPERVISOR.writeBatch(buildPayload(pkg)),
@@ -329,7 +331,7 @@ export declare class IsolatePool {
     private readonly scope;
     /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
     private readonly network;
-    constructor(env: unknown, ctx: DurableObjectState, opts?: IsolatePoolOptions);
+    constructor(env: unknown, ctx: DurableObjectState, opts: IsolatePoolOptions);
     /** Effective concurrency used when no per-call override is supplied. */
     get defaultConcurrency(): number;
     /**

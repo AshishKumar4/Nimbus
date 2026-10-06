@@ -17,6 +17,7 @@ import realm from 'node:process';
 import { joinRealm } from '../../../../runtime/realm-guest.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
+import { routeFetchThroughHost } from '../../../../runtime/realm-egress-guest.js';
 import { isDirEntries, isHostEvent, isNodeRealmPayload, isStat, } from './node-realm.js';
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload))
@@ -37,14 +38,17 @@ let mainDone = false;
 let exiting = false;
 const fetched = new Map();
 /**
- * Answers the program waits on from off the box (a response's head, a chunk
- * of a body it is reading): each holds the realm, as an active socket holds a
- * Node process. A body it is not reading holds nothing, as in Node.
+ * Under an egress, the program's network is its host's: `fetch` (and the
+ * http and https modules, which use it) crosses to the host, which sends each
+ * request out through the egress (runtime/realm-egress.ts). A WebSocket
+ * cannot cross the realm, so it is refused by name. What the program waits
+ * on from off the box (a response's head, a chunk of a body it is reading)
+ * holds the realm, as an active socket holds a Node process.
  */
-let awaitedOffTheBox = 0;
+let offTheBox = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0 || awaitedOffTheBox > 0);
+    joined.hold(fetched.size > 0 || ports.size > 0 || (offTheBox?.awaited ?? 0) > 0);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do. */
 function exitNow(code) {
@@ -107,140 +111,6 @@ class RealmPorts extends Map {
 }
 const ports = new RealmPorts();
 let fetches = 0;
-/** The program's requests off the box, by id: each takes the answers that cross back for it. */
-const offTheBox = new Map();
-/** A Request's redirect mode, as its type names it (a string, in the platform's typing). */
-function redirectMode(mode) {
-    if (mode === 'follow' || mode === 'manual' || mode === 'error')
-        return mode;
-    throw new TypeError(`fetch: unknown redirect mode ${JSON.stringify(mode)}`);
-}
-/** Statuses whose response has no body (the Response constructor refuses one). */
-const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
-/**
- * `request` off the box: it crosses to the host, which sends it out through
- * the egress and follows its redirects as the program asked. The response is
- * the program's once its head arrives; its body is read from the host as the
- * program reads it. Fails as Node's fetch fails: `fetch failed` before the
- * head, `terminated` in the body, the signal's reason on an abort.
- */
-function sendOffTheBox(request, body) {
-    const id = ++fetches;
-    const signal = request.signal;
-    return new Promise((resolve, reject) => {
-        let awaiting = false;
-        const await_ = (on) => {
-            if (awaiting === on)
-                return;
-            awaiting = on;
-            awaitedOffTheBox += on ? 1 : -1;
-            holdWhileBusy();
-        };
-        let stream;
-        /** Settles the stream's pull, once its chunk, end or error has arrived. */
-        let pulled;
-        const done = () => {
-            offTheBox.delete(id);
-            signal.removeEventListener('abort', aborted);
-            await_(false);
-            pulled?.();
-            pulled = undefined;
-        };
-        const aborted = () => {
-            post({ type: 'egress-cancel', id });
-            if (stream)
-                stream.error(signal.reason);
-            else
-                reject(signal.reason);
-            done();
-        };
-        const head = (answer) => {
-            await_(false);
-            const withBody = answer.body && !NULL_BODY_STATUSES.has(answer.status);
-            if (answer.body && !withBody) {
-                post({ type: 'egress-cancel', id });
-                done();
-            }
-            else if (!withBody) {
-                done();
-            }
-            const source = withBody ? new ReadableStream({
-                start: (controller) => { stream = controller; },
-                pull: () => new Promise((settle) => {
-                    pulled = settle;
-                    await_(true);
-                    post({ type: 'egress-pull', id });
-                }),
-                cancel: () => {
-                    post({ type: 'egress-cancel', id });
-                    done();
-                },
-            }, { highWaterMark: 0 }) : null;
-            let response;
-            try {
-                response = new Response(source, { status: answer.status, statusText: answer.statusText, headers: answer.headers.map(([name, value]) => [name, value]) });
-            }
-            catch (error) {
-                post({ type: 'egress-cancel', id });
-                done();
-                reject(new TypeError('fetch failed', { cause: error }));
-                return;
-            }
-            // Where the response came from, as Node's fetch reports it.
-            Object.defineProperties(response, { url: { value: answer.url }, redirected: { value: answer.redirected } });
-            resolve(response);
-        };
-        offTheBox.set(id, (answer) => {
-            switch (answer.type) {
-                case 'egress-head':
-                    head(answer.head);
-                    return;
-                case 'egress-chunk':
-                    await_(false);
-                    stream?.enqueue(answer.chunk);
-                    pulled?.();
-                    pulled = undefined;
-                    return;
-                case 'egress-end':
-                    stream?.close();
-                    done();
-                    return;
-                case 'egress-error': {
-                    const cause = new Error(answer.message);
-                    if (stream)
-                        stream.error(new TypeError('terminated', { cause }));
-                    else
-                        reject(new TypeError('fetch failed', { cause }));
-                    done();
-                    return;
-                }
-            }
-        });
-        signal.addEventListener('abort', aborted, { once: true });
-        await_(true);
-        post({ type: 'egress', id, request: { url: request.url, method: request.method, headers: [...request.headers], body, redirect: redirectMode(request.redirect) } });
-    });
-}
-/**
- * Under an egress, the program's network is its host's: `fetch` (and the
- * http and https modules, which use it) sends every request off the box
- * across to the host, which sends it out through the egress. A WebSocket
- * cannot cross the realm, so it is refused by name.
- */
-function routeOffTheBox() {
-    globalThis.fetch = async (input, init) => {
-        const request = new Request(input, init);
-        request.signal.throwIfAborted();
-        const body = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
-        request.signal.throwIfAborted();
-        return await sendOffTheBox(request, body);
-    };
-    globalThis.WebSocket = class {
-        constructor() {
-            throw new Error("Nimbus: WebSocket is not available to an inline node program when the workspace's network goes through an egress");
-        }
-    };
-}
 async function routeLoopback(port, request) {
     const id = ++fetches;
     const headers = {};
@@ -292,7 +162,7 @@ events.on('message', (event) => {
         case 'egress-chunk':
         case 'egress-end':
         case 'egress-error':
-            offTheBox.get(event.id)?.(event);
+            offTheBox?.answer(event);
             return;
     }
 });
@@ -313,8 +183,9 @@ realm.on('exit', () => {
     post({ type: 'output', fd: 2, data: `Warning: Detected unsettled top-level await at ${program.filename}\n` });
     post({ type: 'exit', code: 13 });
 });
-if (egress)
-    routeOffTheBox();
+if (egress) {
+    offTheBox = routeFetchThroughHost(post, holdWhileBusy, "Nimbus: WebSocket is not available to an inline node program when the workspace's network goes through an egress");
+}
 holdWhileBusy();
 const end = await runNodeProgram(program, {
     filesystem: () => filesystem,

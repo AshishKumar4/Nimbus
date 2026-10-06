@@ -64,6 +64,12 @@ export declare function networkRef(network: WorkspaceNetwork | undefined): Works
 export declare function loaderOutbound(network: WorkspaceNetwork | undefined): {
     globalOutbound?: WorkspaceEgress;
 };
+/**
+ * `network`, checked where a pool, a fanout or a facet host takes it: a caller
+ * that does not type-check (a host's JavaScript) is refused by name rather
+ * than given the isolate's network unasked.
+ */
+export declare function requireNetwork(network: WorkspaceNetwork | undefined, who: string): WorkspaceNetwork;
 /** Why a program's TLS socket is refused when the workspace's network goes through an egress. */
 export declare const EGRESS_TLS_REFUSAL: string;
 //# sourceMappingURL=workspace-network.d.ts.map

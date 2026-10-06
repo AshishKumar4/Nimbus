@@ -16,7 +16,7 @@
  *   - events: its output, the requests its loopback clients make, the
  *     requests this side forwards to its servers, its exit, and under an
  *     egress the requests it makes off the box, whose responses cross back
- *     as they arrive (OffTheBox).
+ *     as they arrive (runtime/realm-egress.ts).
  *
  * Everything the program sends is untrusted: this side answers only the calls
  * it names below, with arguments of their kind, and never lets a message, an
@@ -29,19 +29,16 @@ import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
+import { isEgressGuestEvent, isEgressHostEvent, RealmEgress } from '../../../../runtime/realm-egress.js';
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
 // Each side receives a structured clone it must narrow: a guard per shape.
 const record = (value) => typeof value === 'object' && value !== null;
 const stringRecord = (value) => record(value) && Object.values(value).every((entry) => typeof entry === 'string');
-const headerPairs = (value) => Array.isArray(value) && value.every((pair) => Array.isArray(pair) && pair.length === 2 && typeof pair[0] === 'string' && typeof pair[1] === 'string');
-const REDIRECT_MODES = ['follow', 'manual', 'error'];
-const isEgressRequest = (value) => record(value) && typeof value.url === 'string' && typeof value.method === 'string' && headerPairs(value.headers)
-    && (value.body === null || value.body instanceof Uint8Array) && REDIRECT_MODES.includes(value.redirect);
-const isEgressHead = (value) => record(value) && typeof value.status === 'number' && typeof value.statusText === 'string' && headerPairs(value.headers)
-    && typeof value.url === 'string' && typeof value.redirected === 'boolean' && typeof value.body === 'boolean';
 const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
     && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 export function isGuestEvent(value) {
+    if (isEgressGuestEvent(value))
+        return true;
     if (!record(value))
         return false;
     switch (value.type) {
@@ -52,23 +49,18 @@ export function isGuestEvent(value) {
                 && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
         case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
         case 'exit': return Number.isSafeInteger(value.code);
-        case 'egress': return Number.isSafeInteger(value.id) && isEgressRequest(value.request);
-        case 'egress-pull':
-        case 'egress-cancel': return Number.isSafeInteger(value.id);
         default: return false;
     }
 }
 export function isHostEvent(value) {
+    if (isEgressHostEvent(value))
+        return true;
     if (!record(value))
         return false;
     switch (value.type) {
         case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
         case 'serve': return typeof value.id === 'number' && typeof value.port === 'number' && record(value.request);
         case 'changed': return true;
-        case 'egress-head': return typeof value.id === 'number' && isEgressHead(value.head);
-        case 'egress-chunk': return typeof value.id === 'number' && value.chunk instanceof Uint8Array;
-        case 'egress-end': return typeof value.id === 'number';
-        case 'egress-error': return typeof value.id === 'number' && typeof value.message === 'string';
         default: return false;
     }
 }
@@ -245,7 +237,8 @@ export async function runNodeInRealm(program, ctx, kernel) {
     };
     let code = null;
     const payload = { program, egress: kernel?.network?.egress !== undefined };
-    const offTheBox = new OffTheBox(kernel?.network, (event) => { post(event); });
+    const network = kernel?.network;
+    const egress = network?.egress === undefined ? null : new RealmEgress(network, (event) => { post(event); });
     const realm = await startRealm({
         entry: new URL('./node-guest.js', import.meta.url),
         payload,
@@ -270,13 +263,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
                     });
                     return;
                 case 'egress':
-                    offTheBox.start(event.id, event.request);
-                    return;
                 case 'egress-pull':
-                    offTheBox.pull(event.id);
-                    return;
                 case 'egress-cancel':
-                    offTheBox.cancel(event.id);
+                    egress?.handle(event);
                     return;
             }
         },
@@ -298,7 +287,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
         kernel?.portRegistry.delete(port);
     for (const respond of pending.values())
         respond(null);
-    offTheBox.close();
+    egress?.close();
     unwatch?.();
     await written;
     if (end.terminated)
@@ -346,139 +335,5 @@ async function fetchForGuest(kernel, event) {
     }
     catch {
         return null;
-    }
-}
-// ── The program's requests off the box ──────────────────────────────────────
-/** Statuses fetch follows a Location from. */
-const REDIRECT_STATUSES = new Set([301, 302, 303, 307, 308]);
-/** At most this many redirects followed, as fetch follows them. */
-const MAX_REDIRECTS = 20;
-/** Headers that describe a request body: dropped with the body when a redirect turns the request into a GET. */
-const REQUEST_BODY_HEADERS = ['content-encoding', 'content-language', 'content-location', 'content-type', 'content-length'];
-/** Headers fetch drops when a redirect leaves the origin. */
-const CROSS_ORIGIN_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'host'];
-/**
- * `request` through `network`, each hop its own request with redirect
- * 'manual', and the program's redirect mode applied here: as workerd's fetch
- * follows a Fetcher's redirects (each hop to the Fetcher) and as Node's fetch
- * follows them (the HTTP-redirect fetch of https://fetch.spec.whatwg.org,
- * undici lib/web/fetch/index.js), so the egress sees every request the
- * program's redirects make. Rejects as Node's fetch fails: 'unexpected
- * redirect' under 'error', 'redirect count exceeded' past 20.
- */
-async function fetchFollowing(network, request, signal) {
-    let url = new URL(request.url);
-    url.hash = '';
-    let method = request.method;
-    let body = request.body;
-    const headers = new Headers(request.headers.map(([name, value]) => [name, value]));
-    for (let followed = 0;; followed++) {
-        const response = await network.fetch(url.href, { method, headers, body, redirect: 'manual', signal });
-        const answered = { response, url: url.href, redirected: followed > 0 };
-        if (!REDIRECT_STATUSES.has(response.status) || request.redirect === 'manual')
-            return answered;
-        if (request.redirect === 'error') {
-            await response.body?.cancel();
-            throw new Error('unexpected redirect');
-        }
-        const location = response.headers.get('location');
-        if (location === null)
-            return answered;
-        await response.body?.cancel();
-        if (followed === MAX_REDIRECTS)
-            throw new Error('redirect count exceeded');
-        const next = new URL(location, url);
-        next.hash = '';
-        if (next.protocol !== 'http:' && next.protocol !== 'https:')
-            throw new Error('URL scheme must be a HTTP(S) scheme');
-        if ((response.status === 303 && method !== 'GET' && method !== 'HEAD') || ((response.status === 301 || response.status === 302) && method === 'POST')) {
-            method = 'GET';
-            body = null;
-            for (const name of REQUEST_BODY_HEADERS)
-                headers.delete(name);
-        }
-        if (next.origin !== url.origin)
-            for (const name of CROSS_ORIGIN_HEADERS)
-                headers.delete(name);
-        url = next;
-    }
-}
-const errorText = (error) => (error instanceof Error ? error.message : String(error));
-/**
- * The program's requests off the box, under an egress: each leaves through
- * the workspace's network, and its response crosses back as it arrives: the
- * head first, then one chunk of the body each time the program reads one. A
- * response that does not end (server-sent events) is read as it comes, and a
- * body the program does not read is not read here either: nothing of it waits
- * in this isolate.
- */
-class OffTheBox {
-    network;
-    post;
-    open = new Map();
-    constructor(network, post) {
-        this.network = network;
-        this.post = post;
-    }
-    start(id, request) {
-        const entry = { abort: new AbortController() };
-        this.open.set(id, entry);
-        void (async () => {
-            try {
-                if (this.network?.egress === undefined)
-                    throw new Error('the workspace has no egress');
-                const { response, url, redirected } = await fetchFollowing(this.network, request, entry.abort.signal);
-                if (this.open.get(id) !== entry) {
-                    await response.body?.cancel();
-                    return;
-                }
-                if (response.body)
-                    entry.reader = response.body.getReader();
-                else
-                    this.open.delete(id);
-                this.post({ type: 'egress-head', id, head: { status: response.status, statusText: response.statusText, headers: [...response.headers], url, redirected, body: entry.reader !== undefined } });
-            }
-            catch (error) {
-                if (this.open.get(id) !== entry)
-                    return;
-                this.open.delete(id);
-                this.post({ type: 'egress-error', id, message: errorText(error) });
-            }
-        })();
-    }
-    pull(id) {
-        const entry = this.open.get(id);
-        const reader = entry?.reader;
-        if (!reader)
-            return;
-        reader.read().then(({ done, value }) => {
-            if (this.open.get(id) !== entry)
-                return;
-            if (done) {
-                this.open.delete(id);
-                this.post({ type: 'egress-end', id });
-            }
-            else {
-                this.post({ type: 'egress-chunk', id, chunk: value });
-            }
-        }, (error) => {
-            if (this.open.get(id) !== entry)
-                return;
-            this.open.delete(id);
-            this.post({ type: 'egress-error', id, message: errorText(error) });
-        });
-    }
-    cancel(id) {
-        const entry = this.open.get(id);
-        if (!entry)
-            return;
-        this.open.delete(id);
-        entry.abort.abort();
-        entry.reader?.cancel().catch(() => { });
-    }
-    /** The realm has ended: what it left open is closed. */
-    close() {
-        for (const id of [...this.open.keys()])
-            this.cancel(id);
     }
 }

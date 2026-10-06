@@ -122,11 +122,13 @@ export interface FanoutOptions {
      */
     extraBindings?: Record<string, unknown>;
     /**
-     * The workspace's network, for a fanout that works on its behalf (an npm
-     * install's registry and tarball requests): every task's facet, here and
-     * in peers, goes out through its egress (IsolatePoolOptions.network).
+     * The network every task's facet uses, here and in peers
+     * (IsolatePoolOptions.network): for a fanout that works on a workspace's
+     * behalf (an npm install's registry and tarball requests) the workspace's,
+     * through its egress; for Nimbus's own work `ISOLATE_NETWORK`. Required, so
+     * each fanout's network is chosen where it is made.
      */
-    network?: WorkspaceNetwork;
+    network: WorkspaceNetwork;
     /**
      * If set, skip the supervisor-RPC binding injection (mirrors
      * IsolatePool's omitSupervisor flag).

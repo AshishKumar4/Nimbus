@@ -17,7 +17,7 @@
  * install and runtime operations do not appear successful after partial
  * dispatch.
  */
-import { networkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { networkRef, requireNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool } from './isolate-pool.js';
@@ -95,6 +95,7 @@ export class Fanout {
         // IsolatePool also enforces this, but checking up front points the
         // diagnostic at the fanout construction site rather than the
         // deferred isolate-pool one.
+        requireNetwork(opts.network, 'Fanout');
         const env = rawEnv ?? {};
         if (!env.LOADER || typeof env.LOADER.get !== 'function') {
             throw new BindingError('Fanout: env.LOADER binding missing or invalid. ' +

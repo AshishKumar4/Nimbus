@@ -1499,7 +1499,7 @@ export async function _rpcFanoutExecute(self, fnSource, args, poolOpts = {}) {
         supervisorDoIdOverride: poolOpts.coordinatorDoId,
         supervisorRoute: poolOpts.coordinatorRoute,
         supervisorPid: poolOpts.supervisorPid,
-        network: poolOpts.network === undefined ? undefined : workspaceNetwork(poolOpts.network.egress, poolOpts.network.id),
+        network: poolOpts.network === undefined ? ISOLATE_NETWORK : workspaceNetwork(poolOpts.network.egress, poolOpts.network.id),
     });
     try {
         // mapSource accepts the pre-serialized fnSource forwarded by the
