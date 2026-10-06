@@ -24,6 +24,7 @@
 
 import { enc, dec, StreamTextDecoders } from '@nimbus-sh/core/_shared/bytes.js';
 import { isBrokenPipe } from '@nimbus-sh/core/substrate/lifo/utils/bytes-io.js';
+import { STDIN_FILE_READ_PIECE_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { normalizeTerminalNewlines } from '@nimbus-sh/core/_shared/terminal.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { getInnerDoClass, noteInnerDoFacetOpened } from '@nimbus-sh/fabric/inner-do-registry.js';
@@ -792,7 +793,7 @@ export async function _rpcFsReadRange(
 
 /** A bounded range used only to prepare fd 0, never an ordinary file read. */
 export async function _rpcStdinFileRead(self: RpcHost, path: string, offset: number, length: number, pid?: number): Promise<{ data: Uint8Array; size: number }> {
-  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > 65536) throw new RangeError('invalid stdin preparation range');
+  if (!Number.isSafeInteger(offset) || offset < 0 || !Number.isSafeInteger(length) || length < 0 || length > STDIN_FILE_READ_PIECE_BYTES) throw new RangeError('invalid stdin preparation range');
   const stat = await self.supervisorBridge(pid).stat(path);
   if (!stat) throw Object.assign(new Error(`ENOENT: no such stdin file '${path}'`), { code: 'ENOENT' });
   const data = await _rpcFsReadRange(self, path, offset, Math.min(length, Math.max(0, stat.size - offset)), pid);

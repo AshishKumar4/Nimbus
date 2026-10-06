@@ -84,7 +84,7 @@ export declare const REPLAY_OPERATION_POLICY: {
     fsAcquire: {
         kind: "observation";
         answer: (value: unknown) => unknown;
-        args: (a: readonly unknown[]) => unknown[];
+        args: () => never[];
     };
     fsAcquired: {
         kind: "observation";

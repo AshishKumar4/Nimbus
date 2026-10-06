@@ -44,6 +44,20 @@ cases.namespace = async () => {
     await assert.rejects(ask(j, op, { entries: [{ path: '/x', stat: { size: 2 } }], paths: [{ path: '/x', stat: { size: 2 } }] }, 'b'), /answered differently/);
   }
 };
+cases.acquirePosition = async () => {
+  const j=journal();
+  const row={path:'/config',type:'file',size:3,mode:0o644,uid:1000,gid:1000,data:new Uint8Array([1,2,3])};
+  const reply={epoch:'one',rev:1,paths:[row],more:false};
+  await j.handle('fsAcquire',['one',0,{namespace:true,push:{roots:['/config'],exclude:[]}}],'a',async()=>reply);
+  j.stopped();j.start('b');
+  await j.handle('fsAcquire',['two',88,{namespace:true}],'b',async()=>({...reply,epoch:'two',rev:99}));
+  await j.boundary('b');assert.equal(j.diverged,null,'cache push strategy does not change acquisition position or program inputs');j.close();
+  const changed=journal();
+  await changed.handle('fsAcquire',['one',0,{namespace:true}],'a',async()=>reply);
+  changed.stopped();changed.start('b');
+  await assert.rejects(changed.handle('fsAcquire',['two',99,{namespace:true,push:{roots:['/config']}}],'b',async()=>({...reply,paths:[{...row,data:new Uint8Array([4,5,6])}]})),/answered differently/,
+    'matching acquisition positions still checks every observable namespace/stat/content byte');changed.close();
+};
 cases.boundary = async () => {
   const j = journal();
   await ask(j, 'stat', { size: 1 }); j.stopped(); j.start('b');

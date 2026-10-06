@@ -33,6 +33,7 @@
  */
 
 import { filesystemErrno } from './filesystem.js';
+import { PIPE_CAPACITY, decideWrite } from '../bash/pipe-rules.js';
 import type { Errno, FdEntry, SyscallResult, WasiSupervisorStub, WasiInputPacket } from './types.js';
 import type { Awaitable } from '../os-contracts.js';
 
@@ -66,6 +67,7 @@ export const PROCESS_PARK_MS = 8_000;
  */
 export interface Pipe {
   chunks: Uint8Array[];
+  buffered: number;
   writers: number;
   readers: number;
   waiters: Array<() => void>;
@@ -182,7 +184,7 @@ export interface ProcessHost {
 }
 
 function newPipe(): Pipe {
-  return { chunks: [], writers: 0, readers: 0, waiters: [], forward: null, end: null, ended: false, failed: false };
+  return { chunks: [], buffered: 0, writers: 0, readers: 0, waiters: [], forward: null, end: null, ended: false, failed: false };
 }
 
 function wake(pipe: Pipe): void {
@@ -212,17 +214,17 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
    * cancelled, `attempt` is never asked again, so a wait that did not answer
    * consumed nothing: the guest's retry finds it all still there.
    */
-  const parkedWait = <T>(subscribe: (wake: () => void) => void, attempt: () => T | null): { ready: Promise<T | null>; cancel(): void } => {
+  const parkedWait = <T>(subscribe: (wake: () => void) => void, attempt: () => T | null, accountGuest = true): { ready: Promise<T | null>; cancel(): void } => {
     let finish: (answer: T | null, ran: boolean) => void = () => {};
     const ready = new Promise<T | null>((resolve) => {
       let over = false;
-      if (parks++ === 0) opts.news?.say(true);
+      if (accountGuest && parks++ === 0) opts.news?.say(true);
       const timer = setTimeout(() => finish(null, false), PROCESS_PARK_MS);
       finish = (answer, ran) => {
         if (over) return;
         over = true;
         clearTimeout(timer);
-        if (--parks === 0 && ran) opts.news?.say(false);
+        if (accountGuest && --parks === 0 && ran) opts.news?.say(false);
         resolve(answer);
       };
       const wake = (): void => {
@@ -283,14 +285,14 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     return text.split('\0').slice(0, -1);
   };
 
-  const gather = (iovs: number, iovsLen: number): Uint8Array => {
+  const gather = (iovs: number, iovsLen: number, maximum = Infinity): Uint8Array => {
     const dv = view();
     const u8 = bytesAt();
     const parts: Uint8Array[] = [];
     let total = 0;
-    for (let i = 0; i < iovsLen; i++) {
+    for (let i = 0; i < iovsLen && total < maximum; i++) {
       const ptr = dv.getUint32(iovs + i * 8, true);
-      const len = dv.getUint32(iovs + i * 8 + 4, true);
+      const len = Math.min(dv.getUint32(iovs + i * 8 + 4, true), maximum - total);
       if (len > 0) { parts.push(u8.slice(ptr, ptr + len)); total += len; }
     }
     if (parts.length === 1) return parts[0];
@@ -332,10 +334,25 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
       while (!disposed) {
         const out = await sup.cpReadOutput(child, fd, since, LONG_POLL_MS);
         for (const chunk of out.chunks) {
-          since = Math.max(since, chunk.seq);
-          if (target === null) continue;
+          if (target === null) { since = Math.max(since, chunk.seq); continue; }
           if (typeof target === 'number') await opts.output(target, chunk.data);
-          else if (target.pipe.readers > 0) { target.pipe.chunks.push(chunk.data); wake(target.pipe); }
+          else if (target.pipe.readers > 0) {
+            let at = 0;
+            while (at < chunk.data.byteLength && !disposed && target.pipe.readers > 0) {
+              const room = PIPE_CAPACITY - target.pipe.buffered;
+              if (room === 0) {
+                await parkedWait((wake) => target.pipe.waiters.push(wake), () =>
+                  disposed || target.pipe.readers === 0 || target.pipe.buffered < PIPE_CAPACITY ? true : null, false).ready;
+                continue;
+              }
+              const size = Math.min(room, chunk.data.byteLength - at);
+              target.pipe.chunks.push(chunk.data.slice(at, at + size));
+              target.pipe.buffered += size;
+              at += size;
+              wake(target.pipe);
+            }
+          }
+          since = Math.max(since, chunk.seq);
         }
         // Applied once delivered: the bytes are where the guest reads them.
         opts.news?.apply(out.news);
@@ -453,6 +470,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
           };
           pipe.end = () => sup.cpStdinEnd(childPid);
           for (const chunk of pipe.chunks.splice(0)) await pipe.forward(chunk);
+          pipe.buffered = 0;
+          wake(pipe);
           // The child holds the read end until it exits.
           if (pipe.writers === 0 && !pipe.ended) { pipe.ended = true; await pipe.end().catch(() => {}); }
         } else if (!inheritedInput) {
@@ -573,7 +592,9 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     const answer = (): Errno | null => {
       if (pipe.chunks.length > 0) {
         const moved = scatter(pipe, iovs, iovsLen);
+        pipe.buffered -= moved;
         view().setUint32(nread, moved, true);
+        wake(pipe);
         // Bytes from another process: what follows may depend on what it did.
         opts.inbound();
         return E.SUCCESS;
@@ -593,7 +614,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     if (!entry) return null;
     if (entry.end !== 'write') return E.BADF;
     const pipe = entry.pipe;
-    const bytes = gather(iovs, iovsLen);
+    const bytes = gather(iovs, iovsLen, PIPE_CAPACITY);
+    if (bytes.byteLength === 0) { view().setUint32(nwritten, 0, true); return E.SUCCESS; }
     if (pipe.readers === 0) return E.PIPE;
     if (pipe.forward) {
       return pipe.forward(bytes).then((ok) => {
@@ -602,10 +624,21 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
         return E.SUCCESS;
       });
     }
-    pipe.chunks.push(bytes);
-    wake(pipe);
-    view().setUint32(nwritten, bytes.byteLength, true);
-    return E.SUCCESS;
+    const admit = (): Errno | null => {
+      const decision = decideWrite({ queued: pipe.buffered, readers: pipe.readers, writers: pipe.writers }, bytes.byteLength, 'jspi', PIPE_CAPACITY, PIPE_CAPACITY);
+      if (decision === 'sigpipe') return E.PIPE;
+      if (decision === 'park') return null;
+      const size = Math.min(bytes.byteLength, PIPE_CAPACITY - pipe.buffered);
+      pipe.chunks.push(size === bytes.byteLength ? bytes : bytes.slice(0, size));
+      pipe.buffered += size;
+      view().setUint32(nwritten, size, true);
+      wake(pipe);
+      return E.SUCCESS;
+    };
+    const now = admit();
+    if (now !== null) return now;
+    if (((entry.fdflags ?? 0) & FDFLAGS_NONBLOCK) !== 0) return E.AGAIN;
+    return parkedWait((wake) => pipe.waiters.push(wake), admit).ready.then((written) => written ?? E.INTR);
   };
 
   const close: ProcessHost['close'] = (fd) => {
@@ -621,7 +654,8 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
     if (!entry) return { nbytes: 0, hangup: true };
     const pipe = entry.pipe;
     const check = (): PipeReadiness | null => {
-      if (want === 'write') return { nbytes: 0xFFFF_FFFF, hangup: pipe.readers === 0 };
+      if (want === 'write') return pipe.readers === 0 || pipe.forward || pipe.buffered < PIPE_CAPACITY
+        ? { nbytes: Math.max(0, PIPE_CAPACITY - pipe.buffered), hangup: pipe.readers === 0 } : null;
       const nbytes = pipe.chunks.reduce((sum, chunk) => sum + chunk.byteLength, 0);
       if (nbytes > 0) return { nbytes, hangup: false };
       return pipe.writers === 0 || pipe.failed ? { nbytes: 0, hangup: true } : null;

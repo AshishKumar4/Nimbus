@@ -151,6 +151,24 @@ assertBytesEqual(
   BIG, 'pipe big',
 );
 
+// A selected bounded window amortizes fd0's complete-file ranged RPCs.
+rangeCalls=0;maxRangeLength=0;
+assertBytesEqual(await withTimeout(collect(fs.createReadStream('/home/user/big.bin',{highWaterMark:1048576})),30000,'larger read window'),BIG,'larger read window');
+assert.equal(maxRangeLength,1048576,'ReadStream honours the requested bounded window');
+assert.ok(rangeCalls<=7,`5MiB needs at most seven range replies, not ${rangeCalls}`);
+{
+  let requests=0,otherTurn=false,overtook=0;
+  const readRange=supervisor.fsReadRange;
+  supervisor.fsReadRange=(...args)=>{
+    if(++requests===1)setTimeout(()=>{otherTurn=true;},0);
+    else if(!otherTurn)overtook++;
+    return readRange(...args);
+  };
+  await collect(fs.createReadStream('/home/user/big.bin',{highWaterMark:1048576}));
+  supervisor.fsReadRange=readRange;
+  assert.equal(overtook,0,'a stream yields its turn between complete-file windows, before issuing another read');
+}
+
 // 5. `start`/`end` ranges (HTTP Range serving). `end` is INCLUSIVE in Node.
 {
   const got = await withTimeout(

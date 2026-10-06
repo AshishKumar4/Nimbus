@@ -5259,7 +5259,13 @@ const __fsMod = (() => {
       }
       async _pull() {
         if (this._pos > this._last) { this.push(null); return; }
-        const want = Math.min(READ_STREAM_CHUNK_BYTES, this._last - this._pos + 1);
+        // A resolved ranged RPC can feed the next read in the same task
+        // indefinitely. Yield between windows so other session traffic and
+        // other processes can run; this is a scheduling boundary, not a
+        // backoff or a timeout that pretends I/O completed.
+        if (this.bytesRead > 0) await new Promise((nextTurn) => globalThis.setTimeout(nextTurn, 0));
+        if (this._readableState.destroyed) return;
+        const want = Math.min(this._readableState.highWaterMark, READ_BATCH_REQUEST_BYTES, this._last - this._pos + 1);
         const chunk = await _readRangeAt(this._abs, this.path, this._pos, want);
         if (chunk === null) { this.push(null); return; }
         this._pos += chunk.byteLength;
@@ -10342,7 +10348,7 @@ async function __nimbusPrepareStdin() {
   const file = __nimbusStdinFileSource();
   if (file !== null) {
     if (!file.syncRead) { await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined); return; }
-    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 65536), (r) => r);
+    const prepared = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset, 1048576), (r) => r);
     const want = Math.max(0, Math.min(prepared.size - file.offset, 16777216));
     const bytes = __BufferMod.allocUnsafe(want);
     let got = 0, packet = prepared;
@@ -10351,7 +10357,7 @@ async function __nimbusPrepareStdin() {
       if (!n) break;
       bytes.set(packet.data.subarray(0, n), got);
       got += n;
-      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(65536, want - got)), (r) => r);
+      if (got < want) packet = await __nimbusUseRpcResult(__supervisor.stdinFileRead(file.path, file.offset + got, Math.min(1048576, want - got)), (r) => r);
     }
     __nimbusQueuedStdin = { bytes: bytes.subarray(0, got), ended: file.offset + got >= prepared.size, from: file.offset + got };
     await __nimbusUseRpcResult(__supervisor.stdinPrepared(), () => undefined);
@@ -10501,7 +10507,7 @@ function __makeProcessStdin() {
       } else {
         __nimbusStdinTaken = true;
       }
-      const source = __fsMod.createReadStream(file.path, { start: from });
+      const source = __fsMod.createReadStream(file.path, { start: from, highWaterMark: 1048576 });
       source.on("error", (err) => r.destroy(err));
       source.pipe(r);
       return;

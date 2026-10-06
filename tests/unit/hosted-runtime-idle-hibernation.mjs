@@ -125,7 +125,8 @@ const env = {
   LOADER: {
     // A one-shot `node -e "console.log(1)"`. Like the node runner, the program
     // hands its output and its exit to the supervisor, which keeps them as the
-    // process's log, and answers the run with the same.
+    // process's byte log. A live foreground run has no second text capture
+    // in its completion response.
     load(config) {
       const { pid } = config.env.SUPERVISOR.props;
       return {
@@ -133,7 +134,7 @@ const env = {
           async fetch() {
             await current.runtime.supervisorOp({ op: 'stdout', args: [new TextEncoder().encode('1\n')], pid });
             await current.runtime.supervisorOp({ op: 'reportExit', args: [0, '', [], null, [], []], pid });
-            return Response.json({ exitCode: 0, stdout: '1\n', stderr: '' });
+            return Response.json({ exitCode: 0, stdout: '', stderr: '' });
           },
           [Symbol.dispose]() {},
         }),

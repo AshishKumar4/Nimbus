@@ -39,7 +39,11 @@ export const REPLAY_OPERATION_POLICY = {
     chmod: effect, access: read, chown: effect, setUmask: read,
     readdir: read, exists: read, mkdir: effect, rmdir: effect, rename: effect,
     unlink: effect, readlink: read, fsLinkLeadsTo: read, symlink: effect,
-    fsAcquire: { kind: 'observation', answer: acquire, args: (a) => [a[2]] },
+    // Epoch/cursor and push/scope strategy belong to the replica's cache,
+    // not the program. Match acquisitions by their position in this run;
+    // the complete observable namespace/stat/content answer still diverges
+    // if those different cache requests produce different inputs.
+    fsAcquire: { kind: 'observation', answer: acquire, args: () => [] },
     fsAcquired: { kind: 'observation', answer: withAcquire, args: (a) => [acquireArgs(a[0]), a[1], a[2]] },
     fsRevision: read,
     fsList: { kind: 'observation', answer: (value) => {

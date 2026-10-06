@@ -19,11 +19,11 @@ export class WebSocketTerminal {
     _cols = 80;
     _rows = 24;
     buffer = [];
-    flushTimer = null;
+    flushScheduled = false;
     /** [B'.3] Optional tee called from flush() with the final coalesced
      *  frame data. Used by initSession to mirror every WS output frame
      *  into nimbus_terminal_scrollback. Single-frame granularity (not
-     *  per-write) keeps the row count bounded by the 5 ms flush cadence. */
+     *  per-write) coalesces writes from one JavaScript turn. */
     onFlush;
     constructor(ws = null, onFlush) {
         this.ws = ws;
@@ -75,9 +75,7 @@ export class WebSocketTerminal {
     }
     close() {
         void this.disposeRepl().catch((error) => console.warn('[terminal] REPL cleanup failed', error));
-        if (this.flushTimer)
-            clearTimeout(this.flushTimer);
-        this.flushTimer = null;
+        this.flushScheduled = false;
         this.buffer = [];
         this.onFlush = null;
         this.dataCallback = null;
@@ -92,14 +90,19 @@ export class WebSocketTerminal {
     get rows() { return this._rows; }
     write(data) {
         this.buffer.push(data);
-        if (!this.flushTimer) {
-            this.flushTimer = setTimeout(() => this.flush(), 5);
+        if (!this.flushScheduled) {
+            this.flushScheduled = true;
+            // A file/pipe reader can keep RPC turns arriving continuously; a
+            // timer then runs only when it ends. A microtask flush is part of the
+            // write's own turn, so echo and progress are not withheld meanwhile.
+            queueMicrotask(() => { if (this.flushScheduled)
+                this.flush(); });
         }
     }
     writeln(data) { this.write(data + '\r\n'); }
     /**
      * REPL-A1 (master plan §1): drain the buffer synchronously, bypassing
-     * the 5 ms coalescer. Used by ReplSession.submitLine to emit stdout,
+     * the turn coalescer. Used by ReplSession.submitLine to emit stdout,
      * stderr, and the next-prompt as three discrete frames in deterministic
      * order. Without this, all three coalesce into one `{type:'output'}`
      * frame and probes asserting frame-order (stderr-before-stdout or
@@ -109,14 +112,11 @@ export class WebSocketTerminal {
      * Safe to call on an empty buffer (no-op).
      */
     flushNow() {
-        if (this.flushTimer) {
-            clearTimeout(this.flushTimer);
-            this.flushTimer = null;
-        }
+        this.flushScheduled = false;
         this.flush();
     }
     flush() {
-        this.flushTimer = null;
+        this.flushScheduled = false;
         if (this.buffer.length === 0)
             return;
         const combined = this.buffer.join('');

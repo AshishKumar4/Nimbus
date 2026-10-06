@@ -8,6 +8,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 const encoder=new TextEncoder(),decoder=new TextDecoder();
 const processes=new SessionProcessSupervisor();
 const parent=processes.spawn('node',['parent.js'],'/home/user');
+processes.openInput(parent.pid); // An inherited fd refers to the parent's actual live channel.
 let manager;
 manager=new FacetProcessManager({
  processes,
@@ -27,12 +28,12 @@ try {
  const prompt=await manager.readOutput(childPid,1,0,500);
  assert.equal(decoder.decode(Buffer.concat(prompt.chunks.map(c=>c.data))),'question> ','prompt arrives before stdin');
  assert.equal(prompt.closed,false,'child is still waiting for its answer');
- manager.stdinWrite(childPid,encoder.encode('yes\n'));
+ await manager.stdinWrite(childPid,encoder.encode('yes\n'));
  const status=await manager.wait(childPid,1000);
  assert.equal(status.exitCode,0);
  const stdout=await manager.readOutput(childPid,1,0,0);
  const stderr=await manager.readOutput(childPid,2,0,0);
  assert.equal(decoder.decode(Buffer.concat(stdout.chunks.map(c=>c.data))),'question> ','the completion does not duplicate already streamed output');
  assert.equal(decoder.decode(Buffer.concat(stderr.chunks.map(c=>c.data))),'received yes\n');
-}finally{manager.stdinEnd(childPid);}
+}finally{await manager.stdinEnd(childPid);}
 console.log('cp-live-inline-output: prompt before input, output exactly once');

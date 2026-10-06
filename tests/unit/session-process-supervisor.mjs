@@ -278,7 +278,10 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   let activity = 0;
   processes.setLogPersist({
     load() { return null; },
-    persistChunks(pid, rows) { calls.push(['chunks', pid, rows.map((r) => r.chunk.data)]); },
+    persistChunks(pid, rows) { calls.push(['chunks', pid, rows.map((r) => {
+      assert.ok(r.chunk.data instanceof Uint8Array,'the persisted log is bytes');
+      return new TextDecoder().decode(r.chunk.data);
+    })]); },
     persistExit(pid, info) { calls.push(['exit', pid, info.code]); },
     dropPid(pid) { calls.push(['drop', pid]); },
     pruneBeforeSeq(pid, seq) { calls.push(['prune', pid, seq]); },

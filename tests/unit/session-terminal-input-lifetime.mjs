@@ -28,6 +28,7 @@ try {
     const before=tasks.length;
     await input('controlled\r');
     await entered.promise;
+    assert.ok(frames.some(f=>f.data?.includes('controlled')),'the typed command is flushed while its completion remains held, without a timer turn');
     let completed=false;
     const completion=Promise.all(tasks.slice(before)).then(()=>{completed=true;});
     await Promise.resolve();

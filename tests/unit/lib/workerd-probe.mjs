@@ -230,6 +230,7 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   }
   return {
     run,
+    terminal,
     /** The session's /api/_diag/memory: its counters, VFS cache and heap estimate. */
     memory: async () => {
       const response = await fetch(`${probe.base}/s/${sid}/api/_diag/memory`, { cache: 'no-store', headers: requestHeaders() });

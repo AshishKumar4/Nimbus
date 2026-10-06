@@ -49,6 +49,7 @@ export declare const PROCESS_PARK_MS = 8000;
  */
 export interface Pipe {
     chunks: Uint8Array[];
+    buffered: number;
     writers: number;
     readers: number;
     waiters: Array<() => void>;

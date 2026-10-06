@@ -302,7 +302,7 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
     assert.deepEqual(await spawn('tool', ['x'], env), ['tool x in /tmp\n', '', 0], 'spawn finds a script on the child\'s PATH');
     assert.deepEqual(await spawn('hello-cli', ['y'], env), ['hello-cli y in /tmp\n', '', 0], 'and an npm bin');
     assert.deepEqual(await spawn('tool', [], { PATH: '/custom/bin' }), ['custom tool \n', '', 0], 'by the PATH it is given');
-    assert.deepEqual(await spawn('no-such-tool', [], env), ['', 'no-such-tool: command not found\n', 127]);
+    await assert.rejects(spawn('no-such-tool', [], env), error=>error.code==='ENOENT','an absent command fails the spawn, not a fabricated child exit');
     // A program found on PATH is a child process like one named by its path: its own pid, live
     // stdin through NIMBUS_CP_CHILD_PID, and output it publishes as that pid (an interpreter that
     // reads and reports what a Worker runtime reads, as the node runtime does).
@@ -342,18 +342,11 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
     // does: the error on its stderr, exit 1, recorded so the process table can reap it.
     {
       main.registry.registerLazy('broken-loader', async () => { throw new Error('loader failed'); });
-      const { childPid } = await session._rpcCpSpawn({ command: 'broken-loader', args: [], env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
-      const waited = await session._rpcCpWait(childPid, 5_000);
-      const output = await session._rpcCpDrainOutput(childPid);
-      assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['', 'Error: loader failed\n', 1]);
-      assert.equal(main.processes.getExit(childPid)?.code, 1, 'its exit is recorded');
-      assert.equal(main.processes.get(childPid)?.state, 'exited', 'it is not left running');
-      // reap takes what exited more than maxAge ms ago.
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      await main.processes.reap(0);
-      assert.equal(main.processes.get(childPid), undefined, 'and it is reaped');
+      await assert.rejects(session._rpcCpSpawn({ command: 'broken-loader', args: [], env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid }),/loader failed/,
+        'resolution errors reach the caller before a successful spawn is published');
+      assert.equal(main.processes.getAll().filter(p=>p.ppid===parent.pid&&p.state==='running').length,0,'a refused resolution leaves no running child');
     }
-    assert.deepEqual(await spawn('hintedtool', [], env), ['', 'hintedtool: command not found\nhint: install it with: nimbus install hintedtool\n', 127], 'and with none, the install hint');
+    await assert.rejects(spawn('hintedtool', [], env), error=>error.code==='ENOENT','an install hint is not an executable child');
     // A facet-direct name (yorkie) found in the cwd's node_modules/.bin, through the facet dispatch path.
     {
       const kernel = main.vfs.as(CRED_KERNEL);

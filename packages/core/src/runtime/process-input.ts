@@ -257,7 +257,7 @@ export class ProcessInputStore {
 
     let next = state.packets.shift();
     if (next !== undefined) {
-      const limit = maxBytes === undefined ? PROCESS_INPUT_READ_MAX_BYTES : Math.max(1, Math.min(PROCESS_INPUT_READ_MAX_BYTES, maxBytes));
+      const limit = maxBytes === undefined ? Infinity : Math.max(1, Math.min(PROCESS_INPUT_READ_MAX_BYTES, maxBytes));
       if (maxBytes !== undefined && typeof next.data === 'string') next = { ...next, data: encoder.encode(next.data) };
       if (next.data instanceof Uint8Array && next.data.length > limit) {
         state.packets.unshift({ ...next, data: next.data.subarray(limit) });
