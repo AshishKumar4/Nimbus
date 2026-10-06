@@ -1,9 +1,5 @@
-// The workspace's command and file surfaces
-export type {
-	RunOptions,
-	CommandResult,
-	SandboxCommands,
-} from './sandbox/index.js';
+// The workspace's command surface
+export type { RunOptions, CommandResult } from './sandbox/run-command.js';
 
 // Kernel
 export { Kernel } from './kernel/index.js';
