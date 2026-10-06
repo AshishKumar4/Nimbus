@@ -62,7 +62,41 @@ imports.fd_read = (fd, iovs, n, nreadPtr) => {
 void iovTotal;
 const enosys = () => 52;
 const proc = Object.fromEntries(['pipe', 'dup', 'dup2', 'spawn', 'start', 'wait', 'kill'].map((n) => [n, enosys]));
-const instance = new WebAssembly.Instance(module, { wasi_snapshot_preview1: imports, nimbus_proc: proc });
+proc.ids = (out) => { view().setUint32(out, process.getuid(), true); view().setUint32(out + 4, process.getgid(), true); return 0; };
+// The Nimbus filesystem extension over the host's files: preview1's filestat, then mode, uid, gid.
+const preopenDirs = { 3: repo, 4: '/dev', 5: '/tmp' };
+const { lstatSync, statSync: hostStat, chmodSync } = await import('node:fs');
+const writeStat = (out, st) => {
+  const v = view();
+  const type = st.isDirectory() ? 3 : st.isSymbolicLink() ? 7 : st.isCharacterDevice() ? 2 : st.isFile() ? 4 : 0;
+  v.setBigUint64(out, BigInt(st.dev), true); v.setBigUint64(out + 8, BigInt(st.ino), true); v.setUint8(out + 16, type);
+  v.setBigUint64(out + 24, BigInt(st.nlink), true); v.setBigUint64(out + 32, BigInt(st.size), true);
+  v.setBigUint64(out + 40, BigInt(Math.trunc(st.atimeMs * 1e6)), true); v.setBigUint64(out + 48, BigInt(Math.trunc(st.mtimeMs * 1e6)), true);
+  v.setBigUint64(out + 56, BigInt(Math.trunc(st.ctimeMs * 1e6)), true);
+  v.setUint32(out + 64, st.mode, true); v.setUint32(out + 68, st.uid, true); v.setUint32(out + 72, st.gid, true);
+};
+const hostPath = (fd, p, len) => `${preopenDirs[fd]}/${new TextDecoder().decode(new Uint8Array(memory.buffer, p, len))}`;
+const errnoOf = (e) => ({ ENOENT: 44, ENOTDIR: 54, EACCES: 2, ELOOP: 32 })[e.code] ?? 29;
+const fsExt = {
+  path_stat(fd, flags, p, len, out) {
+    if (!(fd in preopenDirs)) return 8;
+    try { writeStat(out, (flags & 1 ? hostStat : lstatSync)(hostPath(fd, p, len))); return 0; } catch (e) { return errnoOf(e); }
+  },
+  fd_stat(fd, out) {
+    const r = base.fd_filestat_get(fd, out);
+    if (r !== 0) return r;
+    const type = view().getUint8(out + 16);
+    view().setUint32(out + 64, (type === 3 ? 0o040755 : type === 2 ? 0o020620 : 0o100644), true);
+    view().setUint32(out + 68, process.getuid(), true); view().setUint32(out + 72, process.getgid(), true);
+    return 0;
+  },
+  path_chmod(fd, flags, p, len, mode) {
+    if (!(fd in preopenDirs)) return 8;
+    try { chmodSync(hostPath(fd, p, len), mode & 0o7777); return 0; } catch (e) { return errnoOf(e); }
+  },
+  fd_chmod() { return 0; },
+};
+const instance = new WebAssembly.Instance(module, { wasi_snapshot_preview1: imports, nimbus_proc: proc, nimbus_fs: fsExt });
 memory = instance.exports.memory;
 const t = performance.now();
 const cpu0 = process.cpuUsage();
@@ -73,6 +107,7 @@ try { closeSync(stdout); } catch { /* the guest closed it */ }
 const files = [...byFile].map(([p, f]) => ({ file: path.basename(p), sizeMiB: +(f.size / 1048576).toFixed(1), reads: f.reads, readMiB: +(f.bytes / 1048576).toFixed(1), distinctPages64k: f.pages.size, sessionCalls: f.size > RESIDENT_CAP ? f.reads : 0 }));
 console.log(JSON.stringify({
   args: args.join(' '), exit: code, runMs: Math.round(runMs), cpuMs: Math.round((cpu.user + cpu.system) / 1000),
+  jsHeapMiB: +(process.memoryUsage().heapUsed / 1048576).toFixed(1),
   linearMemoryMiB: +(memory.buffer.byteLength / 1048576).toFixed(1),
   sessionCalls: files.reduce((s, f) => s + f.sessionCalls, 0), files,
 }));

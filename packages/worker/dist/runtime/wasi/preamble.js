@@ -145,18 +145,32 @@ let __wasiSup = null;
 // socket's bytes, an accepted connection, a poll wakeup): the next answer then
 // takes the ACQUIRE barrier first, the causal rule a node process keeps.
 let __wasiResident = null;
+let __wasiStorage = null;
+/** Adopt the facet's SQLite for the next process's store (before its first filesystem call). */
+export function __wasiAdoptStorage(storage) {
+    __wasiStorage = storage;
+    __wasiResident = null;
+}
 /** The resident filesystem over `sup`, booting its store; its calls go to the session until the boot lands. */
 function __wasiStartResident(sup, cred) {
     const supervisor = answeringSupervisor(sup);
     const authority = supervisorFilesystem(sup);
     const store = __wasiResidentStore;
-    store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
-    store.__residentSetStorage(undefined, supervisor);
+    const storage = __wasiStorage;
+    if (storage !== null)
+        store.__residentBind({ storage: { sql: storage.sql } });
+    else
+        store.__residentBindInMemory(WASI_RESIDENT_STORE_BYTES);
+    store.__residentSetStorage(storage?.grant, supervisor);
     let view = null;
     void (async () => {
         // The session's own filesystem is the one the store answers for: its root reports its device.
         const root = await authority.stat('/');
-        if (root === null || !(await store.__residentBootLazy(supervisor)))
+        if (root === null)
+            return;
+        // A kept store resumes from what an earlier process read; the heap starts from nothing.
+        const booted = storage !== null ? await store.__residentResumeLazy(supervisor, cred) : await store.__residentBootLazy(supervisor);
+        if (!booted)
             return;
         view = store.__residentNamespaceView(supervisor, root.dev, cred);
     })().catch(() => { view = null; });
@@ -171,6 +185,7 @@ function __wasiStartResident(sup, cred) {
         listTree: (key) => (view === null ? Promise.resolve(false) : view.listTree(key)),
         content: (key) => (view === null ? undefined : view.content(key)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
+        pages: (key, revision, size, first, last) => (view === null ? Promise.resolve(null) : view.pages(key, revision, size, first, last)),
         barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
         reserve: (bytes) => view !== null && view.reserve(bytes),
         release: (bytes) => { view?.release(bytes); },

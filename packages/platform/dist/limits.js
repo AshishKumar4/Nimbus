@@ -180,6 +180,17 @@ export const FACET_OWN_WRITE_MEMORY_BYTES = 32 * 1024 * 1024;
 // or a program that reads much, not what a short run holds. Past it the store
 // holds nothing more and the session answers.
 export const WASI_RESIDENT_STORE_BYTES = 32 * 1024 * 1024;
+// A file too big to hold whole (over WASI_RESIDENT_FILE_CAP_BYTES: a pack, a
+// deep history's .idx) is read through the resident store a page at a time:
+// git's own unit for a paged pack index, and a sixteenth of its 1 MiB pack
+// window, so one window is one batch read.
+export const RESIDENT_PAGE_BYTES = 64 * 1024;
+// The most a resident store holds of such pages, least recently used out
+// first; never more than half the store's own cap (its ledger grant, or a
+// one-shot's heap budget). Measured on vscode's full history (2.18M objects):
+// a .idx of 57.5 MiB, of which every command touched ~49 MiB, and a .rev of
+// 8.6 MiB, so the bound keeps a deep history's index and its hot pack windows.
+export const RESIDENT_PAGE_CACHE_BYTES = 512 * 1024 * 1024;
 // Shared allowance for transient allocations in the supervisor DO. With the
 // VFS LRU shrunk to 8 MiB during an active reservation, 40 MiB of admitted
 // payload plus the 9 MiB bundle baseline stays below the 64 MiB soft ceiling
