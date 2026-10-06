@@ -108,7 +108,8 @@ export interface InstallBatchResult {
 }
 export declare const installPackagesInFacet: (batch: InstallBatchSpec, env: {
     SUPERVISOR: {
-        writeBatchStream: (stream: ReadableStream<Uint8Array>, fence: WaveFence) => Promise<WriteBatchStreamResult>;
+        writeBatchStream: (stream: ReadableStream<Uint8Array>, fence?: WaveFence) => Promise<WriteBatchStreamResult>;
+        openWaveWriter?: () => Promise<string | null>;
         getCachedTarball?: (integrity: string) => Promise<{
             bytes: Uint8Array | null;
             events: Array<{

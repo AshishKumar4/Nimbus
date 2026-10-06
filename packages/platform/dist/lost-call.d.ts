@@ -31,6 +31,13 @@ export declare const LOST_STREAM_STALL_MS = 10000;
 /** A call unanswered this long after its stream ended is taken as lost. */
 export declare const LOST_STREAM_ANSWER_MS = 20000;
 /**
+ * How long a write-wave epoch the session issued admits attempts. Anything
+ * sent under an epoch the session does not know, or one past this, is
+ * refused: a call lost for longer than this can only be refused, never
+ * admitted. A writer opens a new epoch once half of this has passed.
+ */
+export declare const WAVE_EPOCH_TTL_MS: number;
+/**
  * Waits before each re-send of a lost non-idempotent call (±25% jitter):
  * ~42 s in all, to outlast a coordinator queue deep enough to shed. Its
  * length is the bound on re-sends.

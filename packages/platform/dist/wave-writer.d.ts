@@ -56,9 +56,11 @@ export declare const WAVE_PATH_BYTES: number;
 /** Buffered content bytes that close a wave. */
 export declare const WAVE_BYTES: number;
 /**
- * Which attempt of which wave of which writer a stream is: the session
- * refuses an attempt older than one it has seen from the same writer, so an
- * attempt the writer gave up on never applies after its re-send.
+ * Which attempt of which wave under which writer epoch a stream is. The
+ * session issued the epoch (openWaveWriter) and refuses, by default, an
+ * attempt under an epoch it does not hold open, or older than one it has
+ * admitted under it: an attempt the writer gave up on never applies after
+ * its re-send, however late it arrives.
  */
 export interface WaveFence {
     writer: string;
@@ -67,7 +69,14 @@ export interface WaveFence {
 }
 /** The supervisor surface a writer publishes through. */
 export interface WaveSupervisor {
-    writeBatchStream(stream: ReadableStream<Uint8Array>, fence: WaveFence): Promise<unknown>;
+    /** `fence` is absent when the supervisor issued no epoch: the session fences nothing. */
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence): Promise<unknown>;
+    /**
+     * A writer epoch from the session, the only identity it admits fenced
+     * waves under, or null when it fences nothing. Absent on a supervisor
+     * that is the session itself (nothing between them can lose a call).
+     */
+    openWaveWriter?(): Promise<string | null>;
 }
 /** A published file as the session will stat it: what a warm index entry needs. */
 export interface WaveFileReceipt {
@@ -171,8 +180,8 @@ export declare class WaveWriter<Meta = undefined> {
     /** Owners (records' `meta`) whose records a failed wave carried. */
     private readonly failedOwners;
     private readonly counters;
-    /** This writer, as its fences name it. */
-    private readonly id;
+    /** The session's epoch for this writer, and when it was opened (null: unfenced). */
+    private epoch;
     /** Mutations run one at a time, in call order: concurrent writers interleave by record. */
     private mutations;
     constructor(options: WaveWriterOptions<Meta>);
@@ -255,6 +264,12 @@ export declare class WaveWriter<Meta = undefined> {
      * comment), and answer with what the session answered.
      */
     private send;
+    /**
+     * The epoch this writer's waves are fenced under: opened before its first
+     * wave, and again once half of WAVE_EPOCH_TTL_MS has passed, so a wave is
+     * never sent under an epoch about to close.
+     */
+    private currentEpoch;
     /** The directories the buffered records publish, shallowest first. */
     private publishedDirectories;
     private bufferPin;

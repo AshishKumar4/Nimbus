@@ -52,7 +52,7 @@
  */
 import { encodeWriteBatchStream, W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from './w7-frame.js';
 import { CHUNK_SIZE } from './limits.js';
-import { LOST_CALL_RESEND_BACKOFF_MS, LOST_STREAM_ANSWER_MS, LOST_STREAM_STALL_MS, isLostFencedCall, lostCallAttributes, } from './lost-call.js';
+import { LOST_CALL_RESEND_BACKOFF_MS, LOST_STREAM_ANSWER_MS, LOST_STREAM_STALL_MS, WAVE_EPOCH_TTL_MS, isLostFencedCall, lostCallAttributes, } from './lost-call.js';
 import { disposeRpcResource } from './rpc-dispose.js';
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
 export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
@@ -154,8 +154,8 @@ export class WaveWriter {
         maxWaveBytes: 0,
         retries: 0,
     };
-    /** This writer, as its fences name it. */
-    id = crypto.randomUUID();
+    /** The session's epoch for this writer, and when it was opened (null: unfenced). */
+    epoch = null;
     /** Mutations run one at a time, in call order: concurrent writers interleave by record. */
     mutations = Promise.resolve();
     constructor(options) {
@@ -566,8 +566,9 @@ export class WaveWriter {
         const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry
             ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
         for (let attempt = 0;; attempt++) {
+            const writer = await this.currentEpoch();
             const attemptStream = abortable(encodeWriteBatchStream(payload), stallMs, answerDeadlineMs);
-            const fence = { writer: this.id, wave, attempt: attempt + 1 };
+            const fence = writer === null ? undefined : { writer, wave, attempt: attempt + 1 };
             const answer = this.options.supervisor.writeBatchStream(attemptStream.stream, fence);
             try {
                 return await Promise.race([answer, attemptStream.lost]);
@@ -593,6 +594,22 @@ export class WaveWriter {
                 attemptStream.settle();
             }
         }
+    }
+    /**
+     * The epoch this writer's waves are fenced under: opened before its first
+     * wave, and again once half of WAVE_EPOCH_TTL_MS has passed, so a wave is
+     * never sent under an epoch about to close.
+     */
+    async currentEpoch() {
+        const open = this.options.supervisor.openWaveWriter;
+        if (open === undefined)
+            return null;
+        const now = Date.now();
+        const held = this.epoch === null ? null : await this.epoch;
+        if (held === null || (held.writer !== null && now - held.openedAt >= WAVE_EPOCH_TTL_MS / 2)) {
+            this.epoch = open.call(this.options.supervisor).then((writer) => ({ writer, openedAt: now }));
+        }
+        return (await this.epoch).writer;
     }
     /** The directories the buffered records publish, shallowest first. */
     publishedDirectories() {
