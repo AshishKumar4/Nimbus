@@ -1,16 +1,15 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
-import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
 import { SqliteRuntimeFsBridge } from '../../packages/core/src/runtime/sqlite-runtime-fs-bridge.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { importGitFacetWorker } from './lib/git-facet-worker.mjs';
 // A W7 wave holding a file larger than CHUNK_SIZE must not materialize a
 // second full copy of the file beside the writer's original. An eager
 // per-chunk slice() made the oversize single-file wave (a packfile) peak at
@@ -30,8 +29,7 @@ const PACK_SHA = '3'.repeat(40);
 const originalSlice = Uint8Array.prototype.slice;
 
 try {
-  writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
-  writeFileSync(join(tempDir, 'git-bundle.js'), `
+  const facetWorker = await importGitFacetWorker(tempDir, `
 const enc = new TextEncoder();
 export const gitHttp = {};
 export const git = {
@@ -48,8 +46,6 @@ export const git = {
   },
 };
 `);
-
-  const facetWorker = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
 
   const harness = createSqliteVfsTestHarness();
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
