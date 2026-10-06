@@ -16,7 +16,7 @@ import {
   parseNpmInstallInvocation,
   type NpmInstallInvocation,
 } from './npm-install-args.js';
-import { npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
+import { installSummary, npmLogEnabled, type NpmLogEmitter } from './npm-log.js';
 import { exists } from '../../../../vfs/vfs.js';
 import { direntTypeIn } from '../../../../vfs/dirent-type.js';
 
@@ -74,33 +74,17 @@ export interface NpmCommandDeps {
   installer?: NpmInstallPort;
 }
 
-/** The end-of-install report, shared by every install path so a failure
- *  reads the same regardless of which engine ran it. Byte-identical to
- *  what the worker's wrapper printed. */
-async function writeInstallSummary(ctx: CommandContext,
-installed: string[],
-failed: string[],
-opts: { totalFiles?: number; fromCacheHits?: number; linkedBins?: number; globalBinDir?: string; startedAt: number },): Promise<void> { if (failed.length > 0) {
-  await ctx.stderr.write(`\x1b[31mFailed: ${failed.join(', ')}\x1b[0m\n`);
+/** The end-of-install report (installSummary), on the command's own streams. */
+async function writeInstallSummary(
+  ctx: CommandContext,
+  installed: string[],
+  failed: string[],
+  opts: { totalFiles?: number; fromCacheHits?: number; linkedBins?: number; globalBinDir?: string; startedAt: number },
+): Promise<void> {
+  const { stdout, stderr } = installSummary({ ...opts, installed: installed.length, failed, elapsedMs: Date.now() - opts.startedAt });
+  if (stderr) await ctx.stderr.write(stderr);
+  if (stdout) await ctx.stdout.write(stdout);
 }
-const secs = ((Date.now() - opts.startedAt) / 1000).toFixed(1);
-if (installed.length === 0 && failed.length === 0) {
-  await ctx.stdout.write(`\x1b[32mup to date in ${secs}s\x1b[0m\n`);
-  return;
-}
-if (installed.length === 0) return;
-const partial = failed.length > 0;
-const color = partial ? '\x1b[33m' : '\x1b[32m';
-const suffix = partial ? ` (${failed.length} failed, see above)` : '';
-const files = opts.totalFiles !== undefined ? ` (${opts.totalFiles} files)` : '';
-await ctx.stdout.write(`\n${color}added ${installed.length} packages${files} in ${secs}s${suffix}\x1b[0m\n`);
-if (opts.fromCacheHits) {
-  await ctx.stdout.write(`\x1b[2m  (${opts.fromCacheHits} from cache)\x1b[0m\n`);
-}
-if (opts.linkedBins) {
-  const n = opts.linkedBins;
-  await ctx.stdout.write(`\x1b[2m  linked ${n} bin${n === 1 ? '' : 's'} into ${opts.globalBinDir}\x1b[0m\n`);
-} }
 // ─── Helpers ───
 
 /**
