@@ -89,6 +89,7 @@ import { decodeWriteBatchStream, encodeWriteBatchStream } from '@nimbus-sh/platf
 import { z } from 'zod/v4';
 
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 type RoutesHost = any;
 
@@ -1261,13 +1262,16 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         const vfs = self.sqliteFs!.as(CRED_KERNEL);
         const body = await parseJsonBody(request, WriteFileBodySchema);
         const path = body.path.replace(/^\/+/, '');
-        // Ensure parent dirs
-        const parts = path.split('/');
-        for (let i = 1; i < parts.length; i++) {
-          const dir = parts.slice(0, i).join('/');
-          if (dir && !vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
-        }
-        vfs.writeFile(path, body.content);
+        // A delegation it meets is recalled first; the whole write is repeatable.
+        await withRecall(() => {
+          // Ensure parent dirs
+          const parts = path.split('/');
+          for (let i = 1; i < parts.length; i++) {
+            const dir = parts.slice(0, i).join('/');
+            if (dir && !vfs.exists(dir)) vfs.mkdir(dir, { recursive: true });
+          }
+          vfs.writeFile(path, body.content);
+        });
         return Response.json({ ok: true, path });
       } catch (e: any) {
         return Response.json({ error: e?.message }, { status: 400 });
@@ -1279,7 +1283,7 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       try {
         const body = await parseJsonBody(request, MkdirBodySchema);
         const path = body.path.replace(/^\/+/, '');
-        self.sqliteFs!.as(CRED_KERNEL).mkdir(path, { recursive: true });
+        await withRecall(() => self.sqliteFs!.as(CRED_KERNEL).mkdir(path, { recursive: true }));
         return Response.json({ ok: true, path });
       } catch (e: any) {
         return Response.json({ error: e?.message }, { status: 400 });
