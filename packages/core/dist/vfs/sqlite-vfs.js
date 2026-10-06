@@ -27,7 +27,7 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter } from './events.js';
-import { normalizeVfsPath } from './path.js';
+import { normalizeVfsPath, parentVfsPath } from './path.js';
 import { PathRevisions } from './path-revisions.js';
 import { z } from 'zod/v4';
 import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES, FS_READ_BATCH_REQUEST_BYTES, INODE_CACHE_MAX_ENTRIES, } from '../constants.js';
@@ -220,6 +220,8 @@ class TransactionPlanBuilder {
     staged = [];
     stagingCreated = [];
     affectedPaths = new Set();
+    /** Directories whose entries this plan may change: each may take a time update (touchDirectories). */
+    entryParents = new Set();
     blobBytes = 0;
     pieces = 0;
     manifestRows = 0;
@@ -248,6 +250,9 @@ class TransactionPlanBuilder {
     addInode(entry) {
         this.inodes.push(entry);
         this.affectedPaths.add(entry.path);
+        // The root has no row to date.
+        if (!entry.movesWithParent && entry.parentPath !== '')
+            this.entryParents.add(entry.parentPath);
         if (!entry.isDir)
             this.fileRows++;
         const content = entry.content;
@@ -333,9 +338,11 @@ class TransactionPlanBuilder {
         this.blobBytes += piece.data?.byteLength ?? 0;
         this.affectedPaths.add(path);
     }
-    addDeletedPath(path, prior, dereference = true) {
-        this.deletes.push({ path, prior, dereference });
+    addDeletedPath(path, prior, dereference = true, movesWithParent = false) {
+        this.deletes.push({ path, prior, dereference, movesWithParent });
         this.affectedPaths.add(path);
+        if (!movesWithParent && parentVfsPath(path) !== '')
+            this.entryParents.add(parentVfsPath(path));
         if (dereference && prior !== undefined && !prior.isDir)
             this.gcRefCount++;
     }
@@ -369,7 +376,11 @@ class TransactionPlanBuilder {
     }
     /** Would one more inode row — and the path it touches — exceed the bound? */
     wouldExceedInode() {
-        return exceededTransactionLimit(this.metricsWith({ inodeRows: 1, paths: 1 }));
+        return this.wouldExceedInodes(1);
+    }
+    /** Would `count` more inode rows (each dating a parent) exceed the bound? */
+    wouldExceedInodes(count) {
+        return exceededTransactionLimit(this.metricsWith({ inodeRows: count, paths: count }));
     }
     /** Would one more removal exceed the bound? */
     wouldExceedDeletion() {
@@ -388,6 +399,7 @@ class TransactionPlanBuilder {
             staged: this.staged,
             stagingCreated: this.stagingCreated,
             affectedPaths: this.affectedPaths,
+            entryParents: this.entryParents,
             metrics: this.metricsWith({}, false),
         };
     }
@@ -405,13 +417,18 @@ class TransactionPlanBuilder {
         const contentRows = this.contentRows + (addition.contentRows ?? 0);
         // Every replaced or removed file may queue one reference; directories name none.
         const gcRows = this.fileRows + (addition.inodeRows ?? 0) + this.gcRefCount + (addition.deletes ?? 0);
-        const historyRows = this.history ? inodeRows + deletes : 0;
+        // A directory whose entries change takes a time update: at most one per
+        // added row, so an admission test counts one per row it adds.
+        const parentRows = this.entryParents.size + (addition.inodeRows ?? 0) + (addition.deletes ?? 0);
+        const historyRows = this.history ? inodeRows + deletes + parentRows : 0;
         return {
             blobBytes: this.blobBytes + (addition.blobBytes ?? 0),
             // A delete writes its tombstone too.
-            logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows + (reserveCommit ? 1 : 0),
+            logicalRows: inodeRows + deletes * 2 + pieces + manifestRows + contentRows + gcRows + historyRows + parentRows
+                + (reserveCommit ? 1 : 0),
             sqlExecs: 2 + (reserveCommit ? 1 : 0)
                 + groupedSqlExecs(historyRows, KEYS_PER_SQL_EXEC)
+                + groupedSqlExecs(parentRows, KEYS_PER_SQL_EXEC)
                 + groupedSqlExecs(deletes, KEYS_PER_SQL_EXEC)
                 + groupedSqlExecs(deletes, TOMBSTONE_ROWS_PER_SQL_EXEC)
                 + groupedSqlExecs(pieces, KEYS_PER_SQL_EXEC)
@@ -4422,6 +4439,8 @@ export class SqliteVFS {
                 defaultAcl: entry.defaultAcl,
                 // Only the moved inode itself changes; its descendants keep their ctime.
                 ctime: entry.path === oldPath ? undefined : entry.ctime,
+                // A descendant moves with its directory: no directory's entries change for it.
+                movesWithParent: entry.path !== oldPath,
             };
             this.normalizeSharedEntry(stored, cred, entry.uid);
             if (stored.mode !== entry.mode || stored.gid !== entry.gid || stored.defaultAcl !== entry.defaultAcl)
@@ -4540,7 +4559,7 @@ export class SqliteVFS {
             for (const entry of retiring) {
                 if (builder.wouldExceedDeletion() !== null)
                     retire();
-                builder.addDeletedPath(entry.path, entry, false);
+                builder.addDeletedPath(entry.path, entry, false, entry.path !== oldPath);
                 retired.push(entry);
             }
             retire();
@@ -4589,8 +4608,9 @@ export class SqliteVFS {
             for (const stored of deepestFirst) {
                 if (builder.wouldExceedDeletion() !== null)
                     flush();
-                // The source still holds these references, so none is queued.
-                builder.addDeletedPath(stored.path, undefined, false);
+                // The source still holds these references, so none is queued; only
+                // the published root's name leaves its directory.
+                builder.addDeletedPath(stored.path, undefined, false, stored.movesWithParent === true);
             }
             if (occupant) {
                 if (builder.wouldExceedInode() !== null)
@@ -4848,9 +4868,23 @@ export class SqliteVFS {
             const last = page.length > 0 ? String(page[page.length - 1].path) : null;
             const done = cursor !== null && page.length < COPY_PAGE_ROWS;
             let gen = 0;
-            this.executeMeasuredTransaction(this.metricsOnlyPlan({ blobBytes: 0, logicalRows: page.length + 2, sqlExecs: 4, affectedPaths: page.length }), { source: 'content-publish', limitMode: 'bounded' }, () => {
-                const state = [...this.sql.exec('UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen, next_ino')][0];
+            // The slice that publishes the copy's root adds a name to the
+            // destination's directory, which is dated with it (and its before-image
+            // kept for a snapshot).
+            const touched = cursor === null && page.length > 0 && this.parentPath(job.dst) !== '' ? [this.parentPath(job.dst)] : [];
+            this.executeMeasuredTransaction(this.metricsOnlyPlan({
+                blobBytes: 0,
+                logicalRows: page.length + 2 + touched.length * 2,
+                sqlExecs: 4 + touched.length * 2,
+                affectedPaths: page.length,
+            }), { source: 'content-publish', limitMode: 'bounded' }, () => {
+                const state = [...this.sql.exec('UPDATE vfs_state SET gen = gen + 1 WHERE slot = 1 RETURNING gen, next_ino, pin_gen')][0];
                 gen = Number(state.gen);
+                if (touched.length > 0) {
+                    if (Number(state.pin_gen) > 0)
+                        this.recordBeforeImages(touched, gen, Number(state.pin_gen));
+                    this.touchDirectoryRows(touched, now, gen);
+                }
                 const firstIno = Number(state.next_ino);
                 if (!Number.isSafeInteger(firstIno + page.length))
                     throw vfsError('ENOSPC', 'inode identity space exhausted');
@@ -4886,6 +4920,7 @@ export class SqliteVFS {
                 }
             });
             this._gen = gen;
+            this.touchedDirectoriesCommitted(touched, now, gen);
             const published = [];
             for (const row of page) {
                 const path = job.dst + String(row.path).slice(job.src.length);
@@ -6607,6 +6642,10 @@ export class SqliteVFS {
             gid: row.gid,
             defaultAcl: row.defaultAcl,
             content,
+            // An imported row arrives with its tree, its directory's time already
+            // final in the directory's own row: the import dates nothing below its
+            // root. Its root is a new name in the directory above (row.path '').
+            movesWithParent: row.path !== '',
         };
         this.normalizeSharedEntry(entry, CRED_KERNEL);
         return entry;
@@ -7406,11 +7445,13 @@ export class SqliteVFS {
                         phase = 'validation';
                         this.validateFileChunks(record.inode, []);
                         phase = 'publish';
-                        pendingDirectories.push(record.inode);
-                        // Directory inodes carry no payload, so the row count is the
-                        // only bound in reach; the flush re-asserts it regardless.
-                        if (pendingDirectories.length >= MAX_TX_LOGICAL_ROWS)
+                        // Directory inodes carry no payload: rows are the only bound in
+                        // reach, priced by the plan's own accounting (each row, the
+                        // parent it dates, and a snapshot's before-images of both), so
+                        // the strict batch the flush commits always fits.
+                        if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null)
                             flushDirectories();
+                        pendingDirectories.push(record.inode);
                         break;
                     }
                     case 'file-begin': {
@@ -7823,6 +7864,71 @@ export class SqliteVFS {
      * edit manifests; upsert inodes; queue every reference a replaced or
      * removed row held and no row now holds; store the counters.
      */
+    /**
+     * The directories whose entries `plan` changes, which POSIX dates: a name
+     * created in one (a new path, or a path now naming another inode: a
+     * rename's or a link's target) or removed from it. A directory the plan
+     * itself writes or removes is dated by that row; a row moving with its
+     * parent (a moved subtree's) changes no entry; the root has no row.
+     * Rewriting a file in place keeps its name's inode, and dates only the file.
+     */
+    entryChangedDirectories(plan, prior, deletedPaths) {
+        if (plan.entryParents.size === 0)
+            return [];
+        const written = new Set();
+        for (const inode of plan.inodes)
+            if (!inode.detached)
+                written.add(inode.path);
+        const touched = new Set();
+        plan.inodes.forEach((inode, index) => {
+            if (inode.detached || inode.movesWithParent)
+                return;
+            // The inode the name will hold (an explicit one, else the row's own).
+            const before = prior[index];
+            if (before === undefined || (inode.ino ?? before.ino) !== before.ino)
+                touched.add(inode.parentPath);
+        });
+        for (const entry of plan.deletes) {
+            if (entry.movesWithParent || written.has(entry.path))
+                continue;
+            touched.add(parentVfsPath(entry.path));
+        }
+        const result = [];
+        for (const path of touched) {
+            if (path === '' || written.has(path) || deletedPaths.has(path))
+                continue;
+            result.push(path);
+        }
+        return result;
+    }
+    /** Before-images, for a snapshot at `pinGen`, of the rows at `paths` that generation `gen` replaces or removes. */
+    recordBeforeImages(paths, gen, pinGen) {
+        for (let i = 0; i < paths.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = paths.slice(i, i + KEYS_PER_SQL_EXEC);
+            this.sql.exec(`INSERT OR IGNORE INTO vfs_inode_history
+           (path, gen_to, gen_from, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id, dacl)
+         SELECT path, ?, gen, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id, dacl
+         FROM vfs_inodes WHERE gen <= ? AND path IN (${batch.map(() => '?').join(',')})`, gen, pinGen, ...batch);
+        }
+    }
+    /** Date `directories` at the transaction's commit time, in its generation: one statement per page. */
+    touchDirectoryRows(directories, at, gen) {
+        for (let i = 0; i < directories.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = directories.slice(i, i + KEYS_PER_SQL_EXEC);
+            this.sql.exec(`UPDATE vfs_inodes SET mtime = ?, ctime = ?, gen = ?
+         WHERE kind = ${INODE_KIND_DIRECTORY} AND path IN (${batch.map(() => '?').join(',')})`, at, at, gen, ...batch);
+        }
+    }
+    /** The cache and the publication learn what touchDirectoryRows committed. */
+    touchedDirectoriesCommitted(directories, at, gen) {
+        for (const path of directories) {
+            const cached = this.inodes.peek(path);
+            if (cached !== undefined && cached.isDir)
+                this.inodes.set(path, { ...cached, mtime: at, ctime: at, gen });
+            if (!this.committedRows.has(path))
+                this.committedRows.set(path, { gen, file: false });
+        }
+    }
     executeTransactionPlan(plan, execution, onCommit, priors) {
         const committedAt = this.now();
         const deletedPaths = new Set();
@@ -7835,6 +7941,7 @@ export class SqliteVFS {
         const deletedPrior = new Map();
         for (const entry of plan.deletes)
             deletedPrior.set(entry.path, entry.prior);
+        const touched = this.entryChangedDirectories(plan, prior, deletedPaths);
         if (this.sharedDirectories.size > 0) {
             for (const entry of plan.deletes)
                 this.revokeSharedDirectories(entry.path);
@@ -7873,14 +7980,7 @@ export class SqliteVFS {
                 // Before-images for every row this transaction replaces or removes
                 // that a snapshot can see (gen <= pin_gen). None without a snapshot.
                 if (pinGen > 0) {
-                    const paths = [...plan.inodes.filter((entry) => !entry.detached).map((entry) => entry.path), ...deletedPaths];
-                    for (let i = 0; i < paths.length; i += KEYS_PER_SQL_EXEC) {
-                        const batch = paths.slice(i, i + KEYS_PER_SQL_EXEC);
-                        this.sql.exec(`INSERT OR IGNORE INTO vfs_inode_history
-                 (path, gen_to, gen_from, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id, dacl)
-               SELECT path, ?, gen, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, chunk_id, content_id, dacl
-               FROM vfs_inodes WHERE gen <= ? AND path IN (${batch.map(() => '?').join(',')})`, gen, pinGen, ...batch);
-                    }
+                    this.recordBeforeImages([...plan.inodes.filter((entry) => !entry.detached).map((entry) => entry.path), ...deletedPaths, ...touched], gen, pinGen);
                 }
                 const deletes = [...deletedPaths];
                 for (let i = 0; i < deletes.length; i += KEYS_PER_SQL_EXEC) {
@@ -8156,6 +8256,7 @@ export class SqliteVFS {
                     rows.push(inode.path, inode.parentPath, inodeKindCode(inode.kind), inode.size, inode.atime !== undefined && Number.isFinite(inode.atime) ? inode.atime : inode.mtime, inode.mtime, inode.ctime, inode.mode, inode.uid, inode.gid, inode.ino, gen, inode.chunkId, inode.contentId, inode.defaultAcl);
                 }
                 this.insertRows('vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)', INODE_ROW_COLUMNS, rows, 'INSERT OR REPLACE');
+                this.touchDirectoryRows(touched, committedAt, gen);
                 const queued = queue.rows();
                 this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
                 if (queued.length > 0)
@@ -8179,6 +8280,7 @@ export class SqliteVFS {
         for (const inode of plan.inodes)
             if (!inode.detached)
                 this.committedRows.set(inode.path, { gen, file: !inode.isDir });
+        this.touchedDirectoriesCommitted(touched, committedAt, gen);
         for (const staging of created)
             if (!staging.durable)
                 this.activeStagingContentIds.add(staging.id);
@@ -8671,6 +8773,7 @@ export class SqliteVFS {
             staged: [],
             stagingCreated: [],
             affectedPaths: new Set(),
+            entryParents: new Set(),
             metrics,
         };
     }
