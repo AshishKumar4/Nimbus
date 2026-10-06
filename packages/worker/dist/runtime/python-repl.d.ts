@@ -1,4 +1,3 @@
-import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 /**
@@ -28,8 +27,6 @@ import type { RuntimeManifest } from '@nimbus-sh/core/runtime/runtime-manifest.j
 import { type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 export interface PythonReplDeps {
     facetMgr: FacetManager;
-    /** The workspace's network: the prompt's program goes out through its egress. */
-    network: WorkspaceNetwork;
     /** Owns the installed interpreter blobs the prompt is booted from. */
     authority: NimbusFilesystemAuthority;
     terminal: WebSocketTerminal;
@@ -101,5 +98,5 @@ export declare function runPythonRepl(deps: PythonReplDeps): Promise<number>;
  * Pay the interpreter's boot before the user asks for a prompt. Pushing empty
  * source compiles to a no-op, so the only thing it does is bring the facet up.
  */
-export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'network' | 'authority' | 'installRoot' | 'home' | 'manifest'>): Promise<void>;
+export declare function warmPythonRepl(deps: Pick<PythonReplDeps, 'facetMgr' | 'authority' | 'installRoot' | 'home' | 'manifest'>): Promise<void>;
 //# sourceMappingURL=python-repl.d.ts.map

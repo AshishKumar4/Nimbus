@@ -138,7 +138,6 @@ export async function registerHostedCommands(self, workspace) {
         if (argv.length === 0 && terminal) {
             const { runPythonRepl } = await import('../runtime/python-repl.js');
             return await runPythonRepl({
-                network: workspace.network,
                 facetMgr,
                 authority: workspace.filesystem,
                 terminal: terminal,
@@ -180,7 +179,6 @@ export async function registerHostedCommands(self, workspace) {
         if (argv.length === 0 && terminal) {
             const { runRubyRepl } = await import('../runtime/ruby-repl.js');
             return await runRubyRepl({
-                network: workspace.network,
                 facetMgr,
                 authority: workspace.filesystem,
                 terminal: terminal,
@@ -283,7 +281,6 @@ export async function registerHostedCommands(self, workspace) {
                 }
                 const { warmPythonRepl } = await import('../runtime/python-repl.js');
                 await warmPythonRepl({
-                    network: workspace.network,
                     facetMgr,
                     authority: workspace.filesystem,
                     installRoot: target.root,
@@ -538,7 +535,7 @@ export async function registerHostedCommands(self, workspace) {
                 const { loaderFacetHost } = await import('../runtime/facet-loader-host.js');
                 const wasmSpec = wasmRunnerSpec({
                     filesystem: workspace.filesystem,
-                    facets: loaderFacetHost(self.env, self.ctx),
+                    facets: loaderFacetHost(self.env, self.ctx, workspace.network),
                     processes: self.processes,
                 });
                 wasmHandler = buildRuntimeHandler(wasmSpec, {

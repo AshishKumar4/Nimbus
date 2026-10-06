@@ -7,8 +7,9 @@
  * program runs, and its ports live only in this module's closure.
  *
  * The realm lives as a Node process does: while its event loop has work. Its
- * own timers hold it; so does `events` while a server it started listens and
- * while a request it made is unanswered (its synchronous calls need no loop). A
+ * own timers hold it; so does `events` while a server it started listens, while
+ * a request it made is unanswered and while it waits on a response body (its
+ * synchronous calls need no loop). A
  * rejection or exception nothing handles is printed and ends it with 1, an
  * ES module whose top-level await never settles with 13.
  */
@@ -16,7 +17,7 @@ import realm from 'node:process';
 import { joinRealm } from '../../../../runtime/realm-guest.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
-import { EXTERNAL_PORT, isDirEntries, isHostEvent, isNodeRealmPayload, isStat, } from './node-realm.js';
+import { isDirEntries, isHostEvent, isNodeRealmPayload, isStat, } from './node-realm.js';
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload))
     throw new Error('node-guest: started without a program');
@@ -35,9 +36,15 @@ function post(event) {
 let mainDone = false;
 let exiting = false;
 const fetched = new Map();
+/**
+ * Answers the program waits on from off the box (a response's head, a chunk
+ * of a body it is reading): each holds the realm, as an active socket holds a
+ * Node process. A body it is not reading holds nothing, as in Node.
+ */
+let awaitedOffTheBox = 0;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy() {
-    joined.hold(fetched.size > 0 || ports.size > 0);
+    joined.hold(fetched.size > 0 || ports.size > 0 || awaitedOffTheBox > 0);
 }
 /** End the process now with `code`, as process.exit() and a fatal error do. */
 function exitNow(code) {
@@ -100,27 +107,133 @@ class RealmPorts extends Map {
 }
 const ports = new RealmPorts();
 let fetches = 0;
+/** The program's requests off the box, by id: each takes the answers that cross back for it. */
+const offTheBox = new Map();
+/** A Request's redirect mode, as its type names it (a string, in the platform's typing). */
+function redirectMode(mode) {
+    if (mode === 'follow' || mode === 'manual' || mode === 'error')
+        return mode;
+    throw new TypeError(`fetch: unknown redirect mode ${JSON.stringify(mode)}`);
+}
+/** Statuses whose response has no body (the Response constructor refuses one). */
+const NULL_BODY_STATUSES = new Set([101, 103, 204, 205, 304]);
+/**
+ * `request` off the box: it crosses to the host, which sends it out through
+ * the egress and follows its redirects as the program asked. The response is
+ * the program's once its head arrives; its body is read from the host as the
+ * program reads it. Fails as Node's fetch fails: `fetch failed` before the
+ * head, `terminated` in the body, the signal's reason on an abort.
+ */
+function sendOffTheBox(request, body) {
+    const id = ++fetches;
+    const signal = request.signal;
+    return new Promise((resolve, reject) => {
+        let awaiting = false;
+        const await_ = (on) => {
+            if (awaiting === on)
+                return;
+            awaiting = on;
+            awaitedOffTheBox += on ? 1 : -1;
+            holdWhileBusy();
+        };
+        let stream;
+        /** Settles the stream's pull, once its chunk, end or error has arrived. */
+        let pulled;
+        const done = () => {
+            offTheBox.delete(id);
+            signal.removeEventListener('abort', aborted);
+            await_(false);
+            pulled?.();
+            pulled = undefined;
+        };
+        const aborted = () => {
+            post({ type: 'egress-cancel', id });
+            if (stream)
+                stream.error(signal.reason);
+            else
+                reject(signal.reason);
+            done();
+        };
+        const head = (answer) => {
+            await_(false);
+            const withBody = answer.body && !NULL_BODY_STATUSES.has(answer.status);
+            if (answer.body && !withBody) {
+                post({ type: 'egress-cancel', id });
+                done();
+            }
+            else if (!withBody) {
+                done();
+            }
+            const source = withBody ? new ReadableStream({
+                start: (controller) => { stream = controller; },
+                pull: () => new Promise((settle) => {
+                    pulled = settle;
+                    await_(true);
+                    post({ type: 'egress-pull', id });
+                }),
+                cancel: () => {
+                    post({ type: 'egress-cancel', id });
+                    done();
+                },
+            }, { highWaterMark: 0 }) : null;
+            let response;
+            try {
+                response = new Response(source, { status: answer.status, statusText: answer.statusText, headers: answer.headers.map(([name, value]) => [name, value]) });
+            }
+            catch (error) {
+                post({ type: 'egress-cancel', id });
+                done();
+                reject(new TypeError('fetch failed', { cause: error }));
+                return;
+            }
+            // Where the response came from, as Node's fetch reports it.
+            Object.defineProperties(response, { url: { value: answer.url }, redirected: { value: answer.redirected } });
+            resolve(response);
+        };
+        offTheBox.set(id, (answer) => {
+            switch (answer.type) {
+                case 'egress-head':
+                    head(answer.head);
+                    return;
+                case 'egress-chunk':
+                    await_(false);
+                    stream?.enqueue(answer.chunk);
+                    pulled?.();
+                    pulled = undefined;
+                    return;
+                case 'egress-end':
+                    stream?.close();
+                    done();
+                    return;
+                case 'egress-error': {
+                    const cause = new Error(answer.message);
+                    if (stream)
+                        stream.error(new TypeError('terminated', { cause }));
+                    else
+                        reject(new TypeError('fetch failed', { cause }));
+                    done();
+                    return;
+                }
+            }
+        });
+        signal.addEventListener('abort', aborted, { once: true });
+        await_(true);
+        post({ type: 'egress', id, request: { url: request.url, method: request.method, headers: [...request.headers], body, redirect: redirectMode(request.redirect) } });
+    });
+}
 /**
  * Under an egress, the program's network is its host's: `fetch` (and the
  * http and https modules, which use it) sends every request off the box
- * across to the host (EXTERNAL_PORT), which sends it out through the egress.
- * A WebSocket cannot cross the realm, so it is refused by name.
+ * across to the host, which sends it out through the egress. A WebSocket
+ * cannot cross the realm, so it is refused by name.
  */
 function routeOffTheBox() {
     globalThis.fetch = async (input, init) => {
         const request = new Request(input, init);
-        const id = ++fetches;
-        const headers = {};
-        request.headers.forEach((value, key) => { headers[key] = value; });
+        request.signal.throwIfAborted();
         const body = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
-        const answer = new Promise((resolve) => fetched.set(id, resolve));
-        holdWhileBusy();
-        post({ type: 'fetch', id, port: EXTERNAL_PORT, url: request.url, method: request.method, headers, body });
-        const response = await answer;
-        if (!response)
-            throw new TypeError('fetch failed');
-        const empty = response.status === 204 || response.status === 304;
-        return new Response(empty ? null : response.body, { status: response.status, headers: response.headers });
+        request.signal.throwIfAborted();
+        return await sendOffTheBox(request, body);
     };
     globalThis.WebSocket = class {
         constructor() {
@@ -174,6 +287,12 @@ events.on('message', (event) => {
             return;
         case 'changed':
             changed?.();
+            return;
+        case 'egress-head':
+        case 'egress-chunk':
+        case 'egress-end':
+        case 'egress-error':
+            offTheBox.get(event.id)?.(event);
             return;
     }
 });

@@ -1156,14 +1156,15 @@ export declare class FacetManager {
      *  authority over the same disk. */
     setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority): void;
     /**
-     * The env/ctx pair every loader-backed runtime builds its facet pools
-     * from. A pool is constructed from exactly these two, so the manager
-     * exposes them as one narrow accessor rather than every runtime reaching
-     * into its private fields.
+     * What every loader-backed runtime builds its facet pools from: the env and
+     * ctx a pool is constructed over, and the workspace's network its facets go
+     * out through. One narrow accessor rather than every runtime reaching into
+     * the manager's private fields.
      */
     loaderHost(): {
         env: unknown;
         ctx: DurableObjectState;
+        network: WorkspaceNetwork;
     };
     /**
      * The image store's disk: this session's VFS, as the kernel — the store is

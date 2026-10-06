@@ -17,18 +17,15 @@
  * the loader's default: the parent's network.
  */
 /**
- * What a host supplies: a `fetch` for HTTP (WebSocket upgrades included) and,
- * for programs that open TCP sockets, a `connect` (a Fetcher's own; its
- * sockets carry plain TCP only, so a program's TLS socket is refused under an
- * egress, see `EGRESS_TLS_REFUSAL`).
+ * What a host supplies: a Fetcher (a service binding, a `ctx.exports`
+ * entrypoint), or on a host without one an object with the same two methods.
+ * `fetch` carries HTTP (WebSocket upgrades included); `connect` carries the
+ * plain TCP sockets programs open. A Fetcher's `connect()` carries plain TCP
+ * only, so a program's TLS socket is refused under an egress
+ * (`EGRESS_TLS_REFUSAL`); an egress that carries no TCP at all refuses in its
+ * `connect`.
  */
-export interface WorkspaceEgress {
-    fetch(request: Request): Promise<Response>;
-    connect?(address: string | {
-        hostname: string;
-        port: number;
-    }, options?: unknown): unknown;
-}
+export type WorkspaceEgress = Pick<Fetcher, 'fetch' | 'connect'>;
 export interface WorkspaceNetwork {
     /** The host's egress, or undefined for the isolate's own network. */
     readonly egress: WorkspaceEgress | undefined;
@@ -42,10 +39,15 @@ export interface WorkspaceNetwork {
     /** `fetch` for code that runs in the host's isolate on the workspace's behalf. */
     fetch(input: RequestInfo | URL, init?: RequestInit): Promise<Response>;
 }
+/** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
+export declare const ISOLATE_NETWORK: WorkspaceNetwork;
 /**
- * The workspace network over `egress`, or over the isolate's own network
- * when there is none. `id` is given only where a network crosses to another
- * Durable Object (a peer that runs the workspace's work keeps its identity).
+ * The workspace network over `egress`, or the isolate's own network when
+ * there is none. One per egress object: whatever asks for it (the workspace,
+ * or a session re-driving a process before its workspace exists) holds the
+ * same network, under the same id. `id` is given only where a network
+ * crosses to another Durable Object: a peer that runs the workspace's work
+ * rebuilds it over the stub it received, under the coordinator's id.
  */
 export declare function workspaceNetwork(egress?: WorkspaceEgress, id?: string): WorkspaceNetwork;
 /** What crosses to another Durable Object for `network` (an egress stub crosses RPC; the network rebuilds there). */
@@ -54,8 +56,6 @@ export interface WorkspaceNetworkRef {
     id: string;
 }
 export declare function networkRef(network: WorkspaceNetwork | undefined): WorkspaceNetworkRef | undefined;
-/** The isolate's own network: what a kernel or command holds before a workspace gives it one. */
-export declare const ISOLATE_NETWORK: WorkspaceNetwork;
 /**
  * The part of a Dynamic Worker's loader config that routes it through the
  * workspace's egress: `{ globalOutbound }`, or nothing (the loader's default)

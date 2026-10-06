@@ -14,7 +14,9 @@
  *     asynchronously (fd 0, read to its end) holds the guest exactly as a
  *     blocking read holds a Node program;
  *   - events: its output, the requests its loopback clients make, the
- *     requests this side forwards to its servers, its exit.
+ *     requests this side forwards to its servers, its exit, and under an
+ *     egress the requests it makes off the box, whose responses cross back
+ *     as they arrive (OffTheBox).
  *
  * Everything the program sends is untrusted: this side answers only the calls
  * it names below, with arguments of their kind, and never lets a message, an
@@ -31,8 +33,6 @@ import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
 export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'network'>>;
-/** The port a guest's request names when it is not for a port of the box: it leaves through the workspace's network. */
-export declare const EXTERNAL_PORT = -1;
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 /** A synchronous call the guest makes. */
@@ -52,11 +52,31 @@ export type NodeCall = {
     readonly op: 'watch';
     readonly on: boolean;
 };
-/** A response, as data, either way across (bytes for a request that left the box). */
+/** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
     readonly status: number;
     readonly headers: Record<string, string>;
     readonly body: string | Uint8Array;
+}
+/** A header list as it crosses: in order, a name once per value (set-cookie). */
+export type HeaderPairs = readonly (readonly [string, string])[];
+/** A request the program sends off the box: its body whole, its redirect mode the program's. */
+export interface EgressRequest {
+    readonly url: string;
+    readonly method: string;
+    readonly headers: HeaderPairs;
+    readonly body: Uint8Array | null;
+    readonly redirect: 'follow' | 'manual' | 'error';
+}
+/** Its response's head. A body, when there is one, crosses a chunk per `egress-pull`. */
+export interface EgressHead {
+    readonly status: number;
+    readonly statusText: string;
+    readonly headers: HeaderPairs;
+    /** Where the response came from, after any redirect followed. */
+    readonly url: string;
+    readonly redirected: boolean;
+    readonly body: boolean;
 }
 /** What the guest posts on `events`. */
 export type GuestEvent = {
@@ -78,6 +98,20 @@ export type GuestEvent = {
 } | {
     readonly type: 'exit';
     readonly code: number;
+} | {
+    readonly type: 'egress';
+    readonly id: number;
+    readonly request: EgressRequest;
+}
+/** The program reads its response's body: the next chunk, or its end. */
+ | {
+    readonly type: 'egress-pull';
+    readonly id: number;
+}
+/** The program is done with the request (it cancelled the body, or aborted). */
+ | {
+    readonly type: 'egress-cancel';
+    readonly id: number;
 };
 /** What this side posts on `events`. */
 export type HostEvent = {
@@ -91,14 +125,31 @@ export type HostEvent = {
     readonly request: VirtualRequest;
 } | {
     readonly type: 'changed';
+} | {
+    readonly type: 'egress-head';
+    readonly id: number;
+    readonly head: EgressHead;
+} | {
+    readonly type: 'egress-chunk';
+    readonly id: number;
+    readonly chunk: Uint8Array;
+} | {
+    readonly type: 'egress-end';
+    readonly id: number;
+}
+/** The request failed, or its body did after the head: what a failed connection is in Node. */
+ | {
+    readonly type: 'egress-error';
+    readonly id: number;
+    readonly message: string;
 };
 /** What the realm starts with: the program, and whether its network goes through an egress. */
 export interface NodeRealmPayload {
     readonly program: NodeProgram;
     /**
      * The workspace's network goes through its host's egress: every request
-     * the program makes off the box crosses here ({@link EXTERNAL_PORT}) and
-     * leaves through it; a WebSocket, which cannot cross, is refused by name.
+     * the program makes off the box crosses here (`egress`) and leaves through
+     * it; a WebSocket, which cannot cross, is refused by name.
      */
     readonly egress: boolean;
 }

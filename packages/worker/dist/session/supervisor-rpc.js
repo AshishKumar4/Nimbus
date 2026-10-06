@@ -1038,13 +1038,9 @@ export class SupervisorRPC extends WorkerEntrypoint {
             if (run !== undefined && answer && answer.unrecorded)
                 unrecorded(run);
             // Through the workspace's egress (its connect carries plain TCP), when it has one.
-            if (egress !== undefined && typeof egress.connect !== 'function') {
-                await socket.close().catch(() => { });
-                return;
-            }
-            const upstream = (egress !== undefined
+            const upstream = egress !== undefined
                 ? egress.connect(address, { allowHalfOpen: true })
-                : connectSocket(address, { allowHalfOpen: true }));
+                : connectSocket(address, { allowHalfOpen: true });
             await Promise.all([socket.readable.pipeTo(upstream.writable), upstream.readable.pipeTo(socket.writable)]).catch(() => { });
             return;
         }

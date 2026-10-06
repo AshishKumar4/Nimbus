@@ -7,7 +7,12 @@ import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
  * grow.
  */
 export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
-export function loaderFacetHost(env, ctx) {
+/**
+ * Facets as dynamic workers over `env` and `ctx`, each going out through
+ * `network`: the workspace's (`workspace.network`, or `workspaceNetwork(egress)`
+ * for the egress the workspace is created with).
+ */
+export function loaderFacetHost(env, ctx, network) {
     return {
         // workerd suspends a guest through JSPI, which is what lets a syscall reach
         // back to the session mid-instruction.
@@ -21,27 +26,29 @@ export function loaderFacetHost(env, ctx) {
                 omitSupervisor: spec.syscalls === undefined,
                 supervisorPid: spec.syscalls?.pid,
                 cacheScope: spec.reuse,
+                network,
             });
         },
     };
 }
 /**
- * The two objects a IsolatePool needs from a FacetManager, via the manager's
- * own `loaderHost()` accessor. The runtime guard stays: harnesses build
- * FacetManagers on mock contexts, and one built on something other than a
- * DurableObjectState should fail with a sentence instead of at the first RPC.
+ * What an IsolatePool is built from, from a FacetManager: its env and ctx and
+ * the workspace's network, via the manager's own `loaderHost()` accessor. The
+ * runtime guard stays: harnesses build FacetManagers on mock contexts, and one
+ * built on something other than a DurableObjectState should fail with a
+ * sentence instead of at the first RPC.
  */
 export function getFacetManagerLoaderHost(facetMgr) {
-    const { env, ctx } = facetMgr.loaderHost();
+    const { env, ctx, network } = facetMgr.loaderHost();
     if (!isDurableObjectState(ctx)) {
         throw new Error('a loader-backed runtime requires a FacetManager with DurableObjectState context');
     }
-    return { env, ctx };
+    return { env, ctx, network };
 }
-/** The facet host a runtime reached through a FacetManager runs on. */
+/** The facet host a runtime reached through a FacetManager runs on, over the manager's network. */
 export function facetHostForManager(facetMgr) {
-    const { env, ctx } = getFacetManagerLoaderHost(facetMgr);
-    return loaderFacetHost(env, ctx);
+    const { env, ctx, network } = getFacetManagerLoaderHost(facetMgr);
+    return loaderFacetHost(env, ctx, network);
 }
 function isDurableObjectState(value) {
     if (typeof value !== 'object' || value === null)
