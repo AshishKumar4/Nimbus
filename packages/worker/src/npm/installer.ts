@@ -31,6 +31,7 @@ import type {
 import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
@@ -257,7 +258,19 @@ export class NpmInstaller {
     // installer is shared, the terminal it should speak to is not.
     const previousProgress = this.onProgress;
     if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
-    const log = (msg: string) => this.onProgress?.(msg);
+    // This invocation's terminal, while the command runs. Work that outlives
+    // it (the background pre-bundle) still logs through `log`, and once the
+    // command has returned and the prompt is back, that goes to the console
+    // instead: never into the next command's output, nor this one's prompt.
+    const progress = this.onProgress;
+    let returned = false;
+    const log = (msg: string) => {
+      if (!returned) {
+        progress?.(msg);
+        return;
+      }
+      try { console.log('[npm:late] ' + msg); } catch {}
+    };
     this.npmLog = opts?.npmLog ?? (() => {});
 
     // Reset phase to 'idle' on any exit path so /api/_diag/memory
@@ -266,6 +279,7 @@ export class NpmInstaller {
     // a non-fatal mid-install throw.
     try { return await this._installInner(projDir, nmDir, opts, log, start); }
     finally {
+      returned = true;
       setInstallPhase('idle');
       this.npmLog = () => {};
       this.onProgress = previousProgress;
@@ -550,88 +564,14 @@ export class NpmInstaller {
       await this.handKernelArtifact(principal, `/${engineDir}/node_modules/.nimbus-synthetic`);
       phaseStart = Date.now();
       setInstallPhase('bundle');
-      // ── Bug 1 (production reliability P4) — late-progress gating ───────────────
-      //
-      // Background:
-      //   The install command MUST resolve immediately (see the long
-      //   note above re: workerd isolate-kill paths that defeat
-      //   try/catch on awaits). We keep that invariant intact.
-      //
-      // Symptom we are fixing:
-      //   prebundleUsedModules's `finally` block emits a "Pre-bundle
-      //   complete:" line via this.onProgress (installer.ts:1548).
-      //   onProgress is the closure
-      //   `(msg) => ctx.stdout.write('[npm] ' + msg + '\n')` captured
-      //   from the npm registry handler in
-      //   src/session/init.ts:1228 / :1723. After install() returns,
-      //   the npm command-handler returns to the shell, the shell
-      //   prints its prompt, and THEN the orphan promise's safeProgress
-      //   fires — visually corrupting the freshly-rendered prompt
-      //   ("user@nimbus:~/example-app$ [npm] Pre-bundle complete: ...").
-      //
-      // Fix:
-      //   Suppress writes to ctx.stdout once install() has returned.
-      //   Pre-bundle progress is still observable via wrangler dev
-      //   console (console.log) and via /api/_diag/memory's
-      //   recordPreBundleSummary aggregate, but it does NOT touch the
-      //   user's interactive terminal after the prompt has redrawn.
-      //
-      // Why a flag instead of swapping `this.onProgress`:
-      //   ensureNpmInstaller (nimbus-session.ts:892) caches the
-      //   installer on `this.npmInstaller` for the DO's lifetime. A
-      //   subsequent `npm install` invocation has a different ctx,
-      //   so the persistent onProgress reference is doubly wrong:
-      //   it's stale-after-this-invocation AND it would clobber the
-      //   next install's progress channel. Gating without mutating
-      //   keeps the swap simple and idempotent.
-      const installInvocationActive = { v: true };
-      // Replace this.onProgress (the persistent ctx.stdout closure)
-      // with a wrapper for the duration of pre-bundle. While the
-      // outer install() call is on the stack the wrapper forwards to
-      // the original; once we flip the flag in the cleanup below,
-      // the wrapper drops to a console.log fallback so traces aren't
-      // lost but ctx.stdout never sees them.
-      const persistentProgress = this.onProgress;
-      this.onProgress = (msg: string) => {
-        if (installInvocationActive.v) {
-          persistentProgress?.(msg);
-        } else {
-          // Late progress — pre-bundle finished AFTER install()
-          // returned. Surface to the wrangler dev console only so
-          // the user's shell prompt isn't corrupted.
-          try { console.log('[npm:late] ' + msg); } catch {}
-        }
-      };
-      // Fire-and-forget. Capture rejections so the orphan promise
-      // never raises an "unhandled rejection" warning. We do NOT
-      // await here — see Phase 7 design note above for why.
-      const prebundlePromise = this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred))
-        .catch((e: any) => {
-          // Routes through the installInvocationActive gate above,
-          // so this is safe to call from after-return: it lands on
-          // console.log instead of ctx.stdout.
-          log(`pre-bundle skipped: ${e?.message || String(e)}`);
-        })
-        .finally(() => {
-          // Always restore the persistent reference so a subsequent
-          // ensureNpmInstaller call (which doesn't reconstruct the
-          // installer) can still wire a fresh ctx.stdout closure.
-          this.onProgress = persistentProgress;
-        });
-      // Mark `void` so the linter / human reader knows we intentionally
-      // don't await this. The promise outlives the install command.
-      void prebundlePromise;
+      // Fire-and-forget: the install resolves now and the bundle finishes in
+      // the background (see the Phase 7 design note above). Its progress goes
+      // through this invocation's `log`, which turns to the console once the
+      // command has returned, so a late line never lands on the redrawn
+      // prompt or in another install's output.
+      void this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log)
+        .catch((e: unknown) => log(`pre-bundle skipped: ${errorText(e)}`));
       phases['bundle'] = Date.now() - phaseStart;
-      // The flag flip happens AFTER install() returns its result.
-      // We schedule it inline by closing over the same object;
-      // the `finally` at install()'s top level (line 173) gets us
-      // to the right boundary. We piggyback there via a deferred
-      // microtask: when the outer try{} returns the result object,
-      // the microtask flips the flag; pre-bundle's safeProgress
-      // calls after this point land on console.log.
-      queueMicrotask(() => {
-        installInvocationActive.v = false;
-      });
     }
 
     setInstallPhase('done');
@@ -2029,6 +1969,7 @@ export class NpmInstaller {
     projDir: string,
     installed: Map<string, ResolvedPackage>,
     fs: CredentialedVfs,
+    progress: (msg: string) => void,
   ): Promise<void> {
     // Pre-bundle runs in the session's build facet (facets/prebundle-pool.ts),
     // from slices the supervisor walks (npm/pre-bundle-facet.ts); the
@@ -2149,7 +2090,7 @@ export class NpmInstaller {
       if (!entryPath) continue;
 
       if (/\.(wasm|node)$/i.test(entryPath)) {
-        this.onProgress?.(`  skipped pre-bundle for ${specifier} (native/WASM)`);
+        progress(`  skipped pre-bundle for ${specifier} (native/WASM)`);
         continue;
       }
 
@@ -2171,7 +2112,7 @@ export class NpmInstaller {
           // hard-error with a remediation message if a request comes
           // in for it. Users who hit this need to add a static named
           // import for the icons they reference dynamically.
-          this.onProgress?.(
+          progress(
             `  skipped pre-bundle for ${specifier}: barrel (${fileCount} files) ` +
             `with no static named imports detected. Add explicit imports to enable bundling.`,
           );
@@ -2187,12 +2128,12 @@ export class NpmInstaller {
           fs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
           fs.writeFile(entryPath, synth.code);
         } catch (e: any) {
-          this.onProgress?.(
+          progress(
             `  failed to write synthetic entry for ${specifier}: ${e?.message || e}`,
           );
           continue;
         }
-        this.onProgress?.(
+        progress(
           `  synthesized entry for ${specifier} (barrel: ${fileCount} files; ` +
           `${names.size} static imports → tree-shaken bundle)`,
         );
@@ -2229,7 +2170,7 @@ export class NpmInstaller {
     // allocation sources from runtime counters that ARE accurate
     // (DiagCounters singleton + SqliteVFS.getStats()).
     const memBefore = this._estimateSupervisorHeapMiB();
-    this.onProgress?.(
+    progress(
       `Pre-bundling ${pending.length} modules... (supervisor heap ${memBefore.toFixed(1)} MiB)`,
     );
 
@@ -2298,7 +2239,7 @@ export class NpmInstaller {
     // pre-bundle phase keeps running. Same pattern is used in the
     // summary finally block below.
     const safeProgress = (msg: string): void => {
-      try { this.onProgress?.(msg); } catch (e: any) {
+      try { progress(msg); } catch (e: any) {
         try { console.error('[pre-bundle] onProgress threw:', e?.message || e); } catch {}
       }
     };

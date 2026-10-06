@@ -315,7 +315,7 @@ try {
       esbuild: new EsbuildService(undefined, { engine: esbuildEngine }),
       bundlePool: { acquire: async () => pool },
     });
-    const prebundle = () => installer.prebundleUsedModules(root, new Map([['pkg', {}]]), project.vfs.as(CRED_KERNEL));
+    const prebundle = () => installer.prebundleUsedModules(root, new Map([['pkg', {}]]), project.vfs.as(CRED_KERNEL), () => {});
     const row = () => new NpmCache(project.harness.sql).getEsmBundle('pkg');
 
     await prebundle();
