@@ -622,11 +622,13 @@ function target(dir = 'home') {
   dst.vfs.rmdir('home');
   dst.raw.snapshot('empty');
   dst.vfs.mkdir('home');
+  // home/a before the fill: creating it dates home (POSIX), and home must be
+  // early in gen order for the first slice to take it.
+  dst.vfs.mkdir('home/a');
   const fill = [];
   for (let i = 0; i < 42_000; i++) fill.push(`fill/d${i}`);
   dst.vfs.mkdir('fill');
   for (let i = 0; i < fill.length; i += 100) dst.vfs.mkdirBatch(fill.slice(i, i + 100));
-  dst.vfs.mkdir('home/a');
   const first = importPages(src, dst, { at: 'first', root: 'proj', dst: 'home/a/proj', pages: 1 });
   const late = nextPage(src, dst, { at: 'first', root: 'proj', after: first.next });
   // The first slice runs in the call; the rest after it yields.
