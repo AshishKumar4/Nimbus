@@ -48,26 +48,20 @@ const command: Command = async (ctx) => {
     return 1;
   }
 
-  const results: string[] = [];
   const isInt = Number.isInteger(first) && Number.isInteger(increment) && Number.isInteger(last);
+  const steps = Math.floor((last - first) / increment + 1e-10);
+  if (steps < 0) return 0;
+  const format = (n: number) => (isInt ? String(Math.round(n)) : String(n));
+  // -w pads to the wider of the first and the last number printed.
+  const width = equalWidth && isInt
+    ? Math.max(format(first).length, format(first + steps * increment).length)
+    : 0;
 
-  if (increment > 0) {
-    for (let n = first; n <= last + 1e-10; n += increment) {
-      results.push(isInt ? String(Math.round(n)) : String(n));
-    }
-  } else {
-    for (let n = first; n >= last - 1e-10; n += increment) {
-      results.push(isInt ? String(Math.round(n)) : String(n));
-    }
-  }
-
-  if (results.length > 0) {
-    if (equalWidth && isInt) {
-      const maxLen = Math.max(...results.map(r => r.length));
-      await ctx.stdout.write(results.map(r => r.padStart(maxLen, '0')).join(separator) + '\n');
-    } else {
-      await ctx.stdout.write(results.join(separator) + '\n');
-    }
+  // One number per write, so `seq 1 1000000000 | head` ends with its reader.
+  for (let i = 0; i <= steps; i++) {
+    if (ctx.signal.aborted) return 130;
+    const text = format(first + i * increment).padStart(width, '0');
+    await ctx.stdout.write(i === steps ? `${text}\n` : text + separator);
   }
 
   return 0;

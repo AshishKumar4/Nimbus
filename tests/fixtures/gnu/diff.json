@@ -1,0 +1,52 @@
+{
+ "tool": "diff",
+ "inputs": {
+  "a": "b25lCnR3bwp0aHJlZQo=",
+  "b": "b25lClRXTwp0aHJlZQpmb3VyCg==",
+  "c": "emVybwpvbmUKdHdvCnRocmVlCg==",
+  "e": ""
+ },
+ "cases": [
+  {
+   "args": "a b",
+   "stdout": "2c2\n< two\n---\n> TWO\n3a4\n> four\n",
+   "exit": 1
+  },
+  {
+   "args": "b a",
+   "stdout": "2c2\n< TWO\n---\n> two\n4d3\n< four\n",
+   "exit": 1
+  },
+  {
+   "args": "a a",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "a c",
+   "stdout": "0a1\n> zero\n",
+   "exit": 1
+  },
+  {
+   "args": "c a",
+   "stdout": "1d0\n< zero\n",
+   "exit": 1
+  },
+  {
+   "args": "a e",
+   "stdout": "1,3d0\n< one\n< two\n< three\n",
+   "exit": 1
+  },
+  {
+   "args": "e a",
+   "stdout": "0a1,3\n> one\n> two\n> three\n",
+   "exit": 1
+  },
+  {
+   "args": "-u a a",
+   "stdout": "",
+   "exit": 0
+  }
+ ],
+ "recorded": "diff (GNU diffutils) 3.12, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)"
+}

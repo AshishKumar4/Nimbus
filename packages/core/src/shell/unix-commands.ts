@@ -1,15 +1,10 @@
 /**
- * unix-commands.ts — Nimbus v2.0 Unix command implementations.
- *
- * Every command is a real implementation operating on SqliteVFS.
- * No stubs, no "not implemented" — each does actual work.
- *
- * Commands: which, env, export, unset, history, clear, alias, date,
- * uptime, tree, grep -r, head, tail, wc, diff, sort, uniq,
- * sed (s///), awk (field extract), xargs, tee, chown, ln -s,
- * du, man/help, basename, dirname, printf, true, false, seq, sleep,
- * touch, stat, file, xxd, od, hexdump, base64, sha256sum, id, hostname,
- * realpath
+ * unix-commands.ts — the Unix commands that need the shell's own machinery:
+ * credentials, mounts, command resolution (which/type/command/xargs) and the
+ * durable store's metadata. Every command is a real implementation; the
+ * pure byte/text tools are the substrate's (substrate/lifo/commands), which
+ * `textCommand` wraps where this module registers one of them.
+ * `registerUnixCommands` at the end is the list.
  */
 
 import type { SqliteVFS } from '../vfs/sqlite-vfs.js';
@@ -611,15 +606,6 @@ function mkType(vfs: UnixVfs, registry: UnixCommandRegistry): CmdFn {
   };
 }
 
-function mkEnv(): CmdFn {
-  return async (ctx) => {
-    for (const [k, v] of Object.entries(ctx.env)) {
-      (await ctx.stdout.write(`${k}=${v}\n`));
-    }
-    return 0;
-  };
-}
-
 function mkExport(): CmdFn {
   return async (ctx) => {
     for (const arg of ctx.args) {
@@ -889,20 +875,26 @@ function mkUptime(): CmdFn {
   };
 }
 
+/** tree: `-L n` bounds the depth (unbounded without it), `-d` lists directories alone. */
 function mkTree(vfs: UnixVfs): CmdFn {
   return async (ctx) => {
     const level = ctx.args.indexOf('-L');
+    const dirsOnly = ctx.args.includes('-d');
     // `-L n` takes the next word; the first other non-option word is the directory.
     const operand = ctx.args.find((a, i) => !a.startsWith('-') && (level === -1 || i !== level + 1)) ?? '.';
     const root = resolvePath(ctx.cwd, operand);
-    const maxDepth = level === -1 ? 3 : parseInt(ctx.args[level + 1]) || 3;
+    const maxDepth = level === -1 ? Infinity : parseInt(ctx.args[level + 1]) || Infinity;
     const MAX_ENTRIES = 2000; // Safety limit to prevent hanging on huge repos
     let dirs = 0, files = 0, total = 0;
     let truncated = false;
     async function walk(path: string, prefix: string, depth: number) {
       if (depth > maxDepth || truncated) return;
       try {
-        const entries = (await vfs.readdir(path)).sort((a, b) => a.name.localeCompare(b.name));
+        const listed = await Promise.all((await vfs.readdir(path)).map(async (e) => ({
+          name: e.name,
+          directory: (await direntTypeIn(vfs, path, e)) === 'directory',
+        })));
+        const entries = listed.filter((e) => !dirsOnly || e.directory).sort((a, b) => a.name.localeCompare(b.name));
         for (let i = 0; i < entries.length; i++) {
           if (total >= MAX_ENTRIES) { truncated = true; return; }
           total++;
@@ -911,7 +903,7 @@ function mkTree(vfs: UnixVfs): CmdFn {
           const connector = isLast ? '└── ' : '├── ';
           const childPrefix = isLast ? '    ' : '│   ';
           (await ctx.stdout.write(prefix + connector + e.name + '\n'));
-          if ((await direntTypeIn(vfs, path, e)) === 'directory') {
+          if (e.directory) {
             dirs++;
             (await walk(resolvePath(path, e.name), prefix + childPrefix, depth + 1));
           } else { files++; }
@@ -926,7 +918,7 @@ function mkTree(vfs: UnixVfs): CmdFn {
     (await ctx.stdout.write(operand + '\n'));
     (await walk(root, '', 1));
     if (truncated) (await ctx.stdout.write(`\n... truncated at ${MAX_ENTRIES} entries\n`));
-    (await ctx.stdout.write(`\n${dirs} directories, ${files} files\n`));
+    (await ctx.stdout.write(dirsOnly ? `\n${dirs} directories\n` : `\n${dirs} directories, ${files} files\n`));
     return 0;
   };
 }
@@ -2151,39 +2143,6 @@ function mkDu(vfs: UnixVfs): CmdFn {
   };
 }
 
-function mkDiff(vfs: UnixVfs): CmdFn {
-  return async (ctx) => {
-    if (ctx.args.length < 2) { (await ctx.stderr.write('Usage: diff FILE1 FILE2\n')); return 1; }
-    const f1 = resolvePath(ctx.cwd, ctx.args[0]);
-    const f2 = resolvePath(ctx.cwd, ctx.args[1]);
-    try {
-      const a = (await vfs.readFileString(f1)).split('\n');
-      const b = (await vfs.readFileString(f2)).split('\n');
-      let hasDiff = false;
-      const maxLen = Math.max(a.length, b.length);
-      for (let i = 0; i < maxLen; i++) {
-        if (a[i] !== b[i]) {
-          hasDiff = true;
-          if (a[i] !== undefined && b[i] === undefined) (await ctx.stdout.write(`${i + 1}d${i}\n< ${a[i]}\n`));
-          else if (a[i] === undefined && b[i] !== undefined) (await ctx.stdout.write(`${i}a${i + 1}\n> ${b[i]}\n`));
-          else (await ctx.stdout.write(`${i + 1}c${i + 1}\n< ${a[i]}\n---\n> ${b[i]}\n`));
-        }
-      }
-      return hasDiff ? 1 : 0;
-    } catch (e) {
-      // `diff` reports the thrown value's `message`, whatever it holds, rather
-      // than the value: a throw carrying none has always printed `undefined`.
-      const message = typeof e === 'object' && e !== null && 'message' in e ? e.message : undefined;
-      (await ctx.stderr.write(`diff: ${String(message)}\n`));
-      return 2;
-    }
-  };
-}
-
-/**
- * POSIX rm: -f makes a missing target no error (exit 0), -r removes a
- * directory tree, and a failure is reported with the POSIX text.
- */
 /** The single-character backslash escapes `echo -e` and `printf` both expand. */
 const BACKSLASH_ESCAPES: Readonly<Record<string, string>> = {
   '\\': '\\',
@@ -2518,6 +2477,10 @@ function mkLs(vfs: UnixVfs): CmdFn {
   };
 }
 
+/**
+ * POSIX rm: -f makes a missing target no error (exit 0), -r removes a
+ * directory tree, and a failure is reported with the POSIX text.
+ */
 function mkRm(vfs: UnixVfs): CmdFn {
   return async ctx => {
     const recursive = ctx.args.some(arg => /^-[^-]*[rR]/.test(arg) || arg === '--recursive');
@@ -3083,21 +3046,6 @@ function mkBase64(vfs: UnixVfs): CmdFn {
   };
 }
 
-function mkSeq(): CmdFn {
-  return async (ctx) => {
-    const nums = ctx.args.map(Number).filter(n => !isNaN(n));
-    let start = 1, step = 1, end = 1;
-    if (nums.length === 1) end = nums[0];
-    else if (nums.length === 2) { start = nums[0]; end = nums[1]; }
-    else if (nums.length >= 3) { start = nums[0]; step = nums[1]; end = nums[2]; }
-    for (let i = start; step > 0 ? i <= end : i >= end; i += step) {
-      if (ctx.signal.aborted) return 130;
-      (await ctx.stdout.write(i + '\n'));
-    }
-    return 0;
-  };
-}
-
 function mkId(sqliteVfs: SqliteVFS): CmdFn {
   return async (ctx) => {
     const vfs = ctx.vfs;
@@ -3134,30 +3082,6 @@ function mkTest(sqliteVfs: SqliteVFS): CmdFn {
     } catch {
       return 1;
     }
-  };
-}
-
-function mkHostname(): CmdFn {
-  return async (ctx) => { (await ctx.stdout.write('nimbus\n')); return 0; };
-}
-
-function mkBasename(): CmdFn {
-  return async (ctx) => {
-    const p = ctx.args[0] || '';
-    const suffix = ctx.args[1] || '';
-    let base = p.split('/').pop() || '';
-    if (suffix && base.endsWith(suffix)) base = base.slice(0, -suffix.length);
-    (await ctx.stdout.write(base + '\n'));
-    return 0;
-  };
-}
-
-function mkDirname(): CmdFn {
-  return async (ctx) => {
-    const p = ctx.args[0] || '';
-    const dir = p.includes('/') ? p.substring(0, p.lastIndexOf('/')) : '.';
-    (await ctx.stdout.write((dir || '/') + '\n'));
-    return 0;
   };
 }
 
@@ -3606,6 +3530,7 @@ function mkFile(vfs: UnixVfs): CmdFn {
       const fp = resolvePath(ctx.cwd, f);
       try {
         if ((await vfs.isDirectory(fp))) { (await ctx.stdout.write(`${f}: directory\n`)); continue; }
+        if ((await statOrThrow(vfs, fp)).size === 0) { (await ctx.stdout.write(`${f}: empty\n`)); continue; }
         // BUG-SWEEP-3 (2026-05-11): scan raw bytes for NUL or non-text
         // bytes BEFORE attempting a UTF-8 decode. Pre-fix every binary
         // file was reported as "UTF-8 text" because readFileString
@@ -3644,7 +3569,7 @@ function mkFile(vfs: UnixVfs): CmdFn {
         else if (f.endsWith('.ts') || f.endsWith('.tsx')) (await ctx.stdout.write(`${f}: TypeScript source\n`));
         else if (f.endsWith('.js') || f.endsWith('.mjs')) (await ctx.stdout.write(`${f}: JavaScript source\n`));
         else if (f.endsWith('.css')) (await ctx.stdout.write(`${f}: CSS stylesheet\n`));
-        else (await ctx.stdout.write(`${f}: ASCII text, ${content.split('\n').length} lines\n`));
+        else (await ctx.stdout.write(`${f}: ASCII text\n`));
       } catch { (await ctx.stderr.write(`file: ${f}: No such file\n`)); return 1; }
     }
     return 0;
@@ -4948,7 +4873,6 @@ export function registerUnixCommands(
   registry.register('whereis', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkWhereis(vfs, registry))));
   registry.register('command', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkCommand(vfs, registry))));
   registry.register('type', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkType(vfs, registry))));
-  registry.register('env', wrap(mkEnv()));
   registry.register('export', wrap(mkExport()));
   registry.register('unset', wrap(mkUnset()));
   registry.register('clear', wrap(mkClear()));
@@ -4970,7 +4894,6 @@ export function registerUnixCommands(
   registry.register('xargs', wrap(withInvocationVfs(sqliteVfs, (vfs) => mkXargs(vfs, registry))));
   registry.register('tee', textCommand(sqliteVfs, teeCommand));
   registry.register('du', wrap(withInvocationVfs(sqliteVfs, mkDu)));
-  registry.register('diff', wrap(withInvocationVfs(sqliteVfs, mkDiff)));
   // Registry-level echo + cat for xargs cross-command dispatch.
   // Shell.builtins still wins for direct `echo X` invocations; this
   // entry is only reached when a command (xargs etc.) looks them up
@@ -4984,11 +4907,7 @@ export function registerUnixCommands(
   registry.register('touch', wrap(withInvocationVfs(sqliteVfs, mkTouch)));
   registry.register('stat', wrap(withInvocationVfs(sqliteVfs, (v) => mkStat(v, sqliteVfs))));
   registry.register('base64', wrap(withInvocationVfs(sqliteVfs, mkBase64)));
-  registry.register('seq', wrap(mkSeq()));
   registry.register('id', wrap(mkId(sqliteVfs)));
-  registry.register('hostname', wrap(mkHostname()));
-  registry.register('basename', wrap(mkBasename()));
-  registry.register('dirname', wrap(mkDirname()));
   registry.register('realpath', wrap(withInvocationVfs(sqliteVfs, mkRealpath)));
   registry.register('printf', wrap(mkPrintf()));
   registry.register('true', wrap(mkTrue()));

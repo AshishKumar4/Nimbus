@@ -1,0 +1,62 @@
+{
+ "tool": "seq",
+ "inputs": {},
+ "cases": [
+  {
+   "args": "3",
+   "stdout": "1\n2\n3\n",
+   "exit": 0
+  },
+  {
+   "args": "2 5",
+   "stdout": "2\n3\n4\n5\n",
+   "exit": 0
+  },
+  {
+   "args": "10 -3 1",
+   "stdout": "10\n7\n4\n1\n",
+   "exit": 0
+  },
+  {
+   "args": "5 1",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-w 8 10",
+   "stdout": "08\n09\n10\n",
+   "exit": 0
+  },
+  {
+   "args": "-w 98 101",
+   "stdout": "098\n099\n100\n101\n",
+   "exit": 0
+  },
+  {
+   "args": "-s : 1 4",
+   "stdout": "1:2:3:4\n",
+   "exit": 0
+  },
+  {
+   "args": "-s , -w 9 11",
+   "stdout": "09,10,11\n",
+   "exit": 0
+  },
+  {
+   "args": "0",
+   "stdout": "",
+   "exit": 0
+  },
+  {
+   "args": "-1 1",
+   "stdout": "-1\n0\n1\n",
+   "exit": 0
+  },
+  {
+   "args": "1 2 6",
+   "stdout": "1\n3\n5\n",
+   "exit": 0
+  }
+ ],
+ "recorded": "seq (GNU coreutils) 9.7, LANG=en_US.UTF-8; stdout as latin1 (one char per byte)"
+}
