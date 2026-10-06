@@ -7417,6 +7417,13 @@ const __childProcessMod = (() => {
     });
   }
 
+  // Node destroys the parent's pipe to fd0 before announcing the child's
+  // exit. A later stdin.end(data) is a write to a destroyed stream, not a
+  // fresh RPC to an input reader the session has already removed.
+  function _closeChildInput(child) {
+    try { child.stdin && child.stdin.destroy(); } catch {}
+  }
+
   function _applyWait(child, r) {
     // Settled already (both the wait loop and the exit-time drain can hear
     // of the same exit or refusal): nothing more to emit.
@@ -7432,6 +7439,7 @@ const __childProcessMod = (() => {
     child.exitCode = r.exitCode;
     child.signalCode = r.signal || null;
     child._exitFired = true;
+    _closeChildInput(child);
     try { child.emit("exit", r.exitCode, r.signal || null); } catch {}
     _flushStdio(child);
     _maybeFireClose(child);
@@ -7459,6 +7467,7 @@ const __childProcessMod = (() => {
         // Couldn't wait — synthesize an error exit.
         child.exitCode = 1;
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         _flushStdio(child);
         _maybeFireClose(child);
@@ -7484,6 +7493,7 @@ const __childProcessMod = (() => {
     __cpChildren.delete(child._brokerPid);
     child.exitCode = errno;
     child._exitFired = true;
+    _closeChildInput(child);
     try { child.emit("error", err); } catch {}
     try { child._stdoutSink && child._stdoutSink.end(); } catch {}
     try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -7521,6 +7531,7 @@ const __childProcessMod = (() => {
         });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         // End the streams synchronously; their 'end' listeners flip the
         // _stdoutEnded/_stderrEnded flags and trigger _maybeFireClose.
@@ -7604,6 +7615,7 @@ const __childProcessMod = (() => {
         }
         try { child.emit("error", e); } catch {}
         child._exitFired = true;
+        _closeChildInput(child);
         try { child.emit("exit", 1, null); } catch {}
         try { child._stdoutSink && child._stdoutSink.end(); } catch {}
         try { child._stderrSink && child._stderrSink.end(); } catch {}
@@ -7888,6 +7900,7 @@ const __childProcessMod = (() => {
             if (!settled) {
               child.exitCode = child.exitCode == null ? 0 : child.exitCode;
               child._exitFired = true;
+              _closeChildInput(child);
               try { child.emit("exit", child.exitCode, child.signalCode); } catch {}
               _flushStdio(child);
             }

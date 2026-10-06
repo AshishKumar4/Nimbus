@@ -21,4 +21,11 @@ assert.ok(polls>0&&polls<count,'without an application reader, stdout high-water
 const bytes=[];child.stdout.on('data',d=>bytes.push(Buffer.from(d)));
 await new Promise((resolve,reject)=>{const timeout=timer(()=>reject(new Error('the child did not close after its output was read')),5000);child.once('close',()=>{clearTimeout(timeout);resolve();});});
 assert.equal(Buffer.concat(bytes).length,count*piece.length);assert.ok(Buffer.concat(bytes).every(b=>b===255));
+assert.equal(child.stdin.destroyed, true, 'a child exit closes its parent-side stdin as Node does');
+let lateWrites = 0;
+sup.cpStdinWrite = async () => { lateWrites++; return { ok: false }; };
+child.stdin.end(new Uint8Array([120]));
+for (let i=0;i<20;i++) await null;
+assert.equal(lateWrites,0,'ending a closed child stdin sends no late write and cannot reject the parent loop');
+
 console.log('node-child-output-backpressure: reader bounds relay until consumption; bytes and close preserved');

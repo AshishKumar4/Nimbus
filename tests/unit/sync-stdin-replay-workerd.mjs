@@ -595,7 +595,11 @@ try {
       await write(`${W}/net.js`, NET_PARENT);
       fixtureStats.tcp = 0;
       fixtureStats.bodyErrors = 0;
-      const net = netLines((await run(`cd ${W} && node net.js`, 400_000)).stdout);
+      const networkRun = await run(`cd ${W} && node net.js`, 400_000);
+      const net = netLines(networkRun.stdout);
+      if (networkRun.status !== 0 || Object.keys(net).length !== Object.keys(NET).length) {
+        console.error('sync-stdin network parent result: ' + JSON.stringify(networkRun));
+      }
       check(JSON.stringify(net.headers) === JSON.stringify(netExpected.headers),
         `a response's headers and bytes, through blob() and a body reader, are the run before's\n  node:   ${JSON.stringify(netExpected.headers)}\n  nimbus: ${JSON.stringify(net.headers)}`);
       check(JSON.stringify(net.pending) === JSON.stringify(netExpected.pending),

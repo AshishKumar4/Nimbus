@@ -57,6 +57,7 @@ const __streamMod = (() => {
     if (r) { r.destroyed = true; stream.readable = false; }
     if (w) {
       w.destroyed = true;
+      stream.writable = false;
       if (stream.__nimbusTransformReadCallback) {
         const pending = stream.__nimbusTransformReadCallback;
         stream.__nimbusTransformReadCallback = null;
@@ -556,6 +557,8 @@ const __streamMod = (() => {
     uncork() { _uncork(this); }
     destroy(err) { return _destroyStream(this, err); }
 
+    get destroyed() { return this._writableState.destroyed; }
+    set destroyed(value) { this._writableState.destroyed = !!value; }
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }

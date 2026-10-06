@@ -13,7 +13,9 @@ published independently in the `@nimbus-sh` npm scope.
   derive their text view on read. Missing/nonexecutable children fail spawn
   with ENOENT/EACCES, and a vanished reader releases a blocked writer. npm-bin
   entrypoints retain their broker-owned pid/fd0 and forward logged bytes
-  without feeding the same foreground subscriber back into itself.
+  without feeding the same foreground subscriber back into itself. A child's
+  parent-side stdin is destroyed on exit, so a delayed end cannot write to
+  a removed reader and abort its parent's asynchronous work.
 - Fixed: echo, progress, replay wakeups and impossible-child refusals use a
   timer-independent continuation fence, so incoming filesystem RPC traffic
   cannot withhold their bookkeeping. Fresh CPU turns still use the session's
