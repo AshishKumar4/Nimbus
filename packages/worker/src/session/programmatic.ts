@@ -288,6 +288,7 @@ function getHome(self: ProgrammaticHost): string {
   return '/home/user';
 }
 
+/** What a runtime install writes with: as the kernel, repeatable, so its callers pass a delegation it meets by withRecall. */
 function runtimeDeps(self: ProgrammaticHost) {
   self.ensureSqliteFs();
   if (!self.sqliteFs) throw new Error('Nimbus SQLite filesystem did not initialize');
@@ -310,7 +311,7 @@ export async function ensureProgrammaticReady(
     .map((s) => String(s).trim())
     .filter(Boolean);
   if (preinstall.length > 0) {
-    const results = await ensureRuntimesProgrammatic(runtimeDeps(self), preinstall);
+    const results = await withRecall(() => ensureRuntimesProgrammatic(runtimeDeps(self), preinstall));
     const failed = results.filter((r) => r.exitCode !== 0);
     if (failed.length > 0) {
       const details = failed.map((r) => `${r.spec}: ${r.stderr || r.stdout}`).join('\n');
@@ -693,7 +694,7 @@ export async function rpcInstallRuntime(
   options: { force?: boolean } = {},
 ) {
   await ensureProgrammaticReady(self);
-  return installRuntimeProgrammatic(runtimeDeps(self), String(spec), options);
+  return withRecall(() => installRuntimeProgrammatic(runtimeDeps(self), String(spec), options));
 }
 
 export async function rpcEnsureRuntimes(
@@ -702,11 +703,11 @@ export async function rpcEnsureRuntimes(
   options: { force?: boolean } = {},
 ) {
   await ensureProgrammaticReady(self);
-  return ensureRuntimesProgrammatic(
+  return withRecall(() => ensureRuntimesProgrammatic(
     runtimeDeps(self),
     specs.map((s) => String(s)),
     options,
-  );
+  ));
 }
 
 export async function rpcListRuntimes(self: ProgrammaticHost) {

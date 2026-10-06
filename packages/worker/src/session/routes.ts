@@ -1452,13 +1452,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
       }
       // Polished placeholder — auto-reloads when vite starts.
       // Checks the VFS for the starter app so we can offer a context-aware hint.
-      const hasSeed = (() => {
-        try {
-          const vfs = self.sqliteFs!.as(CRED_KERNEL);
-          return vfs.exists(SEED_PROJECT_DIR) &&
-                 vfs.exists(SEED_PROJECT_DIR + '/package.json');
-        } catch { return false; }
-      })();
+      const hasSeed = await withRecall(() => {
+        const vfs = self.sqliteFs!.as(CRED_KERNEL);
+        return vfs.exists(SEED_PROJECT_DIR) && vfs.exists(SEED_PROJECT_DIR + '/package.json');
+      }).catch(() => false);
       const hint = hasSeed
         ? `cd ${SEED_PROJECT_NAME} &amp;&amp; npm install &amp;&amp; npm run dev`
         : 'vite';
@@ -1492,15 +1489,13 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
         // nimbus-wrangler starts. The placeholder references BOTH command
         // names so users coming from either `wrangler dev` or
         // `nimbus-wrangler dev` see a familiar hint.
-        const hasWranglerConfig = (() => {
-          try {
-            self.ensureSqliteFs();
-            const vfs = self.sqliteFs!.as(CRED_KERNEL);
-            return vfs.exists('home/user/wrangler.jsonc') ||
-                   vfs.exists('home/user/wrangler.json') ||
-                   vfs.exists('home/user/wrangler.toml');
-          } catch { return false; }
-        })();
+        const hasWranglerConfig = await withRecall(() => {
+          self.ensureSqliteFs();
+          const vfs = self.sqliteFs!.as(CRED_KERNEL);
+          return vfs.exists('home/user/wrangler.jsonc') ||
+                 vfs.exists('home/user/wrangler.json') ||
+                 vfs.exists('home/user/wrangler.toml');
+        }).catch(() => false);
         const hint = hasWranglerConfig
           ? 'npm run dev'
           : 'wrangler dev';
