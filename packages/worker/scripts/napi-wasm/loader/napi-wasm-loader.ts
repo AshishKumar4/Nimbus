@@ -26,12 +26,11 @@
  *   - A host whose callers live in separate I/O contexts sharing one binding
  *     (workerd's Durable Objects, whose facets share an isolate) passes
  *     `contexts` (callLanes): each threadsafe function then calls JavaScript
- *     in the context it was created in, the pump and emnapi's other work run
- *     in the contexts of the calls in flight, so no caller's callbacks run in
- *     another's context, nor wait on one that has ended; and what the binding
- *     awaits in a context abandoned under it is refused, so its work ends.
- *     Async work is refused there: emnapi queues it past its pool where no
- *     wrapper sees, and no binding run that way uses it.
+ *     in the context it was created in, as each async work completes in it;
+ *     the pump and emnapi's other work run in the contexts of the calls in
+ *     flight, so no caller's callbacks run in another's context, nor wait on
+ *     one that has ended; and what the binding awaits in a context abandoned
+ *     under it is refused, so its work ends.
  */
 
 import { instantiateNapiModuleSync } from '@emnapi/core';
@@ -62,7 +61,9 @@ type WasmFn = (...args: never[]) => unknown;
 /** A napi import as the binding calls it: wasm32 arguments, a status back. */
 type NapiImport = (...args: number[]) => number;
 const isNapiImport = (value: unknown): value is NapiImport => typeof value === 'function';
-const NAPI_PENDING_EXCEPTION = 10;
+/** Async works emnapi runs at once (its single-threaded pool; it queues the rest). */
+const ASYNC_WORK_POOL = 4;
+const NAPI_OK = 0;
 
 export interface NapiWasmBindingHost {
   /** The calling process's `fs`. Nimbus's node-shims provide it in a guest. */
@@ -97,9 +98,9 @@ export interface NapiWasmBindingHost {
    * in different contexts share this one binding and each may do I/O only in
    * its own (workerd: the Durable Objects whose facets share an isolate).
    * Each threadsafe function then calls JavaScript in the context it was
-   * created in, and the pump and emnapi's other work continue in the
-   * contexts of the calls in flight. Async work is refused. Absent: every
-   * callback runs where it was scheduled.
+   * created in, each async work completes in it, and the pump and emnapi's
+   * other work continue in the contexts of the calls in flight. Absent:
+   * every callback runs where it was scheduled.
    */
   contexts?: BindingContexts;
 }
@@ -743,38 +744,99 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   const contextNow = (): object => contexts?.current() ?? here;
   /** The context each threadsafe function was created in, by handle, while that context's call is open (or its successor's). */
   const owners = new Map<number, object>();
-  /** The owner of the threadsafe function being sent or released now. */
+  /** The owner of the threadsafe function being sent or released now, or of the async work being cancelled. */
   let sending: object | undefined;
   /** The rejection handlers the binding gave the promises it awaits, by the context awaiting. */
   const awaiting = new WeakMap<object, Set<(reason: unknown) => void>>();
-  /** Work scheduled while no call was in flight: the next call into the binding takes it. */
-  const homeless: Array<() => void> = [];
+  /** Work any call may run, taken by the first to get to it. */
+  const shared: Array<() => void> = [];
+  /** The lanes a wake-up for `shared` is posted to and has not run in: at most one each. */
+  const woken = new WeakSet<object>();
+  /** Each async work's creator, by id, while that context's call is open (or its successor's). */
+  const workOwners = new Map<number, object>();
+  /** The async work being let into emnapi's queue now, and the one whose execute step runs now. */
+  let queueing: number | undefined;
+  let executing: number | undefined;
+  /** Async works in emnapi's queue whose execute step has not ended: at most ASYNC_WORK_POOL. */
+  let worksIn = 0;
+  /** Lets waiting async works in as execute steps end (routeCallbacks). */
+  let letWaitingIn = (): void => {};
+  /**
+   * Wakes `lane` to take the shared work, unless a wake-up is already posted
+   * to it. The work stays shared until a lane running its wake-up (alive, so)
+   * takes it, so a lane whose context ends first holds only that wake-up.
+   */
+  const wake = (lane: object): boolean => {
+    if (!contexts) return false;
+    if (woken.has(lane)) return true;
+    woken.add(lane);
+    const wakeUp = () => {
+      woken.delete(lane);
+      while (shared.length > 0 && contexts.post(lane, shared[0])) shared.shift();
+    };
+    if (contexts.post(lane, wakeUp)) return true;
+    woken.delete(lane);
+    return false;
+  };
   if (contexts) {
-    // emnapi schedules all its work with this, in place of its default. A
-    // threadsafe function's dispatch runs in the context its function was
-    // created in; anything else (a closing function's finalize, a finalizer)
-    // in the call it was scheduled from, else the first call in flight to get
-    // to it, else the next call. Never on a timer of no call's: workerd runs
-    // finalization callbacks in its global scope, where setting one throws.
-    context.features.setImmediate = (fn: () => void) => {
-      for (const owner of [sending, contexts.current()]) {
-        if (owner !== undefined && contexts.post(owner, fn)) return;
+    const immediate = context.features.setImmediate;
+    /**
+     * `fn` for any call to run: every call in flight is woken to run it, as
+     * the next call into the binding is. With no call in flight it runs where
+     * it was scheduled, on emnapi's own scheduler, unless no timer may be set
+     * there (workerd's global scope).
+     */
+    const share = (fn: () => void) => {
+      let woke = false;
+      for (const live of contexts.live()) woke = wake(live) || woke;
+      if (!woke) {
+        try {
+          immediate(fn);
+          return;
+        } catch {
+          // No timer here: the next call runs it.
+        }
       }
-      let ran = false;
-      const once = () => {
-        if (ran) return;
-        ran = true;
-        fn();
-      };
-      let posted = false;
-      for (const live of contexts.live()) posted = contexts.post(live, once) || posted;
-      if (!posted) homeless.push(fn);
+      shared.push(fn);
+    };
+    // emnapi schedules all its work with this. A threadsafe function's
+    // dispatch runs in the context its function was created in, as an async
+    // work's complete step (where a binding may call JavaScript) does; an
+    // async work's execute step (computation only) in whichever call gets to
+    // it first, so that a context that ends holds no other's work behind it;
+    // anything else (a closing function's finalize, a finalizer) in the call
+    // it was scheduled from, else any call's. workerd runs finalization
+    // callbacks in its global scope, where no timer may be set.
+    context.features.setImmediate = (fn: () => void) => {
+      const work = queueing;
+      if (work !== undefined) {
+        worksIn++;
+        share(() => {
+          const outer = executing;
+          executing = work;
+          try {
+            fn();
+          } finally {
+            executing = outer;
+            worksIn--;
+            letWaitingIn();
+          }
+        });
+        return;
+      }
+      const owner = executing !== undefined ? workOwners.get(executing) : sending;
+      for (const at of [owner, contexts.current()]) {
+        if (at !== undefined && contexts.post(at, fn)) return;
+      }
+      share(fn);
     };
     contexts.onEnded((ended, successor) => {
-      for (const [handle, owner] of owners) {
-        if (owner !== ended) continue;
-        if (successor === undefined) owners.delete(handle);
-        else owners.set(handle, successor);
+      for (const handles of [owners, workOwners]) {
+        for (const [handle, owner] of handles) {
+          if (owner !== ended) continue;
+          if (successor === undefined) handles.delete(handle);
+          else handles.set(handle, successor);
+        }
       }
       const rejections = awaiting.get(ended);
       awaiting.delete(ended);
@@ -785,12 +847,6 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
       for (const reject of rejections) contexts.post(successor, () => reject(reason));
     });
   }
-  /** Posts the homeless work to the call running now, if any. */
-  const rehome = () => {
-    if (!contexts || homeless.length === 0) return;
-    const now = contexts.current();
-    while (now !== undefined && homeless.length > 0 && contexts.post(now, homeless[0])) homeless.shift();
-  };
 
   // ── The pump ──────────────────────────────────────────────────────────
   // Set at the instance boundary, and only on a pumped binding.
@@ -888,7 +944,9 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
         } finally {
           depth--;
           if (depth === 0) {
-            rehome();
+            // Shared work waiting (scheduled where no call ran): this call takes it.
+            const now = contexts?.current();
+            if (shared.length > 0 && now !== undefined) wake(now);
             // Mid-turn too: a JSPI turn's poll loop may have returned with
             // its `finished` still queued, so the wake-up is kept (pumpAgain).
             if (fatal === null && aliveTasks !== null && aliveTasks() > 0) requestPump();
@@ -933,7 +991,8 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
    * was created in (its handle, written to the call's result pointer), and
    * each send or release of it routes what emnapi schedules to that context;
    * each then or catch the binding calls on a promise is noted as awaited in
-   * the calling context; async work is refused.
+   * the calling context; each async work remembers its creator, and the
+   * works past emnapi's pool wait here (see the scheduler above).
    */
   const routeCallbacks = (napi: Record<string, unknown>, contexts: BindingContexts) => {
     const wrap = (name: string, around: (original: NapiImport, args: number[]) => number) => {
@@ -972,15 +1031,67 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
       if (status === 0 && now !== undefined) noteAwait(now, args[1] >>> 0, args[2] >>> 0, args[3] >>> 0, args[4] >>> 0);
       return status;
     });
-    // napi_create_async_work(env, resource, name, execute, complete, data, result): refused, as a
-    // pending exception. emnapi queues work past its pool from inside another
-    // work's step, where no wrapper sees it, so it could not keep to its caller's context.
-    const napiThrow = napi.napi_throw;
-    if (!isNapiImport(napiThrow)) throw new Error('napi-wasm: emnapi has no napi_throw');
-    wrap('napi_create_async_work', (_original, args) => {
-      const refused = new Error(`napi-wasm: ${host.name} created async work, which a binding shared across contexts does not run`);
-      napiThrow(args[0], Number(context.napiValueFromJsValue(refused)));
-      return NAPI_PENDING_EXCEPTION;
+    // napi_create_async_work(env, resource, name, execute, complete, data, result)
+    wrap('napi_create_async_work', (original, args) => {
+      const status = original(...args);
+      if (status === 0) {
+        const work = new DataView(memory.buffer).getUint32(args[6] >>> 0, true);
+        const owner = contexts.current();
+        if (owner !== undefined) workOwners.set(work, owner);
+        else workOwners.delete(work);
+      }
+      return status;
+    });
+    // emnapi queues a work past its pool and lets it in from inside another
+    // work's execute step, where nothing says whose it is; so none waits in
+    // emnapi's queue: past the pool a work waits here, and each execute step
+    // that ends lets the next in.
+    const queueWork = napi.napi_queue_async_work;
+    if (!isNapiImport(queueWork)) throw new Error('napi-wasm: emnapi has no napi_queue_async_work to route');
+    const waiting: number[][] = [];
+    const letIn = (args: number[]) => {
+      queueing = args[1] >>> 0;
+      try {
+        return queueWork(...args);
+      } finally {
+        queueing = undefined;
+      }
+    };
+    letWaitingIn = () => {
+      while (worksIn < ASYNC_WORK_POOL) {
+        const next = waiting.shift();
+        if (next === undefined) return;
+        letIn(next);
+      }
+    };
+    // napi_queue_async_work(env, work)
+    wrap('napi_queue_async_work', (_original, args) => {
+      if (worksIn < ASYNC_WORK_POOL) return letIn(args);
+      waiting.push(args);
+      return NAPI_OK;
+    });
+    // napi_cancel_async_work(env, work): emnapi cancels only a work waiting
+    // in its own queue, so one waiting here goes in now (emnapi's pool is
+    // full while any waits here, so it waits there) and is cancelled there.
+    // Its complete step, told so, runs in its creator's context.
+    wrap('napi_cancel_async_work', (original, args) => {
+      const at = waiting.findIndex((queued) => queued[1] === args[1]);
+      if (at >= 0) {
+        waiting.splice(at, 1);
+        queueWork(...args);
+      }
+      const outer = sending;
+      sending = workOwners.get(args[1] >>> 0);
+      try {
+        return original(...args);
+      } finally {
+        sending = outer;
+      }
+    });
+    // napi_delete_async_work(env, work)
+    wrap('napi_delete_async_work', (original, args) => {
+      workOwners.delete(args[1] >>> 0);
+      return original(...args);
     });
   };
 
@@ -1001,7 +1112,8 @@ export function createNapiWasmBinding(host: NapiWasmBindingHost): Record<string,
   };
   const { napiModule } = instantiateNapiModuleSync(host.binding, {
     context,
-    asyncWorkPoolSize: 0,
+    // Negative: emnapi's single-threaded async work, this many at once.
+    asyncWorkPoolSize: -ASYNC_WORK_POOL,
     plugins: [asyncWork, tsfn],
     wasi: {
       wasiImport: wasi,

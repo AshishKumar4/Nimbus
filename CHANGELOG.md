@@ -16,11 +16,12 @@ published independently in the `@nimbus-sh` npm scope.
   lane of its own (napi-wasm-loader's `callLanes`): a threadsafe function
   calls JavaScript in the lane of the call that created it, its release and
   emnapi's other work (finalizers, a closing function's finalize) run in a
-  call's lane, and the pump runs in the lanes of the calls in flight and
-  where it last ran, so no hook runs in, or waits on, another object's
-  context. A lane ends with its call. Async work, which the facet never
-  queues, is refused there by name: emnapi queues work past its pool from
-  inside another work's step, where no wrapper sees it. The esbuild facet
+  call's lane, and the pump runs in the lanes of the calls in flight and where
+  it last ran, so no hook runs in, or waits on, another object's context. A
+  lane ends with its call. An async work completes in the lane of the call
+  that created it and computes in whichever call gets to it first; works past
+  emnapi's pool of four wait in the loader, since emnapi lets a queued work in
+  from inside another work's step, where it then completed. The esbuild facet
   needed nothing: each call runs its own esbuild, whose timers and callbacks
   are that call's.
 - Fixed: a build whose Durable Object is reset under it no longer stays on the

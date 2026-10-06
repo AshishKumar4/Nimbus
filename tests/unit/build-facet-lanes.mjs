@@ -25,12 +25,16 @@
 //   - A build whose lane is abandoned with a hook in flight that will never
 //     answer ends on the binding: the binding refuses what it awaits there,
 //     so its task ends and its state is freed rather than held for good.
-//   - Async work is refused on a binding run with contexts (emnapi queues it
-//     past its pool where no wrapper sees), loudly and by name; it runs
-//     without them.
+//   - Async work from two contexts past emnapi's pool of four: each work
+//     completes in the lane of its own call (emnapi lets a queued work in
+//     from inside another's step, where it would complete in that other's);
+//     and works queued behind a reset context's (their lanes killed: posts
+//     accepted, never run, as workerd leaves them) still run.
+//   - A lane whose context ended is posted at most a pump turn and a
+//     wake-up, however much shared work (finalizers) comes and goes.
 //   - None of emnapi's work (a threadsafe function's release, a finalizer)
-//     goes to a timer of no context's: each runs in a call's context, and a
-//     finalizer scheduled outside every call is taken by the next one.
+//     goes to a timer of no call's while calls are in flight: each runs in a
+//     call's context, and finalizers are taken by calls.
 
 import assert from 'node:assert/strict';
 import { AsyncLocalStorage } from 'node:async_hooks';
@@ -216,14 +220,16 @@ try {
   });
 
   // ── The facet's binding, made by hand, with lanes as its contexts ──────
-  // emnapi's own scheduler is this spy from here on: every call to it from
-  // the loader is work of emnapi's that went to no call's context.
+  // emnapi's own scheduler is this spy from here on: a call to it from the
+  // loader while a call is in flight is work of emnapi's that went to no
+  // call's context.
   const nativeSetImmediate = globalThis.setImmediate;
+  let liveLanes = () => 0;
   let unrouted = 0;
   const unroutedStacks = [];
   const spySetImmediate = function (fn, ...args) {
     const stack = new Error().stack ?? '';
-    if (stack.includes('napi-wasm-loader')) {
+    if (stack.includes('napi-wasm-loader') && liveLanes() > 0) {
       unrouted++;
       if (unroutedStacks.length < 3) unroutedStacks.push(stack.split('\n').slice(2, 6).map((line) => line.trim()).join(' < '));
     }
@@ -232,11 +238,36 @@ try {
   globalThis.setImmediate = spySetImmediate;
   try {
     const lanes = callLanes(AsyncLocalStorage);
+    liveLanes = () => [...lanes.live()].length;
+    // The binding's contexts: the lanes, but a lane can be killed: posts to
+    // it are accepted and never run, as workerd leaves a reset object's.
+    const killed = new WeakSet();
+    const killedPosts = new Map();
+    const posted = [];
     let finalizerDrains = 0;
-    const post = lanes.post;
-    lanes.post = (context, fn) => {
-      if (String(fn).includes('drainFinalizerQueue')) finalizerDrains++;
-      return post.call(lanes, context, fn);
+    const contexts_ = {
+      current: () => lanes.current(),
+      live: () => lanes.live(),
+      onEnded: (listener) => lanes.onEnded(listener),
+      post(context, fn) {
+        const text = String(fn);
+        if (text.includes('drainFinalizerQueue')) finalizerDrains++;
+        posted.push([context, text]);
+        if (!killed.has(context)) return lanes.post(context, fn);
+        killedPosts.set(context, (killedPosts.get(context) ?? 0) + 1);
+        return true;
+      },
+    };
+    /** A call in a lane killed as it starts, holding it open for good. */
+    const killedCall = (name, body) => {
+      let lane;
+      contexts.run(name, () => lanes.instance(undefined).run(async () => {
+        lane = lanes.current();
+        killed.add(lane);
+        body();
+        await new Promise(() => {});
+      }));
+      return lane;
     };
     const rolldown = STAGED_BINDING_ARTIFACTS.find((b) => b.name === 'rolldown');
     const host = {
@@ -254,7 +285,7 @@ try {
     };
     let binding;
     try {
-      binding = createNapiWasmBinding({ ...host, contexts: lanes });
+      binding = createNapiWasmBinding({ ...host, contexts: contexts_ });
     } finally {
       WebAssembly.Instance = NativeInstance;
     }
@@ -326,12 +357,26 @@ try {
     });
 
     await section('async work', async () => {
-      const source = 'let a: number = 1;';
-      const refused = await new Promise((resolve) => resolve(binding.enhancedTransform('a.ts', source, undefined, undefined, false))).then(() => 'it ran', (error) => String(error?.message ?? error));
-      check('async work is refused on a binding run with contexts, by name', /created async work/.test(refused), refused);
-      const sync = binding.enhancedTransformSync('a.ts', source, undefined, undefined, false);
-      check('the synchronous transform runs there', /let a = 1/.test(sync.code), JSON.stringify(sync).slice(0, 200));
-      // emnapi's scheduler is the native one on this binding: it is not routed.
+      const transform = (n) => binding.enhancedTransform(`m${n}.ts`, `let v${n}: number = ${n};`, undefined, undefined, false);
+      const transformed = (results, from) => results.every((result, i) => result.code.includes(`let v${from + i} = ${from + i}`));
+      // Two contexts' works past emnapi's pool of four: each completes in the lane of its own call.
+      const completions = () => posted.filter(([, text]) => text.includes('callComplete')).map(([context]) => context);
+      const before = completions().length;
+      let cLane;
+      let dLane;
+      const c = contexts.run('C', () => lanes.instance(undefined).run(() => (cLane = lanes.current(), Promise.all([0, 1, 2].map(transform)))));
+      const d = contexts.run('D', () => lanes.instance(undefined).run(() => (dLane = lanes.current(), Promise.all([3, 4, 5].map(transform)))));
+      const [cResults, dResults] = await within(30_000, Promise.all([c, d]), 'six works from two contexts');
+      check('works from two contexts past the pool all complete', transformed(cResults, 0) && transformed(dResults, 3), JSON.stringify([cResults, dResults]).slice(0, 200));
+      const ran = completions().slice(before);
+      check('each work completes in its own call\'s lane', ran.filter((lane) => lane === cLane).length === 3 && ran.filter((lane) => lane === dLane).length === 3, `${ran.length} completions: ${ran.filter((lane) => lane === cLane).length} in C's, ${ran.filter((lane) => lane === dLane).length} in D's`);
+      // A's four fill the pool and its object is reset under them; B's two
+      // queue behind. A's ending holds none of B's work.
+      const killedLane = killedCall('A', () => [0, 1, 2, 3].forEach(transform));
+      const bResults = await within(30_000, contexts.run('B', () => lanes.instance(undefined).run(() => Promise.all([4, 5].map(transform)))), 'B\'s works behind a reset context\'s');
+      check('works queued behind a reset context\'s run, and complete', transformed(bResults, 4), JSON.stringify(bResults).slice(0, 200));
+      check('the reset context\'s works complete only in its own lane, where they wait', completions().filter((lane) => lane === killedLane).length === 4 && completions().slice(before).length === 12, `${completions().filter((lane) => lane === killedLane).length} of its 4 completions held there, ${completions().slice(before).length - 6} of 6 since`);
+      // Without contexts, emnapi runs them as it always has.
       globalThis.setImmediate = nativeSetImmediate;
       let plain;
       try {
@@ -339,22 +384,32 @@ try {
       } finally {
         globalThis.setImmediate = spySetImmediate;
       }
-      const ran = await plain.enhancedTransform('a.ts', source, undefined, undefined, false);
-      check('async work runs on a binding without contexts', /let a = 1/.test(ran.code), JSON.stringify(ran).slice(0, 200));
+      const ran2 = await plain.enhancedTransform('a.ts', 'let a: number = 1;', undefined, undefined, false);
+      check('async work runs on a binding without contexts', /let a = 1/.test(ran2.code), JSON.stringify(ran2).slice(0, 200));
+    });
+
+    await section('a context that ended holds at most one wake-up', async () => {
+      const dead = killedCall('dead', () => {});
+      // A call of another object's open throughout, so shared work always has a live lane to run in.
+      const done = Promise.withResolvers();
+      const keeper = contexts.run('keeper', () => lanes.instance(undefined).run(() => done.promise));
+      const drains = finalizerDrains;
+      for (let round = 0; round < 15; round++) {
+        Bun.gc(true);
+        await new Promise((resolve) => nativeSetImmediate(resolve));
+        const small = project(`live${round}`, 5, []);
+        await contexts.run(`live${round}`, () => lanes.instance(undefined).run(() => viaRuntime(small.vfs).build([small.entry], { bundle: true, format: 'esm' })));
+      }
+      done.resolve();
+      await keeper;
+      check('finalizers ran meanwhile', finalizerDrains - drains >= 2, `${finalizerDrains - drains} finalizer drains in 15 collections`);
+      check('a lane whose context ended is posted at most a pump turn and a wake-up', (killedPosts.get(dead) ?? 0) <= 2, `${killedPosts.get(dead) ?? 0} posts held for it`);
     });
 
     await section('emnapi\'s other work', async () => {
-      // Releases happened in every build above. Finalizers: collect, then
-      // build again, until one has run.
-      for (let round = 0; round < 20 && finalizerDrains === 0; round++) {
-        Bun.gc(true);
-        await new Promise((resolve) => nativeSetImmediate(resolve));
-        const seen = [];
-        const small = project(`gc${round}`, 5, seen);
-        await contexts.run(`gc${round}`, () => lanes.instance(undefined).run(() => viaRuntime(small.vfs).build([small.entry], { bundle: true, format: 'esm' })));
-      }
-      check('finalizers scheduled outside every call are taken by a call', finalizerDrains > 0, 'no finalizer ran in 20 collections');
-      check('none of emnapi\'s work went to a timer of no call\'s context', unrouted === 0, `${unrouted}, e.g. ${unroutedStacks.join(' | ')}`);
+      // Releases happened in every build above, and finalizers in the last section.
+      check('finalizers are taken by calls', finalizerDrains > 0, 'no finalizer drain reached a call');
+      check('none of emnapi\'s work went to a timer of no call\'s while calls were in flight', unrouted === 0, `${unrouted}, e.g. ${unroutedStacks.join(' | ')}`);
     });
   } finally {
     globalThis.setImmediate = nativeSetImmediate;
