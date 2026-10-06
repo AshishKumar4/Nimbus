@@ -50,11 +50,15 @@ export const RUNTIMES = [
     name: 'git',
     version: '2.53.0',
     license: 'GPL-2.0-only',
-    entrypoints: [{ binName: 'git', runner: GIT_RUNNER, args: [] }],
+    entrypoints: [
+      { binName: 'git', runner: GIT_RUNNER, args: [] },
+      { binName: 'git-fsmonitor-nimbus', runner: GIT_RUNNER, kind: 'fsmonitor', args: [] },
+    ],
     files: [
       ['share/git/git.wasm', `${WASM_DIR}git/git.wasm`],
       ['share/git/gitconfig', `${WASM_DIR}git/gitconfig`],
       ['bin/git', null, '# Nimbus git-runner launcher marker.\n'],
+      ['bin/git-fsmonitor-nimbus', null, '# Nimbus git fsmonitor v2 launcher marker.\n'],
     ],
   },
 ];

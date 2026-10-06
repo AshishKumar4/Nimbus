@@ -1,7 +1,7 @@
 import { Shell, createCurlCommand, createNpmCommand, NPM_VERSION, createTopCommand, createWatchCommand, createHelpCommand } from '@nimbus-sh/core/substrate/lifo/index.js';
 import { createKillCommand, type HostProcessSignals } from '@nimbus-sh/core/substrate/lifo/commands/system/kill.js';
 import { exitCodeForSignal, signalDisposition } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
-import type { CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
+import type { Command, CommandContext } from '@nimbus-sh/core/substrate/lifo/commands/types.js';
 import type { ShellCommandIdentity } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
 import { textSink } from '@nimbus-sh/core/_shared/bytes.js';
 import { NimbusWorkspace } from '@nimbus-sh/core/workspace';
@@ -135,14 +135,23 @@ registry.register('git', async (ctx: any) => {
 // 3. Rehydrate any previously-installed runtimes from VFS so their
 //    bins reappear in the registry after DO eviction or WS reconnect.
 // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
+// Image caching and fsmonitor token provenance live for this workspace
+// incarnation, not for one command (and not across hibernation).
+let gitFactory: Promise<ReturnType<typeof import('@nimbus-sh/core/runtime/git-runner.js')['makeGitRunnerFactory']>> | null = null;
 workspace.runtimes.registerRunner(
   GIT_RUNNER,
-  (manifest, installRoot, binName, binKind) => async (ctx: CommandContext) => {
-    const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
-    const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-    return await makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(
-      manifest, installRoot, binName, binKind,
-    )(ctx);
+  (manifest, installRoot, binName, binKind) => {
+    let handler: Promise<Command> | null = null;
+    return async (ctx: CommandContext) => {
+      gitFactory ??= (async () => {
+        const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+        return makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem });
+      })().catch((error) => { gitFactory = null; throw error; });
+      handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
+        .catch((error) => { handler = null; throw error; });
+      return (await handler)(ctx);
+    };
   },
 );
 workspace.runtimes.registerRunner(

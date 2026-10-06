@@ -34,6 +34,7 @@ import type { WasiCred } from './wasi/types.js';
 import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { makeGitFsmonitor } from './git-fsmonitor.js';
 
 /** Where the installed runtime keeps the image and the system configuration. */
 const GIT_WASM = 'share/git/git.wasm';
@@ -50,7 +51,22 @@ export function makeGitRunnerFactory(deps: {
   facets: FacetHost;
   filesystem: NimbusFilesystemAuthority;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command {
-  return function gitRunnerFactory(manifest, installRoot, binName) {
+  const fsmonitor = makeGitFsmonitor();
+  return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
+    if (binKind === 'fsmonitor') return async (ctx) => {
+      if (ctx.args.length !== 2 || ctx.args[0] !== '2') {
+        await ctx.stderr.write(`${binName}: expected fsmonitor protocol 2 and a revision token\n`);
+        return 2;
+      }
+      try {
+        const bytes = await fsmonitor.query({ fs: ctx.vfs.process, cwd: ctx.cwd, cred: ctx.cred, token: ctx.args[1] });
+        await writeOut(ctx.stdout, bytes);
+        return 0;
+      } catch (error) {
+        await ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
+        return 1;
+      }
+    };
     const installed = (rel: string): string | null =>
       manifest.files.some((f) => f.path === rel) ? `${installRoot}/${rel}` : null;
     const wasmPath = installed(GIT_WASM);

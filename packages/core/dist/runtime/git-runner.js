@@ -28,6 +28,7 @@ import { withHostView } from './process-files.js';
 import { CRED_KERNEL, gateSyncLaunch, requireVfsCred } from './os-contracts.js';
 import { normalizeVfsPath } from '../vfs/path.js';
 import { WASI_ABI_NAMESPACE, WASI_INSTANCE_PREAMBLE_SRC } from './wasi-instance.js';
+import { makeGitFsmonitor } from './git-fsmonitor.js';
 /** Where the installed runtime keeps the image and the system configuration. */
 const GIT_WASM = 'share/git/git.wasm';
 const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
@@ -38,7 +39,24 @@ const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
  */
 const PASSED_ENV = /^(GIT_|HOME$|USER$|LOGNAME$|TZ$|LANG$|LC_|EMAIL$|NO_COLOR$)/;
 export function makeGitRunnerFactory(deps) {
-    return function gitRunnerFactory(manifest, installRoot, binName) {
+    const fsmonitor = makeGitFsmonitor();
+    return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
+        if (binKind === 'fsmonitor')
+            return async (ctx) => {
+                if (ctx.args.length !== 2 || ctx.args[0] !== '2') {
+                    await ctx.stderr.write(`${binName}: expected fsmonitor protocol 2 and a revision token\n`);
+                    return 2;
+                }
+                try {
+                    const bytes = await fsmonitor.query({ fs: ctx.vfs.process, cwd: ctx.cwd, cred: ctx.cred, token: ctx.args[1] });
+                    await writeOut(ctx.stdout, bytes);
+                    return 0;
+                }
+                catch (error) {
+                    await ctx.stderr.write(`${binName}: ${errorMessage(error)}\n`);
+                    return 1;
+                }
+            };
         const installed = (rel) => manifest.files.some((f) => f.path === rel) ? `${installRoot}/${rel}` : null;
         const wasmPath = installed(GIT_WASM);
         const systemConfig = installed(GIT_SYSTEM_CONFIG);

@@ -116,10 +116,21 @@ export async function registerHostedCommands(self, workspace) {
     // 3. Rehydrate any previously-installed runtimes from VFS so their
     //    bins reappear in the registry after DO eviction or WS reconnect.
     // Real git (git.wasm), one WASI process per invocation: core runtime/git-runner.ts.
-    workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => async (ctx) => {
-        const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
-        const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
-        return await makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem })(manifest, installRoot, binName, binKind)(ctx);
+    // Image caching and fsmonitor token provenance live for this workspace
+    // incarnation, not for one command (and not across hibernation).
+    let gitFactory = null;
+    workspace.runtimes.registerRunner(GIT_RUNNER, (manifest, installRoot, binName, binKind) => {
+        let handler = null;
+        return async (ctx) => {
+            gitFactory ??= (async () => {
+                const { makeGitRunnerFactory } = await import('@nimbus-sh/core/runtime/git-runner.js');
+                const { facetHostForManager } = await import('../runtime/facet-loader-host.js');
+                return makeGitRunnerFactory({ facets: facetHostForManager(facetMgr), filesystem: workspace.filesystem });
+            })().catch((error) => { gitFactory = null; throw error; });
+            handler ??= gitFactory.then((factory) => factory(manifest, installRoot, binName, binKind))
+                .catch((error) => { handler = null; throw error; });
+            return (await handler)(ctx);
+        };
     });
     workspace.runtimes.registerRunner('clang-runner', (manifest, installRoot, binName, binKind) => async (ctx) => {
         const { makeClangRunnerFactory } = await import('@nimbus-sh/core/runtime/clang-runner.js');

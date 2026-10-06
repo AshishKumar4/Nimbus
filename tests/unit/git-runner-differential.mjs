@@ -150,6 +150,28 @@ try {
   }
   steps.push('bytes');
 
+  // Real Git owns sparse checkout too; compare both its index flags and
+  // what actually remains in the working tree after each operation.
+  await step('sparse fixture', {
+    files: { 'docs/intro.txt': 'intro\n', 'assets/logo.txt': 'logo\n', 'src/deep/nested.txt': 'nested\n', 'other/keep.txt': 'other\n' },
+    git: [['restore', 'latin1.txt'], ['add', '-A'], ['commit', '-q', '-m', 'sparse fixture']],
+  });
+  const sparseTree = async (label) => {
+    const expected = execFileSync('find', ['.', '-type', 'f', '-not', '-path', './.git/*'], { cwd: join(hostDir, 'repo'), encoding: 'utf8' }).trim().split('\n').sort();
+    const got = await ws.exec("cd repo && find . -type f -not -path './.git/*'");
+    assert.equal(got.exitCode, 0, got.stderr);
+    assert.deepEqual(got.stdout.trim().split('\n').sort(), expected, `${label}: working-tree files`);
+  };
+  for (const [label, args] of [
+    ['cone init', ['init', '--cone']], ['cone set', ['set', 'src']],
+    ['cone add', ['add', 'docs']], ['cone reapply', ['reapply']], ['cone disable', ['disable']],
+    ['non-cone init', ['init', '--no-cone']], ['non-cone set', ['set', '/src/*', '!/src/b.js', '/README.md']],
+    ['non-cone add', ['add', '/other/keep.txt']], ['non-cone reapply', ['reapply']], ['non-cone disable', ['disable']],
+  ]) {
+    await step(label, { git: [['sparse-checkout', ...args], ['sparse-checkout', 'list'], ['ls-files', '-t'], ['status', '--porcelain']] });
+    await sparseTree(label);
+  }
+
   // The paging backend is below Git's NO_MMAP hooks. Both index formats,
   // large enough for hashes to straddle 64 KiB pages, must still resolve
   // every object as host git does. Seed the real host-written packs, without

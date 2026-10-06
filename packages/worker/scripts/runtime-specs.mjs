@@ -197,6 +197,7 @@ export const SPECS = {
       { src: 'git.wasm', vfs: 'share/git/git.wasm' },
       { src: 'gitconfig', vfs: 'share/git/gitconfig' },
       { src: 'BIN_MARKER', vfs: 'bin/git', mode: 'exec', runner: GIT_RUNNER, binName: 'git' },
+      { src: 'BIN_MARKER', vfs: 'bin/git-fsmonitor-nimbus', mode: 'exec', runner: GIT_RUNNER, binName: 'git-fsmonitor-nimbus', kind: 'fsmonitor' },
     ],
     synthetic_files: {
       'BIN_MARKER': Buffer.from(

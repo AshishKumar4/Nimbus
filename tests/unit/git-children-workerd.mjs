@@ -19,6 +19,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { execFileSync } from 'node:child_process';
+import { chmodSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
 
 const ID = 'GIT_AUTHOR_NAME=Ada GIT_AUTHOR_EMAIL=ada@example.com GIT_COMMITTER_NAME=Ada GIT_COMMITTER_EMAIL=ada@example.com';
@@ -45,6 +49,42 @@ try {
     assert.match(refused.stdout, /status=1/);
     assert.match(refused.stdout, /^second$/m, 'the commit did not happen');
     checks++;
+
+    // The hook returns NUL-delimited bytes through an ordinary registry
+    // child. Compare real Git's monitored status to native Git's full scan.
+    const native = mkdtempSync(join(tmpdir(), 'git-fsmonitor-native-'));
+    const nativeEnv = { ...process.env, GIT_CONFIG_NOSYSTEM: '1', GIT_CONFIG_GLOBAL: '/dev/null', GIT_AUTHOR_NAME: 'Ada', GIT_AUTHOR_EMAIL: 'ada@example.com', GIT_COMMITTER_NAME: 'Ada', GIT_COMMITTER_EMAIL: 'ada@example.com' };
+    const host = (...args) => execFileSync('git', args, { cwd: native, env: nativeEnv, encoding: 'utf8' });
+    try {
+      host('init', '-q', '-b', 'main');
+      for (const name of ['a', 'b']) writeFileSync(join(native, `${name}.txt`), `${name}\n`);
+      host('add', '-A'); host('commit', '-q', '-m', 'base');
+      writeFileSync(join(native, 'c.txt'), 'c\n'); host('add', 'c.txt');
+      const options = '-c core.fsmonitor=git-fsmonitor-nimbus -c core.fsmonitorHookVersion=2';
+      for (let n = 0; n < 3; n++) assert.equal((await run(`git -C repo ${options} status --porcelain`)).status, 0);
+      const trace = await run(`GIT_TRACE_FSMONITOR=1 git -C repo ${options} status --porcelain`);
+      assert.match(trace.stdout, /returned success/, 'Git queried the v2 hook successfully');
+      const compare = async (label) => {
+        const got = await run(`git -C repo ${options} status --porcelain`);
+        assert.equal(got.status, 0, got.stdout);
+        assert.equal(got.stdout, host('status', '--porcelain'), label);
+      };
+      await compare('warm monitored status');
+      writeFileSync(join(native, 'a.txt'), 'edited\n');
+      writeFileSync(join(native, 'new.txt'), 'new\n');
+      await run("printf 'edited\\n' > repo/a.txt && printf 'new\\n' > repo/new.txt");
+      await compare('tracked and untracked additions');
+      host('mv', 'b.txt', 'renamed.txt');
+      await run('git -C repo mv b.txt renamed.txt');
+      await compare('rename');
+      chmodSync(join(native, 'a.txt'), 0o755);
+      await run('chmod 755 repo/a.txt');
+      await compare('executable mode change');
+      rmSync(join(native, 'new.txt'));
+      await run('rm repo/new.txt');
+      await compare('untracked deletion');
+      checks++;
+    } finally { rmSync(native, { recursive: true, force: true }); }
 
   } finally {
     await terminal.close().catch(() => {});
