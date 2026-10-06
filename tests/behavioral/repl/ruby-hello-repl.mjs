@@ -1,9 +1,11 @@
 #!/usr/bin/env bun
 // repl/ruby-hello-repl — `ruby` with no args drops into REPL, in the shell's
 // working directory, over the session filesystem: it reads a file there by
-// its relative name and writes one the shell then sees.
+// its relative name and writes one the shell then sees. And a local variable
+// lasts to the next line, as the JavaScript REPLs' probe checks theirs.
 
 import { mintSession, Terminal, makeAsserter, stripAnsi } from '../_driver.mjs';
+import { pushLine } from './_push.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('repl/ruby-hello-repl');
@@ -41,6 +43,16 @@ await t.waitFor((b) => /=>.*3\b/.test(b), 20_000, 'expression value');
 const out2 = stripAnsi(t.buf);
 a.check('bare expression 1+2 prints "=> 3" (irb convention)',
   /=>.*3\b/.test(out2), JSON.stringify(out2.slice(-200)));
+
+for (const [line, expected] of [['x = 40', '=> 40'], ['x + 2', '=> 42']]) {
+  let printed;
+  try {
+    printed = (await pushLine(t, line, { prompt: /irb>\s*$/, timeoutMs: 30_000 })).replace(/\r/g, '').trim();
+  } catch (e) {
+    printed = `(no prompt: ${e.message})`;
+  }
+  a.check(`${line} prints ${JSON.stringify(expected)}`, printed === expected, JSON.stringify(printed));
+}
 
 t.reset();
 t.cmd('print Dir.pwd, " ", File.read("here.txt")');

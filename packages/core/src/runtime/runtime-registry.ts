@@ -233,6 +233,12 @@ export interface RuntimeSpec {
    * (RuntimeRunOpts.launchesServer).
    */
   routesServers?: boolean;
+  /**
+   * The program run with no script at a terminal, its stdin the terminal's
+   * lines: the runtime's REPL (js-repl.ts), as `node` runs its own. With no
+   * script and stdin not a terminal, the program is stdin (`echo code | node`).
+   */
+  repl?: string;
 }
 
 /**
@@ -425,10 +431,32 @@ export function buildRuntimeHandler(
 
     // ── script path (or .wasm path for bypassesScriptRead) ──
     const scriptIdx = flagSpan;
-    const scriptPath = args[scriptIdx];
+    // No script: the REPL at a terminal, otherwise the program is stdin, as
+    // Node decides between them by whether stdin is a TTY.
+    const terminalInput = ctx.terminalStdin !== undefined && (ctx.stdin === undefined || ctx.stdin === ctx.terminalStdin) && ctx.isFdTerminal?.(0) !== false;
+    if (args[scriptIdx] === undefined && spec.repl !== undefined && terminalInput) {
+      const result = await spec.run(spec.repl, {
+        cred: ctx.cred,
+        invokerPid: ctx.pid,
+        signal: ctx.signal,
+        argv: args.slice(0, scriptIdx),
+        env: ctx.env,
+        cwd: ctx.cwd,
+        filename: '<repl>',
+        dirname: ctx.cwd || '/home/user',
+        command: binSpawn?.command || name,
+        stdin: ctx.terminalStdin,
+        ...reservedProcess,
+        ...(captureOutput ? { captureOutput: true } : {}),
+      });
+      if (result.stdout) ctx.stdout.write(result.stdout);
+      if (result.stderr) ctx.stderr.write(result.stderr);
+      return result.exitCode;
+    }
+    const scriptPath = args[scriptIdx] ?? (spec.repl !== undefined && ctx.stdin !== undefined ? '-' : undefined);
     if (!scriptPath) {
       ctx.stderr.write(
-        `${name}: REPL not supported. Use ${name} -e "code" or ${name} script.js\n`,
+        `${name}: no program. Use ${name} -e "code" or ${name} script.js\n`,
       );
       return 1;
     }
