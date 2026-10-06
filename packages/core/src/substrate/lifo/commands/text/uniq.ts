@@ -1,3 +1,4 @@
+import { getopt, type GetoptSpec } from '../../utils/args.js';
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
 import { asciiBytes, asciiUpper, concatBytes, readAllInput, skipBlankField, splitRecords, writeBytes } from '../../utils/bytes-io.js';
@@ -10,6 +11,15 @@ import { strerror } from '../../../../vfs/vfs-error.js';
 
 type Method = 'none' | 'prepend' | 'separate' | 'append' | 'both';
 
+
+const UNIQ_OPTIONS: GetoptSpec = {
+  short: 'cdDuizf:s:w:',
+  long: {
+    count: ['c', 'none'], repeated: ['d', 'none'], unique: ['u', 'none'], 'ignore-case': ['i', 'none'],
+    'zero-terminated': ['z', 'none'], 'all-repeated': ['all-repeated', 'optional'], group: ['group', 'optional'],
+    'skip-fields': ['f', 'required'], 'skip-chars': ['s', 'required'], 'check-chars': ['w', 'required'],
+  },
+};
 
 const command: Command = async (ctx) => {
   let count = false, repeated = false, unique = false, fold = false, zero = false;
@@ -28,52 +38,28 @@ const command: Command = async (ctx) => {
     }
     return Number(value);
   };
-  const args = ctx.args;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--') { operands.push(...args.slice(i + 1)); break; }
-    if (arg.startsWith('--')) {
-      const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
-      const needs = ['skip-fields', 'skip-chars', 'check-chars'].includes(name);
-      const value = needs ? inline ?? args[++i] : inline;
-      if (name === 'count') count = true;
-      else if (name === 'repeated') repeated = true;
-      else if (name === 'unique') unique = true;
-      else if (name === 'ignore-case') fold = true;
-      else if (name === 'zero-terminated') zero = true;
-      else if (name === 'all-repeated') {
-        const method = (value ?? 'none') as Method;
-        if (!['none', 'prepend', 'separate'].includes(method)) return usage(`invalid argument \u2018${value}\u2019 for \u2018--all-repeated\u2019`);
-        allRepeated = method;
-      } else if (name === 'group') {
-        const method = (value ?? 'separate') as Method;
-        if (!['separate', 'prepend', 'append', 'both'].includes(method)) return usage(`invalid argument \u2018${value}\u2019 for \u2018--group\u2019`);
-        group = method;
-      } else if (needs) {
-        const n = number(name === 'skip-fields' ? 'f' : name === 'skip-chars' ? 's' : 'w', value);
-        if (typeof n === 'string') return usage(n);
-        if (name === 'skip-fields') skipFields = n; else if (name === 'skip-chars') skipChars = n; else checkChars = n;
-      } else return usage(`unrecognized option '--${name}'`);
-      continue;
-    }
-    if (!arg.startsWith('-') || arg === '-') { operands.push(arg); continue; }
-    for (let j = 1; j < arg.length; j++) {
-      const flag = arg[j];
-      if (flag === 'f' || flag === 's' || flag === 'w') {
-        let value: string | undefined = arg.slice(j + 1);
-        if (value === '') value = args[++i];
-        const n = number(flag, value);
-        if (typeof n === 'string') return usage(n);
-        if (flag === 'f') skipFields = n; else if (flag === 's') skipChars = n; else checkChars = n;
-        break;
-      }
-      if (flag === 'c') count = true;
-      else if (flag === 'd') repeated = true;
-      else if (flag === 'D') allRepeated = 'none';
-      else if (flag === 'u') unique = true;
-      else if (flag === 'i') fold = true;
-      else if (flag === 'z') zero = true;
-      else return usage(`invalid option -- '${flag}'`);
+  for (const event of getopt(ctx.args, UNIQ_OPTIONS)) {
+    if (event.kind === 'error') return usage(event.message);
+    if (event.kind === 'operand') { operands.push(event.value); continue; }
+    const { key, value } = event;
+    if (key === 'c') count = true;
+    else if (key === 'd') repeated = true;
+    else if (key === 'D') allRepeated = 'none';
+    else if (key === 'u') unique = true;
+    else if (key === 'i') fold = true;
+    else if (key === 'z') zero = true;
+    else if (key === 'all-repeated') {
+      const method = (value ?? 'none') as Method;
+      if (!['none', 'prepend', 'separate'].includes(method)) return usage(`invalid argument \u2018${value}\u2019 for \u2018--all-repeated\u2019`);
+      allRepeated = method;
+    } else if (key === 'group') {
+      const method = (value ?? 'separate') as Method;
+      if (!['separate', 'prepend', 'append', 'both'].includes(method)) return usage(`invalid argument \u2018${value}\u2019 for \u2018--group\u2019`);
+      group = method;
+    } else {
+      const n = number(key, value);
+      if (typeof n === 'string') return usage(n);
+      if (key === 'f') skipFields = n; else if (key === 's') skipChars = n; else checkChars = n;
     }
   }
   if (operands.length > 2) return usage(`extra operand \u2018${operands[2]}\u2019`);

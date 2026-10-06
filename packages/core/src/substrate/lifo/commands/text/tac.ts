@@ -1,3 +1,4 @@
+import { getopt, type GetoptSpec } from '../../utils/args.js';
 import type { Command } from '../types.js';
 import { concatBytes, decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
@@ -8,6 +9,11 @@ import { strerror } from '../../../../vfs/vfs-error.js';
 // separator is a basic regular expression). A last record without its
 // separator is printed as it is, first.
 
+const TAC_OPTIONS: GetoptSpec = {
+  short: 'brs:',
+  long: { before: ['b', 'none'], regex: ['r', 'none'], separator: ['s', 'required'] },
+};
+
 const command: Command = async (ctx) => {
   let before = false, regex = false;
   let separator = '\n';
@@ -16,35 +22,12 @@ const command: Command = async (ctx) => {
     await ctx.stderr.write(`tac: ${message}\nTry 'tac --help' for more information.\n`);
     return 1;
   };
-  const args = ctx.args;
-  for (let i = 0; i < args.length; i++) {
-    const arg = args[i];
-    if (arg === '--') { files.push(...args.slice(i + 1)); break; }
-    if (arg.startsWith('--')) {
-      const [name, inline] = arg.slice(2).split(/=(.*)/s, 2);
-      if (name === 'before') before = true;
-      else if (name === 'regex') regex = true;
-      else if (name === 'separator') {
-        const value = inline ?? args[++i];
-        if (value === undefined) return usage("option '--separator' requires an argument");
-        separator = value;
-      } else return usage(`unrecognized option '--${name}'`);
-      continue;
-    }
-    if (!arg.startsWith('-') || arg === '-') { files.push(arg); continue; }
-    for (let j = 1; j < arg.length; j++) {
-      const flag = arg[j];
-      if (flag === 's') {
-        let value: string | undefined = arg.slice(j + 1);
-        if (value === '') value = args[++i];
-        if (value === undefined) return usage("option requires an argument -- 's'");
-        separator = value;
-        break;
-      }
-      if (flag === 'b') before = true;
-      else if (flag === 'r') regex = true;
-      else return usage(`invalid option -- '${flag}'`);
-    }
+  for (const event of getopt(ctx.args, TAC_OPTIONS)) {
+    if (event.kind === 'error') return usage(event.message);
+    if (event.kind === 'operand') files.push(event.value);
+    else if (event.key === 'b') before = true;
+    else if (event.key === 'r') regex = true;
+    else separator = event.value!;
   }
   let pattern: RegExp | null = null;
   if (regex) {
