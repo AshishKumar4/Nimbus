@@ -6068,7 +6068,11 @@ export class SqliteVFS {
       let copied = slice.copied;
       while (!slice.done) {
         await yieldToStorage();
-        slice = run(slice.id);
+        // A delegation granted over the destination since the last slice is
+        // recalled, and the slice (one transaction, refused before it wrote)
+        // runs again: the copy waits for it rather than failing.
+        const id = slice.id;
+        slice = await withRecall(() => run(id));
         copied += slice.copied;
       }
       return copied;
