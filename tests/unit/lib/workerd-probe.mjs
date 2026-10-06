@@ -246,6 +246,11 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
     }
   };
   let serial = 0;
+  /**
+   * @param {string} command
+   * @param {number} [timeoutMs]
+   * @param {{ progress?: () => Promise<unknown>, stalledMs?: number }} [options]
+   */
   const run = async (command, timeoutMs = 120_000, { progress, stalledMs = 120_000 } = {}) => {
     const mark = `__NIMBUS_DONE_${++serial}__`;
     const line = `${command}; echo "${mark}$?"`;
