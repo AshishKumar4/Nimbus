@@ -12,7 +12,7 @@
  * No server upgrade support is added: workerd's HTTP dispatcher emits
  * request, not upgrade. The separate Cirrus HMR bridge is not part of this
  * path. A client's WebSocket upgrade (a request with `Upgrade: websocket`) is
- * answered by node-ws-upgrade.ts, installed on both modules here.
+ * answered by node-ws-upgrade.ts, which the shims install over both modules.
  */
 export const NATIVE_HTTP_SOURCE = `
 const __nativeHttpResponse = globalThis.Response;
@@ -269,7 +269,6 @@ Object.defineProperty(builtins, "http", {
         return await Promise.race([dispatch(), deadline.promise]);
       } finally { clearTimeout(timer); detach(); server.removeListener("request", captureResponse); }
     };
-    __nimbusWebSocketUpgrades(http, false);
     Object.defineProperty(builtins, "http", { value: http, writable: true, enumerable: true, configurable: true });
     return http;
   },
@@ -282,7 +281,6 @@ Object.defineProperty(builtins, "https", {
     void builtins.http;
     const https = typeof __real_https !== "undefined"
       ? (__real_https.default ?? __real_https) : globalThis.process.getBuiltinModule("https");
-    __nimbusWebSocketUpgrades(https, true);
     Object.defineProperty(builtins, "https", { value: https, writable: true, enumerable: true, configurable: true });
     return https;
   },

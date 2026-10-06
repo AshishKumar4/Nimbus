@@ -672,7 +672,10 @@ const __streamMod = (() => {
   // ── pipeline ────────────────────────────────────────────────────────
   function pipeline(...args) {
     const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
-    const streams = args;
+    // pipeline(streams[, callback]), as Node takes it too (axios passes its
+    // response and decompressor so); a copy, since the adapting below
+    // replaces entries.
+    const streams = args.length === 1 && Array.isArray(args[0]) ? [...args[0]] : args;
     if (streams.length < 2) {
       if (callback) callback(new Error('pipeline requires at least 2 streams'));
       return streams[0];
