@@ -24,6 +24,7 @@
  * hosted/commands.ts).
  */
 
+import { exitCodeForAbortSignal } from '../../shell/signals.js';
 import type { RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../../runtime/os-contracts.js';
 import { realmOutcome, startRealm, type RealmOutcome } from '../../../../runtime/realm.js';
 import type { CommandContext, CommandOutputStream } from '../types.js';
@@ -219,7 +220,7 @@ export function serveRealmCall(call: unknown, services: RealmServices): Promise<
  * loop ran empty, or the caller's abort (kill, Ctrl-C) terminated it.
  */
 export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, kernel: NodeRealmKernel | undefined): Promise<number> {
-  if (ctx.signal.aborted) return 130;
+  if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
   const filesystem = synchronousFilesystem(ctx.vfs);
 
   // Output in the order it was written, each write after the last.
@@ -324,7 +325,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   for (const respond of pending.values()) respond(null);
   unwatch?.();
   await written;
-  if (end.terminated) return 130;
+  if (end.terminated) return exitCodeForAbortSignal(ctx.signal);
   if (end.failure !== null) {
     await ctx.stderr.write(`${end.failure.stack ?? end.failure.message}\n`);
     return code ?? 1;
