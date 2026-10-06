@@ -39,7 +39,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import esbuild from 'esbuild';
-import { NODE_BUILTINS, ensureBuildInstall } from './cirrus-bundle-shared.mjs';
+import { NODE_BUILTINS } from './cirrus-bundle-shared.mjs';
+import { resolvePackageDir } from './resolve-package-dir.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -61,7 +62,6 @@ const ASSET_PATH = `/_assets/${ASSET_FILENAME}`;
 const TARGETS = [
   {
     pkg: 'react',
-    version: '^18.3.1',
     externalPeers: [],
     entries: [
       { subpath: '', moduleSuffix: '.js' },
@@ -72,7 +72,6 @@ const TARGETS = [
     // the SAME react instance the user imports — so they get their
     // own bundle target with react marked external.
     pkg: 'react',
-    version: '^18.3.1',
     externalPeers: ['react'],
     entries: [
       { subpath: 'jsx-runtime', moduleSuffix: '.js' },
@@ -81,7 +80,6 @@ const TARGETS = [
   },
   {
     pkg: 'react-dom',
-    version: '^18.3.1',
     // react + scheduler are SHARED peers.
     externalPeers: ['react', 'scheduler'],
     entries: [
@@ -94,7 +92,6 @@ const TARGETS = [
     // import) so we don't ship two copies of react-doms 980 KB
     // runtime.
     pkg: 'react-dom',
-    version: '^18.3.1',
     externalPeers: ['react', 'scheduler', 'react-dom'],
     entries: [
       { subpath: 'client', moduleSuffix: '.js' },
@@ -102,27 +99,12 @@ const TARGETS = [
   },
   {
     pkg: 'scheduler',
-    version: '*',
     externalPeers: [],
     entries: [
       { subpath: '', moduleSuffix: '.js' },
     ],
   },
 ];
-
-function ensureInstalled() {
-  return ensureBuildInstall(path.join(ROOT, '.cirrus-npm-cjs-src'), {
-    name: 'cirrus-npm-cjs-build',
-    log: '[bundle-npm-cjs]',
-    markers: ['react', 'cjs-module-lexer'],
-    dependencies: {
-      ...Object.fromEntries(
-        TARGETS.filter((t) => t.version !== '*').map((t) => [t.pkg, t.version]),
-      ),
-      'cjs-module-lexer': '^2',
-    },
-  });
-}
 
 /**
  * Walk the CJS entry + its `require(...)` transitive closure within
@@ -134,8 +116,8 @@ function ensureInstalled() {
  * We detect `module.exports = require(...)` and follow the referenced
  * file to enumerate ITS exports (which are the real ones).
  */
-async function discoverExports(srcDir, pkgName, subpath, lexer) {
-  const req = createRequire(path.join(srcDir, 'package.json'));
+async function discoverExports(pkgName, subpath, lexer) {
+  const req = createRequire(path.join(ROOT, 'package.json'));
   const spec = subpath ? `${pkgName}/${subpath}` : pkgName;
   let entryPath;
   try { entryPath = req.resolve(spec); }
@@ -169,24 +151,26 @@ async function walkExports(filepath, lexer, seen) {
   return [...names];
 }
 
-async function bundleEntry(srcDir, pkgName, subpath, externalPeers, lexer) {
-  const exportNames = await discoverExports(srcDir, pkgName, subpath, lexer);
+async function bundleEntry(pkgName, subpath, externalPeers, lexer) {
+  const exportNames = await discoverExports(pkgName, subpath, lexer);
   const filtered = exportNames.filter(
     (n) => /^[a-zA-Z_$][\w$]*$/.test(n) && n !== 'default',
   );
 
   const fullSpec = subpath ? `${pkgName}/${subpath}` : pkgName;
-  const stubPath = path.join(srcDir, '.stub-' + pkgName.replace(/[^a-z0-9]/gi, '_') + '-' + (subpath || 'root').replace(/[^a-z0-9]/gi, '_') + '.mjs');
+  // The entry re-exports the package's discovered named exports beside its
+  // default; it is fed on stdin, named as the stub file it used to be.
+  const stubName = '.stub-' + pkgName.replace(/[^a-z0-9]/gi, '_') + '-' + (subpath || 'root').replace(/[^a-z0-9]/gi, '_') + '.mjs';
   const namedLines = filtered.map(
     (n) => `export const ${n} = _mod.${n} ?? _default?.${n};`,
   ).join('\n');
-  await fs.writeFile(stubPath, `
+  const stubSource = `
 import * as _mod from ${JSON.stringify(fullSpec)};
 const _default = _mod.default ?? _mod;
 ${namedLines}
 export default _default;
-`);
-  try {
+`;
+  {
     // externalPeers: list of bare specifiers (e.g. 'react', 'scheduler')
     // that must NOT be inlined — they'll be served as separate
     // pre-built bundles from the same registry, ensuring a single
@@ -214,7 +198,7 @@ export default _default;
       },
     };
     const result = await esbuild.build({
-      entryPoints: [stubPath],
+      stdin: { contents: stubSource, resolveDir: ROOT, sourcefile: stubName, loader: 'js' },
       bundle: true,
       format: 'esm',
       platform: 'neutral',
@@ -230,7 +214,7 @@ export default _default;
         'process.env.NODE_ENV': JSON.stringify('development'),
         'import.meta.url': JSON.stringify(`file:///cirrus-npm/${pkgName}${subpath ? '/' + subpath : ''}.js`),
       },
-      absWorkingDir: srcDir,
+      absWorkingDir: ROOT,
       logLevel: 'warning',
     });
     if (result.errors.length) {
@@ -274,33 +258,24 @@ export default _default;
     }
 
     return text;
-  } finally {
-    await fs.unlink(stubPath).catch(() => {});
   }
 }
 
 async function main() {
-  const srcDir = await ensureInstalled();
-  const lexerReq = createRequire(path.join(srcDir, 'package.json'));
-  const lexer = lexerReq('cjs-module-lexer');
+  const lexer = createRequire(path.join(ROOT, 'package.json'))('cjs-module-lexer');
   await lexer.init();
   const bundles = {};
   const versions = {};
   let totalBytes = 0;
 
   for (const target of TARGETS) {
-    const pkgPath = path.join(srcDir, 'node_modules', target.pkg, 'package.json');
-    try {
-      const pkg = JSON.parse(await fs.readFile(pkgPath, 'utf8'));
-      versions[target.pkg] = pkg.version;
-    } catch {
-      versions[target.pkg] = '(missing)';
-    }
+    const pkgPath = path.join(resolvePackageDir(target.pkg, { start: ROOT }), 'package.json');
+    versions[target.pkg] = JSON.parse(await fs.readFile(pkgPath, 'utf8')).version;
     for (const entry of target.entries) {
       const label = entry.subpath ? `${target.pkg}/${entry.subpath}` : target.pkg;
       console.log(`[bundle-npm-cjs] bundling ${label}...`);
       try {
-        const text = await bundleEntry(srcDir, target.pkg, entry.subpath, target.externalPeers || [], lexer);
+        const text = await bundleEntry(target.pkg, entry.subpath, target.externalPeers || [], lexer);
         const moduleName = (entry.subpath ? `${target.pkg}-${entry.subpath}` : target.pkg).replace(/[^a-z0-9]/gi, '-') + entry.moduleSuffix;
         bundles[label] = { moduleName, code: text };
         totalBytes += text.length;

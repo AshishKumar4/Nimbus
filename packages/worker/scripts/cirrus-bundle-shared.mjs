@@ -10,13 +10,7 @@
  *     never silently no-op a patch.
  *   - requirePolyfillSeam: the replacement for esbuild's `__require`
  *     polyfill, which always throws in workerd's ESM context.
- *   - ensureBuildInstall: the private, gitignored install a bundler
- *     builds its pinned inputs from.
  */
-
-import { execSync } from 'node:child_process';
-import { promises as fs } from 'node:fs';
-import path from 'node:path';
 
 /**
  * Native Node builtins, `node:`-prefixed and bare. Only real builtins
@@ -129,24 +123,4 @@ export function requirePolyfillSeam({ base, label, stubs = '' }) {
     replace: () => replacement,
     count: 1,
   };
-}
-
-/**
- * Install `dependencies` into `dir` (a private package the bundler owns)
- * unless every package in `markers` is already there, and return `dir`.
- *
- * @param {string} dir
- * @param {{ name: string, dependencies: Record<string, string>, markers: string[], log: string }} spec
- */
-export async function ensureBuildInstall(dir, { name, dependencies, markers, log }) {
-  const present = await Promise.all(markers.map((pkg) =>
-    fs.access(path.join(dir, 'node_modules', pkg, 'package.json')).then(() => true, () => false)));
-  if (present.every(Boolean)) return dir;
-  console.log(`${log} installing ${Object.keys(dependencies).join(', ')} into ${dir}...`);
-  await fs.mkdir(dir, { recursive: true });
-  await fs.writeFile(path.join(dir, 'package.json'), JSON.stringify({
-    name, private: true, version: '0.0.0', dependencies,
-  }, null, 2));
-  execSync('bun install', { cwd: dir, stdio: 'inherit' });
-  return dir;
 }

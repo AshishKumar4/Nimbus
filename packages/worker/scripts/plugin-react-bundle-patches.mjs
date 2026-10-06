@@ -15,8 +15,10 @@ import { replaceSeam } from './cirrus-bundle-shared.mjs';
  * @returns {string}
  */
 export function patchPluginReactIndex(src, { refreshRuntime, refreshUtils }) {
+  // Escaped for a template literal. Every replacement here is a function, so
+  // no `$` in the inlined source is ever read as a replacement pattern.
   const esc = (s) =>
-    s.replace(/\\/g, '\\\\').replace(/`/g, '\\`').replace(/\$\{/g, '\\${');
+    s.replace(/\\/g, () => '\\\\').replace(/`/g, () => '\\`').replace(/\$\{/g, () => '\\${');
 
   let patched = src;
 

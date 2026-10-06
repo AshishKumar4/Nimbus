@@ -45,8 +45,9 @@ import { promises as fs } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import esbuild from 'esbuild';
-import { NODE_BUILTINS, ensureBuildInstall, replaceSeam, requirePolyfillSeam } from './cirrus-bundle-shared.mjs';
+import { NODE_BUILTINS, replaceSeam, requirePolyfillSeam } from './cirrus-bundle-shared.mjs';
 import { patchPluginReactIndex } from './plugin-react-bundle-patches.mjs';
+import { resolvePackageDir } from './resolve-package-dir.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -55,26 +56,30 @@ const OUT = path.join(ROOT, 'src', 'cirrus-plugin-react.generated.ts');
 const ASSETS_DIR = path.join(ROOT, 'public', '_assets');
 const ASSET_PATH = '/_assets/cirrus-plugin-react.bundle.js';
 
-// Pinned to the version the Cirrus-shim React starter uses. If users
-// specify a different version in their own project we'll still use this
-// one for real-vite mode — Path C is a compatibility bridge, not a
-// per-project bundler.
-const PINNED_PLUGIN_REACT_VERSION = '~4.3.4';
-const PINNED_REACT_REFRESH_VERSION = '^0.14.0';
-const PINNED_BABEL_CORE_VERSION = '^7.25.0';
-const PINNED_BABEL_PLUGIN_TRANSFORM_REACT_JSX_SELF = '^7.25.0';
-const PINNED_BABEL_PLUGIN_TRANSFORM_REACT_JSX_SOURCE = '^7.25.0';
-// Added by pathC step 7: plugin-react 4.x delegates JSX transform
-// to Vite's esbuild. We disabled vite:esbuild for workerd, so we
-// need Babel's JSX transformer bundled in instead.
-const PINNED_BABEL_PLUGIN_TRANSFORM_REACT_JSX = '^7.25.0';
-const PINNED_BABEL_PLUGIN_SYNTAX_JSX = '^7.25.0';
-// Step 8: Vite's esbuild also lowered TypeScript syntax (interface,
-// type annotations, `!` non-null assertions, enums, etc.). Same
-// disablement kills that too. Bundle @babel/plugin-transform-typescript
-// so plugin-react's Babel pass strips TS syntax from .ts/.tsx files.
-const PINNED_BABEL_PLUGIN_TRANSFORM_TYPESCRIPT = '^7.25.0';
-const PINNED_BABEL_PLUGIN_SYNTAX_TYPESCRIPT = '^7.25.0';
+// Every input is a devDependency of @nimbus-sh/worker, pinned exactly and
+// installed from the repo lockfile, so `bun run bundle` rebuilds the staged
+// bundle byte for byte and dist-integrity checks it like every other asset:
+//   - @vitejs/plugin-react: the plugin itself, and refreshUtils.js.
+//   - react-refresh: the runtime plugin-react serves at /@react-refresh, and
+//     react-refresh/babel.
+//   - The Babel transforms loadPlugin() loads. plugin-react 4.x leaves JSX
+//     and TypeScript to Vite's esbuild, which real-vite mode disables, so
+//     @babel/plugin-transform-react-jsx and -typescript are bundled in
+//     beside the -jsx-self / -jsx-source plugins it ships with.
+//   - @babel/types and @babel/parser, which every Babel package imports: the
+//     lockfile keeps 7.29.7 for the dependents that had it before these pins
+//     arrived, so without one resolution the bundle would carry two copies.
+// They resolve from packages/worker, never from wherever a transitive
+// dependency happens to be linked.
+const WORKER_RESOLVED = new Set([
+  'react-refresh/babel',
+  '@babel/parser',
+  '@babel/plugin-transform-react-jsx',
+  '@babel/plugin-transform-react-jsx-self',
+  '@babel/plugin-transform-react-jsx-source',
+  '@babel/plugin-transform-typescript',
+  '@babel/types',
+]);
 
 // Optional deps babel tries to require() to detect feature support but
 // never actually USES in the transform path plugin-react exercises.
@@ -89,25 +94,6 @@ const STUB_AS_EMPTY = new Set([
   'fsevents',
 ]);
 
-function ensureInstalled() {
-  return ensureBuildInstall(path.join(ROOT, '.cirrus-plugin-react-src'), {
-    name: 'cirrus-plugin-react-build',
-    log: '[bundle-plugin-react]',
-    markers: ['@vitejs/plugin-react', '@babel/core'],
-    dependencies: {
-      '@vitejs/plugin-react': PINNED_PLUGIN_REACT_VERSION,
-      'react-refresh': PINNED_REACT_REFRESH_VERSION,
-      '@babel/core': PINNED_BABEL_CORE_VERSION,
-      '@babel/plugin-transform-react-jsx-self': PINNED_BABEL_PLUGIN_TRANSFORM_REACT_JSX_SELF,
-      '@babel/plugin-transform-react-jsx-source': PINNED_BABEL_PLUGIN_TRANSFORM_REACT_JSX_SOURCE,
-      '@babel/plugin-transform-react-jsx': PINNED_BABEL_PLUGIN_TRANSFORM_REACT_JSX,
-      '@babel/plugin-syntax-jsx': PINNED_BABEL_PLUGIN_SYNTAX_JSX,
-      '@babel/plugin-transform-typescript': PINNED_BABEL_PLUGIN_TRANSFORM_TYPESCRIPT,
-      '@babel/plugin-syntax-typescript': PINNED_BABEL_PLUGIN_SYNTAX_TYPESCRIPT,
-    },
-  });
-}
-
 /** Read an asset plugin-react inlines; a missing one fails the build. */
 async function readAsset(p, label) {
   try { return await fs.readFile(p, 'utf8'); }
@@ -116,7 +102,7 @@ async function readAsset(p, label) {
   }
 }
 
-function makeInlineAssetsPlugin(srcDir) {
+function makeInlineAssetsPlugin() {
   const pluginIndex = /@vitejs[\\/]plugin-react[\\/]dist[\\/]index\.(mjs|cjs)$/;
 
   return {
@@ -135,20 +121,20 @@ function makeInlineAssetsPlugin(srcDir) {
         contents: 'module.exports = {};', loader: 'js',
       }));
 
+      // loadPlugin()'s targets resolve from packages/worker's own pins.
+      build.onResolve({ filter: /^(?:react-refresh|@babel)\// }, async (args) => {
+        if (!WORKER_RESOLVED.has(args.path) || args.pluginData?.fromWorker) return undefined;
+        const resolved = await build.resolve(args.path, { kind: args.kind, resolveDir: ROOT, pluginData: { fromWorker: true } });
+        if (resolved.errors.length > 0) return { errors: resolved.errors };
+        return { path: resolved.path, namespace: resolved.namespace, sideEffects: resolved.sideEffects };
+      });
+
       // Source-level rewrites for plugin-react's index.mjs.
       build.onLoad({ filter: pluginIndex }, async (args) => {
         const src = await fs.readFile(args.path, 'utf8');
-        const pluginDir = args.path.replace(/[\\/]index\.(mjs|cjs)$/, '');
-        // react-refresh is a sibling of @vitejs in node_modules/.
-        // args.path = <srcDir>/node_modules/@vitejs/plugin-react/dist/index.mjs
-        //   → node_modules_dir    = <srcDir>/node_modules
-        //   → reactRefreshDir     = <srcDir>/node_modules/react-refresh
-        const vitejs_dir = path.dirname(path.dirname(pluginDir)); // .../node_modules/@vitejs
-        const nodeModulesDir = path.dirname(vitejs_dir);          // .../node_modules
-        const reactRefreshDir = path.join(nodeModulesDir, 'react-refresh');
-
+        const pluginDir = path.dirname(args.path);
         const rrRuntime = await readAsset(
-          path.join(reactRefreshDir, 'cjs/react-refresh-runtime.development.js'),
+          path.join(resolvePackageDir('react-refresh', { start: ROOT }), 'cjs/react-refresh-runtime.development.js'),
           'react-refresh-runtime.development.js',
         );
         const rrUtils = await readAsset(
@@ -165,17 +151,11 @@ function makeInlineAssetsPlugin(srcDir) {
 }
 
 async function main() {
-  const srcDir = await ensureInstalled();
-  const entry = path.join(
-    srcDir, 'node_modules/@vitejs/plugin-react/dist/index.mjs',
-  );
-  const pluginPkg = JSON.parse(
-    await fs.readFile(
-      path.join(srcDir, 'node_modules/@vitejs/plugin-react/package.json'),
-      'utf8',
-    ),
-  );
-  const pluginReactVersion = pluginPkg.version;
+  const pluginDir = resolvePackageDir('@vitejs/plugin-react', { start: ROOT });
+  const entry = path.join(pluginDir, 'dist/index.mjs');
+  const pluginReactVersion = JSON.parse(
+    await fs.readFile(path.join(pluginDir, 'package.json'), 'utf8'),
+  ).version;
 
   console.log(`[bundle-plugin-react] bundling @vitejs/plugin-react@${pluginReactVersion}...`);
 
@@ -193,7 +173,7 @@ async function main() {
     mainFields: ['module', 'main'],
     keepNames: true,
     minify: false,
-    plugins: [makeInlineAssetsPlugin(srcDir)],
+    plugins: [makeInlineAssetsPlugin()],
     define: {
       'process.env.NODE_ENV': JSON.stringify('development'),
       // @babel/types / @babel/helper-validator flip these off in

@@ -3,11 +3,15 @@
 // replaceSeam fails the build when an anchor's match count moves, the
 // plugin-react rewrite inlines react-refresh's runtime byte for byte (a
 // string replacement once read its `$$typeof` as a `$$` pattern and
-// shipped `'$typeof'`), the shared __require polyfill resolves in its
+// shipped `'$typeof'`; the staged bundle is checked against the pinned
+// runtime), the shared __require polyfill resolves in its
 // documented order, and the real-vite seam table applies every seam once
 // and names the one whose anchor is gone.
 
 import assert from 'node:assert/strict';
+import { readFileSync } from 'node:fs';
+import { join } from 'node:path';
+import { resolvePackageDir } from '../../packages/worker/scripts/resolve-package-dir.mjs';
 import { replaceSeam, requirePolyfillSeam } from '../../packages/worker/scripts/cirrus-bundle-shared.mjs';
 import { patchPluginReactIndex } from '../../packages/worker/scripts/plugin-react-bundle-patches.mjs';
 import { patchRealViteBundle } from '../../packages/worker/scripts/real-vite-bundle-patches.mjs';
@@ -138,5 +142,24 @@ assert.throws(
   () => patchRealViteBundle(viteBundle.replace('var require_postcss = __commonJS({});', '')),
   /no bundled CJS factory require_postcss/,
 );
+
+// ── the staged plugin-react bundle serves react-refresh verbatim ────
+// /@react-refresh is plugin-react's runtimeCode: the react-refresh runtime
+// and refreshUtils.js between two fixed lines. Read it out of the staged
+// bundle and compare it with the pinned packages it was built from.
+{
+  const worker = new URL('../../packages/worker/', import.meta.url).pathname;
+  const staged = readFileSync(join(worker, 'public/_assets/cirrus-plugin-react.bundle.js'), 'utf8');
+  const start = staged.indexOf('var runtimeCode = `');
+  assert.ok(start >= 0, 'the staged bundle defines runtimeCode');
+  let end = start + 'var runtimeCode = `'.length;
+  while (staged[end] !== '`') end += staged[end] === '\\' ? 2 : 1;
+  const runtimeCode = new Function(`return ${staged.slice(start + 'var runtimeCode = '.length, end + 1)};`)();
+  const refreshRuntime = readFileSync(join(resolvePackageDir('react-refresh', { start: worker }), 'cjs/react-refresh-runtime.development.js'), 'utf8');
+  const refreshUtils = readFileSync(join(resolvePackageDir('@vitejs/plugin-react', { start: worker }), 'dist/refreshUtils.js'), 'utf8');
+  assert.ok(runtimeCode.includes("getProperty(type, '$$typeof')"), "react-refresh's `$$typeof` survives in the staged bundle");
+  assert.equal(runtimeCode, `\nconst exports = {}\n${refreshRuntime}\n${refreshUtils}\nexport default exports\n`,
+    'the staged /@react-refresh runtime is the pinned react-refresh + refreshUtils, byte for byte');
+}
 
 console.log('cirrus-bundle-seams: ok');

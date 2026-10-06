@@ -2,10 +2,6 @@ node_modules/
 .wrangler/
 .dev.vars
 
-# Build-time scratch directories.
-.cirrus-plugin-react-src/
-.cirrus-npm-cjs-src/
-
 # Internal workspace notes and generated research scratch.
 audit/
 docs/research/

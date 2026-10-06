@@ -6,34 +6,45 @@ var __getProtoOf = Object.getPrototypeOf;
 var __hasOwnProp = Object.prototype.hasOwnProperty;
 var __name = (target, value2) => __defProp(target, "name", { value: value2, configurable: true });
 var __require = /* @__PURE__ */ (function() {
+  // Lazy-init: __cirrusNodeCreateRequire is set by main.js BEFORE
+  // the bundle evaluates, but we defer the createRequire() call
+  // until first use so module-init order doesn't matter.
   let _cjsRequire = null;
   function _getRequire() {
     if (_cjsRequire) return _cjsRequire;
     const cr = globalThis.__cirrusNodeCreateRequire;
     if (cr) {
-      try { _cjsRequire = cr("file:///cirrus-plugin-react.js"); } catch {}
+      try { _cjsRequire = cr("file:///cirrus-plugin-react.js"); } catch (e) {
+        console.warn('[cirrus-plugin-react __require] createRequire failed:', e?.message);
+      }
     }
     return _cjsRequire;
   }
+  const _stubs = {};
   return function __require(name) {
+    if (_stubs[name]) return _stubs[name];
     if (globalThis.__cirrusNodeBuiltinTable && globalThis.__cirrusNodeBuiltinTable[name]) {
       return globalThis.__cirrusNodeBuiltinTable[name];
     }
     if (globalThis.__cirrusRealRequireShim) {
-      try { return globalThis.__cirrusRealRequireShim(name); } catch {}
+      try { return globalThis.__cirrusRealRequireShim(name); }
+      catch (_e) { /* fall through */ }
     }
+    // VFS-backed userspace modules (e.g. react-refresh/babel loaded
+    // dynamically by @vitejs/plugin-react at transform time). Lives
+    // in cirrus-real.ts' main.js synthetic init.
     if (globalThis.__cirrusRealUserspaceRequire) {
       try {
         const mod = globalThis.__cirrusRealUserspaceRequire(name);
         if (mod) return mod;
-      } catch {}
+      } catch (_e) { /* fall through */ }
     }
     const req = _getRequire();
     if (req) {
       try { return req(name); }
-      catch (e) { throw Error('[cirrus-plugin-react __require] "' + name + '" failed: ' + (e?.message || e)); }
+      catch (e) { throw Error('[cirrus-plugin-react __require] failed resolving "' + name + '": ' + (e?.message || e)); }
     }
-    throw Error('[cirrus-plugin-react __require] "' + name + '" unresolved');
+    throw Error('[cirrus-plugin-react __require] no createRequire available for "' + name + '"');
   };
 })();
 var __esm = (fn, res) => function __init() {
@@ -64,9 +75,9 @@ var __toESM = (mod, isNodeMode, target) => (target = mod != null ? __create(__ge
 ));
 var __toCommonJS = (mod) => __copyProps(__defProp({}, "__esModule", { value: true }), mod);
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/shallowEqual.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/shallowEqual.js
 var require_shallowEqual = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/shallowEqual.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/shallowEqual.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -85,9 +96,9 @@ var require_shallowEqual = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/deprecationWarning.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/deprecationWarning.js
 var require_deprecationWarning = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/deprecationWarning.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/deprecationWarning.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -135,9 +146,9 @@ ${trace}`);
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/generated/index.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/generated/index.js
 var require_generated = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/generated/index.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/generated/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3243,9 +3254,9 @@ var require_generated = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/matchesPattern.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/matchesPattern.js
 var require_matchesPattern = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/matchesPattern.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/matchesPattern.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3292,9 +3303,9 @@ var require_matchesPattern = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/buildMatchMemberExpression.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/buildMatchMemberExpression.js
 var require_buildMatchMemberExpression = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/buildMatchMemberExpression.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/buildMatchMemberExpression.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3309,9 +3320,9 @@ var require_buildMatchMemberExpression = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/react/isReactComponent.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/react/isReactComponent.js
 var require_isReactComponent = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/react/isReactComponent.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/react/isReactComponent.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3323,9 +3334,9 @@ var require_isReactComponent = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/react/isCompatTag.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/react/isCompatTag.js
 var require_isCompatTag = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/react/isCompatTag.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/react/isCompatTag.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3338,9 +3349,9 @@ var require_isCompatTag = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isType.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isType.js
 var require_isType = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isType.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3359,9 +3370,9 @@ var require_isType = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isPlaceholderType.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isPlaceholderType.js
 var require_isPlaceholderType = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isPlaceholderType.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isPlaceholderType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3378,9 +3389,9 @@ var require_isPlaceholderType = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/is.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/is.js
 var require_is = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/is.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/is.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3409,9 +3420,9 @@ var require_is = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-identifier/lib/identifier.js
+// ../../node_modules/.bun/@babel+helper-validator-identifier@7.29.7/node_modules/@babel/helper-validator-identifier/lib/identifier.js
 var require_identifier = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-identifier/lib/identifier.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-validator-identifier@7.29.7/node_modules/@babel/helper-validator-identifier/lib/identifier.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3486,9 +3497,9 @@ var require_identifier = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-identifier/lib/keyword.js
+// ../../node_modules/.bun/@babel+helper-validator-identifier@7.29.7/node_modules/@babel/helper-validator-identifier/lib/keyword.js
 var require_keyword = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-identifier/lib/keyword.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-validator-identifier@7.29.7/node_modules/@babel/helper-validator-identifier/lib/keyword.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3529,9 +3540,9 @@ var require_keyword = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-identifier/lib/index.js
+// ../../node_modules/.bun/@babel+helper-validator-identifier@7.29.7/node_modules/@babel/helper-validator-identifier/lib/index.js
 var require_lib = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-identifier/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-validator-identifier@7.29.7/node_modules/@babel/helper-validator-identifier/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3589,9 +3600,9 @@ var require_lib = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isValidIdentifier.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isValidIdentifier.js
 var require_isValidIdentifier = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isValidIdentifier.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isValidIdentifier.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3611,9 +3622,9 @@ var require_isValidIdentifier = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-string-parser/lib/index.js
+// ../../node_modules/.bun/@babel+helper-string-parser@7.29.7/node_modules/@babel/helper-string-parser/lib/index.js
 var require_lib2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-string-parser/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-string-parser@7.29.7/node_modules/@babel/helper-string-parser/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3913,9 +3924,9 @@ var require_lib2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/constants/index.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/constants/index.js
 var require_constants = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/constants/index.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/constants/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -3947,9 +3958,9 @@ var require_constants = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/utils.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/utils.js
 var require_utils = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/utils.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/utils.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -4274,9 +4285,9 @@ ${errors.join("\n")}`);
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/core.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/core.js
 var require_core = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/core.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/core.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -4853,7 +4864,17 @@ var require_core = __commonJS({
       } : {})
     });
     defineType("NewExpression", {
-      inherits: "CallExpression"
+      inherits: "CallExpression",
+      fields: {
+        callee: {
+          validate: (0, _utils.assertNodeType)("Expression")
+        },
+        arguments: (0, _utils.validateArrayOfType)("Expression", "SpreadElement", "ArgumentPlaceholder"),
+        typeArguments: {
+          validate: (0, _utils.assertNodeType)("TypeParameterInstantiation", "TSTypeParameterInstantiation"),
+          optional: true
+        }
+      }
     });
     defineType("Program", {
       visitor: ["directives", "body"],
@@ -6005,9 +6026,9 @@ Expected ${val.length + 1} quasis but got ${node.quasis.length}`);
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/flow.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/flow.js
 var require_flow = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/flow.js"() {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/flow.js"() {
     "use strict";
     var _core = require_core();
     var _utils = require_utils();
@@ -6503,9 +6524,9 @@ var require_flow = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/jsx.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/jsx.js
 var require_jsx = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/jsx.js"() {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/jsx.js"() {
     "use strict";
     var _utils = require_utils();
     var defineType = (0, _utils.defineAliasedType)("JSX");
@@ -6663,9 +6684,9 @@ var require_jsx = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/placeholders.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/placeholders.js
 var require_placeholders = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/placeholders.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/placeholders.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -6693,9 +6714,9 @@ var require_placeholders = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/misc.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/misc.js
 var require_misc = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/misc.js"() {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/misc.js"() {
     "use strict";
     var _utils = require_utils();
     var _placeholders = require_placeholders();
@@ -6727,9 +6748,9 @@ var require_misc = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/experimental.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/experimental.js
 var require_experimental = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/experimental.js"() {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/experimental.js"() {
     "use strict";
     var _utils = require_utils();
     (0, _utils.default)("ArgumentPlaceholder", {});
@@ -6856,9 +6877,9 @@ var require_experimental = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/typescript.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/typescript.js
 var require_typescript = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/typescript.js"() {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/typescript.js"() {
     "use strict";
     var _utils = require_utils();
     var _core = require_core();
@@ -7388,9 +7409,9 @@ Expected ${val.length + 1} quasis but got ${node.quasis.length}`);
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/deprecated-aliases.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/deprecated-aliases.js
 var require_deprecated_aliases = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/deprecated-aliases.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/deprecated-aliases.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -7402,9 +7423,9 @@ var require_deprecated_aliases = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/index.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/index.js
 var require_definitions = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/definitions/index.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/definitions/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -7511,9 +7532,9 @@ var require_definitions = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/validate.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/validate.js
 var require_validate = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/validate.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/validate.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -7560,9 +7581,9 @@ var require_validate = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/generated/lowercase.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/generated/lowercase.js
 var require_lowercase = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/generated/lowercase.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/generated/lowercase.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -8216,7 +8237,8 @@ var require_lowercase = __commonJS({
       const node = {
         type: "NewExpression",
         callee,
-        arguments: _arguments
+        arguments: _arguments,
+        typeParameters: null
       };
       const defs = NODE_FIELDS.NewExpression;
       validate(defs.callee, node, "callee", callee, 1);
@@ -10722,9 +10744,9 @@ var require_lowercase = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/generated/uppercase.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/generated/uppercase.js
 var require_uppercase = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/generated/uppercase.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/generated/uppercase.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -10998,9 +11020,9 @@ var require_uppercase = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/generated/index.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/generated/index.js
 var require_generated2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/generated/index.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/generated/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -11030,9 +11052,9 @@ var require_generated2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/react/cleanJSXElementLiteralChild.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/react/cleanJSXElementLiteralChild.js
 var require_cleanJSXElementLiteralChild = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/react/cleanJSXElementLiteralChild.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/react/cleanJSXElementLiteralChild.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -11074,9 +11096,9 @@ var require_cleanJSXElementLiteralChild = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/react/buildChildren.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/react/buildChildren.js
 var require_buildChildren = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/react/buildChildren.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/react/buildChildren.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -11102,9 +11124,9 @@ var require_buildChildren = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isNode.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isNode.js
 var require_isNode = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isNode.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isNode.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -11118,9 +11140,9 @@ var require_isNode = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/asserts/assertNode.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/asserts/assertNode.js
 var require_assertNode = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/asserts/assertNode.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/asserts/assertNode.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -11138,9 +11160,9 @@ var require_assertNode = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/asserts/generated/index.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/asserts/generated/index.js
 var require_generated3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/asserts/generated/index.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/asserts/generated/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -12701,9 +12723,9 @@ var require_generated3 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/flow/createTypeAnnotationBasedOnTypeof.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/flow/createTypeAnnotationBasedOnTypeof.js
 var require_createTypeAnnotationBasedOnTypeof = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/flow/createTypeAnnotationBasedOnTypeof.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/flow/createTypeAnnotationBasedOnTypeof.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -12736,9 +12758,9 @@ var require_createTypeAnnotationBasedOnTypeof = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/flow/removeTypeDuplicates.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/flow/removeTypeDuplicates.js
 var require_removeTypeDuplicates = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/flow/removeTypeDuplicates.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/flow/removeTypeDuplicates.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -12806,9 +12828,9 @@ var require_removeTypeDuplicates = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/flow/createFlowUnionType.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/flow/createFlowUnionType.js
 var require_createFlowUnionType = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/flow/createFlowUnionType.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/flow/createFlowUnionType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -12828,9 +12850,9 @@ var require_createFlowUnionType = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/typescript/removeTypeDuplicates.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/typescript/removeTypeDuplicates.js
 var require_removeTypeDuplicates2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/typescript/removeTypeDuplicates.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/typescript/removeTypeDuplicates.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -12899,9 +12921,9 @@ var require_removeTypeDuplicates2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/typescript/createTSUnionType.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/typescript/createTSUnionType.js
 var require_createTSUnionType = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/typescript/createTSUnionType.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/typescript/createTSUnionType.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -12925,9 +12947,9 @@ var require_createTSUnionType = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/productions.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/productions.js
 var require_productions = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/builders/productions.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/builders/productions.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -12941,9 +12963,9 @@ var require_productions = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneNode.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneNode.js
 var require_cloneNode = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneNode.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneNode.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13056,9 +13078,9 @@ var require_cloneNode = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/clone.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/clone.js
 var require_clone = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/clone.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/clone.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13072,9 +13094,9 @@ var require_clone = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneDeep.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneDeep.js
 var require_cloneDeep = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneDeep.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneDeep.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13088,9 +13110,9 @@ var require_cloneDeep = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneDeepWithoutLoc.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneDeepWithoutLoc.js
 var require_cloneDeepWithoutLoc = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneDeepWithoutLoc.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneDeepWithoutLoc.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13104,9 +13126,9 @@ var require_cloneDeepWithoutLoc = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneWithoutLoc.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneWithoutLoc.js
 var require_cloneWithoutLoc = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/clone/cloneWithoutLoc.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/clone/cloneWithoutLoc.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13120,9 +13142,9 @@ var require_cloneWithoutLoc = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/addComments.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/addComments.js
 var require_addComments = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/addComments.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/addComments.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13146,9 +13168,9 @@ var require_addComments = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/addComment.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/addComment.js
 var require_addComment = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/addComment.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/addComment.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13165,9 +13187,9 @@ var require_addComment = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/inherit.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/inherit.js
 var require_inherit = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/utils/inherit.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/utils/inherit.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13182,9 +13204,9 @@ var require_inherit = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritInnerComments.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritInnerComments.js
 var require_inheritInnerComments = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritInnerComments.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritInnerComments.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13198,9 +13220,9 @@ var require_inheritInnerComments = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritLeadingComments.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritLeadingComments.js
 var require_inheritLeadingComments = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritLeadingComments.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritLeadingComments.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13214,9 +13236,9 @@ var require_inheritLeadingComments = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritTrailingComments.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritTrailingComments.js
 var require_inheritTrailingComments = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritTrailingComments.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritTrailingComments.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13230,9 +13252,9 @@ var require_inheritTrailingComments = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritsComments.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritsComments.js
 var require_inheritsComments = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/inheritsComments.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/inheritsComments.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13251,9 +13273,9 @@ var require_inheritsComments = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/removeComments.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/removeComments.js
 var require_removeComments = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/comments/removeComments.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/comments/removeComments.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13270,9 +13292,9 @@ var require_removeComments = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/constants/generated/index.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/constants/generated/index.js
 var require_generated4 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/constants/generated/index.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/constants/generated/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13333,9 +13355,9 @@ var require_generated4 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toBlock.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toBlock.js
 var require_toBlock = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toBlock.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toBlock.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13366,9 +13388,9 @@ var require_toBlock = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/ensureBlock.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/ensureBlock.js
 var require_ensureBlock = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/ensureBlock.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/ensureBlock.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13384,9 +13406,9 @@ var require_ensureBlock = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toIdentifier.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toIdentifier.js
 var require_toIdentifier = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toIdentifier.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toIdentifier.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13413,9 +13435,9 @@ var require_toIdentifier = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toBindingIdentifierName.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toBindingIdentifierName.js
 var require_toBindingIdentifierName = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toBindingIdentifierName.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toBindingIdentifierName.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13431,9 +13453,9 @@ var require_toBindingIdentifierName = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toComputedKey.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toComputedKey.js
 var require_toComputedKey = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toComputedKey.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toComputedKey.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13449,9 +13471,9 @@ var require_toComputedKey = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toExpression.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toExpression.js
 var require_toExpression = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toExpression.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toExpression.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13481,9 +13503,9 @@ var require_toExpression = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/traverse/traverseFast.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/traverse/traverseFast.js
 var require_traverseFast = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/traverse/traverseFast.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/traverse/traverseFast.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13525,9 +13547,9 @@ var require_traverseFast = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/removeProperties.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/removeProperties.js
 var require_removeProperties = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/removeProperties.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/removeProperties.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13553,9 +13575,9 @@ var require_removeProperties = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/removePropertiesDeep.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/removePropertiesDeep.js
 var require_removePropertiesDeep = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/removePropertiesDeep.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/removePropertiesDeep.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13571,9 +13593,9 @@ var require_removePropertiesDeep = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toKeyAlias.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toKeyAlias.js
 var require_toKeyAlias = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toKeyAlias.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toKeyAlias.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13613,9 +13635,9 @@ var require_toKeyAlias = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toStatement.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toStatement.js
 var require_toStatement = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toStatement.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toStatement.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13656,9 +13678,9 @@ var require_toStatement = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/valueToNode.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/valueToNode.js
 var require_valueToNode = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/valueToNode.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/valueToNode.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13750,9 +13772,9 @@ var require_valueToNode = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/appendToMemberExpression.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/appendToMemberExpression.js
 var require_appendToMemberExpression = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/appendToMemberExpression.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/appendToMemberExpression.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13769,9 +13791,9 @@ var require_appendToMemberExpression = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/inherits.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/inherits.js
 var require_inherits = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/inherits.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/inherits.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13801,9 +13823,9 @@ var require_inherits = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/prependToMemberExpression.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/prependToMemberExpression.js
 var require_prependToMemberExpression = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/modifications/prependToMemberExpression.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/modifications/prependToMemberExpression.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13822,9 +13844,9 @@ var require_prependToMemberExpression = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getAssignmentIdentifiers.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getAssignmentIdentifiers.js
 var require_getAssignmentIdentifiers = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getAssignmentIdentifiers.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getAssignmentIdentifiers.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13874,9 +13896,9 @@ var require_getAssignmentIdentifiers = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getBindingIdentifiers.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getBindingIdentifiers.js
 var require_getBindingIdentifiers = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getBindingIdentifiers.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getBindingIdentifiers.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13980,9 +14002,9 @@ var require_getBindingIdentifiers = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getOuterBindingIdentifiers.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getOuterBindingIdentifiers.js
 var require_getOuterBindingIdentifiers = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getOuterBindingIdentifiers.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getOuterBindingIdentifiers.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -13997,9 +14019,9 @@ var require_getOuterBindingIdentifiers = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getFunctionName.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getFunctionName.js
 var require_getFunctionName = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/retrievers/getFunctionName.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/retrievers/getFunctionName.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14067,9 +14089,9 @@ var require_getFunctionName = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/traverse/traverse.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/traverse/traverse.js
 var require_traverse = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/traverse/traverse.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/traverse/traverse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14122,9 +14144,9 @@ var require_traverse = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isBinding.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isBinding.js
 var require_isBinding = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isBinding.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isBinding.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14153,9 +14175,9 @@ var require_isBinding = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isLet.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isLet.js
 var require_isLet = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isLet.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isLet.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14170,9 +14192,9 @@ var require_isLet = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isBlockScoped.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isBlockScoped.js
 var require_isBlockScoped = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isBlockScoped.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isBlockScoped.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14187,9 +14209,9 @@ var require_isBlockScoped = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isImmutable.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isImmutable.js
 var require_isImmutable = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isImmutable.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isImmutable.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14212,9 +14234,9 @@ var require_isImmutable = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isNodesEquivalent.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isNodesEquivalent.js
 var require_isNodesEquivalent = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isNodesEquivalent.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isNodesEquivalent.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14273,9 +14295,9 @@ var require_isNodesEquivalent = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isReferenced.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isReferenced.js
 var require_isReferenced = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isReferenced.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isReferenced.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14373,9 +14395,9 @@ var require_isReferenced = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isScope.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isScope.js
 var require_isScope = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isScope.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isScope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14395,9 +14417,9 @@ var require_isScope = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isSpecifierDefault.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isSpecifierDefault.js
 var require_isSpecifierDefault = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isSpecifierDefault.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isSpecifierDefault.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14413,9 +14435,9 @@ var require_isSpecifierDefault = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isValidES3Identifier.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isValidES3Identifier.js
 var require_isValidES3Identifier = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isValidES3Identifier.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isValidES3Identifier.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14430,9 +14452,9 @@ var require_isValidES3Identifier = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isVar.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isVar.js
 var require_isVar = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/validators/isVar.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/validators/isVar.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14449,9 +14471,9 @@ var require_isVar = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/gatherSequenceExpressions.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/gatherSequenceExpressions.js
 var require_gatherSequenceExpressions = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/gatherSequenceExpressions.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/gatherSequenceExpressions.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14518,9 +14540,9 @@ var require_gatherSequenceExpressions = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toSequenceExpression.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toSequenceExpression.js
 var require_toSequenceExpression = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/converters/toSequenceExpression.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/converters/toSequenceExpression.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -14541,9 +14563,9 @@ var require_toSequenceExpression = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/index.js
+// ../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/index.js
 var require_lib3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/types/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+types@7.29.8/node_modules/@babel/types/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -15126,9 +15148,9 @@ var require_lib3 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/formatters.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/formatters.js
 var require_formatters = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/formatters.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/formatters.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -15196,9 +15218,9 @@ ${str}
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/options.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/options.js
 var require_options = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/options.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/options.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -15282,9 +15304,9 @@ var require_options = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/parser/lib/index.js
+// ../../node_modules/.bun/@babel+parser@7.29.9/node_modules/@babel/parser/lib/index.js
 var require_lib4 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/parser/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+parser@7.29.9/node_modules/@babel/parser/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -15534,6 +15556,7 @@ var require_lib4 = __commonJS({
       SloppyFunctionAnnexB: "In non-strict mode code, functions can only be declared at top level, inside a block, or as the body of an if statement.",
       SourcePhaseImportRequiresDefault: 'Only `import source x from "./module"` is valid.',
       StaticPrototype: "Classes may not have static property named prototype.",
+      SuperCallNotNewExpression: "Cannot use new with super(...).",
       SuperNotAllowed: "`super()` is only valid inside a class constructor of a subclass. Maybe a typo in the method name ('constructor') or not extending another class?",
       SuperPrivateField: "Private fields can't be accessed on super.",
       TrailingDecorator: "Decorators must be attached to a class element.",
@@ -15563,7 +15586,6 @@ var require_lib4 = __commonJS({
       UnexpectedTokenUnaryExponentiation: "Illegal expression. Wrap left hand side or entire exponentiation in parentheses.",
       UnexpectedUsingDeclaration: "Using declaration cannot appear in the top level when source type is `script` or in the bare case statement.",
       UnexpectedVoidPattern: "Unexpected void binding.",
-      UnsupportedBind: "Binding should be performed on object property.",
       UnsupportedDecoratorExport: "A decorated export must export a class declaration.",
       UnsupportedDefaultExport: "Only expressions, functions or classes are allowed as the `default` export.",
       UnsupportedImport: "`import` can only be used in `import()` or `import.meta`.",
@@ -15631,6 +15653,10 @@ var require_lib4 = __commonJS({
       PrimaryTopicNotAllowed: "Topic reference was used in a lexical context without topic binding.",
       PrimaryTopicRequiresSmartPipeline: 'Topic reference is used, but the pipelineOperator plugin was not passed a "proposal": "hack" or "smart" option.'
     });
+    var FunctionBindErrors = {
+      UnsupportedBind: "Binding should be performed on object property.",
+      UnsupportedBindRHS: "The right-hand side of binding can not be super or import."
+    };
     var _excluded = ["message"];
     function defineHidden(obj, key2, value2) {
       Object.defineProperty(obj, key2, {
@@ -15722,7 +15748,7 @@ var require_lib4 = __commonJS({
       return ParseErrorConstructors;
     }
     __name(ParseErrorEnum, "ParseErrorEnum");
-    var Errors = Object.assign({}, ParseErrorEnum(ModuleErrors), ParseErrorEnum(StandardErrors), ParseErrorEnum(StrictModeErrors), ParseErrorEnum(ParseExpressionErrors), ParseErrorEnum`pipelineOperator`(PipelineOperatorErrors));
+    var Errors = Object.assign({}, ParseErrorEnum(ModuleErrors), ParseErrorEnum(StandardErrors), ParseErrorEnum(StrictModeErrors), ParseErrorEnum(ParseExpressionErrors), ParseErrorEnum`pipelineOperator`(PipelineOperatorErrors), ParseErrorEnum`functionBind`(FunctionBindErrors));
     function createDefaultOptions() {
       return {
         sourceType: "script",
@@ -18407,13 +18433,15 @@ var require_lib4 = __commonJS({
         const arrows = [];
         while (stack2.length !== 0) {
           const node2 = stack2.pop();
-          if (node2.type === "ArrowFunctionExpression" && node2.body.type !== "BlockStatement") {
+          if (node2.type === "ArrowFunctionExpression") {
             if (node2.typeParameters || !node2.returnType) {
               this.finishArrowValidation(node2);
             } else {
               arrows.push(node2);
             }
-            stack2.push(node2.body);
+            if (node2.body.type !== "BlockStatement") {
+              stack2.push(node2.body);
+            }
           } else if (node2.type === "ConditionalExpression") {
             stack2.push(node2.consequent);
             stack2.push(node2.alternate);
@@ -25655,8 +25683,11 @@ var require_lib4 = __commonJS({
         }
       }
       fillOptionalPropertiesForTSESLint(node) {
-        var _node$directive, _node$decorators, _node$optional, _node$typeAnnotation, _node$accessibility, _node$decorators2, _node$override, _node$readonly, _node$static, _node$declare, _node$returnType, _node$typeParameters, _node$optional2, _node$optional3, _node$accessibility2, _node$readonly2, _node$static2, _node$declare2, _node$definite, _node$readonly3, _node$typeAnnotation2, _node$accessibility3, _node$decorators3, _node$override2, _node$optional4, _node$id, _node$abstract, _node$declare3, _node$decorators4, _node$implements, _node$superTypeArgume, _node$typeParameters2, _node$declare4, _node$definite2, _node$const, _node$declare5, _node$computed, _node$qualifier, _node$options, _node$declare6, _node$extends, _node$optional5, _node$readonly4, _node$declare7, _node$global, _node$const2, _node$in, _node$out;
+        var _node$phase, _node$directive, _node$decorators, _node$optional, _node$typeAnnotation, _node$accessibility, _node$decorators2, _node$override, _node$readonly, _node$static, _node$declare, _node$returnType, _node$typeParameters, _node$optional2, _node$optional3, _node$accessibility2, _node$readonly2, _node$static2, _node$declare2, _node$definite, _node$readonly3, _node$typeAnnotation2, _node$accessibility3, _node$decorators3, _node$override2, _node$optional4, _node$id, _node$abstract, _node$declare3, _node$decorators4, _node$implements, _node$superTypeArgume, _node$typeParameters2, _node$declare4, _node$definite2, _node$const, _node$declare5, _node$computed, _node$qualifier, _node$options, _node$declare6, _node$extends, _node$optional5, _node$readonly4, _node$declare7, _node$global, _node$const2, _node$in, _node$out;
         switch (node.type) {
+          case "ImportDeclaration":
+            (_node$phase = node.phase) != null ? _node$phase : node.phase = null;
+            return;
           case "ExpressionStatement":
             (_node$directive = node.directive) != null ? _node$directive : node.directive = void 0;
             return;
@@ -26568,7 +26599,7 @@ var require_lib4 = __commonJS({
           type
         } = this.state;
         if (!noCalls && type === 15) {
-          return this.parseBind(base, startLoc, noCalls, state);
+          return this.parseBind(base, startLoc, state);
         } else if (tokenIsTemplate(type)) {
           return this.parseTaggedTemplateExpression(base, startLoc, state);
         }
@@ -26621,13 +26652,18 @@ var require_lib4 = __commonJS({
           return this.finishNode(node, "MemberExpression");
         }
       }
-      parseBind(base, startLoc, noCalls, state) {
+      parseBind(base, startLoc, state) {
         const node = this.startNodeAt(startLoc);
         node.object = base;
         this.next();
-        node.callee = this.parseNoCallExpr();
+        const isImport = this.match(83);
+        const callee = this.parseNoCallExpr();
+        if (callee.type === "Super" || isImport && callee.type === "ImportExpression" || callee.type === "Import") {
+          throw this.raise(Errors.UnsupportedBindRHS, callee);
+        }
+        node.callee = callee;
         state.stop = true;
-        return this.parseSubscripts(this.finishNode(node, "BindExpression"), startLoc, noCalls);
+        return this.parseSubscripts(this.finishNode(node, "BindExpression"), startLoc, false);
       }
       parseCoverCallAndAsyncArrowHead(base, startLoc, state, optional) {
         const oldMaybeInArrowParameters = this.state.maybeInArrowParameters;
@@ -27210,8 +27246,11 @@ var require_lib4 = __commonJS({
         const isImport = this.match(83);
         const callee = this.parseNoCallExpr();
         node.callee = callee;
-        if (isImport && (callee.type === "Import" || callee.type === "ImportExpression")) {
+        if (isImport && callee.type === "ImportExpression" || callee.type === "Import") {
           this.raise(Errors.ImportCallNotNewExpression, callee);
+        }
+        if (callee.type === "Super") {
+          this.raise(Errors.SuperCallNotNewExpression, callee);
         }
       }
       parseTemplateElement(isTagged) {
@@ -30045,9 +30084,9 @@ var require_lib4 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/picocolors/picocolors.js
+// ../../node_modules/.bun/picocolors@1.1.1/node_modules/picocolors/picocolors.js
 var require_picocolors = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/picocolors/picocolors.js"(exports, module) {
+  "../../node_modules/.bun/picocolors@1.1.1/node_modules/picocolors/picocolors.js"(exports, module) {
     var p = process || {};
     var argv = p.argv || [];
     var env2 = p.env || {};
@@ -30117,9 +30156,9 @@ var require_picocolors = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/js-tokens/index.js
+// ../../node_modules/.bun/js-tokens@4.0.0/node_modules/js-tokens/index.js
 var require_js_tokens = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/js-tokens/index.js"(exports) {
+  "../../node_modules/.bun/js-tokens@4.0.0/node_modules/js-tokens/index.js"(exports) {
     Object.defineProperty(exports, "__esModule", {
       value: true
     });
@@ -30139,9 +30178,9 @@ var require_js_tokens = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/code-frame/lib/index.js
+// ../../node_modules/.bun/@babel+code-frame@7.29.7/node_modules/@babel/code-frame/lib/index.js
 var require_lib5 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/code-frame/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+code-frame@7.29.7/node_modules/@babel/code-frame/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var picocolors = require_picocolors();
@@ -30362,9 +30401,9 @@ ${frame}`;
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/parse.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/parse.js
 var require_parse = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/parse.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/parse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -30532,9 +30571,9 @@ var require_parse = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/populate.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/populate.js
 var require_populate = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/populate.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/populate.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -30676,9 +30715,9 @@ var require_populate = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/string.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/string.js
 var require_string = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/string.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/string.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -30700,9 +30739,9 @@ var require_string = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/literal.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/literal.js
 var require_literal = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/literal.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/literal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -30775,9 +30814,9 @@ var require_literal = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/builder.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/builder.js
 var require_builder = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/builder.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/builder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -30851,9 +30890,9 @@ ${rootStack}`;
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/index.js
+// ../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/index.js
 var require_lib6 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/template/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+template@7.29.7/node_modules/@babel/template/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -30877,9 +30916,9 @@ var require_lib6 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helpers/lib/helpers-generated.js
+// ../../node_modules/.bun/@babel+helpers@7.29.7/node_modules/@babel/helpers/lib/helpers-generated.js
 var require_helpers_generated = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helpers/lib/helpers-generated.js"(exports) {
+  "../../node_modules/.bun/@babel+helpers@7.29.7/node_modules/@babel/helpers/lib/helpers-generated.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -32323,9 +32362,9 @@ var e,t,r="function"==typeof Symbol?Symbol:{},n=r.iterator||"@@iterator",o=r.toS
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helpers/lib/index.js
+// ../../node_modules/.bun/@babel+helpers@7.29.7/node_modules/@babel/helpers/lib/index.js
 var require_lib7 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helpers/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helpers@7.29.7/node_modules/@babel/helpers/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -32455,9 +32494,9 @@ var require_lib7 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/virtual-types.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/virtual-types.js
 var require_virtual_types = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/virtual-types.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/virtual-types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -32484,9 +32523,9 @@ var require_virtual_types = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/ms/index.js
+// ../../node_modules/.bun/ms@2.1.3/node_modules/ms/index.js
 var require_ms = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/ms/index.js"(exports, module) {
+  "../../node_modules/.bun/ms@2.1.3/node_modules/ms/index.js"(exports, module) {
     var s = 1e3;
     var m = s * 60;
     var h = m * 60;
@@ -32604,9 +32643,9 @@ var require_ms = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/common.js
+// ../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/common.js
 var require_common = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/common.js"(exports, module) {
+  "../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/common.js"(exports, module) {
     function setup(env2) {
       createDebug.debug = createDebug;
       createDebug.default = createDebug;
@@ -32792,9 +32831,9 @@ var require_common = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/browser.js
+// ../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/browser.js
 var require_browser = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/browser.js"(exports, module) {
+  "../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/browser.js"(exports, module) {
     exports.formatArgs = formatArgs;
     exports.save = save;
     exports.load = load;
@@ -32967,7 +33006,7 @@ var require_browser = __commonJS({
   }
 });
 
-// node_modules/supports-color/index.js
+// ../../node_modules/.bun/supports-color@10.2.2/node_modules/supports-color/index.js
 var supports_color_exports = {};
 __export(supports_color_exports, {
   createSupportsColor: () => createSupportsColor,
@@ -33101,7 +33140,7 @@ function createSupportsColor(stream, options = {}) {
 }
 var env, flagForceColor, supportsColor, supports_color_default;
 var init_supports_color = __esm({
-  "node_modules/supports-color/index.js"() {
+  "../../node_modules/.bun/supports-color@10.2.2/node_modules/supports-color/index.js"() {
     __name(hasFlag, "hasFlag");
     ({ env } = process2);
     if (hasFlag("no-color") || hasFlag("no-colors") || hasFlag("color=false") || hasFlag("color=never")) {
@@ -33121,9 +33160,9 @@ var init_supports_color = __esm({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/node.js
+// ../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/node.js
 var require_node = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/node.js"(exports, module) {
+  "../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/node.js"(exports, module) {
     var tty2 = __require("tty");
     var util2 = __require("util");
     exports.init = init;
@@ -33302,9 +33341,9 @@ var require_node = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/index.js
+// ../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/index.js
 var require_src = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/debug/src/index.js"(exports, module) {
+  "../../node_modules/.bun/debug@4.4.3/node_modules/debug/src/index.js"(exports, module) {
     if (typeof process === "undefined" || process.type === "renderer" || process.browser === true || process.__nwjs) {
       module.exports = require_browser();
     } else {
@@ -33313,9 +33352,9 @@ var require_src = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/virtual-types-validator.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/virtual-types-validator.js
 var require_virtual_types_validator = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/virtual-types-validator.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/virtual-types-validator.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -33494,9 +33533,9 @@ var require_virtual_types_validator = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/visitors.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/visitors.js
 var require_visitors = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/visitors.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/visitors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -33603,7 +33642,7 @@ var require_visitors = __commonJS({
         }
         if (shouldIgnoreKey(nodeType)) continue;
         if (!TYPES.includes(nodeType)) {
-          throw new Error(`You gave us a visitor for the node type ${nodeType} but it's not a valid type in @babel/traverse ${"7.29.0"}`);
+          throw new Error(`You gave us a visitor for the node type ${nodeType} but it's not a valid type in @babel/traverse ${"7.29.8"}`);
         }
         const visitors = visitor[nodeType];
         if (typeof visitors === "object") {
@@ -33762,9 +33801,9 @@ var require_visitors = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/lib/renamer.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/lib/renamer.js
 var require_renamer = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/lib/renamer.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/lib/renamer.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -33900,9 +33939,9 @@ var require_renamer = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/traverseForScope.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/traverseForScope.js
 var require_traverseForScope = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/traverseForScope.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/traverseForScope.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -33971,9 +34010,9 @@ var require_traverseForScope = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/binding.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/binding.js
 var require_binding = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/binding.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/binding.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -34062,9 +34101,9 @@ var require_binding = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/cache.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/cache.js
 var require_cache = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/cache.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/cache.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -34107,9 +34146,9 @@ var require_cache = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-globals/data/builtin-lower.json
+// ../../node_modules/.bun/@babel+helper-globals@7.29.7/node_modules/@babel/helper-globals/data/builtin-lower.json
 var require_builtin_lower = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-globals/data/builtin-lower.json"(exports, module) {
+  "../../node_modules/.bun/@babel+helper-globals@7.29.7/node_modules/@babel/helper-globals/data/builtin-lower.json"(exports, module) {
     module.exports = [
       "decodeURI",
       "decodeURIComponent",
@@ -34128,9 +34167,9 @@ var require_builtin_lower = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-globals/data/builtin-upper.json
+// ../../node_modules/.bun/@babel+helper-globals@7.29.7/node_modules/@babel/helper-globals/data/builtin-upper.json
 var require_builtin_upper = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-globals/data/builtin-upper.json"(exports, module) {
+  "../../node_modules/.bun/@babel+helper-globals@7.29.7/node_modules/@babel/helper-globals/data/builtin-upper.json"(exports, module) {
     module.exports = [
       "AggregateError",
       "Array",
@@ -34185,9 +34224,9 @@ var require_builtin_upper = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/index.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/index.js
 var require_scope = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/scope/index.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/scope/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -35214,7 +35253,7 @@ var require_scope = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/sourcemap-codec/dist/sourcemap-codec.mjs
+// ../../node_modules/.bun/@jridgewell+sourcemap-codec@1.5.5/node_modules/@jridgewell/sourcemap-codec/dist/sourcemap-codec.mjs
 function decodeInteger(reader, relative) {
   let value2 = 0;
   let shift = 0;
@@ -35322,7 +35361,7 @@ function encode(decoded) {
 }
 var comma, semicolon, chars, intToChar, charToInt, bufLength, td, StringWriter, StringReader;
 var init_sourcemap_codec = __esm({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/sourcemap-codec/dist/sourcemap-codec.mjs"() {
+  "../../node_modules/.bun/@jridgewell+sourcemap-codec@1.5.5/node_modules/@jridgewell/sourcemap-codec/dist/sourcemap-codec.mjs"() {
     comma = ",".charCodeAt(0);
     semicolon = ";".charCodeAt(0);
     chars = "ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/";
@@ -35400,7 +35439,7 @@ var init_sourcemap_codec = __esm({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/resolve-uri/dist/resolve-uri.mjs
+// ../../node_modules/.bun/@jridgewell+resolve-uri@3.1.2/node_modules/@jridgewell/resolve-uri/dist/resolve-uri.mjs
 function isAbsoluteUrl(input) {
   return schemeRegex.test(input);
 }
@@ -35567,7 +35606,7 @@ function resolve(input, base) {
 }
 var schemeRegex, urlRegex, fileRegex;
 var init_resolve_uri = __esm({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/resolve-uri/dist/resolve-uri.mjs"() {
+  "../../node_modules/.bun/@jridgewell+resolve-uri@3.1.2/node_modules/@jridgewell/resolve-uri/dist/resolve-uri.mjs"() {
     schemeRegex = /^[\w+.-]+:\/\//;
     urlRegex = /^([\w+.-]+:)\/\/([^@/#?]*@)?([^:/#?]*)(:\d+)?(\/[^#?]*)?(\?[^#]*)?(#.*)?/;
     fileRegex = /^file:(?:\/\/((?![a-z]:)[^/#?]*)?)?(\/?[^#?]*)(\?[^#]*)?(#.*)?/i;
@@ -35587,7 +35626,7 @@ var init_resolve_uri = __esm({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/trace-mapping/dist/trace-mapping.mjs
+// ../../node_modules/.bun/@jridgewell+trace-mapping@0.3.31/node_modules/@jridgewell/trace-mapping/dist/trace-mapping.mjs
 var trace_mapping_exports = {};
 __export(trace_mapping_exports, {
   AnyMap: () => FlattenMap,
@@ -35982,7 +36021,7 @@ function generatedPosition(map, source2, line2, column2, bias, all) {
 }
 var COLUMN, SOURCES_INDEX, SOURCE_LINE, SOURCE_COLUMN, NAMES_INDEX, REV_GENERATED_LINE, REV_GENERATED_COLUMN, found, FlattenMap, LINE_GTR_ZERO, COL_GTR_EQ_ZERO, LEAST_UPPER_BOUND, GREATEST_LOWER_BOUND, TraceMap;
 var init_trace_mapping = __esm({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/trace-mapping/dist/trace-mapping.mjs"() {
+  "../../node_modules/.bun/@jridgewell+trace-mapping@0.3.31/node_modules/@jridgewell/trace-mapping/dist/trace-mapping.mjs"() {
     init_sourcemap_codec();
     init_resolve_uri();
     __name(stripFilename, "stripFilename");
@@ -36107,7 +36146,7 @@ var init_trace_mapping = __esm({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/gen-mapping/dist/gen-mapping.mjs
+// ../../node_modules/.bun/@jridgewell+gen-mapping@0.3.13/node_modules/@jridgewell/gen-mapping/dist/gen-mapping.mjs
 var gen_mapping_exports = {};
 __export(gen_mapping_exports, {
   GenMapping: () => GenMapping,
@@ -36352,7 +36391,7 @@ function addMappingInternal(skipable, map, mapping) {
 }
 var SetArray, COLUMN2, SOURCES_INDEX2, SOURCE_LINE2, SOURCE_COLUMN2, NAMES_INDEX2, NO_NAME, GenMapping, maybeAddSegment, maybeAddMapping;
 var init_gen_mapping = __esm({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/gen-mapping/dist/gen-mapping.mjs"() {
+  "../../node_modules/.bun/@jridgewell+gen-mapping@0.3.13/node_modules/@jridgewell/gen-mapping/dist/gen-mapping.mjs"() {
     init_sourcemap_codec();
     init_trace_mapping();
     SetArray = class {
@@ -36426,9 +36465,9 @@ var init_gen_mapping = __esm({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/source-map.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/source-map.js
 var require_source_map = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/source-map.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/source-map.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -36491,7 +36530,9 @@ var require_source_map = __commonJS({
               line: line2,
               column: column2
             });
-            if (!originalMapping.name && identifierNamePos) {
+            if (originalMapping.name && (identifierNamePos || identifierName != null && originalMapping.column === column2)) {
+              identifierName = originalMapping.name;
+            } else if (identifierNamePos) {
               const originalIdentifierMapping = (0, _traceMapping.originalPositionFor)(this._inputMap, identifierNamePos);
               if (originalIdentifierMapping.name) {
                 identifierName = originalIdentifierMapping.name;
@@ -36518,9 +36559,9 @@ var require_source_map = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/buffer.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/buffer.js
 var require_buffer = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/buffer.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/buffer.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -36605,9 +36646,9 @@ var require_buffer = __commonJS({
         };
         return result;
       }
-      append(str, maybeNewline) {
+      append(str, maybeNewline, ignoreMapping = false) {
         this._flush();
-        this._append(str, maybeNewline);
+        this._append(str, maybeNewline, ignoreMapping);
       }
       appendChar(char) {
         this._flush();
@@ -36653,7 +36694,7 @@ var require_buffer = __commonJS({
           position.column = 0;
         }
       }
-      _append(str, maybeNewline) {
+      _append(str, maybeNewline, ignoreMapping) {
         const len = str.length;
         const position = this._position;
         const sourcePos = this._sourcePosition;
@@ -36666,7 +36707,7 @@ var require_buffer = __commonJS({
         } else {
           this._str += str;
         }
-        const hasMap = this._map !== null;
+        const hasMap = !ignoreMapping && this._map !== null;
         if (!maybeNewline && !hasMap) {
           position.column += len;
           return;
@@ -36750,12 +36791,15 @@ var require_buffer = __commonJS({
       _normalizePosition(prop, loc, columnOffset) {
         this._flush();
         const pos2 = loc[prop];
-        const target = this._sourcePosition;
         if (pos2) {
-          target.line = pos2.line;
-          target.column = Math.max(pos2.column + columnOffset, 0);
-          target.filename = loc.filename;
+          this.setSourcePosition(pos2.line, Math.max(pos2.column + columnOffset, 0));
+          this._sourcePosition.filename = loc.filename;
         }
+      }
+      setSourcePosition(line2, column2) {
+        const target = this._sourcePosition;
+        target.line = line2;
+        target.column = column2;
       }
       getCurrentColumn() {
         return this._position.column + (this._queuedChar ? 1 : 0);
@@ -36768,9 +36812,9 @@ var require_buffer = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/node/parentheses.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/node/parentheses.js
 var require_parentheses = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/node/parentheses.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/node/parentheses.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -37096,9 +37140,9 @@ var require_parentheses = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/template-literals.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/template-literals.js
 var require_template_literals = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/template-literals.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/template-literals.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -37141,9 +37185,9 @@ var require_template_literals = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/expressions.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/expressions.js
 var require_expressions = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/expressions.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/expressions.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -37481,9 +37525,9 @@ var require_expressions = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/statements.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/statements.js
 var require_statements = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/statements.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/statements.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -37803,9 +37847,9 @@ var require_statements = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/methods.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/methods.js
 var require_methods = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/methods.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/methods.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -38023,9 +38067,9 @@ var require_methods = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/typescript.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/typescript.js
 var require_typescript2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/typescript.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/typescript.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -38827,9 +38871,9 @@ var require_typescript2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/modules.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/modules.js
 var require_modules = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/modules.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/modules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -39133,9 +39177,9 @@ Please specify the "importAttributesKeyword" generator option, whose value can b
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/jsesc/jsesc.js
+// ../../node_modules/.bun/jsesc@3.1.0/node_modules/jsesc/jsesc.js
 var require_jsesc = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/jsesc/jsesc.js"(exports, module) {
+  "../../node_modules/.bun/jsesc@3.1.0/node_modules/jsesc/jsesc.js"(exports, module) {
     "use strict";
     var object = {};
     var hasOwnProperty2 = object.hasOwnProperty;
@@ -39409,9 +39453,9 @@ var require_jsesc = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/types.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/types.js
 var require_types = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/types.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -39614,9 +39658,9 @@ var require_types = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/flow.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/flow.js
 var require_flow2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/flow.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/flow.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -40343,9 +40387,9 @@ var require_flow2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/classes.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/classes.js
 var require_classes = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/classes.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/classes.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -40571,9 +40615,9 @@ var require_classes = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/base.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/base.js
 var require_base = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/base.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/base.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -40667,9 +40711,9 @@ var require_base = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/jsx.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/jsx.js
 var require_jsx2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/jsx.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/jsx.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -40810,9 +40854,9 @@ var require_jsx2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/index.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/index.js
 var require_generators = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/index.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -40941,9 +40985,9 @@ var require_generators = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/deprecated.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/deprecated.js
 var require_deprecated = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/generators/deprecated.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/generators/deprecated.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -41023,9 +41067,9 @@ var require_deprecated = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/nodes.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/nodes.js
 var require_nodes = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/nodes.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/nodes.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -41045,9 +41089,9 @@ var require_nodes = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/node/index.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/node/index.js
 var require_node2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/node/index.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/node/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -41079,21 +41123,35 @@ var require_node2 = __commonJS({
         _nodes.generatorInfosMap.get(type)[2] = func;
       }
     }
-    function isOrHasCallExpression(node) {
-      switch (node.type) {
-        case "CallExpression":
-          return true;
-        case "MemberExpression":
-          return isOrHasCallExpression(node.object);
+    function newCalleeNeedsParens(node) {
+      let current = node;
+      while (true) {
+        switch (current.type) {
+          case "CallExpression":
+          case "ImportExpression":
+          case "OptionalCallExpression":
+          case "OptionalMemberExpression":
+            return true;
+          case "MemberExpression":
+            current = current.object;
+            break;
+          case "TaggedTemplateExpression":
+            current = current.tag;
+            break;
+          case "TSNonNullExpression":
+            current = current.expression;
+            break;
+          default:
+            return false;
+        }
       }
-      return false;
     }
-    __name(isOrHasCallExpression, "isOrHasCallExpression");
+    __name(newCalleeNeedsParens, "newCalleeNeedsParens");
     function parentNeedsParens(node, parent, parentId) {
       switch (parentId) {
         case 112:
           if (parent.callee === node) {
-            if (isOrHasCallExpression(node)) return true;
+            return newCalleeNeedsParens(node);
           }
           break;
         case 42:
@@ -41133,9 +41191,9 @@ var require_node2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/token-map.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/token-map.js
 var require_token_map = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/token-map.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/token-map.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -41335,9 +41393,9 @@ var require_token_map = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/printer.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/printer.js
 var require_printer = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/printer.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/printer.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -41681,7 +41739,8 @@ var require_printer = __commonJS({
         const spacesCount = count > 0 ? column2 : column2 - this._buf.getCurrentColumn();
         if (spacesCount > 0) {
           const spaces = this._originalCode ? this._originalCode.slice(index - spacesCount, index).replace(/[^\t\x0B\f \xA0\u1680\u2000-\u200A\u202F\u205F\u3000\uFEFF]/gu, " ") : " ".repeat(spacesCount);
-          this._append(spaces, false);
+          this._buf.append(spaces, false, true);
+          this._buf.setSourcePosition(line2, column2);
           this.setLastChar(32);
         }
       }
@@ -42129,9 +42188,9 @@ ${" ".repeat(indentSize)}`);
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/index.js
+// ../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/index.js
 var require_lib8 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/generator/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+generator@7.29.8/node_modules/@babel/generator/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -42245,9 +42304,9 @@ var require_lib8 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/ancestry.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/ancestry.js
 var require_ancestry = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/ancestry.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/ancestry.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -42397,9 +42456,9 @@ var require_ancestry = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/util.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/util.js
 var require_util = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/util.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -42429,9 +42488,9 @@ var require_util = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/inferer-reference.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/inferer-reference.js
 var require_inferer_reference = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/inferer-reference.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/inferer-reference.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -42590,9 +42649,9 @@ var require_inferer_reference = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/inferers.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/inferers.js
 var require_inferers = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/inferers.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/inferers.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -42827,9 +42886,9 @@ var require_inferers = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/index.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/index.js
 var require_inference = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/inference/index.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/inference/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -42986,9 +43045,9 @@ var require_inference = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/removal-hooks.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/removal-hooks.js
 var require_removal_hooks = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/removal-hooks.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/removal-hooks.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -43027,9 +43086,9 @@ var require_removal_hooks = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/removal.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/removal.js
 var require_removal = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/removal.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/removal.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -43103,9 +43162,9 @@ var require_removal = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/hoister.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/hoister.js
 var require_hoister = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/lib/hoister.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/lib/hoister.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -43281,9 +43340,9 @@ var require_hoister = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/modification.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/modification.js
 var require_modification = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/modification.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/modification.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -43524,9 +43583,9 @@ var require_modification = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/replacement.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/replacement.js
 var require_replacement = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/replacement.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/replacement.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -43798,9 +43857,9 @@ var require_replacement = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/evaluation.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/evaluation.js
 var require_evaluation = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/evaluation.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/evaluation.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -44183,9 +44242,9 @@ var require_evaluation = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/conversion.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/conversion.js
 var require_conversion = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/conversion.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/conversion.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -44813,9 +44872,9 @@ var require_conversion = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/introspection.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/introspection.js
 var require_introspection = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/introspection.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/introspection.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -45233,9 +45292,9 @@ var require_introspection = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/family.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/family.js
 var require_family = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/family.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/family.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -45605,9 +45664,9 @@ var require_family = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/comments.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/comments.js
 var require_comments = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/comments.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/comments.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -45664,9 +45723,9 @@ var require_comments = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/index.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/index.js
 var require_path = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/index.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -45961,9 +46020,9 @@ var require_path = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/hub.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/hub.js
 var require_hub = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/hub.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/hub.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -45988,9 +46047,9 @@ var require_hub = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/context.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/context.js
 var require_context = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/context.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/context.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -46119,9 +46178,9 @@ var require_context = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/traverse-node.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/traverse-node.js
 var require_traverse_node = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/traverse-node.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/traverse-node.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -46154,9 +46213,9 @@ var require_traverse_node = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/context.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/context.js
 var require_context2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/path/context.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/path/context.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -46434,9 +46493,9 @@ var require_context2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/index.js
+// ../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/index.js
 var require_lib9 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/traverse/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+traverse@7.29.8/node_modules/@babel/traverse/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -46525,9 +46584,9 @@ var require_lib9 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/semver/semver.js
+// ../../node_modules/.bun/semver@6.3.1/node_modules/semver/semver.js
 var require_semver = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/semver/semver.js"(exports, module) {
+  "../../node_modules/.bun/semver@6.3.1/node_modules/semver/semver.js"(exports, module) {
     exports = module.exports = SemVer;
     var debug;
     if (typeof process === "object" && process.env && process.env.NODE_DEBUG && /\bsemver\b/i.test(process.env.NODE_DEBUG)) {
@@ -47733,9 +47792,9 @@ var require_semver = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/import-builder.js
+// ../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/import-builder.js
 var require_import_builder = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/import-builder.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/import-builder.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -47861,9 +47920,9 @@ var require_import_builder = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/is-module.js
+// ../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/is-module.js
 var require_is_module = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/is-module.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/is-module.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -47876,9 +47935,9 @@ var require_is_module = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/import-injector.js
+// ../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/import-injector.js
 var require_import_injector = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/import-injector.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/import-injector.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -48190,9 +48249,9 @@ var require_import_injector = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/index.js
+// ../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/index.js
 var require_lib10 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-imports/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-imports@7.29.7/node_modules/@babel/helper-module-imports/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -48234,9 +48293,9 @@ var require_lib10 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/rewrite-this.js
+// ../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/rewrite-this.js
 var require_rewrite_this = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/rewrite-this.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/rewrite-this.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -48260,9 +48319,9 @@ var require_rewrite_this = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/rewrite-live-references.js
+// ../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/rewrite-live-references.js
 var require_rewrite_live_references = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/rewrite-live-references.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/rewrite-live-references.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -48624,9 +48683,9 @@ var require_rewrite_live_references = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/normalize-and-load-metadata.js
+// ../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/normalize-and-load-metadata.js
 var require_normalize_and_load_metadata = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/normalize-and-load-metadata.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/normalize-and-load-metadata.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -49002,9 +49061,9 @@ var require_normalize_and_load_metadata = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/lazy-modules.js
+// ../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/lazy-modules.js
 var require_lazy_modules = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/lazy-modules.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/lazy-modules.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -49038,9 +49097,9 @@ var require_lazy_modules = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/dynamic-import.js
+// ../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/dynamic-import.js
 var require_dynamic_import = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/dynamic-import.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/dynamic-import.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -49088,9 +49147,9 @@ var require_dynamic_import = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/get-module-name.js
+// ../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/get-module-name.js
 var require_get_module_name = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/get-module-name.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/get-module-name.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -49138,9 +49197,9 @@ var require_get_module_name = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/index.js
+// ../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/index.js
 var require_lib11 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-module-transforms/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-module-transforms@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-module-transforms/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -49549,16 +49608,16 @@ var require_lib11 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/babel-7-helpers.cjs
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/babel-7-helpers.cjs
 var require_babel_7_helpers = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/babel-7-helpers.cjs"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/babel-7-helpers.cjs"(exports) {
     exports.getModuleName = () => require_lib11().getModuleName;
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/file.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/file.js
 var require_file = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/file.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/file.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -49770,9 +49829,9 @@ var require_file = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/tools/build-external-helpers.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/tools/build-external-helpers.js
 var require_build_external_helpers = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/tools/build-external-helpers.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/tools/build-external-helpers.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -49926,9 +49985,9 @@ var require_build_external_helpers = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/gensync/index.js
+// ../../node_modules/.bun/gensync@1.0.0-beta.2/node_modules/gensync/index.js
 var require_gensync = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/gensync/index.js"(exports, module) {
+  "../../node_modules/.bun/gensync@1.0.0-beta.2/node_modules/gensync/index.js"(exports, module) {
     "use strict";
     var GENSYNC_START = /* @__PURE__ */ Symbol.for("gensync:v1:start");
     var GENSYNC_SUSPEND = /* @__PURE__ */ Symbol.for("gensync:v1:suspend");
@@ -50262,9 +50321,9 @@ var require_gensync = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/gensync-utils/async.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/gensync-utils/async.js
 var require_async = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/gensync-utils/async.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/gensync-utils/async.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50383,9 +50442,9 @@ var require_async = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/util.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/util.js
 var require_util2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/util.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/util.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50419,9 +50478,9 @@ var require_util2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/caching.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/caching.js
 var require_caching = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/caching.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/caching.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50703,9 +50762,9 @@ var require_caching = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/gensync-utils/fs.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/gensync-utils/fs.js
 var require_fs = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/gensync-utils/fs.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/gensync-utils/fs.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50738,9 +50797,9 @@ var require_fs = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/utils.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/utils.js
 var require_utils2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/utils.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/utils.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50779,9 +50838,9 @@ var require_utils2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/errors/rewrite-stack-trace.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/errors/rewrite-stack-trace.js
 var require_rewrite_stack_trace = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/errors/rewrite-stack-trace.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/errors/rewrite-stack-trace.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50888,9 +50947,9 @@ var require_rewrite_stack_trace = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/errors/config-error.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/errors/config-error.js
 var require_config_error = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/errors/config-error.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/errors/config-error.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50911,9 +50970,9 @@ var require_config_error = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/package.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/package.js
 var require_package = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/package.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/package.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -50976,7 +51035,7 @@ var require_package = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/json5/dist/index.mjs
+// ../../node_modules/.bun/json5@2.2.3/node_modules/json5/dist/index.mjs
 var dist_exports = {};
 __export(dist_exports, {
   default: () => dist_default
@@ -51264,7 +51323,7 @@ function syntaxError(message) {
 }
 var Space_Separator, ID_Start, ID_Continue, unicode, util, source, parseState, stack, pos, line, column, token, key, root, parse2, lexState, buffer, doubleQuote, sign, c, lexStates, parseStates, stringify, JSON5, lib, dist_default;
 var init_dist = __esm({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/json5/dist/index.mjs"() {
+  "../../node_modules/.bun/json5@2.2.3/node_modules/json5/dist/index.mjs"() {
     Space_Separator = /[\u1680\u2000-\u200A\u202F\u205F\u3000]/;
     ID_Start = /[\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0370-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u048A-\u052F\u0531-\u0556\u0559\u0561-\u0587\u05D0-\u05EA\u05F0-\u05F2\u0620-\u064A\u066E\u066F\u0671-\u06D3\u06D5\u06E5\u06E6\u06EE\u06EF\u06FA-\u06FC\u06FF\u0710\u0712-\u072F\u074D-\u07A5\u07B1\u07CA-\u07EA\u07F4\u07F5\u07FA\u0800-\u0815\u081A\u0824\u0828\u0840-\u0858\u0860-\u086A\u08A0-\u08B4\u08B6-\u08BD\u0904-\u0939\u093D\u0950\u0958-\u0961\u0971-\u0980\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BD\u09CE\u09DC\u09DD\u09DF-\u09E1\u09F0\u09F1\u09FC\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A59-\u0A5C\u0A5E\u0A72-\u0A74\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABD\u0AD0\u0AE0\u0AE1\u0AF9\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3D\u0B5C\u0B5D\u0B5F-\u0B61\u0B71\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BD0\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D\u0C58-\u0C5A\u0C60\u0C61\u0C80\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBD\u0CDE\u0CE0\u0CE1\u0CF1\u0CF2\u0D05-\u0D0C\u0D0E-\u0D10\u0D12-\u0D3A\u0D3D\u0D4E\u0D54-\u0D56\u0D5F-\u0D61\u0D7A-\u0D7F\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0E01-\u0E30\u0E32\u0E33\u0E40-\u0E46\u0E81\u0E82\u0E84\u0E87\u0E88\u0E8A\u0E8D\u0E94-\u0E97\u0E99-\u0E9F\u0EA1-\u0EA3\u0EA5\u0EA7\u0EAA\u0EAB\u0EAD-\u0EB0\u0EB2\u0EB3\u0EBD\u0EC0-\u0EC4\u0EC6\u0EDC-\u0EDF\u0F00\u0F40-\u0F47\u0F49-\u0F6C\u0F88-\u0F8C\u1000-\u102A\u103F\u1050-\u1055\u105A-\u105D\u1061\u1065\u1066\u106E-\u1070\u1075-\u1081\u108E\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u170C\u170E-\u1711\u1720-\u1731\u1740-\u1751\u1760-\u176C\u176E-\u1770\u1780-\u17B3\u17D7\u17DC\u1820-\u1877\u1880-\u1884\u1887-\u18A8\u18AA\u18B0-\u18F5\u1900-\u191E\u1950-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u1A00-\u1A16\u1A20-\u1A54\u1AA7\u1B05-\u1B33\u1B45-\u1B4B\u1B83-\u1BA0\u1BAE\u1BAF\u1BBA-\u1BE5\u1C00-\u1C23\u1C4D-\u1C4F\u1C5A-\u1C7D\u1C80-\u1C88\u1CE9-\u1CEC\u1CEE-\u1CF1\u1CF5\u1CF6\u1D00-\u1DBF\u1E00-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u2071\u207F\u2090-\u209C\u2102\u2107\u210A-\u2113\u2115\u2119-\u211D\u2124\u2126\u2128\u212A-\u212D\u212F-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2C2E\u2C30-\u2C5E\u2C60-\u2CE4\u2CEB-\u2CEE\u2CF2\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D80-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u2E2F\u3005-\u3007\u3021-\u3029\u3031-\u3035\u3038-\u303C\u3041-\u3096\u309D-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312E\u3131-\u318E\u31A0-\u31BA\u31F0-\u31FF\u3400-\u4DB5\u4E00-\u9FEA\uA000-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA61F\uA62A\uA62B\uA640-\uA66E\uA67F-\uA69D\uA6A0-\uA6EF\uA717-\uA71F\uA722-\uA788\uA78B-\uA7AE\uA7B0-\uA7B7\uA7F7-\uA801\uA803-\uA805\uA807-\uA80A\uA80C-\uA822\uA840-\uA873\uA882-\uA8B3\uA8F2-\uA8F7\uA8FB\uA8FD\uA90A-\uA925\uA930-\uA946\uA960-\uA97C\uA984-\uA9B2\uA9CF\uA9E0-\uA9E4\uA9E6-\uA9EF\uA9FA-\uA9FE\uAA00-\uAA28\uAA40-\uAA42\uAA44-\uAA4B\uAA60-\uAA76\uAA7A\uAA7E-\uAAAF\uAAB1\uAAB5\uAAB6\uAAB9-\uAABD\uAAC0\uAAC2\uAADB-\uAADD\uAAE0-\uAAEA\uAAF2-\uAAF4\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB65\uAB70-\uABE2\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D\uFB1F-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE70-\uFE74\uFE76-\uFEFC\uFF21-\uFF3A\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC]|\uD800[\uDC00-\uDC0B\uDC0D-\uDC26\uDC28-\uDC3A\uDC3C\uDC3D\uDC3F-\uDC4D\uDC50-\uDC5D\uDC80-\uDCFA\uDD40-\uDD74\uDE80-\uDE9C\uDEA0-\uDED0\uDF00-\uDF1F\uDF2D-\uDF4A\uDF50-\uDF75\uDF80-\uDF9D\uDFA0-\uDFC3\uDFC8-\uDFCF\uDFD1-\uDFD5]|\uD801[\uDC00-\uDC9D\uDCB0-\uDCD3\uDCD8-\uDCFB\uDD00-\uDD27\uDD30-\uDD63\uDE00-\uDF36\uDF40-\uDF55\uDF60-\uDF67]|\uD802[\uDC00-\uDC05\uDC08\uDC0A-\uDC35\uDC37\uDC38\uDC3C\uDC3F-\uDC55\uDC60-\uDC76\uDC80-\uDC9E\uDCE0-\uDCF2\uDCF4\uDCF5\uDD00-\uDD15\uDD20-\uDD39\uDD80-\uDDB7\uDDBE\uDDBF\uDE00\uDE10-\uDE13\uDE15-\uDE17\uDE19-\uDE33\uDE60-\uDE7C\uDE80-\uDE9C\uDEC0-\uDEC7\uDEC9-\uDEE4\uDF00-\uDF35\uDF40-\uDF55\uDF60-\uDF72\uDF80-\uDF91]|\uD803[\uDC00-\uDC48\uDC80-\uDCB2\uDCC0-\uDCF2]|\uD804[\uDC03-\uDC37\uDC83-\uDCAF\uDCD0-\uDCE8\uDD03-\uDD26\uDD50-\uDD72\uDD76\uDD83-\uDDB2\uDDC1-\uDDC4\uDDDA\uDDDC\uDE00-\uDE11\uDE13-\uDE2B\uDE80-\uDE86\uDE88\uDE8A-\uDE8D\uDE8F-\uDE9D\uDE9F-\uDEA8\uDEB0-\uDEDE\uDF05-\uDF0C\uDF0F\uDF10\uDF13-\uDF28\uDF2A-\uDF30\uDF32\uDF33\uDF35-\uDF39\uDF3D\uDF50\uDF5D-\uDF61]|\uD805[\uDC00-\uDC34\uDC47-\uDC4A\uDC80-\uDCAF\uDCC4\uDCC5\uDCC7\uDD80-\uDDAE\uDDD8-\uDDDB\uDE00-\uDE2F\uDE44\uDE80-\uDEAA\uDF00-\uDF19]|\uD806[\uDCA0-\uDCDF\uDCFF\uDE00\uDE0B-\uDE32\uDE3A\uDE50\uDE5C-\uDE83\uDE86-\uDE89\uDEC0-\uDEF8]|\uD807[\uDC00-\uDC08\uDC0A-\uDC2E\uDC40\uDC72-\uDC8F\uDD00-\uDD06\uDD08\uDD09\uDD0B-\uDD30\uDD46]|\uD808[\uDC00-\uDF99]|\uD809[\uDC00-\uDC6E\uDC80-\uDD43]|[\uD80C\uD81C-\uD820\uD840-\uD868\uD86A-\uD86C\uD86F-\uD872\uD874-\uD879][\uDC00-\uDFFF]|\uD80D[\uDC00-\uDC2E]|\uD811[\uDC00-\uDE46]|\uD81A[\uDC00-\uDE38\uDE40-\uDE5E\uDED0-\uDEED\uDF00-\uDF2F\uDF40-\uDF43\uDF63-\uDF77\uDF7D-\uDF8F]|\uD81B[\uDF00-\uDF44\uDF50\uDF93-\uDF9F\uDFE0\uDFE1]|\uD821[\uDC00-\uDFEC]|\uD822[\uDC00-\uDEF2]|\uD82C[\uDC00-\uDD1E\uDD70-\uDEFB]|\uD82F[\uDC00-\uDC6A\uDC70-\uDC7C\uDC80-\uDC88\uDC90-\uDC99]|\uD835[\uDC00-\uDC54\uDC56-\uDC9C\uDC9E\uDC9F\uDCA2\uDCA5\uDCA6\uDCA9-\uDCAC\uDCAE-\uDCB9\uDCBB\uDCBD-\uDCC3\uDCC5-\uDD05\uDD07-\uDD0A\uDD0D-\uDD14\uDD16-\uDD1C\uDD1E-\uDD39\uDD3B-\uDD3E\uDD40-\uDD44\uDD46\uDD4A-\uDD50\uDD52-\uDEA5\uDEA8-\uDEC0\uDEC2-\uDEDA\uDEDC-\uDEFA\uDEFC-\uDF14\uDF16-\uDF34\uDF36-\uDF4E\uDF50-\uDF6E\uDF70-\uDF88\uDF8A-\uDFA8\uDFAA-\uDFC2\uDFC4-\uDFCB]|\uD83A[\uDC00-\uDCC4\uDD00-\uDD43]|\uD83B[\uDE00-\uDE03\uDE05-\uDE1F\uDE21\uDE22\uDE24\uDE27\uDE29-\uDE32\uDE34-\uDE37\uDE39\uDE3B\uDE42\uDE47\uDE49\uDE4B\uDE4D-\uDE4F\uDE51\uDE52\uDE54\uDE57\uDE59\uDE5B\uDE5D\uDE5F\uDE61\uDE62\uDE64\uDE67-\uDE6A\uDE6C-\uDE72\uDE74-\uDE77\uDE79-\uDE7C\uDE7E\uDE80-\uDE89\uDE8B-\uDE9B\uDEA1-\uDEA3\uDEA5-\uDEA9\uDEAB-\uDEBB]|\uD869[\uDC00-\uDED6\uDF00-\uDFFF]|\uD86D[\uDC00-\uDF34\uDF40-\uDFFF]|\uD86E[\uDC00-\uDC1D\uDC20-\uDFFF]|\uD873[\uDC00-\uDEA1\uDEB0-\uDFFF]|\uD87A[\uDC00-\uDFE0]|\uD87E[\uDC00-\uDE1D]/;
     ID_Continue = /[\xAA\xB5\xBA\xC0-\xD6\xD8-\xF6\xF8-\u02C1\u02C6-\u02D1\u02E0-\u02E4\u02EC\u02EE\u0300-\u0374\u0376\u0377\u037A-\u037D\u037F\u0386\u0388-\u038A\u038C\u038E-\u03A1\u03A3-\u03F5\u03F7-\u0481\u0483-\u0487\u048A-\u052F\u0531-\u0556\u0559\u0561-\u0587\u0591-\u05BD\u05BF\u05C1\u05C2\u05C4\u05C5\u05C7\u05D0-\u05EA\u05F0-\u05F2\u0610-\u061A\u0620-\u0669\u066E-\u06D3\u06D5-\u06DC\u06DF-\u06E8\u06EA-\u06FC\u06FF\u0710-\u074A\u074D-\u07B1\u07C0-\u07F5\u07FA\u0800-\u082D\u0840-\u085B\u0860-\u086A\u08A0-\u08B4\u08B6-\u08BD\u08D4-\u08E1\u08E3-\u0963\u0966-\u096F\u0971-\u0983\u0985-\u098C\u098F\u0990\u0993-\u09A8\u09AA-\u09B0\u09B2\u09B6-\u09B9\u09BC-\u09C4\u09C7\u09C8\u09CB-\u09CE\u09D7\u09DC\u09DD\u09DF-\u09E3\u09E6-\u09F1\u09FC\u0A01-\u0A03\u0A05-\u0A0A\u0A0F\u0A10\u0A13-\u0A28\u0A2A-\u0A30\u0A32\u0A33\u0A35\u0A36\u0A38\u0A39\u0A3C\u0A3E-\u0A42\u0A47\u0A48\u0A4B-\u0A4D\u0A51\u0A59-\u0A5C\u0A5E\u0A66-\u0A75\u0A81-\u0A83\u0A85-\u0A8D\u0A8F-\u0A91\u0A93-\u0AA8\u0AAA-\u0AB0\u0AB2\u0AB3\u0AB5-\u0AB9\u0ABC-\u0AC5\u0AC7-\u0AC9\u0ACB-\u0ACD\u0AD0\u0AE0-\u0AE3\u0AE6-\u0AEF\u0AF9-\u0AFF\u0B01-\u0B03\u0B05-\u0B0C\u0B0F\u0B10\u0B13-\u0B28\u0B2A-\u0B30\u0B32\u0B33\u0B35-\u0B39\u0B3C-\u0B44\u0B47\u0B48\u0B4B-\u0B4D\u0B56\u0B57\u0B5C\u0B5D\u0B5F-\u0B63\u0B66-\u0B6F\u0B71\u0B82\u0B83\u0B85-\u0B8A\u0B8E-\u0B90\u0B92-\u0B95\u0B99\u0B9A\u0B9C\u0B9E\u0B9F\u0BA3\u0BA4\u0BA8-\u0BAA\u0BAE-\u0BB9\u0BBE-\u0BC2\u0BC6-\u0BC8\u0BCA-\u0BCD\u0BD0\u0BD7\u0BE6-\u0BEF\u0C00-\u0C03\u0C05-\u0C0C\u0C0E-\u0C10\u0C12-\u0C28\u0C2A-\u0C39\u0C3D-\u0C44\u0C46-\u0C48\u0C4A-\u0C4D\u0C55\u0C56\u0C58-\u0C5A\u0C60-\u0C63\u0C66-\u0C6F\u0C80-\u0C83\u0C85-\u0C8C\u0C8E-\u0C90\u0C92-\u0CA8\u0CAA-\u0CB3\u0CB5-\u0CB9\u0CBC-\u0CC4\u0CC6-\u0CC8\u0CCA-\u0CCD\u0CD5\u0CD6\u0CDE\u0CE0-\u0CE3\u0CE6-\u0CEF\u0CF1\u0CF2\u0D00-\u0D03\u0D05-\u0D0C\u0D0E-\u0D10\u0D12-\u0D44\u0D46-\u0D48\u0D4A-\u0D4E\u0D54-\u0D57\u0D5F-\u0D63\u0D66-\u0D6F\u0D7A-\u0D7F\u0D82\u0D83\u0D85-\u0D96\u0D9A-\u0DB1\u0DB3-\u0DBB\u0DBD\u0DC0-\u0DC6\u0DCA\u0DCF-\u0DD4\u0DD6\u0DD8-\u0DDF\u0DE6-\u0DEF\u0DF2\u0DF3\u0E01-\u0E3A\u0E40-\u0E4E\u0E50-\u0E59\u0E81\u0E82\u0E84\u0E87\u0E88\u0E8A\u0E8D\u0E94-\u0E97\u0E99-\u0E9F\u0EA1-\u0EA3\u0EA5\u0EA7\u0EAA\u0EAB\u0EAD-\u0EB9\u0EBB-\u0EBD\u0EC0-\u0EC4\u0EC6\u0EC8-\u0ECD\u0ED0-\u0ED9\u0EDC-\u0EDF\u0F00\u0F18\u0F19\u0F20-\u0F29\u0F35\u0F37\u0F39\u0F3E-\u0F47\u0F49-\u0F6C\u0F71-\u0F84\u0F86-\u0F97\u0F99-\u0FBC\u0FC6\u1000-\u1049\u1050-\u109D\u10A0-\u10C5\u10C7\u10CD\u10D0-\u10FA\u10FC-\u1248\u124A-\u124D\u1250-\u1256\u1258\u125A-\u125D\u1260-\u1288\u128A-\u128D\u1290-\u12B0\u12B2-\u12B5\u12B8-\u12BE\u12C0\u12C2-\u12C5\u12C8-\u12D6\u12D8-\u1310\u1312-\u1315\u1318-\u135A\u135D-\u135F\u1380-\u138F\u13A0-\u13F5\u13F8-\u13FD\u1401-\u166C\u166F-\u167F\u1681-\u169A\u16A0-\u16EA\u16EE-\u16F8\u1700-\u170C\u170E-\u1714\u1720-\u1734\u1740-\u1753\u1760-\u176C\u176E-\u1770\u1772\u1773\u1780-\u17D3\u17D7\u17DC\u17DD\u17E0-\u17E9\u180B-\u180D\u1810-\u1819\u1820-\u1877\u1880-\u18AA\u18B0-\u18F5\u1900-\u191E\u1920-\u192B\u1930-\u193B\u1946-\u196D\u1970-\u1974\u1980-\u19AB\u19B0-\u19C9\u19D0-\u19D9\u1A00-\u1A1B\u1A20-\u1A5E\u1A60-\u1A7C\u1A7F-\u1A89\u1A90-\u1A99\u1AA7\u1AB0-\u1ABD\u1B00-\u1B4B\u1B50-\u1B59\u1B6B-\u1B73\u1B80-\u1BF3\u1C00-\u1C37\u1C40-\u1C49\u1C4D-\u1C7D\u1C80-\u1C88\u1CD0-\u1CD2\u1CD4-\u1CF9\u1D00-\u1DF9\u1DFB-\u1F15\u1F18-\u1F1D\u1F20-\u1F45\u1F48-\u1F4D\u1F50-\u1F57\u1F59\u1F5B\u1F5D\u1F5F-\u1F7D\u1F80-\u1FB4\u1FB6-\u1FBC\u1FBE\u1FC2-\u1FC4\u1FC6-\u1FCC\u1FD0-\u1FD3\u1FD6-\u1FDB\u1FE0-\u1FEC\u1FF2-\u1FF4\u1FF6-\u1FFC\u203F\u2040\u2054\u2071\u207F\u2090-\u209C\u20D0-\u20DC\u20E1\u20E5-\u20F0\u2102\u2107\u210A-\u2113\u2115\u2119-\u211D\u2124\u2126\u2128\u212A-\u212D\u212F-\u2139\u213C-\u213F\u2145-\u2149\u214E\u2160-\u2188\u2C00-\u2C2E\u2C30-\u2C5E\u2C60-\u2CE4\u2CEB-\u2CF3\u2D00-\u2D25\u2D27\u2D2D\u2D30-\u2D67\u2D6F\u2D7F-\u2D96\u2DA0-\u2DA6\u2DA8-\u2DAE\u2DB0-\u2DB6\u2DB8-\u2DBE\u2DC0-\u2DC6\u2DC8-\u2DCE\u2DD0-\u2DD6\u2DD8-\u2DDE\u2DE0-\u2DFF\u2E2F\u3005-\u3007\u3021-\u302F\u3031-\u3035\u3038-\u303C\u3041-\u3096\u3099\u309A\u309D-\u309F\u30A1-\u30FA\u30FC-\u30FF\u3105-\u312E\u3131-\u318E\u31A0-\u31BA\u31F0-\u31FF\u3400-\u4DB5\u4E00-\u9FEA\uA000-\uA48C\uA4D0-\uA4FD\uA500-\uA60C\uA610-\uA62B\uA640-\uA66F\uA674-\uA67D\uA67F-\uA6F1\uA717-\uA71F\uA722-\uA788\uA78B-\uA7AE\uA7B0-\uA7B7\uA7F7-\uA827\uA840-\uA873\uA880-\uA8C5\uA8D0-\uA8D9\uA8E0-\uA8F7\uA8FB\uA8FD\uA900-\uA92D\uA930-\uA953\uA960-\uA97C\uA980-\uA9C0\uA9CF-\uA9D9\uA9E0-\uA9FE\uAA00-\uAA36\uAA40-\uAA4D\uAA50-\uAA59\uAA60-\uAA76\uAA7A-\uAAC2\uAADB-\uAADD\uAAE0-\uAAEF\uAAF2-\uAAF6\uAB01-\uAB06\uAB09-\uAB0E\uAB11-\uAB16\uAB20-\uAB26\uAB28-\uAB2E\uAB30-\uAB5A\uAB5C-\uAB65\uAB70-\uABEA\uABEC\uABED\uABF0-\uABF9\uAC00-\uD7A3\uD7B0-\uD7C6\uD7CB-\uD7FB\uF900-\uFA6D\uFA70-\uFAD9\uFB00-\uFB06\uFB13-\uFB17\uFB1D-\uFB28\uFB2A-\uFB36\uFB38-\uFB3C\uFB3E\uFB40\uFB41\uFB43\uFB44\uFB46-\uFBB1\uFBD3-\uFD3D\uFD50-\uFD8F\uFD92-\uFDC7\uFDF0-\uFDFB\uFE00-\uFE0F\uFE20-\uFE2F\uFE33\uFE34\uFE4D-\uFE4F\uFE70-\uFE74\uFE76-\uFEFC\uFF10-\uFF19\uFF21-\uFF3A\uFF3F\uFF41-\uFF5A\uFF66-\uFFBE\uFFC2-\uFFC7\uFFCA-\uFFCF\uFFD2-\uFFD7\uFFDA-\uFFDC]|\uD800[\uDC00-\uDC0B\uDC0D-\uDC26\uDC28-\uDC3A\uDC3C\uDC3D\uDC3F-\uDC4D\uDC50-\uDC5D\uDC80-\uDCFA\uDD40-\uDD74\uDDFD\uDE80-\uDE9C\uDEA0-\uDED0\uDEE0\uDF00-\uDF1F\uDF2D-\uDF4A\uDF50-\uDF7A\uDF80-\uDF9D\uDFA0-\uDFC3\uDFC8-\uDFCF\uDFD1-\uDFD5]|\uD801[\uDC00-\uDC9D\uDCA0-\uDCA9\uDCB0-\uDCD3\uDCD8-\uDCFB\uDD00-\uDD27\uDD30-\uDD63\uDE00-\uDF36\uDF40-\uDF55\uDF60-\uDF67]|\uD802[\uDC00-\uDC05\uDC08\uDC0A-\uDC35\uDC37\uDC38\uDC3C\uDC3F-\uDC55\uDC60-\uDC76\uDC80-\uDC9E\uDCE0-\uDCF2\uDCF4\uDCF5\uDD00-\uDD15\uDD20-\uDD39\uDD80-\uDDB7\uDDBE\uDDBF\uDE00-\uDE03\uDE05\uDE06\uDE0C-\uDE13\uDE15-\uDE17\uDE19-\uDE33\uDE38-\uDE3A\uDE3F\uDE60-\uDE7C\uDE80-\uDE9C\uDEC0-\uDEC7\uDEC9-\uDEE6\uDF00-\uDF35\uDF40-\uDF55\uDF60-\uDF72\uDF80-\uDF91]|\uD803[\uDC00-\uDC48\uDC80-\uDCB2\uDCC0-\uDCF2]|\uD804[\uDC00-\uDC46\uDC66-\uDC6F\uDC7F-\uDCBA\uDCD0-\uDCE8\uDCF0-\uDCF9\uDD00-\uDD34\uDD36-\uDD3F\uDD50-\uDD73\uDD76\uDD80-\uDDC4\uDDCA-\uDDCC\uDDD0-\uDDDA\uDDDC\uDE00-\uDE11\uDE13-\uDE37\uDE3E\uDE80-\uDE86\uDE88\uDE8A-\uDE8D\uDE8F-\uDE9D\uDE9F-\uDEA8\uDEB0-\uDEEA\uDEF0-\uDEF9\uDF00-\uDF03\uDF05-\uDF0C\uDF0F\uDF10\uDF13-\uDF28\uDF2A-\uDF30\uDF32\uDF33\uDF35-\uDF39\uDF3C-\uDF44\uDF47\uDF48\uDF4B-\uDF4D\uDF50\uDF57\uDF5D-\uDF63\uDF66-\uDF6C\uDF70-\uDF74]|\uD805[\uDC00-\uDC4A\uDC50-\uDC59\uDC80-\uDCC5\uDCC7\uDCD0-\uDCD9\uDD80-\uDDB5\uDDB8-\uDDC0\uDDD8-\uDDDD\uDE00-\uDE40\uDE44\uDE50-\uDE59\uDE80-\uDEB7\uDEC0-\uDEC9\uDF00-\uDF19\uDF1D-\uDF2B\uDF30-\uDF39]|\uD806[\uDCA0-\uDCE9\uDCFF\uDE00-\uDE3E\uDE47\uDE50-\uDE83\uDE86-\uDE99\uDEC0-\uDEF8]|\uD807[\uDC00-\uDC08\uDC0A-\uDC36\uDC38-\uDC40\uDC50-\uDC59\uDC72-\uDC8F\uDC92-\uDCA7\uDCA9-\uDCB6\uDD00-\uDD06\uDD08\uDD09\uDD0B-\uDD36\uDD3A\uDD3C\uDD3D\uDD3F-\uDD47\uDD50-\uDD59]|\uD808[\uDC00-\uDF99]|\uD809[\uDC00-\uDC6E\uDC80-\uDD43]|[\uD80C\uD81C-\uD820\uD840-\uD868\uD86A-\uD86C\uD86F-\uD872\uD874-\uD879][\uDC00-\uDFFF]|\uD80D[\uDC00-\uDC2E]|\uD811[\uDC00-\uDE46]|\uD81A[\uDC00-\uDE38\uDE40-\uDE5E\uDE60-\uDE69\uDED0-\uDEED\uDEF0-\uDEF4\uDF00-\uDF36\uDF40-\uDF43\uDF50-\uDF59\uDF63-\uDF77\uDF7D-\uDF8F]|\uD81B[\uDF00-\uDF44\uDF50-\uDF7E\uDF8F-\uDF9F\uDFE0\uDFE1]|\uD821[\uDC00-\uDFEC]|\uD822[\uDC00-\uDEF2]|\uD82C[\uDC00-\uDD1E\uDD70-\uDEFB]|\uD82F[\uDC00-\uDC6A\uDC70-\uDC7C\uDC80-\uDC88\uDC90-\uDC99\uDC9D\uDC9E]|\uD834[\uDD65-\uDD69\uDD6D-\uDD72\uDD7B-\uDD82\uDD85-\uDD8B\uDDAA-\uDDAD\uDE42-\uDE44]|\uD835[\uDC00-\uDC54\uDC56-\uDC9C\uDC9E\uDC9F\uDCA2\uDCA5\uDCA6\uDCA9-\uDCAC\uDCAE-\uDCB9\uDCBB\uDCBD-\uDCC3\uDCC5-\uDD05\uDD07-\uDD0A\uDD0D-\uDD14\uDD16-\uDD1C\uDD1E-\uDD39\uDD3B-\uDD3E\uDD40-\uDD44\uDD46\uDD4A-\uDD50\uDD52-\uDEA5\uDEA8-\uDEC0\uDEC2-\uDEDA\uDEDC-\uDEFA\uDEFC-\uDF14\uDF16-\uDF34\uDF36-\uDF4E\uDF50-\uDF6E\uDF70-\uDF88\uDF8A-\uDFA8\uDFAA-\uDFC2\uDFC4-\uDFCB\uDFCE-\uDFFF]|\uD836[\uDE00-\uDE36\uDE3B-\uDE6C\uDE75\uDE84\uDE9B-\uDE9F\uDEA1-\uDEAF]|\uD838[\uDC00-\uDC06\uDC08-\uDC18\uDC1B-\uDC21\uDC23\uDC24\uDC26-\uDC2A]|\uD83A[\uDC00-\uDCC4\uDCD0-\uDCD6\uDD00-\uDD4A\uDD50-\uDD59]|\uD83B[\uDE00-\uDE03\uDE05-\uDE1F\uDE21\uDE22\uDE24\uDE27\uDE29-\uDE32\uDE34-\uDE37\uDE39\uDE3B\uDE42\uDE47\uDE49\uDE4B\uDE4D-\uDE4F\uDE51\uDE52\uDE54\uDE57\uDE59\uDE5B\uDE5D\uDE5F\uDE61\uDE62\uDE64\uDE67-\uDE6A\uDE6C-\uDE72\uDE74-\uDE77\uDE79-\uDE7C\uDE7E\uDE80-\uDE89\uDE8B-\uDE9B\uDEA1-\uDEA3\uDEA5-\uDEA9\uDEAB-\uDEBB]|\uD869[\uDC00-\uDED6\uDF00-\uDFFF]|\uD86D[\uDC00-\uDF34\uDF40-\uDFFF]|\uD86E[\uDC00-\uDC1D\uDC20-\uDFFF]|\uD873[\uDC00-\uDEA1\uDEB0-\uDFFF]|\uD87A[\uDC00-\uDFE0]|\uD87E[\uDC00-\uDE1D]|\uDB40[\uDD00-\uDDEF]/;
@@ -52078,9 +52137,9 @@ var init_dist = __esm({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/helpers/config-api.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/helpers/config-api.js
 var require_config_api = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/helpers/config-api.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/helpers/config-api.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -52170,9 +52229,9 @@ var require_config_api = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/helpers/deep-array.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/helpers/deep-array.js
 var require_deep_array = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/helpers/deep-array.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/helpers/deep-array.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -52198,9 +52257,9 @@ var require_deep_array = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/plugin.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/plugin.js
 var require_plugin = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/plugin.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/plugin.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -52236,9 +52295,9 @@ var require_plugin = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/gensync-utils/functional.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/gensync-utils/functional.js
 var require_functional = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/gensync-utils/functional.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/gensync-utils/functional.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -52298,243 +52357,3296 @@ var require_functional = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/baseline-browser-mapping/dist/index.cjs
+// ../../node_modules/.bun/baseline-browser-mapping@2.11.15/node_modules/baseline-browser-mapping/dist/index.cjs
 var require_dist = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/baseline-browser-mapping/dist/index.cjs"(exports) {
+  "../../node_modules/.bun/baseline-browser-mapping@2.11.15/node_modules/baseline-browser-mapping/dist/index.cjs"(exports) {
     "use strict";
-    var s = { chrome: { releases: [["1", "2008-12-11", "r", "w", "528"], ["2", "2009-05-21", "r", "w", "530"], ["3", "2009-09-15", "r", "w", "532"], ["4", "2010-01-25", "r", "w", "532.5"], ["5", "2010-05-25", "r", "w", "533"], ["6", "2010-09-02", "r", "w", "534.3"], ["7", "2010-10-19", "r", "w", "534.7"], ["8", "2010-12-02", "r", "w", "534.10"], ["9", "2011-02-03", "r", "w", "534.13"], ["10", "2011-03-08", "r", "w", "534.16"], ["11", "2011-04-27", "r", "w", "534.24"], ["12", "2011-06-07", "r", "w", "534.30"], ["13", "2011-08-02", "r", "w", "535.1"], ["14", "2011-09-16", "r", "w", "535.1"], ["15", "2011-10-25", "r", "w", "535.2"], ["16", "2011-12-13", "r", "w", "535.7"], ["17", "2012-02-08", "r", "w", "535.11"], ["18", "2012-03-28", "r", "w", "535.19"], ["19", "2012-05-15", "r", "w", "536.5"], ["20", "2012-06-26", "r", "w", "536.10"], ["21", "2012-07-31", "r", "w", "537.1"], ["22", "2012-09-25", "r", "w", "537.4"], ["23", "2012-11-06", "r", "w", "537.11"], ["24", "2013-01-10", "r", "w", "537.17"], ["25", "2013-02-21", "r", "w", "537.22"], ["26", "2013-03-26", "r", "w", "537.31"], ["27", "2013-05-21", "r", "w", "537.36"], ["28", "2013-07-09", "r", "b", "28"], ["29", "2013-08-20", "r", "b", "29"], ["30", "2013-10-01", "r", "b", "30"], ["31", "2013-11-12", "r", "b", "31"], ["32", "2014-01-14", "r", "b", "32"], ["33", "2014-02-20", "r", "b", "33"], ["34", "2014-04-08", "r", "b", "34"], ["35", "2014-05-20", "r", "b", "35"], ["36", "2014-07-16", "r", "b", "36"], ["37", "2014-08-26", "r", "b", "37"], ["38", "2014-10-07", "r", "b", "38"], ["39", "2014-11-18", "r", "b", "39"], ["40", "2015-01-21", "r", "b", "40"], ["41", "2015-03-03", "r", "b", "41"], ["42", "2015-04-14", "r", "b", "42"], ["43", "2015-05-19", "r", "b", "43"], ["44", "2015-07-21", "r", "b", "44"], ["45", "2015-09-01", "r", "b", "45"], ["46", "2015-10-13", "r", "b", "46"], ["47", "2015-12-01", "r", "b", "47"], ["48", "2016-01-20", "r", "b", "48"], ["49", "2016-03-02", "r", "b", "49"], ["50", "2016-04-13", "r", "b", "50"], ["51", "2016-05-25", "r", "b", "51"], ["52", "2016-07-20", "r", "b", "52"], ["53", "2016-08-31", "r", "b", "53"], ["54", "2016-10-12", "r", "b", "54"], ["55", "2016-12-01", "r", "b", "55"], ["56", "2017-01-25", "r", "b", "56"], ["57", "2017-03-09", "r", "b", "57"], ["58", "2017-04-19", "r", "b", "58"], ["59", "2017-06-05", "r", "b", "59"], ["60", "2017-07-25", "r", "b", "60"], ["61", "2017-09-05", "r", "b", "61"], ["62", "2017-10-17", "r", "b", "62"], ["63", "2017-12-06", "r", "b", "63"], ["64", "2018-01-23", "r", "b", "64"], ["65", "2018-03-06", "r", "b", "65"], ["66", "2018-04-17", "r", "b", "66"], ["67", "2018-05-29", "r", "b", "67"], ["68", "2018-07-24", "r", "b", "68"], ["69", "2018-09-04", "r", "b", "69"], ["70", "2018-10-16", "r", "b", "70"], ["71", "2018-12-04", "r", "b", "71"], ["72", "2019-01-29", "r", "b", "72"], ["73", "2019-03-12", "r", "b", "73"], ["74", "2019-04-23", "r", "b", "74"], ["75", "2019-06-04", "r", "b", "75"], ["76", "2019-07-30", "r", "b", "76"], ["77", "2019-09-10", "r", "b", "77"], ["78", "2019-10-22", "r", "b", "78"], ["79", "2019-12-10", "r", "b", "79"], ["80", "2020-02-04", "r", "b", "80"], ["81", "2020-04-07", "r", "b", "81"], ["83", "2020-05-19", "r", "b", "83"], ["84", "2020-07-27", "r", "b", "84"], ["85", "2020-08-25", "r", "b", "85"], ["86", "2020-10-20", "r", "b", "86"], ["87", "2020-11-17", "r", "b", "87"], ["88", "2021-01-19", "r", "b", "88"], ["89", "2021-03-02", "r", "b", "89"], ["90", "2021-04-13", "r", "b", "90"], ["91", "2021-05-25", "r", "b", "91"], ["92", "2021-07-20", "r", "b", "92"], ["93", "2021-08-31", "r", "b", "93"], ["94", "2021-09-21", "r", "b", "94"], ["95", "2021-10-19", "r", "b", "95"], ["96", "2021-11-15", "r", "b", "96"], ["97", "2022-01-04", "r", "b", "97"], ["98", "2022-02-01", "r", "b", "98"], ["99", "2022-03-01", "r", "b", "99"], ["100", "2022-03-29", "r", "b", "100"], ["101", "2022-04-26", "r", "b", "101"], ["102", "2022-05-24", "r", "b", "102"], ["103", "2022-06-21", "r", "b", "103"], ["104", "2022-08-02", "r", "b", "104"], ["105", "2022-09-02", "r", "b", "105"], ["106", "2022-09-27", "r", "b", "106"], ["107", "2022-10-25", "r", "b", "107"], ["108", "2022-11-29", "r", "b", "108"], ["109", "2023-01-10", "r", "b", "109"], ["110", "2023-02-07", "r", "b", "110"], ["111", "2023-03-07", "r", "b", "111"], ["112", "2023-04-04", "r", "b", "112"], ["113", "2023-05-02", "r", "b", "113"], ["114", "2023-05-30", "r", "b", "114"], ["115", "2023-07-18", "r", "b", "115"], ["116", "2023-08-15", "r", "b", "116"], ["117", "2023-09-12", "r", "b", "117"], ["118", "2023-10-10", "r", "b", "118"], ["119", "2023-10-31", "r", "b", "119"], ["120", "2023-12-05", "r", "b", "120"], ["121", "2024-01-23", "r", "b", "121"], ["122", "2024-02-20", "r", "b", "122"], ["123", "2024-03-19", "r", "b", "123"], ["124", "2024-04-16", "r", "b", "124"], ["125", "2024-05-14", "r", "b", "125"], ["126", "2024-06-11", "r", "b", "126"], ["127", "2024-07-23", "r", "b", "127"], ["128", "2024-08-20", "r", "b", "128"], ["129", "2024-09-17", "r", "b", "129"], ["130", "2024-10-15", "r", "b", "130"], ["131", "2024-11-12", "r", "b", "131"], ["132", "2025-01-14", "r", "b", "132"], ["133", "2025-02-04", "r", "b", "133"], ["134", "2025-03-04", "r", "b", "134"], ["135", "2025-04-01", "r", "b", "135"], ["136", "2025-04-29", "r", "b", "136"], ["137", "2025-05-27", "r", "b", "137"], ["138", "2025-06-24", "r", "b", "138"], ["139", "2025-08-05", "r", "b", "139"], ["140", "2025-09-02", "r", "b", "140"], ["141", "2025-09-30", "r", "b", "141"], ["142", "2025-10-28", "r", "b", "142"], ["143", "2025-12-02", "r", "b", "143"], ["144", "2026-01-13", "r", "b", "144"], ["145", "2026-02-10", "r", "b", "145"], ["146", "2026-03-10", "r", "b", "146"], ["147", "2026-04-07", "r", "b", "147"], ["148", "2026-05-05", "c", "b", "148"], ["149", "2026-06-02", "b", "b", "149"], ["150", "2026-06-30", "n", "b", "150"], ["151", null, "p", "b", "151"]] }, chrome_android: { releases: [["18", "2012-06-27", "r", "w", "535.19"], ["25", "2013-02-27", "r", "w", "537.22"], ["26", "2013-04-03", "r", "w", "537.31"], ["27", "2013-05-22", "r", "w", "537.36"], ["28", "2013-07-10", "r", "b", "28"], ["29", "2013-08-21", "r", "b", "29"], ["30", "2013-10-02", "r", "b", "30"], ["31", "2013-11-14", "r", "b", "31"], ["32", "2014-01-15", "r", "b", "32"], ["33", "2014-02-26", "r", "b", "33"], ["34", "2014-04-02", "r", "b", "34"], ["35", "2014-05-20", "r", "b", "35"], ["36", "2014-07-16", "r", "b", "36"], ["37", "2014-09-03", "r", "b", "37"], ["38", "2014-10-08", "r", "b", "38"], ["39", "2014-11-12", "r", "b", "39"], ["40", "2015-01-21", "r", "b", "40"], ["41", "2015-03-11", "r", "b", "41"], ["42", "2015-04-15", "r", "b", "42"], ["43", "2015-05-27", "r", "b", "43"], ["44", "2015-07-29", "r", "b", "44"], ["45", "2015-09-01", "r", "b", "45"], ["46", "2015-10-14", "r", "b", "46"], ["47", "2015-12-02", "r", "b", "47"], ["48", "2016-01-26", "r", "b", "48"], ["49", "2016-03-09", "r", "b", "49"], ["50", "2016-04-13", "r", "b", "50"], ["51", "2016-06-08", "r", "b", "51"], ["52", "2016-07-27", "r", "b", "52"], ["53", "2016-09-07", "r", "b", "53"], ["54", "2016-10-19", "r", "b", "54"], ["55", "2016-12-06", "r", "b", "55"], ["56", "2017-02-01", "r", "b", "56"], ["57", "2017-03-16", "r", "b", "57"], ["58", "2017-04-25", "r", "b", "58"], ["59", "2017-06-06", "r", "b", "59"], ["60", "2017-08-01", "r", "b", "60"], ["61", "2017-09-05", "r", "b", "61"], ["62", "2017-10-24", "r", "b", "62"], ["63", "2017-12-05", "r", "b", "63"], ["64", "2018-01-23", "r", "b", "64"], ["65", "2018-03-06", "r", "b", "65"], ["66", "2018-04-17", "r", "b", "66"], ["67", "2018-05-31", "r", "b", "67"], ["68", "2018-07-24", "r", "b", "68"], ["69", "2018-09-04", "r", "b", "69"], ["70", "2018-10-17", "r", "b", "70"], ["71", "2018-12-04", "r", "b", "71"], ["72", "2019-01-29", "r", "b", "72"], ["73", "2019-03-12", "r", "b", "73"], ["74", "2019-04-24", "r", "b", "74"], ["75", "2019-06-04", "r", "b", "75"], ["76", "2019-07-30", "r", "b", "76"], ["77", "2019-09-10", "r", "b", "77"], ["78", "2019-10-22", "r", "b", "78"], ["79", "2019-12-17", "r", "b", "79"], ["80", "2020-02-04", "r", "b", "80"], ["81", "2020-04-07", "r", "b", "81"], ["83", "2020-05-19", "r", "b", "83"], ["84", "2020-07-27", "r", "b", "84"], ["85", "2020-08-25", "r", "b", "85"], ["86", "2020-10-20", "r", "b", "86"], ["87", "2020-11-17", "r", "b", "87"], ["88", "2021-01-19", "r", "b", "88"], ["89", "2021-03-02", "r", "b", "89"], ["90", "2021-04-13", "r", "b", "90"], ["91", "2021-05-25", "r", "b", "91"], ["92", "2021-07-20", "r", "b", "92"], ["93", "2021-08-31", "r", "b", "93"], ["94", "2021-09-21", "r", "b", "94"], ["95", "2021-10-19", "r", "b", "95"], ["96", "2021-11-15", "r", "b", "96"], ["97", "2022-01-04", "r", "b", "97"], ["98", "2022-02-01", "r", "b", "98"], ["99", "2022-03-01", "r", "b", "99"], ["100", "2022-03-29", "r", "b", "100"], ["101", "2022-04-26", "r", "b", "101"], ["102", "2022-05-24", "r", "b", "102"], ["103", "2022-06-21", "r", "b", "103"], ["104", "2022-08-02", "r", "b", "104"], ["105", "2022-09-02", "r", "b", "105"], ["106", "2022-09-27", "r", "b", "106"], ["107", "2022-10-25", "r", "b", "107"], ["108", "2022-11-29", "r", "b", "108"], ["109", "2023-01-10", "r", "b", "109"], ["110", "2023-02-07", "r", "b", "110"], ["111", "2023-03-07", "r", "b", "111"], ["112", "2023-04-04", "r", "b", "112"], ["113", "2023-05-02", "r", "b", "113"], ["114", "2023-05-30", "r", "b", "114"], ["115", "2023-07-21", "r", "b", "115"], ["116", "2023-08-15", "r", "b", "116"], ["117", "2023-09-12", "r", "b", "117"], ["118", "2023-10-10", "r", "b", "118"], ["119", "2023-10-31", "r", "b", "119"], ["120", "2023-12-05", "r", "b", "120"], ["121", "2024-01-23", "r", "b", "121"], ["122", "2024-02-20", "r", "b", "122"], ["123", "2024-03-19", "r", "b", "123"], ["124", "2024-04-16", "r", "b", "124"], ["125", "2024-05-14", "r", "b", "125"], ["126", "2024-06-11", "r", "b", "126"], ["127", "2024-07-23", "r", "b", "127"], ["128", "2024-08-20", "r", "b", "128"], ["129", "2024-09-17", "r", "b", "129"], ["130", "2024-10-15", "r", "b", "130"], ["131", "2024-11-12", "r", "b", "131"], ["132", "2025-01-14", "r", "b", "132"], ["133", "2025-02-04", "r", "b", "133"], ["134", "2025-03-04", "r", "b", "134"], ["135", "2025-04-01", "r", "b", "135"], ["136", "2025-04-29", "r", "b", "136"], ["137", "2025-05-27", "r", "b", "137"], ["138", "2025-06-24", "r", "b", "138"], ["139", "2025-08-05", "r", "b", "139"], ["140", "2025-09-02", "r", "b", "140"], ["141", "2025-09-30", "r", "b", "141"], ["142", "2025-10-28", "r", "b", "142"], ["143", "2025-12-02", "r", "b", "143"], ["144", "2026-01-13", "r", "b", "144"], ["145", "2026-02-10", "r", "b", "145"], ["146", "2026-03-10", "r", "b", "146"], ["147", "2026-04-07", "r", "b", "147"], ["148", "2026-05-05", "c", "b", "148"], ["149", "2026-06-02", "b", "b", "149"], ["150", "2026-06-30", "n", "b", "150"], ["151", null, "p", "b", "151"]] }, edge: { releases: [["12", "2015-07-29", "r", null, "12"], ["13", "2015-11-12", "r", null, "13"], ["14", "2016-08-02", "r", null, "14"], ["15", "2017-04-05", "r", null, "15"], ["16", "2017-10-17", "r", null, "16"], ["17", "2018-04-30", "r", null, "17"], ["18", "2018-10-02", "r", null, "18"], ["79", "2020-01-15", "r", "b", "79"], ["80", "2020-02-07", "r", "b", "80"], ["81", "2020-04-13", "r", "b", "81"], ["83", "2020-05-21", "r", "b", "83"], ["84", "2020-07-16", "r", "b", "84"], ["85", "2020-08-27", "r", "b", "85"], ["86", "2020-10-09", "r", "b", "86"], ["87", "2020-11-19", "r", "b", "87"], ["88", "2021-01-21", "r", "b", "88"], ["89", "2021-03-04", "r", "b", "89"], ["90", "2021-04-15", "r", "b", "90"], ["91", "2021-05-27", "r", "b", "91"], ["92", "2021-07-22", "r", "b", "92"], ["93", "2021-09-02", "r", "b", "93"], ["94", "2021-09-24", "r", "b", "94"], ["95", "2021-10-21", "r", "b", "95"], ["96", "2021-11-19", "r", "b", "96"], ["97", "2022-01-06", "r", "b", "97"], ["98", "2022-02-03", "r", "b", "98"], ["99", "2022-03-03", "r", "b", "99"], ["100", "2022-04-01", "r", "b", "100"], ["101", "2022-04-28", "r", "b", "101"], ["102", "2022-05-31", "r", "b", "102"], ["103", "2022-06-23", "r", "b", "103"], ["104", "2022-08-05", "r", "b", "104"], ["105", "2022-09-01", "r", "b", "105"], ["106", "2022-10-03", "r", "b", "106"], ["107", "2022-10-27", "r", "b", "107"], ["108", "2022-12-05", "r", "b", "108"], ["109", "2023-01-12", "r", "b", "109"], ["110", "2023-02-09", "r", "b", "110"], ["111", "2023-03-13", "r", "b", "111"], ["112", "2023-04-06", "r", "b", "112"], ["113", "2023-05-05", "r", "b", "113"], ["114", "2023-06-02", "r", "b", "114"], ["115", "2023-07-21", "r", "b", "115"], ["116", "2023-08-21", "r", "b", "116"], ["117", "2023-09-15", "r", "b", "117"], ["118", "2023-10-13", "r", "b", "118"], ["119", "2023-11-02", "r", "b", "119"], ["120", "2023-12-07", "r", "b", "120"], ["121", "2024-01-25", "r", "b", "121"], ["122", "2024-02-23", "r", "b", "122"], ["123", "2024-03-22", "r", "b", "123"], ["124", "2024-04-18", "r", "b", "124"], ["125", "2024-05-17", "r", "b", "125"], ["126", "2024-06-13", "r", "b", "126"], ["127", "2024-07-25", "r", "b", "127"], ["128", "2024-08-22", "r", "b", "128"], ["129", "2024-09-19", "r", "b", "129"], ["130", "2024-10-17", "r", "b", "130"], ["131", "2024-11-14", "r", "b", "131"], ["132", "2025-01-17", "r", "b", "132"], ["133", "2025-02-06", "r", "b", "133"], ["134", "2025-03-06", "r", "b", "134"], ["135", "2025-04-04", "r", "b", "135"], ["136", "2025-05-01", "r", "b", "136"], ["137", "2025-05-29", "r", "b", "137"], ["138", "2025-06-26", "r", "b", "138"], ["139", "2025-08-07", "r", "b", "139"], ["140", "2025-09-05", "r", "b", "140"], ["141", "2025-10-03", "r", "b", "141"], ["142", "2025-10-31", "r", "b", "142"], ["143", "2025-12-05", "r", "b", "143"], ["144", "2026-01-21", "r", "b", "144"], ["145", "2026-02-14", "r", "b", "145"], ["146", "2026-03-13", "r", "b", "146"], ["147", "2026-04-10", "r", "b", "147"], ["148", "2026-05-07", "c", "b", "148"], ["149", "2026-06-04", "b", "b", "149"], ["150", null, "n", "b", "150"], ["151", null, "p", "b", "151"]] }, firefox: { releases: [["1", "2004-11-09", "r", "g", "1.7"], ["2", "2006-10-24", "r", "g", "1.8.1"], ["3", "2008-06-17", "r", "g", "1.9"], ["4", "2011-03-22", "r", "g", "2"], ["5", "2011-06-21", "r", "g", "5"], ["6", "2011-08-16", "r", "g", "6"], ["7", "2011-09-27", "r", "g", "7"], ["8", "2011-11-08", "r", "g", "8"], ["9", "2011-12-20", "r", "g", "9"], ["10", "2012-01-31", "r", "g", "10"], ["11", "2012-03-13", "r", "g", "11"], ["12", "2012-04-24", "r", "g", "12"], ["13", "2012-06-05", "r", "g", "13"], ["14", "2012-07-17", "r", "g", "14"], ["15", "2012-08-28", "r", "g", "15"], ["16", "2012-10-09", "r", "g", "16"], ["17", "2012-11-20", "r", "g", "17"], ["18", "2013-01-08", "r", "g", "18"], ["19", "2013-02-19", "r", "g", "19"], ["20", "2013-04-02", "r", "g", "20"], ["21", "2013-05-14", "r", "g", "21"], ["22", "2013-06-25", "r", "g", "22"], ["23", "2013-08-06", "r", "g", "23"], ["24", "2013-09-17", "r", "g", "24"], ["25", "2013-10-29", "r", "g", "25"], ["26", "2013-12-10", "r", "g", "26"], ["27", "2014-02-04", "r", "g", "27"], ["28", "2014-03-18", "r", "g", "28"], ["29", "2014-04-29", "r", "g", "29"], ["30", "2014-06-10", "r", "g", "30"], ["31", "2014-07-22", "r", "g", "31"], ["32", "2014-09-02", "r", "g", "32"], ["33", "2014-10-14", "r", "g", "33"], ["34", "2014-12-01", "r", "g", "34"], ["35", "2015-01-13", "r", "g", "35"], ["36", "2015-02-24", "r", "g", "36"], ["37", "2015-03-31", "r", "g", "37"], ["38", "2015-05-12", "r", "g", "38"], ["39", "2015-07-02", "r", "g", "39"], ["40", "2015-08-11", "r", "g", "40"], ["41", "2015-09-22", "r", "g", "41"], ["42", "2015-11-03", "r", "g", "42"], ["43", "2015-12-15", "r", "g", "43"], ["44", "2016-01-26", "r", "g", "44"], ["45", "2016-03-08", "r", "g", "45"], ["46", "2016-04-26", "r", "g", "46"], ["47", "2016-06-07", "r", "g", "47"], ["48", "2016-08-02", "r", "g", "48"], ["49", "2016-09-20", "r", "g", "49"], ["50", "2016-11-15", "r", "g", "50"], ["51", "2017-01-24", "r", "g", "51"], ["52", "2017-03-07", "r", "g", "52"], ["53", "2017-04-19", "r", "g", "53"], ["54", "2017-06-13", "r", "g", "54"], ["55", "2017-08-08", "r", "g", "55"], ["56", "2017-09-28", "r", "g", "56"], ["57", "2017-11-14", "r", "g", "57"], ["58", "2018-01-23", "r", "g", "58"], ["59", "2018-03-13", "r", "g", "59"], ["60", "2018-05-09", "r", "g", "60"], ["61", "2018-06-26", "r", "g", "61"], ["62", "2018-09-05", "r", "g", "62"], ["63", "2018-10-23", "r", "g", "63"], ["64", "2018-12-11", "r", "g", "64"], ["65", "2019-01-29", "r", "g", "65"], ["66", "2019-03-19", "r", "g", "66"], ["67", "2019-05-21", "r", "g", "67"], ["68", "2019-07-09", "r", "g", "68"], ["69", "2019-09-03", "r", "g", "69"], ["70", "2019-10-22", "r", "g", "70"], ["71", "2019-12-10", "r", "g", "71"], ["72", "2020-01-07", "r", "g", "72"], ["73", "2020-02-11", "r", "g", "73"], ["74", "2020-03-10", "r", "g", "74"], ["75", "2020-04-07", "r", "g", "75"], ["76", "2020-05-05", "r", "g", "76"], ["77", "2020-06-02", "r", "g", "77"], ["78", "2020-06-30", "r", "g", "78"], ["79", "2020-07-28", "r", "g", "79"], ["80", "2020-08-25", "r", "g", "80"], ["81", "2020-09-22", "r", "g", "81"], ["82", "2020-10-20", "r", "g", "82"], ["83", "2020-11-17", "r", "g", "83"], ["84", "2020-12-15", "r", "g", "84"], ["85", "2021-01-26", "r", "g", "85"], ["86", "2021-02-23", "r", "g", "86"], ["87", "2021-03-23", "r", "g", "87"], ["88", "2021-04-19", "r", "g", "88"], ["89", "2021-06-01", "r", "g", "89"], ["90", "2021-07-13", "r", "g", "90"], ["91", "2021-08-10", "r", "g", "91"], ["92", "2021-09-07", "r", "g", "92"], ["93", "2021-10-05", "r", "g", "93"], ["94", "2021-11-02", "r", "g", "94"], ["95", "2021-12-07", "r", "g", "95"], ["96", "2022-01-11", "r", "g", "96"], ["97", "2022-02-08", "r", "g", "97"], ["98", "2022-03-08", "r", "g", "98"], ["99", "2022-04-05", "r", "g", "99"], ["100", "2022-05-03", "r", "g", "100"], ["101", "2022-05-31", "r", "g", "101"], ["102", "2022-06-28", "r", "g", "102"], ["103", "2022-07-26", "r", "g", "103"], ["104", "2022-08-23", "r", "g", "104"], ["105", "2022-09-20", "r", "g", "105"], ["106", "2022-10-18", "r", "g", "106"], ["107", "2022-11-15", "r", "g", "107"], ["108", "2022-12-13", "r", "g", "108"], ["109", "2023-01-17", "r", "g", "109"], ["110", "2023-02-14", "r", "g", "110"], ["111", "2023-03-14", "r", "g", "111"], ["112", "2023-04-11", "r", "g", "112"], ["113", "2023-05-09", "r", "g", "113"], ["114", "2023-06-06", "r", "g", "114"], ["115", "2023-07-04", "r", "g", "115"], ["116", "2023-08-01", "r", "g", "116"], ["117", "2023-08-29", "r", "g", "117"], ["118", "2023-09-26", "r", "g", "118"], ["119", "2023-10-24", "r", "g", "119"], ["120", "2023-11-21", "r", "g", "120"], ["121", "2023-12-19", "r", "g", "121"], ["122", "2024-01-23", "r", "g", "122"], ["123", "2024-02-20", "r", "g", "123"], ["124", "2024-03-19", "r", "g", "124"], ["125", "2024-04-16", "r", "g", "125"], ["126", "2024-05-14", "r", "g", "126"], ["127", "2024-06-11", "r", "g", "127"], ["128", "2024-07-09", "r", "g", "128"], ["129", "2024-08-06", "r", "g", "129"], ["130", "2024-09-03", "r", "g", "130"], ["131", "2024-10-01", "r", "g", "131"], ["132", "2024-10-29", "r", "g", "132"], ["133", "2024-11-26", "r", "g", "133"], ["134", "2025-01-07", "r", "g", "134"], ["135", "2025-02-04", "r", "g", "135"], ["136", "2025-03-04", "r", "g", "136"], ["137", "2025-04-01", "r", "g", "137"], ["138", "2025-04-29", "r", "g", "138"], ["139", "2025-05-27", "r", "g", "139"], ["140", "2025-06-24", "e", "g", "140"], ["141", "2025-07-22", "r", "g", "141"], ["142", "2025-08-19", "r", "g", "142"], ["143", "2025-09-16", "r", "g", "143"], ["144", "2025-10-14", "r", "g", "144"], ["145", "2025-11-11", "r", "g", "145"], ["146", "2025-12-09", "r", "g", "146"], ["147", "2026-01-13", "r", "g", "147"], ["148", "2026-02-24", "r", "g", "148"], ["149", "2026-03-24", "r", "g", "149"], ["150", "2026-04-21", "c", "g", "150"], ["151", "2026-05-19", "b", "g", "151"], ["152", "2026-06-16", "n", "g", "152"], ["153", "2026-07-21", "p", "g", "153"], ["1.5", "2005-11-29", "r", "g", "1.8"], ["3.5", "2009-06-30", "r", "g", "1.9.1"], ["3.6", "2010-01-21", "r", "g", "1.9.2"]] }, firefox_android: { releases: [["4", "2011-03-29", "r", "g", "2"], ["5", "2011-06-21", "r", "g", "5"], ["6", "2011-08-16", "r", "g", "6"], ["7", "2011-09-27", "r", "g", "7"], ["8", "2011-11-08", "r", "g", "8"], ["9", "2011-12-21", "r", "g", "9"], ["10", "2012-01-31", "r", "g", "10"], ["14", "2012-06-26", "r", "g", "14"], ["15", "2012-08-28", "r", "g", "15"], ["16", "2012-10-09", "r", "g", "16"], ["17", "2012-11-20", "r", "g", "17"], ["18", "2013-01-08", "r", "g", "18"], ["19", "2013-02-19", "r", "g", "19"], ["20", "2013-04-02", "r", "g", "20"], ["21", "2013-05-14", "r", "g", "21"], ["22", "2013-06-25", "r", "g", "22"], ["23", "2013-08-06", "r", "g", "23"], ["24", "2013-09-17", "r", "g", "24"], ["25", "2013-10-29", "r", "g", "25"], ["26", "2013-12-10", "r", "g", "26"], ["27", "2014-02-04", "r", "g", "27"], ["28", "2014-03-18", "r", "g", "28"], ["29", "2014-04-29", "r", "g", "29"], ["30", "2014-06-10", "r", "g", "30"], ["31", "2014-07-22", "r", "g", "31"], ["32", "2014-09-02", "r", "g", "32"], ["33", "2014-10-14", "r", "g", "33"], ["34", "2014-12-01", "r", "g", "34"], ["35", "2015-01-13", "r", "g", "35"], ["36", "2015-02-27", "r", "g", "36"], ["37", "2015-03-31", "r", "g", "37"], ["38", "2015-05-12", "r", "g", "38"], ["39", "2015-07-02", "r", "g", "39"], ["40", "2015-08-11", "r", "g", "40"], ["41", "2015-09-22", "r", "g", "41"], ["42", "2015-11-03", "r", "g", "42"], ["43", "2015-12-15", "r", "g", "43"], ["44", "2016-01-26", "r", "g", "44"], ["45", "2016-03-08", "r", "g", "45"], ["46", "2016-04-26", "r", "g", "46"], ["47", "2016-06-07", "r", "g", "47"], ["48", "2016-08-02", "r", "g", "48"], ["49", "2016-09-20", "r", "g", "49"], ["50", "2016-11-15", "r", "g", "50"], ["51", "2017-01-24", "r", "g", "51"], ["52", "2017-03-07", "r", "g", "52"], ["53", "2017-04-19", "r", "g", "53"], ["54", "2017-06-13", "r", "g", "54"], ["55", "2017-08-08", "r", "g", "55"], ["56", "2017-09-28", "r", "g", "56"], ["57", "2017-11-28", "r", "g", "57"], ["58", "2018-01-22", "r", "g", "58"], ["59", "2018-03-13", "r", "g", "59"], ["60", "2018-05-09", "r", "g", "60"], ["61", "2018-06-26", "r", "g", "61"], ["62", "2018-09-05", "r", "g", "62"], ["63", "2018-10-23", "r", "g", "63"], ["64", "2018-12-11", "r", "g", "64"], ["65", "2019-01-29", "r", "g", "65"], ["66", "2019-03-19", "r", "g", "66"], ["67", "2019-05-21", "r", "g", "67"], ["68", "2019-07-09", "r", "g", "68"], ["79", "2020-07-28", "r", "g", "79"], ["80", "2020-08-31", "r", "g", "80"], ["81", "2020-09-22", "r", "g", "81"], ["82", "2020-10-20", "r", "g", "82"], ["83", "2020-11-17", "r", "g", "83"], ["84", "2020-12-15", "r", "g", "84"], ["85", "2021-01-26", "r", "g", "85"], ["86", "2021-02-23", "r", "g", "86"], ["87", "2021-03-23", "r", "g", "87"], ["88", "2021-04-19", "r", "g", "88"], ["89", "2021-06-01", "r", "g", "89"], ["90", "2021-07-13", "r", "g", "90"], ["91", "2021-08-10", "r", "g", "91"], ["92", "2021-09-07", "r", "g", "92"], ["93", "2021-10-05", "r", "g", "93"], ["94", "2021-11-02", "r", "g", "94"], ["95", "2021-12-07", "r", "g", "95"], ["96", "2022-01-11", "r", "g", "96"], ["97", "2022-02-08", "r", "g", "97"], ["98", "2022-03-08", "r", "g", "98"], ["99", "2022-04-05", "r", "g", "99"], ["100", "2022-05-03", "r", "g", "100"], ["101", "2022-05-31", "r", "g", "101"], ["102", "2022-06-28", "r", "g", "102"], ["103", "2022-07-26", "r", "g", "103"], ["104", "2022-08-23", "r", "g", "104"], ["105", "2022-09-20", "r", "g", "105"], ["106", "2022-10-18", "r", "g", "106"], ["107", "2022-11-15", "r", "g", "107"], ["108", "2022-12-13", "r", "g", "108"], ["109", "2023-01-17", "r", "g", "109"], ["110", "2023-02-14", "r", "g", "110"], ["111", "2023-03-14", "r", "g", "111"], ["112", "2023-04-11", "r", "g", "112"], ["113", "2023-05-09", "r", "g", "113"], ["114", "2023-06-06", "r", "g", "114"], ["115", "2023-07-04", "r", "g", "115"], ["116", "2023-08-01", "r", "g", "116"], ["117", "2023-08-29", "r", "g", "117"], ["118", "2023-09-26", "r", "g", "118"], ["119", "2023-10-24", "r", "g", "119"], ["120", "2023-11-21", "r", "g", "120"], ["121", "2023-12-19", "r", "g", "121"], ["122", "2024-01-23", "r", "g", "122"], ["123", "2024-02-20", "r", "g", "123"], ["124", "2024-03-19", "r", "g", "124"], ["125", "2024-04-16", "r", "g", "125"], ["126", "2024-05-14", "r", "g", "126"], ["127", "2024-06-11", "r", "g", "127"], ["128", "2024-07-09", "r", "g", "128"], ["129", "2024-08-06", "r", "g", "129"], ["130", "2024-09-03", "r", "g", "130"], ["131", "2024-10-01", "r", "g", "131"], ["132", "2024-10-29", "r", "g", "132"], ["133", "2024-11-26", "r", "g", "133"], ["134", "2025-01-07", "r", "g", "134"], ["135", "2025-02-04", "r", "g", "135"], ["136", "2025-03-04", "r", "g", "136"], ["137", "2025-04-01", "r", "g", "137"], ["138", "2025-04-29", "r", "g", "138"], ["139", "2025-05-27", "r", "g", "139"], ["140", "2025-06-24", "e", "g", "140"], ["141", "2025-07-22", "r", "g", "141"], ["142", "2025-08-19", "r", "g", "142"], ["143", "2025-09-16", "r", "g", "143"], ["144", "2025-10-14", "r", "g", "144"], ["145", "2025-11-11", "r", "g", "145"], ["146", "2025-12-09", "r", "g", "146"], ["147", "2026-01-13", "r", "g", "147"], ["148", "2026-02-24", "r", "g", "148"], ["149", "2026-03-24", "r", "g", "149"], ["150", "2026-04-21", "c", "g", "150"], ["151", "2026-05-19", "b", "g", "151"], ["152", "2026-06-16", "n", "g", "152"], ["153", "2026-07-21", "p", "g", "153"]] }, opera: { releases: [["2", "1996-07-14", "r", null, null], ["3", "1997-12-01", "r", null, null], ["4", "2000-06-28", "r", null, null], ["5", "2000-12-06", "r", null, null], ["6", "2001-12-18", "r", null, null], ["7", "2003-01-28", "r", "p", "1"], ["8", "2005-04-19", "r", "p", "1"], ["9", "2006-06-20", "r", "p", "2"], ["10", "2009-09-01", "r", "p", "2.2"], ["11", "2010-12-16", "r", "p", "2.7"], ["12", "2012-06-14", "r", "p", "2.10"], ["15", "2013-07-02", "r", "b", "28"], ["16", "2013-08-27", "r", "b", "29"], ["17", "2013-10-08", "r", "b", "30"], ["18", "2013-11-19", "r", "b", "31"], ["19", "2014-01-28", "r", "b", "32"], ["20", "2014-03-04", "r", "b", "33"], ["21", "2014-05-06", "r", "b", "34"], ["22", "2014-06-03", "r", "b", "35"], ["23", "2014-07-22", "r", "b", "36"], ["24", "2014-09-02", "r", "b", "37"], ["25", "2014-10-15", "r", "b", "38"], ["26", "2014-12-03", "r", "b", "39"], ["27", "2015-01-27", "r", "b", "40"], ["28", "2015-03-10", "r", "b", "41"], ["29", "2015-04-28", "r", "b", "42"], ["30", "2015-06-09", "r", "b", "43"], ["31", "2015-08-04", "r", "b", "44"], ["32", "2015-09-15", "r", "b", "45"], ["33", "2015-10-27", "r", "b", "46"], ["34", "2015-12-08", "r", "b", "47"], ["35", "2016-02-02", "r", "b", "48"], ["36", "2016-03-15", "r", "b", "49"], ["37", "2016-05-04", "r", "b", "50"], ["38", "2016-06-08", "r", "b", "51"], ["39", "2016-08-02", "r", "b", "52"], ["40", "2016-09-20", "r", "b", "53"], ["41", "2016-10-25", "r", "b", "54"], ["42", "2016-12-13", "r", "b", "55"], ["43", "2017-02-07", "r", "b", "56"], ["44", "2017-03-21", "r", "b", "57"], ["45", "2017-05-10", "r", "b", "58"], ["46", "2017-06-22", "r", "b", "59"], ["47", "2017-08-09", "r", "b", "60"], ["48", "2017-09-27", "r", "b", "61"], ["49", "2017-11-08", "r", "b", "62"], ["50", "2018-01-04", "r", "b", "63"], ["51", "2018-02-07", "r", "b", "64"], ["52", "2018-03-22", "r", "b", "65"], ["53", "2018-05-10", "r", "b", "66"], ["54", "2018-06-28", "r", "b", "67"], ["55", "2018-08-16", "r", "b", "68"], ["56", "2018-09-25", "r", "b", "69"], ["57", "2018-11-28", "r", "b", "70"], ["58", "2019-01-23", "r", "b", "71"], ["60", "2019-04-09", "r", "b", "73"], ["62", "2019-06-27", "r", "b", "75"], ["63", "2019-08-20", "r", "b", "76"], ["64", "2019-10-07", "r", "b", "77"], ["65", "2019-11-13", "r", "b", "78"], ["66", "2020-01-07", "r", "b", "79"], ["67", "2020-03-03", "r", "b", "80"], ["68", "2020-04-22", "r", "b", "81"], ["69", "2020-06-24", "r", "b", "83"], ["70", "2020-07-27", "r", "b", "84"], ["71", "2020-09-15", "r", "b", "85"], ["72", "2020-10-21", "r", "b", "86"], ["73", "2020-12-09", "r", "b", "87"], ["74", "2021-02-02", "r", "b", "88"], ["75", "2021-03-24", "r", "b", "89"], ["76", "2021-04-28", "r", "b", "90"], ["77", "2021-06-09", "r", "b", "91"], ["78", "2021-08-03", "r", "b", "92"], ["79", "2021-09-14", "r", "b", "93"], ["80", "2021-10-05", "r", "b", "94"], ["81", "2021-11-04", "r", "b", "95"], ["82", "2021-12-02", "r", "b", "96"], ["83", "2022-01-19", "r", "b", "97"], ["84", "2022-02-16", "r", "b", "98"], ["85", "2022-03-23", "r", "b", "99"], ["86", "2022-04-20", "r", "b", "100"], ["87", "2022-05-17", "r", "b", "101"], ["88", "2022-06-08", "r", "b", "102"], ["89", "2022-07-07", "r", "b", "103"], ["90", "2022-08-18", "r", "b", "104"], ["91", "2022-09-14", "r", "b", "105"], ["92", "2022-10-19", "r", "b", "106"], ["93", "2022-11-17", "r", "b", "107"], ["94", "2022-12-15", "r", "b", "108"], ["95", "2023-02-01", "r", "b", "109"], ["96", "2023-02-22", "r", "b", "110"], ["97", "2023-03-22", "r", "b", "111"], ["98", "2023-04-20", "r", "b", "112"], ["99", "2023-05-16", "r", "b", "113"], ["100", "2023-06-29", "r", "b", "114"], ["101", "2023-07-26", "r", "b", "115"], ["102", "2023-08-23", "r", "b", "116"], ["103", "2023-10-03", "r", "b", "117"], ["104", "2023-10-23", "r", "b", "118"], ["105", "2023-11-14", "r", "b", "119"], ["106", "2023-12-19", "r", "b", "120"], ["107", "2024-02-07", "r", "b", "121"], ["108", "2024-03-05", "r", "b", "122"], ["109", "2024-03-27", "r", "b", "123"], ["110", "2024-05-14", "r", "b", "124"], ["111", "2024-06-12", "r", "b", "125"], ["112", "2024-07-11", "r", "b", "126"], ["113", "2024-08-22", "r", "b", "127"], ["114", "2024-09-25", "r", "b", "128"], ["115", "2024-11-27", "r", "b", "130"], ["116", "2025-01-08", "r", "b", "131"], ["117", "2025-02-13", "r", "b", "132"], ["118", "2025-04-15", "r", "b", "133"], ["119", "2025-05-13", "r", "b", "134"], ["120", "2025-07-02", "r", "b", "135"], ["121", "2025-08-27", "r", "b", "137"], ["122", "2025-09-11", "r", "b", "138"], ["123", "2025-10-28", "r", "b", "139"], ["124", "2025-11-13", "r", "b", "140"], ["125", "2025-12-04", "r", "b", "141"], ["126", "2026-01-08", "r", "b", "142"], ["127", "2026-02-02", "r", "b", "143"], ["128", "2026-02-26", "r", "b", "144"], ["129", "2026-03-18", "r", "b", "145"], ["130", "2026-04-08", "r", "b", "146"], ["131", "2026-04-29", "c", "b", "147"], ["132", null, "b", "b", "148"], ["133", null, "n", "b", "149"], ["10.1", "2009-11-23", "r", "p", "2.2"], ["10.5", "2010-03-02", "r", "p", "2.5"], ["10.6", "2010-07-01", "r", "p", "2.6"], ["11.1", "2011-04-12", "r", "p", "2.8"], ["11.5", "2011-06-28", "r", "p", "2.9"], ["11.6", "2011-12-06", "r", "p", "2.10"], ["12.1", "2012-11-20", "r", "p", "2.12"], ["3.5", "1998-11-18", "r", null, null], ["3.6", "1999-05-06", "r", null, null], ["5.1", "2001-04-10", "r", null, null], ["7.1", "2003-04-11", "r", "p", "1"], ["7.2", "2003-09-23", "r", "p", "1"], ["7.5", "2004-05-12", "r", "p", "1"], ["8.5", "2005-09-20", "r", "p", "1"], ["9.1", "2006-12-18", "r", "p", "2"], ["9.2", "2007-04-11", "r", "p", "2"], ["9.5", "2008-06-12", "r", "p", "2.1"], ["9.6", "2008-10-08", "r", "p", "2.1"]] }, opera_android: { releases: [["11", "2011-03-22", "r", "p", "2.7"], ["12", "2012-02-25", "r", "p", "2.10"], ["14", "2013-05-21", "r", "w", "537.31"], ["15", "2013-07-08", "r", "b", "28"], ["16", "2013-09-18", "r", "b", "29"], ["18", "2013-11-20", "r", "b", "31"], ["19", "2014-01-28", "r", "b", "32"], ["20", "2014-03-06", "r", "b", "33"], ["21", "2014-04-22", "r", "b", "34"], ["22", "2014-06-17", "r", "b", "35"], ["24", "2014-09-10", "r", "b", "37"], ["25", "2014-10-16", "r", "b", "38"], ["26", "2014-12-02", "r", "b", "39"], ["27", "2015-01-29", "r", "b", "40"], ["28", "2015-03-10", "r", "b", "41"], ["29", "2015-04-28", "r", "b", "42"], ["30", "2015-06-10", "r", "b", "43"], ["32", "2015-09-23", "r", "b", "45"], ["33", "2015-11-03", "r", "b", "46"], ["34", "2015-12-16", "r", "b", "47"], ["35", "2016-02-04", "r", "b", "48"], ["36", "2016-03-31", "r", "b", "49"], ["37", "2016-06-16", "r", "b", "50"], ["41", "2016-10-25", "r", "b", "54"], ["42", "2017-01-21", "r", "b", "55"], ["43", "2017-09-27", "r", "b", "59"], ["44", "2017-12-11", "r", "b", "60"], ["45", "2018-02-15", "r", "b", "61"], ["46", "2018-05-14", "r", "b", "63"], ["47", "2018-07-23", "r", "b", "66"], ["48", "2018-11-08", "r", "b", "69"], ["49", "2018-12-07", "r", "b", "70"], ["50", "2019-02-18", "r", "b", "71"], ["51", "2019-03-21", "r", "b", "72"], ["52", "2019-05-17", "r", "b", "73"], ["53", "2019-07-11", "r", "b", "74"], ["54", "2019-10-18", "r", "b", "76"], ["55", "2019-12-03", "r", "b", "77"], ["56", "2020-02-06", "r", "b", "78"], ["57", "2020-03-30", "r", "b", "80"], ["58", "2020-05-13", "r", "b", "81"], ["59", "2020-06-30", "r", "b", "83"], ["60", "2020-09-23", "r", "b", "85"], ["61", "2020-12-07", "r", "b", "86"], ["62", "2021-02-16", "r", "b", "87"], ["63", "2021-04-16", "r", "b", "89"], ["64", "2021-05-25", "r", "b", "91"], ["65", "2021-10-20", "r", "b", "92"], ["66", "2021-12-15", "r", "b", "94"], ["67", "2022-01-31", "r", "b", "96"], ["68", "2022-03-30", "r", "b", "99"], ["69", "2022-05-09", "r", "b", "100"], ["70", "2022-06-29", "r", "b", "102"], ["71", "2022-09-16", "r", "b", "104"], ["72", "2022-10-21", "r", "b", "106"], ["73", "2023-01-17", "r", "b", "108"], ["74", "2023-03-13", "r", "b", "110"], ["75", "2023-05-17", "r", "b", "112"], ["76", "2023-06-26", "r", "b", "114"], ["77", "2023-08-31", "r", "b", "115"], ["78", "2023-10-23", "r", "b", "117"], ["79", "2023-12-06", "r", "b", "119"], ["80", "2024-01-25", "r", "b", "120"], ["81", "2024-03-14", "r", "b", "122"], ["82", "2024-05-02", "r", "b", "124"], ["83", "2024-06-25", "r", "b", "126"], ["84", "2024-08-26", "r", "b", "127"], ["85", "2024-10-29", "r", "b", "128"], ["86", "2024-12-02", "r", "b", "130"], ["87", "2025-01-22", "r", "b", "132"], ["88", "2025-03-19", "r", "b", "134"], ["89", "2025-04-29", "r", "b", "135"], ["90", "2025-06-18", "r", "b", "137"], ["91", "2025-08-19", "r", "b", "139"], ["92", "2025-10-08", "r", "b", "140"], ["93", "2025-11-25", "r", "b", "142"], ["94", "2026-01-13", "r", "b", "143"], ["95", "2026-02-11", "r", "b", "144"], ["96", "2026-03-10", "r", "b", "145"], ["97", "2026-04-16", "r", "b", "146"], ["98", "2026-05-05", "c", "b", "147"], ["10.1", "2010-11-09", "r", "p", "2.5"], ["11.1", "2011-06-30", "r", "p", "2.8"], ["11.5", "2011-10-12", "r", "p", "2.9"], ["12.1", "2012-10-09", "r", "p", "2.11"]] }, safari: { releases: [["1", "2003-06-23", "r", "w", "85"], ["2", "2005-04-29", "r", "w", "412"], ["3", "2007-10-26", "r", "w", "523.10"], ["4", "2009-06-08", "r", "w", "530.17"], ["5", "2010-06-07", "r", "w", "533.16"], ["6", "2012-07-25", "r", "w", "536.25"], ["7", "2013-10-22", "r", "w", "537.71"], ["8", "2014-10-16", "r", "w", "538.35"], ["9", "2015-09-30", "r", "w", "601.1.56"], ["10", "2016-09-20", "r", "w", "602.1.50"], ["11", "2017-09-19", "r", "w", "604.2.4"], ["12", "2018-09-17", "r", "w", "606.1.36"], ["13", "2019-09-19", "r", "w", "608.2.11"], ["14", "2020-09-16", "r", "w", "610.1.28"], ["15", "2021-09-20", "r", "w", "612.1.27"], ["16", "2022-09-12", "r", "w", "614.1.25"], ["17", "2023-09-18", "r", "w", "616.1.27"], ["18", "2024-09-16", "r", "w", "619.1.26"], ["26", "2025-09-15", "r", "w", "622.1.22"], ["1.1", "2003-10-24", "r", "w", "100"], ["1.2", "2004-02-02", "r", "w", "125"], ["1.3", "2005-04-15", "r", "w", "312"], ["10.1", "2017-03-27", "r", "w", "603.2.1"], ["11.1", "2018-04-12", "r", "w", "605.1.33"], ["12.1", "2019-03-25", "r", "w", "607.1.40"], ["13.1", "2020-03-24", "r", "w", "609.1.20"], ["14.1", "2021-04-26", "r", "w", "611.1.21"], ["15.1", "2021-10-25", "r", "w", "612.2.9"], ["15.2", "2021-12-13", "r", "w", "612.3.6"], ["15.3", "2022-01-26", "r", "w", "612.4.9"], ["15.4", "2022-03-14", "r", "w", "613.1.17"], ["15.5", "2022-05-16", "r", "w", "613.2.7"], ["15.6", "2022-07-20", "r", "w", "613.3.9"], ["16.1", "2022-10-24", "r", "w", "614.2.9"], ["16.2", "2022-12-13", "r", "w", "614.3.7"], ["16.3", "2023-01-23", "r", "w", "614.4.6"], ["16.4", "2023-03-27", "r", "w", "615.1.26"], ["16.5", "2023-05-18", "r", "w", "615.2.9"], ["16.6", "2023-07-24", "r", "w", "615.3.12"], ["17.1", "2023-10-25", "r", "w", "616.2.9"], ["17.2", "2023-12-11", "r", "w", "617.1.17"], ["17.3", "2024-01-22", "r", "w", "617.2.4"], ["17.4", "2024-03-05", "r", "w", "618.1.15"], ["17.5", "2024-05-13", "r", "w", "618.2.12"], ["17.6", "2024-07-29", "r", "w", "618.3.11"], ["18.1", "2024-10-28", "r", "w", "619.2.8"], ["18.2", "2024-12-11", "r", "w", "620.1.16"], ["18.3", "2025-01-27", "r", "w", "620.2.4"], ["18.4", "2025-03-31", "r", "w", "621.1.15"], ["18.5", "2025-05-12", "r", "w", "621.2.5"], ["18.6", "2025-07-29", "r", "w", "621.3.11"], ["26.1", "2025-11-03", "r", "w", "622.2.11"], ["26.2", "2025-12-12", "r", "w", "623.1.14"], ["26.3", "2026-02-11", "r", "w", "623.2.7"], ["26.4", "2026-03-24", "c", "w", "624.1.16"], ["26.5", null, "b", "w", "624.2.1"], ["3.1", "2008-03-18", "r", "w", "525.13"], ["5.1", "2011-07-20", "r", "w", "534.48"], ["9.1", "2016-03-21", "r", "w", "601.5.17"]] }, safari_ios: { releases: [["1", "2007-06-29", "r", "w", "522.11"], ["2", "2008-07-11", "r", "w", "525.18"], ["3", "2009-06-17", "r", "w", "528.18"], ["4", "2010-06-21", "r", "w", "532.9"], ["5", "2011-10-12", "r", "w", "534.46"], ["6", "2012-09-10", "r", "w", "536.26"], ["7", "2013-09-18", "r", "w", "537.51"], ["8", "2014-09-17", "r", "w", "600.1.4"], ["9", "2015-09-16", "r", "w", "601.1.56"], ["10", "2016-09-13", "r", "w", "602.1.50"], ["11", "2017-09-19", "r", "w", "604.2.4"], ["12", "2018-09-17", "r", "w", "606.1.36"], ["13", "2019-09-19", "r", "w", "608.2.11"], ["14", "2020-09-16", "r", "w", "610.1.28"], ["15", "2021-09-20", "r", "w", "612.1.27"], ["16", "2022-09-12", "r", "w", "614.1.25"], ["17", "2023-09-18", "r", "w", "616.1.27"], ["18", "2024-09-16", "r", "w", "619.1.26"], ["26", "2025-09-15", "r", "w", "622.1.22"], ["10.3", "2017-03-27", "r", "w", "603.2.1"], ["11.3", "2018-03-29", "r", "w", "605.1.33"], ["12.2", "2019-03-25", "r", "w", "607.1.40"], ["13.4", "2020-03-24", "r", "w", "609.1.20"], ["14.5", "2021-04-26", "r", "w", "611.1.21"], ["15.1", "2021-10-25", "r", "w", "612.2.9"], ["15.2", "2021-12-13", "r", "w", "612.3.6"], ["15.3", "2022-01-26", "r", "w", "612.4.9"], ["15.4", "2022-03-14", "r", "w", "613.1.17"], ["15.5", "2022-05-16", "r", "w", "613.2.7"], ["15.6", "2022-07-20", "r", "w", "613.3.9"], ["16.1", "2022-10-24", "r", "w", "614.2.9"], ["16.2", "2022-12-13", "r", "w", "614.3.7"], ["16.3", "2023-01-23", "r", "w", "614.4.6"], ["16.4", "2023-03-27", "r", "w", "615.1.26"], ["16.5", "2023-05-18", "r", "w", "615.2.9"], ["16.6", "2023-07-24", "r", "w", "615.3.12"], ["17.1", "2023-10-25", "r", "w", "616.2.9"], ["17.2", "2023-12-11", "r", "w", "617.1.17"], ["17.3", "2024-01-22", "r", "w", "617.2.4"], ["17.4", "2024-03-05", "r", "w", "618.1.15"], ["17.5", "2024-05-13", "r", "w", "618.2.12"], ["17.6", "2024-07-29", "r", "w", "618.3.11"], ["18.1", "2024-10-28", "r", "w", "619.2.8"], ["18.2", "2024-12-11", "r", "w", "620.1.16"], ["18.3", "2025-01-27", "r", "w", "620.2.4"], ["18.4", "2025-03-31", "r", "w", "621.1.15"], ["18.5", "2025-05-12", "r", "w", "621.2.5"], ["18.6", "2025-07-29", "r", "w", "621.3.11"], ["26.1", "2025-11-03", "r", "w", "622.2.11"], ["26.2", "2025-12-12", "r", "w", "623.1.14"], ["26.3", "2026-02-11", "r", "w", "623.2.7"], ["26.4", "2026-03-24", "c", "w", "624.1.16"], ["26.5", null, "b", "w", "624.2.1"], ["3.2", "2010-04-03", "r", "w", "531.21"], ["4.2", "2010-11-22", "r", "w", "533.17"], ["9.3", "2016-03-21", "r", "w", "601.5.17"]] }, samsunginternet_android: { releases: [["1.0", "2013-04-27", "r", "w", "535.19"], ["1.5", "2013-09-25", "r", "b", "28"], ["1.6", "2014-04-11", "r", "b", "28"], ["10.0", "2019-08-22", "r", "b", "71"], ["10.2", "2019-10-09", "r", "b", "71"], ["11.0", "2019-12-05", "r", "b", "75"], ["11.2", "2020-03-22", "r", "b", "75"], ["12.0", "2020-06-19", "r", "b", "79"], ["12.1", "2020-07-07", "r", "b", "79"], ["13.0", "2020-12-02", "r", "b", "83"], ["13.2", "2021-01-20", "r", "b", "83"], ["14.0", "2021-04-17", "r", "b", "87"], ["14.2", "2021-06-25", "r", "b", "87"], ["15.0", "2021-08-13", "r", "b", "90"], ["16.0", "2021-11-25", "r", "b", "92"], ["16.2", "2022-03-06", "r", "b", "92"], ["17.0", "2022-05-04", "r", "b", "96"], ["18.0", "2022-08-08", "r", "b", "99"], ["18.1", "2022-09-09", "r", "b", "99"], ["19.0", "2022-11-01", "r", "b", "102"], ["19.1", "2022-11-08", "r", "b", "102"], ["2.0", "2014-10-17", "r", "b", "34"], ["2.1", "2015-01-07", "r", "b", "34"], ["20.0", "2023-02-10", "r", "b", "106"], ["21.0", "2023-05-19", "r", "b", "110"], ["22.0", "2023-07-14", "r", "b", "111"], ["23.0", "2023-10-18", "r", "b", "115"], ["24.0", "2024-01-25", "r", "b", "117"], ["25.0", "2024-04-24", "r", "b", "121"], ["26.0", "2024-06-07", "r", "b", "122"], ["27.0", "2024-11-06", "r", "b", "125"], ["28.0", "2025-04-02", "r", "b", "130"], ["29.0", "2025-10-25", "c", "b", "136"], ["3.0", "2015-04-10", "r", "b", "38"], ["3.2", "2015-08-24", "r", "b", "38"], ["4.0", "2016-03-11", "r", "b", "44"], ["4.2", "2016-08-02", "r", "b", "44"], ["5.0", "2016-12-15", "r", "b", "51"], ["5.2", "2017-04-21", "r", "b", "51"], ["5.4", "2017-05-17", "r", "b", "51"], ["6.0", "2017-08-23", "r", "b", "56"], ["6.2", "2017-10-26", "r", "b", "56"], ["6.4", "2018-02-19", "r", "b", "56"], ["7.0", "2018-03-16", "r", "b", "59"], ["7.2", "2018-06-20", "r", "b", "59"], ["7.4", "2018-09-12", "r", "b", "59"], ["8.0", "2018-07-18", "r", "b", "63"], ["8.2", "2018-12-21", "r", "b", "63"], ["9.0", "2018-09-15", "r", "b", "67"], ["9.2", "2019-04-02", "r", "b", "67"], ["9.4", "2019-07-25", "r", "b", "67"]] }, webview_android: { releases: [["1", "2008-09-23", "r", "w", "523.12"], ["2", "2009-10-26", "r", "w", "530.17"], ["3", "2011-02-22", "r", "w", "534.13"], ["4", "2011-10-18", "r", "w", "534.30"], ["37", "2014-09-03", "r", "b", "37"], ["38", "2014-10-08", "r", "b", "38"], ["39", "2014-11-12", "r", "b", "39"], ["40", "2015-01-21", "r", "b", "40"], ["41", "2015-03-11", "r", "b", "41"], ["42", "2015-04-15", "r", "b", "42"], ["43", "2015-05-27", "r", "b", "43"], ["44", "2015-07-29", "r", "b", "44"], ["45", "2015-09-01", "r", "b", "45"], ["46", "2015-10-14", "r", "b", "46"], ["47", "2015-12-02", "r", "b", "47"], ["48", "2016-01-26", "r", "b", "48"], ["49", "2016-03-09", "r", "b", "49"], ["50", "2016-04-13", "r", "b", "50"], ["51", "2016-06-08", "r", "b", "51"], ["52", "2016-07-27", "r", "b", "52"], ["53", "2016-09-07", "r", "b", "53"], ["54", "2016-10-19", "r", "b", "54"], ["55", "2016-12-06", "r", "b", "55"], ["56", "2017-02-01", "r", "b", "56"], ["57", "2017-03-16", "r", "b", "57"], ["58", "2017-04-25", "r", "b", "58"], ["59", "2017-06-06", "r", "b", "59"], ["60", "2017-08-01", "r", "b", "60"], ["61", "2017-09-05", "r", "b", "61"], ["62", "2017-10-24", "r", "b", "62"], ["63", "2017-12-05", "r", "b", "63"], ["64", "2018-01-23", "r", "b", "64"], ["65", "2018-03-06", "r", "b", "65"], ["66", "2018-04-17", "r", "b", "66"], ["67", "2018-05-31", "r", "b", "67"], ["68", "2018-07-24", "r", "b", "68"], ["69", "2018-09-04", "r", "b", "69"], ["70", "2018-10-17", "r", "b", "70"], ["71", "2018-12-04", "r", "b", "71"], ["72", "2019-01-29", "r", "b", "72"], ["73", "2019-03-12", "r", "b", "73"], ["74", "2019-04-24", "r", "b", "74"], ["75", "2019-06-04", "r", "b", "75"], ["76", "2019-07-30", "r", "b", "76"], ["77", "2019-09-10", "r", "b", "77"], ["78", "2019-10-22", "r", "b", "78"], ["79", "2019-12-17", "r", "b", "79"], ["80", "2020-02-04", "r", "b", "80"], ["81", "2020-04-07", "r", "b", "81"], ["83", "2020-05-19", "r", "b", "83"], ["84", "2020-07-27", "r", "b", "84"], ["85", "2020-08-25", "r", "b", "85"], ["86", "2020-10-20", "r", "b", "86"], ["87", "2020-11-17", "r", "b", "87"], ["88", "2021-01-19", "r", "b", "88"], ["89", "2021-03-02", "r", "b", "89"], ["90", "2021-04-13", "r", "b", "90"], ["91", "2021-05-25", "r", "b", "91"], ["92", "2021-07-20", "r", "b", "92"], ["93", "2021-08-31", "r", "b", "93"], ["94", "2021-09-21", "r", "b", "94"], ["95", "2021-10-19", "r", "b", "95"], ["96", "2021-11-15", "r", "b", "96"], ["97", "2022-01-04", "r", "b", "97"], ["98", "2022-02-01", "r", "b", "98"], ["99", "2022-03-01", "r", "b", "99"], ["100", "2022-03-29", "r", "b", "100"], ["101", "2022-04-26", "r", "b", "101"], ["102", "2022-05-24", "r", "b", "102"], ["103", "2022-06-21", "r", "b", "103"], ["104", "2022-08-02", "r", "b", "104"], ["105", "2022-09-02", "r", "b", "105"], ["106", "2022-09-27", "r", "b", "106"], ["107", "2022-10-25", "r", "b", "107"], ["108", "2022-11-29", "r", "b", "108"], ["109", "2023-01-10", "r", "b", "109"], ["110", "2023-02-07", "r", "b", "110"], ["111", "2023-03-01", "r", "b", "111"], ["112", "2023-04-04", "r", "b", "112"], ["113", "2023-05-02", "r", "b", "113"], ["114", "2023-05-30", "r", "b", "114"], ["115", "2023-07-21", "r", "b", "115"], ["116", "2023-08-15", "r", "b", "116"], ["117", "2023-09-12", "r", "b", "117"], ["118", "2023-10-10", "r", "b", "118"], ["119", "2023-10-31", "r", "b", "119"], ["120", "2023-12-05", "r", "b", "120"], ["121", "2024-01-23", "r", "b", "121"], ["122", "2024-02-20", "r", "b", "122"], ["123", "2024-03-19", "r", "b", "123"], ["124", "2024-04-16", "r", "b", "124"], ["125", "2024-05-14", "r", "b", "125"], ["126", "2024-06-11", "r", "b", "126"], ["127", "2024-07-23", "r", "b", "127"], ["128", "2024-08-20", "r", "b", "128"], ["129", "2024-09-17", "r", "b", "129"], ["130", "2024-10-15", "r", "b", "130"], ["131", "2024-11-12", "r", "b", "131"], ["132", "2025-01-14", "r", "b", "132"], ["133", "2025-02-04", "r", "b", "133"], ["134", "2025-03-04", "r", "b", "134"], ["135", "2025-04-01", "r", "b", "135"], ["136", "2025-04-29", "r", "b", "136"], ["137", "2025-05-27", "r", "b", "137"], ["138", "2025-06-24", "r", "b", "138"], ["139", "2025-08-05", "r", "b", "139"], ["140", "2025-09-02", "r", "b", "140"], ["141", "2025-09-30", "r", "b", "141"], ["142", "2025-10-28", "r", "b", "142"], ["143", "2025-12-02", "r", "b", "143"], ["144", "2026-01-13", "r", "b", "144"], ["145", "2026-02-10", "r", "b", "145"], ["146", "2026-03-10", "r", "b", "146"], ["147", "2026-04-07", "r", "b", "147"], ["148", "2026-05-05", "c", "b", "148"], ["149", "2026-06-02", "b", "b", "149"], ["150", "2026-06-30", "n", "b", "150"], ["151", null, "p", "b", "151"], ["1.5", "2009-04-27", "r", "w", "525.20"], ["2.2", "2010-05-20", "r", "w", "533.1"], ["4.4", "2013-12-09", "r", "b", "30"], ["4.4.3", "2014-06-02", "r", "b", "33"]] } };
-    var a = { ya_android: { releases: [["1.0", "u", "u", "b", "25"], ["1.5", "u", "u", "b", "22"], ["1.6", "u", "u", "b", "25"], ["1.7", "u", "u", "b", "25"], ["1.20", "u", "u", "b", "25"], ["2.5", "u", "u", "b", "25"], ["3.2", "u", "u", "b", "25"], ["4.6", "u", "u", "b", "25"], ["5.3", "u", "u", "b", "25"], ["5.4", "u", "u", "b", "25"], ["7.4", "u", "u", "b", "25"], ["9.6", "u", "u", "b", "25"], ["10.5", "u", "u", "b", "25"], ["11.4", "u", "u", "b", "25"], ["11.5", "u", "u", "b", "25"], ["12.7", "u", "u", "b", "25"], ["13.9", "u", "u", "b", "28"], ["13.10", "u", "u", "b", "28"], ["13.11", "u", "u", "b", "28"], ["13.12", "u", "u", "b", "30"], ["14.2", "u", "u", "b", "32"], ["14.4", "u", "u", "b", "33"], ["14.5", "u", "u", "b", "34"], ["14.7", "u", "u", "b", "35"], ["14.8", "u", "u", "b", "36"], ["14.10", "u", "u", "b", "37"], ["14.12", "u", "u", "b", "38"], ["15.2", "u", "u", "b", "40"], ["15.4", "u", "u", "b", "41"], ["15.6", "u", "u", "b", "42"], ["15.7", "u", "u", "b", "43"], ["15.9", "u", "u", "b", "44"], ["15.10", "u", "u", "b", "45"], ["15.12", "u", "u", "b", "46"], ["16.2", "u", "u", "b", "47"], ["16.3", "u", "u", "b", "47"], ["16.4", "u", "u", "b", "49"], ["16.6", "u", "u", "b", "50"], ["16.7", "u", "u", "b", "51"], ["16.9", "u", "u", "b", "52"], ["16.10", "u", "u", "b", "53"], ["16.11", "u", "u", "b", "54"], ["17.1", "u", "u", "b", "55"], ["17.3", "u", "u", "b", "56"], ["17.4", "u", "u", "b", "57"], ["17.6", "u", "u", "b", "58"], ["17.7", "u", "u", "b", "59"], ["17.9", "u", "u", "b", "60"], ["17.10", "u", "u", "b", "61"], ["17.11", "u", "u", "b", "62"], ["18.1", "u", "u", "b", "63"], ["18.2", "u", "u", "b", "63"], ["18.3", "u", "u", "b", "64"], ["18.4", "u", "u", "b", "65"], ["18.6", "u", "u", "b", "66"], ["18.7", "u", "u", "b", "67"], ["18.9", "u", "u", "b", "68"], ["18.10", "u", "u", "b", "69"], ["18.11", "u", "u", "b", "70"], ["19.1", "u", "u", "b", "71"], ["19.3", "u", "u", "b", "72"], ["19.4", "u", "u", "b", "73"], ["19.5", "u", "u", "b", "75"], ["19.6", "u", "u", "b", "75"], ["19.7", "u", "u", "b", "75"], ["19.9", "u", "u", "b", "76"], ["19.10", "u", "u", "b", "77"], ["19.11", "u", "u", "b", "78"], ["19.12", "u", "u", "b", "78"], ["20.2", "u", "u", "b", "79"], ["20.3", "u", "u", "b", "80"], ["20.4", "u", "u", "b", "81"], ["20.6", "u", "u", "b", "81"], ["20.7", "u", "u", "b", "83"], ["20.8", "2020-09-02", "u", "b", "84"], ["20.9", "2020-09-27", "u", "b", "85"], ["20.11", "2020-11-11", "u", "b", "86"], ["20.12", "2020-12-20", "u", "b", "87"], ["21.1", "2021-12-31", "u", "b", "88"], ["21.2", "u", "u", "b", "88"], ["21.3", "2021-04-04", "u", "b", "89"], ["21.5", "u", "u", "b", "90"], ["21.6", "2021-09-28", "u", "b", "91"], ["21.8", "2021-09-28", "u", "b", "92"], ["21.9", "2021-09-29", "u", "b", "93"], ["21.11", "2021-10-29", "u", "b", "94"], ["22.1", "2021-12-31", "u", "b", "96"], ["22.3", "2022-03-25", "u", "b", "98"], ["22.4", "u", "u", "b", "92"], ["22.5", "2022-05-20", "u", "b", "100"], ["22.7", "2022-07-07", "u", "b", "102"], ["22.8", "u", "u", "b", "104"], ["22.9", "2022-08-27", "u", "b", "104"], ["22.11", "2022-11-11", "u", "b", "106"], ["23.1", "2023-01-10", "u", "b", "108"], ["23.3", "2023-03-26", "u", "b", "110"], ["23.5", "2023-05-19", "u", "b", "112"], ["23.7", "2023-07-06", "u", "b", "114"], ["23.9", "2023-09-13", "u", "b", "116"], ["23.11", "2023-11-15", "u", "b", "118"], ["24.1", "2024-01-18", "u", "b", "120"], ["24.2", "2024-03-25", "u", "b", "120"], ["24.4", "2024-03-27", "u", "b", "122"], ["24.6", "2024-06-04", "u", "b", "124"], ["24.7", "2024-07-18", "u", "b", "126"], ["24.9", "2024-10-01", "u", "b", "126"], ["24.10", "2024-10-11", "u", "b", "128"], ["24.12", "2024-11-30", "u", "b", "130"], ["25.2", "2025-04-24", "u", "b", "132"], ["25.3", "2025-04-23", "u", "b", "132"], ["25.4", "2025-04-23", "u", "b", "134"], ["25.6", "2025-09-04", "u", "b", "136"], ["25.8", "2025-08-30", "u", "b", "138"], ["25.10", "2025-10-09", "u", "b", "140"], ["25.12", "2025-12-07", "u", "b", "142"], ["26.3", "2026-03-04", "u", "b", "144"], ["26.4", "2026-04-25", "u", "b", "146"]] }, uc_android: { releases: [["10.5", "u", "u", "b", "31"], ["10.7", "u", "u", "b", "31"], ["10.8", "u", "u", "b", "31"], ["10.10", "u", "u", "b", "31"], ["11.0", "u", "u", "b", "31"], ["11.1", "u", "u", "b", "40"], ["11.2", "u", "u", "b", "40"], ["11.3", "u", "u", "b", "40"], ["11.4", "u", "u", "b", "40"], ["11.5", "u", "u", "b", "40"], ["11.6", "u", "u", "b", "57"], ["11.8", "u", "u", "b", "57"], ["11.9", "u", "u", "b", "57"], ["12.0", "u", "u", "b", "57"], ["12.1", "u", "u", "b", "57"], ["12.2", "u", "u", "b", "57"], ["12.3", "u", "u", "b", "57"], ["12.4", "u", "u", "b", "57"], ["12.5", "u", "u", "b", "57"], ["12.6", "u", "u", "b", "57"], ["12.7", "u", "u", "b", "57"], ["12.8", "u", "u", "b", "57"], ["12.9", "u", "u", "b", "57"], ["12.10", "u", "u", "b", "57"], ["12.11", "u", "u", "b", "57"], ["12.12", "u", "u", "b", "57"], ["12.13", "u", "u", "b", "57"], ["12.14", "u", "u", "b", "57"], ["13.0", "u", "u", "b", "57"], ["13.1", "u", "u", "b", "57"], ["13.2", "u", "u", "b", "57"], ["13.3", "2020-09-09", "u", "b", "78"], ["13.4", "2021-09-28", "u", "b", "78"], ["13.5", "2023-08-25", "u", "b", "78"], ["13.6", "2023-12-17", "u", "b", "78"], ["13.7", "2023-06-24", "u", "b", "78"], ["13.8", "2022-04-30", "u", "b", "78"], ["13.9", "2022-05-18", "u", "b", "78"], ["15.0", "2022-08-24", "u", "b", "78"], ["15.1", "2022-11-11", "u", "b", "78"], ["15.2", "2023-04-23", "u", "b", "78"], ["15.3", "2023-03-17", "u", "b", "100"], ["15.4", "2023-10-25", "u", "b", "100"], ["15.5", "2023-08-22", "u", "b", "100"], ["16.0", "2023-08-24", "u", "b", "100"], ["16.1", "2023-10-15", "u", "b", "100"], ["16.2", "2023-12-09", "u", "b", "100"], ["16.3", "2024-03-08", "u", "b", "100"], ["16.4", "2024-10-03", "u", "b", "100"], ["16.5", "2024-05-30", "u", "b", "100"], ["16.6", "2024-07-23", "u", "b", "100"], ["17.0", "2024-08-24", "u", "b", "100"], ["17.1", "2024-09-26", "u", "b", "100"], ["17.2", "2024-11-29", "u", "b", "100"], ["17.3", "2025-01-07", "u", "b", "100"], ["17.4", "2025-02-26", "u", "b", "100"], ["17.5", "2025-04-08", "u", "b", "100"], ["17.6", "2025-05-15", "u", "b", "123"], ["17.7", "2025-06-11", "u", "b", "123"], ["17.8", "2025-07-30", "u", "b", "123"], ["18.0", "2025-08-17", "u", "b", "123"], ["18.1", "2025-10-04", "u", "b", "123"], ["18.2", "2025-11-04", "u", "b", "123"], ["18.3", "2025-12-12", "u", "b", "123"], ["18.4", "2026-01-09", "u", "b", "123"], ["18.5", "2026-01-28", "u", "b", "123"], ["18.6", "2026-03-21", "u", "b", "123"], ["18.8", "2026-05-03", "u", "b", "123"]] }, qq_android: { releases: [["6.0", "u", "u", "b", "37"], ["6.1", "u", "u", "b", "37"], ["6.2", "u", "u", "b", "37"], ["6.3", "u", "u", "b", "37"], ["6.4", "u", "u", "b", "37"], ["6.6", "u", "u", "b", "37"], ["6.7", "u", "u", "b", "37"], ["6.8", "u", "u", "b", "37"], ["6.9", "u", "u", "b", "37"], ["7.0", "u", "u", "b", "37"], ["7.1", "u", "u", "b", "37"], ["7.2", "u", "u", "b", "37"], ["7.3", "u", "u", "b", "37"], ["7.4", "u", "u", "b", "37"], ["7.5", "u", "u", "b", "37"], ["7.6", "u", "u", "b", "37"], ["7.7", "u", "u", "b", "37"], ["7.8", "u", "u", "b", "37"], ["7.9", "u", "u", "b", "37"], ["8.0", "u", "u", "b", "37"], ["8.1", "u", "u", "b", "57"], ["8.2", "u", "u", "b", "57"], ["8.3", "u", "u", "b", "57"], ["8.4", "u", "u", "b", "57"], ["8.5", "u", "u", "b", "57"], ["8.6", "u", "u", "b", "57"], ["8.7", "u", "u", "b", "57"], ["8.8", "u", "u", "b", "57"], ["8.9", "u", "u", "b", "57"], ["9.1", "u", "u", "b", "57"], ["9.6", "u", "u", "b", "66"], ["9.7", "u", "u", "b", "66"], ["9.8", "u", "u", "b", "66"], ["10.0", "u", "u", "b", "66"], ["10.1", "u", "u", "b", "66"], ["10.2", "u", "u", "b", "66"], ["10.3", "u", "u", "b", "66"], ["10.4", "u", "u", "b", "66"], ["10.5", "u", "u", "b", "66"], ["10.7", "2020-09-09", "u", "b", "66"], ["10.9", "2020-11-22", "u", "b", "77"], ["11.0", "u", "u", "b", "77"], ["11.2", "2021-01-30", "u", "b", "77"], ["11.3", "2021-03-31", "u", "b", "77"], ["11.7", "2021-11-02", "u", "b", "89"], ["11.9", "u", "u", "b", "89"], ["12.0", "2021-11-04", "u", "b", "89"], ["12.1", "2021-11-05", "u", "b", "89"], ["12.2", "2021-12-07", "u", "b", "89"], ["12.5", "2022-04-07", "u", "b", "89"], ["12.7", "2022-05-21", "u", "b", "89"], ["12.8", "2022-06-30", "u", "b", "89"], ["12.9", "2022-07-26", "u", "b", "89"], ["13.0", "2022-08-15", "u", "b", "89"], ["13.1", "2022-09-10", "u", "b", "89"], ["13.2", "2022-10-26", "u", "b", "89"], ["13.3", "2022-11-09", "u", "b", "89"], ["13.4", "2023-04-26", "u", "b", "98"], ["13.5", "2023-02-06", "u", "b", "98"], ["13.6", "2023-02-09", "u", "b", "98"], ["13.7", "2023-04-21", "u", "b", "98"], ["13.8", "2023-04-21", "u", "b", "98"], ["14.0", "2023-12-12", "u", "b", "98"], ["14.1", "2023-07-16", "u", "b", "98"], ["14.2", "2023-10-14", "u", "b", "109"], ["14.3", "2023-09-13", "u", "b", "109"], ["14.4", "2023-10-31", "u", "b", "109"], ["14.5", "2023-11-12", "u", "b", "109"], ["14.6", "2023-12-24", "u", "b", "109"], ["14.7", "2024-01-18", "u", "b", "109"], ["14.8", "2024-03-04", "u", "b", "109"], ["14.9", "2024-04-09", "u", "b", "109"], ["15.0", "2024-04-17", "u", "b", "109"], ["15.1", "2024-05-18", "u", "b", "109"], ["15.2", "2024-10-24", "u", "b", "109"], ["15.3", "2024-07-28", "u", "b", "109"], ["15.4", "2024-09-07", "u", "b", "109"], ["15.5", "2024-09-24", "u", "b", "109"], ["15.6", "2024-10-24", "u", "b", "109"], ["15.7", "2024-12-03", "u", "b", "109"], ["15.8", "2024-12-11", "u", "b", "109"], ["15.9", "2025-02-01", "u", "b", "109"], ["19.1", "2025-07-08", "u", "b", "121"], ["19.2", "2025-07-15", "u", "b", "121"], ["19.3", "2025-08-31", "u", "b", "121"], ["19.4", "2025-09-20", "u", "b", "121"], ["19.5", "2025-10-23", "u", "b", "121"], ["19.6", "2025-11-17", "u", "b", "121"], ["19.7", "2025-12-18", "u", "b", "121"], ["19.8", "2026-01-20", "u", "b", "121"], ["19.9", "2026-03-09", "u", "b", "121"], ["20.0", "2026-04-06", "u", "b", "121"], ["20.1", "2026-04-30", "u", "b", "121"]] }, kai_os: { releases: [["1.0", "2017-03-01", "u", "g", "37"], ["2.0", "2017-07-01", "u", "g", "48"], ["2.5", "2017-07-01", "u", "g", "48"], ["3.0", "2021-09-01", "u", "g", "84"], ["3.1", "2022-03-01", "u", "g", "84"], ["4.0", "2025-05-01", "u", "g", "123"]] }, facebook_android: { releases: [["66", "u", "u", "b", "48"], ["68", "u", "u", "b", "48"], ["74", "u", "u", "b", "50"], ["75", "u", "u", "b", "50"], ["76", "u", "u", "b", "50"], ["77", "u", "u", "b", "50"], ["78", "u", "u", "b", "50"], ["79", "u", "u", "b", "50"], ["80", "u", "u", "b", "51"], ["81", "u", "u", "b", "51"], ["82", "u", "u", "b", "51"], ["83", "u", "u", "b", "51"], ["84", "u", "u", "b", "51"], ["86", "u", "u", "b", "51"], ["87", "u", "u", "b", "52"], ["88", "u", "u", "b", "52"], ["89", "u", "u", "b", "52"], ["90", "u", "u", "b", "52"], ["91", "u", "u", "b", "52"], ["92", "u", "u", "b", "52"], ["93", "u", "u", "b", "52"], ["94", "u", "u", "b", "52"], ["95", "u", "u", "b", "53"], ["96", "u", "u", "b", "53"], ["97", "u", "u", "b", "53"], ["98", "u", "u", "b", "53"], ["99", "u", "u", "b", "53"], ["100", "u", "u", "b", "54"], ["101", "u", "u", "b", "54"], ["103", "u", "u", "b", "54"], ["104", "u", "u", "b", "54"], ["105", "u", "u", "b", "54"], ["106", "u", "u", "b", "55"], ["107", "u", "u", "b", "55"], ["108", "u", "u", "b", "55"], ["109", "u", "u", "b", "55"], ["110", "u", "u", "b", "55"], ["111", "u", "u", "b", "55"], ["112", "u", "u", "b", "56"], ["113", "u", "u", "b", "56"], ["114", "u", "u", "b", "56"], ["115", "u", "u", "b", "56"], ["116", "u", "u", "b", "56"], ["117", "u", "u", "b", "57"], ["118", "u", "u", "b", "57"], ["119", "u", "u", "b", "57"], ["120", "u", "u", "b", "57"], ["121", "u", "u", "b", "57"], ["122", "u", "u", "b", "58"], ["123", "u", "u", "b", "58"], ["124", "u", "u", "b", "58"], ["125", "u", "u", "b", "58"], ["126", "u", "u", "b", "58"], ["127", "u", "u", "b", "58"], ["128", "u", "u", "b", "58"], ["129", "u", "u", "b", "58"], ["130", "u", "u", "b", "59"], ["131", "u", "u", "b", "59"], ["132", "u", "u", "b", "59"], ["133", "u", "u", "b", "59"], ["134", "u", "u", "b", "59"], ["135", "u", "u", "b", "59"], ["136", "u", "u", "b", "59"], ["137", "u", "u", "b", "59"], ["138", "u", "u", "b", "60"], ["140", "u", "u", "b", "60"], ["142", "u", "u", "b", "61"], ["143", "u", "u", "b", "61"], ["144", "u", "u", "b", "61"], ["145", "u", "u", "b", "61"], ["146", "u", "u", "b", "61"], ["147", "u", "u", "b", "61"], ["148", "u", "u", "b", "61"], ["149", "u", "u", "b", "62"], ["150", "u", "u", "b", "62"], ["151", "u", "u", "b", "62"], ["152", "u", "u", "b", "62"], ["153", "u", "u", "b", "63"], ["154", "u", "u", "b", "63"], ["155", "u", "u", "b", "63"], ["156", "u", "u", "b", "63"], ["157", "u", "u", "b", "64"], ["158", "u", "u", "b", "64"], ["159", "u", "u", "b", "64"], ["160", "u", "u", "b", "64"], ["161", "u", "u", "b", "64"], ["162", "u", "u", "b", "64"], ["163", "u", "u", "b", "65"], ["164", "u", "u", "b", "65"], ["165", "u", "u", "b", "65"], ["166", "u", "u", "b", "65"], ["167", "u", "u", "b", "65"], ["168", "u", "u", "b", "65"], ["169", "u", "u", "b", "66"], ["170", "u", "u", "b", "66"], ["171", "u", "u", "b", "66"], ["172", "u", "u", "b", "66"], ["173", "u", "u", "b", "66"], ["174", "u", "u", "b", "66"], ["175", "u", "u", "b", "67"], ["176", "u", "u", "b", "67"], ["177", "u", "u", "b", "67"], ["178", "u", "u", "b", "67"], ["180", "u", "u", "b", "67"], ["181", "u", "u", "b", "67"], ["182", "u", "u", "b", "67"], ["183", "u", "u", "b", "68"], ["184", "u", "u", "b", "68"], ["185", "u", "u", "b", "68"], ["186", "u", "u", "b", "68"], ["187", "u", "u", "b", "68"], ["188", "u", "u", "b", "68"], ["202", "u", "u", "b", "71"], ["227", "u", "u", "b", "75"], ["228", "u", "u", "b", "75"], ["229", "u", "u", "b", "75"], ["230", "u", "u", "b", "75"], ["231", "u", "u", "b", "75"], ["233", "u", "u", "b", "76"], ["235", "u", "u", "b", "76"], ["236", "u", "u", "b", "76"], ["237", "u", "u", "b", "76"], ["238", "u", "u", "b", "76"], ["240", "u", "u", "b", "77"], ["241", "u", "u", "b", "77"], ["242", "u", "u", "b", "77"], ["243", "u", "u", "b", "77"], ["244", "u", "u", "b", "78"], ["245", "u", "u", "b", "78"], ["246", "u", "u", "b", "78"], ["247", "u", "u", "b", "78"], ["248", "u", "u", "b", "78"], ["249", "u", "u", "b", "78"], ["250", "u", "u", "b", "78"], ["251", "u", "u", "b", "79"], ["252", "u", "u", "b", "79"], ["253", "u", "u", "b", "79"], ["254", "u", "u", "b", "79"], ["255", "u", "u", "b", "79"], ["256", "u", "u", "b", "80"], ["257", "u", "u", "b", "80"], ["258", "u", "u", "b", "80"], ["259", "u", "u", "b", "80"], ["260", "u", "u", "b", "80"], ["261", "u", "u", "b", "80"], ["262", "u", "u", "b", "80"], ["263", "u", "u", "b", "80"], ["264", "u", "u", "b", "80"], ["265", "u", "u", "b", "80"], ["266", "u", "u", "b", "81"], ["267", "u", "u", "b", "81"], ["268", "u", "u", "b", "81"], ["269", "u", "u", "b", "81"], ["270", "u", "u", "b", "81"], ["271", "u", "u", "b", "81"], ["272", "u", "u", "b", "83"], ["273", "u", "u", "b", "83"], ["274", "u", "u", "b", "83"], ["275", "u", "u", "b", "83"], ["297", "2020-12-02", "u", "b", "86"], ["348", "2021-12-19", "u", "b", "96"], ["399", "2023-02-04", "u", "b", "109"], ["400", "2023-02-10", "u", "b", "109"], ["420", "2023-06-28", "u", "b", "114"], ["430", "2023-09-03", "u", "b", "116"], ["434", "2023-10-05", "u", "b", "117"], ["436", "2023-10-13", "u", "b", "117"], ["437", "u", "u", "b", "118"], ["438", "2023-10-28", "u", "b", "118"], ["439", "2023-11-11", "u", "b", "119"], ["440", "2023-11-12", "u", "b", "119"], ["441", "2023-11-20", "u", "b", "119"], ["442", "2023-11-29", "u", "b", "119"], ["443", "2023-12-07", "u", "b", "120"], ["444", "2023-12-13", "u", "b", "120"], ["445", "2023-12-21", "u", "b", "120"], ["446", "2024-01-06", "u", "b", "120"], ["447", "2024-01-12", "u", "b", "120"], ["448", "2024-01-29", "u", "b", "121"], ["449", "2024-02-02", "u", "b", "121"], ["450", "2024-02-05", "u", "b", "121"], ["451", "2024-02-17", "u", "b", "121"], ["452", "2024-02-25", "u", "b", "122"], ["453", "2024-02-28", "u", "b", "122"], ["454", "2024-03-04", "u", "b", "122"], ["465", "2024-07-07", "u", "b", "126"], ["466", "u", "u", "b", "126"], ["469", "u", "u", "b", "126"], ["471", "2024-07-10", "u", "b", "126"], ["472", "2024-07-11", "u", "b", "126"], ["474", "2024-07-30", "u", "b", "127"], ["475", "2024-08-01", "u", "b", "127"], ["476", "2024-08-09", "u", "b", "127"], ["477", "2024-08-16", "u", "b", "127"], ["478", "2024-08-21", "u", "b", "128"], ["479", "2024-08-31", "u", "b", "128"], ["480", "2024-09-07", "u", "b", "128"], ["481", "2024-09-14", "u", "b", "128"], ["482", "2024-09-20", "u", "b", "129"], ["483", "2024-09-27", "u", "b", "129"], ["484", "2024-10-04", "u", "b", "129"], ["485", "2024-10-11", "u", "b", "129"], ["486", "2024-10-18", "u", "b", "130"], ["487", "2024-10-26", "u", "b", "130"], ["488", "2024-11-02", "u", "b", "130"], ["489", "2024-11-09", "u", "b", "130"], ["494", "2024-12-26", "u", "b", "131"], ["497", "2025-01-26", "u", "b", "132"], ["503", "2025-03-12", "u", "b", "134"], ["514", "2025-05-28", "u", "b", "136"], ["515", "2025-05-31", "u", "b", "137"]] }, instagram_android: { releases: [["23", "u", "u", "b", "62"], ["24", "u", "u", "b", "62"], ["25", "u", "u", "b", "62"], ["26", "u", "u", "b", "63"], ["27", "u", "u", "b", "63"], ["28", "u", "u", "b", "63"], ["29", "u", "u", "b", "63"], ["30", "u", "u", "b", "63"], ["31", "u", "u", "b", "64"], ["32", "u", "u", "b", "64"], ["33", "u", "u", "b", "64"], ["34", "u", "u", "b", "64"], ["35", "u", "u", "b", "65"], ["36", "u", "u", "b", "65"], ["37", "u", "u", "b", "65"], ["38", "u", "u", "b", "65"], ["39", "u", "u", "b", "65"], ["40", "u", "u", "b", "65"], ["41", "u", "u", "b", "65"], ["42", "u", "u", "b", "66"], ["43", "u", "u", "b", "66"], ["44", "u", "u", "b", "66"], ["45", "u", "u", "b", "66"], ["46", "u", "u", "b", "66"], ["47", "u", "u", "b", "66"], ["48", "u", "u", "b", "67"], ["49", "u", "u", "b", "67"], ["50", "u", "u", "b", "67"], ["51", "u", "u", "b", "67"], ["52", "u", "u", "b", "67"], ["53", "u", "u", "b", "67"], ["54", "u", "u", "b", "67"], ["55", "u", "u", "b", "67"], ["56", "u", "u", "b", "68"], ["57", "u", "u", "b", "68"], ["58", "u", "u", "b", "68"], ["59", "u", "u", "b", "68"], ["60", "u", "u", "b", "68"], ["61", "u", "u", "b", "68"], ["65", "u", "u", "b", "69"], ["66", "u", "u", "b", "69"], ["68", "u", "u", "b", "69"], ["72", "u", "u", "b", "70"], ["74", "u", "u", "b", "71"], ["75", "u", "u", "b", "71"], ["79", "u", "u", "b", "71"], ["81", "u", "u", "b", "72"], ["82", "u", "u", "b", "72"], ["83", "u", "u", "b", "72"], ["84", "u", "u", "b", "73"], ["86", "u", "u", "b", "73"], ["95", "u", "u", "b", "74"], ["96", "u", "u", "b", "80"], ["97", "u", "u", "b", "80"], ["98", "u", "u", "b", "80"], ["103", "u", "u", "b", "80"], ["104", "u", "u", "b", "80"], ["117", "u", "u", "b", "80"], ["118", "u", "u", "b", "80"], ["119", "u", "u", "b", "80"], ["120", "u", "u", "b", "80"], ["121", "u", "u", "b", "80"], ["127", "u", "u", "b", "80"], ["128", "u", "u", "b", "80"], ["129", "u", "u", "b", "80"], ["130", "u", "u", "b", "80"], ["131", "u", "u", "b", "80"], ["132", "u", "u", "b", "80"], ["133", "u", "u", "b", "80"], ["134", "u", "u", "b", "80"], ["135", "u", "u", "b", "80"], ["136", "u", "u", "b", "80"], ["137", "u", "u", "b", "81"], ["138", "u", "u", "b", "81"], ["139", "u", "u", "b", "81"], ["140", "u", "u", "b", "81"], ["141", "u", "u", "b", "81"], ["142", "u", "u", "b", "81"], ["143", "u", "u", "b", "83"], ["144", "u", "u", "b", "83"], ["145", "u", "u", "b", "83"], ["146", "u", "u", "b", "83"], ["153", "u", "u", "b", "84"], ["163", "u", "u", "b", "92"], ["164", "u", "u", "b", "92"], ["230", "u", "u", "b", "92"], ["258", "2022-11-04", "u", "b", "106"], ["259", "2022-11-04", "u", "b", "106"], ["279", "2023-12-31", "u", "b", "109"], ["281", "u", "u", "b", "109"], ["288", "u", "u", "b", "114"], ["289", "2023-12-21", "u", "b", "114"], ["290", "2023-12-30", "u", "b", "114"], ["292", "u", "u", "b", "115"], ["295", "u", "u", "b", "115"], ["296", "u", "u", "b", "115"], ["297", "u", "u", "b", "115"], ["298", "2024-01-11", "u", "b", "115"], ["299", "u", "u", "b", "115"], ["300", "u", "u", "b", "116"], ["301", "2024-01-12", "u", "b", "116"], ["302", "u", "u", "b", "117"], ["303", "u", "u", "b", "117"], ["304", "u", "u", "b", "117"], ["305", "u", "u", "b", "117"], ["306", "2024-01-17", "u", "b", "118"], ["307", "u", "u", "b", "118"], ["308", "2024-01-19", "u", "b", "118"], ["309", "u", "u", "b", "119"], ["310", "u", "u", "b", "119"], ["311", "u", "u", "b", "120"], ["312", "u", "u", "b", "120"], ["313", "u", "u", "b", "120"], ["314", "u", "u", "b", "120"], ["315", "2024-01-19", "u", "b", "120"], ["316", "2024-01-25", "u", "b", "120"], ["317", "2024-02-03", "u", "b", "121"], ["318", "2024-02-16", "u", "b", "121"], ["320", "2024-03-04", "u", "b", "121"], ["321", "2024-03-07", "u", "b", "122"], ["338", "2024-07-06", "u", "b", "126"], ["346", "2024-09-01", "u", "b", "127"], ["347", "2024-09-11", "u", "b", "127"], ["349", "2024-09-20", "u", "b", "128"], ["355", "2024-11-06", "u", "b", "130"], ["366", "u", "u", "b", "132"], ["367", "2025-02-15", "u", "b", "132"], ["378", "2025-05-03", "u", "b", "135"], ["381", "2025-06-19", "u", "b", "137"], ["382", "2025-06-19", "u", "b", "137"], ["383", "2025-06-18", "u", "b", "137"], ["384", "2025-06-16", "u", "b", "137"], ["385", "2025-06-27", "u", "b", "137"], ["387", "2025-07-09", "u", "b", "137"], ["390", "2025-07-26", "u", "b", "138"], ["392", "2025-08-12", "u", "b", "138"], ["394", "2025-08-26", "u", "b", "139"], ["395", "2025-09-13", "u", "b", "139"], ["396", "2025-09-20", "u", "b", "139"], ["397", "2025-09-19", "u", "b", "139"], ["399", "2025-09-28", "u", "b", "140"], ["400", "2025-10-06", "u", "b", "141"], ["401", "2025-10-08", "u", "b", "141"], ["404", "2025-10-31", "u", "b", "141"], ["406", "2025-11-16", "u", "b", "141"], ["407", "2025-11-23", "u", "b", "142"], ["408", "2025-11-28", "u", "b", "142"], ["409", "2025-12-16", "u", "b", "143"], ["410", "2025-12-17", "u", "b", "143"], ["411", "2026-01-07", "u", "b", "143"], ["423", "2026-04-05", "u", "b", "146"]] } };
-    var r = [["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "1", fa: "4", s: "4", si: "3.2" }], ["2019-03-25", { c: "66", ca: "66", e: "16", f: "57", fa: "57", s: "12.1", si: "12.2" }], ["2019-03-25", { c: "66", ca: "66", e: "16", f: "57", fa: "57", s: "12.1", si: "12.2" }], ["2024-03-19", { c: "116", ca: "116", e: "116", f: "124", fa: "124", s: "17.4", si: "17.4" }], ["2024-04-18", { c: "124", ca: "124", e: "124", f: "100", fa: "100", s: "16", si: "16" }], ["2025-06-26", { c: "138", ca: "138", e: "138", f: "118", fa: "118", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "17", ca: "18", e: "12", f: "5", fa: "5", s: "6", si: "6" }], ["2026-01-13", { c: "125", ca: "125", e: "125", f: "147", fa: "147", s: "18.2", si: "18.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2024-04-16", { c: "123", ca: "123", e: "123", f: "125", fa: "125", s: "17.4", si: "17.4" }], ["2020-01-15", { c: "37", ca: "37", e: "79", f: "27", fa: "27", s: "9.1", si: "9.3" }], ["2024-07-09", { c: "77", ca: "77", e: "79", f: "128", fa: "128", s: "17.4", si: "17.4" }], ["2016-06-07", { c: "32", ca: "30", e: "12", f: "47", fa: "47", s: "8", si: "8" }], ["2023-07-04", { c: "112", ca: "112", e: "112", f: "115", fa: "115", s: "16", si: "16" }], ["2015-09-30", { c: "43", ca: "43", e: "12", f: "16", fa: "16", s: "9", si: "9" }], ["2022-03-14", { c: "84", ca: "84", e: "84", f: "80", fa: "80", s: "15.4", si: "15.4" }], ["2023-10-24", { c: "103", ca: "103", e: "103", f: "119", fa: "119", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2022-03-14", { c: "92", ca: "92", e: "92", f: "90", fa: "90", s: "15.4", si: "15.4" }], ["2023-07-04", { c: "110", ca: "110", e: "110", f: "115", fa: "115", s: "16", si: "16" }], ["2016-09-20", { c: "45", ca: "45", e: "12", f: "34", fa: "34", s: "10", si: "10" }], ["2016-09-20", { c: "45", ca: "45", e: "12", f: "37", fa: "37", s: "10", si: "10" }], ["2016-09-20", { c: "45", ca: "45", e: "12", f: "37", fa: "37", s: "10", si: "10" }], ["2022-08-23", { c: "97", ca: "97", e: "97", f: "104", fa: "104", s: "15.4", si: "15.4" }], ["2020-01-15", { c: "69", ca: "69", e: "79", f: "62", fa: "62", s: "12", si: "12" }], ["2016-09-20", { c: "45", ca: "45", e: "12", f: "38", fa: "38", s: "10", si: "10" }], ["2024-01-25", { c: "121", ca: "121", e: "121", f: "115", fa: "115", s: "16.4", si: "16.4" }], ["2024-03-05", { c: "117", ca: "117", e: "117", f: "119", fa: "119", s: "17.4", si: "17.4" }], ["2016-09-20", { c: "47", ca: "47", e: "14", f: "43", fa: "43", s: "10", si: "10" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "5" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3", fa: "4", s: "4", si: "3.2" }], ["2018-05-09", { c: "66", ca: "66", e: "14", f: "60", fa: "60", s: "10", si: "10" }], ["2016-09-20", { c: "45", ca: "45", e: "12", f: "38", fa: "38", s: "10", si: "10" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2021-09-20", { c: "88", ca: "88", e: "88", f: "89", fa: "89", s: "15", si: "15" }], ["2017-04-05", { c: "55", ca: "55", e: "15", f: "52", fa: "52", s: "10.1", si: "10.3" }], ["2024-06-11", { c: "76", ca: "76", e: "79", f: "127", fa: "127", s: "13.1", si: "13.4" }], ["2020-01-15", { c: "63", ca: "63", e: "79", f: "57", fa: "57", s: "12", si: "12" }], ["2020-01-15", { c: "63", ca: "63", e: "79", f: "57", fa: "57", s: "12", si: "12" }], ["2025-04-01", { c: "133", ca: "133", e: "133", f: "137", fa: "137", s: "18.4", si: "18.4" }], ["2025-11-11", { c: "90", ca: "90", e: "90", f: "145", fa: "145", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "1", fa: "4", s: "3.1", si: "2" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3.5", fa: "4", s: "3.1", si: "3" }], ["2021-04-26", { c: "66", ca: "66", e: "79", f: "76", fa: "79", s: "14.1", si: "14.5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "4", si: "3.2" }], ["2020-01-15", { c: "54", ca: "54", e: "79", f: "63", fa: "63", s: "10.1", si: "10.3" }], ["2024-01-25", { c: "85", ca: "85", e: "121", f: "113", fa: "113", s: "16.4", si: "16.1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2022-03-14", { c: "37", ca: "37", e: "79", f: "47", fa: "47", s: "15.4", si: "15.4" }], ["2024-09-16", { c: "76", ca: "76", e: "79", f: "103", fa: "103", s: "18", si: "18" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "3.6", fa: "4", s: "1.3", si: "1" }], ["2020-01-15", { c: "35", ca: "59", e: "79", f: "30", fa: "54", s: "8", si: "8" }], ["2015-07-29", { c: "21", ca: "25", e: "12", f: "22", fa: "22", s: "5.1", si: "5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "3.6", fa: "4", s: "1.3", si: "1" }], ["2015-07-29", { c: "21", ca: "25", e: "12", f: "22", fa: "22", s: "5.1", si: "4" }], ["2015-07-29", { c: "25", ca: "25", e: "12", f: "13", fa: "14", s: "7", si: "7" }], ["2016-09-20", { c: "30", ca: "30", e: "12", f: "49", fa: "49", s: "8", si: "8" }], ["2015-07-29", { c: "21", ca: "25", e: "12", f: "9", fa: "18", s: "5.1", si: "4.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "2" }], ["2016-09-20", { c: "30", ca: "30", e: "12", f: "4", fa: "4", s: "10", si: "10" }], ["2020-01-15", { c: "16", ca: "18", e: "79", f: "10", fa: "10", s: "6", si: "6" }], ["2015-07-29", { c: "\u226415", ca: "18", e: "12", f: "10", fa: "10", s: "\u22644", si: "\u22643.2" }], ["2018-04-12", { c: "39", ca: "42", e: "14", f: "31", fa: "31", s: "11.1", si: "11.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1.5", fa: "4", s: "4", si: "3.2" }], ["2020-09-16", { c: "67", ca: "67", e: "79", f: "68", fa: "68", s: "14", si: "14" }], ["2021-09-20", { c: "67", ca: "67", e: "79", f: "68", fa: "68", s: "15", si: "15" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2017-02-01", { c: "56", ca: "56", e: "12", f: "50", fa: "50", s: "9.1", si: "9.3" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "14", s: "1", si: "3" }], ["2015-07-29", { c: "10", ca: "18", e: "12", f: "4", fa: "4", s: "5.1", si: "5" }], ["2015-07-29", { c: "10", ca: "18", e: "12", f: "29", fa: "29", s: "5.1", si: "6" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2022-03-14", { c: "54", ca: "54", e: "79", f: "38", fa: "38", s: "15.4", si: "15.4" }], ["2017-09-19", { c: "50", ca: "51", e: "15", f: "44", fa: "44", s: "11", si: "11" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "26", ca: "28", e: "12", f: "16", fa: "16", s: "7", si: "7" }], ["2023-06-06", { c: "110", ca: "110", e: "110", f: "114", fa: "114", s: "16", si: "16" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1.5", fa: "4", s: "2", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1.5", fa: "4", s: "2", si: "1" }], ["2024-09-16", { c: "99", ca: "99", e: "99", f: "28", fa: "28", s: "18", si: "18" }], ["2023-04-11", { c: "99", ca: "99", e: "99", f: "112", fa: "112", s: "16.4", si: "16.4" }], ["2023-12-11", { c: "99", ca: "99", e: "99", f: "113", fa: "113", s: "17.2", si: "17.2" }], ["2023-04-11", { c: "99", ca: "99", e: "99", f: "112", fa: "112", s: "16.4", si: "16.4" }], ["2023-12-11", { c: "118", ca: "118", e: "118", f: "97", fa: "97", s: "17.2", si: "17.2" }], ["2020-01-15", { c: "51", ca: "51", e: "79", f: "43", fa: "43", s: "11", si: "11" }], ["2020-01-15", { c: "57", ca: "57", e: "79", f: "53", fa: "53", s: "11.1", si: "11.3" }], ["2022-03-14", { c: "99", ca: "99", e: "99", f: "97", fa: "97", s: "15.4", si: "15.4" }], ["2020-01-15", { c: "49", ca: "49", e: "79", f: "47", fa: "47", s: "9", si: "9" }], ["2015-07-29", { c: "27", ca: "27", e: "12", f: "1", fa: "4", s: "7", si: "7" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "2" }], ["2015-09-22", { c: "4", ca: "18", e: "12", f: "41", fa: "41", s: "5", si: "4.2" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "1.5", fa: "4", s: "4", si: "4" }], ["2024-03-05", { c: "105", ca: "105", e: "105", f: "106", fa: "106", s: "17.4", si: "17.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2016-03-08", { c: "42", ca: "42", e: "13", f: "45", fa: "45", s: "9", si: "9" }], ["2021-01-21", { c: "88", ca: "88", e: "88", f: "71", fa: "79", s: "13.1", si: "13" }], ["2020-01-15", { c: "55", ca: "55", e: "79", f: "49", fa: "49", s: "12.1", si: "12.2" }], ["2023-11-02", { c: "119", ca: "119", e: "119", f: "54", fa: "54", s: "13.1", si: "13.4" }], ["2017-03-27", { c: "41", ca: "41", e: "12", f: "22", fa: "22", s: "10.1", si: "10.3" }], ["2025-03-31", { c: "121", ca: "121", e: "121", f: "127", fa: "127", s: "18.4", si: "18.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-05-09", { c: "111", ca: "111", e: "111", f: "113", fa: "113", s: "15", si: "15" }], ["2023-02-14", { c: "58", ca: "58", e: "79", f: "110", fa: "110", s: "10", si: "10" }], ["2023-05-09", { c: "111", ca: "111", e: "111", f: "113", fa: "113", s: "16.2", si: "16.2" }], ["2022-02-03", { c: "98", ca: "98", e: "98", f: "96", fa: "96", s: "13", si: "13" }], ["2020-01-15", { c: "53", ca: "53", e: "79", f: "31", fa: "31", s: "11.1", si: "11.3" }], ["2017-03-07", { c: "50", ca: "50", e: "12", f: "52", fa: "52", s: "9", si: "9" }], ["2020-07-28", { c: "50", ca: "50", e: "12", f: "71", fa: "79", s: "9", si: "9" }], ["2025-08-19", { c: "137", ca: "137", e: "137", f: "142", fa: "142", s: "17", si: "17" }], ["2017-04-19", { c: "26", ca: "26", e: "12", f: "53", fa: "53", s: "7", si: "7" }], ["2023-05-09", { c: "80", ca: "80", e: "80", f: "113", fa: "113", s: "16.4", si: "16.4" }], ["2020-11-17", { c: "69", ca: "69", e: "79", f: "83", fa: "83", s: "12.1", si: "12.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "4", fa: "4", s: "3", si: "1" }], ["2018-12-11", { c: "40", ca: "40", e: "18", f: "51", fa: "64", s: "10.1", si: "10.3" }], ["2023-03-27", { c: "73", ca: "73", e: "79", f: "101", fa: "101", s: "16.4", si: "16.4" }], ["2022-03-14", { c: "52", ca: "52", e: "79", f: "69", fa: "79", s: "15.4", si: "15.4" }], ["2022-09-12", { c: "105", ca: "105", e: "105", f: "101", fa: "101", s: "16", si: "16" }], ["2023-09-18", { c: "83", ca: "83", e: "83", f: "107", fa: "107", s: "17", si: "17" }], ["2022-03-14", { c: "52", ca: "52", e: "79", f: "69", fa: "79", s: "15.4", si: "15.4" }], ["2022-03-14", { c: "52", ca: "52", e: "79", f: "69", fa: "79", s: "15.4", si: "15.4" }], ["2022-03-14", { c: "52", ca: "52", e: "79", f: "69", fa: "79", s: "15.4", si: "15.4" }], ["2022-07-26", { c: "52", ca: "52", e: "79", f: "103", fa: "103", s: "15.4", si: "15.4" }], ["2023-02-14", { c: "105", ca: "105", e: "105", f: "110", fa: "110", s: "16", si: "16" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2025-09-15", { c: "108", ca: "108", e: "108", f: "130", fa: "130", s: "26", si: "26" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "4", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2025-03-04", { c: "51", ca: "51", e: "12", f: "136", fa: "136", s: "5.1", si: "5" }], ["2026-04-10", { c: "147", ca: "147", e: "147", f: "146", fa: "146", s: "26", si: "26" }], ["2024-09-16", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "18", si: "18" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "3.5", fa: "4", s: "4", si: "3.2" }], ["2023-12-11", { c: "85", ca: "85", e: "85", f: "68", fa: "68", s: "17.2", si: "17.2" }], ["2023-09-18", { c: "91", ca: "91", e: "91", f: "33", fa: "33", s: "17", si: "17" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "1", fa: "25", s: "3", si: "1" }], ["2023-12-11", { c: "59", ca: "59", e: "79", f: "98", fa: "98", s: "17.2", si: "17.2" }], ["2020-01-15", { c: "60", ca: "60", e: "79", f: "60", fa: "60", s: "13", si: "13" }], ["2026-05-07", { c: "148", ca: "148", e: "148", f: "65", fa: "65", s: "7", si: "7" }], ["2016-08-02", { c: "25", ca: "25", e: "14", f: "23", fa: "23", s: "7", si: "7" }], ["2020-01-15", { c: "46", ca: "46", e: "79", f: "31", fa: "31", s: "10.1", si: "10.3" }], ["2015-09-30", { c: "28", ca: "28", e: "12", f: "22", fa: "22", s: "9", si: "9" }], ["2020-01-15", { c: "61", ca: "61", e: "79", f: "55", fa: "55", s: "11", si: "11" }], ["2015-07-29", { c: "16", ca: "18", e: "12", f: "4", fa: "4", s: "6", si: "6" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1.5", fa: "4", s: "4", si: "3.2" }], ["2017-04-05", { c: "49", ca: "49", e: "15", f: "31", fa: "31", s: "9.1", si: "9.3" }], ["2017-10-24", { c: "62", ca: "62", e: "14", f: "22", fa: "22", s: "10", si: "10" }], ["2015-07-29", { c: "\u22644", ca: "18", e: "12", f: "\u22642", fa: "4", s: "\u22643.1", si: "\u22642" }], ["2015-07-29", { c: "7", ca: "18", e: "12", f: "6", fa: "6", s: "5.1", si: "5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2024-02-20", { c: "111", ca: "111", e: "111", f: "123", fa: "123", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "4", fa: "4", s: "4", si: "5" }], ["2020-01-15", { c: "10", ca: "18", e: "79", f: "4", fa: "4", s: "5", si: "5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2020-01-15", { c: "60", ca: "60", e: "79", f: "55", fa: "55", s: "11.1", si: "11.3" }], ["2020-01-15", { c: "12", ca: "18", e: "79", f: "49", fa: "49", s: "6", si: "6" }], ["2025-09-16", { c: "131", ca: "131", e: "131", f: "143", fa: "143", s: "18.4", si: "18.4" }], ["2024-09-03", { c: "120", ca: "120", e: "120", f: "130", fa: "130", s: "17.2", si: "17.2" }], ["2023-09-18", { c: "31", ca: "31", e: "12", f: "6", fa: "6", s: "17", si: "4.2" }], ["2015-07-29", { c: "15", ca: "18", e: "12", f: "1", fa: "4", s: "6", si: "6" }], ["2022-03-14", { c: "37", ca: "37", e: "79", f: "98", fa: "98", s: "15.4", si: "15.4" }], ["2023-12-07", { c: "120", ca: "120", e: "120", f: "49", fa: "49", s: "16.4", si: "16.4" }], ["2023-08-01", { c: "17", ca: "18", e: "79", f: "116", fa: "116", s: "6", si: "6" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-01-15", { c: "58", ca: "58", e: "79", f: "53", fa: "53", s: "13", si: "13" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["\u22642017-04-05", { c: "1", ca: "18", e: "\u226415", f: "3", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2025-12-12", { c: "128", ca: "128", e: "128", f: "20", fa: "20", s: "26.2", si: "26.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-01-15", { c: "61", ca: "61", e: "79", f: "33", fa: "33", s: "11", si: "11" }], ["2020-01-15", { c: "1", ca: "18", e: "79", f: "1", fa: "4", s: "4", si: "3.2" }], ["2016-03-21", { c: "31", ca: "31", e: "12", f: "12", fa: "14", s: "9.1", si: "9.3" }], ["2019-09-19", { c: "14", ca: "18", e: "18", f: "20", fa: "20", s: "10.1", si: "13" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3.5", fa: "4", s: "4", si: "3.2" }], ["2022-05-03", { c: "98", ca: "98", e: "98", f: "100", fa: "100", s: "13.1", si: "13.4" }], ["2020-01-15", { c: "43", ca: "43", e: "79", f: "46", fa: "46", s: "11.1", si: "11.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-01-15", { c: "1", ca: "18", e: "79", f: "1.5", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3.1", si: "2" }], ["2019-03-25", { c: "42", ca: "42", e: "13", f: "38", fa: "38", s: "12.1", si: "12.2" }], ["2021-11-02", { c: "77", ca: "77", e: "79", f: "94", fa: "94", s: "13.1", si: "13.4" }], ["2021-09-20", { c: "93", ca: "93", e: "93", f: "91", fa: "91", s: "15", si: "15" }], ["2025-12-12", { c: "76", ca: "76", e: "79", f: "89", fa: "89", s: "26.2", si: "26.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-12-07", { c: "120", ca: "120", e: "120", f: "118", fa: "118", s: "15.4", si: "15.4" }], ["2017-03-27", { c: "52", ca: "52", e: "14", f: "52", fa: "52", s: "10.1", si: "10.3" }], ["2018-04-30", { c: "38", ca: "38", e: "17", f: "47", fa: "35", s: "9", si: "9" }], ["2021-09-20", { c: "56", ca: "56", e: "79", f: "51", fa: "51", s: "15", si: "15" }], ["2020-09-16", { c: "63", ca: "63", e: "17", f: "47", fa: "36", s: "14", si: "14" }], ["2020-02-07", { c: "40", ca: "40", e: "80", f: "58", fa: "28", s: "9", si: "9" }], ["2016-06-07", { c: "34", ca: "34", e: "12", f: "47", fa: "47", s: "9.1", si: "9.3" }], ["2017-03-27", { c: "42", ca: "42", e: "14", f: "39", fa: "39", s: "10.1", si: "10.3" }], ["2024-10-29", { c: "103", ca: "103", e: "103", f: "132", fa: "132", s: "17.2", si: "17.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "8", ca: "18", e: "12", f: "4", fa: "4", s: "5.1", si: "5" }], ["2020-01-15", { c: "38", ca: "38", e: "79", f: "28", fa: "28", s: "10.1", si: "10.3" }], ["2021-04-26", { c: "89", ca: "89", e: "89", f: "82", fa: "82", s: "14.1", si: "14.5" }], ["2016-09-07", { c: "53", ca: "53", e: "12", f: "35", fa: "35", s: "9.1", si: "9.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2021-11-02", { c: "46", ca: "46", e: "79", f: "94", fa: "94", s: "11", si: "11" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-09-30", { c: "29", ca: "29", e: "12", f: "20", fa: "20", s: "9", si: "9" }], ["2021-04-26", { c: "84", ca: "84", e: "84", f: "63", fa: "63", s: "14.1", si: "14.5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2025-04-04", { c: "135", ca: "135", e: "135", f: "129", fa: "129", s: "18.2", si: "18.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "24", fa: "24", s: "3.1", si: "2" }], ["2022-03-14", { c: "86", ca: "86", e: "86", f: "85", fa: "85", s: "15.4", si: "15.4" }], ["2020-01-15", { c: "60", ca: "60", e: "79", f: "52", fa: "52", s: "10.1", si: "10.3" }], ["2020-01-15", { c: "60", ca: "60", e: "79", f: "58", fa: "58", s: "11.1", si: "11.3" }], ["2016-09-20", { c: "36", ca: "36", e: "14", f: "39", fa: "39", s: "10", si: "10" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2026-03-24", { c: "109", ca: "109", e: "109", f: "149", fa: "149", s: "26.2", si: "26.2" }], ["2021-09-07", { c: "56", ca: "56", e: "79", f: "92", fa: "92", s: "11", si: "11" }], ["2017-04-05", { c: "48", ca: "48", e: "15", f: "34", fa: "34", s: "9.1", si: "9.3" }], ["2020-01-15", { c: "33", ca: "33", e: "79", f: "32", fa: "32", s: "9", si: "9" }], ["2020-01-15", { c: "35", ca: "35", e: "79", f: "41", fa: "41", s: "10", si: "10" }], ["2020-03-24", { c: "79", ca: "79", e: "17", f: "62", fa: "62", s: "13.1", si: "13.4" }], ["2022-11-15", { c: "101", ca: "101", e: "101", f: "107", fa: "107", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2024-07-25", { c: "127", ca: "127", e: "127", f: "118", fa: "118", s: "17", si: "17" }], ["2020-01-15", { c: "62", ca: "62", e: "79", f: "62", fa: "62", s: "11.1", si: "11.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2022-01-06", { c: "97", ca: "97", e: "97", f: "34", fa: "34", s: "9", si: "9" }], ["2023-03-27", { c: "97", ca: "97", e: "97", f: "111", fa: "111", s: "16.4", si: "16.4" }], ["2023-03-27", { c: "97", ca: "97", e: "97", f: "111", fa: "111", s: "16.4", si: "16.4" }], ["2023-03-27", { c: "97", ca: "97", e: "97", f: "111", fa: "111", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-03-13", { c: "111", ca: "111", e: "111", f: "34", fa: "34", s: "9.1", si: "9.3" }], ["2020-01-15", { c: "52", ca: "52", e: "79", f: "34", fa: "34", s: "9.1", si: "9.3" }], ["2020-01-15", { c: "63", ca: "63", e: "79", f: "34", fa: "34", s: "9.1", si: "9.3" }], ["2020-01-15", { c: "34", ca: "34", e: "79", f: "34", fa: "34", s: "9.1", si: "9.3" }], ["2020-01-15", { c: "52", ca: "52", e: "79", f: "34", fa: "34", s: "9.1", si: "9.3" }], ["2018-09-05", { c: "62", ca: "62", e: "17", f: "62", fa: "62", s: "11", si: "11" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2022-09-12", { c: "89", ca: "89", e: "79", f: "89", fa: "89", s: "16", si: "16" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "2" }], ["2023-03-27", { c: "77", ca: "77", e: "79", f: "98", fa: "98", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "10", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2017-03-27", { c: "35", ca: "35", e: "12", f: "29", fa: "32", s: "10.1", si: "10.3" }], ["2016-09-20", { c: "39", ca: "39", e: "13", f: "26", fa: "26", s: "10", si: "10" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "3.5", fa: "4", s: "5", si: "\u22643" }], ["2015-07-29", { c: "11", ca: "18", e: "12", f: "3.5", fa: "4", s: "5.1", si: "5" }], ["2024-09-16", { c: "125", ca: "125", e: "125", f: "128", fa: "128", s: "18", si: "18" }], ["2026-02-14", { c: "145", ca: "145", e: "145", f: "144", fa: "144", s: "26.2", si: "26.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-01-15", { c: "71", ca: "71", e: "79", f: "65", fa: "65", s: "12.1", si: "12.2" }], ["2024-06-11", { c: "111", ca: "111", e: "111", f: "127", fa: "127", s: "16.2", si: "16.2" }], ["2015-07-29", { c: "26", ca: "26", e: "12", f: "3.6", fa: "4", s: "7", si: "7" }], ["2017-10-17", { c: "57", ca: "57", e: "16", f: "52", fa: "52", s: "10.1", si: "10.3" }], ["2022-10-27", { c: "107", ca: "107", e: "107", f: "66", fa: "66", s: "16", si: "16" }], ["2022-03-14", { c: "37", ca: "37", e: "15", f: "48", fa: "48", s: "15.4", si: "15.4" }], ["2023-12-19", { c: "105", ca: "105", e: "105", f: "121", fa: "121", s: "15.4", si: "15.4" }], ["2020-03-24", { c: "74", ca: "74", e: "79", f: "67", fa: "67", s: "13.1", si: "13.4" }], ["2015-07-29", { c: "16", ca: "18", e: "12", f: "11", fa: "14", s: "6", si: "6" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2026-03-24", { c: "105", ca: "105", e: "105", f: "149", fa: "149", s: "17.2", si: "17.2" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4" }], ["2020-01-15", { c: "54", ca: "54", e: "79", f: "63", fa: "63", s: "10", si: "10" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2020-01-15", { c: "65", ca: "65", e: "79", f: "52", fa: "52", s: "12.1", si: "12.2" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "4", fa: "4", s: "7", si: "7" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-09-30", { c: "41", ca: "41", e: "12", f: "36", fa: "36", s: "9", si: "9" }], ["2024-09-16", { c: "87", ca: "87", e: "87", f: "88", fa: "88", s: "18", si: "18" }], ["2022-04-28", { c: "101", ca: "101", e: "101", f: "96", fa: "96", s: "15", si: "15" }], ["2023-09-18", { c: "106", ca: "106", e: "106", f: "98", fa: "98", s: "17", si: "17" }], ["2023-09-18", { c: "88", ca: "55", e: "88", f: "43", fa: "43", s: "17", si: "17" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2022-10-03", { c: "106", ca: "106", e: "106", f: "97", fa: "97", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "17", fa: "17", s: "5", si: "4" }], ["2020-01-15", { c: "20", ca: "25", e: "79", f: "25", fa: "25", s: "6", si: "6" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-04-13", { c: "81", ca: "81", e: "81", f: "26", fa: "26", s: "13.1", si: "13.4" }], ["2021-10-05", { c: "41", ca: "41", e: "79", f: "93", fa: "93", s: "10", si: "10" }], ["2023-09-18", { c: "113", ca: "113", e: "113", f: "89", fa: "89", s: "17", si: "17" }], ["2020-01-15", { c: "66", ca: "66", e: "79", f: "50", fa: "50", s: "11.1", si: "11.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-03-27", { c: "89", ca: "89", e: "89", f: "108", fa: "108", s: "16.4", si: "16.4" }], ["2020-01-15", { c: "39", ca: "39", e: "79", f: "51", fa: "51", s: "10", si: "10" }], ["2021-09-20", { c: "58", ca: "58", e: "79", f: "51", fa: "51", s: "15", si: "15" }], ["2022-08-05", { c: "104", ca: "104", e: "104", f: "72", fa: "79", s: "14.1", si: "14.5" }], ["2023-04-11", { c: "102", ca: "102", e: "102", f: "112", fa: "112", s: "15.5", si: "15.5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-11-12", { c: "1", ca: "18", e: "13", f: "19", fa: "19", s: "1.2", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "3.6", fa: "4", s: "3", si: "1" }], ["2021-04-26", { c: "20", ca: "25", e: "12", f: "57", fa: "57", s: "14.1", si: "5" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "3" }], ["2020-01-15", { c: "1", ca: "18", e: "79", f: "6", fa: "6", s: "3.1", si: "2" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "3", fa: "4", s: "4", si: "3" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "3.6", fa: "4", s: "4", si: "3.2" }], ["2025-08-19", { c: "13", ca: "132", e: "13", f: "50", fa: "142", s: "11.1", si: "18.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "7", ca: "18", e: "12", f: "29", fa: "29", s: "5.1", si: "5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2017-03-16", { c: "4", ca: "57", e: "12", f: "23", fa: "52", s: "3.1", si: "5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3.1", si: "2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2021-12-07", { c: "66", ca: "66", e: "79", f: "95", fa: "79", s: "12.1", si: "12.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2018-12-11", { c: "41", ca: "41", e: "12", f: "64", fa: "64", s: "9", si: "9" }], ["2019-03-25", { c: "58", ca: "58", e: "16", f: "55", fa: "55", s: "12.1", si: "12.2" }], ["2017-09-28", { c: "24", ca: "25", e: "12", f: "29", fa: "56", s: "10", si: "10" }], ["2021-04-26", { c: "81", ca: "81", e: "81", f: "86", fa: "86", s: "14.1", si: "14.5" }], ["2025-03-04", { c: "129", ca: "129", e: "129", f: "136", fa: "136", s: "16.4", si: "16.4" }], ["2021-04-26", { c: "72", ca: "72", e: "79", f: "78", fa: "79", s: "14.1", si: "14.5" }], ["2020-09-16", { c: "74", ca: "74", e: "79", f: "75", fa: "79", s: "14", si: "14" }], ["2019-09-19", { c: "63", ca: "63", e: "18", f: "58", fa: "58", s: "13", si: "13" }], ["2020-09-16", { c: "71", ca: "71", e: "79", f: "76", fa: "79", s: "14", si: "14" }], ["2024-04-16", { c: "87", ca: "87", e: "87", f: "125", fa: "125", s: "14.1", si: "14.5" }], ["2025-12-12", { c: "135", ca: "135", e: "135", f: "144", fa: "144", s: "26.2", si: "26.2" }], ["2021-01-21", { c: "88", ca: "88", e: "88", f: "82", fa: "82", s: "14", si: "14" }], ["2018-04-12", { c: "55", ca: "55", e: "15", f: "52", fa: "52", s: "11.1", si: "11.3" }], ["2020-01-15", { c: "41", ca: "41", e: "79", f: "36", fa: "36", s: "8", si: "8" }], ["2026-03-24", { c: "146", ca: "146", e: "146", f: "147", fa: "147", s: "26.4", si: "26.4" }], ["2025-03-31", { c: "122", ca: "122", e: "122", f: "131", fa: "131", s: "18.4", si: "18.4" }], ["2015-07-29", { c: "38", ca: "38", e: "12", f: "13", fa: "14", s: "7", si: "7" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "1", fa: "4", s: "5", si: "4.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2018-05-09", { c: "61", ca: "61", e: "16", f: "60", fa: "60", s: "11", si: "11" }], ["2026-01-13", { c: "91", ca: "91", e: "91", f: "147", fa: "147", s: "15", si: "15" }], ["2026-05-05", { c: "80", ca: "148", e: "80", f: "114", fa: "114", s: "16", si: "16" }], ["2023-06-06", { c: "80", ca: "80", e: "80", f: "114", fa: "114", s: "15", si: "15" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3.5", fa: "4", s: "4", si: "4" }], ["2025-04-29", { c: "123", ca: "123", e: "123", f: "138", fa: "138", s: "17.2", si: "17.2" }], ["2025-03-31", { c: "114", ca: "114", e: "114", f: "135", fa: "135", s: "18.4", si: "18.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "6", fa: "6", s: "1.2", si: "1" }], ["2023-05-09", { c: "111", ca: "111", e: "111", f: "113", fa: "113", s: "15", si: "15" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3.1", si: "2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2025-12-12", { c: "77", ca: "77", e: "79", f: "122", fa: "122", s: "26.2", si: "26.2" }], ["2020-01-15", { c: "48", ca: "48", e: "79", f: "50", fa: "50", s: "11", si: "11" }], ["2016-09-20", { c: "49", ca: "49", e: "14", f: "44", fa: "44", s: "10", si: "10" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-11-21", { c: "109", ca: "109", e: "109", f: "120", fa: "120", s: "16.4", si: "16.4" }], ["2024-05-13", { c: "123", ca: "123", e: "123", f: "120", fa: "120", s: "17.5", si: "17.5" }], ["2020-07-28", { c: "83", ca: "83", e: "83", f: "69", fa: "79", s: "13", si: "13" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-12-11", { c: "113", ca: "113", e: "113", f: "112", fa: "112", s: "17.2", si: "17.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2025-09-15", { c: "46", ca: "46", e: "79", f: "127", fa: "127", s: "5", si: "26" }], ["2020-01-15", { c: "46", ca: "46", e: "79", f: "39", fa: "39", s: "11.1", si: "11.3" }], ["2021-01-26", { c: "50", ca: "50", e: "79", f: "85", fa: "85", s: "11.1", si: "11.3" }], ["2020-01-15", { c: "65", ca: "65", e: "79", f: "50", fa: "50", s: "9", si: "9" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-12-19", { c: "77", ca: "77", e: "79", f: "121", fa: "121", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "3.5", fa: "6", s: "4", si: "3.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-09-16", { c: "85", ca: "85", e: "85", f: "79", fa: "79", s: "14", si: "14" }], ["2021-09-20", { c: "89", ca: "89", e: "89", f: "66", fa: "66", s: "15", si: "15" }], ["2015-07-29", { c: "26", ca: "26", e: "12", f: "21", fa: "21", s: "7", si: "7" }], ["2015-07-29", { c: "38", ca: "38", e: "12", f: "13", fa: "14", s: "8", si: "8" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "7", ca: "18", e: "12", f: "4", fa: "4", s: "5.1", si: "5" }], ["2020-01-15", { c: "24", ca: "25", e: "79", f: "35", fa: "35", s: "7", si: "7" }], ["2023-12-07", { c: "120", ca: "120", e: "120", f: "53", fa: "53", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "9", ca: "18", e: "12", f: "6", fa: "6", s: "5.1", si: "5" }], ["2026-04-10", { c: "147", ca: "147", e: "147", f: "137", fa: "137", s: "26.2", si: "26.2" }], ["2023-01-12", { c: "109", ca: "109", e: "109", f: "4", fa: "4", s: "5.1", si: "5" }], ["2022-04-28", { c: "101", ca: "101", e: "101", f: "63", fa: "63", s: "15.4", si: "15.4" }], ["2017-09-19", { c: "53", ca: "53", e: "12", f: "36", fa: "36", s: "11", si: "11" }], ["2020-02-04", { c: "80", ca: "80", e: "12", f: "42", fa: "42", s: "8", si: "12.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2023-03-27", { c: "104", ca: "104", e: "104", f: "102", fa: "102", s: "16.4", si: "16.4" }], ["2021-04-26", { c: "49", ca: "49", e: "79", f: "25", fa: "25", s: "14.1", si: "14" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2023-03-27", { c: "60", ca: "60", e: "18", f: "57", fa: "57", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2018-10-02", { c: "6", ca: "18", e: "18", f: "56", fa: "56", s: "6", si: "10.3" }], ["2020-07-28", { c: "79", ca: "79", e: "79", f: "75", fa: "79", s: "13.1", si: "13.4" }], ["2020-01-15", { c: "46", ca: "46", e: "79", f: "66", fa: "66", s: "11", si: "11" }], ["2015-07-29", { c: "18", ca: "18", e: "12", f: "1", fa: "4", s: "1.3", si: "1" }], ["2020-01-15", { c: "41", ca: "41", e: "79", f: "32", fa: "32", s: "8", si: "8" }], ["2020-01-15", { c: "\u226479", ca: "\u226479", e: "79", f: "\u226423", fa: "\u226423", s: "\u22649.1", si: "\u22649.3" }], ["2022-09-02", { c: "105", ca: "105", e: "105", f: "103", fa: "103", s: "15.6", si: "15.6" }], ["2023-09-18", { c: "66", ca: "66", e: "79", f: "115", fa: "115", s: "17", si: "17" }], ["2022-09-12", { c: "55", ca: "55", e: "79", f: "72", fa: "79", s: "16", si: "16" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2017-03-07", { c: "50", ca: "50", e: "12", f: "52", fa: "52", s: "9", si: "9" }], ["2015-07-29", { c: "26", ca: "26", e: "12", f: "14", fa: "14", s: "7", si: "7" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2026-01-13", { c: "102", ca: "102", e: "102", f: "147", fa: "147", s: "26.2", si: "26.2" }], ["2021-10-25", { c: "57", ca: "57", e: "12", f: "58", fa: "58", s: "15", si: "15.1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-12-11", { c: "120", ca: "120", e: "120", f: "117", fa: "117", s: "17.2", si: "17.2" }], ["2021-01-21", { c: "88", ca: "88", e: "88", f: "84", fa: "84", s: "9", si: "9" }], ["2023-03-27", { c: "20", ca: "42", e: "14", f: "22", fa: "22", s: "7", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "3.5", fa: "4", s: "3.1", si: "2" }], ["2023-05-09", { c: "111", ca: "111", e: "111", f: "113", fa: "113", s: "9", si: "9" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "3.5", fa: "4", s: "3.1", si: "2" }], ["2020-09-16", { c: "85", ca: "85", e: "85", f: "79", fa: "79", s: "14", si: "14" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-07-28", { c: "75", ca: "75", e: "79", f: "70", fa: "79", s: "13", si: "13" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "2" }], ["2020-01-15", { c: "32", ca: "32", e: "79", f: "36", fa: "36", s: "10", si: "10" }], ["2022-03-14", { c: "93", ca: "93", e: "93", f: "92", fa: "92", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-01-15", { c: "32", ca: "32", e: "79", f: "36", fa: "36", s: "10", si: "10" }], ["2015-07-29", { c: "24", ca: "25", e: "12", f: "24", fa: "24", s: "8", si: "8" }], ["2021-04-26", { c: "80", ca: "80", e: "80", f: "71", fa: "79", s: "14.1", si: "14.5" }], ["2015-07-29", { c: "10", ca: "18", e: "12", f: "10", fa: "10", s: "8", si: "8" }], ["2015-07-29", { c: "10", ca: "18", e: "12", f: "6", fa: "6", s: "8", si: "8" }], ["2015-07-29", { c: "29", ca: "29", e: "12", f: "24", fa: "24", s: "8", si: "8" }], ["2016-08-02", { c: "27", ca: "27", e: "14", f: "29", fa: "29", s: "8", si: "8" }], ["2018-04-30", { c: "24", ca: "25", e: "17", f: "25", fa: "25", s: "8", si: "9" }], ["2021-04-26", { c: "35", ca: "35", e: "12", f: "25", fa: "25", s: "14.1", si: "14.5" }], ["2023-03-27", { c: "69", ca: "69", e: "79", f: "105", fa: "105", s: "16.4", si: "16.4" }], ["2023-05-09", { c: "111", ca: "111", e: "111", f: "113", fa: "113", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "1.5", fa: "4", s: "4", si: "3.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "2", si: "1" }], ["\u22642020-03-24", { c: "\u226480", ca: "\u226480", e: "\u226480", f: "1.5", fa: "4", s: "\u226413.1", si: "\u226413.4" }], ["2020-01-15", { c: "66", ca: "66", e: "79", f: "58", fa: "58", s: "11.1", si: "11.3" }], ["2023-03-27", { c: "108", ca: "109", e: "108", f: "111", fa: "111", s: "16.4", si: "16.4" }], ["2023-03-27", { c: "94", ca: "94", e: "94", f: "88", fa: "88", s: "16.4", si: "16.4" }], ["2017-04-05", { c: "1", ca: "18", e: "15", f: "1.5", fa: "4", s: "1.2", si: "1" }], ["\u22642018-10-02", { c: "10", ca: "18", e: "\u226418", f: "4", fa: "4", s: "7", si: "7" }], ["2023-09-18", { c: "113", ca: "113", e: "113", f: "66", fa: "66", s: "17", si: "17" }], ["2022-09-12", { c: "90", ca: "90", e: "90", f: "81", fa: "81", s: "16", si: "16" }], ["2020-03-24", { c: "68", ca: "68", e: "79", f: "61", fa: "61", s: "13.1", si: "13.4" }], ["2018-10-02", { c: "23", ca: "25", e: "18", f: "49", fa: "49", s: "7", si: "7" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2019-01-29", { c: "50", ca: "50", e: "12", f: "65", fa: "65", s: "10", si: "10" }], ["2024-12-11", { c: "15", ca: "18", e: "79", f: "95", fa: "95", s: "18.2", si: "18.2" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "1.5", fa: "4", s: "5", si: "4" }], ["2015-07-29", { c: "33", ca: "33", e: "12", f: "18", fa: "18", s: "7", si: "7" }], ["2024-03-22", { c: "123", ca: "123", e: "123", f: "\u226466", fa: "\u226466", s: "\u226412", si: "\u226412" }], ["2021-04-26", { c: "60", ca: "60", e: "79", f: "84", fa: "84", s: "14.1", si: "14.5" }], ["2025-09-15", { c: "124", ca: "124", e: "124", f: "128", fa: "128", s: "26", si: "26" }], ["2023-03-27", { c: "94", ca: "94", e: "94", f: "99", fa: "99", s: "16.4", si: "16.4" }], ["2015-09-16", { c: "6", ca: "18", e: "12", f: "7", fa: "7", s: "8", si: "9" }], ["2022-09-12", { c: "44", ca: "44", e: "79", f: "46", fa: "46", s: "16", si: "16" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2016-03-21", { c: "38", ca: "38", e: "13", f: "38", fa: "38", s: "9.1", si: "9.3" }], ["2020-01-15", { c: "57", ca: "57", e: "79", f: "51", fa: "51", s: "10.1", si: "10.3" }], ["2020-01-15", { c: "47", ca: "47", e: "79", f: "51", fa: "51", s: "9", si: "9" }], ["2020-01-15", { c: "59", ca: "59", e: "79", f: "3", fa: "4", s: "8", si: "8" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "3.6", fa: "4", s: "4", si: "3.2" }], ["2020-07-28", { c: "55", ca: "55", e: "12", f: "59", fa: "79", s: "13", si: "13" }], ["2025-01-27", { c: "116", ca: "116", e: "116", f: "125", fa: "125", s: "17", si: "18.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "3", fa: "4", s: "4", si: "3.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2020-01-15", { c: "76", ca: "76", e: "79", f: "67", fa: "67", s: "12.1", si: "13" }], ["2022-05-31", { c: "96", ca: "96", e: "96", f: "101", fa: "101", s: "14.1", si: "14.5" }], ["2020-01-15", { c: "74", ca: "74", e: "79", f: "63", fa: "64", s: "10.1", si: "10.3" }], ["2023-12-11", { c: "73", ca: "73", e: "79", f: "78", fa: "79", s: "17.2", si: "17.2" }], ["2023-12-11", { c: "86", ca: "86", e: "86", f: "101", fa: "101", s: "17.2", si: "17.2" }], ["2023-06-06", { c: "1", ca: "18", e: "12", f: "1", fa: "114", s: "1.1", si: "1" }], ["2025-05-01", { c: "136", ca: "136", e: "136", f: "97", fa: "97", s: "15.4", si: "15.4" }], ["2019-09-19", { c: "63", ca: "63", e: "12", f: "6", fa: "6", s: "13", si: "13" }], ["2015-07-29", { c: "6", ca: "18", e: "12", f: "6", fa: "6", s: "6", si: "7" }], ["2015-07-29", { c: "32", ca: "32", e: "12", f: "29", fa: "29", s: "8", si: "8" }], ["2020-07-28", { c: "76", ca: "76", e: "79", f: "71", fa: "79", s: "13", si: "13" }], ["2020-09-16", { c: "85", ca: "85", e: "85", f: "79", fa: "79", s: "14", si: "14" }], ["2018-10-02", { c: "63", ca: "63", e: "18", f: "58", fa: "58", s: "11.1", si: "11.3" }], ["2025-01-07", { c: "128", ca: "128", e: "128", f: "134", fa: "134", s: "18.2", si: "18.2" }], ["2024-03-05", { c: "119", ca: "119", e: "119", f: "121", fa: "121", s: "17.4", si: "17.4" }], ["2016-09-20", { c: "49", ca: "49", e: "12", f: "18", fa: "18", s: "10", si: "10" }], ["2023-03-27", { c: "50", ca: "50", e: "17", f: "44", fa: "48", s: "16", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "2" }], ["2020-03-24", { c: "63", ca: "63", e: "79", f: "49", fa: "49", s: "13.1", si: "13.4" }], ["2020-07-28", { c: "71", ca: "71", e: "79", f: "69", fa: "79", s: "12.1", si: "12.2" }], ["2021-04-26", { c: "87", ca: "87", e: "87", f: "70", fa: "79", s: "14.1", si: "14.5" }], ["2026-01-13", { c: "118", ca: "118", e: "118", f: "147", fa: "147", s: "17.2", si: "17.2" }], ["2026-01-13", { c: "111", ca: "111", e: "111", f: "147", fa: "147", s: "17.2", si: "17.2" }], ["2020-07-28", { c: "1", ca: "18", e: "13", f: "78", fa: "79", s: "4", si: "3.2" }], ["2026-03-24", { c: "89", ca: "89", e: "89", f: "102", fa: "102", s: "26.4", si: "26.4" }], ["2024-01-23", { c: "119", ca: "119", e: "119", f: "122", fa: "122", s: "17.2", si: "17.2" }], ["2021-09-20", { c: "85", ca: "85", e: "85", f: "87", fa: "87", s: "15", si: "15" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2025-05-01", { c: "136", ca: "136", e: "136", f: "134", fa: "134", s: "18.2", si: "18.2" }], ["2024-07-09", { c: "85", ca: "85", e: "85", f: "128", fa: "128", s: "16.4", si: "16.4" }], ["2024-09-16", { c: "125", ca: "125", e: "125", f: "128", fa: "128", s: "18", si: "18" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "4", ca: "18", e: "12", f: "3.6", fa: "4", s: "5", si: "4" }], ["2026-03-24", { c: "96", ca: "96", e: "96", f: "149", fa: "149", s: "16.4", si: "16.4" }], ["2026-03-24", { c: "74", ca: "74", e: "79", f: "149", fa: "149", s: "18.4", si: "18.4" }], ["2015-07-29", { c: "24", ca: "25", e: "12", f: "23", fa: "23", s: "7", si: "7" }], ["2023-03-27", { c: "69", ca: "69", e: "79", f: "99", fa: "99", s: "16.4", si: "16.4" }], ["2024-10-29", { c: "83", ca: "83", e: "83", f: "132", fa: "132", s: "15.4", si: "15.4" }], ["2025-05-27", { c: "134", ca: "134", e: "134", f: "139", fa: "139", s: "18.4", si: "18.4" }], ["2024-07-09", { c: "111", ca: "111", e: "111", f: "128", fa: "128", s: "16.4", si: "16.4" }], ["2020-07-28", { c: "64", ca: "64", e: "79", f: "69", fa: "79", s: "13.1", si: "13.4" }], ["2022-09-12", { c: "68", ca: "68", e: "79", f: "62", fa: "62", s: "16", si: "16" }], ["2018-10-23", { c: "1", ca: "18", e: "12", f: "63", fa: "63", s: "3", si: "1" }], ["2023-03-27", { c: "54", ca: "54", e: "17", f: "45", fa: "45", s: "16.4", si: "16.4" }], ["2017-09-19", { c: "29", ca: "29", e: "12", f: "35", fa: "35", s: "11", si: "11" }], ["2020-07-27", { c: "84", ca: "84", e: "84", f: "67", fa: "67", s: "9.1", si: "9.3" }], ["2026-01-13", { c: "111", ca: "111", e: "111", f: "147", fa: "147", s: "17.2", si: "17.2" }], ["2020-01-15", { c: "65", ca: "65", e: "79", f: "52", fa: "52", s: "12.1", si: "12.2" }], ["2026-01-13", { c: "111", ca: "111", e: "111", f: "147", fa: "147", s: "17.2", si: "17.2" }], ["2023-11-21", { c: "111", ca: "111", e: "111", f: "120", fa: "120", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2024-05-17", { c: "125", ca: "125", e: "125", f: "118", fa: "118", s: "17.2", si: "17.2" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "38", fa: "38", s: "5", si: "4.2" }], ["2024-12-11", { c: "128", ca: "128", e: "128", f: "38", fa: "38", s: "18.2", si: "18.2" }], ["2024-12-11", { c: "84", ca: "84", e: "84", f: "38", fa: "38", s: "18.2", si: "18.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2020-01-15", { c: "69", ca: "69", e: "79", f: "65", fa: "65", s: "11.1", si: "11.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2025-12-12", { c: "143", ca: "143", e: "143", f: "146", fa: "146", s: "26.2", si: "26.2" }], ["2020-01-15", { c: "27", ca: "27", e: "79", f: "32", fa: "32", s: "7", si: "7" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2023-03-27", { c: "38", ca: "39", e: "79", f: "43", fa: "43", s: "16.4", si: "16.4" }], ["2025-03-31", { c: "84", ca: "84", e: "84", f: "126", fa: "126", s: "16.4", si: "18.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "2" }], ["2023-12-07", { c: "120", ca: "120", e: "120", f: "113", fa: "113", s: "17", si: "17" }], ["2022-03-14", { c: "61", ca: "61", e: "79", f: "36", fa: "36", s: "15.4", si: "15.4" }], ["2020-09-16", { c: "61", ca: "61", e: "79", f: "36", fa: "36", s: "14", si: "14" }], ["2020-01-15", { c: "1", ca: "18", e: "79", f: "1", fa: "4", s: "3", si: "1" }], ["2020-01-15", { c: "69", ca: "69", e: "79", f: "68", fa: "68", s: "11", si: "11" }], ["2024-10-01", { c: "80", ca: "80", e: "80", f: "131", fa: "131", s: "16.1", si: "16.1" }], ["2025-12-12", { c: "121", ca: "121", e: "121", f: "64", fa: "64", s: "26.2", si: "26.2" }], ["2024-12-11", { c: "94", ca: "94", e: "94", f: "97", fa: "97", s: "18.2", si: "18.2" }], ["2024-12-11", { c: "121", ca: "121", e: "121", f: "64", fa: "64", s: "18.2", si: "18.2" }], ["2025-12-12", { c: "114", ca: "114", e: "114", f: "109", fa: "109", s: "26.2", si: "26.2" }], ["2023-10-13", { c: "118", ca: "118", e: "118", f: "118", fa: "118", s: "17", si: "17" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "4", fa: "4", s: "5", si: "4.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2017-03-07", { c: "11", ca: "18", e: "12", f: "52", fa: "52", s: "5.1", si: "5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2020-01-15", { c: "6", ca: "18", e: "79", f: "6", fa: "45", s: "5", si: "5" }], ["2023-03-27", { c: "65", ca: "65", e: "79", f: "61", fa: "61", s: "16.4", si: "16.4" }], ["2018-04-30", { c: "45", ca: "45", e: "17", f: "44", fa: "44", s: "11.1", si: "11.3" }], ["2015-07-29", { c: "38", ca: "38", e: "12", f: "13", fa: "14", s: "8", si: "8" }], ["2024-06-11", { c: "122", ca: "122", e: "122", f: "127", fa: "127", s: "17", si: "17" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3.5", fa: "4", s: "4", si: "5" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3.5", fa: "4", s: "4", si: "5" }], ["2020-01-15", { c: "53", ca: "53", e: "79", f: "63", fa: "63", s: "10", si: "10" }], ["2020-07-28", { c: "73", ca: "73", e: "79", f: "72", fa: "79", s: "13.1", si: "13.4" }], ["2026-02-24", { c: "135", ca: "135", e: "135", f: "148", fa: "148", s: "18.4", si: "18.4" }], ["2020-01-15", { c: "37", ca: "37", e: "79", f: "62", fa: "62", s: "10.1", si: "10.3" }], ["2020-01-15", { c: "37", ca: "37", e: "79", f: "54", fa: "54", s: "10.1", si: "10.3" }], ["2021-12-13", { c: "68", ca: "89", e: "79", f: "79", fa: "79", s: "15.2", si: "15.2" }], ["2026-05-05", { c: "5", ca: "148", e: "79", f: "29", fa: "33", s: "16", si: "16" }], ["2020-01-15", { c: "53", ca: "53", e: "79", f: "63", fa: "63", s: "10", si: "10" }], ["2023-03-27", { c: "92", ca: "92", e: "92", f: "92", fa: "92", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2020-01-15", { c: "19", ca: "25", e: "79", f: "4", fa: "4", s: "6", si: "6" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3.5", fa: "4", s: "3.1", si: "2" }], ["2020-01-15", { c: "18", ca: "18", e: "79", f: "55", fa: "55", s: "7", si: "7" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2018-09-05", { c: "33", ca: "33", e: "14", f: "49", fa: "62", s: "7", si: "7" }], ["2017-11-28", { c: "9", ca: "47", e: "12", f: "2", fa: "57", s: "5.1", si: "5" }], ["2020-01-15", { c: "60", ca: "60", e: "79", f: "55", fa: "55", s: "11.1", si: "11.3" }], ["2017-03-27", { c: "38", ca: "38", e: "13", f: "38", fa: "38", s: "10.1", si: "10.3" }], ["2020-01-15", { c: "70", ca: "70", e: "79", f: "3", fa: "4", s: "10.1", si: "10.3" }], ["2024-08-06", { c: "117", ca: "117", e: "117", f: "129", fa: "129", s: "17.5", si: "17.5" }], ["2024-05-17", { c: "125", ca: "125", e: "125", f: "126", fa: "126", s: "17.4", si: "17.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-09-16", { c: "77", ca: "77", e: "79", f: "65", fa: "65", s: "14", si: "14" }], ["2019-09-19", { c: "56", ca: "56", e: "16", f: "59", fa: "59", s: "13", si: "13" }], ["2023-12-05", { c: "119", ca: "120", e: "85", f: "65", fa: "65", s: "11.1", si: "11.3" }], ["2023-09-18", { c: "61", ca: "61", e: "79", f: "57", fa: "57", s: "17", si: "17" }], ["2022-06-28", { c: "67", ca: "67", e: "79", f: "102", fa: "102", s: "14.1", si: "14.5" }], ["2022-03-14", { c: "92", ca: "92", e: "92", f: "90", fa: "90", s: "15.4", si: "15.4" }], ["2015-09-30", { c: "41", ca: "41", e: "12", f: "29", fa: "29", s: "9", si: "9" }], ["2015-09-30", { c: "41", ca: "41", e: "12", f: "40", fa: "40", s: "9", si: "9" }], ["2020-01-15", { c: "73", ca: "73", e: "79", f: "67", fa: "67", s: "13", si: "13" }], ["2016-09-20", { c: "34", ca: "34", e: "12", f: "31", fa: "31", s: "10", si: "10" }], ["2017-04-05", { c: "57", ca: "57", e: "15", f: "48", fa: "48", s: "10", si: "10" }], ["2015-09-30", { c: "41", ca: "41", e: "12", f: "34", fa: "34", s: "9", si: "9" }], ["2015-09-30", { c: "41", ca: "36", e: "12", f: "24", fa: "24", s: "9", si: "9" }], ["2020-08-27", { c: "85", ca: "85", e: "85", f: "77", fa: "79", s: "13.1", si: "13.4" }], ["2015-09-30", { c: "41", ca: "36", e: "12", f: "17", fa: "17", s: "9", si: "9" }], ["2020-01-15", { c: "66", ca: "66", e: "79", f: "61", fa: "61", s: "12", si: "12" }], ["2023-10-24", { c: "111", ca: "111", e: "111", f: "119", fa: "119", s: "16.4", si: "16.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2022-03-14", { c: "98", ca: "98", e: "98", f: "94", fa: "94", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2023-09-15", { c: "117", ca: "117", e: "117", f: "71", fa: "79", s: "16", si: "16" }], ["2018-04-30", { c: "46", ca: "46", e: "17", f: "51", fa: "51", s: "11.1", si: "11.3" }], ["2015-09-30", { c: "28", ca: "28", e: "12", f: "22", fa: "22", s: "9", si: "9" }], ["2016-09-20", { c: "2", ca: "18", e: "12", f: "49", fa: "49", s: "4", si: "3.2" }], ["2020-01-15", { c: "1", ca: "18", e: "79", f: "3", fa: "4", s: "3", si: "2" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "3", fa: "4", s: "6", si: "6" }], ["2015-09-30", { c: "38", ca: "38", e: "12", f: "36", fa: "36", s: "9", si: "9" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2021-08-10", { c: "42", ca: "42", e: "79", f: "91", fa: "91", s: "13.1", si: "13.4" }], ["2018-10-02", { c: "1", ca: "18", e: "18", f: "1.5", fa: "4", s: "3.1", si: "2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1.3", si: "2" }], ["2024-12-11", { c: "89", ca: "89", e: "89", f: "131", fa: "131", s: "18.2", si: "18.2" }], ["2015-11-12", { c: "26", ca: "26", e: "13", f: "22", fa: "22", s: "8", si: "8" }], ["2020-01-15", { c: "62", ca: "62", e: "79", f: "53", fa: "53", s: "11", si: "11" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2022-09-12", { c: "47", ca: "47", e: "12", f: "49", fa: "49", s: "16", si: "16" }], ["2022-03-14", { c: "48", ca: "48", e: "79", f: "48", fa: "48", s: "15.4", si: "15.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2022-03-14", { c: "64", ca: "64", e: "79", f: "70", fa: "79", s: "15.4", si: "15.4" }], ["2026-05-07", { c: "148", ca: "148", e: "148", f: "75", fa: "79", s: "15.4", si: "15.4" }], ["2025-12-12", { c: "121", ca: "121", e: "121", f: "137", fa: "137", s: "26.2", si: "26.2" }], ["2022-03-03", { c: "99", ca: "99", e: "99", f: "46", fa: "46", s: "7", si: "7" }], ["2020-01-15", { c: "38", ca: "38", e: "79", f: "19", fa: "19", s: "10.1", si: "10.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2026-03-13", { c: "146", ca: "146", e: "146", f: "121", fa: "121", s: "15", si: "15" }], ["2026-03-13", { c: "146", ca: "146", e: "146", f: "121", fa: "121", s: "15", si: "15" }], ["2020-09-16", { c: "48", ca: "48", e: "79", f: "41", fa: "41", s: "14", si: "14" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "7", fa: "7", s: "1.3", si: "1" }], ["2015-07-29", { c: "2", ca: "18", e: "12", f: "3.5", fa: "4", s: "1.1", si: "1" }], ["2017-04-05", { c: "4", ca: "18", e: "15", f: "49", fa: "49", s: "3", si: "2" }], ["2015-07-29", { c: "23", ca: "25", e: "12", f: "31", fa: "31", s: "6", si: "6" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-11-19", { c: "87", ca: "87", e: "87", f: "70", fa: "79", s: "12.1", si: "12.2" }], ["2020-07-28", { c: "33", ca: "33", e: "12", f: "74", fa: "79", s: "12.1", si: "12.2" }], ["2024-10-17", { c: "130", ca: "130", e: "130", f: "124", fa: "124", s: "17.5", si: "17.5" }], ["2024-05-13", { c: "114", ca: "114", e: "114", f: "121", fa: "121", s: "17.5", si: "17.5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643" }], ["2017-10-24", { c: "62", ca: "62", e: "14", f: "22", fa: "22", s: "10", si: "10" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2019-09-19", { c: "36", ca: "36", e: "12", f: "52", fa: "52", s: "13", si: "9.3" }], ["2024-03-05", { c: "114", ca: "114", e: "114", f: "122", fa: "122", s: "17.4", si: "17.4" }], ["2024-04-16", { c: "118", ca: "118", e: "118", f: "125", fa: "125", s: "13.1", si: "13.4" }], ["2015-09-30", { c: "36", ca: "36", e: "12", f: "16", fa: "16", s: "9", si: "9" }], ["2022-03-14", { c: "36", ca: "36", e: "12", f: "16", fa: "16", s: "15.4", si: "15.4" }], ["2024-08-06", { c: "117", ca: "117", e: "117", f: "129", fa: "129", s: "17.4", si: "17.4" }], ["2015-09-30", { c: "26", ca: "26", e: "12", f: "16", fa: "16", s: "9", si: "9" }], ["2023-03-14", { c: "19", ca: "25", e: "79", f: "111", fa: "111", s: "6", si: "6" }], ["2023-03-13", { c: "111", ca: "111", e: "111", f: "108", fa: "108", s: "15.4", si: "15.4" }], ["2026-02-24", { c: "83", ca: "83", e: "83", f: "148", fa: "148", s: "26", si: "26" }], ["2023-07-21", { c: "115", ca: "115", e: "115", f: "70", fa: "79", s: "15", si: "15" }], ["2016-09-20", { c: "45", ca: "45", e: "12", f: "38", fa: "38", s: "10", si: "10" }], ["2016-09-20", { c: "45", ca: "45", e: "12", f: "37", fa: "37", s: "10", si: "10" }], ["2015-07-29", { c: "7", ca: "18", e: "12", f: "4", fa: "4", s: "5.1", si: "4.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2025-09-05", { c: "140", ca: "140", e: "140", f: "133", fa: "133", s: "18.2", si: "18.2" }], ["2015-09-30", { c: "44", ca: "44", e: "12", f: "40", fa: "40", s: "9", si: "9" }], ["2016-03-21", { c: "41", ca: "41", e: "13", f: "27", fa: "27", s: "9.1", si: "9.3" }], ["2023-09-18", { c: "113", ca: "113", e: "113", f: "102", fa: "102", s: "17", si: "17" }], ["2018-04-30", { c: "44", ca: "44", e: "17", f: "48", fa: "48", s: "10.1", si: "10.3" }], ["2015-07-29", { c: "32", ca: "32", e: "12", f: "19", fa: "19", s: "7", si: "7" }], ["2023-12-07", { c: "120", ca: "120", e: "120", f: "115", fa: "115", s: "17", si: "17" }], ["2025-09-15", { c: "95", ca: "95", e: "95", f: "142", fa: "142", s: "26", si: "26" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "2", si: "1" }], ["2023-11-21", { c: "72", ca: "72", e: "79", f: "120", fa: "120", s: "16.4", si: "16.4" }], ["2016-09-20", { c: "4", ca: "18", e: "12", f: "3.5", fa: "4", s: "10", si: "10" }], ["2023-11-02", { c: "119", ca: "119", e: "119", f: "88", fa: "88", s: "16.5", si: "16.5" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "\u22644", si: "\u22643.2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2024-04-18", { c: "124", ca: "124", e: "124", f: "120", fa: "120", s: "17.4", si: "17.4" }], ["2015-07-29", { c: "3", ca: "18", e: "12", f: "3.5", fa: "4", s: "3.1", si: "3" }], ["2025-10-14", { c: "125", ca: "125", e: "125", f: "144", fa: "144", s: "18.2", si: "18.2" }], ["2025-10-14", { c: "111", ca: "111", e: "111", f: "144", fa: "144", s: "18", si: "18" }], ["2022-12-05", { c: "108", ca: "108", e: "108", f: "101", fa: "101", s: "15.4", si: "15.4" }], ["2017-10-17", { c: "26", ca: "26", e: "16", f: "19", fa: "19", s: "7", si: "7" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1.3", si: "1" }], ["2021-08-10", { c: "61", ca: "61", e: "79", f: "91", fa: "68", s: "13", si: "13" }], ["2017-10-17", { c: "57", ca: "57", e: "16", f: "52", fa: "52", s: "11", si: "11" }], ["2021-04-26", { c: "85", ca: "85", e: "85", f: "78", fa: "79", s: "14.1", si: "14.5" }], ["2021-10-25", { c: "75", ca: "75", e: "79", f: "78", fa: "79", s: "15.1", si: "15.1" }], ["2022-05-03", { c: "95", ca: "95", e: "95", f: "100", fa: "100", s: "15.2", si: "15.2" }], ["2024-03-05", { c: "114", ca: "114", e: "114", f: "112", fa: "112", s: "17.4", si: "17.4" }], ["2024-12-11", { c: "119", ca: "119", e: "119", f: "120", fa: "120", s: "18.2", si: "18.2" }], ["2020-10-20", { c: "86", ca: "86", e: "86", f: "78", fa: "79", s: "13.1", si: "13.4" }], ["2020-03-24", { c: "69", ca: "69", e: "79", f: "62", fa: "62", s: "13.1", si: "13.4" }], ["2021-10-25", { c: "75", ca: "75", e: "18", f: "64", fa: "64", s: "15.1", si: "15.1" }], ["2021-11-19", { c: "96", ca: "96", e: "96", f: "79", fa: "79", s: "15.1", si: "15.1" }], ["2021-04-26", { c: "69", ca: "69", e: "18", f: "62", fa: "62", s: "14.1", si: "14.5" }], ["2023-03-27", { c: "91", ca: "91", e: "91", f: "89", fa: "89", s: "16.4", si: "16.4" }], ["2024-12-11", { c: "112", ca: "112", e: "112", f: "121", fa: "121", s: "18.2", si: "18.2" }], ["2021-12-13", { c: "74", ca: "88", e: "79", f: "79", fa: "79", s: "15.2", si: "15.2" }], ["2024-09-16", { c: "119", ca: "119", e: "119", f: "120", fa: "120", s: "18", si: "18" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "4", si: "3.2" }], ["2021-04-26", { c: "84", ca: "84", e: "84", f: "79", fa: "79", s: "14.1", si: "14.5" }], ["2015-07-29", { c: "36", ca: "36", e: "12", f: "6", fa: "6", s: "8", si: "8" }], ["2015-09-30", { c: "36", ca: "36", e: "12", f: "34", fa: "34", s: "9", si: "9" }], ["2020-09-16", { c: "84", ca: "84", e: "84", f: "75", fa: "79", s: "14", si: "14" }], ["2021-04-26", { c: "35", ca: "35", e: "12", f: "25", fa: "25", s: "14.1", si: "14.5" }], ["2015-07-29", { c: "37", ca: "37", e: "12", f: "34", fa: "34", s: "11", si: "11" }], ["2022-03-14", { c: "69", ca: "69", e: "79", f: "96", fa: "96", s: "15.4", si: "15.4" }], ["2021-09-07", { c: "67", ca: "70", e: "18", f: "60", fa: "92", s: "13", si: "13" }], ["2023-10-24", { c: "85", ca: "85", e: "85", f: "119", fa: "119", s: "16", si: "16" }], ["2015-07-29", { c: "9", ca: "25", e: "12", f: "4", fa: "4", s: "5.1", si: "8" }], ["2021-09-20", { c: "63", ca: "63", e: "17", f: "30", fa: "30", s: "14", si: "15" }], ["2024-10-29", { c: "104", ca: "104", e: "104", f: "132", fa: "132", s: "16.4", si: "16.4" }], ["2020-01-15", { c: "47", ca: "47", e: "79", f: "53", fa: "53", s: "12", si: "12" }], ["2017-04-19", { c: "33", ca: "33", e: "12", f: "53", fa: "53", s: "9.1", si: "9.3" }], ["2020-09-16", { c: "47", ca: "47", e: "79", f: "56", fa: "56", s: "14", si: "14" }], ["2015-07-29", { c: "26", ca: "26", e: "12", f: "22", fa: "22", s: "8", si: "8" }], ["2018-04-30", { c: "26", ca: "26", e: "17", f: "22", fa: "22", s: "8", si: "8" }], ["2022-12-13", { c: "100", ca: "100", e: "100", f: "108", fa: "108", s: "16", si: "16" }], ["2021-09-20", { c: "56", ca: "58", e: "79", f: "51", fa: "51", s: "15", si: "15" }], ["2024-10-29", { c: "104", ca: "104", e: "104", f: "132", fa: "132", s: "16.4", si: "16.4" }], ["2020-09-16", { c: "32", ca: "32", e: "18", f: "65", fa: "65", s: "14", si: "14" }], ["2020-01-15", { c: "56", ca: "56", e: "79", f: "22", fa: "24", s: "11", si: "11" }], ["2025-10-03", { c: "141", ca: "141", e: "141", f: "117", fa: "117", s: "15.4", si: "15.4" }], ["2023-05-09", { c: "76", ca: "76", e: "79", f: "113", fa: "113", s: "15.4", si: "15.4" }], ["2020-01-15", { c: "58", ca: "58", e: "79", f: "44", fa: "44", s: "11", si: "11" }], ["2015-07-29", { c: "5", ca: "18", e: "12", f: "11", fa: "14", s: "5", si: "4.2" }], ["2026-03-24", { c: "97", ca: "97", e: "97", f: "114", fa: "114", s: "26.4", si: "26.4" }], ["2015-07-29", { c: "23", ca: "25", e: "12", f: "31", fa: "31", s: "6", si: "8" }], ["2020-01-15", { c: "23", ca: "25", e: "79", f: "31", fa: "31", s: "6", si: "8" }], ["2021-01-21", { c: "88", ca: "88", e: "88", f: "82", fa: "82", s: "14", si: "14" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2024-03-19", { c: "114", ca: "114", e: "114", f: "124", fa: "124", s: "17.4", si: "17.4" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2020-01-15", { c: "36", ca: "36", e: "79", f: "36", fa: "36", s: "9.1", si: "9.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2015-09-30", { c: "44", ca: "44", e: "12", f: "15", fa: "15", s: "9", si: "9" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "1", si: "1" }], ["2017-03-27", { c: "48", ca: "48", e: "12", f: "41", fa: "41", s: "10.1", si: "10.3" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3", si: "1" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "1", fa: "4", s: "3.1", si: "2" }], ["2015-07-29", { c: "1", ca: "18", e: "12", f: "3", fa: "4", s: "1", si: "1" }], ["2024-05-14", { c: "1", ca: "18", e: "12", f: "126", fa: "126", s: "3.1", si: "3" }], ["2026-02-11", { c: "123", ca: "123", e: "123", f: "126", fa: "126", s: "26.3", si: "26.3" }]];
-    var c2 = { w: "WebKit", g: "Gecko", p: "Presto", b: "Blink" };
-    var f = { r: "retired", c: "current", b: "beta", n: "nightly", p: "planned", u: "unknown", e: "esr" };
-    var e = /* @__PURE__ */ __name((s2) => {
-      const a2 = {};
-      return Object.keys(s2).forEach((r2) => {
-        const e2 = s2[r2];
-        if (e2 && e2.releases) {
-          a2[r2] || (a2[r2] = { releases: {} });
-          const s3 = a2[r2].releases;
-          e2.releases.forEach((a3) => {
-            s3[a3[0]] = { version: a3[0], release_date: "u" == a3[1] ? "unknown" : a3[1], status: f[a3[2]], engine: a3[3] ? c2[a3[3]] : void 0, engine_version: a3[4] };
-          });
+    var n = /* @__PURE__ */ __name((n2, a2) => {
+      if (n2 === a2) return 0;
+      const [e2 = 0, u2 = 0] = n2.split(".", 2).map(Number), [s2 = 0, o2 = 0] = a2.split(".", 2).map(Number);
+      if (isNaN(e2) || isNaN(u2)) throw new Error(`Invalid version: ${n2}`);
+      if (isNaN(s2) || isNaN(o2)) throw new Error(`Invalid version: ${a2}`);
+      return e2 !== s2 ? e2 > s2 ? 1 : -1 : u2 !== o2 ? u2 > o2 ? 1 : -1 : 0;
+    }, "n");
+    var a = { c: { longName: "chrome" }, ca: { longName: "chrome_android" }, e: { longName: "edge" }, f: { longName: "firefox" }, fa: { longName: "firefox_android" }, s: { longName: "safari" }, si: { longName: "safari_ios" }, o: { longName: "opera", engine: "Blink" }, oa: { longName: "opera_android", engine: "Blink" }, sa: { longName: "samsunginternet_android", engine: "Blink" }, wva: { longName: "webview_android", engine: "Blink" }, y: { longName: "ya_android", engine: "Blink" }, u: { longName: "uc_android", engine: "Blink" }, q: { longName: "qq_android", engine: "Blink" }, k: { longName: "kai_os", engine: "Gecko" }, fb: { longName: "facebook_android", engine: "Blink" }, ia: { longName: "instagram_android", engine: "Blink" } };
+    var e = /* @__PURE__ */ __name((n2) => 6 === n2.length && /^\d{6}$/.test(n2) ? `20${n2.slice(0, 2)}-${n2.slice(2, 4)}-${n2.slice(4, 6)}` : 8 === n2.length && /^\d{8}$/.test(n2) ? `${n2.slice(0, 4)}-${n2.slice(4, 6)}-${n2.slice(6, 8)}` : n2, "e");
+    var u = {};
+    var s = {};
+    var o = "";
+    var f = false;
+    "pre_baseline\nc,1,081211\nc,2,090521\nc,3,090915\nc,4,100125\nc,5,100525\nc,6,100902\nc,7,101019\nc,8,101202\nc,9,110203\nc,10,110308\nc,11,110427\nc,12,110607\nc,13,110802\nc,14,110916\nc,15,111025\nc,16,111213\nc,17,120208\nc,18,120328\nc,19,120515\nc,20,120626\nc,21,120731\nc,22,120925\nc,23,121106\nc,24,130110\nc,25,130221\nc,26,130326\nc,27,130521\nc,28,130709\nc,29,130820\nc,30,131001\nc,31,131112\nc,32,140114\nc,33,140220\nc,34,140408\nc,35,140520\nc,36,140716\nc,37,140826\nc,38,141007\nc,39,141118\nc,40,150121\nc,41,150303\nc,42,150414\nc,43,150519\nc,44,150721\nca,18,120627\nca,25,130227\nca,26,130403\nca,27,130522\nca,28,130710\nca,29,130821\nca,30,131002\nca,31,131114\nca,32,140115\nca,33,140226\nca,34,140402\nca,35,140520\nca,36,140716\nca,37,140903\nca,38,141008\nca,39,141112\nca,40,150121\nca,41,150311\nca,42,150415\nca,43,150527\nf,1,041109\nf,1.5,051129\nf,2,061024\nf,3,080617\nf,3.5,090630\nf,3.6,100121\nf,4,110322\nf,5,110621\nf,6,110816\nf,7,110927\nf,8,111108\nf,9,111220\nf,10,120131\nf,11,120313\nf,12,120424\nf,13,120605\nf,14,120717\nf,15,120828\nf,16,121009\nf,17,121120\nf,18,130108\nf,19,130219\nf,20,130402\nf,21,130514\nf,22,130625\nf,23,130806\nf,24,130917\nf,25,131029\nf,26,131210\nf,27,140204\nf,28,140318\nf,29,140429\nf,30,140610\nf,31,140722\nf,32,140902\nf,33,141014\nf,34,141201\nf,35,150113\nf,36,150224\nf,37,150331\nf,38,150512\nf,39,150702\nfa,4,110329\nfa,5,110621\nfa,6,110816\nfa,7,110927\nfa,8,111108\nfa,9,111221\nfa,10,120131\nfa,14,120626\nfa,15,120828\nfa,16,121009\nfa,17,121120\nfa,18,130108\nfa,19,130219\nfa,20,130402\nfa,21,130514\nfa,22,130625\nfa,23,130806\nfa,24,130917\nfa,25,131029\nfa,26,131210\nfa,27,140204\nfa,28,140318\nfa,29,140429\nfa,30,140610\nfa,31,140722\nfa,32,140902\nfa,33,141014\nfa,34,141201\nfa,35,150113\nfa,36,150227\nfa,37,150331\nfa,38,150512\nfa,39,150702\ns,1,030623\ns,1.1,031024\ns,1.2,040202\ns,1.3,050415\ns,2,050429\ns,3,071026\ns,3.1,080318\ns,4,090608\ns,5,100607\ns,5.1,110720\ns,6,120725\ns,7,131022\ns,8,141016\nsi,1,070629\nsi,2,080711\nsi,3,090617\nsi,3.2,100403\nsi,4,100621\nsi,4.2,101122\nsi,5,111012\nsi,6,120910\nsi,7,130918\nsi,8,140917\n20150729\nc,38,141007\nca,38,141008\ne,12,150729\nf,38,150512\nfa,38,150512\ns,11,170919\nsi,11,170919\no,25,141015,38\noa,25,141016,38\nsa,3.0,150410,38\nwva,38,141008,38\ny,14.12,u,38\nu,11.1,u,40\nq,8.1,u,57\nk,2.0,170701,48\nfb,66,u,48\nia,23,u,62\n20150922\nf,41,150922\nfa,41,150922\n20150930\nc,44,150721\nca,44,150729\no,31,150804,44\noa,32,150923,45\nsa,4.0,160311,44\nwva,44,150729,44\ny,15.9,u,44\nu,11.6,u,57\n20151112\ne,13,151112\n20151231\nc,44,150721\nca,44,150729\ne,13,151112\nf,41,150922\nfa,41,150922\ns,11,170919\nsi,11,170919\no,31,150804,44\noa,32,150923,45\nsa,4.0,160311,44\nwva,44,150729,44\ny,15.9,u,44\nu,11.6,u,57\nq,8.1,u,57\nk,2.0,170701,48\nfb,66,u,48\nia,23,u,62\n20160308\nf,45,160308\nfa,45,160308\n20160607\nf,47,160607\nfa,47,160607\n20160802\ne,14,160802\n20160907\nc,53,160831\nca,53,160907\no,40,160920,53\noa,41,161025,54\nsa,6.0,170823,56\nwva,53,160907,53\ny,16.10,u,53\nfb,95,u,53\n20160920\nf,49,160920\nfa,49,160920\nk,3.0,210901,84\n20161231\nc,53,160831\nca,53,160907\ne,14,160802\nf,49,160920\nfa,49,160920\ns,11,170919\nsi,11,170919\no,40,160920,53\noa,41,161025,54\nsa,6.0,170823,56\nwva,53,160907,53\ny,16.10,u,53\nu,11.6,u,57\nq,8.1,u,57\nk,3.0,210901,84\nfb,95,u,53\nia,23,u,62\n20170201\nc,56,170125\nca,56,170201\nf,50,161115\nfa,50,161115\no,43,170207,56\noa,43,170927,59\nwva,56,170201,56\ny,17.3,u,56\nfb,112,u,56\n20170307\nf,52,170307\nfa,52,170307\n20170316\nca,57,170316\n20170405\nc,57,170309\ne,15,170405\no,44,170321,57\nsa,7.0,180316,59\nwva,57,170316,57\ny,17.4,u,57\nfb,117,u,57\n20170419\nf,53,170419\nfa,53,170419\n20170928\nfa,56,170928\n20171017\ne,16,171017\n20171024\nc,62,171017\nca,62,171024\no,49,171108,62\noa,46,180514,63\nsa,8.0,180718,63\nwva,62,171024,62\ny,17.11,u,62\nu,13.3,200909,78\nq,9.6,u,66\nfb,149,u,62\n20171128\nfa,57,171128\n20171231\nc,62,171017\nca,62,171024\ne,16,171017\nf,53,170419\nfa,57,171128\ns,11,170919\nsi,11,170919\no,49,171108,62\noa,46,180514,63\nsa,8.0,180718,63\nwva,62,171024,62\ny,17.11,u,62\nu,13.3,200909,78\nq,9.6,u,66\nk,3.0,210901,84\nfb,149,u,62\nia,23,u,62\n20180412\ns,11.1,180412\nsi,11.3,180329\n20180430\ne,17,180430\n20180509\nc,66,180417\nca,66,180417\nf,60,180509\nfa,60,180509\no,53,180510,66\noa,47,180723,66\nsa,9.0,180915,67\nwva,66,180417,66\ny,18.6,u,66\nfb,169,u,66\nia,42,u,66\n20180905\nf,62,180905\nfa,62,180905\n20181002\ne,18,181002\n20181023\nf,63,181023\nfa,63,181023\n20181211\nf,64,181211\nfa,64,181211\n20181231\nc,66,180417\nca,66,180417\ne,18,181002\nf,64,181211\nfa,64,181211\ns,11.1,180412\nsi,11.3,180329\no,53,180510,66\noa,47,180723,66\nsa,9.0,180915,67\nwva,66,180417,66\ny,18.6,u,66\nu,13.3,200909,78\nq,9.6,u,66\nk,3.0,210901,84\nfb,169,u,66\nia,42,u,66\n20190129\nf,65,190129\nfa,65,190129\n20190325\ns,12.1,190325\nsi,12.2,190325\n20190919\ns,13,190919\nsi,13,190919\n20191231\nc,66,180417\nca,66,180417\ne,18,181002\nf,65,190129\nfa,65,190129\ns,13,190919\nsi,13,190919\no,53,180510,66\noa,47,180723,66\nsa,9.0,180915,67\nwva,66,180417,66\ny,18.6,u,66\nu,13.3,200909,78\nq,9.6,u,66\nk,3.0,210901,84\nfb,169,u,66\nia,42,u,66\n20200115\nc,76,190730\nca,76,190730\ne,79,200115\nf,68,190709\nfa,68,190709\no,63,190820,76\noa,54,191018,76\nsa,12.0,200619,79\nwva,76,190730,76\ny,19.9,u,76\nq,10.9,201122,77\nfb,233,u,76\nia,96,u,80\n20200204\nc,80,200204\nca,80,200204\no,67,200303,80\noa,57,200330,80\nsa,13.0,201202,83\nwva,80,200204,80\ny,20.3,u,80\nu,15.3,230317,100\nq,11.7,211102,89\nfb,256,u,80\n20200207\ne,80,200207\n20200324\ns,13.1,200324\nsi,13.4,200324\n20200413\nc,81,200407\nca,81,200407\ne,81,200413\no,68,200422,81\noa,58,200513,81\nwva,81,200407,81\ny,20.4,u,81\nfb,266,u,81\nia,137,u,81\n20200727\nc,84,200727\nca,84,200727\ne,84,200716\no,70,200727,84\noa,60,200923,85\nsa,14.0,210417,87\nwva,84,200727,84\ny,20.8,200902,84\nfb,297,201202,86\nia,153,u,84\n20200728\nf,78,200630\nfa,79,200728\n20200827\nc,85,200825\nca,85,200825\ne,85,200827\no,71,200915,85\nwva,85,200825,85\ny,20.9,200927,85\nia,163,u,92\n20200916\nf,79,200728\ns,14,200916\nsi,14,200916\n20201020\nc,86,201020\nca,86,201020\ne,86,201009\no,72,201021,86\noa,61,201207,86\nwva,86,201020,86\ny,20.11,201111,86\n20201117\nf,83,201117\nfa,83,201117\n20201119\nc,87,201117\nca,87,201117\ne,87,201119\no,73,201209,87\noa,62,210216,87\nwva,87,201117,87\ny,20.12,201220,87\nfb,348,211219,96\n20201231\nc,87,201117\nca,87,201117\ne,87,201119\nf,83,201117\nfa,83,201117\ns,14,200916\nsi,14,200916\no,73,201209,87\noa,62,210216,87\nsa,14.0,210417,87\nwva,87,201117,87\ny,20.12,201220,87\nu,15.3,230317,100\nq,11.7,211102,89\nk,3.0,210901,84\nfb,348,211219,96\nia,163,u,92\n20210121\nc,88,210119\nca,88,210119\ne,88,210121\nf,84,201215\nfa,84,201215\no,74,210202,88\noa,63,210416,89\nsa,15.0,210813,90\nwva,88,210119,88\ny,21.1,211231,88\n20210126\nf,85,210126\nfa,85,210126\nk,4.0,250501,123\n20210426\nc,89,210302\nca,89,210302\ne,89,210304\nf,86,210223\nfa,86,210223\ns,14.1,210426\nsi,14.5,210426\no,75,210324,89\nwva,89,210302,89\ny,21.3,210404,89\n20210810\nf,91,210810\nfa,91,210810\n20210902\ne,93,210902\n20210907\nf,92,210907\nfa,92,210907\n20210920\nc,93,210831\nca,93,210831\ns,15,210920\nsi,15,210920\no,79,210914,93\noa,66,211215,94\nsa,17.0,220504,96\nwva,93,210831,93\ny,21.9,210929,93\nq,13.4,230426,98\nia,258,221104,106\n20211005\nf,93,211005\nfa,93,211005\n20211025\ns,15.1,211025\nsi,15.1,211025\n20211102\nf,94,211102\nfa,94,211102\n20211119\nc,96,211115\nca,96,211115\ne,96,211119\no,82,211202,96\noa,67,220131,96\nwva,96,211115,96\ny,22.1,211231,96\n20211207\nf,95,211207\n20211213\ns,15.2,211213\nsi,15.2,211213\n20211231\nc,96,211115\nca,96,211115\ne,96,211119\nf,95,211207\nfa,94,211102\ns,15.2,211213\nsi,15.2,211213\no,82,211202,96\noa,67,220131,96\nsa,17.0,220504,96\nwva,96,211115,96\ny,22.1,211231,96\nu,15.3,230317,100\nq,13.4,230426,98\nk,4.0,250501,123\nfb,348,211219,96\nia,258,221104,106\n20220106\nc,97,220104\nca,97,220104\ne,97,220106\no,83,220119,97\noa,68,220330,99\nsa,18.0,220808,99\nwva,97,220104,97\ny,22.3,220325,98\nfb,399,230204,109\n20220203\nc,98,220201\nca,98,220201\ne,98,220203\nf,96,220111\nfa,96,220111\no,84,220216,98\nwva,98,220201,98\n20220303\nc,99,220301\nca,99,220301\ne,99,220303\no,85,220323,99\nwva,99,220301,99\ny,22.5,220520,100\nq,14.2,231014,109\n20220314\nf,98,220308\nfa,98,220308\ns,15.4,220314\nsi,15.4,220314\n20220428\nc,101,220426\nca,101,220426\ne,101,220428\no,87,220517,101\noa,70,220629,102\nsa,19.0,221101,102\nwva,101,220426,101\ny,22.7,220707,102\nu,17.6,250515,123\n20220503\nf,100,220503\nfa,100,220503\n20220531\nf,101,220531\nfa,101,220531\n20220628\nf,102,220628\nfa,102,220628\n20220726\nf,103,220726\nfa,103,220726\n20220805\nc,104,220802\nca,104,220802\ne,104,220805\no,90,220818,104\noa,71,220916,104\nsa,20.0,230210,106\nwva,104,220802,104\ny,22.8,u,104\n20220823\nf,104,220823\nfa,104,220823\n20220902\nc,105,220902\nca,105,220902\ne,105,220901\ns,15.6,220720\nsi,15.6,220720\no,91,220914,105\noa,72,221021,106\nwva,105,220902,105\ny,22.11,221111,106\n20220912\ns,16,220912\nsi,16,220912\n20221003\nc,106,220927\nca,106,220927\ne,106,221003\no,92,221019,106\nwva,106,220927,106\n20221027\nc,107,221025\nca,107,221025\ne,107,221027\no,93,221117,107\noa,73,230117,108\nsa,21.0,230519,110\nwva,107,221025,107\ny,23.1,230110,108\nia,279,231231,109\n20221115\nf,107,221115\nfa,107,221115\n20221205\nc,108,221129\nca,108,221129\ne,108,221205\no,94,221215,108\nwva,108,221129,108\n20221213\nf,108,221213\nfa,108,221213\n20221231\nc,108,221129\nca,108,221129\ne,108,221205\nf,108,221213\nfa,108,221213\ns,16,220912\nsi,16,220912\no,94,221215,108\noa,73,230117,108\nsa,21.0,230519,110\nwva,108,221129,108\ny,23.1,230110,108\nu,17.6,250515,123\nq,14.2,231014,109\nk,4.0,250501,123\nfb,399,230204,109\nia,279,231231,109\n20230112\nc,109,230110\nca,109,230110\ne,109,230112\no,95,230201,109\noa,74,230313,110\nwva,109,230110,109\ny,23.3,230326,110\n20230214\nf,110,230214\nfa,110,230214\n20230313\nc,111,230307\nca,111,230307\ne,111,230313\no,97,230322,111\noa,75,230517,112\nsa,22.0,230714,111\nwva,111,230301,111\ny,23.5,230519,112\nq,19.1,250708,121\nfb,420,230628,114\nia,288,u,114\n20230314\nf,111,230314\nfa,111,230314\n20230327\ns,16.4,230327\nsi,16.4,230327\n20230411\nf,112,230411\nfa,112,230411\n20230509\nf,113,230509\nfa,113,230509\n20230606\nf,114,230606\nfa,114,230606\n20230704\nc,112,230404\nca,112,230404\ne,112,230406\nf,115,230704\nfa,115,230704\no,98,230420,112\nsa,23.0,231018,115\nwva,112,230404,112\n20230721\nc,115,230718\nca,115,230721\ne,115,230721\no,101,230726,115\noa,77,230831,115\nwva,115,230721,115\ny,23.9,230913,116\nfb,430,230903,116\nia,292,u,115\n20230801\nf,116,230801\nfa,116,230801\n20230915\nc,117,230912\nca,117,230912\ne,117,230915\no,103,231003,117\noa,78,231023,117\nsa,24.0,240125,117\nwva,117,230912,117\ny,23.11,231115,118\nfb,434,231005,117\nia,302,u,117\n20230918\ns,17,230918\nsi,17,230918\n20231013\nc,118,231010\nca,118,231010\ne,118,231013\nf,118,230926\nfa,118,230926\no,104,231023,118\noa,79,231206,119\nsa,25.0,240424,121\nwva,118,231010,118\nfb,437,u,118\nia,306,240117,118\n20231024\nf,119,231024\nfa,119,231024\n20231102\nc,119,231031\nca,119,231031\ne,119,231102\no,105,231114,119\nwva,119,231031,119\ny,24.1,240118,120\nfb,439,231111,119\nia,309,u,119\n20231121\nf,120,231121\nfa,120,231121\n20231205\nca,120,231205\n20231207\nc,120,231205\ne,120,231207\no,106,231219,120\noa,80,240125,120\nwva,120,231205,120\nfb,443,231207,120\nia,311,u,120\n20231211\ns,17.2,231211\nsi,17.2,231211\n20231219\nf,121,231219\nfa,121,231219\n20231231\nc,120,231205\nca,120,231205\ne,120,231207\nf,121,231219\nfa,121,231219\ns,17.2,231211\nsi,17.2,231211\no,106,231219,120\noa,80,240125,120\nsa,25.0,240424,121\nwva,120,231205,120\ny,24.1,240118,120\nu,17.6,250515,123\nq,19.1,250708,121\nk,4.0,250501,123\nfb,443,231207,120\nia,311,u,120\n20240123\nf,122,240123\nfa,122,240123\n20240125\nc,121,240123\nca,121,240123\ne,121,240125\no,107,240207,121\noa,81,240314,122\nwva,121,240123,121\ny,24.4,240327,122\nfb,448,240129,121\nia,317,240203,121\n20240220\nf,123,240220\nfa,123,240220\n20240305\ns,17.4,240305\nsi,17.4,240305\n20240319\nf,124,240319\nfa,124,240319\n20240322\nc,123,240319\nca,123,240319\ne,123,240322\no,109,240327,123\noa,82,240502,124\nsa,27.0,241106,125\nwva,123,240319,123\ny,24.6,240604,124\nfb,465,240707,126\nia,338,240706,126\n20240416\nf,125,240416\nfa,125,240416\n20240418\nc,124,240416\nca,124,240416\ne,124,240418\no,110,240514,124\nwva,124,240416,124\n20240513\ns,17.5,240513\nsi,17.5,240513\n20240514\nf,126,240514\nfa,126,240514\n20240517\nc,125,240514\nca,125,240514\ne,125,240517\no,111,240612,125\noa,83,240625,126\nwva,125,240514,125\ny,24.7,240718,126\n20240611\nf,127,240611\nfa,127,240611\n20240709\nf,128,240709\nfa,128,240709\n20240725\nc,127,240723\nca,127,240723\ne,127,240725\no,113,240822,127\noa,84,240826,127\nsa,28.0,250402,130\nwva,127,240723,127\ny,24.10,241011,128\nfb,474,240730,127\nia,346,240901,127\n20240806\nf,129,240806\nfa,129,240806\n20240903\nf,130,240903\nfa,130,240903\n20240916\ns,18,240916\nsi,18,240916\n20241001\nf,131,241001\nfa,131,241001\n20241017\nc,130,241015\nca,130,241015\ne,130,241017\no,115,241127,130\noa,86,241202,130\nwva,130,241015,130\ny,24.12,241130,130\nfb,486,241018,130\nia,355,241106,130\n20241029\nf,132,241029\nfa,132,241029\n20241211\ns,18.2,241211\nsi,18.2,241211\n20241231\nc,130,241015\nca,130,241015\ne,130,241017\nf,132,241029\nfa,132,241029\ns,18.2,241211\nsi,18.2,241211\no,115,241127,130\noa,86,241202,130\nsa,28.0,250402,130\nwva,130,241015,130\ny,24.12,241130,130\nfb,486,241018,130\nia,355,241106,130\n20250107\nf,134,250107\nfa,134,250107\n20250127\nsi,18.3,250127\n20250304\nf,136,250304\nfa,136,250304\n20250331\ns,18.4,250331\nsi,18.4,250331\n20250401\nc,133,250204\nca,133,250204\ne,133,250206\nf,137,250401\nfa,137,250401\no,118,250415,133\noa,88,250319,134\nsa,29.0,251025,136\nwva,133,250204,133\ny,25.4,250423,134\nfb,503,250312,134\nia,378,250503,135\n20250404\nc,135,250401\nca,135,250401\ne,135,250404\no,120,250702,135\noa,89,250429,135\nwva,135,250401,135\ny,25.6,250904,136\nfb,514,250528,136\n20250429\nf,138,250429\nfa,138,250429\n20250501\nc,136,250429\nca,136,250429\ne,136,250501\no,121,250827,137\noa,90,250618,137\nwva,136,250429,136\nia,381,250619,137\n20250512\nsi,18.5,250512\n20250527\nf,139,250527\nfa,139,250527\n20250626\nc,138,250624\nca,138,250624\ne,138,250626\no,122,250911,138\noa,91,250819,139\nwva,138,250624,138\ny,25.8,250830,138\nia,390,250726,138\n20250819\nf,142,250819\nfa,142,250819\n20250905\nc,140,250902\nca,140,250902\ne,140,250905\no,124,251113,140\noa,92,251008,140\nwva,140,250902,140\ny,25.10,251009,140\nia,399,250928,140\n20250915\ns,26,250915\nsi,26,250915\n20250916\nf,143,250916\nfa,143,250916\n20251003\nc,141,250930\nca,141,250930\ne,141,251003\no,125,251204,141\noa,93,251125,142\nwva,141,250930,141\ny,25.12,251207,142\nia,400,251006,141\n20251014\nf,144,251014\nfa,144,251014\n20251111\nf,145,251111\nfa,145,251111\n20251212\ns,26.2,251212\nsi,26.2,251212\n20251231\nc,141,250930\nca,141,250930\ne,141,251003\nf,145,251111\nfa,145,251111\ns,26.2,251212\nsi,26.2,251212\no,125,251204,141\noa,93,251125,142\nwva,141,250930,141\ny,25.12,251207,142\nia,400,251006,141\n20260113\nf,147,260113\nfa,147,260113\n20260211\ns,26.3,260211\nsi,26.3,260211\n20260214\nc,145,260210\nca,145,260210\ne,145,260214\no,129,260318,145\noa,96,260310,145\nwva,145,260210,145\ny,26.4,260425,146\nia,423,260405,146\n20260224\nf,148,260224\nfa,148,260224\n20260313\nc,146,260310\nca,146,260310\ne,146,260313\no,130,260408,146\noa,97,260416,146\nwva,146,260310,146\n20260324\nf,149,260324\nfa,149,260324\ns,26.4,260324\nsi,26.4,260324\n20260410\nc,147,260407\nca,147,260407\ne,147,260410\no,131,260429,147\noa,98,260505,147\nwva,147,260407,147\ny,26.6,260608,148\nia,430,260530,148\n20260505\nca,148,260505\n20260507\nc,148,260505\ne,148,260507\no,132,260528,148\noa,99,260610,148\nwva,148,260505,148\n20260511\ns,26.5,260511\nsi,26.5,260511\n20260519\nf,151,260519\nfa,151,260519\n20260616\nf,152,260616\nfa,152,260616\n20260721\nf,153,260721\nfa,153,260721\nreleases\nc,45,150901\nc,46,151013\nc,47,151201\nc,48,160120\nc,49,160302\nc,50,160413\nc,51,160525\nc,52,160720\nc,54,161012\nc,55,161201\nc,58,170419\nc,59,170605\nc,60,170725\nc,61,170905\nc,63,171206\nc,64,180123\nc,65,180306\nc,67,180529\nc,68,180724\nc,69,180904\nc,70,181016\nc,71,181204\nc,72,190129\nc,73,190312\nc,74,190423\nc,75,190604\nc,77,190910\nc,78,191022\nc,79,191210\nc,83,200519\nc,90,210413\nc,91,210525\nc,92,210720\nc,94,210921\nc,95,211019\nc,100,220329\nc,102,220524\nc,103,220621\nc,110,230207\nc,113,230502\nc,114,230530\nc,116,230815\nc,122,240220\nc,126,240611\nc,128,240820\nc,129,240917\nc,131,241112\nc,132,250114\nc,134,250304\nc,137,250527\nc,139,250805\nc,142,251028\nc,143,251202\nc,144,260113\nc,149,260602\nc,150,260630\nc,151,260728\nc,152,260825\nc,153,260908\nca,45,150901\nca,46,151014\nca,47,151202\nca,48,160126\nca,49,160309\nca,50,160413\nca,51,160608\nca,52,160727\nca,54,161019\nca,55,161206\nca,58,170425\nca,59,170606\nca,60,170801\nca,61,170905\nca,63,171205\nca,64,180123\nca,65,180306\nca,67,180531\nca,68,180724\nca,69,180904\nca,70,181017\nca,71,181204\nca,72,190129\nca,73,190312\nca,74,190424\nca,75,190604\nca,77,190910\nca,78,191022\nca,79,191217\nca,83,200519\nca,90,210413\nca,91,210525\nca,92,210720\nca,94,210921\nca,95,211019\nca,100,220329\nca,102,220524\nca,103,220621\nca,110,230207\nca,113,230502\nca,114,230530\nca,116,230815\nca,122,240220\nca,126,240611\nca,128,240820\nca,129,240917\nca,131,241112\nca,132,250114\nca,134,250304\nca,137,250527\nca,139,250805\nca,142,251028\nca,143,251202\nca,144,260113\nca,149,260602\nca,150,260630\nca,151,260728\nca,152,260825\nca,153,260908\ne,83,200521\ne,90,210415\ne,91,210527\ne,92,210722\ne,94,210924\ne,95,211021\ne,100,220401\ne,102,220531\ne,103,220623\ne,110,230209\ne,113,230505\ne,114,230602\ne,116,230821\ne,122,240223\ne,126,240613\ne,128,240822\ne,129,240919\ne,131,241114\ne,132,250117\ne,134,250306\ne,137,250529\ne,139,250807\ne,142,251031\ne,143,251205\ne,144,260121\ne,149,260604\ne,150,260702\ne,151,260731\ne,152,260827\ne,153,260910\nf,40,150811\nf,42,151103\nf,43,151215\nf,44,160126\nf,46,160426\nf,48,160802\nf,51,170124\nf,54,170613\nf,55,170808\nf,56,170928\nf,57,171114\nf,58,180123\nf,59,180313\nf,61,180626\nf,66,190319\nf,67,190521\nf,69,190903\nf,70,191022\nf,71,191210\nf,72,200107\nf,73,200211\nf,74,200310\nf,75,200407\nf,76,200505\nf,77,200602\nf,80,200825\nf,81,200922\nf,82,201020\nf,87,210323\nf,88,210419\nf,89,210601\nf,90,210713\nf,97,220208\nf,99,220405\nf,105,220920\nf,106,221018\nf,109,230117\nf,117,230829\nf,133,241126\nf,135,250204\nf,140,250624\nf,141,250722\nf,146,251209\nf,150,260421\nf,154,260818\nf,155,260901\nfa,40,150811\nfa,42,151103\nfa,43,151215\nfa,44,160126\nfa,46,160426\nfa,48,160802\nfa,51,170124\nfa,54,170613\nfa,55,170808\nfa,58,180122\nfa,59,180313\nfa,61,180626\nfa,66,190319\nfa,67,190521\nfa,80,200831\nfa,81,200922\nfa,82,201020\nfa,87,210323\nfa,88,210419\nfa,89,210601\nfa,90,210713\nfa,95,211207\nfa,97,220208\nfa,99,220405\nfa,105,220920\nfa,106,221018\nfa,109,230117\nfa,117,230829\nfa,133,241126\nfa,135,250204\nfa,140,250624\nfa,141,250722\nfa,146,251209\nfa,150,260421\nfa,154,260818\nfa,155,260901\ns,9,150930\ns,9.1,160321\ns,10,160920\ns,10.1,170327\ns,12,180917\ns,15.3,220126\ns,15.5,220516\ns,16.1,221024\ns,16.2,221213\ns,16.3,230123\ns,16.5,230518\ns,16.6,230724\ns,17.1,231025\ns,17.3,240122\ns,17.6,240729\ns,18.1,241028\ns,18.3,250127\ns,18.5,250512\ns,18.6,250729\ns,26.1,251103\ns,26.6,260727\ns,27,u\nsi,9,150916\nsi,9.3,160321\nsi,10,160913\nsi,10.3,170327\nsi,12,180917\nsi,15.3,220126\nsi,15.5,220516\nsi,16.1,221024\nsi,16.2,221213\nsi,16.3,230123\nsi,16.5,230518\nsi,16.6,230724\nsi,17.1,231025\nsi,17.3,240122\nsi,17.6,240729\nsi,18.1,241028\nsi,18.6,250729\nsi,26.1,251103\nsi,26.6,260727\nsi,27,u\no,15,130702,28\no,16,130827,29\no,17,131008,30\no,18,131119,31\no,19,140128,32\no,20,140304,33\no,21,140506,34\no,22,140603,35\no,23,140722,36\no,24,140902,37\no,26,141203,39\no,27,150127,40\no,28,150310,41\no,29,150428,42\no,30,150609,43\no,32,150915,45\no,33,151027,46\no,34,151208,47\no,35,160202,48\no,36,160315,49\no,37,160504,50\no,38,160608,51\no,39,160802,52\no,41,161025,54\no,42,161213,55\no,45,170510,58\no,46,170622,59\no,47,170809,60\no,48,170927,61\no,50,180104,63\no,51,180207,64\no,52,180322,65\no,54,180628,67\no,55,180816,68\no,56,180925,69\no,57,181128,70\no,58,190123,71\no,60,190409,73\no,62,190627,75\no,64,191007,77\no,65,191113,78\no,66,200107,79\no,69,200624,83\no,76,210428,90\no,77,210609,91\no,78,210803,92\no,80,211005,94\no,81,211104,95\no,86,220420,100\no,88,220608,102\no,89,220707,103\no,96,230222,110\no,99,230516,113\no,100,230629,114\no,102,230823,116\no,108,240305,122\no,112,240711,126\no,114,240925,128\no,116,250108,131\no,117,250213,132\no,119,250513,134\no,123,251028,139\no,126,260108,142\no,127,260202,143\no,128,260226,144\no,133,260629,149\no,134,260806,150\no,135,u,151\no,136,u,152\noa,15,130708,28\noa,16,130918,29\noa,18,131120,31\noa,19,140128,32\noa,20,140306,33\noa,21,140422,34\noa,22,140617,35\noa,24,140910,37\noa,26,141202,39\noa,27,150129,40\noa,28,150310,41\noa,29,150428,42\noa,30,150610,43\noa,33,151103,46\noa,34,151216,47\noa,35,160204,48\noa,36,160331,49\noa,37,160616,50\noa,42,170121,55\noa,44,171211,60\noa,45,180215,61\noa,48,181108,69\noa,49,181207,70\noa,50,190218,71\noa,51,190321,72\noa,52,190517,73\noa,53,190711,74\noa,55,191203,77\noa,56,200206,78\noa,59,200630,83\noa,64,210525,91\noa,65,211020,92\noa,69,220509,100\noa,76,230626,114\noa,85,241029,128\noa,87,250122,132\noa,94,260113,143\noa,95,260211,144\noa,100,260701,149\nsa,1.5,130925,28\nsa,1.6,140411,28\nsa,2.0,141017,34\nsa,2.1,150107,34\nsa,3.2,150824,38\nsa,4.2,160802,44\nsa,5.0,161215,51\nsa,5.2,170421,51\nsa,5.4,170517,51\nsa,6.2,171026,56\nsa,6.4,180219,56\nsa,7.2,180620,59\nsa,7.4,180912,59\nsa,8.2,181221,63\nsa,9.2,190402,67\nsa,9.4,190725,67\nsa,10.0,190822,71\nsa,10.2,191009,71\nsa,11.0,191205,75\nsa,11.2,200322,75\nsa,12.1,200707,79\nsa,13.2,210120,83\nsa,14.2,210625,87\nsa,16.0,211125,92\nsa,16.2,220306,92\nsa,18.1,220909,99\nsa,19.1,221108,102\nsa,26.0,240607,122\nwva,4.4,131209,30\nwva,4.4.3,140602,33\nwva,37,140903,37\nwva,39,141112,39\nwva,40,150121,40\nwva,41,150311,41\nwva,42,150415,42\nwva,43,150527,43\nwva,45,150901,45\nwva,46,151014,46\nwva,47,151202,47\nwva,48,160126,48\nwva,49,160309,49\nwva,50,160413,50\nwva,51,160608,51\nwva,52,160727,52\nwva,54,161019,54\nwva,55,161206,55\nwva,58,170425,58\nwva,59,170606,59\nwva,60,170801,60\nwva,61,170905,61\nwva,63,171205,63\nwva,64,180123,64\nwva,65,180306,65\nwva,67,180531,67\nwva,68,180724,68\nwva,69,180904,69\nwva,70,181017,70\nwva,71,181204,71\nwva,72,190129,72\nwva,73,190312,73\nwva,74,190424,74\nwva,75,190604,75\nwva,77,190910,77\nwva,78,191022,78\nwva,79,191217,79\nwva,83,200519,83\nwva,90,210413,90\nwva,91,210525,91\nwva,92,210720,92\nwva,94,210921,94\nwva,95,211019,95\nwva,100,220329,100\nwva,102,220524,102\nwva,103,220621,103\nwva,110,230207,110\nwva,113,230502,113\nwva,114,230530,114\nwva,116,230815,116\nwva,122,240220,122\nwva,126,240611,126\nwva,128,240820,128\nwva,129,240917,129\nwva,131,241112,131\nwva,132,250114,132\nwva,134,250304,134\nwva,137,250527,137\nwva,139,250805,139\nwva,142,251028,142\nwva,143,251202,143\nwva,144,260113,144\nwva,149,260602,149\nwva,150,260630,150\nwva,151,260728,151\nwva,152,260825,152\nwva,153,260908,153\ny,1.0,u,25\ny,1.5,u,22\ny,1.6,u,25\ny,1.7,u,25\ny,1.20,u,25\ny,2.5,u,25\ny,3.2,u,25\ny,4.6,u,25\ny,5.3,u,25\ny,5.4,u,25\ny,7.4,u,25\ny,9.6,u,25\ny,10.5,u,25\ny,11.4,u,25\ny,11.5,u,25\ny,12.7,u,25\ny,13.9,u,28\ny,13.10,u,28\ny,13.11,u,28\ny,13.12,u,30\ny,14.2,u,32\ny,14.4,u,33\ny,14.5,u,34\ny,14.7,u,35\ny,14.8,u,36\ny,14.10,u,37\ny,15.2,u,40\ny,15.4,u,41\ny,15.6,u,42\ny,15.7,u,43\ny,15.10,u,45\ny,15.12,u,46\ny,16.2,u,47\ny,16.3,u,47\ny,16.4,u,49\ny,16.6,u,50\ny,16.7,u,51\ny,16.9,u,52\ny,16.11,u,54\ny,17.1,u,55\ny,17.6,u,58\ny,17.7,u,59\ny,17.9,u,60\ny,17.10,u,61\ny,18.1,u,63\ny,18.2,u,63\ny,18.3,u,64\ny,18.4,u,65\ny,18.7,u,67\ny,18.9,u,68\ny,18.10,u,69\ny,18.11,u,70\ny,19.1,u,71\ny,19.3,u,72\ny,19.4,u,73\ny,19.5,u,75\ny,19.6,u,75\ny,19.7,u,75\ny,19.10,u,77\ny,19.11,u,78\ny,19.12,u,78\ny,20.2,u,79\ny,20.6,u,81\ny,20.7,u,83\ny,21.2,u,88\ny,21.5,u,90\ny,21.6,210928,91\ny,21.8,210928,92\ny,21.11,211029,94\ny,22.4,u,92\ny,22.9,220827,104\ny,23.7,230706,114\ny,24.2,240325,120\ny,24.9,241001,126\ny,25.2,250424,132\ny,25.3,250423,132\ny,26.3,260304,144\ny,26.7,260723,149\ny,26.8,260801,150\nu,10.5,u,31\nu,10.7,u,31\nu,10.8,u,31\nu,10.10,u,31\nu,11.0,u,31\nu,11.2,u,40\nu,11.3,u,40\nu,11.4,u,40\nu,11.5,u,40\nu,11.8,u,57\nu,11.9,u,57\nu,12.0,u,57\nu,12.1,u,57\nu,12.2,u,57\nu,12.3,u,57\nu,12.4,u,57\nu,12.5,u,57\nu,12.6,u,57\nu,12.7,u,57\nu,12.8,u,57\nu,12.9,u,57\nu,12.10,u,57\nu,12.11,u,57\nu,12.12,u,57\nu,12.13,u,57\nu,12.14,u,57\nu,13.0,u,57\nu,13.1,u,57\nu,13.2,u,57\nu,13.4,210928,78\nu,13.5,230825,78\nu,13.6,231217,78\nu,13.7,230624,78\nu,13.8,220430,78\nu,13.9,220518,78\nu,15.0,220824,78\nu,15.1,221111,78\nu,15.2,230423,78\nu,15.4,231025,100\nu,15.5,230822,100\nu,16.0,230824,100\nu,16.1,231015,100\nu,16.2,231209,100\nu,16.3,240308,100\nu,16.4,241003,100\nu,16.5,240530,100\nu,16.6,240723,100\nu,17.0,240824,100\nu,17.1,240926,100\nu,17.2,241129,100\nu,17.3,250107,100\nu,17.4,250226,100\nu,17.5,250408,100\nu,17.7,250611,123\nu,17.8,250730,123\nu,18.0,250817,123\nu,18.1,251004,123\nu,18.2,251104,123\nu,18.3,251212,123\nu,18.4,260109,123\nu,18.5,260128,123\nu,18.6,260321,123\nu,18.8,260503,123\nu,18.9,260702,123\nu,18.10,260808,123\nq,6.0,u,37\nq,6.1,u,37\nq,6.2,u,37\nq,6.3,u,37\nq,6.4,u,37\nq,6.6,u,37\nq,6.7,u,37\nq,6.8,u,37\nq,6.9,u,37\nq,7.0,u,37\nq,7.1,u,37\nq,7.2,u,37\nq,7.3,u,37\nq,7.4,u,37\nq,7.5,u,37\nq,7.6,u,37\nq,7.7,u,37\nq,7.8,u,37\nq,7.9,u,37\nq,8.0,u,37\nq,8.2,u,57\nq,8.3,u,57\nq,8.4,u,57\nq,8.5,u,57\nq,8.6,u,57\nq,8.7,u,57\nq,8.8,u,57\nq,8.9,u,57\nq,9.1,u,57\nq,9.7,u,66\nq,9.8,u,66\nq,10.0,u,66\nq,10.1,u,66\nq,10.2,u,66\nq,10.3,u,66\nq,10.4,u,66\nq,10.5,u,66\nq,10.7,200909,66\nq,11.0,u,77\nq,11.2,210130,77\nq,11.3,210331,77\nq,11.9,u,89\nq,12.0,211104,89\nq,12.1,211105,89\nq,12.2,211207,89\nq,12.5,220407,89\nq,12.7,220521,89\nq,12.8,220630,89\nq,12.9,220726,89\nq,13.0,220815,89\nq,13.1,220910,89\nq,13.2,221026,89\nq,13.3,221109,89\nq,13.5,230206,98\nq,13.6,230209,98\nq,13.7,230421,98\nq,13.8,230421,98\nq,14.0,231212,98\nq,14.1,230716,98\nq,14.3,230913,109\nq,14.4,231031,109\nq,14.5,231112,109\nq,14.6,231224,109\nq,14.7,240118,109\nq,14.8,240304,109\nq,14.9,240409,109\nq,15.0,240417,109\nq,15.1,240518,109\nq,15.2,241024,109\nq,15.3,240728,109\nq,15.4,240907,109\nq,15.5,240924,109\nq,15.6,241024,109\nq,15.7,241203,109\nq,15.8,241211,109\nq,15.9,250201,109\nq,19.2,250715,121\nq,19.3,250831,121\nq,19.4,250920,121\nq,19.5,251023,121\nq,19.6,251117,121\nq,19.7,251218,121\nq,19.8,260120,121\nq,19.9,260309,121\nq,20.0,260406,121\nq,20.1,260430,121\nq,20.2,260610,121\nq,20.3,260617,121\nq,20.4,260728,121\nq,20.5,260817,121\nk,1.0,170301,37\nk,2.5,170701,48\nk,3.1,220301,84\nfb,68,u,48\nfb,74,u,50\nfb,75,u,50\nfb,76,u,50\nfb,77,u,50\nfb,78,u,50\nfb,79,u,50\nfb,80,u,51\nfb,81,u,51\nfb,82,u,51\nfb,83,u,51\nfb,84,u,51\nfb,86,u,51\nfb,87,u,52\nfb,88,u,52\nfb,89,u,52\nfb,90,u,52\nfb,91,u,52\nfb,92,u,52\nfb,93,u,52\nfb,94,u,52\nfb,96,u,53\nfb,97,u,53\nfb,98,u,53\nfb,99,u,53\nfb,100,u,54\nfb,101,u,54\nfb,103,u,54\nfb,104,u,54\nfb,105,u,54\nfb,106,u,55\nfb,107,u,55\nfb,108,u,55\nfb,109,u,55\nfb,110,u,55\nfb,111,u,55\nfb,113,u,56\nfb,114,u,56\nfb,115,u,56\nfb,116,u,56\nfb,118,u,57\nfb,119,u,57\nfb,120,u,57\nfb,121,u,57\nfb,122,u,58\nfb,123,u,58\nfb,124,u,58\nfb,125,u,58\nfb,126,u,58\nfb,127,u,58\nfb,128,u,58\nfb,129,u,58\nfb,130,u,59\nfb,131,u,59\nfb,132,u,59\nfb,133,u,59\nfb,134,u,59\nfb,135,u,59\nfb,136,u,59\nfb,137,u,59\nfb,138,u,60\nfb,140,u,60\nfb,142,u,61\nfb,143,u,61\nfb,144,u,61\nfb,145,u,61\nfb,146,u,61\nfb,147,u,61\nfb,148,u,61\nfb,150,u,62\nfb,151,u,62\nfb,152,u,62\nfb,153,u,63\nfb,154,u,63\nfb,155,u,63\nfb,156,u,63\nfb,157,u,64\nfb,158,u,64\nfb,159,u,64\nfb,160,u,64\nfb,161,u,64\nfb,162,u,64\nfb,163,u,65\nfb,164,u,65\nfb,165,u,65\nfb,166,u,65\nfb,167,u,65\nfb,168,u,65\nfb,170,u,66\nfb,171,u,66\nfb,172,u,66\nfb,173,u,66\nfb,174,u,66\nfb,175,u,67\nfb,176,u,67\nfb,177,u,67\nfb,178,u,67\nfb,180,u,67\nfb,181,u,67\nfb,182,u,67\nfb,183,u,68\nfb,184,u,68\nfb,185,u,68\nfb,186,u,68\nfb,187,u,68\nfb,188,u,68\nfb,202,u,71\nfb,227,u,75\nfb,228,u,75\nfb,229,u,75\nfb,230,u,75\nfb,231,u,75\nfb,235,u,76\nfb,236,u,76\nfb,237,u,76\nfb,238,u,76\nfb,240,u,77\nfb,241,u,77\nfb,242,u,77\nfb,243,u,77\nfb,244,u,78\nfb,245,u,78\nfb,246,u,78\nfb,247,u,78\nfb,248,u,78\nfb,249,u,78\nfb,250,u,78\nfb,251,u,79\nfb,252,u,79\nfb,253,u,79\nfb,254,u,79\nfb,255,u,79\nfb,257,u,80\nfb,258,u,80\nfb,259,u,80\nfb,260,u,80\nfb,261,u,80\nfb,262,u,80\nfb,263,u,80\nfb,264,u,80\nfb,265,u,80\nfb,267,u,81\nfb,268,u,81\nfb,269,u,81\nfb,270,u,81\nfb,271,u,81\nfb,272,u,83\nfb,273,u,83\nfb,274,u,83\nfb,275,u,83\nfb,400,230210,109\nfb,436,231013,117\nfb,438,231028,118\nfb,440,231112,119\nfb,441,231120,119\nfb,442,231129,119\nfb,444,231213,120\nfb,445,231221,120\nfb,446,240106,120\nfb,447,240112,120\nfb,449,240202,121\nfb,450,240205,121\nfb,451,240217,121\nfb,452,240225,122\nfb,453,240228,122\nfb,454,240304,122\nfb,466,u,126\nfb,469,u,126\nfb,471,240710,126\nfb,472,240711,126\nfb,475,240801,127\nfb,476,240809,127\nfb,477,240816,127\nfb,478,240821,128\nfb,479,240831,128\nfb,480,240907,128\nfb,481,240914,128\nfb,482,240920,129\nfb,483,240927,129\nfb,484,241004,129\nfb,485,241011,129\nfb,487,241026,130\nfb,488,241102,130\nfb,489,241109,130\nfb,494,241226,131\nfb,497,250126,132\nfb,515,250531,137\nia,24,u,62\nia,25,u,62\nia,26,u,63\nia,27,u,63\nia,28,u,63\nia,29,u,63\nia,30,u,63\nia,31,u,64\nia,32,u,64\nia,33,u,64\nia,34,u,64\nia,35,u,65\nia,36,u,65\nia,37,u,65\nia,38,u,65\nia,39,u,65\nia,40,u,65\nia,41,u,65\nia,43,u,66\nia,44,u,66\nia,45,u,66\nia,46,u,66\nia,47,u,66\nia,48,u,67\nia,49,u,67\nia,50,u,67\nia,51,u,67\nia,52,u,67\nia,53,u,67\nia,54,u,67\nia,55,u,67\nia,56,u,68\nia,57,u,68\nia,58,u,68\nia,59,u,68\nia,60,u,68\nia,61,u,68\nia,65,u,69\nia,66,u,69\nia,68,u,69\nia,72,u,70\nia,74,u,71\nia,75,u,71\nia,79,u,71\nia,81,u,72\nia,82,u,72\nia,83,u,72\nia,84,u,73\nia,86,u,73\nia,95,u,74\nia,97,u,80\nia,98,u,80\nia,103,u,80\nia,104,u,80\nia,117,u,80\nia,118,u,80\nia,119,u,80\nia,120,u,80\nia,121,u,80\nia,127,u,80\nia,128,u,80\nia,129,u,80\nia,130,u,80\nia,131,u,80\nia,132,u,80\nia,133,u,80\nia,134,u,80\nia,135,u,80\nia,136,u,80\nia,138,u,81\nia,139,u,81\nia,140,u,81\nia,141,u,81\nia,142,u,81\nia,143,u,83\nia,144,u,83\nia,145,u,83\nia,146,u,83\nia,164,u,92\nia,230,u,92\nia,259,221104,106\nia,281,u,109\nia,289,231221,114\nia,290,231230,114\nia,295,u,115\nia,296,u,115\nia,297,u,115\nia,298,240111,115\nia,299,u,115\nia,300,u,116\nia,301,240112,116\nia,303,u,117\nia,304,u,117\nia,305,u,117\nia,307,u,118\nia,308,240119,118\nia,310,u,119\nia,312,u,120\nia,313,u,120\nia,314,u,120\nia,315,240119,120\nia,316,240125,120\nia,318,240216,121\nia,320,240304,121\nia,321,240307,122\nia,347,240911,127\nia,349,240920,128\nia,366,u,132\nia,367,250215,132\nia,382,250619,137\nia,383,250618,137\nia,384,250616,137\nia,385,250627,137\nia,387,250709,137\nia,392,250812,138\nia,394,250826,139\nia,395,250913,139\nia,396,250920,139\nia,397,250919,139\nia,401,251008,141\nia,404,251031,141\nia,406,251116,141\nia,407,251123,142\nia,408,251128,142\nia,409,251216,143\nia,410,251217,143\nia,411,260107,143\nia,438,260722,150\n".split("\n").forEach((n2) => {
+      if (n2 = n2.trim()) if ("releases" !== n2) {
+        if (f) {
+          const a2 = n2.split(",");
+          if (a2.length >= 3) {
+            const [n3, u2, o2, f2] = a2, i2 = [n3, u2, e(o2.trim())];
+            f2 && i2.push(f2.trim()), s[n3] || (s[n3] = []), s[n3].push(i2);
+          }
+          return;
         }
-      }), a2;
-    }, "e");
-    var b = (() => {
-      const s2 = [];
-      return r.forEach((a2) => {
-        var r2;
-        s2.push({ status: { baseline_low_date: a2[0], support: (r2 = a2[1], { chrome: r2.c, chrome_android: r2.ca, edge: r2.e, firefox: r2.f, firefox_android: r2.fa, safari: r2.s, safari_ios: r2.si }) } });
-      }), s2;
-    })();
-    var u = e(s);
-    var i = e(a);
-    var n = false;
-    var o = ["chrome", "chrome_android", "edge", "firefox", "firefox_android", "safari", "safari_ios"];
-    var g = Object.keys(u).map((s2) => [s2, u[s2]]).filter(([s2]) => o.includes(s2));
-    var t = ["webview_android", "samsunginternet_android", "opera_android", "opera"];
-    var l = [...Object.keys(u).map((s2) => [s2, u[s2]]).filter(([s2]) => t.includes(s2)), ...Object.keys(i).map((s2) => [s2, i[s2]])];
-    var w = ["current", "esr", "retired", "unknown", "beta", "nightly"];
-    var p = false;
-    var d = /* @__PURE__ */ __name((s2) => {
-      if (false === s2.includeDownstreamBrowsers && true === s2.includeKaiOS) {
-        if (console.log(new Error("KaiOS is a downstream browser and can only be included if you include other downstream browsers. Please ensure you use `includeDownstreamBrowsers: true`.")), "undefined" == typeof process || !process.exit) throw new Error("KaiOS configuration error: process.exit is not available");
-        process.exit(1);
-      }
-    }, "d");
-    var v = /* @__PURE__ */ __name((s2) => s2 && s2.startsWith("\u2264") ? s2.slice(1) : s2, "v");
-    var _ = /* @__PURE__ */ __name((s2, a2) => {
-      if (s2 === a2) return 0;
-      const [r2 = 0, c3 = 0] = s2.split(".", 2).map(Number), [f2 = 0, e2 = 0] = a2.split(".", 2).map(Number);
-      if (isNaN(r2) || isNaN(c3)) throw new Error(`Invalid version: ${s2}`);
-      if (isNaN(f2) || isNaN(e2)) throw new Error(`Invalid version: ${a2}`);
-      return r2 !== f2 ? r2 > f2 ? 1 : -1 : c3 !== e2 ? c3 > e2 ? 1 : -1 : 0;
-    }, "_");
-    var h = /* @__PURE__ */ __name((s2) => {
-      let a2 = [];
-      return s2.forEach((s3) => {
-        let r2 = g.find((a3) => a3[0] === s3.browser);
-        if (r2) {
-          Object.keys(r2[1].releases).map((s4) => [s4, r2[1].releases[s4]]).filter(([, s4]) => w.includes(s4.status)).sort((s4, a3) => _(s4[0], a3[0])).forEach(([r3, c3]) => !!w.includes(c3.status) && (1 === _(r3, s3.version) && (a2.push({ browser: s3.browser, version: r3, release_date: c3.release_date ? c3.release_date : "unknown" }), true)));
-        }
-      }), a2;
-    }, "h");
-    var m = /* @__PURE__ */ __name((s2, a2 = false) => {
-      if (s2.getFullYear() < 2015 && !p && console.warn(new Error("There are no browser versions compatible with Baseline before 2015.  You may receive unexpected results.")), s2.getFullYear() < 2002) throw new Error("None of the browsers in the core set were released before 2002.  Please use a date after 2002.");
-      if (s2.getFullYear() > (/* @__PURE__ */ new Date()).getFullYear()) throw new Error("There are no browser versions compatible with Baseline in the future");
-      const r2 = ((s3) => b.filter((a3) => a3.status.baseline_low_date && new Date(a3.status.baseline_low_date) <= s3).map((s4) => ({ baseline_low_date: s4.status.baseline_low_date, support: s4.status.support })))(s2), c3 = ((s3) => {
-        let a3 = {};
-        return g.forEach((s4) => {
-          a3[s4[0]] = { browser: s4[0], version: "0", release_date: "" };
-        }), s3.forEach((s4) => {
-          Object.keys(s4.support).forEach((r3) => {
-            const c4 = s4.support[r3], f2 = v(c4);
-            a3[r3] && 1 === _(f2, v(a3[r3].version)) && (a3[r3] = { browser: r3, version: f2, release_date: s4.baseline_low_date });
-          });
-        }), Object.keys(a3).map((s4) => a3[s4]);
-      })(r2);
-      return a2 ? [...c3, ...h(c3)].sort((s3, a3) => s3.browser < a3.browser ? -1 : s3.browser > a3.browser ? 1 : _(s3.version, a3.version)) : c3;
-    }, "m");
-    var y = /* @__PURE__ */ __name((s2 = [], a2 = true, r2 = false) => {
-      const c3 = /* @__PURE__ */ __name((a3) => {
-        var r3;
-        return s2 && s2.length > 0 ? null === (r3 = s2.filter((s3) => s3.browser === a3).sort((s3, a4) => _(s3.version, a4.version))[0]) || void 0 === r3 ? void 0 : r3.version : void 0;
-      }, "c"), f2 = c3("chrome"), e2 = c3("firefox");
-      if (!f2 && !e2) throw new Error("There are no browser versions compatible with Baseline before Chrome and Firefox");
-      let b2 = [];
-      return l.filter(([s3]) => !("kai_os" === s3 && !r2)).forEach(([s3, r3]) => {
-        var c4;
-        if (!r3.releases) return;
-        let u2 = Object.keys(r3.releases).map((s4) => [s4, r3.releases[s4]]).filter(([, s4]) => {
-          const { engine: a3, engine_version: r4 } = s4;
-          return !(!a3 || !r4) && ("Blink" === a3 && f2 ? _(r4, f2) >= 0 : !("Gecko" !== a3 || !e2) && _(r4, e2) >= 0);
-        }).sort((s4, a3) => _(s4[0], a3[0]));
-        for (let r4 = 0; r4 < u2.length; r4++) {
-          const f3 = u2[r4];
-          if (f3) {
-            const [r5, e3] = f3;
-            let u3 = { browser: s3, version: r5, release_date: null !== (c4 = e3.release_date) && void 0 !== c4 ? c4 : "unknown" };
-            if (e3.engine && e3.engine_version && (u3.engine = e3.engine, u3.engine_version = e3.engine_version), b2.push(u3), !a2) break;
+        if (n2.startsWith("20") || n2.startsWith("pre_baseline")) return o = e(n2), void (u[o] = []);
+        {
+          const a2 = n2.split(",");
+          if (a2.length >= 3) {
+            const [n3, s2, f2, i2] = a2, r2 = [n3, s2, e(f2.trim())];
+            if (i2 && r2.push(i2.trim()), !u[o]) throw new Error(`Timeline entry for date ${o} is undefined. This should not happen.`);
+            u[o].push(r2);
           }
         }
-      }), b2;
-    }, "y");
-    function O(s2) {
-      var a2, r2, c3, f2, e2, b2, u2;
-      let i2 = null != s2 ? s2 : {}, o2 = { listAllCompatibleVersions: null !== (a2 = i2.listAllCompatibleVersions) && void 0 !== a2 && a2, includeDownstreamBrowsers: null !== (r2 = i2.includeDownstreamBrowsers) && void 0 !== r2 && r2, widelyAvailableOnDate: null !== (c3 = i2.widelyAvailableOnDate) && void 0 !== c3 ? c3 : void 0, targetYear: null !== (f2 = i2.targetYear) && void 0 !== f2 ? f2 : void 0, includeKaiOS: null !== (e2 = i2.includeKaiOS) && void 0 !== e2 && e2, overrideLastUpdated: null !== (b2 = i2.overrideLastUpdated) && void 0 !== b2 ? b2 : void 0, suppressWarnings: null !== (u2 = i2.suppressWarnings) && void 0 !== u2 && u2 }, g2 = /* @__PURE__ */ new Date();
-      if (d(o2), o2.widelyAvailableOnDate || o2.targetYear) if (o2.targetYear && o2.widelyAvailableOnDate) {
-        if (console.log(new Error("You cannot use targetYear and widelyAvailableOnDate at the same time.  Please remove one of these options and try again.")), "undefined" == typeof process || !process.exit) throw new Error("Configuration error: targetYear and widelyAvailableOnDate cannot be used together");
-        process.exit(1);
-      } else o2.widelyAvailableOnDate ? g2 = new Date(o2.widelyAvailableOnDate) : o2.targetYear && (g2 = /* @__PURE__ */ new Date(`${o2.targetYear}-12-31`));
-      else g2 = /* @__PURE__ */ new Date();
-      (o2.widelyAvailableOnDate || void 0 === o2.targetYear) && g2.setMonth(g2.getMonth() - 30);
-      let t2 = m(g2, o2.listAllCompatibleVersions);
-      return o2.suppressWarnings || ((s3, a3) => {
-        if (n || "undefined" != typeof process && process.env && (process.env.BROWSERSLIST_IGNORE_OLD_DATA || process.env.BASELINE_BROWSER_MAPPING_IGNORE_OLD_DATA)) return;
-        const r3 = /* @__PURE__ */ new Date();
-        r3.setMonth(r3.getMonth() - 2), s3 > r3 && (null != a3 ? a3 : 1778337689623) < r3.getTime() && (console.warn("[baseline-browser-mapping] The data in this module is over two months old and you are targetting a recent feature cut off date of " + s3.toISOString().slice(0, 10) + ". To ensure accurate Baseline data, please update to the latest version of this module using the package manager of your choice.You can suppress these warnings using the environment variables `BROWSERSLIST_IGNORE_OLD_DATA=true` or `BASELINE_BROWSER_MAPPING_IGNORE_OLD_DATA=true` or by passing `suppressWarnings: true` when you call `getCompatibleVersions()` or `getAllVersions()`."), n = true);
-      })(g2, o2.overrideLastUpdated), false === o2.includeDownstreamBrowsers ? t2 : [...t2, ...y(t2, o2.listAllCompatibleVersions, o2.includeKaiOS)];
+      } else f = true;
+    });
+    var i = {};
+    Object.keys(a).forEach((n2) => {
+      var a2;
+      i[n2] = [...null !== (a2 = s[n2]) && void 0 !== a2 ? a2 : []];
+    }), Object.keys(u).forEach((n2) => {
+      u[n2].forEach((n3) => {
+        const a2 = n3[0];
+        i[a2] && (i[a2].some((a3) => a3[1] === n3[1]) || i[a2].push(n3));
+      });
+    }), Object.keys(i).forEach((a2) => {
+      i[a2].sort((a3, e2) => n(a3[1], e2[1]));
+    });
+    var r = false;
+    var c2 = Object.keys(a).filter((n2) => void 0 === a[n2].engine).map((n2) => {
+      const { longName: e2 } = a[n2];
+      return { shortName: n2, longName: e2 };
+    });
+    var t = ["webview_android", "samsunginternet_android", "opera_android", "opera", "ya_android", "uc_android", "qq_android", "kai_os", "facebook_android", "instagram_android"];
+    var b = /* @__PURE__ */ __name((a2) => {
+      const e2 = [], u2 = [];
+      return a2.forEach((n2) => {
+        c2.some((a3) => a3.longName === n2.browser) ? e2.push(n2) : u2.push(n2);
+      }), e2.sort((a3, e3) => a3.browser < e3.browser ? -1 : a3.browser > e3.browser ? 1 : n(a3.version, e3.version)), u2.sort((a3, e3) => {
+        const u3 = t.indexOf(a3.browser), s2 = t.indexOf(e3.browser);
+        return u3 !== s2 ? u3 - s2 : n(a3.version, e3.version);
+      }), [...e2, ...u2];
+    }, "b");
+    var l = false;
+    var w = /* @__PURE__ */ __name((n2) => {
+      if (false === n2.includeDownstreamBrowsers && true === n2.includeKaiOS) throw new Error("KaiOS is a downstream browser and can only be included if you include other downstream browsers. Please ensure you use `includeDownstreamBrowsers: true`.");
+    }, "w");
+    var v = /* @__PURE__ */ __name((n2, e2, u2, s2, o2) => {
+      var f2;
+      const i2 = { browser: e2, version: u2, release_date: "u" === s2 ? "unknown" : s2 };
+      return o2 && (i2.engine_version = o2, i2.engine = null === (f2 = a[n2]) || void 0 === f2 ? void 0 : f2.engine), i2;
+    }, "v");
+    function y(e2) {
+      var s2, o2, f2, t2, y2, p, d;
+      let g = null != e2 ? e2 : {}, q = { listAllCompatibleVersions: null !== (s2 = g.listAllCompatibleVersions) && void 0 !== s2 && s2, includeDownstreamBrowsers: null !== (o2 = g.includeDownstreamBrowsers) && void 0 !== o2 && o2, widelyAvailableOnDate: null !== (f2 = g.widelyAvailableOnDate) && void 0 !== f2 ? f2 : void 0, targetYear: null !== (t2 = g.targetYear) && void 0 !== t2 ? t2 : void 0, includeKaiOS: null !== (y2 = g.includeKaiOS) && void 0 !== y2 && y2, overrideLastUpdated: null !== (p = g.overrideLastUpdated) && void 0 !== p ? p : void 0, suppressWarnings: null !== (d = g.suppressWarnings) && void 0 !== d && d }, m = /* @__PURE__ */ new Date();
+      if (q.widelyAvailableOnDate || q.targetYear) {
+        if (q.targetYear && q.widelyAvailableOnDate) throw new Error("You cannot use targetYear and widelyAvailableOnDate at the same time.  Please remove one of these options and try again.");
+        q.widelyAvailableOnDate ? m = new Date(q.widelyAvailableOnDate) : q.targetYear && (m = /* @__PURE__ */ new Date(`${q.targetYear}-12-31`));
+      } else m = /* @__PURE__ */ new Date();
+      if ((q.widelyAvailableOnDate || void 0 === q.targetYear) && m.setMonth(m.getMonth() - 30), !q.suppressWarnings) {
+        if (((n2, a2) => {
+          if (r || "undefined" != typeof process && process.env && (process.env.BROWSERSLIST_IGNORE_OLD_DATA || process.env.BASELINE_BROWSER_MAPPING_IGNORE_OLD_DATA)) return;
+          const e3 = /* @__PURE__ */ new Date();
+          e3.setMonth(e3.getMonth() - 2), n2 > e3 && (null != a2 ? a2 : 1786976913541) < e3.getTime() && (console.warn("[baseline-browser-mapping] The data in this module is over two months old and you are targetting a recent feature cut off date of " + n2.toISOString().slice(0, 10) + ". To ensure accurate Baseline data, please update to the latest version of this module using the package manager of your choice.You can suppress these warnings using the environment variables `BROWSERSLIST_IGNORE_OLD_DATA=true` or `BASELINE_BROWSER_MAPPING_IGNORE_OLD_DATA=true` or by passing `suppressWarnings: true` when you call `getCompatibleVersions()` or `getAllVersions()`."), r = true);
+        })(m, q.overrideLastUpdated), w(q), m.getFullYear() < 2015 && !l && console.warn(new Error("There are no browser versions compatible with Baseline before 2015.  You may receive unexpected results.")), m.getFullYear() < 2002) throw new Error("None of the browsers in the core set were released before 2002.  Please use a date after 2002.");
+        if (m.getFullYear() > (/* @__PURE__ */ new Date()).getFullYear()) throw new Error("There are no browser versions compatible with Baseline in the future");
+      }
+      const h = m < /* @__PURE__ */ new Date("2015-07-29"), _ = {};
+      Object.keys(a).forEach((n2) => {
+        _[n2] = void 0;
+      }), Object.keys(u).forEach((n2) => {
+        const a2 = u[n2];
+        let e3 = false;
+        e3 = "pre_baseline" === n2 || new Date(n2) <= m, e3 && a2.forEach((a3) => {
+          const e4 = a3[0];
+          "pre_baseline" !== n2 && (_[e4] = a3);
+        });
+      });
+      const O = [];
+      return Object.keys(a).forEach((e3) => {
+        var u2, s3;
+        const { longName: o3 } = a[e3];
+        if (!q.includeKaiOS && "k" === e3) return;
+        const f3 = c2.some((n2) => n2.shortName === e3);
+        if (q.includeDownstreamBrowsers || f3) if (h) if (q.listAllCompatibleVersions) {
+          O.push({ browser: o3, version: "0", release_date: "" });
+          (null !== (u2 = i[e3]) && void 0 !== u2 ? u2 : []).forEach((n2) => {
+            O.push(v(e3, o3, n2[1], n2[2], n2[3]));
+          });
+        } else O.push({ browser: o3, version: "0", release_date: "" });
+        else {
+          const a2 = _[e3];
+          if (!a2) return;
+          const u3 = a2[1];
+          if (q.listAllCompatibleVersions) {
+            (null !== (s3 = i[e3]) && void 0 !== s3 ? s3 : []).forEach((a3) => {
+              const s4 = a3[1];
+              n(s4, u3) >= 0 && O.push(v(e3, o3, s4, a3[2], a3[3]));
+            });
+          } else O.push(v(e3, o3, u3, a2[2], a2[3]));
+        }
+      }), b(O);
     }
-    __name(O, "O");
+    __name(y, "y");
     exports._resetHasWarned = function() {
-      n = false;
-    }, exports.getAllVersions = function(s2) {
-      var a2, r2, c3, f2, e2;
-      p = true;
-      let b2 = null != s2 ? s2 : {}, u2 = { outputFormat: null !== (a2 = b2.outputFormat) && void 0 !== a2 ? a2 : "array", includeDownstreamBrowsers: null !== (r2 = b2.includeDownstreamBrowsers) && void 0 !== r2 && r2, useSupports: null !== (c3 = b2.useSupports) && void 0 !== c3 && c3, includeKaiOS: null !== (f2 = b2.includeKaiOS) && void 0 !== f2 && f2, suppressWarnings: null !== (e2 = b2.suppressWarnings) && void 0 !== e2 && e2 };
-      d(u2);
-      let i2 = (/* @__PURE__ */ new Date()).getFullYear() + 1;
-      const n2 = [...Array(i2).keys()].slice(2002), g2 = {};
-      n2.forEach((s3) => {
-        g2[s3] = {}, O({ targetYear: s3, suppressWarnings: u2.suppressWarnings }).forEach((a3) => {
-          g2[s3] && (g2[s3][a3.browser] = a3);
+      r = false;
+    }, exports.getAllVersions = function(a2) {
+      var e2, u2, s2, o2, f2;
+      l = true;
+      let i2 = null != a2 ? a2 : {}, r2 = { outputFormat: null !== (e2 = i2.outputFormat) && void 0 !== e2 ? e2 : "array", includeDownstreamBrowsers: null !== (u2 = i2.includeDownstreamBrowsers) && void 0 !== u2 && u2, useSupports: null !== (s2 = i2.useSupports) && void 0 !== s2 && s2, includeKaiOS: null !== (o2 = i2.includeKaiOS) && void 0 !== o2 && o2, suppressWarnings: null !== (f2 = i2.suppressWarnings) && void 0 !== f2 && f2 };
+      w(r2);
+      let t2 = (/* @__PURE__ */ new Date()).getFullYear() + 1;
+      const b2 = [...Array(t2).keys()].slice(2015), v2 = {};
+      b2.forEach((n2) => {
+        v2[n2] = {}, y({ targetYear: n2, suppressWarnings: r2.suppressWarnings }).forEach((a3) => {
+          v2[n2] && (v2[n2][a3.browser] = a3);
         });
       });
-      const t2 = O({ suppressWarnings: u2.suppressWarnings }), l2 = {};
-      t2.forEach((s3) => {
-        l2[s3.browser] = s3;
+      const p = y({ suppressWarnings: r2.suppressWarnings }), d = {};
+      p.forEach((n2) => {
+        d[n2.browser] = n2;
       });
-      const w2 = /* @__PURE__ */ new Date();
-      w2.setMonth(w2.getMonth() + 30);
-      const v2 = O({ widelyAvailableOnDate: w2.toISOString().slice(0, 10), suppressWarnings: u2.suppressWarnings }), h2 = {};
-      v2.forEach((s3) => {
-        h2[s3.browser] = s3;
+      const g = /* @__PURE__ */ new Date();
+      g.setMonth(g.getMonth() + 30);
+      const q = y({ widelyAvailableOnDate: g.toISOString().slice(0, 10), suppressWarnings: r2.suppressWarnings }), m = {};
+      q.forEach((n2) => {
+        m[n2.browser] = n2;
       });
-      const m2 = O({ targetYear: 2002, listAllCompatibleVersions: true, suppressWarnings: u2.suppressWarnings }), E = [];
-      if (o.forEach((s3) => {
-        var a3, r3, c4, f3;
-        let e3 = m2.filter((a4) => a4.browser == s3).sort((s4, a4) => _(s4.version, a4.version)), b3 = null !== (r3 = null === (a3 = l2[s3]) || void 0 === a3 ? void 0 : a3.version) && void 0 !== r3 ? r3 : "0", o2 = null !== (f3 = null === (c4 = h2[s3]) || void 0 === c4 ? void 0 : c4.version) && void 0 !== f3 ? f3 : "0";
-        n2.forEach((a4) => {
-          var r4;
-          if (g2[a4]) {
-            let c5 = (null !== (r4 = g2[a4][s3]) && void 0 !== r4 ? r4 : { version: "0" }).version, f4 = e3.findIndex((s4) => 0 === _(s4.version, c5));
-            (a4 === i2 - 1 ? e3 : e3.slice(0, f4)).forEach((s4) => {
-              let r5 = _(s4.version, b3) >= 0, c6 = _(s4.version, o2) >= 0, f5 = Object.assign(Object.assign({}, s4), { year: a4 <= 2015 ? "pre_baseline" : a4 - 1 });
-              u2.useSupports ? (r5 && (f5.supports = "widely"), c6 && (f5.supports = "newly")) : f5 = Object.assign(Object.assign({}, f5), { wa_compatible: r5 }), E.push(f5);
-            }), e3 = e3.slice(f4, e3.length);
+      const h = y({ targetYear: 2002, listAllCompatibleVersions: true, suppressWarnings: r2.suppressWarnings }), _ = [];
+      if (c2.map((n2) => n2.longName).forEach((a3) => {
+        var e3, u3, s3, o3;
+        let f3 = h.filter((n2) => n2.browser == a3).sort((a4, e4) => n(a4.version, e4.version)), i3 = null !== (u3 = null === (e3 = d[a3]) || void 0 === e3 ? void 0 : e3.version) && void 0 !== u3 ? u3 : "0", c3 = null !== (o3 = null === (s3 = m[a3]) || void 0 === s3 ? void 0 : s3.version) && void 0 !== o3 ? o3 : "0";
+        b2.forEach((e4) => {
+          var u4;
+          if (v2[e4]) {
+            let s4 = (null !== (u4 = v2[e4][a3]) && void 0 !== u4 ? u4 : { version: "0" }).version, o4 = f3.findIndex((a4) => 0 === n(a4.version, s4));
+            (e4 === t2 - 1 ? f3 : f3.slice(0, o4)).forEach((a4) => {
+              let u5 = n(a4.version, i3) >= 0, s5 = n(a4.version, c3) >= 0, o5 = Object.assign(Object.assign({}, a4), { year: e4 <= 2015 ? "pre_baseline" : e4 - 1 });
+              r2.useSupports ? (u5 && (o5.supports = "widely"), s5 && (o5.supports = "newly")) : o5 = Object.assign(Object.assign({}, o5), { wa_compatible: u5 }), _.push(o5);
+            }), f3 = f3.slice(o4, f3.length);
           }
         });
-      }), u2.includeDownstreamBrowsers) {
-        y(E, true, u2.includeKaiOS).forEach((s3) => {
-          let a3 = E.find((a4) => "chrome" === a4.browser && a4.version === s3.engine_version);
-          a3 && (u2.useSupports ? E.push(Object.assign(Object.assign({}, s3), { year: a3.year, supports: a3.supports })) : E.push(Object.assign(Object.assign({}, s3), { year: a3.year, wa_compatible: a3.wa_compatible })));
+      }), r2.includeDownstreamBrowsers) {
+        y({ targetYear: 2002, listAllCompatibleVersions: true, includeDownstreamBrowsers: true, includeKaiOS: r2.includeKaiOS, suppressWarnings: r2.suppressWarnings }).filter((n2) => !c2.map((n3) => n3.longName).includes(n2.browser)).forEach((n2) => {
+          const a3 = "Gecko" === n2.engine ? "firefox" : "chrome";
+          let e3 = _.find((e4) => e4.browser === a3 && e4.version === n2.engine_version);
+          e3 && (r2.useSupports ? _.push(Object.assign(Object.assign({}, n2), { year: e3.year, supports: e3.supports })) : _.push(Object.assign(Object.assign({}, n2), { year: e3.year, wa_compatible: e3.wa_compatible })));
         });
       }
-      if (E.sort((s3, a3) => {
-        if ("pre_baseline" === s3.year && "pre_baseline" !== a3.year) return -1;
-        if ("pre_baseline" === a3.year && "pre_baseline" !== s3.year) return 1;
-        if ("pre_baseline" !== s3.year && "pre_baseline" !== a3.year) {
-          if (s3.year < a3.year) return -1;
-          if (s3.year > a3.year) return 1;
+      if (_.sort((a3, e3) => {
+        if ("pre_baseline" === a3.year && "pre_baseline" !== e3.year) return -1;
+        if ("pre_baseline" === e3.year && "pre_baseline" !== a3.year) return 1;
+        if ("pre_baseline" !== a3.year && "pre_baseline" !== e3.year) {
+          if (a3.year < e3.year) return -1;
+          if (a3.year > e3.year) return 1;
         }
-        return s3.browser < a3.browser ? -1 : s3.browser > a3.browser ? 1 : _(s3.version, a3.version);
-      }), "object" === u2.outputFormat) {
-        const s3 = {};
-        return E.forEach((a3) => {
-          s3[a3.browser] || (s3[a3.browser] = {});
-          let r3 = { year: a3.year, release_date: a3.release_date, engine: a3.engine, engine_version: a3.engine_version };
-          s3[a3.browser][a3.version] = u2.useSupports ? a3.supports ? Object.assign(Object.assign({}, r3), { supports: a3.supports }) : r3 : Object.assign(Object.assign({}, r3), { wa_compatible: a3.wa_compatible });
-        }), null != s3 ? s3 : {};
+        return a3.browser < e3.browser ? -1 : a3.browser > e3.browser ? 1 : n(a3.version, e3.version);
+      }), "object" === r2.outputFormat) {
+        const n2 = {};
+        return _.forEach((a3) => {
+          n2[a3.browser] || (n2[a3.browser] = {});
+          let e3 = { year: a3.year, release_date: a3.release_date, engine: a3.engine, engine_version: a3.engine_version };
+          n2[a3.browser][a3.version] = r2.useSupports ? a3.supports ? Object.assign(Object.assign({}, e3), { supports: a3.supports }) : e3 : Object.assign(Object.assign({}, e3), { wa_compatible: a3.wa_compatible });
+        }), null != n2 ? n2 : {};
       }
-      if ("csv" === u2.outputFormat) {
-        let s3 = `"browser","version","year","${u2.useSupports ? "supports" : "wa_compatible"}","release_date","engine","engine_version"`;
-        return E.forEach((a3) => {
-          var r3, c4, f3, e3;
-          let b3 = { browser: a3.browser, version: a3.version, year: a3.year, release_date: null !== (r3 = a3.release_date) && void 0 !== r3 ? r3 : "NULL", engine: null !== (c4 = a3.engine) && void 0 !== c4 ? c4 : "NULL", engine_version: null !== (f3 = a3.engine_version) && void 0 !== f3 ? f3 : "NULL" };
-          b3 = u2.useSupports ? Object.assign(Object.assign({}, b3), { supports: null !== (e3 = a3.supports) && void 0 !== e3 ? e3 : "" }) : Object.assign(Object.assign({}, b3), { wa_compatible: a3.wa_compatible }), s3 += `
-"${b3.browser}","${b3.version}","${b3.year}","${u2.useSupports ? b3.supports : b3.wa_compatible}","${b3.release_date}","${b3.engine}","${b3.engine_version}"`;
-        }), s3;
+      if ("csv" === r2.outputFormat) {
+        let n2 = `"browser","version","year","${r2.useSupports ? "supports" : "wa_compatible"}","release_date","engine","engine_version"`;
+        return _.forEach((a3) => {
+          var e3, u3, s3, o3;
+          let f3 = { browser: a3.browser, version: a3.version, year: a3.year, release_date: null !== (e3 = a3.release_date) && void 0 !== e3 ? e3 : "NULL", engine: null !== (u3 = a3.engine) && void 0 !== u3 ? u3 : "NULL", engine_version: null !== (s3 = a3.engine_version) && void 0 !== s3 ? s3 : "NULL" };
+          f3 = r2.useSupports ? Object.assign(Object.assign({}, f3), { supports: null !== (o3 = a3.supports) && void 0 !== o3 ? o3 : "" }) : Object.assign(Object.assign({}, f3), { wa_compatible: a3.wa_compatible }), n2 += `
+"${f3.browser}","${f3.version}","${f3.year}","${r2.useSupports ? f3.supports : f3.wa_compatible}","${f3.release_date}","${f3.engine}","${f3.engine_version}"`;
+        }), n2;
       }
-      return E;
-    }, exports.getCompatibleVersions = O;
+      return _;
+    }, exports.getCompatibleVersions = y, exports.getTimeline = function(n2) {
+      var e2, s2, o2, f2;
+      const i2 = null != n2 ? n2 : {}, r2 = null !== (e2 = i2.groupBy) && void 0 !== e2 ? e2 : "date", t2 = null !== (s2 = i2.listAllBrowsers) && void 0 !== s2 && s2, l2 = null !== (o2 = i2.includeDownstreamBrowsers) && void 0 !== o2 && o2, w2 = null !== (f2 = i2.includeKaiOS) && void 0 !== f2 && f2;
+      if (false === l2 && true === w2) throw new Error("KaiOS is a downstream browser and can only be included if you include other downstream browsers. Please ensure you use `includeDownstreamBrowsers: true`.");
+      const y2 = {}, p = [];
+      if (Object.keys(u).forEach((n3) => {
+        const e3 = u[n3];
+        if ("pre_baseline" === n3) return;
+        const s3 = /* @__PURE__ */ new Set();
+        e3.forEach((n4) => {
+          const a2 = n4[0], e4 = y2[a2], u2 = n4[1];
+          e4 && e4[1] === u2 || s3.add(a2), y2[a2] = n4;
+        });
+        const o3 = [];
+        if (Object.keys(a).forEach((n4) => {
+          const { longName: e4 } = a[n4];
+          if (!w2 && "k" === n4) return;
+          const u2 = c2.some((a2) => a2.shortName === n4);
+          if (!l2 && !u2) return;
+          const f3 = s3.has(n4);
+          if (t2 || f3) {
+            const a2 = y2[n4];
+            a2 && o3.push(v(n4, e4, a2[1], a2[2], a2[3]));
+          }
+        }), o3.length > 0) {
+          const a2 = b(o3);
+          p.push({ date: n3, browsers: a2 });
+        }
+      }), "browser" === r2) {
+        const n3 = {};
+        return Object.keys(a).forEach((e3) => {
+          const { longName: u2 } = a[e3];
+          if (!w2 && "k" === e3) return;
+          const s3 = c2.some((n4) => n4.shortName === e3);
+          (l2 || s3) && (n3[u2] = []);
+        }), p.forEach((a2) => {
+          a2.browsers.forEach((e3) => {
+            const { browser: u2 } = e3, s3 = (function(n4, a3) {
+              var e4 = {};
+              for (var u3 in n4) Object.prototype.hasOwnProperty.call(n4, u3) && a3.indexOf(u3) < 0 && (e4[u3] = n4[u3]);
+              if (null != n4 && "function" == typeof Object.getOwnPropertySymbols) {
+                var s4 = 0;
+                for (u3 = Object.getOwnPropertySymbols(n4); s4 < u3.length; s4++) a3.indexOf(u3[s4]) < 0 && Object.prototype.propertyIsEnumerable.call(n4, u3[s4]) && (e4[u3[s4]] = n4[u3[s4]]);
+              }
+              return e4;
+            })(e3, ["browser"]);
+            n3[u2] && n3[u2].push(Object.assign({ date: a2.date }, s3));
+          });
+        }), n3;
+      }
+      return p;
+    };
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/node-releases/data/processed/envs.json
+// ../../node_modules/.bun/node-releases@2.0.53/node_modules/node-releases/data/processed/envs.json
 var require_envs = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/node-releases/data/processed/envs.json"(exports, module) {
-    module.exports = [{ name: "nodejs", version: "0.2.0", date: "2011-08-26", lts: false, security: false, v8: "2.3.8.0" }, { name: "nodejs", version: "0.3.0", date: "2011-08-26", lts: false, security: false, v8: "2.5.1.0" }, { name: "nodejs", version: "0.4.0", date: "2011-08-26", lts: false, security: false, v8: "3.1.2.0" }, { name: "nodejs", version: "0.5.0", date: "2011-08-26", lts: false, security: false, v8: "3.1.8.25" }, { name: "nodejs", version: "0.6.0", date: "2011-11-04", lts: false, security: false, v8: "3.6.6.6" }, { name: "nodejs", version: "0.7.0", date: "2012-01-17", lts: false, security: false, v8: "3.8.6.0" }, { name: "nodejs", version: "0.8.0", date: "2012-06-22", lts: false, security: false, v8: "3.11.10.10" }, { name: "nodejs", version: "0.9.0", date: "2012-07-20", lts: false, security: false, v8: "3.11.10.15" }, { name: "nodejs", version: "0.10.0", date: "2013-03-11", lts: false, security: false, v8: "3.14.5.8" }, { name: "nodejs", version: "0.11.0", date: "2013-03-28", lts: false, security: false, v8: "3.17.13.0" }, { name: "nodejs", version: "0.12.0", date: "2015-02-06", lts: false, security: false, v8: "3.28.73.0" }, { name: "nodejs", version: "4.0.0", date: "2015-09-08", lts: false, security: false, v8: "4.5.103.30" }, { name: "nodejs", version: "4.1.0", date: "2015-09-17", lts: false, security: false, v8: "4.5.103.33" }, { name: "nodejs", version: "4.2.0", date: "2015-10-12", lts: "Argon", security: false, v8: "4.5.103.35" }, { name: "nodejs", version: "4.3.0", date: "2016-02-09", lts: "Argon", security: false, v8: "4.5.103.35" }, { name: "nodejs", version: "4.4.0", date: "2016-03-08", lts: "Argon", security: false, v8: "4.5.103.35" }, { name: "nodejs", version: "4.5.0", date: "2016-08-16", lts: "Argon", security: false, v8: "4.5.103.37" }, { name: "nodejs", version: "4.6.0", date: "2016-09-27", lts: "Argon", security: true, v8: "4.5.103.37" }, { name: "nodejs", version: "4.7.0", date: "2016-12-06", lts: "Argon", security: false, v8: "4.5.103.43" }, { name: "nodejs", version: "4.8.0", date: "2017-02-21", lts: "Argon", security: false, v8: "4.5.103.45" }, { name: "nodejs", version: "4.9.0", date: "2018-03-28", lts: "Argon", security: true, v8: "4.5.103.53" }, { name: "nodejs", version: "5.0.0", date: "2015-10-29", lts: false, security: false, v8: "4.6.85.28" }, { name: "nodejs", version: "5.1.0", date: "2015-11-17", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.2.0", date: "2015-12-09", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.3.0", date: "2015-12-15", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.4.0", date: "2016-01-06", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.5.0", date: "2016-01-21", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.6.0", date: "2016-02-09", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.7.0", date: "2016-02-23", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.8.0", date: "2016-03-09", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.9.0", date: "2016-03-16", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.10.0", date: "2016-04-01", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.11.0", date: "2016-04-21", lts: false, security: false, v8: "4.6.85.31" }, { name: "nodejs", version: "5.12.0", date: "2016-06-23", lts: false, security: false, v8: "4.6.85.32" }, { name: "nodejs", version: "6.0.0", date: "2016-04-26", lts: false, security: false, v8: "5.0.71.35" }, { name: "nodejs", version: "6.1.0", date: "2016-05-05", lts: false, security: false, v8: "5.0.71.35" }, { name: "nodejs", version: "6.2.0", date: "2016-05-17", lts: false, security: false, v8: "5.0.71.47" }, { name: "nodejs", version: "6.3.0", date: "2016-07-06", lts: false, security: false, v8: "5.0.71.52" }, { name: "nodejs", version: "6.4.0", date: "2016-08-12", lts: false, security: false, v8: "5.0.71.60" }, { name: "nodejs", version: "6.5.0", date: "2016-08-26", lts: false, security: false, v8: "5.1.281.81" }, { name: "nodejs", version: "6.6.0", date: "2016-09-14", lts: false, security: false, v8: "5.1.281.83" }, { name: "nodejs", version: "6.7.0", date: "2016-09-27", lts: false, security: true, v8: "5.1.281.83" }, { name: "nodejs", version: "6.8.0", date: "2016-10-12", lts: false, security: false, v8: "5.1.281.84" }, { name: "nodejs", version: "6.9.0", date: "2016-10-18", lts: "Boron", security: false, v8: "5.1.281.84" }, { name: "nodejs", version: "6.10.0", date: "2017-02-21", lts: "Boron", security: false, v8: "5.1.281.93" }, { name: "nodejs", version: "6.11.0", date: "2017-06-06", lts: "Boron", security: false, v8: "5.1.281.102" }, { name: "nodejs", version: "6.12.0", date: "2017-11-06", lts: "Boron", security: false, v8: "5.1.281.108" }, { name: "nodejs", version: "6.13.0", date: "2018-02-10", lts: "Boron", security: false, v8: "5.1.281.111" }, { name: "nodejs", version: "6.14.0", date: "2018-03-28", lts: "Boron", security: true, v8: "5.1.281.111" }, { name: "nodejs", version: "6.15.0", date: "2018-11-27", lts: "Boron", security: true, v8: "5.1.281.111" }, { name: "nodejs", version: "6.16.0", date: "2018-12-26", lts: "Boron", security: false, v8: "5.1.281.111" }, { name: "nodejs", version: "6.17.0", date: "2019-02-28", lts: "Boron", security: true, v8: "5.1.281.111" }, { name: "nodejs", version: "7.0.0", date: "2016-10-25", lts: false, security: false, v8: "5.4.500.36" }, { name: "nodejs", version: "7.1.0", date: "2016-11-08", lts: false, security: false, v8: "5.4.500.36" }, { name: "nodejs", version: "7.2.0", date: "2016-11-22", lts: false, security: false, v8: "5.4.500.43" }, { name: "nodejs", version: "7.3.0", date: "2016-12-20", lts: false, security: false, v8: "5.4.500.45" }, { name: "nodejs", version: "7.4.0", date: "2017-01-04", lts: false, security: false, v8: "5.4.500.45" }, { name: "nodejs", version: "7.5.0", date: "2017-01-31", lts: false, security: false, v8: "5.4.500.48" }, { name: "nodejs", version: "7.6.0", date: "2017-02-21", lts: false, security: false, v8: "5.5.372.40" }, { name: "nodejs", version: "7.7.0", date: "2017-02-28", lts: false, security: false, v8: "5.5.372.41" }, { name: "nodejs", version: "7.8.0", date: "2017-03-29", lts: false, security: false, v8: "5.5.372.43" }, { name: "nodejs", version: "7.9.0", date: "2017-04-11", lts: false, security: false, v8: "5.5.372.43" }, { name: "nodejs", version: "7.10.0", date: "2017-05-02", lts: false, security: false, v8: "5.5.372.43" }, { name: "nodejs", version: "8.0.0", date: "2017-05-30", lts: false, security: false, v8: "5.8.283.41" }, { name: "nodejs", version: "8.1.0", date: "2017-06-08", lts: false, security: false, v8: "5.8.283.41" }, { name: "nodejs", version: "8.2.0", date: "2017-07-19", lts: false, security: false, v8: "5.8.283.41" }, { name: "nodejs", version: "8.3.0", date: "2017-08-08", lts: false, security: false, v8: "6.0.286.52" }, { name: "nodejs", version: "8.4.0", date: "2017-08-15", lts: false, security: false, v8: "6.0.286.52" }, { name: "nodejs", version: "8.5.0", date: "2017-09-12", lts: false, security: false, v8: "6.0.287.53" }, { name: "nodejs", version: "8.6.0", date: "2017-09-26", lts: false, security: false, v8: "6.0.287.53" }, { name: "nodejs", version: "8.7.0", date: "2017-10-11", lts: false, security: false, v8: "6.1.534.42" }, { name: "nodejs", version: "8.8.0", date: "2017-10-24", lts: false, security: false, v8: "6.1.534.42" }, { name: "nodejs", version: "8.9.0", date: "2017-10-31", lts: "Carbon", security: false, v8: "6.1.534.46" }, { name: "nodejs", version: "8.10.0", date: "2018-03-06", lts: "Carbon", security: false, v8: "6.2.414.50" }, { name: "nodejs", version: "8.11.0", date: "2018-03-28", lts: "Carbon", security: true, v8: "6.2.414.50" }, { name: "nodejs", version: "8.12.0", date: "2018-09-10", lts: "Carbon", security: false, v8: "6.2.414.66" }, { name: "nodejs", version: "8.13.0", date: "2018-11-20", lts: "Carbon", security: false, v8: "6.2.414.72" }, { name: "nodejs", version: "8.14.0", date: "2018-11-27", lts: "Carbon", security: true, v8: "6.2.414.72" }, { name: "nodejs", version: "8.15.0", date: "2018-12-26", lts: "Carbon", security: false, v8: "6.2.414.75" }, { name: "nodejs", version: "8.16.0", date: "2019-04-16", lts: "Carbon", security: false, v8: "6.2.414.77" }, { name: "nodejs", version: "8.17.0", date: "2019-12-17", lts: "Carbon", security: true, v8: "6.2.414.78" }, { name: "nodejs", version: "9.0.0", date: "2017-10-31", lts: false, security: false, v8: "6.2.414.32" }, { name: "nodejs", version: "9.1.0", date: "2017-11-07", lts: false, security: false, v8: "6.2.414.32" }, { name: "nodejs", version: "9.2.0", date: "2017-11-14", lts: false, security: false, v8: "6.2.414.44" }, { name: "nodejs", version: "9.3.0", date: "2017-12-12", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "9.4.0", date: "2018-01-10", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "9.5.0", date: "2018-01-31", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "9.6.0", date: "2018-02-21", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "9.7.0", date: "2018-03-01", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "9.8.0", date: "2018-03-07", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "9.9.0", date: "2018-03-21", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "9.10.0", date: "2018-03-28", lts: false, security: true, v8: "6.2.414.46" }, { name: "nodejs", version: "9.11.0", date: "2018-04-04", lts: false, security: false, v8: "6.2.414.46" }, { name: "nodejs", version: "10.0.0", date: "2018-04-24", lts: false, security: false, v8: "6.6.346.24" }, { name: "nodejs", version: "10.1.0", date: "2018-05-08", lts: false, security: false, v8: "6.6.346.27" }, { name: "nodejs", version: "10.2.0", date: "2018-05-23", lts: false, security: false, v8: "6.6.346.32" }, { name: "nodejs", version: "10.3.0", date: "2018-05-29", lts: false, security: false, v8: "6.6.346.32" }, { name: "nodejs", version: "10.4.0", date: "2018-06-06", lts: false, security: false, v8: "6.7.288.43" }, { name: "nodejs", version: "10.5.0", date: "2018-06-20", lts: false, security: false, v8: "6.7.288.46" }, { name: "nodejs", version: "10.6.0", date: "2018-07-04", lts: false, security: false, v8: "6.7.288.46" }, { name: "nodejs", version: "10.7.0", date: "2018-07-18", lts: false, security: false, v8: "6.7.288.49" }, { name: "nodejs", version: "10.8.0", date: "2018-08-01", lts: false, security: false, v8: "6.7.288.49" }, { name: "nodejs", version: "10.9.0", date: "2018-08-15", lts: false, security: false, v8: "6.8.275.24" }, { name: "nodejs", version: "10.10.0", date: "2018-09-06", lts: false, security: false, v8: "6.8.275.30" }, { name: "nodejs", version: "10.11.0", date: "2018-09-19", lts: false, security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.12.0", date: "2018-10-10", lts: false, security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.13.0", date: "2018-10-30", lts: "Dubnium", security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.14.0", date: "2018-11-27", lts: "Dubnium", security: true, v8: "6.8.275.32" }, { name: "nodejs", version: "10.15.0", date: "2018-12-26", lts: "Dubnium", security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.16.0", date: "2019-05-28", lts: "Dubnium", security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.17.0", date: "2019-10-22", lts: "Dubnium", security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.18.0", date: "2019-12-17", lts: "Dubnium", security: true, v8: "6.8.275.32" }, { name: "nodejs", version: "10.19.0", date: "2020-02-05", lts: "Dubnium", security: true, v8: "6.8.275.32" }, { name: "nodejs", version: "10.20.0", date: "2020-03-26", lts: "Dubnium", security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.21.0", date: "2020-06-02", lts: "Dubnium", security: true, v8: "6.8.275.32" }, { name: "nodejs", version: "10.22.0", date: "2020-07-21", lts: "Dubnium", security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.23.0", date: "2020-10-27", lts: "Dubnium", security: false, v8: "6.8.275.32" }, { name: "nodejs", version: "10.24.0", date: "2021-02-23", lts: "Dubnium", security: true, v8: "6.8.275.32" }, { name: "nodejs", version: "11.0.0", date: "2018-10-23", lts: false, security: false, v8: "7.0.276.28" }, { name: "nodejs", version: "11.1.0", date: "2018-10-30", lts: false, security: false, v8: "7.0.276.32" }, { name: "nodejs", version: "11.2.0", date: "2018-11-15", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.3.0", date: "2018-11-27", lts: false, security: true, v8: "7.0.276.38" }, { name: "nodejs", version: "11.4.0", date: "2018-12-07", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.5.0", date: "2018-12-18", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.6.0", date: "2018-12-26", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.7.0", date: "2019-01-17", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.8.0", date: "2019-01-24", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.9.0", date: "2019-01-30", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.10.0", date: "2019-02-14", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.11.0", date: "2019-03-05", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.12.0", date: "2019-03-14", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.13.0", date: "2019-03-28", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.14.0", date: "2019-04-10", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "11.15.0", date: "2019-04-30", lts: false, security: false, v8: "7.0.276.38" }, { name: "nodejs", version: "12.0.0", date: "2019-04-23", lts: false, security: false, v8: "7.4.288.21" }, { name: "nodejs", version: "12.1.0", date: "2019-04-29", lts: false, security: false, v8: "7.4.288.21" }, { name: "nodejs", version: "12.2.0", date: "2019-05-07", lts: false, security: false, v8: "7.4.288.21" }, { name: "nodejs", version: "12.3.0", date: "2019-05-21", lts: false, security: false, v8: "7.4.288.27" }, { name: "nodejs", version: "12.4.0", date: "2019-06-04", lts: false, security: false, v8: "7.4.288.27" }, { name: "nodejs", version: "12.5.0", date: "2019-06-26", lts: false, security: false, v8: "7.5.288.22" }, { name: "nodejs", version: "12.6.0", date: "2019-07-03", lts: false, security: false, v8: "7.5.288.22" }, { name: "nodejs", version: "12.7.0", date: "2019-07-23", lts: false, security: false, v8: "7.5.288.22" }, { name: "nodejs", version: "12.8.0", date: "2019-08-06", lts: false, security: false, v8: "7.5.288.22" }, { name: "nodejs", version: "12.9.0", date: "2019-08-20", lts: false, security: false, v8: "7.6.303.29" }, { name: "nodejs", version: "12.10.0", date: "2019-09-04", lts: false, security: false, v8: "7.6.303.29" }, { name: "nodejs", version: "12.11.0", date: "2019-09-25", lts: false, security: false, v8: "7.7.299.11" }, { name: "nodejs", version: "12.12.0", date: "2019-10-11", lts: false, security: false, v8: "7.7.299.13" }, { name: "nodejs", version: "12.13.0", date: "2019-10-21", lts: "Erbium", security: false, v8: "7.7.299.13" }, { name: "nodejs", version: "12.14.0", date: "2019-12-17", lts: "Erbium", security: true, v8: "7.7.299.13" }, { name: "nodejs", version: "12.15.0", date: "2020-02-05", lts: "Erbium", security: true, v8: "7.7.299.13" }, { name: "nodejs", version: "12.16.0", date: "2020-02-11", lts: "Erbium", security: false, v8: "7.8.279.23" }, { name: "nodejs", version: "12.17.0", date: "2020-05-26", lts: "Erbium", security: false, v8: "7.8.279.23" }, { name: "nodejs", version: "12.18.0", date: "2020-06-02", lts: "Erbium", security: true, v8: "7.8.279.23" }, { name: "nodejs", version: "12.19.0", date: "2020-10-06", lts: "Erbium", security: false, v8: "7.8.279.23" }, { name: "nodejs", version: "12.20.0", date: "2020-11-24", lts: "Erbium", security: false, v8: "7.8.279.23" }, { name: "nodejs", version: "12.21.0", date: "2021-02-23", lts: "Erbium", security: true, v8: "7.8.279.23" }, { name: "nodejs", version: "12.22.0", date: "2021-03-30", lts: "Erbium", security: false, v8: "7.8.279.23" }, { name: "nodejs", version: "13.0.0", date: "2019-10-22", lts: false, security: false, v8: "7.8.279.17" }, { name: "nodejs", version: "13.1.0", date: "2019-11-05", lts: false, security: false, v8: "7.8.279.17" }, { name: "nodejs", version: "13.2.0", date: "2019-11-21", lts: false, security: false, v8: "7.9.317.23" }, { name: "nodejs", version: "13.3.0", date: "2019-12-03", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.4.0", date: "2019-12-17", lts: false, security: true, v8: "7.9.317.25" }, { name: "nodejs", version: "13.5.0", date: "2019-12-18", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.6.0", date: "2020-01-07", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.7.0", date: "2020-01-21", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.8.0", date: "2020-02-05", lts: false, security: true, v8: "7.9.317.25" }, { name: "nodejs", version: "13.9.0", date: "2020-02-18", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.10.0", date: "2020-03-04", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.11.0", date: "2020-03-12", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.12.0", date: "2020-03-26", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.13.0", date: "2020-04-14", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "13.14.0", date: "2020-04-29", lts: false, security: false, v8: "7.9.317.25" }, { name: "nodejs", version: "14.0.0", date: "2020-04-21", lts: false, security: false, v8: "8.1.307.30" }, { name: "nodejs", version: "14.1.0", date: "2020-04-29", lts: false, security: false, v8: "8.1.307.31" }, { name: "nodejs", version: "14.2.0", date: "2020-05-05", lts: false, security: false, v8: "8.1.307.31" }, { name: "nodejs", version: "14.3.0", date: "2020-05-19", lts: false, security: false, v8: "8.1.307.31" }, { name: "nodejs", version: "14.4.0", date: "2020-06-02", lts: false, security: true, v8: "8.1.307.31" }, { name: "nodejs", version: "14.5.0", date: "2020-06-30", lts: false, security: false, v8: "8.3.110.9" }, { name: "nodejs", version: "14.6.0", date: "2020-07-20", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.7.0", date: "2020-07-29", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.8.0", date: "2020-08-11", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.9.0", date: "2020-08-27", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.10.0", date: "2020-09-08", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.11.0", date: "2020-09-15", lts: false, security: true, v8: "8.4.371.19" }, { name: "nodejs", version: "14.12.0", date: "2020-09-22", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.13.0", date: "2020-09-29", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.14.0", date: "2020-10-15", lts: false, security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.15.0", date: "2020-10-27", lts: "Fermium", security: false, v8: "8.4.371.19" }, { name: "nodejs", version: "14.16.0", date: "2021-02-23", lts: "Fermium", security: true, v8: "8.4.371.19" }, { name: "nodejs", version: "14.17.0", date: "2021-05-11", lts: "Fermium", security: false, v8: "8.4.371.23" }, { name: "nodejs", version: "14.18.0", date: "2021-09-28", lts: "Fermium", security: false, v8: "8.4.371.23" }, { name: "nodejs", version: "14.19.0", date: "2022-02-01", lts: "Fermium", security: false, v8: "8.4.371.23" }, { name: "nodejs", version: "14.20.0", date: "2022-07-07", lts: "Fermium", security: true, v8: "8.4.371.23" }, { name: "nodejs", version: "14.21.0", date: "2022-11-01", lts: "Fermium", security: false, v8: "8.4.371.23" }, { name: "nodejs", version: "15.0.0", date: "2020-10-20", lts: false, security: false, v8: "8.6.395.16" }, { name: "nodejs", version: "15.1.0", date: "2020-11-04", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.2.0", date: "2020-11-10", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.3.0", date: "2020-11-24", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.4.0", date: "2020-12-09", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.5.0", date: "2020-12-22", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.6.0", date: "2021-01-14", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.7.0", date: "2021-01-25", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.8.0", date: "2021-02-02", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.9.0", date: "2021-02-18", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.10.0", date: "2021-02-23", lts: false, security: true, v8: "8.6.395.17" }, { name: "nodejs", version: "15.11.0", date: "2021-03-03", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.12.0", date: "2021-03-17", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.13.0", date: "2021-03-31", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "15.14.0", date: "2021-04-06", lts: false, security: false, v8: "8.6.395.17" }, { name: "nodejs", version: "16.0.0", date: "2021-04-20", lts: false, security: false, v8: "9.0.257.17" }, { name: "nodejs", version: "16.1.0", date: "2021-05-04", lts: false, security: false, v8: "9.0.257.24" }, { name: "nodejs", version: "16.2.0", date: "2021-05-19", lts: false, security: false, v8: "9.0.257.25" }, { name: "nodejs", version: "16.3.0", date: "2021-06-03", lts: false, security: false, v8: "9.0.257.25" }, { name: "nodejs", version: "16.4.0", date: "2021-06-23", lts: false, security: false, v8: "9.1.269.36" }, { name: "nodejs", version: "16.5.0", date: "2021-07-14", lts: false, security: false, v8: "9.1.269.38" }, { name: "nodejs", version: "16.6.0", date: "2021-07-29", lts: false, security: true, v8: "9.2.230.21" }, { name: "nodejs", version: "16.7.0", date: "2021-08-18", lts: false, security: false, v8: "9.2.230.21" }, { name: "nodejs", version: "16.8.0", date: "2021-08-25", lts: false, security: false, v8: "9.2.230.21" }, { name: "nodejs", version: "16.9.0", date: "2021-09-07", lts: false, security: false, v8: "9.3.345.16" }, { name: "nodejs", version: "16.10.0", date: "2021-09-22", lts: false, security: false, v8: "9.3.345.19" }, { name: "nodejs", version: "16.11.0", date: "2021-10-08", lts: false, security: false, v8: "9.4.146.19" }, { name: "nodejs", version: "16.12.0", date: "2021-10-20", lts: false, security: false, v8: "9.4.146.19" }, { name: "nodejs", version: "16.13.0", date: "2021-10-26", lts: "Gallium", security: false, v8: "9.4.146.19" }, { name: "nodejs", version: "16.14.0", date: "2022-02-08", lts: "Gallium", security: false, v8: "9.4.146.24" }, { name: "nodejs", version: "16.15.0", date: "2022-04-26", lts: "Gallium", security: false, v8: "9.4.146.24" }, { name: "nodejs", version: "16.16.0", date: "2022-07-07", lts: "Gallium", security: true, v8: "9.4.146.24" }, { name: "nodejs", version: "16.17.0", date: "2022-08-16", lts: "Gallium", security: false, v8: "9.4.146.26" }, { name: "nodejs", version: "16.18.0", date: "2022-10-12", lts: "Gallium", security: false, v8: "9.4.146.26" }, { name: "nodejs", version: "16.19.0", date: "2022-12-13", lts: "Gallium", security: false, v8: "9.4.146.26" }, { name: "nodejs", version: "16.20.0", date: "2023-03-28", lts: "Gallium", security: false, v8: "9.4.146.26" }, { name: "nodejs", version: "17.0.0", date: "2021-10-19", lts: false, security: false, v8: "9.5.172.21" }, { name: "nodejs", version: "17.1.0", date: "2021-11-09", lts: false, security: false, v8: "9.5.172.25" }, { name: "nodejs", version: "17.2.0", date: "2021-11-30", lts: false, security: false, v8: "9.6.180.14" }, { name: "nodejs", version: "17.3.0", date: "2021-12-17", lts: false, security: false, v8: "9.6.180.15" }, { name: "nodejs", version: "17.4.0", date: "2022-01-18", lts: false, security: false, v8: "9.6.180.15" }, { name: "nodejs", version: "17.5.0", date: "2022-02-10", lts: false, security: false, v8: "9.6.180.15" }, { name: "nodejs", version: "17.6.0", date: "2022-02-22", lts: false, security: false, v8: "9.6.180.15" }, { name: "nodejs", version: "17.7.0", date: "2022-03-09", lts: false, security: false, v8: "9.6.180.15" }, { name: "nodejs", version: "17.8.0", date: "2022-03-22", lts: false, security: false, v8: "9.6.180.15" }, { name: "nodejs", version: "17.9.0", date: "2022-04-07", lts: false, security: false, v8: "9.6.180.15" }, { name: "nodejs", version: "18.0.0", date: "2022-04-18", lts: false, security: false, v8: "10.1.124.8" }, { name: "nodejs", version: "18.1.0", date: "2022-05-03", lts: false, security: false, v8: "10.1.124.8" }, { name: "nodejs", version: "18.2.0", date: "2022-05-17", lts: false, security: false, v8: "10.1.124.8" }, { name: "nodejs", version: "18.3.0", date: "2022-06-02", lts: false, security: false, v8: "10.2.154.4" }, { name: "nodejs", version: "18.4.0", date: "2022-06-16", lts: false, security: false, v8: "10.2.154.4" }, { name: "nodejs", version: "18.5.0", date: "2022-07-06", lts: false, security: true, v8: "10.2.154.4" }, { name: "nodejs", version: "18.6.0", date: "2022-07-13", lts: false, security: false, v8: "10.2.154.13" }, { name: "nodejs", version: "18.7.0", date: "2022-07-26", lts: false, security: false, v8: "10.2.154.13" }, { name: "nodejs", version: "18.8.0", date: "2022-08-24", lts: false, security: false, v8: "10.2.154.13" }, { name: "nodejs", version: "18.9.0", date: "2022-09-07", lts: false, security: false, v8: "10.2.154.15" }, { name: "nodejs", version: "18.10.0", date: "2022-09-28", lts: false, security: false, v8: "10.2.154.15" }, { name: "nodejs", version: "18.11.0", date: "2022-10-13", lts: false, security: false, v8: "10.2.154.15" }, { name: "nodejs", version: "18.12.0", date: "2022-10-25", lts: "Hydrogen", security: false, v8: "10.2.154.15" }, { name: "nodejs", version: "18.13.0", date: "2023-01-05", lts: "Hydrogen", security: false, v8: "10.2.154.23" }, { name: "nodejs", version: "18.14.0", date: "2023-02-01", lts: "Hydrogen", security: false, v8: "10.2.154.23" }, { name: "nodejs", version: "18.15.0", date: "2023-03-05", lts: "Hydrogen", security: false, v8: "10.2.154.26" }, { name: "nodejs", version: "18.16.0", date: "2023-04-12", lts: "Hydrogen", security: false, v8: "10.2.154.26" }, { name: "nodejs", version: "18.17.0", date: "2023-07-18", lts: "Hydrogen", security: false, v8: "10.2.154.26" }, { name: "nodejs", version: "18.18.0", date: "2023-09-18", lts: "Hydrogen", security: false, v8: "10.2.154.26" }, { name: "nodejs", version: "18.19.0", date: "2023-11-29", lts: "Hydrogen", security: false, v8: "10.2.154.26" }, { name: "nodejs", version: "18.20.0", date: "2024-03-26", lts: "Hydrogen", security: false, v8: "10.2.154.26" }, { name: "nodejs", version: "19.0.0", date: "2022-10-17", lts: false, security: false, v8: "10.7.193.13" }, { name: "nodejs", version: "19.1.0", date: "2022-11-14", lts: false, security: false, v8: "10.7.193.20" }, { name: "nodejs", version: "19.2.0", date: "2022-11-29", lts: false, security: false, v8: "10.8.168.20" }, { name: "nodejs", version: "19.3.0", date: "2022-12-14", lts: false, security: false, v8: "10.8.168.21" }, { name: "nodejs", version: "19.4.0", date: "2023-01-05", lts: false, security: false, v8: "10.8.168.25" }, { name: "nodejs", version: "19.5.0", date: "2023-01-24", lts: false, security: false, v8: "10.8.168.25" }, { name: "nodejs", version: "19.6.0", date: "2023-02-01", lts: false, security: false, v8: "10.8.168.25" }, { name: "nodejs", version: "19.7.0", date: "2023-02-21", lts: false, security: false, v8: "10.8.168.25" }, { name: "nodejs", version: "19.8.0", date: "2023-03-14", lts: false, security: false, v8: "10.8.168.25" }, { name: "nodejs", version: "19.9.0", date: "2023-04-10", lts: false, security: false, v8: "10.8.168.25" }, { name: "nodejs", version: "20.0.0", date: "2023-04-17", lts: false, security: false, v8: "11.3.244.4" }, { name: "nodejs", version: "20.1.0", date: "2023-05-03", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.2.0", date: "2023-05-16", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.3.0", date: "2023-06-08", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.4.0", date: "2023-07-04", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.5.0", date: "2023-07-19", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.6.0", date: "2023-08-23", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.7.0", date: "2023-09-18", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.8.0", date: "2023-09-28", lts: false, security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.9.0", date: "2023-10-24", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.10.0", date: "2023-11-22", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.11.0", date: "2024-01-09", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.12.0", date: "2024-03-26", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.13.0", date: "2024-05-07", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.14.0", date: "2024-05-28", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.15.0", date: "2024-06-20", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.16.0", date: "2024-07-24", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.17.0", date: "2024-08-21", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.18.0", date: "2024-10-03", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.19.0", date: "2025-03-13", lts: "Iron", security: false, v8: "11.3.244.8" }, { name: "nodejs", version: "20.20.0", date: "2026-01-12", lts: "Iron", security: true, v8: "11.3.244.8" }, { name: "nodejs", version: "21.0.0", date: "2023-10-17", lts: false, security: false, v8: "11.8.172.13" }, { name: "nodejs", version: "21.1.0", date: "2023-10-24", lts: false, security: false, v8: "11.8.172.15" }, { name: "nodejs", version: "21.2.0", date: "2023-11-14", lts: false, security: false, v8: "11.8.172.17" }, { name: "nodejs", version: "21.3.0", date: "2023-11-30", lts: false, security: false, v8: "11.8.172.17" }, { name: "nodejs", version: "21.4.0", date: "2023-12-05", lts: false, security: false, v8: "11.8.172.17" }, { name: "nodejs", version: "21.5.0", date: "2023-12-19", lts: false, security: false, v8: "11.8.172.17" }, { name: "nodejs", version: "21.6.0", date: "2024-01-14", lts: false, security: false, v8: "11.8.172.17" }, { name: "nodejs", version: "21.7.0", date: "2024-03-06", lts: false, security: false, v8: "11.8.172.17" }, { name: "nodejs", version: "22.0.0", date: "2024-04-24", lts: false, security: false, v8: "12.4.254.14" }, { name: "nodejs", version: "22.1.0", date: "2024-05-02", lts: false, security: false, v8: "12.4.254.14" }, { name: "nodejs", version: "22.2.0", date: "2024-05-15", lts: false, security: false, v8: "12.4.254.14" }, { name: "nodejs", version: "22.3.0", date: "2024-06-11", lts: false, security: false, v8: "12.4.254.20" }, { name: "nodejs", version: "22.4.0", date: "2024-07-02", lts: false, security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.5.0", date: "2024-07-17", lts: false, security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.6.0", date: "2024-08-06", lts: false, security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.7.0", date: "2024-08-21", lts: false, security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.8.0", date: "2024-09-03", lts: false, security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.9.0", date: "2024-09-17", lts: false, security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.10.0", date: "2024-10-16", lts: false, security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.11.0", date: "2024-10-29", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.12.0", date: "2024-12-02", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.13.0", date: "2025-01-06", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.14.0", date: "2025-02-11", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.15.0", date: "2025-04-22", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.16.0", date: "2025-05-20", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.17.0", date: "2025-06-24", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.18.0", date: "2025-07-31", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.19.0", date: "2025-08-28", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.20.0", date: "2025-09-24", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.21.0", date: "2025-10-20", lts: "Jod", security: false, v8: "12.4.254.21" }, { name: "nodejs", version: "22.22.0", date: "2026-01-12", lts: "Jod", security: true, v8: "12.4.254.21" }, { name: "nodejs", version: "23.0.0", date: "2024-10-16", lts: false, security: false, v8: "12.9.202.26" }, { name: "nodejs", version: "23.1.0", date: "2024-10-24", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.2.0", date: "2024-11-11", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.3.0", date: "2024-11-20", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.4.0", date: "2024-12-10", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.5.0", date: "2024-12-19", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.6.0", date: "2025-01-07", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.7.0", date: "2025-01-30", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.8.0", date: "2025-02-13", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.9.0", date: "2025-02-26", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.10.0", date: "2025-03-13", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "23.11.0", date: "2025-04-01", lts: false, security: false, v8: "12.9.202.28" }, { name: "nodejs", version: "24.0.0", date: "2025-05-06", lts: false, security: false, v8: "13.6.233.8" }, { name: "nodejs", version: "24.1.0", date: "2025-05-20", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.2.0", date: "2025-06-09", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.3.0", date: "2025-06-24", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.4.0", date: "2025-07-09", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.5.0", date: "2025-07-31", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.6.0", date: "2025-08-14", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.7.0", date: "2025-08-27", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.8.0", date: "2025-09-10", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.9.0", date: "2025-09-25", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.10.0", date: "2025-10-08", lts: false, security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.11.0", date: "2025-10-28", lts: "Krypton", security: false, v8: "13.6.233.10" }, { name: "nodejs", version: "24.12.0", date: "2025-12-10", lts: "Krypton", security: false, v8: "13.6.233.17" }, { name: "nodejs", version: "24.13.0", date: "2026-01-12", lts: "Krypton", security: true, v8: "13.6.233.17" }, { name: "nodejs", version: "24.14.0", date: "2026-02-24", lts: "Krypton", security: false, v8: "13.6.233.17" }, { name: "nodejs", version: "24.15.0", date: "2026-04-15", lts: "Krypton", security: false, v8: "13.6.233.17" }, { name: "nodejs", version: "25.0.0", date: "2025-10-15", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.1.0", date: "2025-10-28", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.2.0", date: "2025-11-11", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.3.0", date: "2026-01-12", lts: false, security: true, v8: "14.1.146.11" }, { name: "nodejs", version: "25.4.0", date: "2026-01-19", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.5.0", date: "2026-01-26", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.6.0", date: "2026-02-02", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.7.0", date: "2026-02-24", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.8.0", date: "2026-03-03", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "25.9.0", date: "2026-03-31", lts: false, security: false, v8: "14.1.146.11" }, { name: "nodejs", version: "26.0.0", date: "2026-05-05", lts: false, security: false, v8: "14.6.202.33" }, { name: "nodejs", version: "26.1.0", date: "2026-05-06", lts: false, security: false, v8: "14.6.202.34" }];
+  "../../node_modules/.bun/node-releases@2.0.53/node_modules/node-releases/data/processed/envs.json"(exports, module) {
+    module.exports = [
+      {
+        name: "nodejs",
+        version: "0.2.0",
+        date: "2011-08-26",
+        lts: false,
+        security: false,
+        v8: "2.3.8.0"
+      },
+      {
+        name: "nodejs",
+        version: "0.3.0",
+        date: "2011-08-26",
+        lts: false,
+        security: false,
+        v8: "2.5.1.0"
+      },
+      {
+        name: "nodejs",
+        version: "0.4.0",
+        date: "2011-08-26",
+        lts: false,
+        security: false,
+        v8: "3.1.2.0"
+      },
+      {
+        name: "nodejs",
+        version: "0.5.0",
+        date: "2011-08-26",
+        lts: false,
+        security: false,
+        v8: "3.1.8.25"
+      },
+      {
+        name: "nodejs",
+        version: "0.6.0",
+        date: "2011-11-04",
+        lts: false,
+        security: false,
+        v8: "3.6.6.6"
+      },
+      {
+        name: "nodejs",
+        version: "0.7.0",
+        date: "2012-01-17",
+        lts: false,
+        security: false,
+        v8: "3.8.6.0"
+      },
+      {
+        name: "nodejs",
+        version: "0.8.0",
+        date: "2012-06-22",
+        lts: false,
+        security: false,
+        v8: "3.11.10.10"
+      },
+      {
+        name: "nodejs",
+        version: "0.9.0",
+        date: "2012-07-20",
+        lts: false,
+        security: false,
+        v8: "3.11.10.15"
+      },
+      {
+        name: "nodejs",
+        version: "0.10.0",
+        date: "2013-03-11",
+        lts: false,
+        security: false,
+        v8: "3.14.5.8"
+      },
+      {
+        name: "nodejs",
+        version: "0.11.0",
+        date: "2013-03-28",
+        lts: false,
+        security: false,
+        v8: "3.17.13.0"
+      },
+      {
+        name: "nodejs",
+        version: "0.12.0",
+        date: "2015-02-06",
+        lts: false,
+        security: false,
+        v8: "3.28.73.0"
+      },
+      {
+        name: "nodejs",
+        version: "4.0.0",
+        date: "2015-09-08",
+        lts: false,
+        security: false,
+        v8: "4.5.103.30"
+      },
+      {
+        name: "nodejs",
+        version: "4.1.0",
+        date: "2015-09-17",
+        lts: false,
+        security: false,
+        v8: "4.5.103.33"
+      },
+      {
+        name: "nodejs",
+        version: "4.2.0",
+        date: "2015-10-12",
+        lts: "Argon",
+        security: false,
+        v8: "4.5.103.35"
+      },
+      {
+        name: "nodejs",
+        version: "4.3.0",
+        date: "2016-02-09",
+        lts: "Argon",
+        security: false,
+        v8: "4.5.103.35"
+      },
+      {
+        name: "nodejs",
+        version: "4.4.0",
+        date: "2016-03-08",
+        lts: "Argon",
+        security: false,
+        v8: "4.5.103.35"
+      },
+      {
+        name: "nodejs",
+        version: "4.5.0",
+        date: "2016-08-16",
+        lts: "Argon",
+        security: false,
+        v8: "4.5.103.37"
+      },
+      {
+        name: "nodejs",
+        version: "4.6.0",
+        date: "2016-09-27",
+        lts: "Argon",
+        security: true,
+        v8: "4.5.103.37"
+      },
+      {
+        name: "nodejs",
+        version: "4.7.0",
+        date: "2016-12-06",
+        lts: "Argon",
+        security: false,
+        v8: "4.5.103.43"
+      },
+      {
+        name: "nodejs",
+        version: "4.8.0",
+        date: "2017-02-21",
+        lts: "Argon",
+        security: false,
+        v8: "4.5.103.45"
+      },
+      {
+        name: "nodejs",
+        version: "4.9.0",
+        date: "2018-03-28",
+        lts: "Argon",
+        security: true,
+        v8: "4.5.103.53"
+      },
+      {
+        name: "nodejs",
+        version: "5.0.0",
+        date: "2015-10-29",
+        lts: false,
+        security: false,
+        v8: "4.6.85.28"
+      },
+      {
+        name: "nodejs",
+        version: "5.1.0",
+        date: "2015-11-17",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.2.0",
+        date: "2015-12-09",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.3.0",
+        date: "2015-12-15",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.4.0",
+        date: "2016-01-06",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.5.0",
+        date: "2016-01-21",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.6.0",
+        date: "2016-02-09",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.7.0",
+        date: "2016-02-23",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.8.0",
+        date: "2016-03-09",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.9.0",
+        date: "2016-03-16",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.10.0",
+        date: "2016-04-01",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.11.0",
+        date: "2016-04-21",
+        lts: false,
+        security: false,
+        v8: "4.6.85.31"
+      },
+      {
+        name: "nodejs",
+        version: "5.12.0",
+        date: "2016-06-23",
+        lts: false,
+        security: false,
+        v8: "4.6.85.32"
+      },
+      {
+        name: "nodejs",
+        version: "6.0.0",
+        date: "2016-04-26",
+        lts: false,
+        security: false,
+        v8: "5.0.71.35"
+      },
+      {
+        name: "nodejs",
+        version: "6.1.0",
+        date: "2016-05-05",
+        lts: false,
+        security: false,
+        v8: "5.0.71.35"
+      },
+      {
+        name: "nodejs",
+        version: "6.2.0",
+        date: "2016-05-17",
+        lts: false,
+        security: false,
+        v8: "5.0.71.47"
+      },
+      {
+        name: "nodejs",
+        version: "6.3.0",
+        date: "2016-07-06",
+        lts: false,
+        security: false,
+        v8: "5.0.71.52"
+      },
+      {
+        name: "nodejs",
+        version: "6.4.0",
+        date: "2016-08-12",
+        lts: false,
+        security: false,
+        v8: "5.0.71.60"
+      },
+      {
+        name: "nodejs",
+        version: "6.5.0",
+        date: "2016-08-26",
+        lts: false,
+        security: false,
+        v8: "5.1.281.81"
+      },
+      {
+        name: "nodejs",
+        version: "6.6.0",
+        date: "2016-09-14",
+        lts: false,
+        security: false,
+        v8: "5.1.281.83"
+      },
+      {
+        name: "nodejs",
+        version: "6.7.0",
+        date: "2016-09-27",
+        lts: false,
+        security: true,
+        v8: "5.1.281.83"
+      },
+      {
+        name: "nodejs",
+        version: "6.8.0",
+        date: "2016-10-12",
+        lts: false,
+        security: false,
+        v8: "5.1.281.84"
+      },
+      {
+        name: "nodejs",
+        version: "6.9.0",
+        date: "2016-10-18",
+        lts: "Boron",
+        security: false,
+        v8: "5.1.281.84"
+      },
+      {
+        name: "nodejs",
+        version: "6.10.0",
+        date: "2017-02-21",
+        lts: "Boron",
+        security: false,
+        v8: "5.1.281.93"
+      },
+      {
+        name: "nodejs",
+        version: "6.11.0",
+        date: "2017-06-06",
+        lts: "Boron",
+        security: false,
+        v8: "5.1.281.102"
+      },
+      {
+        name: "nodejs",
+        version: "6.12.0",
+        date: "2017-11-06",
+        lts: "Boron",
+        security: false,
+        v8: "5.1.281.108"
+      },
+      {
+        name: "nodejs",
+        version: "6.13.0",
+        date: "2018-02-10",
+        lts: "Boron",
+        security: false,
+        v8: "5.1.281.111"
+      },
+      {
+        name: "nodejs",
+        version: "6.14.0",
+        date: "2018-03-28",
+        lts: "Boron",
+        security: true,
+        v8: "5.1.281.111"
+      },
+      {
+        name: "nodejs",
+        version: "6.15.0",
+        date: "2018-11-27",
+        lts: "Boron",
+        security: true,
+        v8: "5.1.281.111"
+      },
+      {
+        name: "nodejs",
+        version: "6.16.0",
+        date: "2018-12-26",
+        lts: "Boron",
+        security: false,
+        v8: "5.1.281.111"
+      },
+      {
+        name: "nodejs",
+        version: "6.17.0",
+        date: "2019-02-28",
+        lts: "Boron",
+        security: true,
+        v8: "5.1.281.111"
+      },
+      {
+        name: "nodejs",
+        version: "7.0.0",
+        date: "2016-10-25",
+        lts: false,
+        security: false,
+        v8: "5.4.500.36"
+      },
+      {
+        name: "nodejs",
+        version: "7.1.0",
+        date: "2016-11-08",
+        lts: false,
+        security: false,
+        v8: "5.4.500.36"
+      },
+      {
+        name: "nodejs",
+        version: "7.2.0",
+        date: "2016-11-22",
+        lts: false,
+        security: false,
+        v8: "5.4.500.43"
+      },
+      {
+        name: "nodejs",
+        version: "7.3.0",
+        date: "2016-12-20",
+        lts: false,
+        security: false,
+        v8: "5.4.500.45"
+      },
+      {
+        name: "nodejs",
+        version: "7.4.0",
+        date: "2017-01-04",
+        lts: false,
+        security: false,
+        v8: "5.4.500.45"
+      },
+      {
+        name: "nodejs",
+        version: "7.5.0",
+        date: "2017-01-31",
+        lts: false,
+        security: false,
+        v8: "5.4.500.48"
+      },
+      {
+        name: "nodejs",
+        version: "7.6.0",
+        date: "2017-02-21",
+        lts: false,
+        security: false,
+        v8: "5.5.372.40"
+      },
+      {
+        name: "nodejs",
+        version: "7.7.0",
+        date: "2017-02-28",
+        lts: false,
+        security: false,
+        v8: "5.5.372.41"
+      },
+      {
+        name: "nodejs",
+        version: "7.8.0",
+        date: "2017-03-29",
+        lts: false,
+        security: false,
+        v8: "5.5.372.43"
+      },
+      {
+        name: "nodejs",
+        version: "7.9.0",
+        date: "2017-04-11",
+        lts: false,
+        security: false,
+        v8: "5.5.372.43"
+      },
+      {
+        name: "nodejs",
+        version: "7.10.0",
+        date: "2017-05-02",
+        lts: false,
+        security: false,
+        v8: "5.5.372.43"
+      },
+      {
+        name: "nodejs",
+        version: "8.0.0",
+        date: "2017-05-30",
+        lts: false,
+        security: false,
+        v8: "5.8.283.41"
+      },
+      {
+        name: "nodejs",
+        version: "8.1.0",
+        date: "2017-06-08",
+        lts: false,
+        security: false,
+        v8: "5.8.283.41"
+      },
+      {
+        name: "nodejs",
+        version: "8.2.0",
+        date: "2017-07-19",
+        lts: false,
+        security: false,
+        v8: "5.8.283.41"
+      },
+      {
+        name: "nodejs",
+        version: "8.3.0",
+        date: "2017-08-08",
+        lts: false,
+        security: false,
+        v8: "6.0.286.52"
+      },
+      {
+        name: "nodejs",
+        version: "8.4.0",
+        date: "2017-08-15",
+        lts: false,
+        security: false,
+        v8: "6.0.286.52"
+      },
+      {
+        name: "nodejs",
+        version: "8.5.0",
+        date: "2017-09-12",
+        lts: false,
+        security: false,
+        v8: "6.0.287.53"
+      },
+      {
+        name: "nodejs",
+        version: "8.6.0",
+        date: "2017-09-26",
+        lts: false,
+        security: false,
+        v8: "6.0.287.53"
+      },
+      {
+        name: "nodejs",
+        version: "8.7.0",
+        date: "2017-10-11",
+        lts: false,
+        security: false,
+        v8: "6.1.534.42"
+      },
+      {
+        name: "nodejs",
+        version: "8.8.0",
+        date: "2017-10-24",
+        lts: false,
+        security: false,
+        v8: "6.1.534.42"
+      },
+      {
+        name: "nodejs",
+        version: "8.9.0",
+        date: "2017-10-31",
+        lts: "Carbon",
+        security: false,
+        v8: "6.1.534.46"
+      },
+      {
+        name: "nodejs",
+        version: "8.10.0",
+        date: "2018-03-06",
+        lts: "Carbon",
+        security: false,
+        v8: "6.2.414.50"
+      },
+      {
+        name: "nodejs",
+        version: "8.11.0",
+        date: "2018-03-28",
+        lts: "Carbon",
+        security: true,
+        v8: "6.2.414.50"
+      },
+      {
+        name: "nodejs",
+        version: "8.12.0",
+        date: "2018-09-10",
+        lts: "Carbon",
+        security: false,
+        v8: "6.2.414.66"
+      },
+      {
+        name: "nodejs",
+        version: "8.13.0",
+        date: "2018-11-20",
+        lts: "Carbon",
+        security: false,
+        v8: "6.2.414.72"
+      },
+      {
+        name: "nodejs",
+        version: "8.14.0",
+        date: "2018-11-27",
+        lts: "Carbon",
+        security: true,
+        v8: "6.2.414.72"
+      },
+      {
+        name: "nodejs",
+        version: "8.15.0",
+        date: "2018-12-26",
+        lts: "Carbon",
+        security: false,
+        v8: "6.2.414.75"
+      },
+      {
+        name: "nodejs",
+        version: "8.16.0",
+        date: "2019-04-16",
+        lts: "Carbon",
+        security: false,
+        v8: "6.2.414.77"
+      },
+      {
+        name: "nodejs",
+        version: "8.17.0",
+        date: "2019-12-17",
+        lts: "Carbon",
+        security: true,
+        v8: "6.2.414.78"
+      },
+      {
+        name: "nodejs",
+        version: "9.0.0",
+        date: "2017-10-31",
+        lts: false,
+        security: false,
+        v8: "6.2.414.32"
+      },
+      {
+        name: "nodejs",
+        version: "9.1.0",
+        date: "2017-11-07",
+        lts: false,
+        security: false,
+        v8: "6.2.414.32"
+      },
+      {
+        name: "nodejs",
+        version: "9.2.0",
+        date: "2017-11-14",
+        lts: false,
+        security: false,
+        v8: "6.2.414.44"
+      },
+      {
+        name: "nodejs",
+        version: "9.3.0",
+        date: "2017-12-12",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.4.0",
+        date: "2018-01-10",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.5.0",
+        date: "2018-01-31",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.6.0",
+        date: "2018-02-21",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.7.0",
+        date: "2018-03-01",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.8.0",
+        date: "2018-03-07",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.9.0",
+        date: "2018-03-21",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.10.0",
+        date: "2018-03-28",
+        lts: false,
+        security: true,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "9.11.0",
+        date: "2018-04-04",
+        lts: false,
+        security: false,
+        v8: "6.2.414.46"
+      },
+      {
+        name: "nodejs",
+        version: "10.0.0",
+        date: "2018-04-24",
+        lts: false,
+        security: false,
+        v8: "6.6.346.24"
+      },
+      {
+        name: "nodejs",
+        version: "10.1.0",
+        date: "2018-05-08",
+        lts: false,
+        security: false,
+        v8: "6.6.346.27"
+      },
+      {
+        name: "nodejs",
+        version: "10.2.0",
+        date: "2018-05-23",
+        lts: false,
+        security: false,
+        v8: "6.6.346.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.3.0",
+        date: "2018-05-29",
+        lts: false,
+        security: false,
+        v8: "6.6.346.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.4.0",
+        date: "2018-06-06",
+        lts: false,
+        security: false,
+        v8: "6.7.288.43"
+      },
+      {
+        name: "nodejs",
+        version: "10.5.0",
+        date: "2018-06-20",
+        lts: false,
+        security: false,
+        v8: "6.7.288.46"
+      },
+      {
+        name: "nodejs",
+        version: "10.6.0",
+        date: "2018-07-04",
+        lts: false,
+        security: false,
+        v8: "6.7.288.46"
+      },
+      {
+        name: "nodejs",
+        version: "10.7.0",
+        date: "2018-07-18",
+        lts: false,
+        security: false,
+        v8: "6.7.288.49"
+      },
+      {
+        name: "nodejs",
+        version: "10.8.0",
+        date: "2018-08-01",
+        lts: false,
+        security: false,
+        v8: "6.7.288.49"
+      },
+      {
+        name: "nodejs",
+        version: "10.9.0",
+        date: "2018-08-15",
+        lts: false,
+        security: false,
+        v8: "6.8.275.24"
+      },
+      {
+        name: "nodejs",
+        version: "10.10.0",
+        date: "2018-09-06",
+        lts: false,
+        security: false,
+        v8: "6.8.275.30"
+      },
+      {
+        name: "nodejs",
+        version: "10.11.0",
+        date: "2018-09-19",
+        lts: false,
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.12.0",
+        date: "2018-10-10",
+        lts: false,
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.13.0",
+        date: "2018-10-30",
+        lts: "Dubnium",
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.14.0",
+        date: "2018-11-27",
+        lts: "Dubnium",
+        security: true,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.15.0",
+        date: "2018-12-26",
+        lts: "Dubnium",
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.16.0",
+        date: "2019-05-28",
+        lts: "Dubnium",
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.17.0",
+        date: "2019-10-22",
+        lts: "Dubnium",
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.18.0",
+        date: "2019-12-17",
+        lts: "Dubnium",
+        security: true,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.19.0",
+        date: "2020-02-05",
+        lts: "Dubnium",
+        security: true,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.20.0",
+        date: "2020-03-26",
+        lts: "Dubnium",
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.21.0",
+        date: "2020-06-02",
+        lts: "Dubnium",
+        security: true,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.22.0",
+        date: "2020-07-21",
+        lts: "Dubnium",
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.23.0",
+        date: "2020-10-27",
+        lts: "Dubnium",
+        security: false,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "10.24.0",
+        date: "2021-02-23",
+        lts: "Dubnium",
+        security: true,
+        v8: "6.8.275.32"
+      },
+      {
+        name: "nodejs",
+        version: "11.0.0",
+        date: "2018-10-23",
+        lts: false,
+        security: false,
+        v8: "7.0.276.28"
+      },
+      {
+        name: "nodejs",
+        version: "11.1.0",
+        date: "2018-10-30",
+        lts: false,
+        security: false,
+        v8: "7.0.276.32"
+      },
+      {
+        name: "nodejs",
+        version: "11.2.0",
+        date: "2018-11-15",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.3.0",
+        date: "2018-11-27",
+        lts: false,
+        security: true,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.4.0",
+        date: "2018-12-07",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.5.0",
+        date: "2018-12-18",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.6.0",
+        date: "2018-12-26",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.7.0",
+        date: "2019-01-17",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.8.0",
+        date: "2019-01-24",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.9.0",
+        date: "2019-01-30",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.10.0",
+        date: "2019-02-14",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.11.0",
+        date: "2019-03-05",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.12.0",
+        date: "2019-03-14",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.13.0",
+        date: "2019-03-28",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.14.0",
+        date: "2019-04-10",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "11.15.0",
+        date: "2019-04-30",
+        lts: false,
+        security: false,
+        v8: "7.0.276.38"
+      },
+      {
+        name: "nodejs",
+        version: "12.0.0",
+        date: "2019-04-23",
+        lts: false,
+        security: false,
+        v8: "7.4.288.21"
+      },
+      {
+        name: "nodejs",
+        version: "12.1.0",
+        date: "2019-04-29",
+        lts: false,
+        security: false,
+        v8: "7.4.288.21"
+      },
+      {
+        name: "nodejs",
+        version: "12.2.0",
+        date: "2019-05-07",
+        lts: false,
+        security: false,
+        v8: "7.4.288.21"
+      },
+      {
+        name: "nodejs",
+        version: "12.3.0",
+        date: "2019-05-21",
+        lts: false,
+        security: false,
+        v8: "7.4.288.27"
+      },
+      {
+        name: "nodejs",
+        version: "12.4.0",
+        date: "2019-06-04",
+        lts: false,
+        security: false,
+        v8: "7.4.288.27"
+      },
+      {
+        name: "nodejs",
+        version: "12.5.0",
+        date: "2019-06-26",
+        lts: false,
+        security: false,
+        v8: "7.5.288.22"
+      },
+      {
+        name: "nodejs",
+        version: "12.6.0",
+        date: "2019-07-03",
+        lts: false,
+        security: false,
+        v8: "7.5.288.22"
+      },
+      {
+        name: "nodejs",
+        version: "12.7.0",
+        date: "2019-07-23",
+        lts: false,
+        security: false,
+        v8: "7.5.288.22"
+      },
+      {
+        name: "nodejs",
+        version: "12.8.0",
+        date: "2019-08-06",
+        lts: false,
+        security: false,
+        v8: "7.5.288.22"
+      },
+      {
+        name: "nodejs",
+        version: "12.9.0",
+        date: "2019-08-20",
+        lts: false,
+        security: false,
+        v8: "7.6.303.29"
+      },
+      {
+        name: "nodejs",
+        version: "12.10.0",
+        date: "2019-09-04",
+        lts: false,
+        security: false,
+        v8: "7.6.303.29"
+      },
+      {
+        name: "nodejs",
+        version: "12.11.0",
+        date: "2019-09-25",
+        lts: false,
+        security: false,
+        v8: "7.7.299.11"
+      },
+      {
+        name: "nodejs",
+        version: "12.12.0",
+        date: "2019-10-11",
+        lts: false,
+        security: false,
+        v8: "7.7.299.13"
+      },
+      {
+        name: "nodejs",
+        version: "12.13.0",
+        date: "2019-10-21",
+        lts: "Erbium",
+        security: false,
+        v8: "7.7.299.13"
+      },
+      {
+        name: "nodejs",
+        version: "12.14.0",
+        date: "2019-12-17",
+        lts: "Erbium",
+        security: true,
+        v8: "7.7.299.13"
+      },
+      {
+        name: "nodejs",
+        version: "12.15.0",
+        date: "2020-02-05",
+        lts: "Erbium",
+        security: true,
+        v8: "7.7.299.13"
+      },
+      {
+        name: "nodejs",
+        version: "12.16.0",
+        date: "2020-02-11",
+        lts: "Erbium",
+        security: false,
+        v8: "7.8.279.23"
+      },
+      {
+        name: "nodejs",
+        version: "12.17.0",
+        date: "2020-05-26",
+        lts: "Erbium",
+        security: false,
+        v8: "7.8.279.23"
+      },
+      {
+        name: "nodejs",
+        version: "12.18.0",
+        date: "2020-06-02",
+        lts: "Erbium",
+        security: true,
+        v8: "7.8.279.23"
+      },
+      {
+        name: "nodejs",
+        version: "12.19.0",
+        date: "2020-10-06",
+        lts: "Erbium",
+        security: false,
+        v8: "7.8.279.23"
+      },
+      {
+        name: "nodejs",
+        version: "12.20.0",
+        date: "2020-11-24",
+        lts: "Erbium",
+        security: false,
+        v8: "7.8.279.23"
+      },
+      {
+        name: "nodejs",
+        version: "12.21.0",
+        date: "2021-02-23",
+        lts: "Erbium",
+        security: true,
+        v8: "7.8.279.23"
+      },
+      {
+        name: "nodejs",
+        version: "12.22.0",
+        date: "2021-03-30",
+        lts: "Erbium",
+        security: false,
+        v8: "7.8.279.23"
+      },
+      {
+        name: "nodejs",
+        version: "13.0.0",
+        date: "2019-10-22",
+        lts: false,
+        security: false,
+        v8: "7.8.279.17"
+      },
+      {
+        name: "nodejs",
+        version: "13.1.0",
+        date: "2019-11-05",
+        lts: false,
+        security: false,
+        v8: "7.8.279.17"
+      },
+      {
+        name: "nodejs",
+        version: "13.2.0",
+        date: "2019-11-21",
+        lts: false,
+        security: false,
+        v8: "7.9.317.23"
+      },
+      {
+        name: "nodejs",
+        version: "13.3.0",
+        date: "2019-12-03",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.4.0",
+        date: "2019-12-17",
+        lts: false,
+        security: true,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.5.0",
+        date: "2019-12-18",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.6.0",
+        date: "2020-01-07",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.7.0",
+        date: "2020-01-21",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.8.0",
+        date: "2020-02-05",
+        lts: false,
+        security: true,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.9.0",
+        date: "2020-02-18",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.10.0",
+        date: "2020-03-04",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.11.0",
+        date: "2020-03-12",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.12.0",
+        date: "2020-03-26",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.13.0",
+        date: "2020-04-14",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "13.14.0",
+        date: "2020-04-29",
+        lts: false,
+        security: false,
+        v8: "7.9.317.25"
+      },
+      {
+        name: "nodejs",
+        version: "14.0.0",
+        date: "2020-04-21",
+        lts: false,
+        security: false,
+        v8: "8.1.307.30"
+      },
+      {
+        name: "nodejs",
+        version: "14.1.0",
+        date: "2020-04-29",
+        lts: false,
+        security: false,
+        v8: "8.1.307.31"
+      },
+      {
+        name: "nodejs",
+        version: "14.2.0",
+        date: "2020-05-05",
+        lts: false,
+        security: false,
+        v8: "8.1.307.31"
+      },
+      {
+        name: "nodejs",
+        version: "14.3.0",
+        date: "2020-05-19",
+        lts: false,
+        security: false,
+        v8: "8.1.307.31"
+      },
+      {
+        name: "nodejs",
+        version: "14.4.0",
+        date: "2020-06-02",
+        lts: false,
+        security: true,
+        v8: "8.1.307.31"
+      },
+      {
+        name: "nodejs",
+        version: "14.5.0",
+        date: "2020-06-30",
+        lts: false,
+        security: false,
+        v8: "8.3.110.9"
+      },
+      {
+        name: "nodejs",
+        version: "14.6.0",
+        date: "2020-07-20",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.7.0",
+        date: "2020-07-29",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.8.0",
+        date: "2020-08-11",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.9.0",
+        date: "2020-08-27",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.10.0",
+        date: "2020-09-08",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.11.0",
+        date: "2020-09-15",
+        lts: false,
+        security: true,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.12.0",
+        date: "2020-09-22",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.13.0",
+        date: "2020-09-29",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.14.0",
+        date: "2020-10-15",
+        lts: false,
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.15.0",
+        date: "2020-10-27",
+        lts: "Fermium",
+        security: false,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.16.0",
+        date: "2021-02-23",
+        lts: "Fermium",
+        security: true,
+        v8: "8.4.371.19"
+      },
+      {
+        name: "nodejs",
+        version: "14.17.0",
+        date: "2021-05-11",
+        lts: "Fermium",
+        security: false,
+        v8: "8.4.371.23"
+      },
+      {
+        name: "nodejs",
+        version: "14.18.0",
+        date: "2021-09-28",
+        lts: "Fermium",
+        security: false,
+        v8: "8.4.371.23"
+      },
+      {
+        name: "nodejs",
+        version: "14.19.0",
+        date: "2022-02-01",
+        lts: "Fermium",
+        security: false,
+        v8: "8.4.371.23"
+      },
+      {
+        name: "nodejs",
+        version: "14.20.0",
+        date: "2022-07-07",
+        lts: "Fermium",
+        security: true,
+        v8: "8.4.371.23"
+      },
+      {
+        name: "nodejs",
+        version: "14.21.0",
+        date: "2022-11-01",
+        lts: "Fermium",
+        security: false,
+        v8: "8.4.371.23"
+      },
+      {
+        name: "nodejs",
+        version: "15.0.0",
+        date: "2020-10-20",
+        lts: false,
+        security: false,
+        v8: "8.6.395.16"
+      },
+      {
+        name: "nodejs",
+        version: "15.1.0",
+        date: "2020-11-04",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.2.0",
+        date: "2020-11-10",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.3.0",
+        date: "2020-11-24",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.4.0",
+        date: "2020-12-09",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.5.0",
+        date: "2020-12-22",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.6.0",
+        date: "2021-01-14",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.7.0",
+        date: "2021-01-25",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.8.0",
+        date: "2021-02-02",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.9.0",
+        date: "2021-02-18",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.10.0",
+        date: "2021-02-23",
+        lts: false,
+        security: true,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.11.0",
+        date: "2021-03-03",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.12.0",
+        date: "2021-03-17",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.13.0",
+        date: "2021-03-31",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "15.14.0",
+        date: "2021-04-06",
+        lts: false,
+        security: false,
+        v8: "8.6.395.17"
+      },
+      {
+        name: "nodejs",
+        version: "16.0.0",
+        date: "2021-04-20",
+        lts: false,
+        security: false,
+        v8: "9.0.257.17"
+      },
+      {
+        name: "nodejs",
+        version: "16.1.0",
+        date: "2021-05-04",
+        lts: false,
+        security: false,
+        v8: "9.0.257.24"
+      },
+      {
+        name: "nodejs",
+        version: "16.2.0",
+        date: "2021-05-19",
+        lts: false,
+        security: false,
+        v8: "9.0.257.25"
+      },
+      {
+        name: "nodejs",
+        version: "16.3.0",
+        date: "2021-06-03",
+        lts: false,
+        security: false,
+        v8: "9.0.257.25"
+      },
+      {
+        name: "nodejs",
+        version: "16.4.0",
+        date: "2021-06-23",
+        lts: false,
+        security: false,
+        v8: "9.1.269.36"
+      },
+      {
+        name: "nodejs",
+        version: "16.5.0",
+        date: "2021-07-14",
+        lts: false,
+        security: false,
+        v8: "9.1.269.38"
+      },
+      {
+        name: "nodejs",
+        version: "16.6.0",
+        date: "2021-07-29",
+        lts: false,
+        security: true,
+        v8: "9.2.230.21"
+      },
+      {
+        name: "nodejs",
+        version: "16.7.0",
+        date: "2021-08-18",
+        lts: false,
+        security: false,
+        v8: "9.2.230.21"
+      },
+      {
+        name: "nodejs",
+        version: "16.8.0",
+        date: "2021-08-25",
+        lts: false,
+        security: false,
+        v8: "9.2.230.21"
+      },
+      {
+        name: "nodejs",
+        version: "16.9.0",
+        date: "2021-09-07",
+        lts: false,
+        security: false,
+        v8: "9.3.345.16"
+      },
+      {
+        name: "nodejs",
+        version: "16.10.0",
+        date: "2021-09-22",
+        lts: false,
+        security: false,
+        v8: "9.3.345.19"
+      },
+      {
+        name: "nodejs",
+        version: "16.11.0",
+        date: "2021-10-08",
+        lts: false,
+        security: false,
+        v8: "9.4.146.19"
+      },
+      {
+        name: "nodejs",
+        version: "16.12.0",
+        date: "2021-10-20",
+        lts: false,
+        security: false,
+        v8: "9.4.146.19"
+      },
+      {
+        name: "nodejs",
+        version: "16.13.0",
+        date: "2021-10-26",
+        lts: "Gallium",
+        security: false,
+        v8: "9.4.146.19"
+      },
+      {
+        name: "nodejs",
+        version: "16.14.0",
+        date: "2022-02-08",
+        lts: "Gallium",
+        security: false,
+        v8: "9.4.146.24"
+      },
+      {
+        name: "nodejs",
+        version: "16.15.0",
+        date: "2022-04-26",
+        lts: "Gallium",
+        security: false,
+        v8: "9.4.146.24"
+      },
+      {
+        name: "nodejs",
+        version: "16.16.0",
+        date: "2022-07-07",
+        lts: "Gallium",
+        security: true,
+        v8: "9.4.146.24"
+      },
+      {
+        name: "nodejs",
+        version: "16.17.0",
+        date: "2022-08-16",
+        lts: "Gallium",
+        security: false,
+        v8: "9.4.146.26"
+      },
+      {
+        name: "nodejs",
+        version: "16.18.0",
+        date: "2022-10-12",
+        lts: "Gallium",
+        security: false,
+        v8: "9.4.146.26"
+      },
+      {
+        name: "nodejs",
+        version: "16.19.0",
+        date: "2022-12-13",
+        lts: "Gallium",
+        security: false,
+        v8: "9.4.146.26"
+      },
+      {
+        name: "nodejs",
+        version: "16.20.0",
+        date: "2023-03-28",
+        lts: "Gallium",
+        security: false,
+        v8: "9.4.146.26"
+      },
+      {
+        name: "nodejs",
+        version: "17.0.0",
+        date: "2021-10-19",
+        lts: false,
+        security: false,
+        v8: "9.5.172.21"
+      },
+      {
+        name: "nodejs",
+        version: "17.1.0",
+        date: "2021-11-09",
+        lts: false,
+        security: false,
+        v8: "9.5.172.25"
+      },
+      {
+        name: "nodejs",
+        version: "17.2.0",
+        date: "2021-11-30",
+        lts: false,
+        security: false,
+        v8: "9.6.180.14"
+      },
+      {
+        name: "nodejs",
+        version: "17.3.0",
+        date: "2021-12-17",
+        lts: false,
+        security: false,
+        v8: "9.6.180.15"
+      },
+      {
+        name: "nodejs",
+        version: "17.4.0",
+        date: "2022-01-18",
+        lts: false,
+        security: false,
+        v8: "9.6.180.15"
+      },
+      {
+        name: "nodejs",
+        version: "17.5.0",
+        date: "2022-02-10",
+        lts: false,
+        security: false,
+        v8: "9.6.180.15"
+      },
+      {
+        name: "nodejs",
+        version: "17.6.0",
+        date: "2022-02-22",
+        lts: false,
+        security: false,
+        v8: "9.6.180.15"
+      },
+      {
+        name: "nodejs",
+        version: "17.7.0",
+        date: "2022-03-09",
+        lts: false,
+        security: false,
+        v8: "9.6.180.15"
+      },
+      {
+        name: "nodejs",
+        version: "17.8.0",
+        date: "2022-03-22",
+        lts: false,
+        security: false,
+        v8: "9.6.180.15"
+      },
+      {
+        name: "nodejs",
+        version: "17.9.0",
+        date: "2022-04-07",
+        lts: false,
+        security: false,
+        v8: "9.6.180.15"
+      },
+      {
+        name: "nodejs",
+        version: "18.0.0",
+        date: "2022-04-18",
+        lts: false,
+        security: false,
+        v8: "10.1.124.8"
+      },
+      {
+        name: "nodejs",
+        version: "18.1.0",
+        date: "2022-05-03",
+        lts: false,
+        security: false,
+        v8: "10.1.124.8"
+      },
+      {
+        name: "nodejs",
+        version: "18.2.0",
+        date: "2022-05-17",
+        lts: false,
+        security: false,
+        v8: "10.1.124.8"
+      },
+      {
+        name: "nodejs",
+        version: "18.3.0",
+        date: "2022-06-02",
+        lts: false,
+        security: false,
+        v8: "10.2.154.4"
+      },
+      {
+        name: "nodejs",
+        version: "18.4.0",
+        date: "2022-06-16",
+        lts: false,
+        security: false,
+        v8: "10.2.154.4"
+      },
+      {
+        name: "nodejs",
+        version: "18.5.0",
+        date: "2022-07-06",
+        lts: false,
+        security: true,
+        v8: "10.2.154.4"
+      },
+      {
+        name: "nodejs",
+        version: "18.6.0",
+        date: "2022-07-13",
+        lts: false,
+        security: false,
+        v8: "10.2.154.13"
+      },
+      {
+        name: "nodejs",
+        version: "18.7.0",
+        date: "2022-07-26",
+        lts: false,
+        security: false,
+        v8: "10.2.154.13"
+      },
+      {
+        name: "nodejs",
+        version: "18.8.0",
+        date: "2022-08-24",
+        lts: false,
+        security: false,
+        v8: "10.2.154.13"
+      },
+      {
+        name: "nodejs",
+        version: "18.9.0",
+        date: "2022-09-07",
+        lts: false,
+        security: false,
+        v8: "10.2.154.15"
+      },
+      {
+        name: "nodejs",
+        version: "18.10.0",
+        date: "2022-09-28",
+        lts: false,
+        security: false,
+        v8: "10.2.154.15"
+      },
+      {
+        name: "nodejs",
+        version: "18.11.0",
+        date: "2022-10-13",
+        lts: false,
+        security: false,
+        v8: "10.2.154.15"
+      },
+      {
+        name: "nodejs",
+        version: "18.12.0",
+        date: "2022-10-25",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.15"
+      },
+      {
+        name: "nodejs",
+        version: "18.13.0",
+        date: "2023-01-05",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.23"
+      },
+      {
+        name: "nodejs",
+        version: "18.14.0",
+        date: "2023-02-01",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.23"
+      },
+      {
+        name: "nodejs",
+        version: "18.15.0",
+        date: "2023-03-05",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.26"
+      },
+      {
+        name: "nodejs",
+        version: "18.16.0",
+        date: "2023-04-12",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.26"
+      },
+      {
+        name: "nodejs",
+        version: "18.17.0",
+        date: "2023-07-18",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.26"
+      },
+      {
+        name: "nodejs",
+        version: "18.18.0",
+        date: "2023-09-18",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.26"
+      },
+      {
+        name: "nodejs",
+        version: "18.19.0",
+        date: "2023-11-29",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.26"
+      },
+      {
+        name: "nodejs",
+        version: "18.20.0",
+        date: "2024-03-26",
+        lts: "Hydrogen",
+        security: false,
+        v8: "10.2.154.26"
+      },
+      {
+        name: "nodejs",
+        version: "19.0.0",
+        date: "2022-10-17",
+        lts: false,
+        security: false,
+        v8: "10.7.193.13"
+      },
+      {
+        name: "nodejs",
+        version: "19.1.0",
+        date: "2022-11-14",
+        lts: false,
+        security: false,
+        v8: "10.7.193.20"
+      },
+      {
+        name: "nodejs",
+        version: "19.2.0",
+        date: "2022-11-29",
+        lts: false,
+        security: false,
+        v8: "10.8.168.20"
+      },
+      {
+        name: "nodejs",
+        version: "19.3.0",
+        date: "2022-12-14",
+        lts: false,
+        security: false,
+        v8: "10.8.168.21"
+      },
+      {
+        name: "nodejs",
+        version: "19.4.0",
+        date: "2023-01-05",
+        lts: false,
+        security: false,
+        v8: "10.8.168.25"
+      },
+      {
+        name: "nodejs",
+        version: "19.5.0",
+        date: "2023-01-24",
+        lts: false,
+        security: false,
+        v8: "10.8.168.25"
+      },
+      {
+        name: "nodejs",
+        version: "19.6.0",
+        date: "2023-02-01",
+        lts: false,
+        security: false,
+        v8: "10.8.168.25"
+      },
+      {
+        name: "nodejs",
+        version: "19.7.0",
+        date: "2023-02-21",
+        lts: false,
+        security: false,
+        v8: "10.8.168.25"
+      },
+      {
+        name: "nodejs",
+        version: "19.8.0",
+        date: "2023-03-14",
+        lts: false,
+        security: false,
+        v8: "10.8.168.25"
+      },
+      {
+        name: "nodejs",
+        version: "19.9.0",
+        date: "2023-04-10",
+        lts: false,
+        security: false,
+        v8: "10.8.168.25"
+      },
+      {
+        name: "nodejs",
+        version: "20.0.0",
+        date: "2023-04-17",
+        lts: false,
+        security: false,
+        v8: "11.3.244.4"
+      },
+      {
+        name: "nodejs",
+        version: "20.1.0",
+        date: "2023-05-03",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.2.0",
+        date: "2023-05-16",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.3.0",
+        date: "2023-06-08",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.4.0",
+        date: "2023-07-04",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.5.0",
+        date: "2023-07-19",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.6.0",
+        date: "2023-08-23",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.7.0",
+        date: "2023-09-18",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.8.0",
+        date: "2023-09-28",
+        lts: false,
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.9.0",
+        date: "2023-10-24",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.10.0",
+        date: "2023-11-22",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.11.0",
+        date: "2024-01-09",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.12.0",
+        date: "2024-03-26",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.13.0",
+        date: "2024-05-07",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.14.0",
+        date: "2024-05-28",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.15.0",
+        date: "2024-06-20",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.16.0",
+        date: "2024-07-24",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.17.0",
+        date: "2024-08-21",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.18.0",
+        date: "2024-10-03",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.19.0",
+        date: "2025-03-13",
+        lts: "Iron",
+        security: false,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "20.20.0",
+        date: "2026-01-12",
+        lts: "Iron",
+        security: true,
+        v8: "11.3.244.8"
+      },
+      {
+        name: "nodejs",
+        version: "21.0.0",
+        date: "2023-10-17",
+        lts: false,
+        security: false,
+        v8: "11.8.172.13"
+      },
+      {
+        name: "nodejs",
+        version: "21.1.0",
+        date: "2023-10-24",
+        lts: false,
+        security: false,
+        v8: "11.8.172.15"
+      },
+      {
+        name: "nodejs",
+        version: "21.2.0",
+        date: "2023-11-14",
+        lts: false,
+        security: false,
+        v8: "11.8.172.17"
+      },
+      {
+        name: "nodejs",
+        version: "21.3.0",
+        date: "2023-11-30",
+        lts: false,
+        security: false,
+        v8: "11.8.172.17"
+      },
+      {
+        name: "nodejs",
+        version: "21.4.0",
+        date: "2023-12-05",
+        lts: false,
+        security: false,
+        v8: "11.8.172.17"
+      },
+      {
+        name: "nodejs",
+        version: "21.5.0",
+        date: "2023-12-19",
+        lts: false,
+        security: false,
+        v8: "11.8.172.17"
+      },
+      {
+        name: "nodejs",
+        version: "21.6.0",
+        date: "2024-01-14",
+        lts: false,
+        security: false,
+        v8: "11.8.172.17"
+      },
+      {
+        name: "nodejs",
+        version: "21.7.0",
+        date: "2024-03-06",
+        lts: false,
+        security: false,
+        v8: "11.8.172.17"
+      },
+      {
+        name: "nodejs",
+        version: "22.0.0",
+        date: "2024-04-24",
+        lts: false,
+        security: false,
+        v8: "12.4.254.14"
+      },
+      {
+        name: "nodejs",
+        version: "22.1.0",
+        date: "2024-05-02",
+        lts: false,
+        security: false,
+        v8: "12.4.254.14"
+      },
+      {
+        name: "nodejs",
+        version: "22.2.0",
+        date: "2024-05-15",
+        lts: false,
+        security: false,
+        v8: "12.4.254.14"
+      },
+      {
+        name: "nodejs",
+        version: "22.3.0",
+        date: "2024-06-11",
+        lts: false,
+        security: false,
+        v8: "12.4.254.20"
+      },
+      {
+        name: "nodejs",
+        version: "22.4.0",
+        date: "2024-07-02",
+        lts: false,
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.5.0",
+        date: "2024-07-17",
+        lts: false,
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.6.0",
+        date: "2024-08-06",
+        lts: false,
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.7.0",
+        date: "2024-08-21",
+        lts: false,
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.8.0",
+        date: "2024-09-03",
+        lts: false,
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.9.0",
+        date: "2024-09-17",
+        lts: false,
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.10.0",
+        date: "2024-10-16",
+        lts: false,
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.11.0",
+        date: "2024-10-29",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.12.0",
+        date: "2024-12-02",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.13.0",
+        date: "2025-01-06",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.14.0",
+        date: "2025-02-11",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.15.0",
+        date: "2025-04-22",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.16.0",
+        date: "2025-05-20",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.17.0",
+        date: "2025-06-24",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.18.0",
+        date: "2025-07-31",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.19.0",
+        date: "2025-08-28",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.20.0",
+        date: "2025-09-24",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.21.0",
+        date: "2025-10-20",
+        lts: "Jod",
+        security: false,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.22.0",
+        date: "2026-01-12",
+        lts: "Jod",
+        security: true,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "22.23.0",
+        date: "2026-06-17",
+        lts: "Jod",
+        security: true,
+        v8: "12.4.254.21"
+      },
+      {
+        name: "nodejs",
+        version: "23.0.0",
+        date: "2024-10-16",
+        lts: false,
+        security: false,
+        v8: "12.9.202.26"
+      },
+      {
+        name: "nodejs",
+        version: "23.1.0",
+        date: "2024-10-24",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.2.0",
+        date: "2024-11-11",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.3.0",
+        date: "2024-11-20",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.4.0",
+        date: "2024-12-10",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.5.0",
+        date: "2024-12-19",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.6.0",
+        date: "2025-01-07",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.7.0",
+        date: "2025-01-30",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.8.0",
+        date: "2025-02-13",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.9.0",
+        date: "2025-02-26",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.10.0",
+        date: "2025-03-13",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "23.11.0",
+        date: "2025-04-01",
+        lts: false,
+        security: false,
+        v8: "12.9.202.28"
+      },
+      {
+        name: "nodejs",
+        version: "24.0.0",
+        date: "2025-05-06",
+        lts: false,
+        security: false,
+        v8: "13.6.233.8"
+      },
+      {
+        name: "nodejs",
+        version: "24.1.0",
+        date: "2025-05-20",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.2.0",
+        date: "2025-06-09",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.3.0",
+        date: "2025-06-24",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.4.0",
+        date: "2025-07-09",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.5.0",
+        date: "2025-07-31",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.6.0",
+        date: "2025-08-14",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.7.0",
+        date: "2025-08-27",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.8.0",
+        date: "2025-09-10",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.9.0",
+        date: "2025-09-25",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.10.0",
+        date: "2025-10-08",
+        lts: false,
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.11.0",
+        date: "2025-10-28",
+        lts: "Krypton",
+        security: false,
+        v8: "13.6.233.10"
+      },
+      {
+        name: "nodejs",
+        version: "24.12.0",
+        date: "2025-12-10",
+        lts: "Krypton",
+        security: false,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "24.13.0",
+        date: "2026-01-12",
+        lts: "Krypton",
+        security: true,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "24.14.0",
+        date: "2026-02-24",
+        lts: "Krypton",
+        security: false,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "24.15.0",
+        date: "2026-04-15",
+        lts: "Krypton",
+        security: false,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "24.16.0",
+        date: "2026-05-21",
+        lts: "Krypton",
+        security: false,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "24.17.0",
+        date: "2026-06-17",
+        lts: "Krypton",
+        security: true,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "24.18.0",
+        date: "2026-06-23",
+        lts: "Krypton",
+        security: false,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "24.19.0",
+        date: "2026-08-03",
+        lts: "Krypton",
+        security: false,
+        v8: "13.6.233.17"
+      },
+      {
+        name: "nodejs",
+        version: "25.0.0",
+        date: "2025-10-15",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.1.0",
+        date: "2025-10-28",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.2.0",
+        date: "2025-11-11",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.3.0",
+        date: "2026-01-12",
+        lts: false,
+        security: true,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.4.0",
+        date: "2026-01-19",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.5.0",
+        date: "2026-01-26",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.6.0",
+        date: "2026-02-02",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.7.0",
+        date: "2026-02-24",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.8.0",
+        date: "2026-03-03",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "25.9.0",
+        date: "2026-03-31",
+        lts: false,
+        security: false,
+        v8: "14.1.146.11"
+      },
+      {
+        name: "nodejs",
+        version: "26.0.0",
+        date: "2026-05-05",
+        lts: false,
+        security: false,
+        v8: "14.6.202.33"
+      },
+      {
+        name: "nodejs",
+        version: "26.1.0",
+        date: "2026-05-06",
+        lts: false,
+        security: false,
+        v8: "14.6.202.34"
+      },
+      {
+        name: "nodejs",
+        version: "26.2.0",
+        date: "2026-05-20",
+        lts: false,
+        security: false,
+        v8: "14.6.202.34"
+      },
+      {
+        name: "nodejs",
+        version: "26.3.0",
+        date: "2026-06-01",
+        lts: false,
+        security: false,
+        v8: "14.6.202.34"
+      },
+      {
+        name: "nodejs",
+        version: "26.4.0",
+        date: "2026-06-24",
+        lts: false,
+        security: false,
+        v8: "14.6.202.34"
+      },
+      {
+        name: "nodejs",
+        version: "26.5.0",
+        date: "2026-07-08",
+        lts: false,
+        security: false,
+        v8: "14.6.202.34"
+      },
+      {
+        name: "nodejs",
+        version: "26.6.0",
+        date: "2026-08-03",
+        lts: false,
+        security: false,
+        v8: "14.6.202.34"
+      },
+      {
+        name: "nodejs",
+        version: "26.7.0",
+        date: "2026-08-05",
+        lts: false,
+        security: false,
+        v8: "14.6.202.34"
+      }
+    ];
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/data/browsers.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/browsers.js
 var require_browsers = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/data/browsers.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/browsers.js"(exports, module) {
     module.exports = { A: "ie", B: "edge", C: "firefox", D: "chrome", E: "safari", F: "opera", G: "ios_saf", H: "op_mini", I: "android", J: "bb", K: "op_mob", L: "and_chr", M: "and_ff", N: "ie_mob", O: "and_uc", P: "samsung", Q: "and_qq", R: "baidu", S: "kaios" };
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/browsers.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/browsers.js
 var require_browsers2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/browsers.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/browsers.js"(exports, module) {
     module.exports.browsers = require_browsers();
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/data/browserVersions.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/browserVersions.js
 var require_browserVersions = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/data/browserVersions.js"(exports, module) {
-    module.exports = { "0": "117", "1": "118", "2": "119", "3": "120", "4": "121", "5": "122", "6": "123", "7": "124", "8": "125", "9": "126", A: "10", B: "11", C: "12", D: "7", E: "8", F: "9", G: "15", H: "80", I: "147", J: "4", K: "6", L: "13", M: "14", N: "16", O: "17", P: "18", Q: "79", R: "81", S: "83", T: "84", U: "85", V: "86", W: "87", X: "88", Y: "89", Z: "90", a: "91", b: "92", c: "93", d: "94", e: "95", f: "96", g: "97", h: "98", i: "99", j: "100", k: "101", l: "102", m: "103", n: "104", o: "105", p: "106", q: "107", r: "108", s: "109", t: "110", u: "111", v: "112", w: "113", x: "114", y: "115", z: "116", AB: "127", BB: "131", CB: "20", DB: "21", EB: "22", FB: "23", GB: "24", HB: "25", IB: "26", JB: "27", KB: "28", LB: "29", MB: "128", NB: "129", OB: "130", PB: "132", QB: "133", RB: "134", SB: "135", TB: "136", UB: "137", VB: "138", WB: "139", XB: "140", YB: "141", ZB: "142", aB: "143", bB: "144", cB: "145", dB: "146", eB: "5", fB: "19", gB: "30", hB: "31", iB: "32", jB: "33", kB: "34", lB: "35", mB: "36", nB: "37", oB: "38", pB: "39", qB: "40", rB: "41", sB: "42", tB: "43", uB: "44", vB: "45", wB: "46", xB: "47", yB: "48", zB: "49", "0B": "50", "1B": "51", "2B": "52", "3B": "53", "4B": "54", "5B": "55", "6B": "56", "7B": "57", "8B": "58", "9B": "60", AC: "62", BC: "63", CC: "64", DC: "65", EC: "66", FC: "67", GC: "68", HC: "69", IC: "70", JC: "71", KC: "72", LC: "73", MC: "74", NC: "75", OC: "76", PC: "77", QC: "78", RC: "150", SC: "11.1", TC: "12.1", UC: "15.5", VC: "16.0", WC: "17.0", XC: "18.0", YC: "3", ZC: "59", aC: "61", bC: "82", cC: "148", dC: "149", eC: "151", fC: "3.2", gC: "10.1", hC: "15.2-15.3", iC: "15.4", jC: "16.1", kC: "16.2", lC: "16.3", mC: "16.4", nC: "16.5", oC: "17.1", pC: "17.2", qC: "17.3", rC: "17.4", sC: "17.5", tC: "18.1", uC: "18.2", vC: "18.3", wC: "18.4", xC: "18.5-18.7", yC: "26.0", zC: "26.1", "0C": "26.2", "1C": "26.3", "2C": "26.4", "3C": "26.5", "4C": "11.5", "5C": "4.2-4.3", "6C": "5.5", "7C": "2", "8C": "152", "9C": "153", AD: "3.5", BD: "3.6", CD: "3.1", DD: "5.1", ED: "6.1", FD: "7.1", GD: "9.1", HD: "13.1", ID: "14.1", JD: "15.1", KD: "15.6", LD: "16.6", MD: "17.6", ND: "TP", OD: "9.5-9.6", PD: "10.0-10.1", QD: "10.5", RD: "10.6", SD: "11.6", TD: "4.0-4.1", UD: "5.0-5.1", VD: "6.0-6.1", WD: "7.0-7.1", XD: "8.1-8.4", YD: "9.0-9.2", ZD: "9.3", aD: "10.0-10.2", bD: "10.3", cD: "11.0-11.2", dD: "11.3-11.4", eD: "12.0-12.1", fD: "12.2-12.5", gD: "13.0-13.1", hD: "13.2", iD: "13.3", jD: "13.4-13.7", kD: "14.0-14.4", lD: "14.5-14.8", mD: "15.0-15.1", nD: "15.6-15.8", oD: "16.6-16.7", pD: "17.6-17.7", qD: "all", rD: "2.1", sD: "2.2", tD: "2.3", uD: "4.1", vD: "4.4", wD: "4.4.3-4.4.4", xD: "5.0-5.4", yD: "6.2-6.4", zD: "7.2-7.4", "0D": "8.2", "1D": "9.2", "2D": "11.1-11.2", "3D": "12.0", "4D": "13.0", "5D": "14.0", "6D": "15.0", "7D": "19.0", "8D": "14.9", "9D": "13.52", AE: "2.5", BE: "3.0-3.1" };
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/browserVersions.js"(exports, module) {
+    module.exports = { "0": "116", "1": "117", "2": "118", "3": "119", "4": "120", "5": "121", "6": "122", "7": "123", "8": "124", "9": "125", A: "10", B: "11", C: "12", D: "7", E: "8", F: "9", G: "15", H: "80", I: "151", J: "4", K: "27", L: "6", M: "13", N: "14", O: "16", P: "17", Q: "18", R: "79", S: "81", T: "83", U: "84", V: "85", W: "86", X: "87", Y: "88", Z: "89", a: "90", b: "91", c: "92", d: "93", e: "94", f: "95", g: "96", h: "97", i: "98", j: "99", k: "100", l: "101", m: "102", n: "103", o: "104", p: "105", q: "106", r: "107", s: "108", t: "109", u: "110", v: "111", w: "112", x: "113", y: "114", z: "115", AB: "126", BB: "127", CB: "131", DB: "20", EB: "21", FB: "22", GB: "23", HB: "24", IB: "25", JB: "26", KB: "28", LB: "29", MB: "30", NB: "128", OB: "129", PB: "130", QB: "132", RB: "133", SB: "134", TB: "135", UB: "136", VB: "137", WB: "138", XB: "139", YB: "140", ZB: "141", aB: "142", bB: "143", cB: "144", dB: "145", eB: "146", fB: "147", gB: "148", hB: "149", iB: "150", jB: "5", kB: "19", lB: "31", mB: "32", nB: "33", oB: "34", pB: "35", qB: "36", rB: "37", sB: "38", tB: "39", uB: "40", vB: "41", wB: "42", xB: "43", yB: "44", zB: "45", "0B": "46", "1B": "47", "2B": "48", "3B": "49", "4B": "50", "5B": "51", "6B": "52", "7B": "53", "8B": "54", "9B": "55", AC: "56", BC: "57", CC: "58", DC: "60", EC: "62", FC: "63", GC: "64", HC: "65", IC: "66", JC: "67", KC: "68", LC: "69", MC: "70", NC: "71", OC: "72", PC: "73", QC: "74", RC: "75", SC: "76", TC: "77", UC: "78", VC: "153", WC: "11.1", XC: "12.1", YC: "15.5", ZC: "16.0", aC: "17.0", bC: "18.0", cC: "3", dC: "59", eC: "61", fC: "82", gC: "152", hC: "154", iC: "3.2", jC: "10.1", kC: "15.2-15.3", lC: "15.4", mC: "16.1", nC: "16.2", oC: "16.3", pC: "16.4", qC: "16.5", rC: "17.1", sC: "17.2", tC: "17.3", uC: "17.4", vC: "17.5", wC: "18.1", xC: "18.2", yC: "18.3", zC: "18.4", "0C": "18.5-18.7", "1C": "26.0", "2C": "26.1", "3C": "26.2", "4C": "26.3", "5C": "26.4", "6C": "26.5", "7C": "11.5", "8C": "4.2-4.3", "9C": "5.5", AD: "2", BD: "155", CD: "156", DD: "3.5", ED: "3.6", FD: "3.1", GD: "5.1", HD: "6.1", ID: "7.1", JD: "9.1", KD: "13.1", LD: "14.1", MD: "15.1", ND: "15.6", OD: "16.6", PD: "17.6", QD: "TP", RD: "9.5-9.6", SD: "10.0-10.1", TD: "10.5", UD: "10.6", VD: "11.6", WD: "4.0-4.1", XD: "5.0-5.1", YD: "6.0-6.1", ZD: "7.0-7.1", aD: "8.1-8.4", bD: "9.0-9.2", cD: "9.3", dD: "10.0-10.2", eD: "10.3", fD: "11.0-11.2", gD: "11.3-11.4", hD: "12.0-12.1", iD: "12.2-12.5", jD: "13.0-13.1", kD: "13.2", lD: "13.3", mD: "13.4-13.7", nD: "14.0-14.4", oD: "14.5-14.8", pD: "15.0-15.1", qD: "15.6-15.8", rD: "16.6-16.7", sD: "17.6-17.7", tD: "all", uD: "2.1", vD: "2.2", wD: "2.3", xD: "4.1", yD: "4.4", zD: "4.4.3-4.4.4", "0D": "5.0-5.4", "1D": "6.2-6.4", "2D": "7.2-7.4", "3D": "8.2", "4D": "9.2", "5D": "11.1-11.2", "6D": "12.0", "7D": "13.0", "8D": "14.0", "9D": "15.0", AE: "19.0", BE: "14.9", CE: "13.52", DE: "2.5", EE: "3.0-3.1" };
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/browserVersions.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/browserVersions.js
 var require_browserVersions2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/browserVersions.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/browserVersions.js"(exports, module) {
     module.exports.browserVersions = require_browserVersions();
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/data/agents.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/agents.js
 var require_agents = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/data/agents.js"(exports, module) {
-    module.exports = { A: { A: { K: 0, D: 0, E: 0, F: 0.13686, A: 0, B: 0.13686, "6C": 0 }, B: "ms", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "6C", "K", "D", "E", "F", "A", "B", "", "", ""], E: "IE", F: { "6C": 962323200, K: 998870400, D: 1161129600, E: 1237420800, F: 1300060800, A: 1346716800, B: 1381968e3 } }, B: { A: { "0": 0, "1": 0, "2": 0, "3": 0.013686, "4": 0, "5": 4562e-6, "6": 0, "7": 0, "8": 0, "9": 4562e-6, C: 0, L: 0, M: 0, G: 0, N: 0, O: 0, P: 0, Q: 0, H: 0, R: 0, S: 0, T: 0, U: 0, V: 0, W: 0, X: 0, Y: 0, Z: 0, a: 0, b: 9124e-6, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0, q: 0, r: 0, s: 0.036496, t: 0, u: 0, v: 0, w: 0, x: 4562e-6, y: 0, z: 0, AB: 4562e-6, MB: 0, NB: 0, OB: 0, BB: 0.013686, PB: 4562e-6, QB: 9124e-6, RB: 9124e-6, SB: 9124e-6, TB: 9124e-6, UB: 9124e-6, VB: 0.018248, WB: 9124e-6, XB: 0.018248, YB: 0.013686, ZB: 0.018248, aB: 0.04562, bB: 0.04562, cB: 0.104926, dB: 2.31293, I: 2.47717 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "C", "L", "M", "G", "N", "O", "P", "Q", "H", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "MB", "NB", "OB", "BB", "PB", "QB", "RB", "SB", "TB", "UB", "VB", "WB", "XB", "YB", "ZB", "aB", "bB", "cB", "dB", "I", "", "", ""], E: "Edge", F: { "0": 1694649600, "1": 1697155200, "2": 1698969600, "3": 1701993600, "4": 1706227200, "5": 1708732800, "6": 1711152e3, "7": 1713398400, "8": 1715990400, "9": 1718841600, C: 1438128e3, L: 1447286400, M: 1470096e3, G: 1491868800, N: 1508198400, O: 1525046400, P: 1542067200, Q: 1579046400, H: 1581033600, R: 1586736e3, S: 1590019200, T: 1594857600, U: 1598486400, V: 1602201600, W: 1605830400, X: 161136e4, Y: 1614816e3, Z: 1618358400, a: 1622073600, b: 1626912e3, c: 1630627200, d: 1632441600, e: 1634774400, f: 1637539200, g: 1641427200, h: 1643932800, i: 1646265600, j: 1649635200, k: 1651190400, l: 1653955200, m: 1655942400, n: 1659657600, o: 1661990400, p: 1664755200, q: 1666915200, r: 1670198400, s: 1673481600, t: 1675900800, u: 1678665600, v: 1680825600, w: 1683158400, x: 1685664e3, y: 1689897600, z: 1692576e3, AB: 1721865600, MB: 1724371200, NB: 1726704e3, OB: 1729123200, BB: 1731542400, PB: 1737417600, QB: 1740614400, RB: 1741219200, SB: 1743984e3, TB: 1746316800, UB: 1748476800, VB: 1750896e3, WB: 1754611200, XB: 1756944e3, YB: 1759363200, ZB: 1761868800, aB: 1764806400, bB: 1768780800, cB: 1770854400, dB: 1773446400, I: 1775692800 }, D: { C: "ms", L: "ms", M: "ms", G: "ms", N: "ms", O: "ms", P: "ms" } }, C: { A: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0, "7C": 0, YC: 0, J: 0, eB: 0, K: 0, D: 0, E: 0, F: 0, A: 0, B: 0.04562, C: 0, L: 0, M: 0, G: 0, N: 0, O: 0, P: 0, fB: 0, CB: 0, DB: 0, EB: 0, FB: 0, GB: 0, HB: 0, IB: 0, JB: 0, KB: 0, LB: 0, gB: 0, hB: 0, iB: 0, jB: 0, kB: 0, lB: 0, mB: 0, nB: 0, oB: 0, pB: 0, qB: 0, rB: 0, sB: 0, tB: 0, uB: 0, vB: 0, wB: 0, xB: 0, yB: 0, zB: 0, "0B": 0, "1B": 0, "2B": 9124e-6, "3B": 0, "4B": 0, "5B": 0, "6B": 0, "7B": 0, "8B": 0, ZC: 0, "9B": 0, aC: 0, AC: 0, BC: 0, CC: 0, DC: 0, EC: 0, FC: 0, GC: 0, HC: 0, IC: 0, JC: 0, KC: 0, LC: 0, MC: 0, NC: 0, OC: 0, PC: 0, QC: 4562e-6, Q: 0, H: 0, R: 0, bC: 0, S: 0, T: 0, U: 0, V: 0, W: 0, X: 0, Y: 0, Z: 0, a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0, q: 0, r: 0, s: 0, t: 0, u: 0, v: 0, w: 0, x: 0, y: 0.132298, z: 0, AB: 0, MB: 4562e-6, NB: 0, OB: 0, BB: 0, PB: 0, QB: 0, RB: 0, SB: 4562e-6, TB: 9124e-6, UB: 0, VB: 0, WB: 0, XB: 0.09124, YB: 0, ZB: 4562e-6, aB: 4562e-6, bB: 0, cB: 4562e-6, dB: 9124e-6, I: 0.027372, cC: 0.063868, dC: 1.08576, RC: 0.328464, eC: 0, "8C": 0, "9C": 0, AD: 0, BD: 0 }, B: "moz", C: ["7C", "YC", "AD", "BD", "J", "eB", "K", "D", "E", "F", "A", "B", "C", "L", "M", "G", "N", "O", "P", "fB", "CB", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "KB", "LB", "gB", "hB", "iB", "jB", "kB", "lB", "mB", "nB", "oB", "pB", "qB", "rB", "sB", "tB", "uB", "vB", "wB", "xB", "yB", "zB", "0B", "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "ZC", "9B", "aC", "AC", "BC", "CC", "DC", "EC", "FC", "GC", "HC", "IC", "JC", "KC", "LC", "MC", "NC", "OC", "PC", "QC", "Q", "H", "R", "bC", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "MB", "NB", "OB", "BB", "PB", "QB", "RB", "SB", "TB", "UB", "VB", "WB", "XB", "YB", "ZB", "aB", "bB", "cB", "dB", "I", "cC", "dC", "RC", "eC", "8C", "9C"], E: "Firefox", F: { "0": 1693267200, "1": 1695686400, "2": 1698105600, "3": 1700524800, "4": 1702944e3, "5": 1705968e3, "6": 1708387200, "7": 1710806400, "8": 1713225600, "9": 1715644800, "7C": 1161648e3, YC: 1213660800, AD: 124632e4, BD: 1264032e3, J: 1300752e3, eB: 1308614400, K: 1313452800, D: 1317081600, E: 1317081600, F: 1320710400, A: 1324339200, B: 1327968e3, C: 1331596800, L: 1335225600, M: 1338854400, G: 1342483200, N: 1346112e3, O: 1349740800, P: 1353628800, fB: 1357603200, CB: 1361232e3, DB: 1364860800, EB: 1368489600, FB: 1372118400, GB: 1375747200, HB: 1379376e3, IB: 1386633600, JB: 1391472e3, KB: 1395100800, LB: 1398729600, gB: 1402358400, hB: 1405987200, iB: 1409616e3, jB: 1413244800, kB: 1417392e3, lB: 1421107200, mB: 1424736e3, nB: 1428278400, oB: 1431475200, pB: 1435881600, qB: 1439251200, rB: 144288e4, sB: 1446508800, tB: 1450137600, uB: 1453852800, vB: 1457395200, wB: 1461628800, xB: 1465257600, yB: 1470096e3, zB: 1474329600, "0B": 1479168e3, "1B": 1485216e3, "2B": 1488844800, "3B": 149256e4, "4B": 1497312e3, "5B": 1502150400, "6B": 1506556800, "7B": 1510617600, "8B": 1516665600, ZC: 1520985600, "9B": 1525824e3, aC: 1529971200, AC: 1536105600, BC: 1540252800, CC: 1544486400, DC: 154872e4, EC: 1552953600, FC: 1558396800, GC: 1562630400, HC: 1567468800, IC: 1571788800, JC: 1575331200, KC: 1578355200, LC: 1581379200, MC: 1583798400, NC: 1586304e3, OC: 1588636800, PC: 1591056e3, QC: 1593475200, Q: 1595894400, H: 1598313600, R: 1600732800, bC: 1603152e3, S: 1605571200, T: 1607990400, U: 1611619200, V: 1614038400, W: 1616457600, X: 1618790400, Y: 1622505600, Z: 1626134400, a: 1628553600, b: 1630972800, c: 1633392e3, d: 1635811200, e: 1638835200, f: 1641859200, g: 1644364800, h: 1646697600, i: 1649116800, j: 1651536e3, k: 1653955200, l: 1656374400, m: 1658793600, n: 1661212800, o: 1663632e3, p: 1666051200, q: 1668470400, r: 1670889600, s: 1673913600, t: 1676332800, u: 1678752e3, v: 1681171200, w: 1683590400, x: 1686009600, y: 1688428800, z: 1690848e3, AB: 1718064e3, MB: 1720483200, NB: 1722902400, OB: 1725321600, BB: 1727740800, PB: 173016e4, QB: 1732579200, RB: 1736208e3, SB: 1738627200, TB: 1741046400, UB: 1743465600, VB: 1745884800, WB: 1748304e3, XB: 1750723200, YB: 1753142400, ZB: 1755561600, aB: 1757980800, bB: 17604e5, cB: 1762819200, dB: 1765238400, I: 1768262400, cC: 1771891200, dC: 1774310400, RC: 1776729600, eC: null, "8C": null, "9C": null } }, D: { A: { "0": 0.168794, "1": 0.013686, "2": 0.02281, "3": 0.209852, "4": 0.018248, "5": 0.04562, "6": 0.018248, "7": 0.173356, "8": 0.100364, "9": 0.041058, J: 0, eB: 0, K: 0, D: 0, E: 0, F: 0, A: 0, B: 0, C: 0, L: 0, M: 0, G: 0, N: 0, O: 0, P: 0, fB: 0, CB: 0, DB: 0, EB: 0, FB: 0, GB: 0, HB: 0, IB: 0, JB: 0, KB: 0, LB: 0, gB: 0, hB: 0, iB: 0, jB: 0, kB: 0, lB: 0, mB: 0, nB: 0, oB: 0, pB: 0.02281, qB: 0.02281, rB: 0.027372, sB: 0.02281, tB: 0.027372, uB: 0.02281, vB: 0.027372, wB: 0.02281, xB: 0.027372, yB: 0.031934, zB: 0.031934, "0B": 0.027372, "1B": 0.027372, "2B": 0.027372, "3B": 0.027372, "4B": 0.027372, "5B": 0.027372, "6B": 0.027372, "7B": 0.027372, "8B": 0.027372, ZC: 0.027372, "9B": 0.027372, aC: 0, AC: 0, BC: 0, CC: 0, DC: 0, EC: 0, FC: 0, GC: 0, HC: 4562e-6, IC: 4562e-6, JC: 0, KC: 0, LC: 0, MC: 0, NC: 0, OC: 0, PC: 0, QC: 0, Q: 9124e-6, H: 0, R: 0, S: 0, T: 0, U: 0, V: 4562e-6, W: 9124e-6, X: 0, Y: 0, Z: 0, a: 9124e-6, b: 0, c: 9124e-6, d: 0, e: 0, f: 0, g: 9124e-6, h: 4562e-6, i: 0, j: 0, k: 9124e-6, l: 0, m: 0.223538, n: 0.173356, o: 0.173356, p: 0.173356, q: 0.173356, r: 0.177918, s: 0.711672, t: 0.173356, u: 0.20529, v: 1.14962, w: 9124e-6, x: 0.02281, y: 0.013686, z: 0.383208, AB: 0.018248, MB: 0.054744, NB: 0.013686, OB: 0.059306, BB: 0.38777, PB: 0.050182, QB: 0.374084, RB: 0.050182, SB: 0.050182, TB: 0.063868, UB: 0.04562, VB: 0.196166, WB: 0.177918, XB: 0.09124, YB: 0.072992, ZB: 0.77554, aB: 0.145984, bB: 0.396894, cB: 0.939772, dB: 7.11216, I: 8.54919, cC: 0.02281, dC: 4562e-6, RC: 0, eC: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "J", "eB", "K", "D", "E", "F", "A", "B", "C", "L", "M", "G", "N", "O", "P", "fB", "CB", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "KB", "LB", "gB", "hB", "iB", "jB", "kB", "lB", "mB", "nB", "oB", "pB", "qB", "rB", "sB", "tB", "uB", "vB", "wB", "xB", "yB", "zB", "0B", "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "ZC", "9B", "aC", "AC", "BC", "CC", "DC", "EC", "FC", "GC", "HC", "IC", "JC", "KC", "LC", "MC", "NC", "OC", "PC", "QC", "Q", "H", "R", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "MB", "NB", "OB", "BB", "PB", "QB", "RB", "SB", "TB", "UB", "VB", "WB", "XB", "YB", "ZB", "aB", "bB", "cB", "dB", "I", "cC", "dC", "RC", "eC"], E: "Chrome", F: { "0": 1694476800, "1": 1696896e3, "2": 1698710400, "3": 1701993600, "4": 1705968e3, "5": 1708387200, "6": 1710806400, "7": 1713225600, "8": 1715644800, "9": 1718064e3, J: 1264377600, eB: 1274745600, K: 1283385600, D: 1287619200, E: 1291248e3, F: 1296777600, A: 1299542400, B: 1303862400, C: 1307404800, L: 1312243200, M: 1316131200, G: 1316131200, N: 1319500800, O: 1323734400, P: 1328659200, fB: 1332892800, CB: 133704e4, DB: 1340668800, EB: 1343692800, FB: 1348531200, GB: 1352246400, HB: 1357862400, IB: 1361404800, JB: 1364428800, KB: 1369094400, LB: 1374105600, gB: 1376956800, hB: 1384214400, iB: 1389657600, jB: 1392940800, kB: 1397001600, lB: 1400544e3, mB: 1405468800, nB: 1409011200, oB: 141264e4, pB: 1416268800, qB: 1421798400, rB: 1425513600, sB: 1429401600, tB: 143208e4, uB: 1437523200, vB: 1441152e3, wB: 1444780800, xB: 1449014400, yB: 1453248e3, zB: 1456963200, "0B": 1460592e3, "1B": 1464134400, "2B": 1469059200, "3B": 1472601600, "4B": 1476230400, "5B": 1480550400, "6B": 1485302400, "7B": 1489017600, "8B": 149256e4, ZC: 1496707200, "9B": 1500940800, aC: 1504569600, AC: 1508198400, BC: 1512518400, CC: 1516752e3, DC: 1520294400, EC: 1523923200, FC: 1527552e3, GC: 1532390400, HC: 1536019200, IC: 1539648e3, JC: 1543968e3, KC: 154872e4, LC: 1552348800, MC: 1555977600, NC: 1559606400, OC: 1564444800, PC: 1568073600, QC: 1571702400, Q: 1575936e3, H: 1580860800, R: 1586304e3, S: 1589846400, T: 1594684800, U: 1598313600, V: 1601942400, W: 1605571200, X: 1611014400, Y: 1614556800, Z: 1618272e3, a: 1621987200, b: 1626739200, c: 1630368e3, d: 1632268800, e: 1634601600, f: 1637020800, g: 1641340800, h: 1643673600, i: 1646092800, j: 1648512e3, k: 1650931200, l: 1653350400, m: 1655769600, n: 1659398400, o: 1661817600, p: 1664236800, q: 1666656e3, r: 166968e4, s: 1673308800, t: 1675728e3, u: 1678147200, v: 1680566400, w: 1682985600, x: 1685404800, y: 1689724800, z: 1692057600, AB: 1721174400, MB: 1724112e3, NB: 1726531200, OB: 1728950400, BB: 1731369600, PB: 1736812800, QB: 1738627200, RB: 1741046400, SB: 1743465600, TB: 1745884800, UB: 1748304e3, VB: 1750723200, WB: 1754352e3, XB: 1756771200, YB: 1759190400, ZB: 1761609600, aB: 1764633600, bB: 1768262400, cB: 1770681600, dB: 1773100800, I: 177552e4, cC: 1777939200, dC: null, RC: null, eC: null } }, E: { A: { J: 0, eB: 0, K: 0, D: 0, E: 0, F: 0, A: 0, B: 0, C: 0, L: 0, M: 9124e-6, G: 0, CD: 0, fC: 0, DD: 0, ED: 0, FD: 0, GD: 0, gC: 0, SC: 0, TC: 0, HD: 0.018248, ID: 0.018248, JD: 0, hC: 0, iC: 4562e-6, UC: 4562e-6, KD: 0.082116, VC: 4562e-6, jC: 9124e-6, kC: 4562e-6, lC: 0.013686, mC: 9124e-6, nC: 9124e-6, LD: 0.127736, WC: 4562e-6, oC: 0.100364, pC: 9124e-6, qC: 0.013686, rC: 0.02281, sC: 0.036496, MD: 0.141422, XC: 9124e-6, tC: 0.018248, uC: 9124e-6, vC: 0.036496, wC: 0.018248, xC: 0.392332, yC: 0.02281, zC: 0.031934, "0C": 0.164232, "1C": 1.05838, "2C": 0.31934, "3C": 9124e-6, ND: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "CD", "fC", "J", "eB", "DD", "K", "ED", "D", "FD", "E", "F", "GD", "A", "gC", "B", "SC", "C", "TC", "L", "HD", "M", "ID", "G", "JD", "hC", "iC", "UC", "KD", "VC", "jC", "kC", "lC", "mC", "nC", "LD", "WC", "oC", "pC", "qC", "rC", "sC", "MD", "XC", "tC", "uC", "vC", "wC", "xC", "yC", "zC", "0C", "1C", "2C", "3C", "ND", ""], E: "Safari", F: { CD: 1205798400, fC: 1226534400, J: 1244419200, eB: 1275868800, DD: 131112e4, K: 1343174400, ED: 13824e5, D: 13824e5, FD: 1410998400, E: 1413417600, F: 1443657600, GD: 1458518400, A: 1474329600, gC: 1490572800, B: 1505779200, SC: 1522281600, C: 1537142400, TC: 1553472e3, L: 1568851200, HD: 1585008e3, M: 1600214400, ID: 1619395200, G: 1632096e3, JD: 1635292800, hC: 1639353600, iC: 1647216e3, UC: 1652745600, KD: 1658275200, VC: 1662940800, jC: 1666569600, kC: 1670889600, lC: 1674432e3, mC: 1679875200, nC: 1684368e3, LD: 1690156800, WC: 1695686400, oC: 1698192e3, pC: 1702252800, qC: 1705881600, rC: 1709596800, sC: 1715558400, MD: 1722211200, XC: 1726444800, tC: 1730073600, uC: 1733875200, vC: 1737936e3, wC: 1743379200, xC: 1747008e3, yC: 1757894400, zC: 1762128e3, "0C": 1762041600, "1C": 1770854400, "2C": 1774310400, "3C": null, ND: null } }, F: { A: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0, F: 0, B: 0, C: 0, G: 0, N: 0, O: 0, P: 0, fB: 0, CB: 0, DB: 0, EB: 0, FB: 0, GB: 0, HB: 0, IB: 0, JB: 0, KB: 0, LB: 0, gB: 0, hB: 0, iB: 0, jB: 0, kB: 0, lB: 0, mB: 0, nB: 0, oB: 0, pB: 0, qB: 0, rB: 0, sB: 0, tB: 0, uB: 0, vB: 0, wB: 0, xB: 0, yB: 0, zB: 0, "0B": 0, "1B": 0, "2B": 0, "3B": 0, "4B": 0, "5B": 0, "6B": 0, "7B": 0, "8B": 0, "9B": 0, AC: 0, BC: 0, CC: 0, DC: 0, EC: 0, FC: 0, GC: 0, HC: 0, IC: 0, JC: 0, KC: 0, LC: 0, MC: 0, NC: 0, OC: 0, PC: 0, QC: 0, Q: 0, H: 0, R: 0, bC: 0, S: 0, T: 0, U: 0, V: 0, W: 0, X: 0, Y: 0, Z: 0, a: 0, b: 0, c: 0, d: 0, e: 0.027372, f: 0.04562, g: 0.06843, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0, q: 0, r: 0, s: 0, t: 0, u: 0, v: 0, w: 0, x: 0, y: 0, z: 0, AB: 9124e-6, BB: 0, OD: 0, PD: 0, QD: 0, RD: 0, SC: 0, "4C": 0, SD: 0, TC: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "F", "OD", "PD", "QD", "RD", "B", "SC", "4C", "SD", "C", "TC", "G", "N", "O", "P", "fB", "CB", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "KB", "LB", "gB", "hB", "iB", "jB", "kB", "lB", "mB", "nB", "oB", "pB", "qB", "rB", "sB", "tB", "uB", "vB", "wB", "xB", "yB", "zB", "0B", "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "9B", "AC", "BC", "CC", "DC", "EC", "FC", "GC", "HC", "IC", "JC", "KC", "LC", "MC", "NC", "OC", "PC", "QC", "Q", "H", "R", "bC", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "BB", "", "", ""], E: "Opera", F: { "0": 1739404800, "1": 1744675200, "2": 1747094400, "3": 1751414400, "4": 1756339200, "5": 1757548800, "6": 1761609600, "7": 1762992e3, "8": 1764806400, "9": 1769990400, F: 1150761600, OD: 1223424e3, PD: 1251763200, QD: 1267488e3, RD: 1277942400, B: 1292457600, SC: 1302566400, "4C": 1309219200, SD: 1323129600, C: 1323129600, TC: 1352073600, G: 1372723200, N: 1377561600, O: 1381104e3, P: 1386288e3, fB: 1390867200, CB: 1393891200, DB: 1399334400, EB: 1401753600, FB: 1405987200, GB: 1409616e3, HB: 1413331200, IB: 1417132800, JB: 1422316800, KB: 1425945600, LB: 1430179200, gB: 1433808e3, hB: 1438646400, iB: 1442448e3, jB: 1445904e3, kB: 1449100800, lB: 1454371200, mB: 1457308800, nB: 146232e4, oB: 1465344e3, pB: 1470096e3, qB: 1474329600, rB: 1477267200, sB: 1481587200, tB: 1486425600, uB: 1490054400, vB: 1494374400, wB: 1498003200, xB: 1502236800, yB: 1506470400, zB: 1510099200, "0B": 1515024e3, "1B": 1517961600, "2B": 1521676800, "3B": 1525910400, "4B": 1530144e3, "5B": 1534982400, "6B": 1537833600, "7B": 1543363200, "8B": 1548201600, "9B": 1554768e3, AC: 1561593600, BC: 1566259200, CC: 1570406400, DC: 1573689600, EC: 1578441600, FC: 1583971200, GC: 1587513600, HC: 1592956800, IC: 1595894400, JC: 1600128e3, KC: 1603238400, LC: 161352e4, MC: 1612224e3, NC: 1616544e3, OC: 1619568e3, PC: 1623715200, QC: 1627948800, Q: 1631577600, H: 1633392e3, R: 1635984e3, bC: 1638403200, S: 1642550400, T: 1644969600, U: 1647993600, V: 1650412800, W: 1652745600, X: 1654646400, Y: 1657152e3, Z: 1660780800, a: 1663113600, b: 1668816e3, c: 1668643200, d: 1671062400, e: 1675209600, f: 1677024e3, g: 1679529600, h: 1681948800, i: 1684195200, j: 1687219200, k: 1690329600, l: 1692748800, m: 1696204800, n: 169992e4, o: 169992e4, p: 1702944e3, q: 1707264e3, r: 1710115200, s: 1711497600, t: 1716336e3, u: 1719273600, v: 1721088e3, w: 1724284800, x: 1727222400, y: 1732665600, z: 1736294400, AB: 1772064e3, BB: 1776124800 }, D: { F: "o", B: "o", C: "o", OD: "o", PD: "o", QD: "o", RD: "o", SC: "o", "4C": "o", SD: "o", TC: "o" } }, G: { A: { E: 0, fC: 0, TD: 0, "5C": 141362e-8, UD: 0, VD: 0, WD: 282724e-8, XD: 0, YD: 0, ZD: 0, aD: 0, bD: 565448e-8, cD: 0.267174, dD: 424086e-8, eD: 0, fD: 0.0523039, gD: 0, hD: 0.0141362, iD: 141362e-8, jD: 424086e-8, kD: 0.0127226, lD: 0.0141362, mD: 0.0155498, hC: 989534e-8, iC: 0.0127226, UC: 0.0155498, nD: 0.253038, VC: 0.0240315, jC: 0.0452358, kC: 0.0254452, lC: 0.0466495, mC: 989534e-8, nC: 0.0183771, oD: 0.34351, WC: 0.0141362, oC: 0.0240315, pC: 0.0197907, qC: 0.029686, rC: 0.0494767, sC: 0.0918853, pD: 0.233247, XC: 0.0494767, tC: 0.100367, uC: 0.0537176, vC: 0.162566, wC: 0.0763355, xC: 2.66043, yC: 0.168221, zC: 0.223352, "0C": 1.01498, "1C": 6.2482, "2C": 1.63414, "3C": 0.0664401 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "fC", "TD", "5C", "UD", "VD", "WD", "E", "XD", "YD", "ZD", "aD", "bD", "cD", "dD", "eD", "fD", "gD", "hD", "iD", "jD", "kD", "lD", "mD", "hC", "iC", "UC", "nD", "VC", "jC", "kC", "lC", "mC", "nC", "oD", "WC", "oC", "pC", "qC", "rC", "sC", "pD", "XC", "tC", "uC", "vC", "wC", "xC", "yC", "zC", "0C", "1C", "2C", "3C", "", ""], E: "Safari on iOS", F: { fC: 1270252800, TD: 1283904e3, "5C": 1299628800, UD: 1331078400, VD: 1359331200, WD: 1394409600, E: 1410912e3, XD: 1413763200, YD: 1442361600, ZD: 1458518400, aD: 1473724800, bD: 1490572800, cD: 1505779200, dD: 1522281600, eD: 1537142400, fD: 1553472e3, gD: 1568851200, hD: 1572220800, iD: 1580169600, jD: 1585008e3, kD: 1600214400, lD: 1619395200, mD: 1632096e3, hC: 1639353600, iC: 1647216e3, UC: 1652659200, nD: 1658275200, VC: 1662940800, jC: 1666569600, kC: 1670889600, lC: 1674432e3, mC: 1679875200, nC: 1684368e3, oD: 1690156800, WC: 1694995200, oC: 1698192e3, pC: 1702252800, qC: 1705881600, rC: 1709596800, sC: 1715558400, pD: 1722211200, XC: 1726444800, tC: 1730073600, uC: 1733875200, vC: 1737936e3, wC: 1743379200, xC: 1747008e3, yC: 1757894400, zC: 1762128e3, "0C": 1765497600, "1C": 1770854400, "2C": 1774310400, "3C": null } }, H: { A: { qD: 0 }, B: "o", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "qD", "", "", ""], E: "Opera Mini", F: { qD: 1426464e3 } }, I: { A: { YC: 0, J: 0, I: 0.244445, rD: 0, sD: 0, tD: 0, uD: 0, "5C": 0, vD: 0, wD: 146799e-9 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "rD", "sD", "tD", "YC", "J", "uD", "5C", "vD", "wD", "I", "", "", ""], E: "Android Browser", F: { rD: 1256515200, sD: 1274313600, tD: 1291593600, YC: 1298332800, J: 1318896e3, uD: 1341792e3, "5C": 1374624e3, vD: 1386547200, wD: 1401667200, I: 1775606400 } }, J: { A: { D: 0, A: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "D", "A", "", "", ""], E: "Blackberry Browser", F: { D: 1325376e3, A: 1359504e3 } }, K: { A: { A: 0, B: 0, C: 0, H: 0.864483, SC: 0, "4C": 0, TC: 0 }, B: "o", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "A", "B", "SC", "4C", "C", "TC", "H", "", "", ""], E: "Opera Mobile", F: { A: 1287100800, B: 1300752e3, SC: 1314835200, "4C": 1318291200, C: 1330300800, TC: 1349740800, H: 1709769600 }, D: { H: "webkit" } }, L: { A: { I: 43.3393 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "I", "", "", ""], E: "Chrome for Android", F: { I: 1775606400 } }, M: { A: { RC: 0.347968 }, B: "moz", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "RC", "", "", ""], E: "Firefox for Android", F: { RC: 1776729600 } }, N: { A: { A: 0, B: 0 }, B: "ms", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "A", "B", "", "", ""], E: "IE Mobile", F: { A: 1340150400, B: 1353456e3 } }, O: { A: { UC: 0.630692 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "UC", "", "", ""], E: "UC Browser for Android", F: { UC: 1710115200 }, D: { UC: "webkit" } }, P: { A: { J: 0, CB: 0, DB: 0, EB: 0, FB: 0, GB: 808358e-8, HB: 808358e-8, IB: 0.0242507, JB: 0.0242507, KB: 0.0565851, LB: 1.40654, xD: 0, yD: 0, zD: 0, "0D": 0, "1D": 0, gC: 0, "2D": 0, "3D": 0, "4D": 0, "5D": 0, "6D": 0, VC: 0, WC: 0, XC: 0, "7D": 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "J", "xD", "yD", "zD", "0D", "1D", "gC", "2D", "3D", "4D", "5D", "6D", "VC", "WC", "XC", "7D", "CB", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "KB", "LB", "", "", ""], E: "Samsung Internet", F: { J: 1461024e3, xD: 1481846400, yD: 1509408e3, zD: 1528329600, "0D": 1546128e3, "1D": 1554163200, gC: 1567900800, "2D": 1582588800, "3D": 1593475200, "4D": 1605657600, "5D": 1618531200, "6D": 1629072e3, VC: 1640736e3, WC: 1651708800, XC: 1659657600, "7D": 1667260800, CB: 1677369600, DB: 1684454400, EB: 1689292800, FB: 1697587200, GB: 1711497600, HB: 1715126400, IB: 1717718400, JB: 1725667200, KB: 1746057600, LB: 1761264e3 } }, Q: { A: { "8D": 0.10874 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "8D", "", "", ""], E: "QQ Browser", F: { "8D": 1710288e3 } }, R: { A: { "9D": 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "9D", "", "", ""], E: "Baidu Browser", F: { "9D": 1710201600 } }, S: { A: { AE: 5437e-6, BE: 0 }, B: "moz", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "AE", "BE", "", "", ""], E: "KaiOS Browser", F: { AE: 1527811200, BE: 1631664e3 } } };
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/agents.js"(exports, module) {
+    module.exports = { A: { A: { L: 0, D: 0, E: 0, F: 0, A: 0, B: 0.266336, "9C": 0 }, B: "ms", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "9C", "L", "D", "E", "F", "A", "B", "", "", ""], E: "IE", F: { "9C": 962323200, L: 998870400, D: 1161129600, E: 1237420800, F: 1300060800, A: 1346716800, B: 1381968e3 } }, B: { A: { "0": 0, "1": 0, "2": 0, "3": 0.179088, "4": 0.18368, "5": 0, "6": 9184e-6, "7": 0, "8": 0, "9": 0, C: 0, M: 0, N: 0, G: 0, O: 0, P: 0, Q: 0, R: 0, H: 0, S: 0, T: 0, U: 0, V: 0, W: 0, X: 0, Y: 0, Z: 0, a: 0, b: 0, c: 9184e-6, d: 0, e: 0, f: 0, g: 0, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0, q: 0, r: 0, s: 0, t: 0.027552, u: 0, v: 0, w: 0, x: 0, y: 4592e-6, z: 0, AB: 0, BB: 0, NB: 0, OB: 0, PB: 0, CB: 0.013776, QB: 0, RB: 4592e-6, SB: 4592e-6, TB: 9184e-6, UB: 4592e-6, VB: 4592e-6, WB: 9184e-6, XB: 9184e-6, YB: 9184e-6, ZB: 9184e-6, aB: 9184e-6, bB: 0.013776, cB: 0.013776, dB: 0.013776, eB: 0.018368, fB: 0.059696, gB: 0.055104, hB: 0.821968, iB: 3.58635, I: 4592e-6 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "C", "M", "N", "G", "O", "P", "Q", "R", "H", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "BB", "NB", "OB", "PB", "CB", "QB", "RB", "SB", "TB", "UB", "VB", "WB", "XB", "YB", "ZB", "aB", "bB", "cB", "dB", "eB", "fB", "gB", "hB", "iB", "I", "", "", ""], E: "Edge", F: { "0": 1692576e3, "1": 1694649600, "2": 1697155200, "3": 1698969600, "4": 1701993600, "5": 1706227200, "6": 1708732800, "7": 1711152e3, "8": 1713398400, "9": 1715990400, C: 1438128e3, M: 1447286400, N: 1470096e3, G: 1491868800, O: 1508198400, P: 1525046400, Q: 1542067200, R: 1579046400, H: 1581033600, S: 1586736e3, T: 1590019200, U: 1594857600, V: 1598486400, W: 1602201600, X: 1605830400, Y: 161136e4, Z: 1614816e3, a: 1618358400, b: 1622073600, c: 1626912e3, d: 1630627200, e: 1632441600, f: 1634774400, g: 1637539200, h: 1641427200, i: 1643932800, j: 1646265600, k: 1649635200, l: 1651190400, m: 1653955200, n: 1655942400, o: 1659657600, p: 1661990400, q: 1664755200, r: 1666915200, s: 1670198400, t: 1673481600, u: 1675900800, v: 1678665600, w: 1680825600, x: 1683158400, y: 1685664e3, z: 1689897600, AB: 1718841600, BB: 1721865600, NB: 1724371200, OB: 1726704e3, PB: 1729123200, CB: 1731542400, QB: 1737417600, RB: 1740614400, SB: 1741219200, TB: 1743984e3, UB: 1746316800, VB: 1748476800, WB: 1750896e3, XB: 1754611200, YB: 1756944e3, ZB: 1759363200, aB: 1761868800, bB: 1764806400, cB: 1768780800, dB: 1770854400, eB: 1773446400, fB: 1775692800, gB: 1778112e3, hB: 1780531200, iB: 1782950400, I: 1785369600 }, D: { C: "ms", M: "ms", N: "ms", G: "ms", O: "ms", P: "ms", Q: "ms" } }, C: { A: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 0.174496, "5": 0.348992, "6": 0, "7": 0, "8": 0, "9": 0.059696, AD: 0, cC: 0, J: 0, jB: 9184e-6, L: 0, D: 0, E: 0, F: 0, A: 0, B: 0, C: 0, M: 0, N: 0, G: 0, O: 0, P: 0, Q: 0, kB: 0, DB: 0, EB: 0, FB: 0, GB: 0, HB: 0, IB: 0, JB: 0, K: 0, KB: 0, LB: 0, MB: 0, lB: 0, mB: 0, nB: 0, oB: 0, pB: 0, qB: 0, rB: 0, sB: 0, tB: 0, uB: 0, vB: 0, wB: 0, xB: 0, yB: 0, zB: 0, "0B": 0, "1B": 0, "2B": 0, "3B": 0, "4B": 0, "5B": 0, "6B": 4592e-6, "7B": 0, "8B": 0, "9B": 0, AC: 0, BC: 0, CC: 0, dC: 0, DC: 0, eC: 0, EC: 0, FC: 0, GC: 0, HC: 0, IC: 0, JC: 0, KC: 0, LC: 0, MC: 0, NC: 0, OC: 0, PC: 0, QC: 0, RC: 0, SC: 0, TC: 0, UC: 4592e-6, R: 0, H: 0, S: 0, fC: 0, T: 0, U: 0, V: 0, W: 0, X: 0, Y: 0, Z: 0, a: 0, b: 0, c: 0, d: 0, e: 0, f: 0, g: 0, h: 0, i: 0, j: 0, k: 0, l: 0, m: 0, n: 0, o: 0, p: 0, q: 0, r: 0, s: 0, t: 0, u: 0, v: 0, w: 0, x: 4592e-6, y: 0, z: 0.119392, AB: 0.059696, BB: 0.064288, NB: 0.050512, OB: 0.036736, PB: 0.059696, CB: 0.064288, QB: 0.059696, RB: 0.06888, SB: 0.041328, TB: 0.13776, UB: 0.078064, VB: 0, WB: 0, XB: 0, YB: 0.06888, ZB: 0, aB: 0, bB: 0, cB: 0, dB: 0, eB: 4592e-6, fB: 9184e-6, gB: 9184e-6, hB: 9184e-6, iB: 0.027552, I: 0.036736, gC: 0.982688, VC: 0.29848, hC: 0, BD: 0, CD: 0, DD: 0, ED: 0 }, B: "moz", C: ["AD", "cC", "DD", "ED", "J", "jB", "L", "D", "E", "F", "A", "B", "C", "M", "N", "G", "O", "P", "Q", "kB", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "K", "KB", "LB", "MB", "lB", "mB", "nB", "oB", "pB", "qB", "rB", "sB", "tB", "uB", "vB", "wB", "xB", "yB", "zB", "0B", "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "9B", "AC", "BC", "CC", "dC", "DC", "eC", "EC", "FC", "GC", "HC", "IC", "JC", "KC", "LC", "MC", "NC", "OC", "PC", "QC", "RC", "SC", "TC", "UC", "R", "H", "S", "fC", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "BB", "NB", "OB", "PB", "CB", "QB", "RB", "SB", "TB", "UB", "VB", "WB", "XB", "YB", "ZB", "aB", "bB", "cB", "dB", "eB", "fB", "gB", "hB", "iB", "I", "gC", "VC", "hC", "BD", "CD"], E: "Firefox", F: { "0": 1690848e3, "1": 1693267200, "2": 1695686400, "3": 1698105600, "4": 1700524800, "5": 1702944e3, "6": 1705968e3, "7": 1708387200, "8": 1710806400, "9": 1713225600, AD: 1161648e3, cC: 1213660800, DD: 124632e4, ED: 1264032e3, J: 1300752e3, jB: 1308614400, L: 1313452800, D: 1317081600, E: 1317081600, F: 1320710400, A: 1324339200, B: 1327968e3, C: 1331596800, M: 1335225600, N: 1338854400, G: 1342483200, O: 1346112e3, P: 1349740800, Q: 1353628800, kB: 1357603200, DB: 1361232e3, EB: 1364860800, FB: 1368489600, GB: 1372118400, HB: 1375747200, IB: 1379376e3, JB: 1386633600, K: 1391472e3, KB: 1395100800, LB: 1398729600, MB: 1402358400, lB: 1405987200, mB: 1409616e3, nB: 1413244800, oB: 1417392e3, pB: 1421107200, qB: 1424736e3, rB: 1428278400, sB: 1431475200, tB: 1435881600, uB: 1439251200, vB: 144288e4, wB: 1446508800, xB: 1450137600, yB: 1453852800, zB: 1457395200, "0B": 1461628800, "1B": 1465257600, "2B": 1470096e3, "3B": 1474329600, "4B": 1479168e3, "5B": 1485216e3, "6B": 1488844800, "7B": 149256e4, "8B": 1497312e3, "9B": 1502150400, AC: 1506556800, BC: 1510617600, CC: 1516665600, dC: 1520985600, DC: 1525824e3, eC: 1529971200, EC: 1536105600, FC: 1540252800, GC: 1544486400, HC: 154872e4, IC: 1552953600, JC: 1558396800, KC: 1562630400, LC: 1567468800, MC: 1571788800, NC: 1575331200, OC: 1578355200, PC: 1581379200, QC: 1583798400, RC: 1586304e3, SC: 1588636800, TC: 1591056e3, UC: 1593475200, R: 1595894400, H: 1598313600, S: 1600732800, fC: 1603152e3, T: 1605571200, U: 1607990400, V: 1611619200, W: 1614038400, X: 1616457600, Y: 1618790400, Z: 1622505600, a: 1626134400, b: 1628553600, c: 1630972800, d: 1633392e3, e: 1635811200, f: 1638835200, g: 1641859200, h: 1644364800, i: 1646697600, j: 1649116800, k: 1651536e3, l: 1653955200, m: 1656374400, n: 1658793600, o: 1661212800, p: 1663632e3, q: 1666051200, r: 1668470400, s: 1670889600, t: 1673913600, u: 1676332800, v: 1678752e3, w: 1681171200, x: 1683590400, y: 1686009600, z: 1688428800, AB: 1715644800, BB: 1718064e3, NB: 1720483200, OB: 1722902400, PB: 1725321600, CB: 1727740800, QB: 173016e4, RB: 1732579200, SB: 1736208e3, TB: 1738627200, UB: 1741046400, VB: 1743465600, WB: 1745884800, XB: 1748304e3, YB: 1750723200, ZB: 1753142400, aB: 1755561600, bB: 1757980800, cB: 17604e5, dB: 1762819200, eB: 1765238400, fB: 1768262400, gB: 1771891200, hB: 1774310400, iB: 1776729600, I: 1779148800, gC: 1781568e3, VC: 1784592e3, hC: null, BD: null, CD: null } }, D: { A: { "0": 0.20664, "1": 0.09184, "2": 0.211232, "3": 0.36736, "4": 0.509712, "5": 0.013776, "6": 0.036736, "7": 0.018368, "8": 0.174496, "9": 0.087248, J: 0, jB: 0, L: 0, D: 0, E: 0, F: 0, A: 0, B: 0, C: 0, M: 0, N: 0, G: 0, O: 0, P: 0, Q: 0, kB: 0, DB: 0, EB: 0, FB: 0, GB: 0, HB: 0, IB: 0, JB: 0, K: 0, KB: 0, LB: 0, MB: 0, lB: 0, mB: 0, nB: 0, oB: 0, pB: 0, qB: 0, rB: 0, sB: 0, tB: 0.02296, uB: 0.02296, vB: 0.02296, wB: 0.02296, xB: 0.02296, yB: 0.02296, zB: 0.02296, "0B": 0.02296, "1B": 0.02296, "2B": 0.027552, "3B": 0.027552, "4B": 0.02296, "5B": 0.02296, "6B": 0.027552, "7B": 0.02296, "8B": 0.02296, "9B": 0.02296, AC: 0.02296, BC: 0.02296, CC: 0.02296, dC: 0.02296, DC: 0.02296, eC: 0, EC: 0, FC: 0, GC: 0, HC: 0, IC: 0, JC: 0, KC: 0, LC: 9184e-6, MC: 0.06888, NC: 0, OC: 0, PC: 0, QC: 0, RC: 0, SC: 0, TC: 0, UC: 0, R: 0.018368, H: 0, S: 0, T: 0, U: 0, V: 0, W: 4592e-6, X: 0.02296, Y: 0, Z: 0, a: 0, b: 9184e-6, c: 0, d: 9184e-6, e: 0, f: 0, g: 0, h: 4592e-6, i: 0.02296, j: 4592e-6, k: 0, l: 9184e-6, m: 9184e-6, n: 0.146944, o: 0.087248, p: 0.087248, q: 0.09184, r: 0.09184, s: 0.096432, t: 0.583184, u: 0.09184, v: 0.101024, w: 0.09184, x: 0, y: 0.018368, z: 9184e-6, AB: 0.036736, BB: 0.013776, NB: 0.064288, OB: 0.013776, PB: 0.027552, CB: 0.270928, QB: 0.073472, RB: 0.211232, SB: 0.04592, TB: 0.036736, UB: 0.247968, VB: 0.073472, WB: 0.123984, XB: 0.188272, YB: 0.036736, ZB: 0.04592, aB: 0.257152, bB: 0.073472, cB: 0.101024, dB: 0.904624, eB: 0.110208, fB: 0.220416, gB: 0.716352, hB: 5.04202, iB: 9.15645, I: 0.142352, gC: 9184e-6, VC: 0, hC: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "J", "jB", "L", "D", "E", "F", "A", "B", "C", "M", "N", "G", "O", "P", "Q", "kB", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "K", "KB", "LB", "MB", "lB", "mB", "nB", "oB", "pB", "qB", "rB", "sB", "tB", "uB", "vB", "wB", "xB", "yB", "zB", "0B", "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "9B", "AC", "BC", "CC", "dC", "DC", "eC", "EC", "FC", "GC", "HC", "IC", "JC", "KC", "LC", "MC", "NC", "OC", "PC", "QC", "RC", "SC", "TC", "UC", "R", "H", "S", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "BB", "NB", "OB", "PB", "CB", "QB", "RB", "SB", "TB", "UB", "VB", "WB", "XB", "YB", "ZB", "aB", "bB", "cB", "dB", "eB", "fB", "gB", "hB", "iB", "I", "gC", "VC", "hC"], E: "Chrome", F: { "0": 1692057600, "1": 1694476800, "2": 1696896e3, "3": 1698710400, "4": 1701993600, "5": 1705968e3, "6": 1708387200, "7": 1710806400, "8": 1713225600, "9": 1715644800, J: 1264377600, jB: 1274745600, L: 1283385600, D: 1287619200, E: 1291248e3, F: 1296777600, A: 1299542400, B: 1303862400, C: 1307404800, M: 1312243200, N: 1316131200, G: 1316131200, O: 1319500800, P: 1323734400, Q: 1328659200, kB: 1332892800, DB: 133704e4, EB: 1340668800, FB: 1343692800, GB: 1348531200, HB: 1352246400, IB: 1357862400, JB: 1361404800, K: 1364428800, KB: 1369094400, LB: 1374105600, MB: 1376956800, lB: 1384214400, mB: 1389657600, nB: 1392940800, oB: 1397001600, pB: 1400544e3, qB: 1405468800, rB: 1409011200, sB: 141264e4, tB: 1416268800, uB: 1421798400, vB: 1425513600, wB: 1429401600, xB: 143208e4, yB: 1437523200, zB: 1441152e3, "0B": 1444780800, "1B": 1449014400, "2B": 1453248e3, "3B": 1456963200, "4B": 1460592e3, "5B": 1464134400, "6B": 1469059200, "7B": 1472601600, "8B": 1476230400, "9B": 1480550400, AC: 1485302400, BC: 1489017600, CC: 149256e4, dC: 1496707200, DC: 1500940800, eC: 1504569600, EC: 1508198400, FC: 1512518400, GC: 1516752e3, HC: 1520294400, IC: 1523923200, JC: 1527552e3, KC: 1532390400, LC: 1536019200, MC: 1539648e3, NC: 1543968e3, OC: 154872e4, PC: 1552348800, QC: 1555977600, RC: 1559606400, SC: 1564444800, TC: 1568073600, UC: 1571702400, R: 1575936e3, H: 1580860800, S: 1586304e3, T: 1589846400, U: 1594684800, V: 1598313600, W: 1601942400, X: 1605571200, Y: 1611014400, Z: 1614556800, a: 1618272e3, b: 1621987200, c: 1626739200, d: 1630368e3, e: 1632268800, f: 1634601600, g: 1637020800, h: 1641340800, i: 1643673600, j: 1646092800, k: 1648512e3, l: 1650931200, m: 1653350400, n: 1655769600, o: 1659398400, p: 1661817600, q: 1664236800, r: 1666656e3, s: 166968e4, t: 1673308800, u: 1675728e3, v: 1678147200, w: 1680566400, x: 1682985600, y: 1685404800, z: 1689724800, AB: 1718064e3, BB: 1721174400, NB: 1724112e3, OB: 1726531200, PB: 1728950400, CB: 1731369600, QB: 1736812800, RB: 1738627200, SB: 1741046400, TB: 1743465600, UB: 1745884800, VB: 1748304e3, WB: 1750723200, XB: 1754352e3, YB: 1756771200, ZB: 1759190400, aB: 1761609600, bB: 1764633600, cB: 1768262400, dB: 1770681600, eB: 1773100800, fB: 177552e4, gB: 1777939200, hB: 1780358400, iB: 1782777600, I: 1785196800, gC: null, VC: null, hC: null } }, E: { A: { J: 0, jB: 0, L: 0, D: 0, E: 0, F: 0, A: 0, B: 0, C: 0, M: 0, N: 4592e-6, G: 0, K: 9184e-6, FD: 0, iC: 0, GD: 0, HD: 0, ID: 0, JD: 0, jC: 0, WC: 0, XC: 0, KD: 0.013776, LD: 0.018368, MD: 0, kC: 0, lC: 0, YC: 0, ND: 0.064288, ZC: 0, mC: 4592e-6, nC: 4592e-6, oC: 9184e-6, pC: 4592e-6, qC: 9184e-6, OD: 0.105616, aC: 9184e-6, rC: 0.087248, sC: 9184e-6, tC: 9184e-6, uC: 0.018368, vC: 0.036736, PD: 0.133168, bC: 4592e-6, wC: 0.013776, xC: 9184e-6, yC: 0.027552, zC: 9184e-6, "0C": 0.293888, "1C": 0.013776, "2C": 0.013776, "3C": 0.055104, "4C": 0.078064, "5C": 0.050512, "6C": 1.35005, QD: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "FD", "iC", "J", "jB", "GD", "L", "HD", "D", "ID", "E", "F", "JD", "A", "jC", "B", "WC", "C", "XC", "M", "KD", "N", "LD", "G", "MD", "kC", "lC", "YC", "ND", "ZC", "mC", "nC", "oC", "pC", "qC", "OD", "aC", "rC", "sC", "tC", "uC", "vC", "PD", "bC", "wC", "xC", "yC", "zC", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "K", "QD"], E: "Safari", F: { FD: 1205798400, iC: 1226534400, J: 1244419200, jB: 1275868800, GD: 131112e4, L: 1343174400, HD: 13824e5, D: 13824e5, ID: 1410998400, E: 1413417600, F: 1443657600, JD: 1458518400, A: 1474329600, jC: 1490572800, B: 1505779200, WC: 1522281600, C: 1537142400, XC: 1553472e3, M: 1568851200, KD: 1585008e3, N: 1600214400, LD: 1619395200, G: 1632096e3, MD: 1635292800, kC: 1639353600, lC: 1647216e3, YC: 1652745600, ND: 1658275200, ZC: 1662940800, mC: 1666569600, nC: 1670889600, oC: 1674432e3, pC: 1679875200, qC: 1684368e3, OD: 1690156800, aC: 1695686400, rC: 1698192e3, sC: 1702252800, tC: 1705881600, uC: 1709596800, vC: 1715558400, PD: 1722211200, bC: 1726444800, wC: 1730073600, xC: 1733875200, yC: 1737936e3, zC: 1743379200, "0C": 1747008e3, "1C": 1757894400, "2C": 1762128e3, "3C": 1762041600, "4C": 1770854400, "5C": 1774310400, "6C": null, K: null, QD: null } }, F: { A: { "0": 0, "1": 0, "2": 0, "3": 0, "4": 0, "5": 0, "6": 0, "7": 0, "8": 0, "9": 0, F: 0, B: 0, C: 0, G: 0, O: 0, P: 0, Q: 0, kB: 0, DB: 0, EB: 0, FB: 0, GB: 0, HB: 0, IB: 0, JB: 0, K: 0, KB: 0, LB: 0, MB: 0, lB: 0, mB: 0, nB: 0, oB: 0, pB: 0, qB: 0, rB: 0, sB: 0, tB: 0, uB: 0, vB: 0, wB: 0, xB: 0, yB: 0, zB: 0, "0B": 4592e-6, "1B": 0, "2B": 0, "3B": 0, "4B": 0, "5B": 0, "6B": 0, "7B": 0, "8B": 0, "9B": 0, AC: 0, BC: 0, CC: 0, DC: 0, EC: 0, FC: 0, GC: 0, HC: 0, IC: 0, JC: 0, KC: 0, LC: 0, MC: 0, NC: 0, OC: 0, PC: 0, QC: 0, RC: 0, SC: 0, TC: 0, UC: 0, R: 0, H: 0, S: 0, fC: 0, T: 0, U: 0, V: 0, W: 0, X: 0, Y: 0, Z: 0, a: 0, b: 0, c: 0, d: 0, e: 0, f: 0.027552, g: 0, h: 0, i: 4592e-6, j: 0.02296, k: 0.128576, l: 0, m: 0, n: 0, o: 0, p: 0, q: 0, r: 0, s: 0, t: 0, u: 0, v: 0, w: 0, x: 0, y: 0, z: 0, AB: 0, BB: 0, CB: 0.059696, RD: 0, SD: 0, TD: 0, UD: 0, WC: 0, "7C": 0, VD: 0, XC: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "F", "RD", "SD", "TD", "UD", "B", "WC", "7C", "VD", "C", "XC", "G", "O", "P", "Q", "kB", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "K", "KB", "LB", "MB", "lB", "mB", "nB", "oB", "pB", "qB", "rB", "sB", "tB", "uB", "vB", "wB", "xB", "yB", "zB", "0B", "1B", "2B", "3B", "4B", "5B", "6B", "7B", "8B", "9B", "AC", "BC", "CC", "DC", "EC", "FC", "GC", "HC", "IC", "JC", "KC", "LC", "MC", "NC", "OC", "PC", "QC", "RC", "SC", "TC", "UC", "R", "H", "S", "fC", "T", "U", "V", "W", "X", "Y", "Z", "a", "b", "c", "d", "e", "f", "g", "h", "i", "j", "k", "l", "m", "n", "o", "p", "q", "r", "s", "t", "u", "v", "w", "x", "y", "z", "0", "1", "2", "3", "4", "5", "6", "7", "8", "9", "AB", "BB", "CB", "", "", ""], E: "Opera", F: { "0": 1736294400, "1": 1739404800, "2": 1744675200, "3": 1747094400, "4": 1751414400, "5": 1756339200, "6": 1757548800, "7": 1761609600, "8": 1762992e3, "9": 1764806400, F: 1150761600, RD: 1223424e3, SD: 1251763200, TD: 1267488e3, UD: 1277942400, B: 1292457600, WC: 1302566400, "7C": 1309219200, VD: 1323129600, C: 1323129600, XC: 1352073600, G: 1372723200, O: 1377561600, P: 1381104e3, Q: 1386288e3, kB: 1390867200, DB: 1393891200, EB: 1399334400, FB: 1401753600, GB: 1405987200, HB: 1409616e3, IB: 1413331200, JB: 1417132800, K: 1422316800, KB: 1425945600, LB: 1430179200, MB: 1433808e3, lB: 1438646400, mB: 1442448e3, nB: 1445904e3, oB: 1449100800, pB: 1454371200, qB: 1457308800, rB: 146232e4, sB: 1465344e3, tB: 1470096e3, uB: 1474329600, vB: 1477267200, wB: 1481587200, xB: 1486425600, yB: 1490054400, zB: 1494374400, "0B": 1498003200, "1B": 1502236800, "2B": 1506470400, "3B": 1510099200, "4B": 1515024e3, "5B": 1517961600, "6B": 1521676800, "7B": 1525910400, "8B": 1530144e3, "9B": 1534982400, AC: 1537833600, BC: 1543363200, CC: 1548201600, DC: 1554768e3, EC: 1561593600, FC: 1566259200, GC: 1570406400, HC: 1573689600, IC: 1578441600, JC: 1583971200, KC: 1587513600, LC: 1592956800, MC: 1595894400, NC: 1600128e3, OC: 1603238400, PC: 161352e4, QC: 1612224e3, RC: 1616544e3, SC: 1619568e3, TC: 1623715200, UC: 1627948800, R: 1631577600, H: 1633392e3, S: 1635984e3, fC: 1638403200, T: 1642550400, U: 1644969600, V: 1647993600, W: 1650412800, X: 1652745600, Y: 1654646400, Z: 1657152e3, a: 1660780800, b: 1663113600, c: 1668816e3, d: 1668643200, e: 1671062400, f: 1675209600, g: 1677024e3, h: 1679529600, i: 1681948800, j: 1684195200, k: 1687219200, l: 1690329600, m: 1692748800, n: 1696204800, o: 169992e4, p: 169992e4, q: 1702944e3, r: 1707264e3, s: 1710115200, t: 1711497600, u: 1716336e3, v: 1719273600, w: 1721088e3, x: 1724284800, y: 1727222400, z: 1732665600, AB: 1769990400, BB: 1772064e3, CB: 1776124800 }, D: { F: "o", B: "o", C: "o", RD: "o", SD: "o", TD: "o", UD: "o", WC: "o", "7C": "o", VD: "o", XC: "o" } }, G: { A: { E: 0, iC: 0, WD: 0, "8C": 137471e-8, XD: 0, YD: 0, ZD: 274943e-8, aD: 0, bD: 137471e-8, cD: 0, dD: 0, eD: 0.0137471, fD: 0.14572, gD: 274943e-8, hD: 0, iD: 0.0426161, jD: 0, kD: 137471e-8, lD: 0, mD: 274943e-8, nD: 824828e-8, oD: 962299e-8, pD: 0.0123724, kC: 687357e-8, lC: 962299e-8, YC: 0.0109977, qD: 0.230952, ZC: 0.019246, mC: 0.0329931, nC: 0.0178713, oC: 0.0371173, pC: 824828e-8, qC: 0.0137471, rD: 0.306561, aC: 0.0137471, rC: 0.0178713, sC: 0.0164966, tC: 0.0233701, uC: 0.0357426, vC: 0.0728598, sD: 0.178713, bC: 0.0412414, wC: 0.0783587, xC: 0.0426161, yC: 0.123724, zC: 0.0563633, "0C": 1.96309, "1C": 0.118225, "2C": 0.123724, "3C": 0.343678, "4C": 0.400042, "5C": 0.339554, "6C": 8.79954 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "iC", "WD", "8C", "XD", "YD", "ZD", "E", "aD", "bD", "cD", "dD", "eD", "fD", "gD", "hD", "iD", "jD", "kD", "lD", "mD", "nD", "oD", "pD", "kC", "lC", "YC", "qD", "ZC", "mC", "nC", "oC", "pC", "qC", "rD", "aC", "rC", "sC", "tC", "uC", "vC", "sD", "bC", "wC", "xC", "yC", "zC", "0C", "1C", "2C", "3C", "4C", "5C", "6C", "", ""], E: "Safari on iOS", F: { iC: 1270252800, WD: 1283904e3, "8C": 1299628800, XD: 1331078400, YD: 1359331200, ZD: 1394409600, E: 1410912e3, aD: 1413763200, bD: 1442361600, cD: 1458518400, dD: 1473724800, eD: 1490572800, fD: 1505779200, gD: 1522281600, hD: 1537142400, iD: 1553472e3, jD: 1568851200, kD: 1572220800, lD: 1580169600, mD: 1585008e3, nD: 1600214400, oD: 1619395200, pD: 1632096e3, kC: 1639353600, lC: 1647216e3, YC: 1652659200, qD: 1658275200, ZC: 1662940800, mC: 1666569600, nC: 1670889600, oC: 1674432e3, pC: 1679875200, qC: 1684368e3, rD: 1690156800, aC: 1694995200, rC: 1698192e3, sC: 1702252800, tC: 1705881600, uC: 1709596800, vC: 1715558400, sD: 1722211200, bC: 1726444800, wC: 1730073600, xC: 1733875200, yC: 1737936e3, zC: 1743379200, "0C": 1747008e3, "1C": 1757894400, "2C": 1762128e3, "3C": 1765497600, "4C": 1770854400, "5C": 1774310400, "6C": null } }, H: { A: { tD: 0 }, B: "o", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "tD", "", "", ""], E: "Opera Mini", F: { tD: 1426464e3 } }, I: { A: { cC: 0, J: 0, I: 0.0324156, uD: 0, vD: 0, wD: 0, xD: 32448e-10, "8C": 0, yD: 0, zD: 129792e-10 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "uD", "vD", "wD", "cC", "J", "xD", "8C", "yD", "zD", "I", "", "", ""], E: "Android Browser", F: { uD: 1256515200, vD: 1274313600, wD: 1291593600, cC: 1298332800, J: 1318896e3, xD: 1341792e3, "8C": 1374624e3, yD: 1386547200, zD: 1401667200, I: 1784073600 } }, J: { A: { D: 0, A: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "D", "A", "", "", ""], E: "Blackberry Browser", F: { D: 1325376e3, A: 1359504e3 } }, K: { A: { A: 0, B: 0, C: 0, H: 0.978848, WC: 0, "7C": 0, XC: 0 }, B: "o", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "A", "B", "WC", "7C", "C", "XC", "H", "", "", ""], E: "Opera Mobile", F: { A: 1287100800, B: 1300752e3, WC: 1314835200, "7C": 1318291200, C: 1330300800, XC: 1349740800, H: 1709769600 }, D: { H: "webkit" } }, L: { A: { I: 46.3251 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "I", "", "", ""], E: "Chrome for Android", F: { I: 1784073600 } }, M: { A: { VC: 0.362336 }, B: "moz", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "VC", "", "", ""], E: "Firefox for Android", F: { VC: 1784592e3 } }, N: { A: { A: 0, B: 0 }, B: "ms", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "A", "B", "", "", ""], E: "IE Mobile", F: { A: 1340150400, B: 1353456e3 } }, O: { A: { YC: 0.681408 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "YC", "", "", ""], E: "UC Browser for Android", F: { YC: 1710115200 }, D: { YC: "webkit" } }, P: { A: { J: 0, DB: 0, EB: 684278e-8, FB: 684278e-8, GB: 684278e-8, HB: 684278e-8, IB: 0.0136856, JB: 0.0273711, K: 0.0205283, KB: 0.0547422, LB: 0.102642, MB: 1.088, "0D": 0, "1D": 0, "2D": 684278e-8, "3D": 0, "4D": 0, jC: 0, "5D": 0, "6D": 0, "7D": 0, "8D": 0, "9D": 0, ZC: 0, aC: 0, bC: 0, AE: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "J", "0D", "1D", "2D", "3D", "4D", "jC", "5D", "6D", "7D", "8D", "9D", "ZC", "aC", "bC", "AE", "DB", "EB", "FB", "GB", "HB", "IB", "JB", "K", "KB", "LB", "MB", "", "", ""], E: "Samsung Internet", F: { J: 1461024e3, "0D": 1481846400, "1D": 1509408e3, "2D": 1528329600, "3D": 1546128e3, "4D": 1554163200, jC: 1567900800, "5D": 1582588800, "6D": 1593475200, "7D": 1605657600, "8D": 1618531200, "9D": 1629072e3, ZC: 1640736e3, aC: 1651708800, bC: 1659657600, AE: 1667260800, DB: 1677369600, EB: 1684454400, FB: 1689292800, GB: 1697587200, HB: 1711497600, IB: 1715126400, JB: 1717718400, K: 1725667200, KB: 1746057600, LB: 1761264e3, MB: 1779235200 } }, Q: { A: { BE: 0.097344 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "BE", "", "", ""], E: "QQ Browser", F: { BE: 1710288e3 } }, R: { A: { CE: 0 }, B: "webkit", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "CE", "", "", ""], E: "Baidu Browser", F: { CE: 1710201600 } }, S: { A: { DE: 5408e-6, EE: 0 }, B: "moz", C: ["", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "", "DE", "EE", "", "", ""], E: "KaiOS Browser", F: { DE: 1527811200, EE: 1631664e3 } } };
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/agents.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/agents.js
 var require_agents2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/agents.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/agents.js"(exports, module) {
     "use strict";
     var browsers = require_browsers2().browsers;
     var versions = require_browserVersions2().browserVersions;
@@ -52582,9 +55694,9 @@ var require_agents2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/electron-to-chromium/versions.js
+// ../../node_modules/.bun/electron-to-chromium@1.5.411/node_modules/electron-to-chromium/versions.js
 var require_versions = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/electron-to-chromium/versions.js"(exports, module) {
+  "../../node_modules/.bun/electron-to-chromium@1.5.411/node_modules/electron-to-chromium/versions.js"(exports, module) {
     module.exports = {
       "0.20": "39",
       "0.21": "41",
@@ -52832,22 +55944,199 @@ var require_versions = __commonJS({
       "41.4": "146",
       "41.5": "146",
       "41.6": "146",
+      "41.7": "146",
+      "41.8": "146",
+      "41.9": "146",
+      "41.10": "146",
       "42.0": "148",
-      "43.0": "150"
+      "42.1": "148",
+      "42.2": "148",
+      "42.3": "148",
+      "42.4": "148",
+      "42.5": "148",
+      "42.6": "148",
+      "42.7": "148",
+      "42.8": "148",
+      "42.9": "148",
+      "43.0": "150",
+      "43.1": "150",
+      "43.2": "150",
+      "43.3": "150",
+      "43.4": "150",
+      "44.0": "152"
     };
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/node-releases/data/release-schedule/release-schedule.json
+// ../../node_modules/.bun/node-releases@2.0.53/node_modules/node-releases/data/release-schedule/release-schedule.json
 var require_release_schedule = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/node-releases/data/release-schedule/release-schedule.json"(exports, module) {
-    module.exports = { "v0.8": { start: "2012-06-25", end: "2014-07-31" }, "v0.10": { start: "2013-03-11", end: "2016-10-31" }, "v0.12": { start: "2015-02-06", end: "2016-12-31" }, v4: { start: "2015-09-08", lts: "2015-10-12", maintenance: "2017-04-01", end: "2018-04-30", codename: "Argon" }, v5: { start: "2015-10-29", maintenance: "2016-04-30", end: "2016-06-30" }, v6: { start: "2016-04-26", lts: "2016-10-18", maintenance: "2018-04-30", end: "2019-04-30", codename: "Boron" }, v7: { start: "2016-10-25", maintenance: "2017-04-30", end: "2017-06-30" }, v8: { start: "2017-05-30", lts: "2017-10-31", maintenance: "2019-01-01", end: "2019-12-31", codename: "Carbon" }, v9: { start: "2017-10-01", maintenance: "2018-04-01", end: "2018-06-30" }, v10: { start: "2018-04-24", lts: "2018-10-30", maintenance: "2020-05-19", end: "2021-04-30", codename: "Dubnium" }, v11: { start: "2018-10-23", maintenance: "2019-04-22", end: "2019-06-01" }, v12: { start: "2019-04-23", lts: "2019-10-21", maintenance: "2020-11-30", end: "2022-04-30", codename: "Erbium" }, v13: { start: "2019-10-22", maintenance: "2020-04-01", end: "2020-06-01" }, v14: { start: "2020-04-21", lts: "2020-10-27", maintenance: "2021-10-19", end: "2023-04-30", codename: "Fermium" }, v15: { start: "2020-10-20", maintenance: "2021-04-01", end: "2021-06-01" }, v16: { start: "2021-04-20", lts: "2021-10-26", maintenance: "2022-10-18", end: "2023-09-11", codename: "Gallium" }, v17: { start: "2021-10-19", maintenance: "2022-04-01", end: "2022-06-01" }, v18: { start: "2022-04-19", lts: "2022-10-25", maintenance: "2023-10-18", end: "2025-04-30", codename: "Hydrogen" }, v19: { start: "2022-10-18", maintenance: "2023-04-01", end: "2023-06-01" }, v20: { start: "2023-04-18", lts: "2023-10-24", maintenance: "2024-10-22", end: "2026-04-30", codename: "Iron" }, v21: { start: "2023-10-17", maintenance: "2024-04-01", end: "2024-06-01" }, v22: { start: "2024-04-24", lts: "2024-10-29", maintenance: "2025-10-21", end: "2027-04-30", codename: "Jod" }, v23: { start: "2024-10-16", maintenance: "2025-04-01", end: "2025-06-01" }, v24: { start: "2025-05-06", lts: "2025-10-28", maintenance: "2026-10-20", end: "2028-04-30", codename: "Krypton" }, v25: { start: "2025-10-15", maintenance: "2026-04-01", end: "2026-06-01" }, v26: { start: "2026-05-05", lts: "2026-10-28", maintenance: "2027-10-20", end: "2029-04-30", codename: "" } };
+  "../../node_modules/.bun/node-releases@2.0.53/node_modules/node-releases/data/release-schedule/release-schedule.json"(exports, module) {
+    module.exports = {
+      "v0.8": {
+        start: "2012-06-25",
+        end: "2014-07-31"
+      },
+      "v0.10": {
+        start: "2013-03-11",
+        end: "2016-10-31"
+      },
+      "v0.12": {
+        start: "2015-02-06",
+        end: "2016-12-31"
+      },
+      v4: {
+        start: "2015-09-08",
+        lts: "2015-10-12",
+        maintenance: "2017-04-01",
+        end: "2018-04-30",
+        codename: "Argon"
+      },
+      v5: {
+        start: "2015-10-29",
+        maintenance: "2016-04-30",
+        end: "2016-06-30"
+      },
+      v6: {
+        start: "2016-04-26",
+        lts: "2016-10-18",
+        maintenance: "2018-04-30",
+        end: "2019-04-30",
+        codename: "Boron"
+      },
+      v7: {
+        start: "2016-10-25",
+        maintenance: "2017-04-30",
+        end: "2017-06-30"
+      },
+      v8: {
+        start: "2017-05-30",
+        lts: "2017-10-31",
+        maintenance: "2019-01-01",
+        end: "2019-12-31",
+        codename: "Carbon"
+      },
+      v9: {
+        start: "2017-10-01",
+        maintenance: "2018-04-01",
+        end: "2018-06-30"
+      },
+      v10: {
+        start: "2018-04-24",
+        lts: "2018-10-30",
+        maintenance: "2020-05-19",
+        end: "2021-04-30",
+        codename: "Dubnium"
+      },
+      v11: {
+        start: "2018-10-23",
+        maintenance: "2019-04-22",
+        end: "2019-06-01"
+      },
+      v12: {
+        start: "2019-04-23",
+        lts: "2019-10-21",
+        maintenance: "2020-11-30",
+        end: "2022-04-30",
+        codename: "Erbium"
+      },
+      v13: {
+        start: "2019-10-22",
+        maintenance: "2020-04-01",
+        end: "2020-06-01"
+      },
+      v14: {
+        start: "2020-04-21",
+        lts: "2020-10-27",
+        maintenance: "2021-10-19",
+        end: "2023-04-30",
+        codename: "Fermium"
+      },
+      v15: {
+        start: "2020-10-20",
+        maintenance: "2021-04-01",
+        end: "2021-06-01"
+      },
+      v16: {
+        start: "2021-04-20",
+        lts: "2021-10-26",
+        maintenance: "2022-10-18",
+        end: "2023-09-11",
+        codename: "Gallium"
+      },
+      v17: {
+        start: "2021-10-19",
+        maintenance: "2022-04-01",
+        end: "2022-06-01"
+      },
+      v18: {
+        start: "2022-04-19",
+        lts: "2022-10-25",
+        maintenance: "2023-10-18",
+        end: "2025-04-30",
+        codename: "Hydrogen"
+      },
+      v19: {
+        start: "2022-10-18",
+        maintenance: "2023-04-01",
+        end: "2023-06-01"
+      },
+      v20: {
+        start: "2023-04-18",
+        lts: "2023-10-24",
+        maintenance: "2024-10-22",
+        end: "2026-04-30",
+        codename: "Iron"
+      },
+      v21: {
+        start: "2023-10-17",
+        maintenance: "2024-04-01",
+        end: "2024-06-01"
+      },
+      v22: {
+        start: "2024-04-24",
+        lts: "2024-10-29",
+        maintenance: "2025-10-21",
+        end: "2027-04-30",
+        codename: "Jod"
+      },
+      v23: {
+        start: "2024-10-16",
+        maintenance: "2025-04-01",
+        end: "2025-06-01"
+      },
+      v24: {
+        start: "2025-05-06",
+        lts: "2025-10-28",
+        maintenance: "2026-10-20",
+        end: "2028-04-30",
+        codename: "Krypton"
+      },
+      v25: {
+        start: "2025-10-15",
+        maintenance: "2026-04-01",
+        end: "2026-06-01"
+      },
+      v26: {
+        start: "2026-05-05",
+        lts: "2026-10-28",
+        maintenance: "2027-10-20",
+        end: "2029-04-30",
+        codename: ""
+      },
+      v27: {
+        alpha: "2026-10-28",
+        start: "2027-04-22",
+        maintenance: "2027-10-20",
+        end: "2030-04-30",
+        codename: ""
+      }
+    };
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/error.js
+// ../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/error.js
 var require_error = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/error.js"(exports, module) {
+  "../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/error.js"(exports, module) {
     function BrowserslistError(message) {
       this.name = "BrowserslistError";
       this.message = message;
@@ -52862,9 +56151,9 @@ var require_error = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/lib/statuses.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/lib/statuses.js
 var require_statuses = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/lib/statuses.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/lib/statuses.js"(exports, module) {
     module.exports = {
       1: "ls",
       // WHATWG Living Standard
@@ -52884,9 +56173,9 @@ var require_statuses = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/lib/supported.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/lib/supported.js
 var require_supported = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/lib/supported.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/lib/supported.js"(exports, module) {
     module.exports = {
       y: 1 << 0,
       n: 1 << 1,
@@ -52899,15 +56188,57 @@ var require_supported = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/feature.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/versionGroups.js
+var require_versionGroups = __commonJS({
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/data/versionGroups.js"(exports, module) {
+    module.exports = { "0": "_I _IB", "1": "_d XD", "2": "_sS _tI", "3": "_4 _e", "4": "J jB", "5": "B C", "6": "_Y _QF", "7": "_xS _pI", "8": "_BE _AB", "9": "eD _AB", A: "A B", B: "D A", C: "DE EE", D: "_DE _cP", E: "_PC 9C", F: "J _U", G: "_DD _tS", H: "_NC _KP", I: "_v _UB", J: "_XH _sI", K: "_H _sI", L: "DD ED", M: "_2 _p", N: "_DE _uS", O: "_JG _tS", P: "_SH _sE", Q: "_vI _BC", R: "_5T _VH", S: "_vS _wE", T: "_h _P", U: "_EB _uE", V: "F _A", W: "_DD _pK", X: "I _w", Y: "_4 _dC", Z: "_OC 9C", a: "_H _pM", b: "_SC _wS", c: "_FB 9C", d: "iC _GG", e: "FD iC", f: "_g _L", g: "AD cC", h: "F _5", i: "J _e", j: "_eM _hE", k: "uD vD", l: "_k wD", m: "_g _6", n: "_g _Y", o: "_d _vC", p: "_FD _AB", q: "_j _pE", r: "E _yS", s: "_4 _UH", t: "_q _hK", u: "_6 _cC", v: "C _AC", w: "yD zD", x: "_vI _tB", y: "_0E 9C", z: "_TC _p", AB: "_qK _jB", BB: "_5 _uS", CB: "_qM _sM", DB: "_o ZD", EB: "_GH _NB", FB: "_bD E", GB: "_bD 9C", HB: "_yI _VH", IB: "R _3D", JB: "C M", KB: "cC _l", LB: "_rM _VH", MB: "_4D _MP", NB: "_AG _qB", OB: "_2 _eC", PB: "F _LD", QB: "_zI _WH", RB: "_JG _2S", SB: "_RC _WH", TB: "_PG _vM", UB: "_9B _8B", VB: "_cC fC", WB: "_2 _FD", XB: "_6T _sM", YB: "H XC", ZB: "_v _9B", aB: "_m _VB", bB: "_DE _sB", cB: "_6T _eP", dB: "_4S _yS", eB: "F _jK", fB: "_A _sB", gB: "_EB _mU", hB: "_OB dD", iB: "_8T _eP", jB: "_oK _fD", kB: "_vE _tB", lB: "F RD", mB: "jB _XB", nB: "_tM _wS", oB: "_yI _zS", pB: "_QB jC", qB: "LB MB", rB: "EC FC", sB: "WC 7C", tB: "_VB _oM", uB: "_7D _gD", vB: "_4 L", wB: "_EB _7T", xB: "_EB _DU", yB: "_rE JD", zB: "FB _CC", "0B": "_aC _ZK", "1B": "J _RH", "2B": "_xS DC", "3B": "_v G", "4B": "EB _zB", "5B": "_XP _EU", "6B": "_JG _wI", "7B": "_jC _p", "8B": "P Q", "9B": "G O", AC: "M N", BC: "_cC _FG", CC: "_FH _NB", DC: "_Y G", EC: "_vE _BC", FC: "_QF _BC", GC: "_Y _hD", HC: "_4 _bD", IC: "_QF _tB", JC: "_uC _A", KC: "_iK _kC", LC: "_g DD", MC: "_rK _zS", NC: "_JF _BH", OC: "_bD _uC", PC: "_OC _A", QC: "_eK _iI", RC: "_4 _OC", SC: "_H _h", TC: "E _mM", UC: "_EE _gE", VC: "_HD _oM", WC: "_wC _qE", XC: "_vB _jP", YC: "vB wB", ZC: "xB yB", aC: "_UB kB", bC: "_MF _PF", cC: "_lE _OF", dC: "_PC _v", eC: "bD cD", fC: "_mE _CD", gC: "D _uC", hC: "kB _EB", iC: "_OF _FG", jC: "E aD", kC: "_dP _jB", lC: "6B _iE", mC: "_9C IC", nC: "_1B 2D", oC: "F _SH", pC: "J 0D", qC: "iC WD", rC: "_OH _pI", sC: "_vI _wE", tC: "_CT _tE", uC: "E F", vC: "XD YD", wC: "_WB _qK", xC: "_n _hD", yC: "_WB fD", zC: "K _tE", "0C": "_g _GU", "1C": "_LG _HU", "2C": "_vB _UH", "3C": "_HC _jP", "4C": "_MD _sB", "5C": "_8T _CU", "6C": "_OD _p", "7C": "_lP _sI", "8C": "_1K _fD", "9C": "_rB _vT", AD: "dC DC", BD: "_oE _hS", CD: "_AD eC", DD: "cC J", ED: "jC WC", FD: "_eC _BE", GD: "_MH _CD", HD: "_OF fC", ID: "_KG _MF", JD: "_WB _HG", KD: "J _qI", LD: "_rM _fP", MD: "_uM _SH", ND: "_MH _uI", OD: "E _9T", PD: "_lI _IE", QD: "GD _yB", RD: "_RF _gP", SD: "C _YB", TD: "I zD", UD: "_H _FC", VD: "_Y _aH", WD: "_5 _cP", XD: "_HE _qE", YD: "_iP _xK", ZD: "_yK _2I", aD: "_nU _wE", bD: "L D", cD: "sB tB", dD: "_kE _iE", eD: "_KF _j", fD: "_BD _9D", gD: "_mE _uI", hD: "_8D _6D", iD: "_GD _BC", jD: "_NF _CD", kD: "_A _v", lD: "_HD _oI", mD: "_FE _cM", nD: "_4D V", oD: "_4D _LP", pD: "_vS _VB", qD: "_rB GC", rD: "E _tI", sD: "_NC 4", tD: "_EB _pU", uD: "_ZC zB", vD: "_MD _kK", wD: "_6S _zE", xD: "_nP _1S", yD: "_eH R", zD: "_7M _1S", "0D": "_IU _FC", "1D": "_KU _L", "2D": "_oU _mK", "3D": "H S", "4D": "T U", "5D": "_KH _jE", "6D": "_LH _QC", "7D": "_5D _bC", "8D": "_nE _7D", "9D": "_xT _DG", AE: "XC KD", BE: "dD eD", CE: "_oS _qS", DE: "_A C", EE: "_MB _bK", FE: "_9C _UP", GE: "O _8B", HE: "_DC _lU", IE: "_lK _jB", JE: "_fC _BC", KE: "_hE _pE", LE: "_Y _8D", ME: "_sK CB", NE: "_7D _6D", OE: "_ED _AE", PE: "_nK _fD", QE: "J _MU", RE: "K _OT", SE: "_H _1S", TE: "_dD 9B", UE: "_jS _PD", VE: "_2T _fD", WE: "_h _DJ", XE: "_ZH 7D", YE: "_TF _XG", ZE: "_3I _BU", aE: "_RG _sI", bE: "_6S _iD", cE: "_qP _BU", dE: "_KT _jB", eE: "_NU _tE", fE: "AB BB", gE: "_sT _ZI", hE: "_bS _IH", iE: "7B 8B", jE: "oB pB", kE: "5B 6B", lE: "_9C _gK", mE: "_6D _MH", nE: "_aC _EB", oE: "bC wC", pE: "_WP hC", qE: "ZC _kI", rE: "HD ID", sE: "_kK XC", tE: "_nK _mK", uE: "_qI _nM", vE: "_7D _fC", wE: "_tB _L", xE: "_aC _GH", yE: "_MB _YK", zE: "_GD _tB", "0E": "_OC A", "1E": "_IB fC", "2E": "_dD _JH", "3E": "_RF M", "4E": "_Y _KG", "5E": "_Y _ID", "6E": "_H _OG", "7E": "_H _xM", "8E": "_EB _nM", "9E": "_eC dD", AF: "_DD _PH", BF: "_n _QU", CF: "_JD iD", DF: "_mC JC", EF: "_3I _hP", FF: "_9S _zE", GF: "_rP _ND", HF: "_5M _EC", IF: "W X", JF: "0 1", KF: "_MB _ZM", LF: "_bM _TP", MF: "qB rB", NF: "_JH _dM", OF: "_fM _IB", PF: "_jI _YC", QF: "_OH _CD", RF: "_LG C", SF: "_xE IB", TF: "_JD _nI", UF: "HB _NB", VF: "_KP _fE", WF: "_MB _YS", XF: "_fC _tB", YF: "_h _hD", ZF: "_uK oB", aF: "_hC _uB", bF: "_aC DB", cF: "_9B P", dF: "_MB _HP", eF: "_jM OD", fF: "_Y _3S", gF: "_EE _sT", hF: "_GC _2E", iF: "_ZH _aP", jF: "ID JD", kF: "_KD jC", lF: "_wC _oK", mF: "J _PH", nF: "_H _zE", oF: "_H _FU", pF: "_EB _mS", qF: "_EB _SU", rF: "_Y _1M", sF: "_Y _bF", tF: "_TH _0S", uF: "_vI _cC", vF: "_a XC", wF: "_x ED", xF: "_iP _7K", yF: "_2B _P", zF: "_ZB P", "0F": "_TF oD", "1F": "_kP _uB", "2F": "_nC 3D", "3F": "_8S _iD", "4F": "_VG _TS", "5F": "_BT _kB", "6F": "_IT _lD", "7F": "_qU _bP", "8F": "v w", "9F": "_US _JP", AG: "IB _tT", BG: "QC RC", CG: "_fI _uT", DG: "5C 6C", EG: "_gM _hM", FG: "_eD _pE", GG: "WD 8C", HG: "fD _iK", IG: "_ED _rI", JG: "_DD I", KG: "_nE _5D", LG: "_4 _PC", MG: "_dS _QC", NG: "KB _qB", OG: "_bC _gD", PG: "_4 _FB", QG: "_dM _CD", RG: "_H _GE", SG: "_xI _BC", TG: "_lE _BG", UG: "_kE 7B", VG: "_wM _DH", WG: "_qT _fE", XG: "_nS kC", YG: "_vK 3B", ZG: "_H _zB", aG: "_LH _eK", bG: "_wK mB", cG: "_sK _t", dG: "_lE QC", eG: "_HE _nK", fG: "_KE _hK", gG: "B _sB", hG: "L GD", iG: "1 _BH", jG: "cD _8", kG: "_NC _CH", lG: "_IB _nD", mG: "_IB _oD", nG: "_H _WM", oG: "_MH DC", pG: "_Y _aC", qG: "_Y _xE", rG: "_Y _vK", sG: "_oE _wT", tG: "_n _L", uG: "_vE _cC", vG: "_qM _rU", wG: "_W yD", xG: "_u _UC", yG: "_HE _eF", zG: "_iP _AN", "0G": "_aB _YT", "1G": "_eB TD", "2G": "_VF _q", "3G": "_kP _EC", "4G": "_WF _IP", "5G": "_4M _uB", "6G": "_dF d", "7G": "_kH _jI", "8G": "_JU _P", "9G": "_UT _BC", AH: "_sU _0K", BH: "2 3", CH: "4 _oT", DH: "p _VS", EH: "DB EB", FH: "GB HB", GH: "_ZK _FH", HH: "eB fB", IH: "_HH _gI", JH: "9B AC", KH: "lB _eS", LH: "_ZC _dS", MH: "_dD _NF", NH: "pC qC", OH: "_8D _mE", PH: "xD 8C", QH: "iD _jS", RH: "0D 1D", SH: "_jK _mI", TH: "G K", UH: "_e GD", VH: "_IG _tE", WH: "_UH _yB", XH: "_H _I", YH: "_8D _LH", ZH: "_KD _lM", aH: "_ID _jI", bH: "_XM _aK", cH: "_aC _EH", dH: "_yE _US", eH: "_lE _fM", fH: "_h _8D", gH: "_0I _q", hH: "_0I _j", iH: "K _NG", jH: "_uC _kD", kH: "_5D _MF", lH: "_jM rD", mH: "u _aK", nH: "tB _1I", oH: "0B _QC", pH: "_oT _WG", qH: "_HC _vM", rH: "N G", sH: "nD _IE", tH: "_fE _t", uH: "_IB _FG", vH: "_IB _UC", wH: "_YK _9F", xH: "_H h", yH: "_H _iD", zH: "_H _IC", "0H": "_H _7S", "1H": "_H _SG", "2H": "_H _gH", "3H": "_H _hH", "4H": "_H _mH", "5H": "_uC A", "6H": "_KH oB", "7H": "_Y _BJ", "8H": "_6 _lE", "9H": "_2 bD", AI: "_rK _hP", BI: "_RC _vM", CI: "_0E _QD", DI: "_2E BC", EI: "_RG _EN", FI: "_VF _j", GI: "_8S _ND", HI: "_dH k", II: "_yC gD", JI: "_3E _vU", KI: "_8M _q", LI: "_fF LD", MI: "_hF BC", NI: "_5K _sI", OI: "_BN _OG", PI: "_CN _xM", QI: "_ZG _kB", RI: "_tP _5I", SI: "_JJ _gD", TI: "_NT _JE", UI: "_bT _CU", VI: "_UU _L", WI: "_VU _P", XI: "_tU _P", YI: "_uU _L", ZI: "y z", aI: "7 8", bI: "n o", cI: "Z a", dI: "_TS u", eI: "RB SB", fI: "NB OB", gI: "_NP I", hI: "_RP PC", iI: "3B 4B", jI: "_cD uB", kI: "mC _fS", lI: "mD nD", mI: "TD UD", nI: "_QH _lI", oI: "_KF CB", pI: "DC _VB", qI: "_RH _rS", rI: "_AE _CE", sI: "_IB _eD", tI: "_vC _mM", uI: "_pI _oI", vI: "_H _6", wI: "_PH _w", xI: "_bC _fC", yI: "B _rK", zI: "_RC A", "0I": "_cI _ZM", "1I": "uB _YC", "2I": "VD XC", "3I": "_AC _TH", "4I": "_eS _jE", "5I": "_NF _uI", "6I": "_jD _tB", "7I": "_tK LB", "8I": "jB _dC", "9I": "rB _PF", AJ: "_NH _3T", BJ: "_YH 1B", CJ: "_FD _HG", DJ: "_SH _kK", EJ: "CC _CD", FJ: "HC _gK", GJ: "_Y _OH", HJ: "_n _8D", IJ: "_rT _XK", JJ: "_H wB", KJ: "DC eC", LJ: "_H _5S", MJ: "_H _1I", NJ: "_7D _mE", OJ: "_OH DC", PJ: "D E", QJ: "kB _GH", RJ: "K _ET", SJ: "RC _dK", TJ: "GD _rE", UJ: "hD _kC", VJ: "_H _3D", WJ: "_H _6I", XJ: "_H _ME", YJ: "_H _oH", ZJ: "_H _RT", aJ: "_H _LN", bJ: "_EB _xU", cJ: "_uT _LF", dJ: "_5D qB", eJ: "_6D 5B", fJ: "_dC G", gJ: "_Y _0B", hJ: "_Y _tK", iJ: "_Y _SF", jJ: "_Y _7I", kJ: "_Y _9M", lJ: "_pE _hK", mJ: "_BD _xT", nJ: "_RH 2D", oJ: "_DD _wI", pJ: "_DE M", qJ: "_XH _IB", rJ: "_gC _A", sJ: "_JD _QH", tJ: "_u _4D", uJ: "_GC _UG", vJ: "_0 _4D", wJ: "_sK _j", xJ: "_jC _CJ", yJ: "_iP _sE", zJ: "_mD NC", "0J": "_xC _WU", "1J": "_xC _wU", "2J": "_lP _aF", "3J": "_WF f", "4J": "_TG SC", "5J": "_LE _ZC", "6J": "_oP _JE", "7J": "_oP _XF", "8J": "_2M _JE", "9J": "_RD XC", AK: "_DT _OG", BK: "_4E qB", CK: "_6K _EC", DK: "_FT _j", EK: "_FT _q", FK: "_GN _iD", GK: "_QT _iC", HK: "_AL _oK", IK: "_BL q", JK: "_DL _aS", KK: "_MN _lD", LK: "_wP _FU", MK: "_zP n", NK: "_cT _uE", OK: "_dT _FC", PK: "_eT CB", QK: "_XU _L", RK: "_yU _P", SK: "_zU _P", TK: "_0U _P", UK: "_1U _L", VK: "_2U _L", WK: "_3U _P", XK: "_IP h", YK: "_YS _XK", ZK: "_EH FB", aK: "_gE _fE", bK: "_YK _YM", cK: "_PP _ZS", dK: "_SP UC", eK: "1B 2B", fK: "_cM _hI", gK: "_UP _fK", hK: "BD CD", iK: "gD hD", jK: "RD SD", kK: "_sB VD", lK: "_nS _pS", mK: "_fD QD", nK: "_jM _3T", oK: "_jM _4T", pK: "_l _PH", qK: "_HG _dP", rK: "_v _TH", sK: "_YM _aK", tK: "_xE _AG", uK: "_nE _KH", vK: "_YH _eK", wK: "_nE lB", xK: "_mI _sE", yK: "_yM _pM", zK: "_tT _qB", "0K": "_oS kC", "1K": "_NH _4T", "2K": "_jD _BC", "3K": "_KF _CG", "4K": "_1E _oI", "5K": "_H Q", "6K": "_H MB", "7K": "UD _sE", "8K": "KC _fK", "9K": "_QH mD", AL: "_FD _qK", BL: "_wM p", CL: "_mD _RP", DL: "_3K _bM", EL: "_H _bH", FL: "F A", GL: "B _v", HL: "_TG _SP", IL: "_uP _bS", JL: "C XC", KL: "C _cP", LL: "C _2I", ML: "Q _hC", NL: "J _wI", OL: "J _YU", PL: "7C _2I", QL: "_pT _bI", RL: "_DH _TS", SL: "_H _XK", TL: "_H _tB", UL: "_H _n", VL: "_H _gD", WL: "_H _2K", XL: "_H _XT", YL: "_H _0P", ZL: "_H _4U", aL: "_H _5U", bL: "_uC _LD", cL: "_EB _bP", dL: "_KF _fI", eL: "_NF DC", fL: "_OF _nD", gL: "_Y _UB", hL: "_Y _wK", iL: "_Y _cH", jL: "_Y _cF", kL: "_Y _YG", lL: "_hS _9D", mL: "_DD _ON", nL: "_HG _nI", oL: "_vC ZD", pL: "_ED XC", qL: "_IG _nK", rL: "_fC _cC", sL: "_n _OH", tL: "_n _fT", uL: "_n _aU", vL: "_n _bU", wL: "_m _6U", xL: "_hC _EC", yL: "_FE LC", zL: "_0 _wM", "0L": "_sK _q", "1L": "_GE _hC", "2L": "_yK XC", "3L": "_8S _zE", "4L": "_9S _iD", "5L": "_nP _FC", "6L": "_oP _gD", "7L": "_qP _0S", "8L": "_2M _XF", "9L": "_rP _zE", AM: "_4M _EC", BM: "_8M _j", CM: "_tP _6I", DM: "_DN _5I", EM: "_DN _2K", FM: "_GT _6I", GM: "_HT _uB", HM: "_FN _zE", IM: "_PT _IC", JM: "_MJ _gD", KM: "_NJ DC", LM: "_PU _P", MM: "_PU _ZU", NM: "_WT _VC", OM: "_NN _uE", PM: "_PN _L", QM: "_1P _BC", RM: "_2P _iC", SM: "_7U _oI", TM: "_8U _P", UM: "_9U _P", VM: "_AV _L", WM: "_IF Y", XM: "_DH _dI", YM: "_9F _XM", ZM: "_bK _aK", aM: "TB UB", bM: "_eI _aM", cM: "LC MC", dM: "BC CC", eM: "_CG _LF", fM: "_BG _dK", gM: "aC rC", hM: "sC tC", iM: "3C 4C", jM: "_qE _NH", kM: "aC _0T", lM: "jC _1T", mM: "ZD aD", nM: "_lM _bP", oM: "_FG _hK", pM: "_OH _uI", qM: "_Y _TH", rM: "_A _rK", sM: "GD _eP", tM: "_H _5", uM: "F B", vM: "_UH _rE", wM: "_yE _9F", xM: "_xI _tB", yM: "_H C", zM: "_vT _gK", "0M": "2B _iI", "1M": "_0B GB", "2M": "_H _YC", "3M": "_cS _fK", "4M": "_H _UF", "5M": "_H _zK", "6M": "MD _qS", "7M": "_H N", "8M": "_H _AU", "9M": "_SF _XS", AN: "SD _xK", BN: "_H pB", CN: "_H _jE", DN: "_H 8B", EN: "_hC _kB", FN: "_H _QC", GN: "_H _MG", HN: "_H _gK", IN: "_H _AT", JN: "_SF JB", KN: "_1E _oM", LN: "PC _lD", MN: "_H _hI", NN: "J _GH", ON: "wD _PH", PN: "_n _ID", QN: "_H _LU", RN: "_LH 1B", SN: "_V _v", TN: "_wC _lH", UN: "WC _rI", VN: "_H _8K", WN: "_H _ZT", XN: "_OE _0K", YN: "C _uS", ZN: "N _UB", aN: "J _uE", bN: "EB _gT", cN: "IB JB", dN: "K _mK", eN: "yB _dS", fN: "hC _hK", gN: "SD TD", hN: "8C _w", iN: "nD _lK", jN: "_8B _hC", kN: "_XM _gE", lN: "_H _IB", mN: "_H _iC", nN: "_H _4B", oN: "_H _aF", pN: "_H _SN", qN: "_H _3P", rN: "_H _BV", sN: "_PC C", tN: "_dM _uI", uN: "_MF _jI", vN: "_7D _RN", wN: "_mE DC", xN: "_Y _9B", yN: "_Y _YH", zN: "_Y _uK", "0N": "_gS _9D", "1N": "_DD _l", "2N": "_DD _2S", "3N": "_6 EC", "4N": "_n _GV", "5N": "_5T _eU", "6N": "_yE i", "7N": "_EE v", "8N": "_JD _9K", "9N": "_u _MB", AO: "_GC 5B", BO: "_GC _kE", CO: "_GC _dD", DO: "_0 _UC", EO: "_0 _gF", FO: "_GE kB", GO: "_kD G", HO: "_oD Z", IO: "_kP _kB", JO: "_LE xB", KO: "_2M _gD", LO: "_NE 5B", MO: "_NE _dD", NO: "_AT _bC", OO: "_BT _uB", PO: "_DT _xM", QO: "_DT _SG", RO: "_6K _uB", SO: "_BN _xM", TO: "_CN _OG", UO: "_GT _5I", VO: "_HT _EC", WO: "_GJ dC", XO: "_GJ _AD", YO: "_JT _EV", ZO: "_HJ _L", aO: "_HJ _FV", bO: "_IJ _cG", cO: "_vP CB", dO: "_LT _kB", eO: "_LT _EC", fO: "_FN _iD", gO: "_MT _uB", hO: "_MT _EC", iO: "_NT _gD", jO: "_JU _DV", kO: "_kF 5D", lO: "_HN _iC", mO: "_HN _VC", nO: "_IN _xM", oO: "_IN _SG", pO: "_pH _t", qO: "_PT _FC", rO: "_ST _tI", sO: "_ST _yS", tO: "_VT _iC", uO: "_VT _VC", vO: "_aT _gH", wO: "_EL _j", xO: "_QN _t", yO: "_TN _EG", zO: "_4P _KN", "0O": "_5P 3B", "1O": "_6P aC", "2O": "_iT _cU", "3O": "_jT _fD", "4O": "_kT gD", "5O": "_dU _FC", "6O": "_fU _P", "7O": "_CV _uE", "8O": "_HV _P", "9O": "_IV _P", AP: "_JV _P", BP: "_KV _P", CP: "_LV _L", DP: "_MV _L", EP: "_NV _L", FP: "_OV _L", GP: "_PV _P", HP: "b c", IP: "f g", JP: "_WS _bI", KP: "_CH _qT", LP: "V _WM", MP: "_LP _cI", NP: "_kU iB", OP: "WB XB", PP: "YB ZB", QP: "CB QB", RP: "NC OC", SP: "SC TC", TP: "_aS _cK", UP: "IC _cS", VP: "1C 2C", WP: "gC VC", XP: "lC YC", YP: "uC vC", ZP: "kD lD", aP: "7D 8D", bP: "_aP _mS", cP: "_sB XC", dP: "_nI _lK", eP: "_yB _VH", fP: "JD _VH", gP: "_WH _ED", hP: "_rI _tE", iP: "_tM _pM", jP: "_UH HD", kP: "_H _NB", lP: "_H _8B", mP: "yB _MG", nP: "_H _AC", oP: "_H _PF", pP: "_XP ND", qP: "N _TH", rP: "_H _mP", sP: "cC _6", tP: "_H _lC", uP: "_KF _eM", vP: "_H _ZM", wP: "_H AC", xP: "_H _iH", yP: "_H _RU", zP: "_dH _WS", "0P": "TC UC", "1P": "_H _EJ", "2P": "_H _FJ", "3P": "X Y", "4P": "_H UC", "5P": "_7D _aG", "6P": "_iF _iS", "7P": "B _3B", "8P": "g h", "9P": "OC PC", AQ: "WC XC", BQ: "_H _CD", CQ: "_H _nH", DQ: "_H _KJ", EQ: "L 9C", FQ: "9 _fE", GQ: "C H", HQ: "C _sE", IQ: "R H", JQ: "m _bI", KQ: "J iC", LQ: "jB GD", MQ: "kB _ZK", NQ: "IB _XS", OQ: "K _mT", PQ: "K _jU", QQ: "lB mB", RQ: "pB _bC", SQ: "pB _xI", TQ: "6B 7B", UQ: "fC _oM", VQ: "7C XC", WQ: "vD wD", XQ: "_3D _FG", YQ: "_JF 2", ZQ: "_IB _4D", aQ: "_H _v", bQ: "_H _JE", cQ: "_H _XF", dQ: "_H _KN", eQ: "_H _GL", fQ: "_H _8P", gQ: "_H _QV", hQ: "_H _RV", iQ: "_H _UV", jQ: "_AC _UB", kQ: "_uC _jF", lQ: "_EB _0T", mQ: "_EB _kM", nQ: "_cK _fG", oQ: "_TP _hE", pQ: "_TP _KE", qQ: "_MF sB", rQ: "_iE _NF", sQ: "_9C _L", tQ: "_4 GD", uQ: "_7D xB", vQ: "_dC _KG", wQ: "_Y _ZF", xQ: "_YP _gU", yQ: "_BD _VP", zQ: "_5 _AN", "0Q": "_5 _AQ", "1Q": "_lM _aP", "2Q": "_mI _kK", "3Q": "_6 _9C", "4Q": "_6 _FE", "5Q": "_6 _mC", "6Q": "_6 _qD", "7Q": "_6 _dG", "8Q": "_yB jC", "9Q": "_yB _XN", AR: "_h _XV", BR: "_JG _hU", CR: "_vE _VB", DR: "_hD 5B", ER: "_V 9C", FR: "_EE _8F", GR: "_LG _gP", HR: "_u _VG", IR: "_u _gF", JR: "_HE ZC", KR: "_0I CB", LR: "_MD WC", MR: "_2B _ZV", NR: "_7 _WV", OR: "_7 _iV", PR: "_xC _L", QR: "_nD _IF", RR: "_4S _tI", SR: "_QG _tB", TR: "_yK _sE", UR: "_YF _TV", VR: "_YF _YV", WR: "_9S _ND", XR: "_3E _3S", YR: "_BT _EC", ZR: "_3M _nT", aR: "_CJ _nI", bR: "_CJ _9K", cR: "_fH _P", dR: "_pD _eD", eR: "_pD _IL", fR: "_5M _kB", gR: "_jF jC", hR: "_5K _EN", iR: "_GT _2K", jR: "_HT _kB", kR: "_IT _VC", lR: "_uP cB", mR: "_JT _P", nR: "_IJ _YM", oR: "_vP _j", pR: "_vP _q", qR: "_LT _uB", rR: "_GN _ND", sR: "_MT _kB", tR: "_5E sB", uR: "_LJ _j", vR: "_LJ _q", wR: "_lF _BD", xR: "_QT _VC", yR: "_eG _BD", zR: "_WT _iC", "0R": "_XT G", "1R": "_qH QD", "2R": "_aT _hH", "3R": "_xP _uB", "4R": "_xP _kB", "5R": "_yP _j", "6R": "_yP _q", "7R": "_OJ _CL", "8R": "_FL _lT", "9R": "_HL _L", AS: "_VN _VC", BS: "_WN _ME", CS: "_7P _UN", DS: "_9P _HD", ES: "_BQ _BC", FS: "_CQ _JE", GS: "_DQ _tB", HS: "_iU _iC", IS: "_SV _ET", JS: "_VV CB", KS: "_aV _L", LS: "_bV _P", MS: "_cV _P", NS: "_dV _P", OS: "_eV _L", PS: "_fV _L", QS: "_gV _L", RS: "_hV _L", SS: "_jV _P", TS: "s t", US: "i j", VS: "q r", WS: "k _pT", XS: "JB K", YS: "_HP _rT", ZS: "aB bB", aS: "VB _OP", bS: "cB dB", cS: "JC KC", dS: "zB 0B", eS: "mB nB", fS: "nC oC", gS: "zC 0C", hS: "_wT _gS", iS: "9D ZC", jS: "jD _ZP", kS: "_yT PD", lS: "3D 4D", mS: "_iS _kM", nS: "oD pD", oS: "LD MD", pS: "_zT qD", qS: "_zT ND", rS: "2D _lS", sS: "E _d", tS: "_pK _w", uS: "H _cP", vS: "_H _m", wS: "_pM _P", xS: "_h _OH", yS: "_tI _p", zS: "WC _hP", "0S": "_CE _tE", "1S": "_UB _sI", "2S": "wD _wI", "3S": "_gP _AE", "4S": "E _GG", "5S": "_ZI _fE", "6S": "_H _iI", "7S": "_dI _aK", "8S": "_H _0M", "9S": "_H 4B", AT: "nB _jE", BT: "_H _qB", CT: "K _pP", DT: "_H _4I", ET: "_9D QD", FT: "_H _aK", GT: "_H _iE", HT: "_H _CC", IT: "_H _zM", JT: "_h _ID", KT: "pD _pS", LT: "_H _EB", MT: "_H _NG", NT: "_H _9I", OT: "_AJ _mK", PT: "_H _dC", QT: "_H _3M", RT: "_dK _4K", ST: "E 8C", TT: "_VS _7S", UT: "_H eC", VT: "_H _fK", WT: "_H _OU", XT: "_gC _kD", YT: "_UC _L", ZT: "e _XK", aT: "_H Y", bT: "_uC _rM", cT: "J _ZK", dT: "_H _jH", eT: "_H _TT", fT: "_YH _L", gT: "FB _FH", hT: "MC _hI", iT: "_uC _DE", jT: "_YP sD", kT: "_FD fD", lT: "JD jC", mT: "_DG QD", nT: "_lD _P", oT: "5 6", pT: "l m", qT: "_aI 9", rT: "d e", sT: "_8F x", tT: "_XS KB", uT: "PB _QP", vT: "GC HC", wT: "xC yC", xT: "_VP _iM", yT: "_EG _YP", zT: "kC _XP", "0T": "bC AE", "1T": "5D 6D", "2T": "_yT sD", "3T": "OD _kS", "4T": "rD _2T", "5T": "_qM _WH", "6T": "_dC _TH", "7T": "_rS _nM", "8T": "_gC _rM", "9T": "YD _mM", AU: "_MP _ZM", BU: "KD _0S", CU: "ID _fP", DU: "_lS _nM", EU: "qD _jB", FU: "_QG _BC", GU: "_4 _L", HU: "_WH jC", IU: "_H _8I", JU: "_h _KG", KU: "_n _tK", LU: "x _5S", MU: "I _wI", NU: "_TH _6M", OU: "FC _zM", PU: "_h _aH", QU: "_cH _L", RU: "U _AU", SU: "4D _nM", TU: "_JP _bH", UU: "_n _KG", VU: "_fH xB", WU: "_kE _L", XU: "_g _RC", YU: "DB _uE", ZU: "vB _P", aU: "_UB _L", bU: "_nE _L", cU: "JD _ED", dU: "_H _kD", eU: "_IG _PE", fU: "_JT _cD", gU: "PD _mK", hU: "vD _2S", iU: "_H _hT", jU: "_hS _ET", kU: "gB hB", lU: "_WH _IG", mU: "1D _7T", nU: "_H _sP", oU: "K _kS", pU: "8D _mS", qU: "_EB _1T", rU: "iC _sM", sU: "_DC _3S", tU: "_h _xE", uU: "_n _bG", vU: "_gP XC", wU: "5B _L", xU: "6D _bP", yU: "_h _1M", zU: "_h _ZF", "0U": "_h _9M", "1U": "_n _xE", "2U": "_n _BJ", "3U": "_YF _UG", "4U": "a _ZM", "5U": "r _7S", "6U": "EC _L", "7U": "_H _VB", "8U": "_h _wK", "9U": "_h _7I", AV: "_n _vK", BV: "j _TU", CV: "J _EH", DV: "qB _P", EV: "sB _P", FV: "xB _L", GV: "_9B _L", HV: "_h _0B", IV: "_h _uK", JV: "_h _YG", KV: "_h _JN", LV: "_n _SF", MV: "_n _uK", NV: "_n _wK", OV: "_n _7I", PV: "_2B _mD", QV: "o _bH", RV: "w _LU", SV: "K _gS", TV: "5B _P", UV: "RC _RT", VV: "_H _TU", WV: "_MB _P", XV: "_UB _P", YV: "_kE _P", ZV: "_9C _P", aV: "_g _HC", bV: "_h _YH", cV: "_h _tK", dV: "_h _cH", eV: "_n _1M", fV: "_n _ZF", gV: "_n _cF", hV: "_n _JN", iV: "_yE _P", jV: "_2B _CL" };
+  }
+});
+
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/versionGroups.js
+var require_versionGroups2 = __commonJS({
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/versionGroups.js"(exports, module) {
+    module.exports.versionGroups = require_versionGroups();
+  }
+});
+
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/feature.js
 var require_feature = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/feature.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/feature.js"(exports, module) {
     "use strict";
     var statuses = require_statuses();
     var supported = require_supported();
     var browsers = require_browsers2().browsers;
     var versions = require_browserVersions2().browserVersions;
+    var versionGroups = require_versionGroups2().versionGroups;
     var MATH2LOG = Math.log(2);
+    var groupCache = {};
+    function expandKey(key2) {
+      let cached = groupCache[key2];
+      if (cached === void 0) {
+        cached = groupCache[key2] = expandGroups(versionGroups[key2], []);
+      }
+      return cached;
+    }
+    __name(expandKey, "expandKey");
+    function expandGroups(value2, out) {
+      let start = 0;
+      for (let i = 0, len = value2.length; i <= len; i++) {
+        if (i === len || value2.charCodeAt(i) === 32) {
+          if (i > start) {
+            if (value2.charCodeAt(start) === 95) {
+              let group = expandKey(value2.slice(start + 1, i));
+              for (let j = 0; j < group.length; j++) out.push(group[j]);
+            } else {
+              out.push(value2.slice(start, i));
+            }
+          }
+          start = i + 1;
+        }
+      }
+      return out;
+    }
+    __name(expandGroups, "expandGroups");
     function unpackSupport(cipher) {
       let stats = Object.keys(supported).reduce((list, support) => {
         if (cipher & supported[support]) list.push(support);
@@ -52933,7 +56264,7 @@ var require_feature = __commonJS({
         let browser = packed.A[key2];
         browserStats[browsers[key2]] = Object.keys(browser).reduce(
           (stats, support) => {
-            let packedVersions = browser[support].split(" ");
+            let packedVersions = expandGroups(browser[support], []);
             let unpacked2 = unpackSupport(support);
             packedVersions.forEach((v) => stats[versions[v]] = unpacked2);
             return stats;
@@ -52950,9 +56281,9 @@ var require_feature = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/region.js
+// ../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/region.js
 var require_region = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/caniuse-lite/dist/unpacker/region.js"(exports, module) {
+  "../../node_modules/.bun/caniuse-lite@1.0.30001809/node_modules/caniuse-lite/dist/unpacker/region.js"(exports, module) {
     "use strict";
     var browsers = require_browsers2().browsers;
     function unpackRegion(packed) {
@@ -52976,9 +56307,9 @@ var require_region = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/node.js
+// ../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/node.js
 var require_node3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/node.js"(exports, module) {
+  "../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/node.js"(exports, module) {
     var feature = require_feature().default;
     var region = require_region().default;
     var fs2 = __require("fs");
@@ -52986,7 +56317,7 @@ var require_node3 = __commonJS({
     var BrowserslistError = require_error();
     var IS_SECTION = /^\s*\[(.+)]\s*$/;
     var CONFIG_PATTERN = /^browserslist-config-/;
-    var SCOPED_CONFIG__PATTERN = /@[^/]+(?:\/[^/]+)?\/browserslist-config(?:-|$|\/)/;
+    var SCOPED_CONFIG__PATTERN = /^@[^/]+(?:\/[^/]+)?\/browserslist-config(?:-|$|\/)/;
     var FORMAT = "Browserslist config should be a string or an array of strings with browser queries";
     var PATHTYPE_UNKNOWN = "unknown";
     var PATHTYPE_DIR = "directory";
@@ -53172,12 +56503,13 @@ var require_node3 = __commonJS({
         stats = stats.dataByBrowser;
       }
       if (typeof stats !== "object") return void 0;
-      var normalized = {};
+      var normalized = /* @__PURE__ */ Object.create(null);
       for (var i in stats) {
         var versions = Object.keys(stats[i]);
-        if (versions.length === 1 && data[i] && data[i].versions.length === 1) {
-          var normal = data[i].versions[0];
-          normalized[i] = {};
+        var known = Object.prototype.hasOwnProperty.call(data, i) && data[i];
+        if (versions.length === 1 && known && known.versions.length === 1) {
+          var normal = known.versions[0];
+          normalized[i] = /* @__PURE__ */ Object.create(null);
           normalized[i][normal] = stats[i][versions[0]];
         } else {
           normalized[i] = stats[i];
@@ -53278,7 +56610,7 @@ var require_node3 = __commonJS({
           }
           var usageData = region(compressed);
           normalizeUsageData(usageData, data);
-          usage[country] = {};
+          usage[country] = /* @__PURE__ */ Object.create(null);
           for (var i in usageData) {
             for (var j in usageData[i]) {
               usage[country][i + " " + j] = usageData[i][j];
@@ -53413,28 +56745,27 @@ var require_node3 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/parse.js
+// ../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/parse.js
 var require_parse2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/parse.js"(exports, module) {
-    var AND_REGEXP = /^\s+and\s+(.*)/i;
-    var OR_REGEXP = /^(?:,\s*|\s+or\s+)(.*)/i;
+  "../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/parse.js"(exports, module) {
+    var SPACE = /\s/;
     function flatten(array) {
       if (!Array.isArray(array)) return [array];
-      return array.reduce(function(a, b) {
-        return a.concat(flatten(b));
-      }, []);
-    }
-    __name(flatten, "flatten");
-    function find(string, predicate) {
-      for (var max = string.length, n = 1; n <= max; n++) {
-        var parsed = string.substr(-n, n);
-        if (predicate(parsed, n, max)) {
-          return string.slice(0, -n);
+      var result = [];
+      var stack2 = [array];
+      while (stack2.length) {
+        var item = stack2.pop();
+        if (Array.isArray(item)) {
+          for (var i = item.length - 1; i >= 0; i--) {
+            stack2.push(item[i]);
+          }
+        } else {
+          result.push(item);
         }
       }
-      return "";
+      return result;
     }
-    __name(find, "find");
+    __name(flatten, "flatten");
     function matchQuery(all, query) {
       var node = { query };
       if (query.indexOf("not ") === 0) {
@@ -53456,37 +56787,63 @@ var require_parse2 = __commonJS({
       return node;
     }
     __name(matchQuery, "matchQuery");
-    function matchBlock(all, string, qs) {
-      var node;
-      return find(string, function(parsed, n, max) {
-        if (AND_REGEXP.test(parsed)) {
-          node = matchQuery(all, parsed.match(AND_REGEXP)[1]);
-          node.compose = "and";
-          qs.unshift(node);
-          return true;
-        } else if (OR_REGEXP.test(parsed)) {
-          node = matchQuery(all, parsed.match(OR_REGEXP)[1]);
-          node.compose = "or";
-          qs.unshift(node);
-          return true;
-        } else if (n === max) {
-          node = matchQuery(all, parsed.trim());
-          node.compose = "or";
-          qs.unshift(node);
-          return true;
-        }
-        return false;
-      });
+    function pushClause(all, qs, text, compose) {
+      var node = matchQuery(all, text.trim());
+      node.compose = compose;
+      qs.push(node);
     }
-    __name(matchBlock, "matchBlock");
+    __name(pushClause, "pushClause");
+    function parseBlock(all, block, qs) {
+      if (block.length === 0) return;
+      var len = block.length;
+      var clauseStart = 0;
+      var compose = "or";
+      var i = 0;
+      while (i < len) {
+        var ch = block[i];
+        if (ch === ",") {
+          if (i !== 0) pushClause(all, qs, block.slice(clauseStart, i), compose);
+          i++;
+          while (i < len && SPACE.test(block[i])) i++;
+          compose = "or";
+          clauseStart = i;
+          continue;
+        }
+        if (SPACE.test(ch)) {
+          var q = i;
+          while (q < len && SPACE.test(block[q])) q++;
+          if (q + 3 < len && (block[q] === "a" || block[q] === "A") && (block[q + 1] === "n" || block[q + 1] === "N") && (block[q + 2] === "d" || block[q + 2] === "D") && SPACE.test(block[q + 3])) {
+            if (i !== 0) pushClause(all, qs, block.slice(clauseStart, i), compose);
+            var afterAnd = q + 3;
+            while (afterAnd < len && SPACE.test(block[afterAnd])) afterAnd++;
+            compose = "and";
+            i = afterAnd;
+            clauseStart = afterAnd;
+            continue;
+          } else if (q + 2 < len && (block[q] === "o" || block[q] === "O") && (block[q + 1] === "r" || block[q + 1] === "R") && SPACE.test(block[q + 2])) {
+            if (i !== 0) pushClause(all, qs, block.slice(clauseStart, i), compose);
+            var afterOr = q + 2;
+            while (afterOr < len && SPACE.test(block[afterOr])) afterOr++;
+            compose = "or";
+            i = afterOr;
+            clauseStart = afterOr;
+            continue;
+          } else {
+            i = q;
+            continue;
+          }
+        }
+        i++;
+      }
+      pushClause(all, qs, block.slice(clauseStart), compose);
+    }
+    __name(parseBlock, "parseBlock");
     module.exports = /* @__PURE__ */ __name(function parse4(all, queries) {
       if (!Array.isArray(queries)) queries = [queries];
       return flatten(
         queries.map(function(block) {
           var qs = [];
-          do {
-            block = matchBlock(all, block, qs);
-          } while (block);
+          parseBlock(all, block, qs);
           return qs;
         })
       );
@@ -53494,9 +56851,9 @@ var require_parse2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/index.js
+// ../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/index.js
 var require_browserslist = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/browserslist/index.js"(exports, module) {
+  "../../node_modules/.bun/browserslist@4.28.8+12f0098455ff50cb/node_modules/browserslist/index.js"(exports, module) {
     var bbm = require_dist();
     var jsReleases = require_envs();
     var agents = require_agents2().agents;
@@ -53575,22 +56932,21 @@ var require_browserslist = __commonJS({
     }
     __name(fillUsage, "fillUsage");
     function generateFilter(sign2, version) {
-      version = parseFloat(version);
       if (sign2 === ">") {
         return function(v) {
-          return parseLatestFloat(v) > version;
+          return parseLatestFloat(v) > parseLatestFloat(version);
         };
       } else if (sign2 === ">=") {
         return function(v) {
-          return parseLatestFloat(v) >= version;
+          return parseLatestFloat(v) >= parseLatestFloat(version);
         };
       } else if (sign2 === "<") {
         return function(v) {
-          return parseFloat(v) < version;
+          return parseFloat(v) < parseFloat(version);
         };
       } else {
         return function(v) {
-          return parseFloat(v) <= version;
+          return parseFloat(v) <= parseFloat(version);
         };
       }
       function parseLatestFloat(v) {
@@ -53868,8 +57224,16 @@ var require_browserslist = __commonJS({
       }
     }
     __name(checkQueries, "checkQueries");
-    var cache = {};
-    var parseCache = {};
+    var CACHE_MAX_ENTRIES = 500;
+    function boundedCacheSet(map, key2, value2) {
+      if (map.size >= CACHE_MAX_ENTRIES) {
+        map.delete(map.keys().next().value);
+      }
+      map.set(key2, value2);
+    }
+    __name(boundedCacheSet, "boundedCacheSet");
+    var cache = /* @__PURE__ */ new Map();
+    var parseCache = /* @__PURE__ */ new Map();
     function browserslist(queries, opts) {
       opts = prepareOpts(opts);
       queries = prepareQueries(queries, opts);
@@ -53896,7 +57260,7 @@ var require_browserslist = __commonJS({
         }
       }
       var cacheKey = JSON.stringify([queries, context]);
-      if (cache[cacheKey]) return cache[cacheKey];
+      if (cache.has(cacheKey)) return cache.get(cacheKey);
       var result = uniq(resolve2(queries, context)).sort(function(name1, name2) {
         name1 = name1.split(" ");
         name2 = name2.split(" ");
@@ -53909,17 +57273,17 @@ var require_browserslist = __commonJS({
         }
       });
       if (!env2.env.BROWSERSLIST_DISABLE_CACHE) {
-        cache[cacheKey] = result;
+        boundedCacheSet(cache, cacheKey, result);
       }
       return result;
     }
     __name(browserslist, "browserslist");
     function parseQueries(queries) {
       var cacheKey = JSON.stringify(queries);
-      if (cacheKey in parseCache) return parseCache[cacheKey];
+      if (parseCache.has(cacheKey)) return parseCache.get(cacheKey);
       var result = parseWithoutCache(QUERIES, queries);
       if (!env2.env.BROWSERSLIST_DISABLE_CACHE) {
-        parseCache[cacheKey] = result;
+        boundedCacheSet(parseCache, cacheKey, result);
       }
       return result;
     }
@@ -54258,44 +57622,41 @@ var require_browserslist = __commonJS({
         //   baseline widely available on 2024-06-01
         //   ...with downstream
         //   ...including kaios
-        regexp: /^baseline\s+(?:(\d+)|(newly|widely)\s+available(?:\s+on\s+(\d{4}-\d{2}-\d{2}))?)?(\s+with\s+downstream)?(\s+including\s+kaios)?$/i,
+        regexp: /^baseline\s+(?!\s)(?:(\d+)|(newly|widely)\s+(?!\s)available(?:\s+(?!\s)on\s+(?!\s)(\d{4}-\d{2}-\d{2}))?)?(\s+(?!\s)with\s+(?!\s)downstream)?(\s+(?!\s)including\s+(?!\s)kaios)?$/i,
         select: /* @__PURE__ */ __name(function(context, node) {
-          var baselineVersions;
-          var includeDownstream = !!node.downstream;
-          var includeKaiOS = !!node.kaios;
-          if (node.availability === "newly" && node.date) {
+          var availability = node.availability && node.availability.toLowerCase();
+          if (availability === "newly" && node.date) {
             throw new BrowserslistError(
               'Using newly available with a date is not supported, please use "widely available on YYYY-MM-DD" and add 30 months to the date you specified.'
             );
           }
+          var options = {
+            includeDownstreamBrowsers: !!node.downstream,
+            includeKaiOS: !!node.kaios,
+            suppressWarnings: true
+          };
           if (node.year) {
-            baselineVersions = bbm.getCompatibleVersions({
-              targetYear: node.year,
-              includeDownstreamBrowsers: includeDownstream,
-              includeKaiOS,
-              suppressWarnings: true
-            });
+            options.targetYear = node.year;
           } else if (node.date) {
-            baselineVersions = bbm.getCompatibleVersions({
-              widelyAvailableOnDate: node.date,
-              includeDownstreamBrowsers: includeDownstream,
-              includeKaiOS,
-              suppressWarnings: true
-            });
-          } else if (node.availability === "newly") {
-            var future30months = (/* @__PURE__ */ new Date()).setMonth((/* @__PURE__ */ new Date()).getMonth() + 30);
-            baselineVersions = bbm.getCompatibleVersions({
-              widelyAvailableOnDate: future30months,
-              includeDownstreamBrowsers: includeDownstream,
-              includeKaiOS,
-              suppressWarnings: true
-            });
+            options.widelyAvailableOnDate = node.date;
+          } else if (availability === "newly") {
+            options.widelyAvailableOnDate = (/* @__PURE__ */ new Date()).setMonth(
+              (/* @__PURE__ */ new Date()).getMonth() + 30
+            );
+          }
+          var baselineVersions;
+          if (options.includeKaiOS && !options.includeDownstreamBrowsers) {
+            options.includeDownstreamBrowsers = true;
+            var downstream = bbm.getCompatibleVersions(options);
+            options.includeDownstreamBrowsers = false;
+            options.includeKaiOS = false;
+            baselineVersions = bbm.getCompatibleVersions(options).concat(
+              downstream.filter(function(version) {
+                return version.browser === "kai_os";
+              })
+            );
           } else {
-            baselineVersions = bbm.getCompatibleVersions({
-              includeDownstreamBrowsers: includeDownstream,
-              includeKaiOS,
-              suppressWarnings: true
-            });
+            baselineVersions = bbm.getCompatibleVersions(options);
           }
           return resolve2(bbmTransform(baselineVersions), context);
         }, "select")
@@ -54484,10 +57845,7 @@ var require_browserslist = __commonJS({
           if (!e2c[toToUse]) {
             throw new BrowserslistError("Unknown version " + to + " of electron");
           }
-          return Object.keys(e2c).filter(function(i) {
-            var parsed = parseFloat(i);
-            return parsed >= from && parsed <= to;
-          }).map(function(i) {
+          return Object.keys(e2c).filter(semverFilterLoose(">=", node.from)).filter(semverFilterLoose("<=", node.to)).map(function(i) {
             return "chrome " + e2c[i];
           });
         }, "select")
@@ -54743,9 +58101,9 @@ var require_browserslist = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-option/lib/find-suggestion.js
+// ../../node_modules/.bun/@babel+helper-validator-option@7.29.7/node_modules/@babel/helper-validator-option/lib/find-suggestion.js
 var require_find_suggestion = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-option/lib/find-suggestion.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-validator-option@7.29.7/node_modules/@babel/helper-validator-option/lib/find-suggestion.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -54783,9 +58141,9 @@ var require_find_suggestion = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-option/lib/validator.js
+// ../../node_modules/.bun/@babel+helper-validator-option@7.29.7/node_modules/@babel/helper-validator-option/lib/validator.js
 var require_validator = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-option/lib/validator.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-validator-option@7.29.7/node_modules/@babel/helper-validator-option/lib/validator.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -54837,9 +58195,9 @@ var require_validator = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-option/lib/index.js
+// ../../node_modules/.bun/@babel+helper-validator-option@7.29.7/node_modules/@babel/helper-validator-option/lib/index.js
 var require_lib12 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-validator-option/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-validator-option@7.29.7/node_modules/@babel/helper-validator-option/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -54861,9 +58219,9 @@ var require_lib12 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/yallist/iterator.js
+// ../../node_modules/.bun/yallist@3.1.1/node_modules/yallist/iterator.js
 var require_iterator = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/yallist/iterator.js"(exports, module) {
+  "../../node_modules/.bun/yallist@3.1.1/node_modules/yallist/iterator.js"(exports, module) {
     "use strict";
     module.exports = function(Yallist) {
       Yallist.prototype[Symbol.iterator] = function* () {
@@ -54875,9 +58233,9 @@ var require_iterator = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/yallist/yallist.js
+// ../../node_modules/.bun/yallist@3.1.1/node_modules/yallist/yallist.js
 var require_yallist = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/yallist/yallist.js"(exports, module) {
+  "../../node_modules/.bun/yallist@3.1.1/node_modules/yallist/yallist.js"(exports, module) {
     "use strict";
     module.exports = Yallist;
     Yallist.Node = Node;
@@ -55249,9 +58607,9 @@ var require_yallist = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/lru-cache/index.js
+// ../../node_modules/.bun/lru-cache@5.1.1/node_modules/lru-cache/index.js
 var require_lru_cache = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/lru-cache/index.js"(exports, module) {
+  "../../node_modules/.bun/lru-cache@5.1.1/node_modules/lru-cache/index.js"(exports, module) {
     "use strict";
     var Yallist = require_yallist();
     var MAX = /* @__PURE__ */ Symbol("max");
@@ -55524,9 +58882,9 @@ var require_lru_cache = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/targets.js
+// ../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/targets.js
 var require_targets = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/targets.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/targets.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -55555,9 +58913,9 @@ var require_targets = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/utils.js
+// ../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/utils.js
 var require_utils3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/utils.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/utils.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -55622,9 +58980,9 @@ var require_utils3 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/options.js
+// ../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/options.js
 var require_options2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/options.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/options.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -55649,9 +59007,9 @@ var require_options2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/pretty.js
+// ../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/pretty.js
 var require_pretty = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/pretty.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/pretty.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -55694,9 +59052,9 @@ var require_pretty = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/debug.js
+// ../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/debug.js
 var require_debug = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/debug.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/debug.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -55726,9 +59084,9 @@ var require_debug = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/data/plugins.json
+// ../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/data/plugins.json
 var require_plugins = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/data/plugins.json"(exports, module) {
+  "../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/data/plugins.json"(exports, module) {
     module.exports = {
       "transform-explicit-resource-management": {
         chrome: "141",
@@ -56575,16 +59933,16 @@ var require_plugins = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/plugins.js
+// ../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/plugins.js
 var require_plugins2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/plugins.js"(exports, module) {
+  "../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/plugins.js"(exports, module) {
     module.exports = require_plugins();
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/filter-items.js
+// ../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/filter-items.js
 var require_filter_items = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/filter-items.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/filter-items.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -56655,9 +60013,9 @@ var require_filter_items = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/data/native-modules.json
+// ../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/data/native-modules.json
 var require_native_modules = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/data/native-modules.json"(exports, module) {
+  "../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/data/native-modules.json"(exports, module) {
     module.exports = {
       "es6.module": {
         chrome: "61",
@@ -56679,16 +60037,16 @@ var require_native_modules = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/native-modules.js
+// ../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/native-modules.js
 var require_native_modules2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/compat-data/native-modules.js"(exports, module) {
+  "../../node_modules/.bun/@babel+compat-data@7.29.7/node_modules/@babel/compat-data/native-modules.js"(exports, module) {
     module.exports = require_native_modules();
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/index.js
+// ../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/index.js
 var require_lib13 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-compilation-targets/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-compilation-targets@7.29.7/node_modules/@babel/helper-compilation-targets/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -56931,9 +60289,9 @@ getting parsed as 6.1, which can lead to unexpected behavior.
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/resolve-targets.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/resolve-targets.js
 var require_resolve_targets = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/resolve-targets.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/resolve-targets.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -56997,9 +60355,9 @@ var require_resolve_targets = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/config-descriptors.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/config-descriptors.js
 var require_config_descriptors = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/config-descriptors.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/config-descriptors.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -57201,9 +60559,9 @@ var require_config_descriptors = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/item.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/item.js
 var require_item = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/item.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/item.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -57277,9 +60635,9 @@ var require_item = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/removed.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/removed.js
 var require_removed = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/removed.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/removed.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -57347,9 +60705,9 @@ var require_removed = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/option-assertions.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/option-assertions.js
 var require_option_assertions = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/option-assertions.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/option-assertions.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -57655,9 +61013,9 @@ var require_option_assertions = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/options.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/options.js
 var require_options3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/options.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/options.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -57857,9 +61215,9 @@ To be a valid ${type}, its name and options should be wrapped in a pair of brack
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/pattern-to-regex.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/pattern-to-regex.js
 var require_pattern_to_regex = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/pattern-to-regex.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/pattern-to-regex.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -57900,9 +61258,9 @@ var require_pattern_to_regex = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/printer.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/printer.js
 var require_printer2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/printer.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/printer.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -58022,9 +61380,9 @@ ${content}`;
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/config-chain.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/config-chain.js
 var require_config_chain = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/config-chain.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/config-chain.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -58524,9 +61882,9 @@ File already loaded following the config chain:
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/plugins.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/plugins.js
 var require_plugins3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/validation/plugins.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/validation/plugins.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -58596,9 +61954,9 @@ var require_plugins3 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/helpers/environment.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/helpers/environment.js
 var require_environment = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/helpers/environment.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/helpers/environment.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -58611,9 +61969,9 @@ var require_environment = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/partial.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/partial.js
 var require_partial = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/partial.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/partial.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -58786,9 +62144,9 @@ One of the following config files must be in the directory tree: "${_index.ROOT_
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/full.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/full.js
 var require_full = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/full.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/full.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -59107,9 +62465,9 @@ var require_full = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/index.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/index.js
 var require_config = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/index.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -59207,9 +62565,9 @@ var require_config = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/plugin-pass.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/plugin-pass.js
 var require_plugin_pass = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/plugin-pass.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/plugin-pass.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -59260,9 +62618,9 @@ var require_plugin_pass = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/block-hoist-plugin.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/block-hoist-plugin.js
 var require_block_hoist_plugin = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/block-hoist-plugin.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/block-hoist-plugin.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -59351,9 +62709,9 @@ var require_block_hoist_plugin = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/normalize-opts.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/normalize-opts.js
 var require_normalize_opts = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/normalize-opts.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/normalize-opts.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -59414,9 +62772,9 @@ var require_normalize_opts = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/convert-source-map/index.js
+// ../../node_modules/.bun/convert-source-map@2.0.0/node_modules/convert-source-map/index.js
 var require_convert_source_map = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/convert-source-map/index.js"(exports) {
+  "../../node_modules/.bun/convert-source-map@2.0.0/node_modules/convert-source-map/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "commentRegex", {
       get: /* @__PURE__ */ __name(function getCommentRegex() {
@@ -59614,9 +62972,107 @@ var require_convert_source_map = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/parser/util/missing-plugin-helper.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/read-input-source-map-file.js
+var require_read_input_source_map_file = __commonJS({
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/read-input-source-map-file.js"(exports) {
+    "use strict";
+    Object.defineProperty(exports, "__esModule", {
+      value: true
+    });
+    exports.default = readInputSourceMapFile;
+    function _fs() {
+      const data = __require("fs");
+      _fs = /* @__PURE__ */ __name(function() {
+        return data;
+      }, "_fs");
+      return data;
+    }
+    __name(_fs, "_fs");
+    function _path() {
+      const data = __require("path");
+      _path = /* @__PURE__ */ __name(function() {
+        return data;
+      }, "_path");
+      return data;
+    }
+    __name(_path, "_path");
+    function _debug() {
+      const data = require_src();
+      _debug = /* @__PURE__ */ __name(function() {
+        return data;
+      }, "_debug");
+      return data;
+    }
+    __name(_debug, "_debug");
+    function _convertSourceMap() {
+      const data = require_convert_source_map();
+      _convertSourceMap = /* @__PURE__ */ __name(function() {
+        return data;
+      }, "_convertSourceMap");
+      return data;
+    }
+    __name(_convertSourceMap, "_convertSourceMap");
+    var debug = _debug()("babel:transform:file");
+    function findUpSync(name, {
+      cwd,
+      stopAt
+    } = {}) {
+      let directory = _path().resolve(cwd || "");
+      const {
+        root: root2
+      } = _path().parse(directory);
+      stopAt = _path().resolve(directory, stopAt || root2);
+      const isAbsoluteName = _path().isAbsolute(name);
+      while (directory) {
+        const filePath = isAbsoluteName ? name : _path().join(directory, name);
+        try {
+          const stats = _fs().statSync(filePath);
+          if (stats.isFile()) {
+            return filePath;
+          }
+        } catch (_) {
+        }
+        if (directory === stopAt || directory === root2) {
+          break;
+        }
+        directory = _path().dirname(directory);
+      }
+    }
+    __name(findUpSync, "findUpSync");
+    function getInputMapPath(filename, root2, inputMapURL) {
+      const inputFileDir = _path().dirname(filename);
+      const inputMapPath = _path().resolve(inputFileDir, inputMapURL);
+      const relativeToInputFileDir = _path().relative(inputFileDir, inputMapPath);
+      if (relativeToInputFileDir.startsWith("..") || _path().isAbsolute(relativeToInputFileDir)) {
+        const inputPackageJSONPath = findUpSync("package.json", {
+          cwd: inputFileDir,
+          stopAt: root2
+        });
+        const inputFileRoot = inputPackageJSONPath ? _path().dirname(inputPackageJSONPath) : root2;
+        const relativeInputMapPath = _path().relative(inputFileRoot, inputMapPath);
+        if (relativeInputMapPath.startsWith("..") || _path().isAbsolute(relativeInputMapPath)) {
+          debug(`discarding input sourcemap "${inputMapPath}" outside of package root "${inputFileRoot}"`);
+          return null;
+        }
+      }
+      return inputMapPath;
+    }
+    __name(getInputMapPath, "getInputMapPath");
+    function readInputSourceMapFile(filename, root2, inputMapURL) {
+      const inputMapPath = getInputMapPath(filename, root2, inputMapURL);
+      if (inputMapPath) {
+        const inputMapContent = _fs().readFileSync(inputMapPath, "utf8");
+        return _convertSourceMap().fromJSON(inputMapContent);
+      }
+      return null;
+    }
+    __name(readInputSourceMapFile, "readInputSourceMapFile");
+  }
+});
+
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/parser/util/missing-plugin-helper.js
 var require_missing_plugin_helper = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/parser/util/missing-plugin-helper.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/parser/util/missing-plugin-helper.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -59958,9 +63414,9 @@ See https://babeljs.io/docs/configuration#print-effective-configs for more info.
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/parser/index.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/parser/index.js
 var require_parser = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/parser/index.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/parser/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -60050,9 +63506,9 @@ var require_parser = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/util/clone-deep.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/util/clone-deep.js
 var require_clone_deep = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/util/clone-deep.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/util/clone-deep.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -60108,30 +63564,14 @@ var require_clone_deep = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/normalize-file.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/normalize-file.js
 var require_normalize_file = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/normalize-file.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/normalize-file.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
     });
     exports.default = normalizeFile;
-    function _fs() {
-      const data = __require("fs");
-      _fs = /* @__PURE__ */ __name(function() {
-        return data;
-      }, "_fs");
-      return data;
-    }
-    __name(_fs, "_fs");
-    function _path() {
-      const data = __require("path");
-      _path = /* @__PURE__ */ __name(function() {
-        return data;
-      }, "_path");
-      return data;
-    }
-    __name(_path, "_path");
     function _debug() {
       const data = require_src();
       _debug = /* @__PURE__ */ __name(function() {
@@ -60156,6 +63596,7 @@ var require_normalize_file = __commonJS({
       return data;
     }
     __name(_convertSourceMap, "_convertSourceMap");
+    var _readInputSourceMapFile = require_read_input_source_map_file();
     var _file = require_file();
     var _index = require_parser();
     var _cloneDeep = require_clone_deep();
@@ -60199,9 +63640,8 @@ var require_normalize_file = __commonJS({
           const lastComment = extractComments(EXTERNAL_SOURCEMAP_REGEX, ast);
           if (typeof options.filename === "string" && lastComment) {
             try {
-              const match = EXTERNAL_SOURCEMAP_REGEX.exec(lastComment);
-              const inputMapContent = _fs().readFileSync(_path().resolve(_path().dirname(options.filename), match[1]), "utf8");
-              inputMap = _convertSourceMap().fromJSON(inputMapContent);
+              const inputMapURL = EXTERNAL_SOURCEMAP_REGEX.exec(lastComment)[1];
+              inputMap = (0, _readInputSourceMapFile.default)(options.filename, options.root, inputMapURL);
             } catch (err) {
               debug("discarding unknown file input sourcemap", err);
             }
@@ -60245,7 +63685,7 @@ var require_normalize_file = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/remapping/dist/remapping.mjs
+// ../../node_modules/.bun/@jridgewell+remapping@2.3.5/node_modules/@jridgewell/remapping/dist/remapping.mjs
 var remapping_exports = {};
 __export(remapping_exports, {
   default: () => remapping
@@ -60359,7 +63799,7 @@ function remapping(input, loader, options) {
 }
 var SOURCELESS_MAPPING, EMPTY_SOURCES, SourceMap;
 var init_remapping = __esm({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@jridgewell/remapping/dist/remapping.mjs"() {
+  "../../node_modules/.bun/@jridgewell+remapping@2.3.5/node_modules/@jridgewell/remapping/dist/remapping.mjs"() {
     init_trace_mapping();
     init_gen_mapping();
     init_trace_mapping();
@@ -60400,9 +63840,9 @@ var init_remapping = __esm({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/merge-map.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/merge-map.js
 var require_merge_map = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/merge-map.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/merge-map.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -60442,9 +63882,9 @@ var require_merge_map = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/generate.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/generate.js
 var require_generate = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/file/generate.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/file/generate.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -60531,9 +63971,9 @@ var require_generate = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/index.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/index.js
 var require_transformation = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transformation/index.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transformation/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -60626,9 +64066,9 @@ var require_transformation = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transform-file.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transform-file.js
 var require_transform_file = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transform-file.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transform-file.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -60671,9 +64111,9 @@ var require_transform_file = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/import.cjs
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/import.cjs
 var require_import = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/import.cjs"(exports, module) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/import.cjs"(exports, module) {
     module.exports = /* @__PURE__ */ __name(function import_(filepath) {
       return import(filepath);
     }, "import_");
@@ -60687,9 +64127,9 @@ var require_package2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/module-types.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/module-types.js
 var require_module_types = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/module-types.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/module-types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -60927,9 +64367,9 @@ packageExtensions:
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/configuration.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/configuration.js
 var require_configuration = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/configuration.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/configuration.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -61237,9 +64677,9 @@ module.exports = function(api) {
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/vendor/import-meta-resolve.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/vendor/import-meta-resolve.js
 var require_import_meta_resolve = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/vendor/import-meta-resolve.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/vendor/import-meta-resolve.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -62359,9 +65799,9 @@ Default "index" lookups for the main are deprecated for ES modules.`, "Deprecati
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/plugins.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/plugins.js
 var require_plugins4 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/plugins.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/plugins.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -62600,9 +66040,9 @@ to your top-level package.json.
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/index.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/index.js
 var require_files = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/config/files/index.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/config/files/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -62679,9 +66119,9 @@ var require_files = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transform.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transform.js
 var require_transform = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transform.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transform.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -62731,9 +66171,9 @@ var require_transform = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transform-ast.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transform-ast.js
 var require_transform_ast = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/transform-ast.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/transform-ast.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -62784,9 +66224,9 @@ var require_transform_ast = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/parse.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/parse.js
 var require_parse3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/parse.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/parse.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -62834,9 +66274,9 @@ var require_parse3 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/index.js
+// ../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/index.js
 var require_lib14 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/core/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+core@7.29.7+631cdf598ada32d6/node_modules/@babel/core/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -63053,7 +66493,7 @@ var require_lib14 = __commonJS({
     var _transformFile = require_transform_file();
     var _transformAst = require_transform_ast();
     var _parse = require_parse3();
-    var version = exports.version = "7.29.0";
+    var version = exports.version = "7.29.7";
     var resolvePlugin = /* @__PURE__ */ __name((name, dirname) => resolvers.resolvePlugin(name, dirname, false).filepath, "resolvePlugin");
     exports.resolvePlugin = resolvePlugin;
     var resolvePreset = /* @__PURE__ */ __name((name, dirname) => resolvers.resolvePreset(name, dirname, false).filepath, "resolvePreset");
@@ -63073,9 +66513,9 @@ var require_lib14 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/react-refresh/cjs/react-refresh-babel.development.js
+// ../../node_modules/.bun/react-refresh@0.14.2/node_modules/react-refresh/cjs/react-refresh-babel.development.js
 var require_react_refresh_babel_development = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/react-refresh/cjs/react-refresh-babel.development.js"(exports, module) {
+  "../../node_modules/.bun/react-refresh@0.14.2/node_modules/react-refresh/cjs/react-refresh-babel.development.js"(exports, module) {
     "use strict";
     if (true) {
       (function() {
@@ -63663,9 +67103,9 @@ var require_react_refresh_babel_development = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/react-refresh/babel.js
+// ../../node_modules/.bun/react-refresh@0.14.2/node_modules/react-refresh/babel.js
 var require_babel = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/react-refresh/babel.js"(exports, module) {
+  "../../node_modules/.bun/react-refresh@0.14.2/node_modules/react-refresh/babel.js"(exports, module) {
     "use strict";
     if (false) {
       module.exports = null;
@@ -63675,9 +67115,9 @@ var require_babel = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-plugin-utils/lib/index.js
+// ../../node_modules/.bun/@babel+helper-plugin-utils@7.29.7/node_modules/@babel/helper-plugin-utils/lib/index.js
 var require_lib15 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-plugin-utils/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-plugin-utils@7.29.7/node_modules/@babel/helper-plugin-utils/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -63756,9 +67196,9 @@ var require_lib15 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx-self/lib/index.js
+// ../../node_modules/.bun/@babel+plugin-transform-react-jsx-self@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx-self/lib/index.js
 var require_lib16 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx-self/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-react-jsx-self@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx-self/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -63823,9 +67263,9 @@ var require_lib16 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx-source/lib/index.js
+// ../../node_modules/.bun/@babel+plugin-transform-react-jsx-source@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx-source/lib/index.js
 var require_lib17 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx-source/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-react-jsx-source@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx-source/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -63878,9 +67318,9 @@ var require_lib17 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-syntax-jsx/lib/index.js
+// ../../node_modules/.bun/@babel+plugin-syntax-jsx@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-syntax-jsx/lib/index.js
 var require_lib18 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-syntax-jsx/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-syntax-jsx@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-syntax-jsx/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -63902,9 +67342,9 @@ var require_lib18 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-annotate-as-pure/lib/index.js
+// ../../node_modules/.bun/@babel+helper-annotate-as-pure@7.29.7/node_modules/@babel/helper-annotate-as-pure/lib/index.js
 var require_lib19 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-annotate-as-pure/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-annotate-as-pure@7.29.7/node_modules/@babel/helper-annotate-as-pure/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -63929,9 +67369,9 @@ var require_lib19 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx/lib/create-plugin.js
+// ../../node_modules/.bun/@babel+plugin-transform-react-jsx@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx/lib/create-plugin.js
 var require_create_plugin = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx/lib/create-plugin.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-react-jsx@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx/lib/create-plugin.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -64479,9 +67919,9 @@ var require_create_plugin = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx/lib/index.js
+// ../../node_modules/.bun/@babel+plugin-transform-react-jsx@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx/lib/index.js
 var require_lib20 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-react-jsx/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-react-jsx@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-transform-react-jsx/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -64495,9 +67935,9 @@ var require_lib20 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-syntax-typescript/lib/index.js
+// ../../node_modules/.bun/@babel+plugin-syntax-typescript@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-syntax-typescript/lib/index.js
 var require_lib21 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-syntax-typescript/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-syntax-typescript@7.29.7+631cdf598ada32d6/node_modules/@babel/plugin-syntax-typescript/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -64547,9 +67987,9 @@ var require_lib21 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-member-expression-to-functions/lib/index.js
+// ../../node_modules/.bun/@babel+helper-member-expression-to-functions@7.29.7/node_modules/@babel/helper-member-expression-to-functions/lib/index.js
 var require_lib22 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-member-expression-to-functions/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-member-expression-to-functions@7.29.7/node_modules/@babel/helper-member-expression-to-functions/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", { value: true });
     var _t = require_lib3();
@@ -64956,9 +68396,9 @@ var require_lib22 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-optimise-call-expression/lib/index.js
+// ../../node_modules/.bun/@babel+helper-optimise-call-expression@7.29.7/node_modules/@babel/helper-optimise-call-expression/lib/index.js
 var require_lib23 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-optimise-call-expression/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-optimise-call-expression@7.29.7/node_modules/@babel/helper-optimise-call-expression/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -64993,9 +68433,9 @@ var require_lib23 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-replace-supers/lib/index.js
+// ../../node_modules/.bun/@babel+helper-replace-supers@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-replace-supers/lib/index.js
 var require_lib24 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-replace-supers/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-replace-supers@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-replace-supers/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -65302,9 +68742,9 @@ var require_lib24 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-skip-transparent-expression-wrappers/lib/index.js
+// ../../node_modules/.bun/@babel+helper-skip-transparent-expression-wrappers@7.29.7/node_modules/@babel/helper-skip-transparent-expression-wrappers/lib/index.js
 var require_lib25 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-skip-transparent-expression-wrappers/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-skip-transparent-expression-wrappers@7.29.7/node_modules/@babel/helper-skip-transparent-expression-wrappers/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -65342,9 +68782,9 @@ var require_lib25 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/typescript.js
+// ../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/typescript.js
 var require_typescript3 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/typescript.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/typescript.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -65363,9 +68803,9 @@ If you have already enabled that plugin (or '@babel/preset-typescript'), make su
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/fields.js
+// ../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/fields.js
 var require_fields = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/fields.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/fields.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -66432,9 +69872,9 @@ var require_fields = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/misc.js
+// ../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/misc.js
 var require_misc2 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/misc.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/misc.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -66575,9 +70015,9 @@ var require_misc2 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/decorators.js
+// ../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/decorators.js
 var require_decorators = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/decorators.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/decorators.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -67945,9 +71385,9 @@ var require_decorators = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/decorators-2018-09.js
+// ../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/decorators-2018-09.js
 var require_decorators_2018_09 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/decorators-2018-09.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/decorators-2018-09.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -68079,9 +71519,9 @@ var require_decorators_2018_09 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/features.js
+// ../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/features.js
 var require_features = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/features.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/features.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -68228,9 +71668,9 @@ See https://babeljs.io/docs/configuration#print-effective-configs for more info.
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/index.js
+// ../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/index.js
 var require_lib26 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/helper-create-class-features-plugin/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+helper-create-class-features-plugin@7.29.7+631cdf598ada32d6/node_modules/@babel/helper-create-class-features-plugin/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -68331,18 +71771,18 @@ var require_lib26 = __commonJS({
         pre(file) {
           (0, _features.enableFeature)(file, feature, loose);
           if (typeof file.get(versionKey) === "number") {
-            file.set(versionKey, "7.29.3");
+            file.set(versionKey, "7.29.7");
             return;
           }
-          if (!file.get(versionKey) || _semver.lt(file.get(versionKey), "7.29.3")) {
-            file.set(versionKey, "7.29.3");
+          if (!file.get(versionKey) || _semver.lt(file.get(versionKey), "7.29.7")) {
+            file.set(versionKey, "7.29.7");
           }
         },
         visitor: {
           Class(path2, {
             file
           }) {
-            if (file.get(versionKey) !== "7.29.3") return;
+            if (file.get(versionKey) !== "7.29.7") return;
             if (!(0, _features.shouldTransform)(path2, file)) return;
             const pathIsClassDeclaration = path2.isClassDeclaration();
             if (pathIsClassDeclaration) (0, _typescript.assertFieldTransformed)(path2);
@@ -68454,7 +71894,7 @@ var require_lib26 = __commonJS({
           ExportDefaultDeclaration(path2, {
             file
           }) {
-            if (file.get(versionKey) !== "7.29.3") return;
+            if (file.get(versionKey) !== "7.29.7") return;
             const decl = path2.get("declaration");
             if (decl.isClassDeclaration() && (0, _decorators.hasDecorators)(decl.node)) {
               if (decl.node.id) {
@@ -68473,9 +71913,9 @@ var require_lib26 = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/enum.js
+// ../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/enum.js
 var require_enum = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/enum.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -68514,7 +71954,8 @@ var require_enum = __commonJS({
         case "ExportNamedDeclaration":
         case "Program": {
           const isGlobal = t.isProgram(path2.parent);
-          const isSeen = seen(parentPath);
+          const existingBinding = path2.scope.getOwnBinding(name);
+          const isSeen = existingBinding != null && existingBinding.identifier !== node.id;
           let init = t.objectExpression([]);
           if (isSeen || isGlobal) {
             init = t.logicalExpression("||", t.cloneNode(fill.ID), init);
@@ -68535,18 +71976,6 @@ var require_enum = __commonJS({
         default:
           throw new Error(`Unexpected enum parent '${path2.parent.type}`);
       }
-      function seen(parentPath2) {
-        if (parentPath2.isExportDeclaration()) {
-          return seen(parentPath2.parentPath);
-        }
-        if (parentPath2.getData(name)) {
-          return true;
-        } else {
-          parentPath2.setData(name, true);
-          return false;
-        }
-      }
-      __name(seen, "seen");
     }
     __name(transpileEnum, "transpileEnum");
     var buildStringAssignment = _core.template.statement(`
@@ -68816,9 +72245,9 @@ var require_enum = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/const-enum.js
+// ../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/const-enum.js
 var require_const_enum = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/const-enum.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/const-enum.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -68880,9 +72309,9 @@ var require_const_enum = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/global-types.js
+// ../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/global-types.js
 var require_global_types = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/global-types.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/global-types.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -68914,9 +72343,9 @@ This problem is likely caused by another plugin injecting
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/namespace.js
+// ../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/namespace.js
 var require_namespace = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/namespace.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/namespace.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -69095,9 +72524,9 @@ var require_namespace = __commonJS({
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/index.js
+// ../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/index.js
 var require_lib27 = __commonJS({
-  "packages/worker/.cirrus-plugin-react-src/node_modules/@babel/plugin-transform-typescript/lib/index.js"(exports) {
+  "../../node_modules/.bun/@babel+plugin-transform-typescript@7.29.9+631cdf598ada32d6/node_modules/@babel/plugin-transform-typescript/lib/index.js"(exports) {
     "use strict";
     Object.defineProperty(exports, "__esModule", {
       value: true
@@ -69598,7 +73027,7 @@ Please consider using \`${suggestion}\`${extra}, or add @babel/plugin-transform-
   }
 });
 
-// packages/worker/.cirrus-plugin-react-src/node_modules/@vitejs/plugin-react/dist/index.mjs
+// ../../node_modules/.bun/@vitejs+plugin-react@4.3.4+ca7e74b8b450b9c3/node_modules/@vitejs/plugin-react/dist/index.mjs
 import { createFilter } from "./vite-config-helper.js";
 import fs from "node:fs";
 import path from "node:path";
@@ -69926,7 +73355,7 @@ function register(type, id) {
     allFamiliesByType.set(type, family); // Visit inner types because we might not have registered them.
 
     if (typeof type === 'object' && type !== null) {
-      switch (getProperty(type, '$typeof')) {
+      switch (getProperty(type, '$$typeof')) {
         case REACT_FORWARD_REF_TYPE:
           register(type.render, id + '$render');
           break;
@@ -69956,7 +73385,7 @@ function setSignature(type, key) {
 
 
     if (typeof type === 'object' && type !== null) {
-      switch (getProperty(type, '$typeof')) {
+      switch (getProperty(type, '$$typeof')) {
         case REACT_FORWARD_REF_TYPE:
           setSignature(type.render, key, forceReset, getCustomHooks);
           break;
@@ -70231,7 +73660,7 @@ function isLikelyComponentType(type) {
       case 'object':
         {
           if (type != null) {
-            switch (getProperty(type, '$typeof')) {
+            switch (getProperty(type, '$$typeof')) {
               case REACT_FORWARD_REF_TYPE:
               case REACT_MEMO_TYPE:
                 // Definitely React components.
