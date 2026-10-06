@@ -4,9 +4,7 @@ import assert from 'node:assert/strict';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 
 function serviceWith(transform) {
-  const service = new EsbuildService();
-  service.ensureInit = async () => {};
-  service._esbuild = { transform };
+  const service = new EsbuildService(undefined, { engine: async () => ({ transform }) });
   return service;
 }
 

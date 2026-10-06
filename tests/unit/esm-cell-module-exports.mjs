@@ -89,9 +89,8 @@ const manager = new FacetManager(
 manager.setVfs(rawVfs, processFiles(rawVfs));
 // The engine the transform facet runs (lib/oxc-engine.mjs); the service's
 // in-isolate path runs the same transform-then-rewrite.
-const esbuild = new EsbuildService();
-esbuild.ensureInit = async () => {};
-esbuild._esbuild = (await import('./lib/oxc-engine.mjs')).oxcEngine;
+const { oxcEngine } = await import('./lib/oxc-engine.mjs');
+const esbuild = new EsbuildService(undefined, { engine: async () => oxcEngine });
 manager.setEsbuildService(esbuild);
 
 for (const [rel, text] of Object.entries(files)) {

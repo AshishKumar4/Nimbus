@@ -7,9 +7,7 @@ import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { wrapCommonJsCell } from '../../packages/core/src/_shared/commonjs-cell.ts';
 import { oxcEngine } from './lib/oxc-engine.mjs';
-const service = new EsbuildService();
-service.ensureInit = async () => {};
-service._esbuild = oxcEngine;
+const service = new EsbuildService(undefined, { engine: async () => oxcEngine });
 const require = createRequire(import.meta.url);
 for (const source of [
   '#!/usr/bin/env node\nimport { sep } from "node:path";\nexport const value = await Promise.resolve(sep + "ready");',
