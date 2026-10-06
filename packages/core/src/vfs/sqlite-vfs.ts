@@ -2237,9 +2237,7 @@ export class SqliteVFS {
       const node = current();
       if (!rights.read) throw vfsKeyError('EBADF', path);
       if (node.isDir) throw vfsKeyError('EISDIR', path);
-      const start = clampNonNegativeInt(offset);
-      const end = Math.min(node.size, start + clampNonNegativeInt(length));
-      return this.readContent(node, start, end, false);
+      return this.readNodeRange(node, offset, length, false);
     };
     const description: VfsOpenDescription = {
       get ino(): number { return live().ino; },
@@ -2935,7 +2933,7 @@ export class SqliteVFS {
         }
         if (inode.kind === 'symlink' && (!leaf || followLeaf)) {
           if (hops === 40) throw vfsKeyError('ELOOP', path);
-          const target = dec.decode(this.readInodeBytes(inode.path, inode));
+          const target = dec.decode(this.readWhole(inode));
           const suffix = parts.slice(index + 1).join('/');
           const base = target.startsWith('/') ? target : `${this.parentPath(prefix)}/${target}`;
           current = this.nameOf(suffix ? `${base}/${suffix}` : base, cred);
@@ -3744,7 +3742,7 @@ export class SqliteVFS {
   private readlink(path: string, cred: VfsCred): string {
     const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
     if (resolved.inode?.kind !== 'symlink') throw vfsError('EINVAL', path, 'not a symlink');
-    return dec.decode(this.readInodeBytes(resolved.path, resolved.inode));
+    return dec.decode(this.readWhole(resolved.inode));
   }
 
   /** Where `path` leads, in the caller's names, or null for a loop. */
@@ -3760,16 +3758,31 @@ export class SqliteVFS {
   }
 
   private readFile(path: string, cred: VfsCred): Uint8Array {
-    const resolved = this.checkAccess(path, 0o4, cred);
+    return this.readWhole(this.regularFile(this.checkAccess(path, 0o4, cred), path));
+  }
+
+  /**
+   * The regular file a pathname read resolved to (live or a snapshot's):
+   * ENOENT when nothing is there, EISDIR for a directory, EINVAL for
+   * anything else that is not a regular file.
+   */
+  private regularFile(resolved: { path: string; inode?: INode | null }, path: string): INode {
     const inode = resolved.inode;
     if (!inode) throw vfsKeyError('ENOENT', path);
     if (inode.kind === 'directory') throw vfsKeyError('EISDIR', resolved.path);
     if (inode.kind !== 'file') throw vfsError('EINVAL', resolved.path, 'not a regular file');
-    return this.readInodeBytes(resolved.path, inode);
+    return inode;
   }
 
-  private readInodeBytes(_path: string, inode: INode, cached = true): Uint8Array {
+  /** All of an inode's bytes (a link's text). */
+  private readWhole(inode: INode, cached = true): Uint8Array {
     return this.readContent(inode, 0, inode.size, cached);
+  }
+
+  /** `length` bytes of an inode's at `offset`, clamped to its size: a read past the end is short. */
+  private readNodeRange(inode: INode, offset: number, length: number, cached: boolean): Uint8Array {
+    const start = clampNonNegativeInt(offset);
+    return this.readContent(inode, start, Math.min(inode.size, start + clampNonNegativeInt(length)), cached);
   }
 
   /**
@@ -3782,12 +3795,7 @@ export class SqliteVFS {
    * blob read once and handed to a Worker Loader module map.
    */
   private readFileUncached(path: string, cred: VfsCred): Uint8Array {
-    const resolved = this.checkAccess(path, 0o4, cred);
-    const inode = resolved.inode;
-    if (!inode) throw vfsKeyError('ENOENT', path);
-    if (inode.kind === 'directory') throw vfsKeyError('EISDIR', resolved.path);
-    if (inode.kind !== 'file') throw vfsError('EINVAL', resolved.path, 'not a regular file');
-    return this.readInodeBytes(resolved.path, inode, false);
+    return this.readWhole(this.regularFile(this.checkAccess(path, 0o4, cred), path), false);
   }
 
   /**
@@ -3814,15 +3822,8 @@ export class SqliteVFS {
     cred: VfsCred,
     options: { cached?: boolean } = {},
   ): Uint8Array {
-    const resolved = this.checkAccess(path, 0o4, cred);
-    const inode = resolved.inode;
-    if (!inode) throw vfsKeyError('ENOENT', path);
-    if (inode.kind === 'directory') throw vfsKeyError('EISDIR', resolved.path);
-    if (inode.kind !== 'file') throw vfsError('EINVAL', resolved.path, 'not a regular file');
-    const start = clampNonNegativeInt(offset);
-    const end = Math.min(inode.size, start + clampNonNegativeInt(length));
-    if (start >= end) return new Uint8Array(0);
-    return this.readContent(inode, start, end, options.cached !== false);
+    const inode = this.regularFile(this.checkAccess(path, 0o4, cred), path);
+    return this.readNodeRange(inode, offset, length, options.cached !== false);
   }
 
   /** Bytes [start, end) of the content an inode (or a snapshot's row) names. */
@@ -3851,16 +3852,9 @@ export class SqliteVFS {
         else missing.push(row.chunkId);
       }
       for (let i = 0; i < missing.length; i += KEYS_PER_SQL_EXEC) {
-        const page = missing.slice(i, i + KEYS_PER_SQL_EXEC);
-        this._sqlReads++;
-        for (const row of this.sql.exec(
-          `SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
-          ...page,
-        )) {
-          if (Number(row.state) !== CHUNK_LOCAL) throw unreadableChunkError(Number(row.state), ref.path);
-          const data = this.blobToUint8Array(row.data);
-          found.set(Number(row.id), data);
-          this.cacheSet(Number(row.id), data);
+        for (const [id, data] of this.loadChunks(missing.slice(i, i + KEYS_PER_SQL_EXEC), ref.path)) {
+          found.set(id, data);
+          this.cacheSet(id, data);
         }
       }
       for (const row of rows) {
@@ -3872,15 +3866,7 @@ export class SqliteVFS {
       // One statement for the whole range: nothing is cached, so nothing is looked up.
       for (let i = 0; i < rows.length; i += KEYS_PER_SQL_EXEC) {
         const page = rows.slice(i, i + KEYS_PER_SQL_EXEC);
-        const byId = new Map<number, Uint8Array>();
-        this._sqlReads++;
-        for (const row of this.sql.exec(
-          `SELECT id, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`,
-          ...page.map((row) => row.chunkId),
-        )) {
-          if (Number(row.state) !== CHUNK_LOCAL) throw unreadableChunkError(Number(row.state), ref.path);
-          byId.set(Number(row.id), this.blobToUint8Array(row.data));
-        }
+        const byId = this.loadChunks(page.map((row) => row.chunkId), ref.path);
         for (const row of page) {
           const data = byId.get(row.chunkId);
           if (!data) throw vfsError('EIO', ref.path, `missing chunk ${row.chunkId} at ${row.off}`);
@@ -3973,16 +3959,29 @@ export class SqliteVFS {
   }
 
   /** One chunk's bytes, through the LRU when `cached`. */
+  /**
+   * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
+   * statement, by id; a chunk not stored here (cold, pending) is
+   * unreadable. A missing id is absent from the answer: the caller names
+   * what it expected.
+   */
+  private loadChunks(ids: readonly number[], path: string): Map<number, Uint8Array> {
+    const out = new Map<number, Uint8Array>();
+    this._sqlReads++;
+    for (const row of this.sql.exec(`SELECT id, data, state FROM vfs_chunks WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)) {
+      if (Number(row.state) !== CHUNK_LOCAL) throw unreadableChunkError(Number(row.state), path);
+      out.set(Number(row.id), this.blobToUint8Array(row.data));
+    }
+    return out;
+  }
+
   private readChunk(chunkId: number, cached: boolean, path: string): Uint8Array {
     if (cached) {
       const hit = this.cacheGet(chunkId);
       if (hit) return hit;
     }
-    this._sqlReads++;
-    const row = [...this.sql.exec('SELECT data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
-    if (!row) throw vfsError('EIO', path, `missing chunk ${chunkId}`);
-    if (Number(row.state) !== CHUNK_LOCAL) throw unreadableChunkError(Number(row.state), path);
-    const data = this.blobToUint8Array(row.data);
+    const data = this.loadChunks([chunkId], path).get(chunkId);
+    if (!data) throw vfsError('EIO', path, `missing chunk ${chunkId}`);
     if (cached) this.cacheSet(chunkId, data);
     return data;
   }
@@ -5254,7 +5253,7 @@ export class SqliteVFS {
           // The row's own target. Re-resolving the listed name would follow the
           // directories above it, and a row they no longer lead to (one left
           // under a link) made the whole enumeration throw ENOENT.
-          ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readInodeBytes(path, inode)) } : {}),
+          ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readWhole(inode)) } : {}),
           ...(inode.kind === 'file' ? { contentKey: this.listedContentKey(inode, row) } : {}),
         };
         if (!fits(entry)) return pageEnding();
@@ -5298,7 +5297,7 @@ export class SqliteVFS {
       const reported: VfsInvalidatedPath = {
         ...entry,
         stat: { ...this.statOf(inode), revision: this.pathRevision(key, inode) },
-        ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readInodeBytes(key, inode)) } : {}),
+        ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readWhole(inode)) } : {}),
         // Content identity, as list() reports it: a holder of equal bytes keeps them.
         ...(inode.kind === 'file' ? { contentKey: this.contentKeyOf(inode) } : {}),
       };
@@ -6377,23 +6376,11 @@ export class SqliteVFS {
         throw error;
       }
     };
-    const file = (path: string): INode => {
-      const resolved = resolve(path, 0o4);
-      const inode = resolved.inode!;
-      if (inode.kind === 'directory') throw vfsKeyError('EISDIR', resolved.path);
-      if (inode.kind !== 'file') throw vfsError('EINVAL', resolved.path, 'not a regular file');
-      return inode;
-    };
-    const range = (path: string, offset: number, length: number): Uint8Array => {
-      const inode = file(path);
-      const start = clampNonNegativeInt(offset);
-      const end = Math.min(inode.size, start + clampNonNegativeInt(length));
-      return this.readContent(inode, start, end, true);
-    };
+    const file = (path: string): INode => this.regularFile(resolve(path, 0o4), path);
     const readlink = (path: string): string => {
       const inode = resolve(path, 0, false).inode!;
       if (inode.kind !== 'symlink') throw vfsError('EINVAL', path, 'not a symlink');
-      return dec.decode(this.readContent(inode, 0, inode.size, true));
+      return dec.decode(this.readWhole(inode));
     };
     return {
       cred: bound,
@@ -6417,19 +6404,15 @@ export class SqliteVFS {
         }
       },
       resolveName: (path, followLeaf, stop) => { pinned(); return this.resolveName(path, bound, followLeaf, stop, tree); },
-      readFile: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, true); },
-      readFileUncached: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, false); },
-      readRange: range,
-      readRangeUncached: (path, offset, length) => {
-        const inode = file(path);
-        const start = clampNonNegativeInt(offset);
-        return this.readContent(inode, start, Math.min(inode.size, start + clampNonNegativeInt(length)), false);
-      },
+      readFile: (path) => this.readWhole(file(path)),
+      readFileUncached: (path) => this.readWhole(file(path), false),
+      readRange: (path, offset, length) => this.readNodeRange(file(path), offset, length, true),
+      readRangeUncached: (path, offset, length) => this.readNodeRange(file(path), offset, length, false),
       writeRange: readOnly,
       appendOnce: readOnly,
       acknowledgeAppend: readOnly,
       truncate: readOnly,
-      readFileString: (path) => { const inode = file(path); return dec.decode(this.readContent(inode, 0, inode.size, true)); },
+      readFileString: (path) => dec.decode(this.readWhole(file(path))),
       stat: (path) => this.statOf(resolve(path, 0).inode!),
       lstat: (path) => this.statOf(resolve(path, 0, false).inode!),
       utimes: readOnly,
