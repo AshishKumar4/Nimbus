@@ -32,11 +32,27 @@ export interface NpmBinResolution extends NpmBinEntry {
  */
 type VfsLike = Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'readdir' | 'lstat'>;
 type WritableVfsLike = VfsLike & Pick<ProjectFs, 'mkdir' | 'writeFile' | 'chmod'>;
+/** What validating a bin's target reads. */
+type BinTargetFs = Pick<VfsLike, 'exists' | 'isDirectory'>;
 export declare function npmBinDirPath(nodeModulesPath: string): string;
 export declare function npmBinManifestPath(nodeModulesPath: string): string;
 export declare function createNpmBinManifest(entries: NpmBinEntry[]): NpmBinManifest;
 export declare function createNpmBinShim(entry: NpmBinEntry, shimDir: string): string;
 export declare function packageBinEntries(pkg: ResolvedPackage, nodeModulesPath: string): NpmBinEntry[];
+/**
+ * The names the package at `packagePath` declares in `bin`, as npm reads its
+ * package.json (npmBinMap), whether or not their targets exist: what an
+ * install links, and what removing the package unlinks.
+ */
+export declare function declaredPackageBins(vfs: Pick<VfsLike, 'readFileString'>, packagePath: string): Promise<string[]>;
+/**
+ * The bin `npx` runs from the package at `packagePath` for `binName`, as a
+ * linked bin is validated (target present, `.js`/`.cjs`/`.mjs` probed, a
+ * staged-artifact sentinel passed through). A package that maps `bin` names
+ * runs its first entry when none is `binName`, as npm runs a single-binary
+ * package; a string `bin` runs only under the package's own name.
+ */
+export declare function npxPackageBin(vfs: BinTargetFs & Pick<VfsLike, 'readFileString'>, packagePath: string, binName: string): Promise<NpmBinEntry | null>;
 export declare function resolveNpmBin(vfs: VfsLike, cwd: string, name: string): Promise<NpmBinResolution | null>;
 /**
  * A path-shaped invocation of an npm bin shim: an executable entry of a

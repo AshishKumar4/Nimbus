@@ -24,7 +24,9 @@
  *   - No closure capture other than args + preamble names.
  *   - Preamble symbols (streamPackageEntries, streamTarEntries,
  *     readableStreamToAsyncIterable, MAX_FILE_BYTES) referenced via
- *     @ts-ignore; __nimbusWaveWriter declared below.
+ *     @ts-ignore; __nimbusWaveWriter and the install preamble's functions
+ *     (retryingRegistryFetch, strongestSriEntry, sriDigestOf,
+ *     sriDigestsEqual) declared below.
  */
 import type { FacetPackageSpec } from './install-facet.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';

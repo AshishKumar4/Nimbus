@@ -86,7 +86,7 @@ export interface NpxResolveResult {
  */
 export declare function resolveNpxBinary(installer: NpmInstaller, 
 /** The caller's view of the namespace (runtime/project-fs.ts): the project and the npx cache alike. */
-vfs: Pick<ProjectFs, 'exists' | 'readFileString' | 'mkdir' | 'writeFile'>, 
+vfs: Pick<ProjectFs, 'exists' | 'isDirectory' | 'readFileString' | 'mkdir' | 'writeFile'>, 
 /** The caller's credential: what the npx cache install is written as. */
 cred: VfsCred, cwd: string, rawArgs: string[], log: (msg: string) => void, pid: number, 
 /** The command's `NPM_REGISTRY`; the npx cache install reads from it too. */

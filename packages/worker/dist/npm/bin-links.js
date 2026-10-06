@@ -40,10 +40,7 @@ const NpmBinManifestSchema = z.object({
 const PackageJsonSchema = z.object({
     name: z.string().min(1),
     version: z.string().optional(),
-    bin: z.union([
-        z.string(),
-        z.record(z.string(), z.string()),
-    ]).optional(),
+    bin: z.unknown().optional(),
 }).passthrough();
 export function npmBinDirPath(nodeModulesPath) {
     return normalizeVfsPath(`${nodeModulesPath}/.bin`);
@@ -89,6 +86,30 @@ export function packageBinEntries(pkg, nodeModulesPath) {
         // VFS path under the package dir.
         targetPath: isStagedArtifactTarget(target) ? target : `${packagePath}/${target}`,
     }));
+}
+/**
+ * The names the package at `packagePath` declares in `bin`, as npm reads its
+ * package.json (npmBinMap), whether or not their targets exist: what an
+ * install links, and what removing the package unlinks.
+ */
+export async function declaredPackageBins(vfs, packagePath) {
+    const pkg = await readPackageJson(vfs, `${packagePath}/package.json`);
+    return pkg ? [...npmBinMap(pkg.name, pkg.bin).keys()] : [];
+}
+/**
+ * The bin `npx` runs from the package at `packagePath` for `binName`, as a
+ * linked bin is validated (target present, `.js`/`.cjs`/`.mjs` probed, a
+ * staged-artifact sentinel passed through). A package that maps `bin` names
+ * runs its first entry when none is `binName`, as npm runs a single-binary
+ * package; a string `bin` runs only under the package's own name.
+ */
+export async function npxPackageBin(vfs, packagePath, binName) {
+    const path = normalizeVfsPath(packagePath);
+    const pkg = await readPackageJson(vfs, `${path}/package.json`);
+    if (!pkg)
+        return null;
+    const entries = await packageJsonBinEntry(vfs, path, pkg);
+    return entries.find((entry) => entry.name === binName) ?? (typeof pkg.bin === 'string' ? null : entries[0] ?? null);
 }
 export async function resolveNpmBin(vfs, cwd, name) {
     const root = normalizeVfsPath(cwd || '/home/user');
