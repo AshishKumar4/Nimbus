@@ -13,6 +13,7 @@
 
 import assert from 'node:assert/strict';
 import { scanProjectImports } from '../../packages/worker/src/runtime/barrel-synthesizer.ts';
+import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 const files = {
   'app/src/main.tsx': "import React from 'react';\nimport { createRoot } from 'react-dom/client';\nimport { Home, Zap as Z, type IconProps } from 'lucide-react';\nimport './style.css';\nimport 'normalize.css?inline';\nconst m = import('lodash-es/debounce');\n",
@@ -37,25 +38,7 @@ const files = {
   'app/dist/out.js': "import 'skipped-dist';\n",
   'app/readme.md': "import 'not-js';\n",
 };
-const dirs = new Set(['app']);
-for (const path of Object.keys(files)) {
-  const parts = path.split('/');
-  for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
-}
-const vfs = {
-  readdir(dir) {
-    const out = new Map();
-    for (const path of [...dirs, ...Object.keys(files)]) {
-      const rest = path.slice(dir.length + 1);
-      if (path.startsWith(dir + '/') && !rest.includes('/')) out.set(rest, dirs.has(path) ? 'directory' : 'file');
-    }
-    return [...out].map(([name, type]) => ({ name, type }));
-  },
-  readFileString(path) {
-    if (!(path in files)) throw new Error(`ENOENT: ${path}`);
-    return files[path];
-  },
-};
+const vfs = new FakeVfs(files);
 
 // The parser a file the lexer cannot decide is read with: here, a stand-in
 // that answers that one file as a transform would.

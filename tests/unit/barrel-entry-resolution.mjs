@@ -10,22 +10,7 @@
 
 import assert from 'node:assert/strict';
 import { buildSyntheticEntry } from '../../packages/worker/src/runtime/barrel-synthesizer.ts';
-
-function tree(files) {
-  const dirs = new Set();
-  for (const path of Object.keys(files)) {
-    const parts = path.split('/');
-    for (let i = 1; i < parts.length; i++) dirs.add(parts.slice(0, i).join('/'));
-  }
-  return {
-    exists: (path) => path in files || dirs.has(path),
-    isDirectory: (path) => dirs.has(path),
-    readFileString(path) {
-      if (!(path in files)) throw new Error(`ENOENT: ${path}`);
-      return files[path];
-    },
-  };
-}
+import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 const ICONS = {
   'app/node_modules/icons/esm/index.js': "export { default as Home } from './icons/home.js';\nexport { default as Zap } from './icons/zap.js';\n",
@@ -39,7 +24,7 @@ for (const [label, pkg] of [
   ['a string import condition', { exports: { '.': { import: './esm/index.js', require: './cjs/index.js' } }, main: 'cjs/index.js' }],
   ['the module field', { module: 'esm/index.js', main: 'cjs/index.js' }],
 ]) {
-  const vfs = tree({ ...ICONS, 'app/node_modules/icons/package.json': JSON.stringify({ name: 'icons', ...pkg }) });
+  const vfs = new FakeVfs({ ...ICONS, 'app/node_modules/icons/package.json': JSON.stringify({ name: 'icons', ...pkg }) });
   const entry = buildSyntheticEntry(vfs, 'app/node_modules', 'icons', new Set(['Home']));
   assert.ok(entry, `${label}: an entry is synthesized`);
   assert.match(entry.code, /icons\/home\.js/, `${label}: Home comes from its own file`);

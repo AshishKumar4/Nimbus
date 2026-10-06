@@ -17,6 +17,7 @@ import { dirname, join } from 'node:path';
 import * as esbuild from 'esbuild';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { prebundleSlice } from '../../packages/core/src/runtime/prebundle-slice.ts';
+import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 const json = (value) => JSON.stringify(value);
 const TREE = {
@@ -109,17 +110,7 @@ try {
   }
 
   // The session filesystem: what EsbuildService's VFS plugin resolves.
-  const files = new Map(Object.entries(TREE));
-  const isDir = (p) => !files.has(p) && [...files.keys()].some((k) => k.startsWith(p + '/'));
-  const vfs = {
-    exists: (p) => files.has(p) || isDir(p),
-    isDirectory: (p) => isDir(p),
-    readFile: (p) => encoder.encode(files.get(p)),
-    readFileString: (p) => {
-      if (!files.has(p)) throw Object.assign(new Error(`ENOENT: ${p}`), { code: 'ENOENT' });
-      return files.get(p);
-    },
-  };
+  const vfs = new FakeVfs(TREE);
   let vfsResolve;
   new EsbuildService(vfs).makeVfsPlugin().setup({
     initialOptions: {},
