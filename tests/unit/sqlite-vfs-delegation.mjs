@@ -276,4 +276,18 @@ function open() {
   assert.equal(raw.ledger.view().reserved, before, 'the reservation outlived its lease');
 }
 
+// ── A `landed` view reads what has landed, asking no holder to send; its
+//    writes still recall ──
+{
+  const { raw } = open();
+  const holder = delegate(raw, 'work/d');
+  holder.decide('work/d/unsent', 'not sent');
+  const tree = raw.as(CRED_KERNEL, { landed: true });
+  assert.equal(dec.decode(tree.readFile('work/d/a')), 'stored');
+  assert.equal(tree.exists('work/d/unsent'), false, 'a landed read saw what was not sent');
+  assert.ok(tree.readdir('work/d').every((entry) => (entry.name ?? entry) !== 'unsent'));
+  assert.deepEqual(holder.recalls, [], 'a landed read recalled the delegation');
+  assert.throws(() => tree.writeFile('work/d/a', 'x'), (error) => error instanceof RecallRequired && error.kind === 'revoke');
+}
+
 console.log('sqlite-vfs delegation: ok');

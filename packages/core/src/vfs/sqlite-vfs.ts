@@ -1694,6 +1694,8 @@ export class SqliteVFS {
   private activeHolds: ReadonlySet<string> | null = null;
   /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
   private activeWrite = false;
+  /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
+  private activeLanded = false;
 
   /** Shared by every concurrent stream targeting this session's VFS. */
   private readonly writeStreamCredits = new WeightedCreditPool(
@@ -2819,9 +2821,11 @@ export class SqliteVFS {
    * lease; `actor` names the principal finer than its uid, in the write
    * events its mutations make (observeWrites); `holds` answers, at each
    * call, the delegations the view's process holds (its own lookups recall
-   * none of them).
+   * none of them). `landed`: the view reads what has landed, never asking a
+   * holder to send first (an observer that is told when a wave lands, the
+   * editor's file tree, reads after it); its writes still recall.
    */
-  as(cred: VfsCred, options?: { mutationOwner?: string; actor?: string; holds?: () => ReadonlySet<string> }): CredentialedVfs {
+  as(cred: VfsCred, options?: { mutationOwner?: string; actor?: string; holds?: () => ReadonlySet<string>; landed?: boolean }): CredentialedVfs {
     const engine = this;
     const mutationOwner = options?.mutationOwner;
     const bound = Object.freeze({
@@ -2914,7 +2918,7 @@ export class SqliteVFS {
       // Live: a view outlives rotateIncarnation.
       get epoch() { return engine._epoch; },
     };
-    return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds });
+    return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds, landed: options?.landed === true });
   }
 
   /** `run` as `origin`'s call: the principal its write events name. */
@@ -2941,9 +2945,9 @@ export class SqliteVFS {
    */
   private callerView(
     view: CredentialedVfs,
-    caller: { origin: Principal; privileged: boolean; mutationOwner: string | undefined; holds: (() => ReadonlySet<string>) | undefined },
+    caller: { origin: Principal; privileged: boolean; mutationOwner: string | undefined; holds: (() => ReadonlySet<string>) | undefined; landed: boolean },
   ): CredentialedVfs {
-    const { origin, privileged, mutationOwner } = caller;
+    const { origin, privileged, mutationOwner, landed } = caller;
     const leased = mutationOwner === undefined ? null : new Set([mutationOwner]);
     const holds = leased !== null ? () => leased : caller.holds ?? null;
     for (const key of Object.keys(view) as (keyof CredentialedVfs)[]) {
@@ -2957,8 +2961,10 @@ export class SqliteVFS {
         const prior = this.privileged;
         const priorHolds = this.activeHolds;
         const priorWrite = this.activeWrite;
+        const priorLanded = this.activeLanded;
         if (privileged) this.privileged = true;
         if (holds !== null) this.activeHolds = holds();
+        this.activeLanded = landed;
         this.activeWrite = writes;
         try {
           if (settles) this.settleAppends();
@@ -2968,6 +2974,7 @@ export class SqliteVFS {
           this.privileged = prior;
           this.activeHolds = priorHolds;
           this.activeWrite = priorWrite;
+          this.activeLanded = priorLanded;
         }
       });
     }
@@ -3685,6 +3692,8 @@ export class SqliteVFS {
    * holder (the lease a mutation scope or a view presents).
    */
   private recallReads(key: string): void {
+    // A read of what has landed asks nothing of a holder; a write still recalls (refusalAt, and below).
+    if (this.activeLanded && !this.activeWrite) return;
     for (const [owner, lease] of this.exclusiveMutationLeases) {
       if (lease.delegation === null || !lease.delegation.reads || lease.shared || this.isHolder(owner)) continue;
       const { root } = lease;

@@ -89,7 +89,11 @@ function held(root, decided, stored = {}) {
 // ── Class 7: the editor pane's reads, lists and writes ──
 {
   const { raw, kernel, recalls } = held('home/user/repo', { 'home/user/repo/decided': 'by the holder' });
-  const editor = raw.as(CRED_KERNEL);
+  const editor = { files: raw.as(CRED_KERNEL), tree: raw.as(CRED_KERNEL, { landed: true }) };
+  // The tree lists what has landed, asking the holder for nothing.
+  const landed = await serveEditorFs(editor, { type: 'fs-list', dir: '/home/user', recursive: true });
+  assert.deepEqual(landed.entries.map((entry) => entry.path).sort(), ['/home/user/repo', '/home/user/repo/existing']);
+  assert.deepEqual(recalls, [], 'the file tree recalled a delegation to list it');
   const read = await serveEditorFs(editor, { type: 'fs-read', path: '/home/user/repo/decided' });
   assert.deepEqual(read, { type: 'fs-read-result', path: '/home/user/repo/decided', content: 'by the holder' });
   assert.deepEqual(recalls, ['share']);
@@ -102,11 +106,12 @@ function held(root, decided, stored = {}) {
   assert.equal(dec.decode(kernel.readFile('home/user/repo/edited')), 'from the editor');
 }
 
-// ── A list that meets a delegation it may not wait out is not silently cut:
-//    the walk is recalled whole, never answered with the subtree left out ──
+// ── A list through a view that recalls is not silently cut: the walk is
+//    recalled whole, never answered with the subtree left out ──
 {
   const { raw, recalls } = held('home/user/repo', {});
-  const listed = await serveEditorFs(raw.as(CRED_KERNEL), { type: 'fs-list', dir: '/home', recursive: true });
+  const files = raw.as(CRED_KERNEL);
+  const listed = await serveEditorFs({ files, tree: files }, { type: 'fs-list', dir: '/home', recursive: true });
   assert.ok(listed.entries.some((entry) => entry.path === '/home/user/repo/existing'), JSON.stringify(listed));
   assert.deepEqual(recalls, ['share']);
 }
