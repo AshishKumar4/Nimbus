@@ -10,9 +10,9 @@
  *      concurrency=N keeps at most N warm isolates rather than one per job.
  *   2. **Nimbus defaults**: compatibilityDate = CF_COMPAT_DATE (matches
  *      the supervisor worker), compatibilityFlags = GUEST_COMPAT_FLAGS,
- *      globalOutbound = the workspace's egress for a pool given its
- *      `network`, else absent (the parent's network, which reaches
- *      https://registry.npmjs.org without a proxy binding).
+ *      globalOutbound = the egress of the pool's `network` when it has
+ *      one, else absent (`ISOLATE_NETWORK`: the parent's network, which
+ *      reaches https://registry.npmjs.org without a proxy binding).
  *   3. **Supervisor autoinjection**. The pool grabs the embedder's
  *      registered supervisor entrypoint stub (see `supervisorEntrypoint` in
  *      composition.ts) and forwards it as `env.SUPERVISOR` to every facet,
@@ -25,7 +25,7 @@
  * and binding types used by this implementation.
  */
 
-import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { loaderOutbound, requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
@@ -56,9 +56,9 @@ import { hostWasmIdentity } from './host-wasm.js';
 // The only no-run supervisor constructor: local to the infrastructure factory.
 // Its network is the pool's (IsolatePoolOptions.network): a facet's SUPERVISOR calls that reach the
 // network for the workspace (an npm packument read) go out through the same egress as the facet.
-function infrastructureSupervisorProps(ctx: DurableObjectState, pid: number, options: { doId?: string; route?: HostRoute; network?: WorkspaceNetwork }) {
+function infrastructureSupervisorProps(ctx: DurableObjectState, pid: number, options: { doId?: string; route?: HostRoute; network: WorkspaceNetwork }) {
   const own = ctx.id.toString(), doId = options.doId ?? own;
-  const egress = options.network?.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
+  const egress = options.network.egress === undefined ? {} : { egress: options.network.egress, networkId: options.network.id };
   return { doId, pid, route: options.route ?? hostRoute() ?? undefined,
     ...(pid > 0 && doId === own ? supervisorDeliveryProps(ctx) : {}), bindingKind: 'infrastructure' as const, ...egress };
 }
@@ -126,14 +126,15 @@ export interface IsolatePoolOptions {
    */
   cacheScope?: 'session' | 'global';
   /**
-   * The network the pool's facets use, for a pool that runs work on behalf
-   * of a workspace (its registry fetches, a program's requests): the
+   * The network the pool's facets use. For a pool that runs work on behalf
+   * of a workspace (its registry fetches, a program's requests), the
    * workspace's (`workspace.network`), whose egress becomes each facet's
    * globalOutbound and whose id is baked into the loader id, so a warm
-   * isolate made under one egress never serves another. Absent, facets keep
-   * the parent's network.
+   * isolate made under one egress never serves another. Nimbus's own work
+   * states `ISOLATE_NETWORK`: the facets keep the parent's network. Required,
+   * so each pool's network is chosen where it is made.
    */
-  network?: WorkspaceNetwork;
+  network: WorkspaceNetwork;
   /**
    * Baked into the loader id. Two pools sharing tag, preamble, wasm and
    * supervisor but differing in `scope` never reuse each other's warm
@@ -422,6 +423,7 @@ export function assembleLoaderWorkerModuleSource(
  *   const pool = new IsolatePool(env, ctx, {
  *     concurrency: 2,
  *     tag: 'npm-install',
+ *     network: workspace.network,
  *   });
  *   const results = await pool.map(
  *     async (pkg, env) => env.SUPERVISOR.writeBatch(buildPayload(pkg)),
@@ -497,11 +499,11 @@ export class IsolatePool {
   /** Extra loader-id segment from options.scope — see IsolatePoolOptions. */
   private readonly scope: string;
   /** IsolatePoolOptions.network: each facet's outbound, and a loader-id segment. */
-  private readonly network: WorkspaceNetwork | undefined;
+  private readonly network: WorkspaceNetwork;
   constructor(
     env: unknown,
     ctx: DurableObjectState,
-    opts?: IsolatePoolOptions,
+    opts: IsolatePoolOptions,
   ) {
     // A host hands its whole env over; the binding is claimed here and the
     // claim is checked on the next line.
@@ -514,20 +516,20 @@ export class IsolatePool {
     }
     this.loader = loader;
     this.ctx = ctx;
-    this.claim = opts?.claim;
-    this.concurrency = Math.max(1, opts?.concurrency ?? 1);
-    this.defaultTimeoutMs = opts?.timeoutMs ?? 60_000;
-    this.defaultRetries = Math.max(0, opts?.retries ?? 0);
-    this.tag = opts?.tag ?? 'facet';
-    this.preamble = opts?.preamble;
+    this.claim = opts.claim;
+    this.concurrency = Math.max(1, opts.concurrency ?? 1);
+    this.defaultTimeoutMs = opts.timeoutMs ?? 60_000;
+    this.defaultRetries = Math.max(0, opts.retries ?? 0);
+    this.tag = opts.tag ?? 'facet';
+    this.preamble = opts.preamble;
     // Include preamble in the cache-bucket key so changes to bundled helpers
     // invalidate warm slots. Empty preamble → '0' suffix (stable).
     this.preambleHash = this.preamble ? hashSource(this.preamble) : '0';
-    this.doIdShort = opts?.cacheScope === 'global'
+    this.doIdShort = opts.cacheScope === 'global'
       ? 'global'
       : ctx.id.toString().slice(0, 12);
-    this.scope = opts?.scope ?? '';
-    this.network = opts?.network;
+    this.scope = opts.scope ?? '';
+    this.network = requireNetwork(opts.network, 'IsolatePool');
 
     // Materialise the wasm-modules table. Sanitise each name into a
     // valid JS identifier for the static import binding; key collisions
@@ -537,7 +539,7 @@ export class IsolatePool {
     const wasmEntries: Array<{ name: string; id: string; wasm: ArrayBuffer | WebAssembly.Module }> = [];
     const fingerprints: string[] = [];
     const seenIds = new Set<string>();
-    if (opts?.wasmModules) {
+    if (opts.wasmModules) {
       for (const [name, wasm] of Object.entries(opts.wasmModules)) {
         let fingerprint: string;
         if (wasm instanceof ArrayBuffer) {
@@ -581,19 +583,19 @@ export class IsolatePool {
     this.wasmModules = wasmEntries;
     this.wasmHash = fingerprints.length === 0 ? '0' : hashSource(fingerprints.join('|'));
 
-    const bindings: Record<string, unknown> = { ...(opts?.extraBindings ?? {}) };
+    const bindings: Record<string, unknown> = { ...(opts.extraBindings ?? {}) };
     this.supervisorKey = 's-none';
-    if (!opts?.omitSupervisor) {
+    if (!opts.omitSupervisor) {
       const supervisorRpc = supervisorEntrypoint();
       if (supervisorRpc) {
         // INSTALL-HONESTY: peer-DO branch supplies coordinator's doId
         // via supervisorDoIdOverride so SUPERVISOR.* RPCs route back
         // to the user's session DO, not the peer DO. Default to the
         // local ctx.id (single-DO callers and the in-DO in-DO fanout path).
-        const supervisor = infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
-          doId: opts?.supervisorDoIdOverride,
-          route: opts?.supervisorRoute,
-          network: opts?.network,
+        const supervisor = infrastructureSupervisorProps(ctx, opts.supervisorPid ?? 0, {
+          doId: opts.supervisorDoIdOverride,
+          route: opts.supervisorRoute,
+          network: opts.network,
         });
         bindings.SUPERVISOR = supervisorRpc({ props: supervisor });
         // Whatever the minted worker's env carries must be in its loader

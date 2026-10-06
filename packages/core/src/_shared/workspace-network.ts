@@ -94,6 +94,18 @@ export function loaderOutbound(network: WorkspaceNetwork | undefined): { globalO
   return network?.egress === undefined ? {} : { globalOutbound: network.egress };
 }
 
+/**
+ * `network`, checked where a pool, a fanout or a facet host takes it: a caller
+ * that does not type-check (a host's JavaScript) is refused by name rather
+ * than given the isolate's network unasked.
+ */
+export function requireNetwork(network: WorkspaceNetwork | undefined, who: string): WorkspaceNetwork {
+  if (network === undefined || network === null || typeof network.fetch !== 'function' || typeof network.id !== 'string') {
+    throw new TypeError(`${who}: a network is required: the workspace's (workspace.network), or ISOLATE_NETWORK for Nimbus's own work`);
+  }
+  return network;
+}
+
 /** Why a program's TLS socket is refused when the workspace's network goes through an egress. */
 export const EGRESS_TLS_REFUSAL =
   "Nimbus: TLS sockets are not available when the workspace's network goes through an egress "

@@ -137,10 +137,12 @@ export class Session extends NimbusSession {
 The egress is a Fetcher's `fetch` and `connect` (`Pick<Fetcher, 'fetch' |
 'connect'>`); on a host without Fetchers, an object with those two methods.
 An egress that carries no TCP refuses in its `connect`. A host that composes
-a workspace with Dynamic Worker facets gives them the same network:
-`facets: loaderFacetHost(env, ctx, workspaceNetwork(egress))`
-(`workspaceNetwork` from `@nimbus-sh/core/_shared/workspace-network.js`; one
-network per egress object, so it is the workspace's own).
+a workspace with facets gives them the same network:
+`facets: loaderFacetHost(env, ctx, workspaceNetwork(egress))` for Dynamic
+Worker facets, `facets: localFacetHost(workspaceNetwork(egress))` on Bun or
+Node (`workspaceNetwork` and `ISOLATE_NETWORK` from `@nimbus-sh/core`; one
+network per egress object, so it is the workspace's own). Every facet host,
+pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 
 | Traffic | Through the egress |
 |---|---|
@@ -156,6 +158,8 @@ network per egress object, so it is the workspace's own).
 | a worker or dev server a command starts (wrangler dev, vite) | yes |
 | an inline `node` program (a host without Dynamic Workers: Bun, Node): fetch, `http`/`https` | yes, as Node's fetch: the response streams, an unread body is not read, the program's redirect mode is honored and each hop is its own request through the egress |
 | an inline `node` program's WebSocket | refused by name: a WebSocket cannot cross the inline program's realm to the host |
+| a facet of `localFacetHost` (Bun, Node): its fetch | yes, as an inline `node` program's |
+| a facet of `localFacetHost`: its WebSocket | refused by name, as an inline `node` program's |
 | Nimbus's own traffic (R2, runtime catalog, OAuth, AI, static assets, its Durable Objects) | no |
 
 HTTPS made by fetch or `https` is unaffected by the TLS limit: it is a

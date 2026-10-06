@@ -73,8 +73,9 @@ const core = underBun ? '../../packages/core/src' : '../../packages/core/dist';
 const ext = underBun ? 'ts' : 'js';
 const { NimbusWorkspace } = await import(`${core}/workspace/nimbus-workspace.${ext}`);
 const { localFacetHost } = await import(`${core}/runtime/local-facet-host.${ext}`);
+const { ISOLATE_NETWORK } = await import(`${core}/_shared/workspace-network.${ext}`);
 
-const host = localFacetHost();
+const host = localFacetHost(ISOLATE_NETWORK);
 /** `promise`, or a rejection after `ms`; the timer goes with it, so it holds nothing (4). */
 const within = (promise, ms, what) => {
   let timer;

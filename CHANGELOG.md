@@ -22,9 +22,13 @@ published independently in the `@nimbus-sh` npm scope.
   starter); so is an inline `node` program's WebSocket. Nimbus's own
   traffic (R2, catalog, OAuth, AI, assets) is not routed. The egress is a
   `Pick<Fetcher, 'fetch' | 'connect'>`. Process bindings carry the egress
-  (`supervisorBindingProps` now requires the workspace's network), and
-  `loaderFacetHost(env, ctx, network)` takes the network its facets go out
-  through. See docs/sandbox-sdk.md.
+  (`supervisorBindingProps` now requires the workspace's network), and every
+  facet host, pool and fanout takes the network its facets go out through:
+  `loaderFacetHost(env, ctx, network)`, `localFacetHost(network)` (whose
+  facets' fetch crosses to the host and out through the egress),
+  `IsolatePoolOptions.network`, `FanoutOptions.network`; Nimbus's own work
+  states `ISOLATE_NETWORK`, exported with `workspaceNetwork` from
+  `@nimbus-sh/core`. See docs/sandbox-sdk.md.
 
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 

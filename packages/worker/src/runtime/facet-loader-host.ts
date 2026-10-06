@@ -12,7 +12,7 @@
  * out through the workspace's (its egress, when it has one), so no runtime
  * opening a facet can leave it out.
  */
-import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { Facet, FacetHost, FacetSpec } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { FacetManager } from '../facets/manager.js';
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
@@ -32,6 +32,7 @@ export { supervisorEsbuildService } from '../facets/esbuild-transform.js';
  * for the egress the workspace is created with).
  */
 export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: WorkspaceNetwork): FacetHost {
+  requireNetwork(network, 'loaderFacetHost');
   return {
     // workerd suspends a guest through JSPI, which is what lets a syscall reach
     // back to the session mid-instruction.

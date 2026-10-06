@@ -112,7 +112,7 @@ export function npmRegistry(base = 'https://registry.npmjs.org') {
 
 /** Install the package at `dir` through the core `@nimbus-sh/core` resolves to. */
 export async function runThroughCore(dir) {
-  const { NimbusWorkspace, localFacetHost } = await import('@nimbus-sh/core');
+  const { ISOLATE_NETWORK, NimbusWorkspace, localFacetHost } = await import('@nimbus-sh/core');
   const { DatabaseSync } = await import('node:sqlite');
   const { default: runtimePackage } = await import(pathToFileURL(join(dir, 'index.js')).href);
   const db = new DatabaseSync(':memory:');
@@ -136,7 +136,7 @@ export async function runThroughCore(dir) {
       sql: { exec: (query, ...bindings) => db.prepare(query).all(...bindings) },
       transactions,
       generation: 1,
-      facets: localFacetHost(),
+      facets: localFacetHost(ISOLATE_NETWORK),
       runtimes: [runtimePackage],
     });
     await workspace.close();

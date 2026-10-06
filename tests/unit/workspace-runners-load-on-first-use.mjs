@@ -9,6 +9,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 
 const RUNNER_MODULES = /\/runtime\/(bash-runner|cpython-runner|ruby-runner|clang-runner|wasm-runner|runtime-registry)\.ts$/;
 const loaded = () => Object.keys(require.cache)
@@ -18,7 +19,7 @@ const loaded = () => Object.keys(require.cache)
 
 assert.deepEqual(loaded(), [], 'no runner module is loaded before the workspace');
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
-const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, facets: localFacetHost() });
+const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, facets: localFacetHost(ISOLATE_NETWORK) });
 assert.deepEqual(loaded(), [], 'create loads no runner module');
 
 const version = await ws.exec('wasm-runner --version');

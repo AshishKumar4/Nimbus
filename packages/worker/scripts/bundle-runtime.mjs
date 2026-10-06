@@ -819,12 +819,12 @@ npm install @nimbus-sh/core ${spec.npm.name}
 \`\`\`
 
 \`\`\`js
-import { NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
+import { ISOLATE_NETWORK, NimbusWorkspace, localFacetHost } from '@nimbus-sh/core';
 import ${RUNTIME} from '${spec.npm.name}';
 
 const workspace = await NimbusWorkspace.create({
   sql,                       // your SQLite, through the SqlDatabase port
-  facets: localFacetHost(),
+  facets: localFacetHost(ISOLATE_NETWORK),
   runtimes: [${RUNTIME}],
 });
 \`\`\`

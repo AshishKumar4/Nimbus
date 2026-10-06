@@ -33,6 +33,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { readText, writeText } from '../../packages/core/src/vfs/vfs.ts';
 
 const PACKAGES = process.env.NIMBUS_RUNTIME_PACKAGES;
@@ -54,7 +55,7 @@ const ws = await NimbusWorkspace.create({
   transactions: harness.ctx,
   generation: 1,
   cwd: '/home/user',
-  facets: localFacetHost(),
+  facets: localFacetHost(ISOLATE_NETWORK),
   runtimes: [ruby, clang],
 });
 

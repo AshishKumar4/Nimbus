@@ -98,7 +98,7 @@ function recordingEgress() {
     },
   };
   const ctx = { id: { toString: () => 'egress-pool-do' }, exports: {} };
-  for (const [label, poolNetwork] of [['egress', network], ['none', undefined]]) {
+  for (const [label, poolNetwork] of [['egress', network], ['none', ISOLATE_NETWORK]]) {
     configs.length = 0;
     loaderIds.length = 0;
     const pool = new IsolatePool(env, ctx, { tag: 'egress-test', concurrency: 1, omitSupervisor: true, network: poolNetwork });
@@ -106,10 +106,10 @@ function recordingEgress() {
     const resolved = await Promise.all(configs.map((make) => make()));
     assert.ok(resolved.length > 0, `${label}: the pool loaded nothing`);
     for (const config of resolved) {
-      if (poolNetwork) assert.equal(config.globalOutbound, egress, 'a pool facet was loaded without the egress');
-      else assert.ok(!('globalOutbound' in config), 'without a network the pool stated a globalOutbound');
+      if (poolNetwork.egress) assert.equal(config.globalOutbound, egress, 'a pool facet was loaded without the egress');
+      else assert.ok(!('globalOutbound' in config), 'under ISOLATE_NETWORK the pool stated a globalOutbound');
     }
-    if (poolNetwork) assert.ok(loaderIds.every((id) => id.endsWith(':' + network.id)), 'a pool loader id is not the egress\'s own: ' + loaderIds);
+    if (poolNetwork.egress) assert.ok(loaderIds.every((id) => id.endsWith(':' + network.id)), 'a pool loader id is not the egress\'s own: ' + loaderIds);
   }
   // A peer rebuilds the coordinator's network with its identity.
   const ref = networkRef(network);

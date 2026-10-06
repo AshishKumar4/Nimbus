@@ -26,7 +26,8 @@ if (process.pid !== 1) {
   console.log('ok - realm-host-pid1 (a process realm runs under a PID 1 host)');
 } else {
   const { localFacetHost } = await import('../../packages/core/src/runtime/local-facet-host.ts');
-  const facet = localFacetHost().open({ tag: 'pid1' });
+  const { ISOLATE_NETWORK } = await import('../../packages/core/src/_shared/workspace-network.ts');
+  const facet = localFacetHost(ISOLATE_NETWORK).open({ tag: 'pid1' });
   assert.equal(await facet.submit(function answer() { return 41 + 1; }, null), 42);
   await facet.dispose();
   console.log('ok - as PID 1');
