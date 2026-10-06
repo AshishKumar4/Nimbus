@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 40 s wall, 14 s CPU, 0.5 GiB peak (6 runs, 2026-10-06)
 // local-facet-host-parking — the in-process facet host parks a guest when the
 // engine can suspend wasm (JSPI: WebAssembly.Suspending + promising, which Bun's
 // JavaScriptCore ships), and answers every syscall on the guest's own stack

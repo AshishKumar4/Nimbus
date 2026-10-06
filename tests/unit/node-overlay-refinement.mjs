@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 68 s wall, 66 s CPU, 0.1 GiB peak (6 runs, 2026-10-06)
 // Refinement bridge for Nimbus.Coherence.Store.overlay_no_stale
 // (lean/fixtures/node-overlay.json). A resident process writes and unlinks
 // files whose write-backs are held (not committed at the authority) until a

@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 27 s wall, 30 s CPU, 1.9 GiB peak (6 runs, 2026-10-06)
 // A process's filesystem errors carry their POSIX code across the real
 // workerd RPC hops between the process and its session (process isolate →
 // SupervisorRPC → session Durable Object and back). Nothing on either side

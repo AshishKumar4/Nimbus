@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI median 19 s wall, 23 s CPU, 2.3 GiB peak (6 runs, 2026-10-06)
 // The Dynamic Worker ledger's refusal through npm scripts, under workerd:
 // nine children, each `sh -c 'npm run build'` with build
 // 'node parent.cjs && true', each program waiting on a grandchild of its

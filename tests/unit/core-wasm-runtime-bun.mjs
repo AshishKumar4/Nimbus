@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 47 s wall, 34 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // The wasm half of Nimbus, off Cloudflare.
 //
 // `nimbus-workspace-embedded.mjs` proves the JavaScript half runs over

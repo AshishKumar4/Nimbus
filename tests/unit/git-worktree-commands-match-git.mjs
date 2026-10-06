@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 43 s wall, 36 s CPU, 0.3 GiB peak (6 runs, 2026-10-06)
 // git rev-parse, ls-files and diff over the Nimbus VFS print what the real
 // git on this machine prints for the same repository: the same bytes on
 // stdout, the same exit code. Each scenario is built on disk with real git,

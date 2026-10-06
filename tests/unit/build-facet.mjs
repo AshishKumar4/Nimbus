@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — large; CI median 14 s wall, 18 s CPU, 1.3 GiB peak (6 runs, 2026-10-06)
 // A Durable Object's builds run in its build facet (facets/build-facet.ts):
 // the staged threadless rolldown binding and its runtime, as production loads
 // them (lib/build-facet-harness.mjs), behind rolldownBuildHost. Overlapping

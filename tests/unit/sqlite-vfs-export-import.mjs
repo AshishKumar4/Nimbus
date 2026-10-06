@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 68 s wall, 61 s CPU, 1.1 GiB peak (6 runs, 2026-10-06)
 /**
  * sqlite-vfs-export-import — moving a tree between databases (SPEC P4, N15,
  * N16): rows by chunk hash, bytes only for chunks the importer lacks. A
