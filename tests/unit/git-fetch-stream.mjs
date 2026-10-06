@@ -109,8 +109,9 @@ try {
     assert.equal(added.length, 1, 'one pack for the fetch');
     const check = mkdtempSync(join(work, 'check-'));
     hostGit(check, ['init', '-q']);
-    hostGit(check, ['index-pack', '-o', join(check, 'x.idx'), join(packDir, added[0])]);
+    hostGit(check, ['index-pack', '--rev-index', '-o', join(check, 'x.idx'), join(packDir, added[0])]);
     assert.deepEqual(readFileSync(join(check, 'x.idx')), readFileSync(join(packDir, added[0].replace(/pack$/, 'idx'))), 'idx equals git index-pack');
+    assert.deepEqual(readFileSync(join(check, 'x.rev')), readFileSync(join(packDir, added[0].replace(/pack$/, 'rev'))), added[0] + ': rev');
     assert.ok(!readdirSync(packDir).some((name) => name.startsWith('tmp_')), 'no temporary packs left');
     // Stored as it arrived: ranged appends to a temporary pack, never one whole-file write.
     const appends = session.requests.rangeWrites.slice(writesBefore).filter((write) => write.path.includes('/objects/pack/tmp_pack_'));

@@ -1,5 +1,6 @@
 // The streaming pack processor against git itself (host git 2.x):
-//   - its .idx is byte-identical to `git index-pack`'s for the same pack:
+//   - its .idx, and its .rev (the reverse index), are byte-identical to
+//     `git index-pack --rev-index`'s for the same pack:
 //     a recorded GitHub pack, and packs git builds here with ofs-deltas,
 //     ref-deltas, entries longer than the first inflate attempt, and >64 KiB
 //     objects;
@@ -18,7 +19,7 @@ import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 import { PackStreamProcessor } from '../../packages/worker/src/git/pack/processor.ts';
-import { encodeIdxV2 } from '../../packages/worker/src/git/pack/idx.ts';
+import { encodeIdxV2, encodeRev } from '../../packages/worker/src/git/pack/idx.ts';
 import { PackFormatError, oidToHex } from '../../packages/worker/src/git/pack/format.ts';
 
 const repoRoot = resolve(dirname(fileURLToPath(import.meta.url)), '../..');
@@ -98,8 +99,16 @@ function gitIndexPack(pack, extraArgs = []) {
   // Inside a repository: git 2.53's index-pack --strict segfaults outside one.
   git(dir, ['init', '-q']);
   writeFileSync(join(dir, 'in.pack'), pack);
-  git(dir, ['index-pack', ...extraArgs, '-o', join(dir, 'out.idx'), join(dir, 'in.pack')]);
-  return readFileSync(join(dir, 'out.idx'));
+  git(dir, ['index-pack', '--rev-index', ...extraArgs, '-o', join(dir, 'out.idx'), join(dir, 'in.pack')]);
+  const idx = readFileSync(join(dir, 'out.idx'));
+  revs.set(idx.toString('hex'), readFileSync(join(dir, 'out.rev')));
+  return idx;
+}
+/** git's .rev for each idx gitIndexPack made, by the idx's bytes. */
+const revs = new Map();
+/** The processor's .rev for a result whose idx equals git's: equal to git's .rev. */
+function assertRev(result, gitIdx, label) {
+  assert.deepEqual(Buffer.from(encodeRev(result.entries, result.packSha)), revs.get(gitIdx.toString('hex')), label + ': rev equals git index-pack --rev-index');
 }
 
 function packOf(repo) {
@@ -138,6 +147,7 @@ try {
     const { store, result } = await processWhole(pack, { sizes: [1, 13, 65516, 4096] });
     assert.deepEqual(Buffer.from(store.bytes), pack, 'stored pack equals the stream');
     assert.deepEqual(await idxOf(result), expected, 'recorded pack: idx equals git index-pack');
+    assertRev(result, expected, 'recorded pack');
   }
 
   // git-built packs: ofs-deltas, then ref-deltas.
@@ -159,7 +169,9 @@ try {
   {
     const refPack = git(repo, ['pack-objects', '--stdout', '--no-delta-base-offset', '--all', '--window=20', '--depth=20'], '');
     const { result } = await processWhole(refPack, { cacheBytes: 2 });
-    assert.deepEqual(await idxOf(result), gitIndexPack(refPack), 'ref-delta pack: idx equals git');
+    const refIdx = gitIndexPack(refPack);
+    assert.deepEqual(await idxOf(result), refIdx, 'ref-delta pack: idx equals git');
+    assertRev(result, refIdx, 'ref-delta pack');
   }
 
   // Stopped at the budget after (nearly) every entry, resumed from the store.
@@ -194,7 +206,9 @@ try {
     assert.ok(result.appendedBases > 0, 'the thin pack needed bases');
     assert.equal(result.appendedBases, objects.size);
     const completed = Buffer.from(store.bytes);
-    assert.deepEqual(await idxOf(result), gitIndexPack(completed), 'completed thin pack: git indexes it to the same idx');
+    const completedIdx = gitIndexPack(completed);
+    assert.deepEqual(await idxOf(result), completedIdx, 'completed thin pack: git indexes it to the same idx');
+    assertRev(result, completedIdx, 'completed thin pack');
     const resumed = await processResumed(thin, 1, { external });
     assert.deepEqual(await idxOf(resumed.result), await idxOf(result), 'thin, resumed: same idx');
   }

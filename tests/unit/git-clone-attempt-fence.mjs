@@ -82,8 +82,9 @@ try {
     for (const pack of readdirSync(packDir).filter((name) => name.endsWith('.pack'))) {
       const check = mkdtempSync(join(work, 'check-'));
       hostGit(check, ['init', '-q']);
-      hostGit(check, ['index-pack', '-o', join(check, 'x.idx'), join(packDir, pack)]);
+      hostGit(check, ['index-pack', '--rev-index', '-o', join(check, 'x.idx'), join(packDir, pack)]);
       assert.deepEqual(readFileSync(join(check, 'x.idx')), readFileSync(join(packDir, pack.replace(/pack$/, 'idx'))), pack);
+      assert.deepEqual(readFileSync(join(check, 'x.rev')), readFileSync(join(packDir, pack.replace(/pack$/, 'rev'))), pack + ': rev');
     }
     assert.ok(!readdirSync(join(out, '.git')).includes('nimbus-clone'), 'no staging left');
     assert.equal(hostGit(out, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']));

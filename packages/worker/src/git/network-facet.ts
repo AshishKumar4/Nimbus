@@ -1468,8 +1468,9 @@ async function discardEarlierAttempts(context, opts, prefix, suffix) {
   for (let attempt = 1; attempt < opts.attempt; attempt++) {
     const name = opts.jobId + (attempt > 1 ? '_' + attempt : '') + suffix;
     await writer.remove('.git/objects/pack/' + prefix + name);
-    // Its idx, if it reached install.ts.
+    // Its idx and rev, if it reached install.ts.
     await writer.remove('.git/objects/pack/tmp_idx_' + name);
+    await writer.remove('.git/objects/pack/tmp_rev_' + name);
   }
   await writer.flush();
 }

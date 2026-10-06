@@ -109,8 +109,9 @@ try {
       for (const pack of packs.filter((n) => n.endsWith('.pack'))) {
         const check = mkdtempSync(join(work, 'check-'));
         hostGit(check, ['init', '-q']);
-        hostGit(check, ['index-pack', '-o', join(check, 'x.idx'), join(packDir, pack)]);
+        hostGit(check, ['index-pack', '--rev-index', '-o', join(check, 'x.idx'), join(packDir, pack)]);
         assert.deepEqual(readFileSync(join(check, 'x.idx')), readFileSync(join(packDir, pack.replace(/pack$/, 'idx'))), pack);
+      assert.deepEqual(readFileSync(join(check, 'x.rev')), readFileSync(join(packDir, pack.replace(/pack$/, 'rev'))), pack + ': rev');
       }
       const packReads = session.requests.rangeReads.slice(readsBefore).filter((read) => read.path.endsWith('.pack'));
       assert.ok(packReads.length > 0, 'blobs were read back from the stored pack');
