@@ -1,0 +1,34 @@
+diff --git a/run-command.c b/run-command.c
+index e3e0247..4a89547 100644
+--- a/run-command.c
++++ b/run-command.c
+@@ -745,7 +745,7 @@ int start_command(struct child_process *cmd)
+ 	if (cmd->close_object_store)
+ 		odb_close(the_repository->objects);
+ 
+-#ifndef GIT_WINDOWS_NATIVE
++#if !defined(GIT_WINDOWS_NATIVE) && !defined(NIMBUS_PROC)
+ {
+ 	int notify_pipe[2];
+ 	int null_fd = -1;
+@@ -932,9 +932,20 @@ int start_command(struct child_process *cmd)
+ 		cmd->args.v = prepare_shell_cmd(&nargv, sargv);
+ 
+ 	trace_argv_printf(cmd->args.v, "trace: start_command:");
++#ifdef NIMBUS_PROC
++	/*
++	 * No fork on WASI: the host starts the child, as Windows does, with the
++	 * descriptors it is to have as 0, 1 and 2 and the environment changes
++	 * (NAME=value to set, NAME to unset) over the parent's.
++	 */
++	cmd->pid = nimbus_spawnvpe(cmd->args.v[0], cmd->args.v,
++				   (char**) cmd->env.v,
++				   cmd->dir, fhin, fhout, fherr);
++#else
+ 	cmd->pid = mingw_spawnvpe(cmd->args.v[0], cmd->args.v,
+ 				  (char**) cmd->env.v,
+ 				  cmd->dir, fhin, fhout, fherr);
++#endif
+ 	failed_errno = errno;
+ 	if (cmd->pid < 0 && (!cmd->silent_exec_failure || errno != ENOENT))
+ 		error_errno("cannot spawn %s", cmd->args.v[0]);

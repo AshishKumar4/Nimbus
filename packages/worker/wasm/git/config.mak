@@ -5,11 +5,14 @@
 GIT_WASI_COMPAT_H = $(GIT_WASI_DIR)/git-wasi-compat.h
 CC = $(WASI_SDK)/bin/wasm32-wasi-clang
 AR = $(WASI_SDK)/bin/llvm-ar
+# NIMBUS_PROC: patches/0002-spawn-through-the-host.patch. start_command starts
+# a child through the host (nimbus_spawnvpe in git-wasi-compat.c), as
+# Windows does through mingw_spawnvpe: there is no fork.
 # PACK_INDEX_PAGED: patches/0001-pack-index-paged.patch. A pack index is read
 # in pages as lookups need them instead of whole (NO_MMAP would read all of
 # it: 60 MiB for a history of two million objects, in a 128 MiB isolate).
 CFLAGS = -O2 -g0 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_GETPID \
-  -DPACK_INDEX_PAGED \
+  -DPACK_INDEX_PAGED -DNIMBUS_PROC \
   -I$(GIT_WASI_DIR)/include -I$(SYSROOT_EXTRA)/include -include $(GIT_WASI_COMPAT_H)
 LDFLAGS = -L$(SYSROOT_EXTRA)/lib -lwasi-emulated-signal -lwasi-emulated-process-clocks -lwasi-emulated-getpid \
   -Wl,-z,stack-size=8388608 -Wl,--initial-memory=12582912 -Wl,--max-memory=2147483648
