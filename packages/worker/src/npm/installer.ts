@@ -24,6 +24,7 @@
  *     fetchIntoMount)
  */
 
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type {
   SqliteVFS,
   CredentialedVfs,
@@ -196,6 +197,8 @@ export class NpmInstaller {
    * when the feature flag is on, using the facet's own global fetch.
    */
   private fetchFn: FetchFn | undefined;
+  /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
+  private readonly network: WorkspaceNetwork;
   /**
    * npm-protocol log sink for the install in flight. Set per invocation
    * because `--loglevel` is a per-invocation flag; the no-op default is
@@ -213,6 +216,8 @@ export class NpmInstaller {
       env?: any;
       onProgress?: (msg: string) => void;
       fetchFn?: FetchFn;
+      /** The workspace's network (`workspace.network`). */
+      network: WorkspaceNetwork;
     },
   ) {
     this.filesystem = filesystem;
@@ -224,6 +229,7 @@ export class NpmInstaller {
     this.env = opts?.env;
     this.onProgress = opts?.onProgress;
     this.fetchFn = opts?.fetchFn;
+    this.network = opts?.network ?? ISOLATE_NETWORK;
   }
 
   /** Expose cache for external use (e.g., serveModule in vite-dev-server). */
@@ -800,6 +806,7 @@ export class NpmInstaller {
     // pool is stateless across submitMany calls.
     const fanoutPool = new Fanout(this.env, this.ctx!, {
       tag: 'npm-resolve-fanout',
+      network: this.network,
       // 5 minutes per layer is generous; typical layers complete in
       // 1-3 s. Per-task this gates each packument fetch + R2 race.
       timeoutMs: 5 * 60_000,
@@ -1203,6 +1210,7 @@ export class NpmInstaller {
     const phaseProfile: string[] = [];
     const fanoutPool = new Fanout(this.env, this.ctx!, {
       tag: 'npm-install-batch',
+      network: this.network,
       // Whole-batch timeout. With per-shard parallelism of N=8 peer
       // DOs each running pLimit(3), Mossaic-class 456 packages
       // typical 30-60 s wall clock. 10 min covers pathological cases.

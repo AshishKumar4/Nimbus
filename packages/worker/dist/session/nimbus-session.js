@@ -411,6 +411,12 @@ export class NimbusSession extends CloudflareDurableObject {
             requestLaunchTurn: async (at) => { await this._scheduleLaunchTurn(at); },
             armResidentKeepalive: () => _w1EnsureResidentKeepalive(this, ctx),
             filesystem: () => this.getFilesystemAuthority(),
+            network: () => {
+                // The network is the workspace's: nothing reaches it for the workspace before there is one.
+                if (!this.runtimeWorkspace)
+                    throw new Error('Nimbus: the workspace network was used before the workspace was created');
+                return this.runtimeWorkspace.network;
+            },
         });
         // In `wrangler dev`, the outer Worker and this DO share a single
         // workerd process, so the `adoptCtxExports(ctx.exports)` call in the
@@ -653,6 +659,21 @@ export class NimbusSession extends CloudflareDurableObject {
      * SUPERVISOR binding minted from this ctx names this instance.
      */
     supervisorDeliveries;
+    /**
+     * The workspace's egress (NimbusWorkspaceOptions.egress): every network
+     * request made for the session's commands and programs goes through it.
+     * By default the `NIMBUS_EGRESS` service binding, when the embedder bound
+     * one. An embedder that names the session to its egress overrides this,
+     * e.g. `return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString() } })`.
+     * Called once, when the workspace is created.
+     */
+    workspaceEgress() {
+        return this.env.NIMBUS_EGRESS;
+    }
+    /** {@link workspaceEgress}, for the session's init (not part of the embedder surface). */
+    egressForWorkspace() {
+        return this.workspaceEgress();
+    }
     /** The session's namespace and process bindings: one, for the workspace, facets and RPC alike. */
     getFilesystemAuthority() {
         this.ensureSqliteFs();

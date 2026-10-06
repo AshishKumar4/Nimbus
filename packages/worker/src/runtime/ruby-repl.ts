@@ -25,6 +25,7 @@
  *   - irb history pickling.
  */
 
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import type { ReplAdapter, ReplPushResult } from './repl-session.js';
@@ -36,6 +37,8 @@ import { exists } from '@nimbus-sh/core/vfs/vfs.js';
 
 export interface RubyReplDeps {
   facetMgr: FacetManager;
+  /** The workspace's network: the prompt's program goes out through its egress. */
+  network: WorkspaceNetwork;
   /** Owns the installed interpreter blob the prompt is booted from. */
   authority: NimbusFilesystemAuthority;
   terminal: WebSocketTerminal;
@@ -218,6 +221,7 @@ class RubyReplAdapter implements ReplAdapter {
       concurrency: 1,
       supervisorPid: this.deps.pid,
       preamble,
+      network: this.deps.network,
     });
   }
 

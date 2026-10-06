@@ -24,11 +24,14 @@
  *   - Ctrl-C mid-execution.
  *   - irb history pickling.
  */
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { FacetManager } from '../facets/manager.js';
 import type { WebSocketTerminal } from '../facets/ws-terminal.js';
 import { type NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 export interface RubyReplDeps {
     facetMgr: FacetManager;
+    /** The workspace's network: the prompt's program goes out through its egress. */
+    network: WorkspaceNetwork;
     /** Owns the installed interpreter blob the prompt is booted from. */
     authority: NimbusFilesystemAuthority;
     terminal: WebSocketTerminal;

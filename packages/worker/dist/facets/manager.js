@@ -690,6 +690,8 @@ ${VFS_CURSOR_SEED_SOURCE}
     // run that made one cannot stop to be run again.
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+    // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
+    globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     // The same store, namespace and data plan a resident boots on, backed by
     // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
     // Declared inside the request, beside the shims, so a loader that reuses
@@ -1133,6 +1135,8 @@ ${VFS_CURSOR_SEED_SOURCE}
     });
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+    // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
+    globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
         await __nimbusReportLearningFailure(__supervisor, error);
@@ -3961,6 +3965,7 @@ export class FacetManager {
      * gone inside one call.
      */
     processHost;
+    network;
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     debugEnabled = false;
     processRpcResources = new Map();
@@ -4096,14 +4101,17 @@ export class FacetManager {
     // facets/opencode-staging.ts assembles the module map inside the
     // Worker-Loader cache-miss callback, so the sources exist only while a facet
     // is actually loading.
-    constructor(ctx, env, processes, portRegistry, host, hooks = {}) {
+    constructor(ctx, env, processes, portRegistry, host, 
+    /** The workspace's network: its processes go out through it (their bindings carry its egress). */
+    network, hooks = {}) {
         this.ctx = ctx;
         this.learning = new LaunchLearningStore(ctx.storage);
         this.env = parseFacetManagerEnv(env);
         this.processes = processes;
         this.portRegistry = portRegistry;
         this.hooks = hooks;
-        this.processHost = host(ctx, env, () => this._residentDisk());
+        this.network = network;
+        this.processHost = host(ctx, env, () => this._residentDisk(), network);
         this.processFabric = new ProcessFabric(this.processHost);
         const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NIMBUS_DEBUG')
@@ -6080,7 +6088,7 @@ export class FacetManager {
         // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
         // context, which stays open for the whole run), never in this DO.
         const writerId = crypto.randomUUID();
-        const supervisor = supervisorBindingProps(this.ctx, staged.pid, { writerId });
+        const supervisor = supervisorBindingProps(this.ctx, staged.pid, { writerId, network: this.network() });
         const ctxExports = getNimbusCtxExports();
         let entrypoint;
         let writerActivated = false;

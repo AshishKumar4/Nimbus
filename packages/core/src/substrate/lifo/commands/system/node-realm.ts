@@ -35,7 +35,10 @@ import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
 import type { NodeProgram } from './node.js';
 
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'network'>>;
+
+/** The port a guest's request names when it is not for a port of the box: it leaves through the workspace's network. */
+export const EXTERNAL_PORT = -1;
 
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
@@ -48,17 +51,17 @@ export type NodeCall =
   | { readonly op: 'unlisten'; readonly port: number }
   | { readonly op: 'watch'; readonly on: boolean };
 
-/** A response, as data, either way across. */
+/** A response, as data, either way across (bytes for a request that left the box). */
 export interface RealmResponse {
   readonly status: number;
   readonly headers: Record<string, string>;
-  readonly body: string;
+  readonly body: string | Uint8Array;
 }
 
 /** What the guest posts on `events`. */
 export type GuestEvent =
   | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array }
-  | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | null }
+  | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
   | { readonly type: 'exit'; readonly code: number };
 
@@ -68,9 +71,15 @@ export type HostEvent =
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
   | { readonly type: 'changed' };
 
-/** What the realm starts with: the program. */
+/** What the realm starts with: the program, and whether its network goes through an egress. */
 export interface NodeRealmPayload {
   readonly program: NodeProgram;
+  /**
+   * The workspace's network goes through its host's egress: every request
+   * the program makes off the box crosses here ({@link EXTERNAL_PORT}) and
+   * leaves through it; a WebSocket, which cannot cross, is refused by name.
+   */
+  readonly egress: boolean;
 }
 
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
@@ -81,7 +90,8 @@ const stringRecord = (value: unknown): value is Record<string, string> =>
   record(value) && Object.values(value).every((entry) => typeof entry === 'string');
 
 const isResponse = (value: unknown): value is RealmResponse | null =>
-  value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers) && typeof value.body === 'string');
+  value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
+    && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 
 export function isGuestEvent(value: unknown): value is GuestEvent {
   if (!record(value)) return false;
@@ -89,7 +99,8 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
     case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
-        && typeof value.method === 'string' && stringRecord(value.headers) && (value.body === null || typeof value.body === 'string');
+        && typeof value.method === 'string' && stringRecord(value.headers)
+        && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code);
     default: return false;
@@ -107,7 +118,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
 }
 
 export function isNodeRealmPayload(value: unknown): value is NodeRealmPayload {
-  return record(value) && record(value.program) && typeof value.program.source === 'string';
+  return record(value) && record(value.program) && typeof value.program.source === 'string' && typeof value.egress === 'boolean';
 }
 
 export function isStat(value: unknown): value is RuntimeVfsStat {
@@ -279,7 +290,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   };
 
   let code: number | null = null;
-  const payload: NodeRealmPayload = { program };
+  const payload: NodeRealmPayload = { program, egress: kernel?.network?.egress !== undefined };
   const realm = await startRealm({
     entry: new URL('./node-guest.js', import.meta.url),
     payload,
@@ -352,6 +363,7 @@ async function readToEnd(stdin: NonNullable<CommandContext['stdin']>): Promise<U
  */
 async function fetchForGuest(kernel: NodeRealmKernel | undefined, event: Extract<GuestEvent, { type: 'fetch' }>): Promise<RealmResponse | null> {
   if (!kernel) return null;
+  if (event.port === EXTERNAL_PORT) return await fetchExternal(kernel, event);
   try {
     const request = new Request(event.url, { method: event.method, headers: event.headers, body: event.body });
     const result = await dispatchWorkspaceRequest(kernel, event.port, request);
@@ -361,5 +373,24 @@ async function fetchForGuest(kernel: NodeRealmKernel | undefined, event: Extract
     return { status: result.response.status, headers, body: await result.response.text() };
   } catch {
     return null;
+  }
+}
+
+/**
+ * A request the program made off the box, under an egress: it leaves through
+ * the workspace's network, and its answer crosses back as bytes. A failure
+ * crosses as a 502 naming it, as a proxy answers, so the program sees a
+ * response rather than a request that never settles.
+ */
+async function fetchExternal(kernel: NodeRealmKernel, event: Extract<GuestEvent, { type: 'fetch' }>): Promise<RealmResponse> {
+  try {
+    const network = kernel.network;
+    if (network?.egress === undefined) throw new Error('no egress');
+    const response = await network.fetch(event.url, { method: event.method, headers: event.headers, body: event.body, redirect: 'manual' });
+    const headers: Record<string, string> = {};
+    response.headers.forEach((value, key) => { headers[key] = value; });
+    return { status: response.status, headers, body: new Uint8Array(await response.arrayBuffer()) };
+  } catch (error) {
+    return { status: 502, headers: { 'content-type': 'text/plain' }, body: `nimbus egress: ${error instanceof Error ? error.message : String(error)}` };
   }
 }

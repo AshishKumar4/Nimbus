@@ -1,3 +1,4 @@
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '../../../_shared/workspace-network.js';
 import { ProcessRegistry } from '../shell/ProcessRegistry.js';
 import { NetworkStack } from './network/NetworkStack.js';
 import { PortBridge } from './network/PortBridge.js';
@@ -34,6 +35,13 @@ export function isLoopbackHost(host: string): boolean {
  */
 export class Kernel {
 	portRegistry: Map<number, VirtualRequestHandler> = new Map();
+	/**
+	 * The network its commands reach off the box through: the workspace's
+	 * egress when its host supplied one (NimbusWorkspaceOptions.egress), else
+	 * the isolate's own. Loopback never goes here: the port registry and
+	 * `routeLoopback` answer it.
+	 */
+	network: WorkspaceNetwork = ISOLATE_NETWORK;
 	routeLoopback?: LoopbackRouter;
 	portBridge: PortBridge;
 	processRegistry: ProcessRegistry;

@@ -30,6 +30,9 @@ import type { Command, CommandRunAsHost } from '../substrate/lifo/commands/types
 import { createNodeCommand } from '../substrate/lifo/commands/system/node.js';
 import { createCurlCommand } from '../substrate/lifo/commands/net/curl.js';
 import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
+import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
+import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
+import { workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { runCommand } from '../substrate/lifo/sandbox/SandboxCommands.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import type { CommandResult, RunOptions } from '../substrate/lifo/sandbox/types.js';
@@ -192,6 +195,32 @@ export interface NimbusWorkspaceOptions {
    *  install stubs can resolve against. Supplied packages win same-name
    *  lookups. */
   readonly runtimeSource?: RuntimeSource;
+  /**
+   * The workspace's egress: every network request made on behalf of the
+   * workspace's commands and programs goes through it. Its `fetch` sees HTTP
+   * and WebSocket upgrades; its `connect`, when it has one, sees plain TCP
+   * sockets. Typically a service binding or a `ctx.exports` entrypoint
+   * minted with the workspace's identity in its props, which may record,
+   * rewrite or refuse each request.
+   *
+   * Covered: git's clone, fetch, pull and push (every Dynamic Worker they
+   * load) and its on-demand object fetches; npm's registry and tarball
+   * requests (the install facets, in this Durable Object and in peers);
+   * curl, wget, dig and ping; pip's and gem's index and downloads; a child
+   * process's fetch, http/https, WebSocket and plain TCP sockets; a worker or
+   * dev server a command starts. A child's TLS socket (`tls.connect`) is
+   * refused under an egress: a Fetcher's `connect()` carries plain TCP only,
+   * so the TLS session could only be made off the egress. HTTPS by fetch or
+   * `https` is not affected. Responses from Nimbus's shared npm packument
+   * cache are not used under an egress, so the egress sees every registry
+   * read; integrity-checked tarballs may still come from the shared cache.
+   *
+   * Not covered: Nimbus's own infrastructure traffic (R2, the runtime
+   * catalog, OAuth, AI inference, static assets, its own Durable Objects).
+   *
+   * Absent, the workspace uses the isolate's own network, as before.
+   */
+  readonly egress?: WorkspaceEgress;
 }
 
 /**
@@ -220,6 +249,13 @@ export class NimbusWorkspace {
   /** The raw durable filesystem, for hosts that need uid-aware operations. */
   readonly vfs: SqliteVFS;
   readonly kernel: Kernel;
+  /**
+   * The network the workspace's commands and programs use: its egress when
+   * the host supplied one ({@link NimbusWorkspaceOptions.egress}), else the
+   * isolate's. Everything that loads a Dynamic Worker for the workspace
+   * gives it `loaderOutbound(workspace.network)`.
+   */
+  get network(): WorkspaceNetwork { return this.kernel.network; }
   readonly shell: Shell;
   /** What the shell resolves a command name against. A host adds its own. */
   readonly registry: CommandRegistry;
@@ -290,6 +326,7 @@ export class NimbusWorkspace {
     const filesystem = options.filesystem ?? new ProcessFiles(vfs);
     if (filesystem.engine !== vfs) throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
     const kernel = new Kernel();
+    kernel.network = workspaceNetwork(options.egress);
     const registry = createDefaultRegistry();
     // The durable coreutils replace ~25 lifo builtins. They are the ones that
     // carry credentials and read this filesystem's uid/gid, so they must win.
@@ -339,6 +376,8 @@ export class NimbusWorkspace {
     registry.register('node', createNodeCommand(kernel));
     registry.register('curl', createCurlCommand(kernel));
     registry.register('wget', createWgetCommand(kernel));
+    registry.register('dig', createDigCommand(kernel));
+    registry.register('ping', createPingCommand(kernel));
     // kill signals this workspace's own processes and jobs (bash's builtin).
     registry.register('kill', createKillCommand(kernel.processRegistry));
 
@@ -374,6 +413,7 @@ export class NimbusWorkspace {
           processes,
           runtimes,
           getHome,
+          network: kernel.network,
         });
         // With a facet host the workspace owns the runner table, and it is
         // complete here: a supplied package naming a runner outside it would
@@ -751,6 +791,7 @@ function registerWasmRuntimes(deps: {
   processes: SessionProcessSupervisor;
   runtimes: RuntimeManager;
   getHome(): string;
+  network: WorkspaceNetwork;
 }): void {
   // wasm-runner allocates pids for what it runs, off the SAME supervisor the
   // shell identity uses — the host's own when it supplied one.
@@ -789,9 +830,9 @@ function registerWasmRuntimes(deps: {
     // run as a one-shot that dies with it. Same for ruby, where a script is
     // the shape that may bind a port.
     'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
-      .makeCPythonRunnerFactory({ facets: deps.facets })),
+      .makeCPythonRunnerFactory({ facets: deps.facets, network: deps.network })),
     'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
-      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome })),
+      .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
     'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
       .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
   };

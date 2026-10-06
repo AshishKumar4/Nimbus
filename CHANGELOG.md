@@ -5,6 +5,23 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A workspace's network can go through its host's egress
+  (`NimbusWorkspaceOptions.egress`; for the session Durable Object a
+  `NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint
+  one per session). Every request made for the workspace's commands and
+  programs goes through it: git (every facet it loads), npm (the install
+  facets here and in peers; the shared packument cache is bypassed), curl,
+  wget, dig, ping, `npm view`/`search`, pip, gem, a program's fetch,
+  `http`/`https` (node-fetch, undici) and WebSocket, a plain TCP socket
+  (the egress's `connect()`), and the workers and dev servers a command
+  starts. A
+  program's TLS socket (`tls.connect`) is refused by name under an egress
+  (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain TCP only
+  (measured in workerd: `startTls()` on such a socket has no TLS starter).
+  Nimbus's own traffic (R2, catalog, OAuth, AI, assets) is not routed.
+  Process bindings carry the egress (`supervisorBindingProps` now requires
+  the workspace's network). See docs/sandbox-sdk.md.
+
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been

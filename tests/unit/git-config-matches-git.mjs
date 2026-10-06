@@ -9,6 +9,7 @@
 // in git, and a read-only command never stages it. A repository that kept
 // cf-git's old `filemode = false` ignores the exec bit, as git does.
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, symlinkSync, utimesSync, writeFileSync } from 'node:fs';
@@ -214,7 +215,7 @@ try {
     jobs++;
     const result = await execGitNetwork({ id: { toString: () => 'config-do' } }, doEnv, {
       op: 'clone', pid: 1, dir, url, ref, depth: 1, exclusiveDestination: true,
-    });
+    }, ISOLATE_NETWORK);
     assert.equal(result.success, true, `clone ${url} ${ref ?? ''}: ${result.error}`);
   }
 

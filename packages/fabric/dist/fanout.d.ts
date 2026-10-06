@@ -17,6 +17,7 @@
  * install and runtime operations do not appear successful after partial
  * dispatch.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type FacetTaskFn } from './isolate-pool.js';
 import type { WorkerLoader } from './vendor/types.js';
 /** The bindings a fan-out needs off the coordinator DO's env. The host
@@ -120,6 +121,12 @@ export interface FanoutOptions {
      * IsolatePool's extraBindings option.
      */
     extraBindings?: Record<string, unknown>;
+    /**
+     * The workspace's network, for a fanout that works on its behalf (an npm
+     * install's registry and tarball requests): every task's facet, here and
+     * in peers, goes out through its egress (IsolatePoolOptions.network).
+     */
+    network?: WorkspaceNetwork;
     /**
      * If set, skip the supervisor-RPC binding injection (mirrors
      * IsolatePool's omitSupervisor flag).

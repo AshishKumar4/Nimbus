@@ -3,6 +3,7 @@
  * on. The substrates themselves live in `@nimbus-sh/fabric/process-host.js`;
  * this module owns only the deployment config that picks between them.
  */
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ProcessHostMode } from '@nimbus-sh/fabric/process-host.js';
 import type { ProcessHost, ResidentDiskReader } from '@nimbus-sh/fabric/process-fabric.js';
 /**
@@ -13,5 +14,5 @@ import type { ProcessHost, ResidentDiskReader } from '@nimbus-sh/fabric/process-
  */
 export declare function processHostMode(env: unknown): ProcessHostMode;
 /** The substrate for this deployment, resolved once. */
-export declare function processHostFor(ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader): ProcessHost;
+export declare function processHostFor(ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, network: () => WorkspaceNetwork): ProcessHost;
 //# sourceMappingURL=process-host.d.ts.map

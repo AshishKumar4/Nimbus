@@ -114,6 +114,40 @@ supports:
 Nimbus does not provide Docker, Linux containers, GPUs, `apt`, custom VM
 images, native Linux ELF execution, or raw TCP listeners.
 
+## Routing a Sandbox's Network (Egress)
+
+A host can send every network request a workspace's commands and programs
+make through a Fetcher of its own, to record, rewrite or refuse it:
+`NimbusWorkspace.create({ egress })`, or for the session Durable Object a
+`NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint
+one per session:
+
+```ts
+export class Egress extends WorkerEntrypoint {
+  async fetch(request) { /* allow, rewrite or refuse; then */ return fetch(request); }
+  async connect(socket) { /* plain TCP: tunnel or close */ }
+}
+export class Session extends NimbusSession {
+  protected override workspaceEgress() {
+    return this.ctx.exports.Egress({ props: { session: this.ctx.id.toString() } });
+  }
+}
+```
+
+| Traffic | Through the egress |
+|---|---|
+| git clone, fetch, pull, push, on-demand object fetches | yes |
+| npm install (registry and tarballs, every install facet and peer) | yes; the shared packument cache is not used |
+| curl, wget, dig, ping, `npm view`/`search`, pip, gem/bundle | yes |
+| a program's fetch, `http`/`https` and clients over them (node-fetch, undici), WebSocket | yes |
+| a plain TCP socket a program opens through the session | yes, to the egress's `connect()`; refused if it has none |
+| a program's TLS socket (`tls.connect`) | refused by name (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain TCP only |
+| a worker or dev server a command starts (wrangler dev, vite) | yes |
+| Nimbus's own traffic (R2, runtime catalog, OAuth, AI, static assets, its Durable Objects) | no |
+
+HTTPS made by fetch or `https` is unaffected by the TLS limit: it is a
+request, not a socket.
+
 ## Proteus-Style Tool Provider
 
 `box.tools({ namespace: 'sandbox', kind: 'sandbox' })` returns a provider with

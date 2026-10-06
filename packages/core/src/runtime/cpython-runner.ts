@@ -41,6 +41,7 @@
  * program that wrote a file and then raised still wrote the file.
  */
 
+import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
 import type { ProcessView as CredentialedVfs } from './process-files.js';
@@ -244,6 +245,8 @@ export type CPythonResidentStart = (spawn: {
 
 export function makeCPythonRunnerFactory(deps: {
   facets: FacetHost;
+  /** The workspace's network: `pip` reaches PyPI through its egress. */
+  network: WorkspaceNetwork;
   /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
   startResident?: CPythonResidentStart;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) =>
@@ -270,6 +273,7 @@ export function makeCPythonRunnerFactory(deps: {
 
       const pipRuntimeContext: PythonPipRuntimeContext = {
         home,
+        network: deps.network,
         // No Pyodide lockfile: there is no curated wheel index behind this
         // interpreter, so pip resolves against PyPI like anywhere else.
         pyodideLockfileText: null,

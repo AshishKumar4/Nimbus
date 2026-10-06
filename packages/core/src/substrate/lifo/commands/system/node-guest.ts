@@ -21,13 +21,13 @@ import type { CommandOutputStream } from '../types.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
 import {
-  isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
+  EXTERNAL_PORT, isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
   type GuestEvent, type NodeCall, type RealmResponse,
 } from './node-realm.js';
 
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload)) throw new Error('node-guest: started without a program');
-const { program } = joined.payload;
+const { program, egress } = joined.payload;
 const { events } = joined;
 
 /** A synchronous call to the host: its value is the host's answer, as cloned. */
@@ -117,6 +117,35 @@ class RealmPorts extends Map<number, VirtualRequestHandler> {
 const ports = new RealmPorts();
 
 let fetches = 0;
+
+/**
+ * Under an egress, the program's network is its host's: `fetch` (and the
+ * http and https modules, which use it) sends every request off the box
+ * across to the host (EXTERNAL_PORT), which sends it out through the egress.
+ * A WebSocket cannot cross the realm, so it is refused by name.
+ */
+function routeOffTheBox(): void {
+  globalThis.fetch = async (input: RequestInfo | URL, init?: RequestInit): Promise<Response> => {
+    const request = new Request(input, init);
+    const id = ++fetches;
+    const headers: Record<string, string> = {};
+    request.headers.forEach((value, key) => { headers[key] = value; });
+    const body = request.body ? new Uint8Array(await request.arrayBuffer()) : null;
+    const answer = new Promise<RealmResponse | null>((resolve) => fetched.set(id, resolve));
+    holdWhileBusy();
+    post({ type: 'fetch', id, port: EXTERNAL_PORT, url: request.url, method: request.method, headers, body });
+    const response = await answer;
+    if (!response) throw new TypeError('fetch failed');
+    const empty = response.status === 204 || response.status === 304;
+    return new Response(empty ? null : response.body, { status: response.status, headers: response.headers });
+  };
+  globalThis.WebSocket = class {
+    constructor() {
+      throw new Error("Nimbus: WebSocket is not available to an inline node program when the workspace's network goes through an egress");
+    }
+  } as unknown as typeof WebSocket;
+}
+
 async function routeLoopback(port: number, request: Request): Promise<Response | null> {
   const id = ++fetches;
   const headers: Record<string, string> = {};
@@ -182,6 +211,7 @@ realm.on('exit', () => {
   post({ type: 'exit', code: 13 });
 });
 
+if (egress) routeOffTheBox();
 holdWhileBusy();
 const end = await runNodeProgram(program, {
   filesystem: () => filesystem,

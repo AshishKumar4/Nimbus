@@ -105,7 +105,7 @@ export async function registerHostedCommands(self, workspace) {
     // first `git` invocation so it stays out of the cold script-eval graph.
     registry.register('git', async (ctx) => {
         const { runGitCommand } = await import('../git/commands.js');
-        return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+        return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
     });
     // ── runtime package manager: `nimbus install` package manager + runner registry.
     //
@@ -138,6 +138,7 @@ export async function registerHostedCommands(self, workspace) {
         if (argv.length === 0 && terminal) {
             const { runPythonRepl } = await import('../runtime/python-repl.js');
             return await runPythonRepl({
+                network: workspace.network,
                 facetMgr,
                 authority: workspace.filesystem,
                 terminal: terminal,
@@ -162,6 +163,7 @@ export async function registerHostedCommands(self, workspace) {
         return await makeCPythonRunnerFactory({
             facets: facetHostForManager(facetMgr),
             startResident: cpythonResidentStart(facetMgr),
+            network: workspace.network,
         })(manifest, installRoot, binName, binKind)(ctx);
     });
     // Ruby v1 — Ruby 3.3.4 via ruby.wasm 2.9.3-2.9.4. Same architecture
@@ -178,6 +180,7 @@ export async function registerHostedCommands(self, workspace) {
         if (argv.length === 0 && terminal) {
             const { runRubyRepl } = await import('../runtime/ruby-repl.js');
             return await runRubyRepl({
+                network: workspace.network,
                 facetMgr,
                 authority: workspace.filesystem,
                 terminal: terminal,
@@ -198,6 +201,7 @@ export async function registerHostedCommands(self, workspace) {
             registry,
             startResident: rubyResidentStart(facetMgr),
             getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
+            network: workspace.network,
         })(manifest, installRoot, binName, binKind);
         return runner(ctx);
     });
@@ -279,6 +283,7 @@ export async function registerHostedCommands(self, workspace) {
                 }
                 const { warmPythonRepl } = await import('../runtime/python-repl.js');
                 await warmPythonRepl({
+                    network: workspace.network,
                     facetMgr,
                     authority: workspace.filesystem,
                     installRoot: target.root,
@@ -663,6 +668,7 @@ export async function registerHostedCommands(self, workspace) {
                 '   \x1b[2mDeploy with real wrangler to get the real bindings.\x1b[0m\n\n');
         }
         self.nimbusWrangler = new NimbusWrangler({
+            network: workspace.network,
             vfs: kernelFs,
             vfsEvents: sqliteFs.events,
             esbuild: self.esbuildService,

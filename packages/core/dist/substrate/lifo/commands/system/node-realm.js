@@ -27,11 +27,14 @@ import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
+/** The port a guest's request names when it is not for a port of the box: it leaves through the workspace's network. */
+export const EXTERNAL_PORT = -1;
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
 // Each side receives a structured clone it must narrow: a guard per shape.
 const record = (value) => typeof value === 'object' && value !== null;
 const stringRecord = (value) => record(value) && Object.values(value).every((entry) => typeof entry === 'string');
-const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers) && typeof value.body === 'string');
+const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
+    && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 export function isGuestEvent(value) {
     if (!record(value))
         return false;
@@ -39,7 +42,8 @@ export function isGuestEvent(value) {
         case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
-                && typeof value.method === 'string' && stringRecord(value.headers) && (value.body === null || typeof value.body === 'string');
+                && typeof value.method === 'string' && stringRecord(value.headers)
+                && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
         case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
         case 'exit': return Number.isSafeInteger(value.code);
         default: return false;
@@ -56,7 +60,7 @@ export function isHostEvent(value) {
     }
 }
 export function isNodeRealmPayload(value) {
-    return record(value) && record(value.program) && typeof value.program.source === 'string';
+    return record(value) && record(value.program) && typeof value.program.source === 'string' && typeof value.egress === 'boolean';
 }
 export function isStat(value) {
     return record(value) && typeof value.type === 'string' && typeof value.mode === 'number' && typeof value.size === 'number';
@@ -227,7 +231,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
         },
     };
     let code = null;
-    const payload = { program };
+    const payload = { program, egress: kernel?.network?.egress !== undefined };
     const realm = await startRealm({
         entry: new URL('./node-guest.js', import.meta.url),
         payload,
@@ -307,6 +311,8 @@ async function readToEnd(stdin) {
 async function fetchForGuest(kernel, event) {
     if (!kernel)
         return null;
+    if (event.port === EXTERNAL_PORT)
+        return await fetchExternal(kernel, event);
     try {
         const request = new Request(event.url, { method: event.method, headers: event.headers, body: event.body });
         const result = await dispatchWorkspaceRequest(kernel, event.port, request);
@@ -318,5 +324,25 @@ async function fetchForGuest(kernel, event) {
     }
     catch {
         return null;
+    }
+}
+/**
+ * A request the program made off the box, under an egress: it leaves through
+ * the workspace's network, and its answer crosses back as bytes. A failure
+ * crosses as a 502 naming it, as a proxy answers, so the program sees a
+ * response rather than a request that never settles.
+ */
+async function fetchExternal(kernel, event) {
+    try {
+        const network = kernel.network;
+        if (network?.egress === undefined)
+            throw new Error('no egress');
+        const response = await network.fetch(event.url, { method: event.method, headers: event.headers, body: event.body, redirect: 'manual' });
+        const headers = {};
+        response.headers.forEach((value, key) => { headers[key] = value; });
+        return { status: response.status, headers, body: new Uint8Array(await response.arrayBuffer()) };
+    }
+    catch (error) {
+        return { status: 502, headers: { 'content-type': 'text/plain' }, body: `nimbus egress: ${error instanceof Error ? error.message : String(error)}` };
     }
 }

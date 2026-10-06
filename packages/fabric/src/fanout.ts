@@ -18,6 +18,7 @@
  * dispatch.
  */
 
+import { networkRef, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool, type FacetTaskFn } from './isolate-pool.js';
@@ -141,6 +142,12 @@ export interface FanoutOptions {
    * IsolatePool's extraBindings option.
    */
   extraBindings?: Record<string, unknown>;
+  /**
+   * The workspace's network, for a fanout that works on its behalf (an npm
+   * install's registry and tarball requests): every task's facet, here and
+   * in peers, goes out through its egress (IsolatePoolOptions.network).
+   */
+  network?: WorkspaceNetwork;
   /**
    * If set, skip the supervisor-RPC binding injection (mirrors
    * IsolatePool's omitSupervisor flag).
@@ -297,6 +304,7 @@ export class Fanout {
       extraBindings: this.opts.extraBindings,
       omitSupervisor: this.opts.omitSupervisor,
       supervisorPid: this.opts.supervisorPid,
+      network: this.opts.network,
     });
     try {
       const items = tasks.map((t) => t.args);
@@ -385,6 +393,8 @@ export class Fanout {
                   wasmModules: this.opts.wasmModules,
                   extraBindings: this.opts.extraBindings,
                   omitSupervisor: this.opts.omitSupervisor,
+                  // The workspace's egress: the peer's facets go out through it too.
+                  network: networkRef(this.opts.network),
                   // INSTALL-HONESTY: forward the COORDINATOR's full doId so
                   // the peer's IsolatePool can mint a SUPERVISOR
                   // binding that routes back HERE (the user's session DO),

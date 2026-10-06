@@ -4,6 +4,7 @@
  * this module owns only the deployment config that picks between them.
  */
 
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import {
   createProcessHost,
   type ProcessHostMode,
@@ -35,6 +36,7 @@ export function processHostFor(
   ctx: DurableObjectState,
   env: unknown,
   disk: () => ResidentDiskReader,
+  network: () => WorkspaceNetwork,
 ): ProcessHost {
-  return createProcessHost(processHostMode(env), ctx, env, disk);
+  return createProcessHost(processHostMode(env), ctx, env, disk, network);
 }

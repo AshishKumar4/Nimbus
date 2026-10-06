@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -990,6 +991,7 @@ export declare class FacetManager {
      * gone inside one call.
      */
     private processHost;
+    private readonly network;
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     private debugEnabled;
     private processRpcResources;
@@ -1119,7 +1121,9 @@ export declare class FacetManager {
      */
     private ephemeralPids;
     private residentClaims;
-    constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, hooks?: FacetManagerHooks);
+    constructor(ctx: DurableObjectState, env: unknown, processes: SessionProcessSupervisor, portRegistry: PortRegistry, host: ProcessHostFactory, 
+    /** The workspace's network: its processes go out through it (their bindings carry its egress). */
+    network: () => WorkspaceNetwork, hooks?: FacetManagerHooks);
     /**
      * A signal's default action: the process ends with 128+signo whether its
      * facet is still being built (the launch stops at its next ownership gate)

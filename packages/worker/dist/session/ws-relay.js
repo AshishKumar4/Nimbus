@@ -61,8 +61,13 @@ function upgradeUrl(url) {
     return target.href;
 }
 export class WebSocketRelay {
+    network;
     entries = new Map();
     nextId = 1;
+    /** `network`: the workspace's, whose egress opens every socket a process asks for. */
+    constructor(network) {
+        this.network = network;
+    }
     /**
      * Open the real socket and start buffering for the facet.
      *
@@ -76,7 +81,7 @@ export class WebSocketRelay {
         const headers = { Upgrade: 'websocket' };
         if (protocols.length > 0)
             headers['Sec-WebSocket-Protocol'] = protocols.join(', ');
-        const response = await fetch(upgradeUrl(url), { headers });
+        const response = await this.network().fetch(upgradeUrl(url), { headers });
         const socket = response.webSocket;
         if (!socket) {
             throw new Error(`websocket relay: ${url} did not upgrade (HTTP ${response.status}); ` +

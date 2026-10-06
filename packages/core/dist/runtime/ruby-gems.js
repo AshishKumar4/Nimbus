@@ -33,7 +33,9 @@ export async function installedGemBins(vfs, gemHome) {
     }
     return bins.sort((a, b) => a.name.localeCompare(b.name));
 }
-export async function installRubyGems(vfs, requests, opts) {
+export async function installRubyGems(vfs, requests, 
+/** `network`: the workspace's; RubyGems is reached through its egress, when it has one. */
+opts) {
     const gemHome = normalizeVfsPath(opts.gemHome);
     const includeDependencies = opts.includeDependencies !== false;
     const report = { installed: [], alreadyInstalled: [] };
@@ -48,6 +50,7 @@ export async function installRubyGems(vfs, requests, opts) {
             includeDependencies,
             report,
             visiting,
+            network: opts.network,
         });
     }
     return report;
@@ -65,6 +68,7 @@ export async function installRubyBundle(vfs, cwd, opts) {
     const report = await installRubyGems(vfs, requests, {
         gemHome: opts.gemHome,
         includeDependencies: true,
+        network: opts.network,
     });
     const lockfilePath = resolveVfsPath('Gemfile.lock', cwd);
     const all = (await readInstalledGemRecords(vfs, normalizeVfsPath(opts.gemHome)));
@@ -325,7 +329,7 @@ async function installOneGem(vfs, req, ctx) {
     if (ctx.visiting.has(visitKey))
         return;
     ctx.visiting.add(visitKey);
-    const metadata = await resolveGemMetadata(normalizedName, req.requirements);
+    const metadata = await resolveGemMetadata(ctx.network, normalizedName, req.requirements);
     const installedKey = `${metadata.name}-${metadata.version}`;
     const gemRoot = `${ctx.gemHome}/gems/${installedKey}`;
     if ((await vfs.exists(`${gemRoot}/lib`)) || (await vfs.exists(`${ctx.gemHome}/specifications/${installedKey}.gemspec`))) {
@@ -344,7 +348,7 @@ async function installOneGem(vfs, req, ctx) {
     if (!metadata.gem_uri) {
         throw new Error(`RubyGems metadata for ${metadata.name}-${metadata.version} did not include gem_uri`);
     }
-    const gemBytes = await fetchGemBytes(metadata.gem_uri);
+    const gemBytes = await fetchGemBytes(ctx.network, metadata.gem_uri);
     const dataFiles = await extractGemData(gemBytes);
     const nativePath = findNativeExtensionPath(Array.from(dataFiles.keys()));
     if (nativePath) {
@@ -378,11 +382,11 @@ async function installOneGem(vfs, req, ctx) {
     ctx.report.installed.push(installedKey);
     ctx.visiting.delete(visitKey);
 }
-async function resolveGemMetadata(name, requirements) {
+async function resolveGemMetadata(network, name, requirements) {
     const exact = exactVersionRequirement(requirements);
     if (exact)
-        return fetchGemMetadata(name, exact);
-    const versions = await fetchGemVersions(name);
+        return fetchGemMetadata(network, name, exact);
+    const versions = await fetchGemVersions(network, name);
     const selected = versions
         .filter((v) => !v.prerelease)
         .filter((v) => !v.platform || v.platform === 'ruby')
@@ -391,25 +395,25 @@ async function resolveGemMetadata(name, requirements) {
     if (!selected?.number) {
         throw new Error(`no ruby platform version of ${name} satisfies ${requirements.join(', ') || '>= 0'}`);
     }
-    return fetchGemMetadata(name, selected.number);
+    return fetchGemMetadata(network, name, selected.number);
 }
-async function fetchGemMetadata(name, version) {
+async function fetchGemMetadata(network, name, version) {
     const url = version
         ? `${RUBYGEMS_API}/api/v2/rubygems/${encodeURIComponent(name)}/versions/${encodeURIComponent(version)}.json`
         : `${RUBYGEMS_API}/api/v1/gems/${encodeURIComponent(name)}.json`;
-    const resp = await fetch(url);
+    const resp = await network.fetch(url);
     if (!resp.ok)
         throw new Error(`RubyGems metadata fetch failed for ${name}${version ? '-' + version : ''}: HTTP ${resp.status}`);
     return await resp.json();
 }
-async function fetchGemVersions(name) {
-    const resp = await fetch(`${RUBYGEMS_API}/api/v1/versions/${encodeURIComponent(name)}.json`);
+async function fetchGemVersions(network, name) {
+    const resp = await network.fetch(`${RUBYGEMS_API}/api/v1/versions/${encodeURIComponent(name)}.json`);
     if (!resp.ok)
         throw new Error(`RubyGems versions fetch failed for ${name}: HTTP ${resp.status}`);
     return await resp.json();
 }
-async function fetchGemBytes(url) {
-    const resp = await fetch(url);
+async function fetchGemBytes(network, url) {
+    const resp = await network.fetch(url);
     if (!resp.ok)
         throw new Error(`RubyGems download failed: HTTP ${resp.status}`);
     return new Uint8Array(await resp.arrayBuffer());

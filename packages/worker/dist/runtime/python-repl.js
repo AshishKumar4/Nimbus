@@ -202,6 +202,7 @@ class PythonReplAdapter {
             concurrency: 1,
             preamble: buildCPythonPreamble(),
             wasmModules: { 'python.wasm': this.wasmBytes },
+            network: this.deps.network,
         };
         const pid = this.deps.pid;
         this.pool = typeof pid === 'number' && pid > 0

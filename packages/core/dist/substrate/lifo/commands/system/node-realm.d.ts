@@ -30,7 +30,9 @@ import type { Kernel, VirtualRequest } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'network'>>;
+/** The port a guest's request names when it is not for a port of the box: it leaves through the workspace's network. */
+export declare const EXTERNAL_PORT = -1;
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 /** A synchronous call the guest makes. */
@@ -50,11 +52,11 @@ export type NodeCall = {
     readonly op: 'watch';
     readonly on: boolean;
 };
-/** A response, as data, either way across. */
+/** A response, as data, either way across (bytes for a request that left the box). */
 export interface RealmResponse {
     readonly status: number;
     readonly headers: Record<string, string>;
-    readonly body: string;
+    readonly body: string | Uint8Array;
 }
 /** What the guest posts on `events`. */
 export type GuestEvent = {
@@ -68,7 +70,7 @@ export type GuestEvent = {
     readonly url: string;
     readonly method: string;
     readonly headers: Record<string, string>;
-    readonly body: string | null;
+    readonly body: string | Uint8Array | null;
 } | {
     readonly type: 'served';
     readonly id: number;
@@ -90,9 +92,15 @@ export type HostEvent = {
 } | {
     readonly type: 'changed';
 };
-/** What the realm starts with: the program. */
+/** What the realm starts with: the program, and whether its network goes through an egress. */
 export interface NodeRealmPayload {
     readonly program: NodeProgram;
+    /**
+     * The workspace's network goes through its host's egress: every request
+     * the program makes off the box crosses here ({@link EXTERNAL_PORT}) and
+     * leaves through it; a WebSocket, which cannot cross, is refused by name.
+     */
+    readonly egress: boolean;
 }
 export declare function isGuestEvent(value: unknown): value is GuestEvent;
 export declare function isHostEvent(value: unknown): value is HostEvent;

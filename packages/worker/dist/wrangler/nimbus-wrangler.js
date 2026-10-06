@@ -13,6 +13,7 @@
  * The dynamic worker IS the user's Worker — running on the actual
  * Cloudflare Workers runtime, not a simulation.
  */
+import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
@@ -130,6 +131,7 @@ function renderWorkerRunningHtml(opts) {
 }
 // ── NimbusWrangler ────────────────────────────────────────────────────────
 export class NimbusWrangler {
+    network;
     vfs;
     vfsEvents;
     esbuild;
@@ -151,6 +153,7 @@ export class NimbusWrangler {
         this.vfsEvents = opts.vfsEvents;
         this.esbuild = opts.esbuild;
         this.loaderEnv = opts.env;
+        this.network = opts.network;
         this.supervisorCtx = opts.ctx || null;
         this.root = opts.root.replace(/^\/+/, '').replace(/\/+$/, '');
         this.onLog = opts.onLog;
@@ -429,6 +432,7 @@ export class NimbusWrangler {
                 mainModule,
                 modules,
                 env: this.buildInnerEnv(),
+                ...loaderOutbound(this.network),
             });
             if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings)))
                 return false;

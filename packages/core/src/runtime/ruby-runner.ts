@@ -44,6 +44,7 @@
  *     canonical_abi_drop_rb-abi-value, memory.
  */
 
+import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import { withHostView, type ProcessView as CredentialedVfs } from './process-files.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
@@ -92,6 +93,8 @@ export function makeRubyRunnerFactory(deps: {
   startResident?: RubyResidentStart;
   /** The session user's home, whose gems are registered when the runtime loads. */
   getHome(): string;
+  /** The workspace's network: `gem` and `bundle` reach RubyGems through its egress. */
+  network: WorkspaceNetwork;
 }): RubyRunnerFactory {
   const { registry } = deps;
 
@@ -134,7 +137,7 @@ export function makeRubyRunnerFactory(deps: {
       if (notHydrated !== null) { ctx.stderr.write(`${binName}: ${notHydrated}\n`); return 1; }
 
       const home = ctx.env?.HOME || deps.getHome();
-      const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx);
+      const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx, deps.network);
       if (packageCommand.handled) {
         if (packageCommand.exitCode === 0) (await registerGemBins(vfs, home));
         return packageCommand.exitCode;
@@ -285,6 +288,7 @@ async function maybeHandleRubyPackageCommand(
   home: string,
   vfs: CredentialedVfs,
   ctx: CommandContext,
+  network: WorkspaceNetwork,
 ): Promise<{ handled: boolean; exitCode: number }> {
   const isGem = binKind === 'gem' || binName === 'gem';
   const isBundle = binKind === 'bundle' || binName === 'bundle' || binName === 'bundler';
@@ -296,7 +300,7 @@ async function maybeHandleRubyPackageCommand(
       return { handled: true, exitCode: 2 };
     }
     try {
-      const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true });
+      const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true, network });
       for (const name of report.installed) ctx.stdout.write(`Successfully installed ${name}\n`);
       for (const name of report.alreadyInstalled) ctx.stdout.write(`${name} is already installed\n`);
       ctx.stdout.write(`${report.installed.length + report.alreadyInstalled.length} gem(s) processed\n`);
@@ -309,7 +313,7 @@ async function maybeHandleRubyPackageCommand(
 
   if (isBundle && argv[0] === 'install') {
     try {
-      const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home) });
+      const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home), network });
       for (const name of report.installed) ctx.stdout.write(`Successfully installed ${name}\n`);
       for (const name of report.alreadyInstalled) ctx.stdout.write(`${name} is already installed\n`);
       ctx.stdout.write(`Bundle complete! ${requests.length} Gemfile dependency(s), ${report.installed.length + report.alreadyInstalled.length} gem(s) now installed.\n`);

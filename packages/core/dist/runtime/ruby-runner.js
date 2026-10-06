@@ -102,7 +102,7 @@ export function makeRubyRunnerFactory(deps) {
                 return 1;
             }
             const home = ctx.env?.HOME || deps.getHome();
-            const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx);
+            const packageCommand = await maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx, deps.network);
             if (packageCommand.handled) {
                 if (packageCommand.exitCode === 0)
                     (await registerGemBins(vfs, home));
@@ -233,7 +233,7 @@ export function makeRubyRunnerFactory(deps) {
         return rubyBinHandler;
     };
 }
-async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx) {
+async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, vfs, ctx, network) {
     const isGem = binKind === 'gem' || binName === 'gem';
     const isBundle = binKind === 'bundle' || binName === 'bundle' || binName === 'bundler';
     if (isGem && argv[0] === 'install') {
@@ -243,7 +243,7 @@ async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, 
             return { handled: true, exitCode: 2 };
         }
         try {
-            const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true });
+            const report = await installRubyGems(vfs, parsed.requests, { gemHome: gemHomeFor(home), includeDependencies: true, network });
             for (const name of report.installed)
                 ctx.stdout.write(`Successfully installed ${name}\n`);
             for (const name of report.alreadyInstalled)
@@ -258,7 +258,7 @@ async function maybeHandleRubyPackageCommand(binKind, binName, argv, cwd, home, 
     }
     if (isBundle && argv[0] === 'install') {
         try {
-            const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home) });
+            const { requests, report, lockfilePath } = await installRubyBundle(vfs, cwd, { gemHome: gemHomeFor(home), network });
             for (const name of report.installed)
                 ctx.stdout.write(`Successfully installed ${name}\n`);
             for (const name of report.alreadyInstalled)

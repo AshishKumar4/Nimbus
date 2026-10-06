@@ -21,6 +21,6 @@ export function processHostMode(env) {
     throw new Error(`Nimbus: NIMBUS_PROCESS_HOST must be 'facet' or 'peer' (got '${String(raw)}')`);
 }
 /** The substrate for this deployment, resolved once. */
-export function processHostFor(ctx, env, disk) {
-    return createProcessHost(processHostMode(env), ctx, env, disk);
+export function processHostFor(ctx, env, disk, network) {
+    return createProcessHost(processHostMode(env), ctx, env, disk, network);
 }

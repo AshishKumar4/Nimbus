@@ -123,7 +123,7 @@ registry.register('chsh', makeChshCommand({
 // first `git` invocation so it stays out of the cold script-eval graph.
 registry.register('git', async (ctx: any) => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
 });
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
@@ -164,6 +164,7 @@ workspace.runtimes.registerRunner(
     if (argv.length === 0 && terminal) {
       const { runPythonRepl } = await import('../runtime/python-repl.js');
       return await runPythonRepl({
+        network: workspace.network,
         facetMgr,
         authority: workspace.filesystem,
         terminal: terminal,
@@ -188,6 +189,7 @@ workspace.runtimes.registerRunner(
     return await makeCPythonRunnerFactory({
       facets: facetHostForManager(facetMgr),
       startResident: cpythonResidentStart(facetMgr),
+      network: workspace.network,
     })(manifest, installRoot, binName, binKind)(ctx);
   },
 );
@@ -207,6 +209,7 @@ workspace.runtimes.registerRunner(
     if (argv.length === 0 && terminal) {
       const { runRubyRepl } = await import('../runtime/ruby-repl.js');
       return await runRubyRepl({
+        network: workspace.network,
         facetMgr,
         authority: workspace.filesystem,
         terminal: terminal,
@@ -227,6 +230,7 @@ workspace.runtimes.registerRunner(
       registry,
       startResident: rubyResidentStart(facetMgr),
       getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
+      network: workspace.network,
     })(manifest, installRoot, binName, binKind);
     return runner(ctx);
   },
@@ -317,6 +321,7 @@ workspace.runtimes.registerRunner(
         }
         const { warmPythonRepl } = await import('../runtime/python-repl.js');
         await warmPythonRepl({
+          network: workspace.network,
           facetMgr,
           authority: workspace.filesystem,
           installRoot: target.root,
@@ -734,6 +739,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     }
 
     self.nimbusWrangler = new NimbusWrangler({
+      network: workspace.network,
       vfs: kernelFs,
       vfsEvents: sqliteFs.events,
       esbuild: self.esbuildService!,

@@ -34,6 +34,7 @@
  *     for its recipes (see `WorkerRecipe.resident`).
  */
 
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
@@ -105,6 +106,8 @@ export interface FacetManagerDeps {
   vfs: SqliteVFS;
   /** The session's one authority — the manager never constructs a second. */
   filesystem: ProcessFiles;
+  /** The workspace's network (`workspace.network`): every process it runs goes out through it. */
+  network: () => WorkspaceNetwork;
   /**
    * A host's esbuild, shared with the manager. Absent: one whose transforms
    * run in the loader-backed transform facet, never in this isolate.
@@ -193,7 +196,7 @@ export function composeFacetManager(deps: FacetManagerDeps): ComposedFacetManage
       : {}),
     resolveWorkerLaunchFallback: (recipe: WorkerRecipe) => resolveDurableWorkerImage(vfs, recipe),
   };
-  const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, hooks);
+  const manager = new FacetManager(ctx, env, deps.processes, deps.portRegistry, processHostFor, deps.network, hooks);
   manager.setVfs(vfs, deps.filesystem);
   manager.setEsbuildService(deps.esbuild ?? supervisorEsbuildService(ctx, env, deps.filesystem.namespaceFs(CRED_KERNEL)));
   const { portRegistry } = deps;

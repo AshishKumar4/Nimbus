@@ -167,6 +167,7 @@ class RubyReplAdapter {
             concurrency: 1,
             supervisorPid: this.deps.pid,
             preamble,
+            network: this.deps.network,
         });
     }
     async submitFacetFn(userCode) {

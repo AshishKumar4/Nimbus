@@ -8863,6 +8863,17 @@ const __tlsMod = (() => {
     return socket;
   };
   const connect = (...args) => {
+    // Under a workspace egress a TLS socket cannot be made: the egress's
+    // connect carries plain TCP only, and making the session here would go
+    // around it. The refusal names the limit; HTTPS by fetch is unaffected.
+    if (globalThis.__nimbusEgress === true) {
+      const refused = realNet ? new realNet.Socket() : null;
+      const error = new Error("Nimbus: TLS sockets are not available when the workspace's network goes through an egress (a Fetcher's connect() carries plain TCP only); use fetch() or https for HTTPS");
+      error.code = 'ERR_NIMBUS_EGRESS_TLS';
+      if (!refused) throw error;
+      queueMicrotask(() => refused.destroy(error));
+      return refused;
+    }
     const proxied = !!(__nimbusReplay && __nimbusReplay.outbound);
     if (!proxied) __nimbusReplay?.effect("tls.connect " + describe(args));
     const socket = proxied ? proxiedConnect(...args) : real.connect(...args);
@@ -8904,6 +8915,11 @@ const __tlsMod = (() => {
         counted.set(p, new Proxy(value, {
           apply(target, self, args) { __nimbusReplay?.effect('tls.' + p); return Reflect.apply(target, self, args); },
           construct(target, args, newTarget) {
+            if (globalThis.__nimbusEgress === true) {
+              const error = new Error("Nimbus: TLS sockets are not available when the workspace's network goes through an egress (a Fetcher's connect() carries plain TCP only); use fetch() or https for HTTPS");
+              error.code = 'ERR_NIMBUS_EGRESS_TLS';
+              throw error;
+            }
             if (__nimbusReplay && __nimbusReplay.outbound) {
               throw notImplemented('tls.' + p, 'a TLS socket the program builds itself is not made in a program whose network goes through Nimbus (one started with its stdin open); use tls.connect');
             }
