@@ -202,6 +202,23 @@ export function splitRecords(bytes: Uint8Array, delim: number): { records: Uint8
   return { records, terminated };
 }
 
+/** A blank, as GNU's field splitting (sort -k, uniq -f) means one: space or tab. */
+export function isBlank(byte: number): boolean {
+  return byte === 0x20 || byte === 0x09;
+}
+
+/** Where the field starting at `at` in `line` ends: past its leading blanks, then past its non-blanks. */
+export function skipBlankField(line: Uint8Array, at: number): number {
+  while (at < line.length && isBlank(line[at])) at++;
+  while (at < line.length && !isBlank(line[at])) at++;
+  return at;
+}
+
+/** An ASCII byte in upper case; any other byte as it is (GNU's -f and -i fold no other). */
+export function asciiUpper(byte: number): number {
+  return byte >= 0x61 && byte <= 0x7a ? byte - 32 : byte;
+}
+
 export function asciiBytes(text: string): Uint8Array {
   return enc.encode(text);
 }

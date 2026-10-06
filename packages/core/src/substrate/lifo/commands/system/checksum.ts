@@ -1,6 +1,6 @@
 import type { Command, CommandContext } from '../types.js';
 import { createHash } from 'node:crypto';
-import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { decodeLossless, encodeLossless, inputChunks, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 import { shellEscape } from '../../../../_shared/shell-quote.js';
 
@@ -354,9 +354,7 @@ async function checkFiles(ctx: CommandContext, o: Options): Promise<number> {
   for (const list of lists) {
     let text: string;
     try {
-      const parts: Uint8Array[] = [];
-      for await (const chunk of inputChunks(ctx, list)) parts.push(chunk);
-      text = decodeLossless(concatBytes(parts));
+      text = decodeLossless(await readAllInput(ctx, list));
     } catch (error) {
       await ctx.stderr.write(`${o.program}: ${shellEscape(list)}: ${strerror(error)}\n`);
       status = 1;

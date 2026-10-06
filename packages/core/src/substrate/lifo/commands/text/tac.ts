@@ -1,5 +1,5 @@
 import type { Command } from '../types.js';
-import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { concatBytes, decodeLossless, encodeLossless, readAllInput, writeBytes } from '../../utils/bytes-io.js';
 import { PosixRegexSyntax, translate } from '../../utils/posix-regex.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 
@@ -63,9 +63,7 @@ const command: Command = async (ctx) => {
   for (const file of files.length > 0 ? files : ['-']) {
     let bytes: Uint8Array;
     try {
-      const parts: Uint8Array[] = [];
-      for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
-      bytes = concatBytes(parts);
+      bytes = await readAllInput(ctx, file);
     } catch (error) {
       await ctx.stderr.write(`tac: failed to open '${file}' for reading: ${strerror(error)}\n`);
       status = 1;

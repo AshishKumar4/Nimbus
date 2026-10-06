@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { concatBytes, decodeLossless, encodeLossless, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiUpper, concatBytes, decodeLossless, encodeLossless, isBlank, readAllInput, skipBlankField, splitRecords, writeBytes } from '../../utils/bytes-io.js';
 import { createHash } from 'node:crypto';
 import { strerror } from '../../../../vfs/vfs-error.js';
 
@@ -55,7 +55,6 @@ function compareBytes(a: Uint8Array, b: Uint8Array): number {
 
 // ── orderings ──
 
-const isBlank = (b: number) => b === 0x20 || b === 0x09;
 
 /** -n: optional blanks, sign, digits with ',' thousands groups, '.' fraction. */
 function numericValue(s: string): { neg: boolean; int: string; frac: string } | null {
@@ -229,8 +228,7 @@ function keyRange(line: Uint8Array, key: Key, tab: number | null): [number, numb
         if (i === -1) return line.length;
         at = i + 1;
       } else {
-        while (at < line.length && isBlank(line[at])) at++;
-        while (at < line.length && !isBlank(line[at])) at++;
+        at = skipBlankField(line, at);
       }
     }
     return at;
@@ -247,9 +245,7 @@ function keyRange(line: Uint8Array, key: Key, tab: number | null): [number, numb
       const i = line.indexOf(tab, at);
       end = i === -1 ? line.length : i;
     } else {
-      while (at < line.length && isBlank(line[at])) at++;
-      while (at < line.length && !isBlank(line[at])) at++;
-      end = at;
+      end = skipBlankField(line, at);
     }
   } else {
     let at = fieldStart(key.endField);
@@ -267,7 +263,7 @@ function transformText(bytes: Uint8Array, o: Ordering): Uint8Array {
     if (o.dictionary && !(isBlank(b) || (b >= 48 && b <= 57) || (b >= 65 && b <= 90) || (b >= 97 && b <= 122))) continue;
     if (o.nonprinting && b >= 0x80) continue;
     if (o.nonprinting && (b < 32 || b === 127)) continue;
-    out.push(o.fold && b >= 97 && b <= 122 ? b - 32 : b);
+    out.push(o.fold ? asciiUpper(b) : b);
   }
   return Uint8Array.from(out);
 }
@@ -421,19 +417,12 @@ const command: Command = async (ctx) => {
   for (const file of files.length > 0 ? files : ['-']) {
     let bytes: Uint8Array;
     try {
-      const parts: Uint8Array[] = [];
-      for await (const chunk of inputChunks(ctx, file)) parts.push(chunk);
-      bytes = concatBytes(parts);
+      bytes = await readAllInput(ctx, file);
     } catch (error) {
       await ctx.stderr.write(`sort: cannot read: ${file}: ${strerror(error)}\n`);
       return 2;
     }
-    let start = 0;
-    for (let i = bytes.indexOf(delim); i !== -1; i = bytes.indexOf(delim, start)) {
-      lines.push(bytes.subarray(start, i));
-      start = i + 1;
-    }
-    if (start < bytes.length) lines.push(bytes.subarray(start));
+    for (const record of splitRecords(bytes, delim).records) lines.push(record);
   }
 
   const whole: Key = { ...global, startField: 1, startChar: 1, endField: Infinity, endChar: 0 };

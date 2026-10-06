@@ -1,6 +1,6 @@
 import type { Command } from '../types.js';
 import { resolve } from '../../utils/path.js';
-import { asciiBytes, concatBytes, inputChunks, writeBytes } from '../../utils/bytes-io.js';
+import { asciiBytes, asciiUpper, concatBytes, readAllInput, skipBlankField, splitRecords, writeBytes } from '../../utils/bytes-io.js';
 import { strerror } from '../../../../vfs/vfs-error.js';
 
 // GNU uniq (coreutils 9.7) on bytes: -c, -d, -D/--all-repeated, --group,
@@ -10,8 +10,6 @@ import { strerror } from '../../../../vfs/vfs-error.js';
 
 type Method = 'none' | 'prepend' | 'separate' | 'append' | 'both';
 
-const isBlank = (b: number) => b === 0x20 || b === 0x09;
-const upper = (b: number) => (b >= 0x61 && b <= 0x7a ? b - 32 : b);
 
 const command: Command = async (ctx) => {
   let count = false, repeated = false, unique = false, fold = false, zero = false;
@@ -87,28 +85,17 @@ const command: Command = async (ctx) => {
   const delim = zero ? 0 : 0x0a;
   let input: Uint8Array;
   try {
-    const parts: Uint8Array[] = [];
-    for await (const chunk of inputChunks(ctx, operands[0])) parts.push(chunk);
-    input = concatBytes(parts);
+    input = await readAllInput(ctx, operands[0]);
   } catch (error) {
     await ctx.stderr.write(`uniq: ${operands[0]}: ${strerror(error)}\n`);
     return 1;
   }
 
-  const lines: Uint8Array[] = [];
-  let start = 0;
-  for (let i = input.indexOf(delim); i !== -1; i = input.indexOf(delim, start)) {
-    lines.push(input.subarray(start, i));
-    start = i + 1;
-  }
-  if (start < input.length) lines.push(input.subarray(start));
+  const lines = splitRecords(input, delim).records;
 
   const keyOf = (line: Uint8Array): Uint8Array => {
     let at = 0;
-    for (let f = 0; f < skipFields && at < line.length; f++) {
-      while (at < line.length && isBlank(line[at])) at++;
-      while (at < line.length && !isBlank(line[at])) at++;
-    }
+    for (let f = 0; f < skipFields && at < line.length; f++) at = skipBlankField(line, at);
     at = Math.min(line.length, at + skipChars);
     return line.subarray(at, checkChars === Infinity ? line.length : Math.min(line.length, at + checkChars));
   };
@@ -116,7 +103,7 @@ const command: Command = async (ctx) => {
     const ka = keyOf(a), kb = keyOf(b);
     if (ka.length !== kb.length) return false;
     for (let i = 0; i < ka.length; i++) {
-      if (ka[i] !== kb[i] && !(fold && upper(ka[i]) === upper(kb[i]))) return false;
+      if (ka[i] !== kb[i] && !(fold && asciiUpper(ka[i]) === asciiUpper(kb[i]))) return false;
     }
     return true;
   };
