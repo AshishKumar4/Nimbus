@@ -33,8 +33,9 @@
 //   2. synthetic-sibling-tla (two-pass): same file but with top-level
 //      await and an imported binding, forcing the TWO-PASS code path.
 //      X still resolves to a file:/// URL.
-//   3. wild-sv: `npx --yes sv@latest create ...` advances past the
-//      import.meta gate (next-layer errors out of scope).
+//
+// The wild case, sv's own engine-*.mjs, runs once in
+// frameworks/sveltekit-real.
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 
@@ -124,25 +125,6 @@ A.check(
   'synthetic-sibling-tla (two-pass): RESULT line emitted with file:/// URL containing sib.mjs (with join + tla intact)',
   /RESULT=file:\/\/\/[^\s]*sib\.mjs/.test(tlaOut) && /join=function/.test(tlaOut) && /tla=1/.test(tlaOut),
   `tail: ${tlaOut.slice(-500)}`,
-);
-
-// ── Check 3: wild-sv ────────────────────────────────────────────────
-//
-// sv@0.15.3 engine.mjs hit the two-pass + import.meta crash post sk-mjs-fix.
-// We verify the import.meta gate is gone. Next-layer scaffold success
-// is OUT OF SCOPE for this wave.
-
-await t.run('rm -rf /home/user/sv-probe && mkdir -p /home/user/sv-probe && cd /home/user/sv-probe', 5_000);
-const svRun = await t.run(
-  'npx --yes sv@latest create mvp --template minimal --types ts --no-add-ons --no-install',
-  360_000,
-);
-const svOut = svRun.output;
-
-A.check(
-  'wild-sv: NO "Cannot use \'import.meta\' outside a module" in sv invocation',
-  !/Cannot use 'import\.meta' outside a module/.test(svOut),
-  `tail: ${svOut.slice(-700)}`,
 );
 
 await t.close();

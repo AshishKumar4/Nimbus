@@ -25,8 +25,9 @@
 //      default that the consumer reads via require('m').default.
 //   4. synthetic-reexport-named: `export { x } from './sub';`
 //   5. synthetic-reexport-star: `export * from './sub';`
-//   6. wild-sv: `npx --yes sv@latest create ...` advances past the
-//      "Unexpected token 'export'" gate (next-layer errors out of scope).
+//
+// The wild case, sv's own engine-*.mjs, runs once in
+// frameworks/sveltekit-real.
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 
@@ -185,19 +186,6 @@ A.check(
   're-export star: NO "Unexpected token" error',
   !/Unexpected token/.test(starOut),
   starOut.slice(-500),
-);
-
-// ── Check 6: wild-sv ────────────────────────────────────────────────
-await t.run('rm -rf /home/user/sv-probe && mkdir -p /home/user/sv-probe && cd /home/user/sv-probe', 5_000);
-const svRun = await t.run(
-  'npx --yes sv@latest create mvp --template minimal --types ts --no-add-ons --no-install',
-  360_000,
-);
-const svOut = svRun.output;
-A.check(
-  'wild-sv: NO "Unexpected token \'export\'" in sv invocation',
-  !/Unexpected token 'export'/.test(svOut),
-  svOut.slice(-700),
 );
 
 await t.close();
