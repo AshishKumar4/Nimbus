@@ -33,7 +33,7 @@ import type { HostOperators } from './host-ops.js';
 import { type FunctionSite, type FunctionSyntax, reparseFunction } from './reparse.js';
 import {
   type Analysis, type Binding, type ClassNode, type FunctionNode, type FunctionOptions, FunctionScope, type Reference,
-  type Scope, analyzeLazyFunction, childNodes, patternIdentifiers, releaseScopes,
+  type Scope, analyzeLazyFunction, patternIdentifiers, releaseScopes, suspendsInFunction,
 } from './scope.js';
 import {
   BigInt, Error, ReferenceError, RegExp, SafeList, SafeMap, SafeSet, SafeWeakMap, SyntaxError, TypeError, append,
@@ -252,29 +252,7 @@ export class Compiler {
     // Only an async function or a generator suspends; a class's keys are evaluated where it sits.
     if (!node || this.shape === 'plain' || this.shape === 'method' || this.shape === 'arrow'
       || this.shape === 'classBase' || this.shape === 'classDerived') return false;
-    const cached = this.suspendCache.get(node);
-    if (cached !== undefined) return cached;
-    let result = false;
-    switch (node.type) {
-      case 'AwaitExpression': case 'YieldExpression': result = true; break;
-      case 'ForOfStatement': result = node.await || this.suspends(node.left) || this.suspends(node.right) || this.suspends(node.body); break;
-      case 'FunctionExpression': case 'FunctionDeclaration': case 'ArrowFunctionExpression': result = false; break;
-      case 'ClassExpression': case 'ClassDeclaration': {
-        result = this.suspends(node.superClass);
-        const members = node.body.body;
-        for (let i = 0; i < members.length && !result; i++) {
-          const m = members[i];
-          if (m.type !== 'StaticBlock' && m.computed && this.suspends(m.key)) result = true;
-        }
-        break;
-      }
-      default: {
-        const children = childNodes(node);
-        for (let i = 0; i < children.length && !result; i++) if (this.suspends(children[i])) result = true;
-      }
-    }
-    this.suspendCache.set(node, result);
-    return result;
+    return suspendsInFunction(node, this.suspendCache);
   }
 
   // ── Scopes ──
