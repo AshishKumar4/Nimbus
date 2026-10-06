@@ -24,6 +24,7 @@ import type {
   Errno,
   FdEntry,
   ListenerFdEntry,
+  NimbusFsImports,
   ParkableImport,
   SyscallResult,
   WasiFsState,
@@ -794,6 +795,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     release: async () => { if (__wasiResident?.fs.holding()) await __wasiResident.fs.flush(); },
     inbound: () => { __wasiResident?.fs.inbound(); },
     news: __wasiChildNews(),
+    cred: () => __wasiFS.cred ?? null,
   });
 
   const imports: WasiImports = {
@@ -1085,6 +1087,9 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
         // Guests fstat a socket fd to learn it is not a regular file (Ruby's
         // IO layer keys buffering and seekability off exactly this).
         ftype = __WASI_FT_SOCKET_STREAM;
+      } else if (entry.kind === 'pipe') {
+        // WASI has no FIFO type; wasmtime calls a pipe unknown too.
+        ftype = __WASI_FT_UNKNOWN;
       } else return __WASI_EBADF;
       const dv = view();
       dv.setUint8(statPtr + 16, ftype);
@@ -1713,6 +1718,30 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     },
   };
 
+  // The Nimbus filesystem extension (core wasi/types.ts NimbusFsImports):
+  // the codec answers its files and directories; a stream's (stdio, a pipe,
+  // a socket) status is preview1's, with the mode its kind has.
+  const fsImport: Partial<NimbusFsImports> = {
+    fd_stat(fd, out) {
+      const kind = fdTable.get(fd)?.kind;
+      const format = kind === 'stdin' || kind === 'stdout' || kind === 'stderr' ? 0o020620
+        : kind === 'pipe' ? 0o010600
+        : kind === 'socket' || kind === 'listener' ? 0o140777
+        : null;
+      if (format === null) return __WASI_EBADF;
+      const answered = imports.fd_filestat_get(fd, out);
+      const finish = (errno: Errno): Errno => {
+        if (errno !== __WASI_ESUCCESS) return errno;
+        const dv = view();
+        dv.setUint32(out + 64, format, true);
+        dv.setUint32(out + 68, __wasiFS.cred?.uid ?? 0, true);
+        dv.setUint32(out + 72, __wasiFS.cred?.gid ?? 0, true);
+        dv.setUint32(out + 76, 0, true);
+        return __WASI_ESUCCESS;
+      };
+      return answered instanceof Promise ? answered.then(finish) : finish(answered as Errno);
+    },
+  };
   installAuthorityFilesystem(imports, {
     fs: () => __wasiFilesystem(opts.parking),
     memory: opts.getMemory,
@@ -1721,6 +1750,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     abi: opts.abi,
     synchronous: opts.parking === 'none',
     residentBytes: __wasiFS.residentFileCap,
+    extension: fsImport,
   });
 
   // Where something leaves the guest: a socket's bytes (fd_write on a socket
@@ -1814,6 +1844,12 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     } as WasiSyscallFn;
   }
   const procImport: Record<string, (...args: number[]) => SyscallResult> = { ...proc.imports };
+  // The extension's calls park as the filesystem's do, under the same watchdog.
+  const fsTable = fsImport as Record<string, WasiSyscallFn>;
+  for (const name of Object.keys(fsTable)) fsTable[name] = withParkDeadline(fsTable[name]);
+  if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
+    for (const name of Object.keys(fsTable)) fsTable[name] = new WebAssembly.Suspending(fsTable[name]) as unknown as WasiSyscallFn;
+  }
   if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
     for (const name of Object.keys(procImport)) {
       procImport[name] = new WebAssembly.Suspending(procImport[name]) as unknown as (...args: number[]) => SyscallResult;
@@ -1901,6 +1937,7 @@ export function __wasiMakeImports(opts: WasiMakeImportsOptions): WasiInstanceBun
     wasiImport: imports,
     procImport,
     procDispose: () => proc.dispose(),
+    fsImport: fsImport as NimbusFsImports,
     getStdout: () => stdoutBuf,
     getStderr: () => stderrBuf,
   };

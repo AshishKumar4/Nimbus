@@ -201,6 +201,7 @@ globalThis.__gitRun = async function __gitRun(args) {
     const r = await WebAssembly.instantiate(args.gitMod, {
       ${WASI_ABI_NAMESPACE.preview1}: wasi.wasiImport,
       nimbus_proc: wasi.procImport,
+      nimbus_fs: wasi.fsImport,
     });
     instance = r instanceof WebAssembly.Instance ? r : r.instance;
   } catch (e) {

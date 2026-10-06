@@ -6,12 +6,13 @@
  * directory, print the same thing and leave the same objects.
  *
  * Dates and identities are fixed, so commit ids are equal when the trees,
- * parents and messages are; a different id is a different repository.
+ * parents and messages are; a different id is a different repository. Modes
+ * too: an executable's (100755), a chmod, a checkout's.
  */
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { chmodSync, mkdtempSync, rmSync, statSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { hostSqlite } from './lib/host-sqlite.mjs';
@@ -76,7 +77,8 @@ async function step(label, { files = {}, git }) {
 try {
   execFileSync('mkdir', ['-p', join(hostDir, 'repo')]);
   assert.equal((await ws.exec('mkdir -p repo')).exitCode, 0);
-  await step('init', { git: [['init', '-q', '-b', 'main']] });
+  // What init writes: core.filemode from its probe of chmod, as on Linux.
+  await step('init', { git: [['init', '-q', '-b', 'main'], ['config', '--list', '--local']] });
   await step('first commit', {
     files: { 'README.md': '# demo\n', 'src/a.js': 'export const a = 1;\n', 'src/b.js': 'export const b = 2;\n' },
     git: [['add', '-A'], ['commit', '-q', '-m', 'first'], ['log', '--format=%H %an %ad %s', '--date=iso-strict'], ['status', '--porcelain=v2', '--branch']],
@@ -101,6 +103,29 @@ try {
     git: [['tag', '-a', 'v1', '-m', 'one'], ['describe', '--tags'], ['reset', '-q', '--hard', 'HEAD~1'], ['rev-parse', 'HEAD', 'HEAD^{tree}', 'v1^{commit}'], ['status', '--porcelain'], ['ls-files', '-s']],
   });
   await step('errors', { git: [['show', 'no-such-ref'], ['switch', 'no-such-branch']] });
+
+  // Modes: an executable is stored as 100755, a chmod is a change, and a
+  // checkout makes the file executable again (through the Nimbus filesystem
+  // extension: preview1 has no modes).
+  const sessionChmod = async (mode, path) => assert.equal((await ws.exec(`chmod ${mode} repo/${path}`)).exitCode, 0);
+  const executable = async (path) => ({
+    host: (statSync(join(hostDir, 'repo', path)).mode & 0o111) !== 0,
+    session: ((await ws.vfs.as({ uid: 0, gid: 0, groups: [0], umask: 0o022 }).stat(`home/user/repo/${path}`))?.mode & 0o111) !== 0,
+  });
+  await step('an executable', { files: { 'tool.sh': '#!/bin/sh\necho tool\n' }, git: [] });
+  chmodSync(join(hostDir, 'repo/tool.sh'), 0o755);
+  await sessionChmod('755', 'tool.sh');
+  await step('commit an executable', { git: [['add', 'tool.sh'], ['commit', '-q', '-m', 'tool'], ['ls-files', '-s', 'tool.sh'], ['log', '-1', '--format=%H']] });
+  chmodSync(join(hostDir, 'repo/tool.sh'), 0o644);
+  await sessionChmod('644', 'tool.sh');
+  await step('a chmod is a change', { git: [['status', '--porcelain'], ['diff']] });
+  await step('checkout gives the mode back', { git: [['checkout', '--', 'tool.sh'], ['status', '--porcelain']] });
+  assert.deepEqual(await executable('tool.sh'), { host: true, session: true }, 'checkout: executable again');
+  rmSync(join(hostDir, 'repo/tool.sh'));
+  assert.equal((await ws.exec('rm repo/tool.sh')).exitCode, 0);
+  await step('checkout creates it executable', { git: [['checkout', '--', 'tool.sh'], ['status', '--porcelain']] });
+  assert.deepEqual(await executable('tool.sh'), { host: true, session: true }, 'checkout: created executable');
+  steps.push('modes');
 
   // Output that is not UTF-8, byte for byte: a binary blob and a diff of a Latin-1 file.
   const binary = Uint8Array.from({ length: 4096 }, (_, i) => (i * 37 + 11) & 0xff);

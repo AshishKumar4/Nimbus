@@ -138,6 +138,8 @@ export interface ProcessHostOptions {
   inbound(): void;
   /** The ledger's news protocol, where the session speaks it. */
   news: ChildNews | null;
+  /** The credential the guest runs as; null where it has none (a guest with no session). */
+  cred(): { uid: number; gid: number } | null;
 }
 
 interface Child {
@@ -349,6 +351,14 @@ export function processHost(opts: ProcessHostOptions): ProcessHost {
   };
 
   const imports: ProcessHost['imports'] = {
+    /** getuid(2) and getgid(2): the credential the session runs the guest as (uid, gid as u32). */
+    ids(outPtr) {
+      const cred = opts.cred();
+      view().setUint32(outPtr, cred?.uid ?? 0, true);
+      view().setUint32(outPtr + 4, cred?.gid ?? 0, true);
+      return E.SUCCESS;
+    },
+
     pipe(fdsPtr) {
       const pipe = newPipe();
       const read = opts.allocateFd();

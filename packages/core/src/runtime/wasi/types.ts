@@ -330,11 +330,50 @@ export interface WasiPollEvent {
   flags: number;
 }
 
+/** The import module of the Nimbus filesystem extension ({@link NimbusFsImports}). */
+export const NIMBUS_FS_MODULE = 'nimbus_fs';
+
+/**
+ * Bytes of the extension's stat: preview1's filestat (64 bytes, its layout:
+ * dev, ino, filetype and padding, nlink, size, atim, mtim, ctim), then
+ * st_mode (type and permission bits), uid and gid as u32, and four bytes of
+ * zero. Aligned to 8.
+ */
+export const NIMBUS_STAT_SIZE = 80;
+
+/**
+ * The Nimbus extension to WASI's filesystem, import module `nimbus_fs`: what
+ * preview1's filestat leaves out of a file's status (its mode and owner), and
+ * the chmod preview1 has no call for. One table for every WASI runtime, built
+ * by the shared codec (wasi/filesystem.ts) with paths and descriptors
+ * resolved exactly as path_filestat_get and fd_filestat_get resolve them, so
+ * a runtime's libc shim reads it where it would read preview1's filestat.
+ * git's does (packages/worker/wasm/git/git-wasi-compat.c); CPython's os.stat
+ * (st_mode, st_uid, st_gid) and a clang-built program's chmod +x are the
+ * next to take it.
+ *
+ * A file a guest creates gets preview1's creation mode (0666 under the
+ * umask); a shim that creates with execute bits asks for them after, with
+ * fd_chmod.
+ */
+export interface NimbusFsImports {
+  /** stat(2) (lookupflags SYMLINK_FOLLOW) or lstat(2) of `path` beneath `fd`, into `out` (NIMBUS_STAT_SIZE). */
+  path_stat(fd: number, lookupflags: number, path: number, pathLen: number, out: number): SyscallResult;
+  /** fstat(2) of `fd` into `out`: a file's or directory's, or a stream's (stdio, a pipe, a socket) by its kind. */
+  fd_stat(fd: number, out: number): SyscallResult;
+  /** chmod(2) of `path` beneath `fd`, the link followed (Linux has no lchmod: without SYMLINK_FOLLOW it is ENOTSUP). */
+  path_chmod(fd: number, lookupflags: number, path: number, pathLen: number, mode: number): SyscallResult;
+  /** fchmod(2). */
+  fd_chmod(fd: number, mode: number): SyscallResult;
+}
+
 /** What `__wasiMakeImports` hands back. */
 export interface WasiInstanceBundle {
   wasiImport: WasiImports;
   /** The `nimbus_proc` imports (wasi/processes.ts), for a guest built to start children through the host. */
   procImport: Record<string, (...args: number[]) => SyscallResult>;
+  /** The Nimbus filesystem extension, for import module NIMBUS_FS_MODULE. */
+  fsImport: NimbusFsImports;
   /** Once the guest exited: stop following its children (they run on, as orphans do). */
   procDispose(): void;
   getStdout(): string;

@@ -80,7 +80,7 @@ export async function residentGuest({ refuse = () => false } = {}) {
   const memory = new WebAssembly.Memory({ initial: 16 });
   P.__wasiInitFS({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }], cred: USER });
   P.__wasiAdoptSupervisor(supervisor);
-  const { wasiImport } = makeImportsWithoutJSPI(P, {
+  const { wasiImport, fsImport } = makeImportsWithoutJSPI(P, {
     argv: ['guest'], env: {}, getMemory: () => memory, stdoutWrite: () => {}, stderrWrite: () => {},
   });
   const view = () => new DataView(memory.buffer);
@@ -90,7 +90,7 @@ export async function residentGuest({ refuse = () => false } = {}) {
   const RIGHTS_ALL = 0x1fffffffn;
 
   const guest = {
-    P, kernel, raw, stats: () => P.__wasiFsStats(),
+    P, kernel, raw, wasiImport, fsImport, memory, stats: () => P.__wasiFsStats(),
     /** path_open: the fd, or a thrown errno. `flags`: { create, truncate, exclusive, directory, write }. */
     async open(name, { create = false, truncate = false, exclusive = false, directory = false, write = false } = {}) {
       const n = putPath(name);

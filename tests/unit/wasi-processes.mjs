@@ -235,6 +235,12 @@ async function guest() {
       return { errno, status: view().getInt32(at, true), waited: view().getInt32(at + 4, true) };
     },
     kill: (pid, signal) => proc.kill(pid, signal),
+    /** The extension's fstat of `fd`: its st_mode. */
+    async fdStatMode(fd) {
+      const at = scratch();
+      assert.equal(await bundle.fsImport.fd_stat(fd, at), E.SUCCESS);
+      return view().getUint32(at + 64, true);
+    },
     /** The guest exited: its host stops following its children. */
     dispose: () => bundle.procDispose(),
     /** poll_oneoff on one descriptor: { errno, events: [{ error, nbytes, hangup }] }. */
@@ -324,6 +330,7 @@ let checks = 0;
   assert.deepEqual(await g.read(r), { errno: E.SUCCESS, text: '' }, 'EOF once every writer is gone');
   assert.deepEqual((await g.poll(r)).events, [{ error: 0, nbytes: 0, hangup: true }], 'and a poll sees the hangup');
 
+  assert.equal(await g.fdStatMode(r), 0o010600, 'fstat of a pipe: a FIFO');
   const [r3, w3] = g.pipe();
   await g.close(r3);
   assert.equal(await g.write(w3, 'x'), E.PIPE, 'EPIPE once every reader is gone');
