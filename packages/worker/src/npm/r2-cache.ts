@@ -60,6 +60,7 @@
  *   - npm publish webhook -> cache invalidation.
  */
 
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -650,9 +651,16 @@ export class R2CacheClient {
   async readThroughPackument(
     name: string,
     options?: { retries?: number; timeoutMs?: number; registry?: string },
+    /**
+     * The workspace's network. Under an egress the shared cache is neither
+     * read (the egress sees every registry read) nor filled (what an egress
+     * answered is the workspace's, never every tenant's).
+     */
+    network: WorkspaceNetwork = ISOLATE_NETWORK,
   ): Promise<PackumentReadThrough> {
     const registry = options?.registry ?? NPM_REGISTRY_ORIGIN;
-    const cached = await this.getPackument(name, registry);
+    const shared = network.egress === undefined;
+    const cached = shared ? await this.getPackument(name, registry) : null;
     if (cached && !cached.expired && cached.json) {
       return { json: cached.json, source: 'r2-cache' };
     }
@@ -663,7 +671,7 @@ export class R2CacheClient {
     try {
       // One try is the request and, for a 2xx, reading its body: a body
       // that breaks off mid-read is tried again like a request that failed.
-      resp = await retryingRegistryFetch(async () => {
+      resp = await retryingRegistryFetch(network, async (fetchVia) => {
         const ctl = new AbortController();
         const timer = setTimeout(() => ctl.abort(), timeoutMs);
         try {
@@ -673,7 +681,7 @@ export class R2CacheClient {
           // libc). It omits `exports`; that is read from the tarball's
           // package.json in the VFS at require time, where the resolver's
           // packument copy is `?? null` anyway.
-          const answer = await fetch(url, {
+          const answer = await fetchVia(url, {
             headers: { Accept: 'application/vnd.npm.install-v1+json' },
             signal: ctl.signal,
           });
@@ -689,8 +697,8 @@ export class R2CacheClient {
       const json = await resp.text();
       this._recordHit('L4', 'packument', json.length);
       // Best-effort fill, awaited so a follow-up read in the same
-      // install sees it.
-      if (!this.readOnly) await this.putPackument(name, json, registry);
+      // install sees it; never of what an egress answered.
+      if (!this.readOnly && shared) await this.putPackument(name, json, registry);
       return { json, source: 'network' };
     }
     if (resp.status >= 400 && resp.status < 500) {

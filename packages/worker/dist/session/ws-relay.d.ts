@@ -34,6 +34,7 @@
  * let a chatty endpoint evict the supervisor.
  */
 /** A frame or lifecycle event, as the facet receives it. */
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 export type WsRelayEvent = {
     kind: 'open';
     protocol: string;
@@ -56,8 +57,11 @@ export type WsRelayEvent = {
  */
 export declare const WS_RELAY_MAX_BACKLOG_BYTES: number;
 export declare class WebSocketRelay {
+    private readonly network;
     private entries;
     private nextId;
+    /** `network`: the workspace's, whose egress opens every socket a process asks for. */
+    constructor(network: () => WorkspaceNetwork);
     /**
      * Open the real socket and start buffering for the facet.
      *

@@ -1,4 +1,5 @@
 import type { Command } from '../types.js';
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '../../../../_shared/workspace-network.js';
 import { resolve } from '../../utils/path.js';
 import { type Kernel } from '../../kernel/index.js';
 import { dispatchWorkspaceRequest, workspaceRequestPort } from './kernel-fetch.js';
@@ -187,10 +188,11 @@ function createCurlImpl(kernel?: Kernel): Command {
         // followed manually here; without -D the fetch-native follow keeps
         // its proven semantics.
         if (options.followRedirects && !headers.inert) {
-          return await followExternalWithDump(ctx, options, url, headers, requestSignal.signal);
+          return await followExternalWithDump(ISOLATE_NETWORK, ctx, options, url, headers, requestSignal.signal);
         }
 
-        const response = await fetch(url, {
+        // No kernel bound (the process-wide default): the isolate's own network.
+        const response = await ISOLATE_NETWORK.fetch(url, {
           method: options.method,
           headers: Object.keys(options.headers).length > 0 ? options.headers : undefined,
           body: options.data,
@@ -237,6 +239,7 @@ const CONTENT_HEADERS = ['content-type', 'content-length', 'transfer-encoding', 
  * stripped when a hop crosses origins.
  */
 async function followExternalWithDump(
+  network: WorkspaceNetwork,
   ctx: Parameters<Command>[0],
   options: CurlOptions,
   startUrl: string,
@@ -248,7 +251,7 @@ async function followExternalWithDump(
   let data = options.data;
   let requestHeaders = new Headers(Object.keys(options.headers).length > 0 ? options.headers : {});
   for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-    const response = await fetch(current, {
+    const response = await network.fetch(current, {
       method,
       headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
       body: data,
@@ -660,7 +663,8 @@ async function executeKernelRequest(
       }
     }
 
-    response ??= await fetch(current, {
+    // Off the box: through the workspace's network (its host's egress, when it supplied one).
+    response ??= await kernel.network.fetch(current, {
       method,
       headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
       body: data,

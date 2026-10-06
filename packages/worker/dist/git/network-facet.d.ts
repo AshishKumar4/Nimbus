@@ -24,6 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
 /**
@@ -173,7 +174,11 @@ export interface GitCloneBudgetDiagnostic {
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
  */
-export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: GitNetworkOpts): Promise<GitNetworkResult>;
+export declare function execGitNetwork(ctx: DurableObjectState, env: any, opts: GitNetworkOpts, /**
+ * The workspace's network (`workspace.network`): every facet this operation
+ * loads goes out through its egress, when its host supplied one (prepare,
+ * every batch and history piece, a fence's reload, fetch/pull/push).
+ */ network: WorkspaceNetwork): Promise<GitNetworkResult>;
 /**
  * Generate the dynamic worker code for the git network facet.
  *

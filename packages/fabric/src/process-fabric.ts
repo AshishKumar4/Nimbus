@@ -74,6 +74,7 @@
  * `ResidentDiskReader` it was given.
  */
 
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { SupervisorBindingProps } from './supervisor-props.js';
 import { z } from 'zod/v4';
 import type { RouteableFacetTarget } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -623,6 +624,7 @@ export type ProcessHostFactory = (
   ctx: DurableObjectState,
   env: unknown,
   disk: () => ResidentDiskReader,
+  network: () => WorkspaceNetwork,
 ) => ProcessHost;
 
 // ── Handle ──────────────────────────────────────────────────────────────────

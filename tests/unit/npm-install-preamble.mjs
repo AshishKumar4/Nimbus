@@ -31,6 +31,8 @@ import { NPM_INSTALL_PREAMBLE } from '../../packages/worker/src/loaders/npm-inst
 import { R2CacheClient, parseTarballAddress } from '../../packages/worker/src/npm/r2-cache.ts';
 import * as integrity from '../../packages/core/src/_shared/tarball-integrity.ts';
 
+// The network every try goes through: the isolate's own fetch, at call time.
+const ISOLATE = { fetch: (input, init) => globalThis.fetch(input, init) };
 const embedded = new Function(`${NPM_INSTALL_PREAMBLE}
 return { retryingRegistryFetch, strongestSriEntry, sriEntries, sriDigestOf, sriDigestsEqual };`)();
 
@@ -42,7 +44,7 @@ try {
     const calls = [];
     return {
       calls,
-      fetchOnce: async (n) => {
+      fetchOnce: async (_fetch, n) => {
         calls.push(n);
         const status = statuses[Math.min(n, statuses.length - 1)];
         if (status === 'throw') throw Object.assign(new Error('socket hang up'), { name: 'TypeError' });
@@ -55,7 +57,7 @@ try {
     const { calls, fetchOnce } = answers(503, 'throw', 'abort', 200);
     const heard = [];
     const waits = [];
-    const response = await embedded.retryingRegistryFetch(fetchOnce, {
+    const response = await embedded.retryingRegistryFetch(ISOLATE, fetchOnce, {
       onRetry: (retry, of, ms, reason) => { heard.push(`${retry}/${of} ${reason}`); waits.push(ms); },
     });
     assert.equal(response.status, 200);
@@ -66,17 +68,25 @@ try {
   }
   {
     const { calls, fetchOnce } = answers(404);
-    assert.equal((await embedded.retryingRegistryFetch(fetchOnce)).status, 404, 'a 4xx is the answer');
+    assert.equal((await embedded.retryingRegistryFetch(ISOLATE, fetchOnce)).status, 404, 'a 4xx is the answer');
     assert.deepEqual(calls, [0]);
   }
   {
     const { calls, fetchOnce } = answers(502);
-    assert.equal((await embedded.retryingRegistryFetch(fetchOnce)).status, 502, 'the last 5xx once the re-tries are spent');
+    assert.equal((await embedded.retryingRegistryFetch(ISOLATE, fetchOnce)).status, 502, 'the last 5xx once the re-tries are spent');
     assert.equal(calls.length, 4);
   }
   {
     const { fetchOnce } = answers('throw');
-    await assert.rejects(embedded.retryingRegistryFetch(fetchOnce, { retries: 1 }), /socket hang up/);
+    await assert.rejects(embedded.retryingRegistryFetch(ISOLATE, fetchOnce, { retries: 1 }), /socket hang up/);
+  }
+  {
+    // Every try fetches through the network it was given.
+    const through = [];
+    const network = { fetch: async (url) => { through.push(String(url)); return new Response('x', { status: through.length < 2 ? 503 : 200 }); } };
+    const response = await embedded.retryingRegistryFetch(network, (fetch, n) => fetch(`https://registry.invalid/p?try=${n}`));
+    assert.equal(response.status, 200);
+    assert.deepEqual(through, ['https://registry.invalid/p?try=0', 'https://registry.invalid/p?try=1']);
   }
   // The supervisor's packument fetch, under the same policy.
   const originalFetch = globalThis.fetch;

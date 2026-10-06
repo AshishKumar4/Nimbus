@@ -41,7 +41,7 @@ import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '@nimbus-sh/core
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 // The registry's retry policy and tarball integrity: in the facet, the
 // preamble's (loaders/npm-install-preamble.ts) by the same identifiers.
-import { retryingRegistryFetch } from './registry-retry.js';
+import { retryingRegistryFetch, type RegistryNetwork } from './registry-retry.js';
 
 declare const __nimbusWaveWriter: typeof import('@nimbus-sh/platform/wave-writer.js');
 
@@ -250,6 +250,11 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       throw new Error('installPackagesInFacet: a batch has one install root and one mtime');
     }
   }
+  // The registry, through this Dynamic Worker's own fetch: its loader routes
+  // that through the workspace's network (core _shared/workspace-network.ts
+  // loaderOutbound), its egress included.
+  const network: RegistryNetwork = { fetch: (input, init) => fetch(input, init) };
+
   // Records carry their package (meta, its index in the batch): a wave the
   // session refused fails the packages it carried, the writer goes on for
   // the rest, and it answers whether each package's writes all published.
@@ -340,18 +345,18 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       hedgeTimer = setTimeout(() => {
         hedgeTimer = null;
         speculativeFetches++;
-        pendingNetwork = fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
+        pendingNetwork = network.fetch(spec.tarballUrl, { signal: hedgeAbort.signal });
         // Rejections are re-awaited and rethrown in order by takeNetworkResponse;
         // this sink only stops a failure that lands while the R2 leg is still
         // outstanding from surfacing as an unhandled rejection.
         pendingNetwork.catch(() => { /* consumed by takeNetworkResponse or discarded */ });
       }, SPECULATIVE_FETCH_DELAY_MS);
     }
-    const takeNetworkResponse = async (): Promise<Response> => {
+    const takeNetworkResponse = async (fetchVia: RegistryNetwork['fetch']): Promise<Response> => {
       clearHedgeTimer();
       const pending = pendingNetwork;
       pendingNetwork = null;
-      return pending ? await pending : await fetch(spec.tarballUrl);
+      return pending ? await pending : await fetchVia(spec.tarballUrl);
     };
     const discardPendingNetwork = (): void => {
       clearHedgeTimer();
@@ -438,7 +443,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
         //     tried again, a 4xx is the answer.
         let lastErr: any;
         try {
-          resp = await retryingRegistryFetch(() => takeNetworkResponse(), {
+          resp = await retryingRegistryFetch(network, (fetchVia) => takeNetworkResponse(fetchVia), {
             onRetry: (retry, of, delayMs, reason) => warnings.push(`retry ${retry}/${of} after ${delayMs}ms (${reason})`),
           });
         } catch (e: any) {

@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { execGitNetwork } from '../../packages/worker/src/git/network-facet.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -148,7 +149,7 @@ const result = await execGitNetwork(
     exclusiveDestination: true,
     exclusiveMutationRoot: 'repo',
     mutationOwner: 'owner',
-  },
+  }, ISOLATE_NETWORK,
 );
 
 assert.equal(result.success, true, result.error);
@@ -187,7 +188,7 @@ const failed = await execGitNetwork(
     exclusiveDestination: true,
     exclusiveMutationRoot: 'failure',
     mutationOwner: 'owner',
-  },
+  }, ISOLATE_NETWORK,
 );
 const failureCalls = calls.slice(callsBeforeFailure);
 assert.equal(failed.success, false, 'failed checkout must not report clone complete');
@@ -215,7 +216,7 @@ const existing = await execGitNetwork(
     exclusiveDestination: true,
     exclusiveMutationRoot: 'existing',
     mutationOwner: 'owner',
-  },
+  }, ISOLATE_NETWORK,
 );
 assert.equal(existing.success, false);
 assert.match(existing.error, /already exists and is not an empty directory/);
@@ -249,7 +250,7 @@ const timedOut = await execGitNetwork(
     exclusiveDestination: true,
     exclusiveMutationRoot: 'timeout',
     mutationOwner: 'owner',
-  },
+  }, ISOLATE_NETWORK,
 );
 assert.equal(timedOut.success, false);
 assert.equal(timedOut.errorPhase, 'clone-prepare');
@@ -305,7 +306,7 @@ try {
       exclusiveDestination: true,
       exclusiveMutationRoot: 'default-budget',
       mutationOwner: 'owner',
-    },
+    }, ISOLATE_NETWORK,
   );
   assert.equal(defaultBudget.success, true, defaultBudget.error);
 } finally {
@@ -330,7 +331,7 @@ const entrypointFailure = await execGitNetwork(
       },
     },
   },
-  { op: 'fetch', pid: 1, dir: '/repo' },
+  { op: 'fetch', pid: 1, dir: '/repo' }, ISOLATE_NETWORK,
 );
 assert.equal(entrypointFailure.success, false);
 assert.equal(entrypointFailure.error, 'entrypoint unavailable');

@@ -23,6 +23,7 @@
  *     mounted project's packages are put there through the view (see
  *     fetchIntoMount)
  */
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
@@ -81,6 +82,8 @@ export class NpmInstaller {
      * when the feature flag is on, using the facet's own global fetch.
      */
     fetchFn;
+    /** The workspace's network: every resolve and install facet (here and in peers) goes out through it. */
+    network;
     /**
      * npm-protocol log sink for the install in flight. Set per invocation
      * because `--loglevel` is a per-invocation flag; the no-op default is
@@ -97,6 +100,7 @@ export class NpmInstaller {
         this.env = opts?.env;
         this.onProgress = opts?.onProgress;
         this.fetchFn = opts?.fetchFn;
+        this.network = opts?.network ?? ISOLATE_NETWORK;
     }
     /** Expose cache for external use (e.g., serveModule in vite-dev-server). */
     get npmCache() { return this.cache; }
@@ -557,6 +561,7 @@ export class NpmInstaller {
         // pool is stateless across submitMany calls.
         const fanoutPool = new Fanout(this.env, this.ctx, {
             tag: 'npm-resolve-fanout',
+            network: this.network,
             // 5 minutes per layer is generous; typical layers complete in
             // 1-3 s. Per-task this gates each packument fetch + R2 race.
             timeoutMs: 5 * 60_000,
@@ -956,6 +961,7 @@ export class NpmInstaller {
         const phaseProfile = [];
         const fanoutPool = new Fanout(this.env, this.ctx, {
             tag: 'npm-install-batch',
+            network: this.network,
             // Whole-batch timeout. With per-shard parallelism of N=8 peer
             // DOs each running pLimit(3), Mossaic-class 456 packages
             // typical 30-60 s wall clock. 10 min covers pathological cases.

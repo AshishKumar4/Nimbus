@@ -59,6 +59,7 @@
  *     stream directly from npm.
  *   - npm publish webhook -> cache invalidation.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 /**
@@ -342,7 +343,13 @@ export declare class R2CacheClient {
         retries?: number;
         timeoutMs?: number;
         registry?: string;
-    }): Promise<PackumentReadThrough>;
+    }, 
+    /**
+     * The workspace's network. Under an egress the shared cache is neither
+     * read (the egress sees every registry read) nor filled (what an egress
+     * answered is the workspace's, never every tenant's).
+     */
+    network?: WorkspaceNetwork): Promise<PackumentReadThrough>;
     /**
      * Write a packument JSON to R2 with a TTL stamp in customMetadata.
      * No-op if the bucket binding is missing.

@@ -133,7 +133,8 @@ function createWgetImpl(kernel?: Kernel): Command {
               body: await res.text(),
             };
           } else {
-            const res = await fetch(requestUrl, { redirect: 'manual', signal: ctx.signal });
+            // Off the box: through the workspace's network (its host's egress, when it supplied one).
+            const res = await kernel.network.fetch(requestUrl, { redirect: 'manual', signal: ctx.signal });
             response = {
               status: res.status,
               statusText: res.statusText,

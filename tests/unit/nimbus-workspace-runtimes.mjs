@@ -10,6 +10,7 @@ import { createHash } from 'node:crypto';
 import { openWorkspace } from './lib/test-box.mjs';
 import { BASH_RUNNER, CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 
 const encoder = new TextEncoder();
@@ -92,7 +93,7 @@ function fakePackage(contents, { name = 'toy', version = '1.0.0', runner = 'toy-
 for (const runtimeInstall of ['eager', 'on-demand']) {
   const refused = await openWorkspace({
     runtimeInstall,
-    facets: localFacetHost(),
+    facets: localFacetHost(ISOLATE_NETWORK),
     runtimes: [fakePackage({ 'bin/toy': '# t\n' }, { version: '1.0.0-3', runner: 'retired-runner' })],
   }).then(
     async (ws) => {

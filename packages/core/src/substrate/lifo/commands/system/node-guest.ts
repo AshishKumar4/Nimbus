@@ -7,8 +7,9 @@
  * program runs, and its ports live only in this module's closure.
  *
  * The realm lives as a Node process does: while its event loop has work. Its
- * own timers hold it; so does `events` while a server it started listens and
- * while a request it made is unanswered (its synchronous calls need no loop). A
+ * own timers hold it; so does `events` while a server it started listens, while
+ * a request it made is unanswered and while it waits on a response body (its
+ * synchronous calls need no loop). A
  * rejection or exception nothing handles is printed and ends it with 1, an
  * ES module whose top-level await never settles with 13.
  */
@@ -20,6 +21,7 @@ import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { CommandOutputStream } from '../types.js';
 import { ProcessExitError } from '../../node-compat/index.js';
 import { runNodeProgram } from './node.js';
+import { routeFetchThroughHost, type RealmEgressGuest } from '../../../../runtime/realm-egress-guest.js';
 import {
   isDirEntries, isHostEvent, isNodeRealmPayload, isStat,
   type GuestEvent, type NodeCall, type RealmResponse,
@@ -27,7 +29,7 @@ import {
 
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload)) throw new Error('node-guest: started without a program');
-const { program } = joined.payload;
+const { program, egress } = joined.payload;
 const { events } = joined;
 
 /** A synchronous call to the host: its value is the host's answer, as cloned. */
@@ -47,9 +49,18 @@ function post(event: GuestEvent): void {
 let mainDone = false;
 let exiting = false;
 const fetched = new Map<number, (response: RealmResponse | null) => void>();
+/**
+ * Under an egress, the program's network is its host's: `fetch` (and the
+ * http and https modules, which use it) crosses to the host, which sends each
+ * request out through the egress (runtime/realm-egress.ts). A WebSocket
+ * cannot cross the realm, so it is refused by name. What the program waits
+ * on from off the box (a response's head, a chunk of a body it is reading)
+ * holds the realm, as an active socket holds a Node process.
+ */
+let offTheBox: RealmEgressGuest | null = null;
 /** `events` holds the realm open while anything of the program's waits on it. */
 function holdWhileBusy(): void {
-  joined.hold(fetched.size > 0 || ports.size > 0);
+  joined.hold(fetched.size > 0 || ports.size > 0 || (offTheBox?.awaited ?? 0) > 0);
 }
 
 /** End the process now with `code`, as process.exit() and a fatal error do. */
@@ -117,6 +128,7 @@ class RealmPorts extends Map<number, VirtualRequestHandler> {
 const ports = new RealmPorts();
 
 let fetches = 0;
+
 async function routeLoopback(port: number, request: Request): Promise<Response | null> {
   const id = ++fetches;
   const headers: Record<string, string> = {};
@@ -162,6 +174,12 @@ events.on('message', (event) => {
     case 'changed':
       changed?.();
       return;
+    case 'egress-head':
+    case 'egress-chunk':
+    case 'egress-end':
+    case 'egress-error':
+      offTheBox?.answer(event);
+      return;
   }
 });
 
@@ -182,6 +200,10 @@ realm.on('exit', () => {
   post({ type: 'exit', code: 13 });
 });
 
+if (egress) {
+  offTheBox = routeFetchThroughHost(post, holdWhileBusy,
+    "Nimbus: WebSocket is not available to an inline node program when the workspace's network goes through an egress");
+}
 holdWhileBusy();
 const end = await runNodeProgram(program, {
   filesystem: () => filesystem,
