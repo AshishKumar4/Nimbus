@@ -19,6 +19,26 @@ function deadline(pid, exitAt, lastActivity, ageMs, isOrphan) {
         return exitAt + ageMs;
     return isOrphan?.(pid) ? lastActivity + ageMs * 3 : null;
 }
+/**
+ * Every retained pid with a deadline: the held ones without a reader, then
+ * the persisted ones the store does not hold.
+ */
+function* deadlines(held, persisted, ageMs, isOrphan) {
+    for (const [pid, log] of held) {
+        if (log.subscribers.size !== 0)
+            continue;
+        const at = deadline(pid, log.exit?.at ?? null, log.lastActivity, ageMs, isOrphan);
+        if (at !== null)
+            yield [pid, at];
+    }
+    for (const [pid, row] of persisted) {
+        if (held.has(pid))
+            continue;
+        const at = deadline(pid, row.exitAt, row.lastActivity, ageMs, isOrphan);
+        if (at !== null)
+            yield [pid, at];
+    }
+}
 export class ProcessLogRetention {
     list;
     /**
@@ -43,18 +63,8 @@ export class ProcessLogRetention {
      */
     next(held, ageMs, isOrphan) {
         let next = null;
-        for (const [pid, log] of held) {
-            if (log.subscribers.size !== 0)
-                continue;
-            const at = deadline(pid, log.exit?.at ?? null, log.lastActivity, ageMs, isOrphan);
-            if (at !== null && (next === null || at < next))
-                next = at;
-        }
-        for (const [pid, row] of this.listed()) {
-            if (held.has(pid))
-                continue;
-            const at = deadline(pid, row.exitAt, row.lastActivity, ageMs, isOrphan);
-            if (at !== null && (next === null || at < next))
+        for (const [, at] of deadlines(held, this.listed(), ageMs, isOrphan)) {
+            if (next === null || at < next)
                 next = at;
         }
         return next;
@@ -65,20 +75,10 @@ export class ProcessLogRetention {
      * store drops their rows.
      */
     due(held, now, ageMs, isOrphan) {
-        const due = [];
-        for (const [pid, log] of held) {
-            if (log.subscribers.size !== 0)
-                continue;
-            const at = deadline(pid, log.exit?.at ?? null, log.lastActivity, ageMs, isOrphan);
-            if (at !== null && at <= now)
-                due.push(pid);
-        }
         const persisted = this.listed();
-        for (const [pid, row] of persisted) {
-            if (held.has(pid))
-                continue;
-            const at = deadline(pid, row.exitAt, row.lastActivity, ageMs, isOrphan);
-            if (at !== null && at <= now)
+        const due = [];
+        for (const [pid, at] of deadlines(held, persisted, ageMs, isOrphan)) {
+            if (at <= now)
                 due.push(pid);
         }
         for (const pid of due)

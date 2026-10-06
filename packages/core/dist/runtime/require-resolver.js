@@ -26,8 +26,9 @@
  * legacy `buildVfsBundle` walked every file in node_modules. W2.6a
  * de-quarantines it as the primary content-bundle source.
  */
-import { METADATA_CANDIDATE_WORK, resolveRequireEx, strip, } from './require-resolution.js';
+import { METADATA_CANDIDATE_WORK, resolveRequireEx, } from './require-resolution.js';
 import { FACET_PROVIDED_PACKAGES, VFS_BUNDLE_MAX_BYTES } from '../constants.js';
+import { stripLeadingSlashes } from '../vfs/path.js';
 import { isNativeBinPath } from './os-contracts.js';
 import { stripCommentsForImports } from './comment-strip.js';
 import { createEsmResolver } from '../_shared/esm-resolver.js';
@@ -390,57 +391,44 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         //     specifiers AST found but regex missed.
         // See `comment-strip.ts` header + the wave's verdict.md.
         const stripped = stripCommentsForImports(code);
-        // Recursive and concurrently suspended walks each own their cursor.
-        // Mutating a shared RegExp.lastIndex repeats or skips a parent's imports.
-        for (const match of stripped.matchAll(REQUIRE_RE)) {
-            const specifier = match[2];
-            if (isFacetProvided(specifier))
-                continue;
-            if (closureExceeded || declined)
-                break;
-            const r = await resolveStaticDependency(specifier, fromDir);
-            if (r)
-                (await addFile(r.resolved));
-            if (r && !policy && namesManifest(specifier))
-                deferBins(r.resolved);
-        }
-        // Immediately-invoked `createRequire(import.meta.url)('./x')` is a
-        // require of './x' from this file's directory (pi-coding-agent's bin).
-        for (const match of stripped.matchAll(CREATE_REQUIRE_CALL_RE)) {
-            const specifier = match[2];
-            if (isFacetProvided(specifier))
-                continue;
-            if (closureExceeded || declined)
-                break;
-            const r = await resolveStaticDependency(specifier, fromDir);
-            if (r)
-                (await addFile(r.resolved));
-        }
-        // X.5-C Fix #1: also follow ESM `import`/`export … from` statements.
-        // Without this, packages whose `module` entry is ESM (react-remove-
-        // scroll, pathe, ESM nuxt deps, etc.) have their entry file in the
-        // bundle but none of the relative `import './x'` siblings — at
-        // runtime W3.5 Fix B's CJS rewrite calls require('./x') which then
-        // fails because `x` was never added.
-        //
-        // The process runs such a module lowered to CommonJS, and its require
-        // takes a package's "require" branch. A module runner that evaluates the
-        // same source itself (Vite's, under Astro) imports a package with
-        // import(), which takes the "import" branch: phase 2 resolves it (the
-        // same file as the require branch adds nothing), behind every deferral
-        // the code names, tables included (IMPORT_BRANCHES).
-        for (const match of stripped.matchAll(IMPORT_RE)) {
-            const specifier = match[2];
-            if (isFacetProvided(specifier))
-                continue;
-            if (closureExceeded || declined)
-                break;
-            const r = await resolveStaticDependency(specifier, fromDir);
-            if (r)
-                (await addFile(r.resolved));
+        // Every static dependency is staged the same way: the CommonJS
+        // resolution of its specifier, unless the facet provides it, until the
+        // closure is full. What each grammar adds after is its own:
+        //   - require()/require.resolve(): a manifest it names may carry bins.
+        //   - Immediately-invoked `createRequire(import.meta.url)('./x')` is a
+        //     require of './x' from this file's directory (pi-coding-agent's bin).
+        //   - ESM `import`/`export … from` (X.5-C Fix #1): packages whose
+        //     `module` entry is ESM (react-remove-scroll, pathe, ESM nuxt deps)
+        //     need their relative siblings staged, since the process runs the
+        //     module lowered to CommonJS and its require takes a package's
+        //     "require" branch. A module runner that evaluates the same source
+        //     itself (Vite's, under Astro) imports a package with import(), which
+        //     takes the "import" branch: phase 2 resolves it (the same file as
+        //     the require branch adds nothing), behind every deferral the code
+        //     names, tables included (IMPORT_BRANCHES).
+        const followUps = [
+            [REQUIRE_RE, (specifier, staged) => { if (staged && !policy && namesManifest(specifier))
+                    deferBins(staged.resolved); }],
+            [CREATE_REQUIRE_CALL_RE, () => { }],
             // Resolved in phase 2, where what it reads is optional too.
-            if (!policy && !/^[./#]|^file:/.test(specifier))
-                defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES });
+            [IMPORT_RE, (specifier) => { if (!policy && !/^[./#]|^file:/.test(specifier))
+                    defer({ specifier, fromDir, alternatives: IMPORT_BRANCHES }); }],
+        ];
+        // Recursive and concurrently suspended walks each own their cursor
+        // (matchAll): mutating a shared RegExp.lastIndex repeats or skips a
+        // parent's imports.
+        for (const [grammar, followUp] of followUps) {
+            for (const match of stripped.matchAll(grammar)) {
+                const specifier = match[2];
+                if (isFacetProvided(specifier))
+                    continue;
+                if (closureExceeded || declined)
+                    break;
+                const staged = await resolveStaticDependency(specifier, fromDir);
+                if (staged)
+                    (await addFile(staged.resolved));
+                followUp(specifier, staged);
+            }
         }
         // Entry deferrals are required; the rest wait for phase 2 (PrefetchResult.speculative).
         const deferrals = new Set();
@@ -468,7 +456,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // loader resolves it the same way, core/_shared/esm-resolver.ts): the
     // "import" conditions, no extension probing. The package.json files it
     // reads are staged too, since the loader reads the same ones.
-    const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(strip(path)));
+    const esm = walkEsmResolver(vfs, progress, async (path) => await addPkgJson(stripLeadingSlashes(path)));
     async function resolveStaticDependency(specifier, fromDir) {
         // Vite's generated config names dependencies by absolute file URL.
         if (specifier.startsWith('file:')) {
@@ -488,7 +476,7 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
      * enclosing-package piggyback is needed.
      */
     async function addPkgJson(pkgJsonPath) {
-        const k = strip(pkgJsonPath);
+        const k = stripLeadingSlashes(pkgJsonPath);
         const content = await stageCell(k, 'metadata');
         visited.add(k);
         return content;
@@ -506,10 +494,10 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     // entryCode (no file context) — covers the `node -e '<code>'`
     // path where opts.filename is '<eval>'.
     async function walk() {
-        const cwdStripped = strip(cwd);
+        const cwdStripped = stripLeadingSlashes(cwd);
         let entryFromDir = cwdStripped;
         if (entryFile) {
-            const stripped = strip(entryFile);
+            const stripped = stripLeadingSlashes(entryFile);
             const slash = stripped.lastIndexOf('/');
             if (slash > 0)
                 entryFromDir = stripped.substring(0, slash);
@@ -517,14 +505,14 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         await parseAndResolve(entryCode, entryFromDir, policy === undefined);
         // If there's an entry file, add it (and recurse).
         if (entryFile)
-            await addFile(strip(entryFile), policy === undefined);
+            await addFile(stripLeadingSlashes(entryFile), policy === undefined);
         const entryPaths = requiredRoots ? new Set(Object.keys(bundle)) : undefined;
         // Modules a previous launch actually tried to execute are required roots,
         // not speculative dynamic-import subtrees. Walk their static imports in
         // this same visited set and byte budget before any optional enrichment.
         // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
         for (const root of requiredRoots ?? []) {
-            const path = strip(root.path);
+            const path = stripLeadingSlashes(root.path);
             if (root.config && root.text === undefined) {
                 configRoots.add(path);
                 defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
@@ -603,7 +591,7 @@ function isFacetProvided(id) {
 function walkEsmResolver(vfs, progress, readText) {
     return createEsmResolver({
         async kind(path) {
-            const key = strip(path);
+            const key = stripLeadingSlashes(path);
             if (progress)
                 await progress(METADATA_CANDIDATE_WORK + key.length);
             if (!(await vfs.exists(key)))
@@ -620,7 +608,7 @@ async function resolveImportWith(esm, specifier, fromDir) {
     const parentUrl = 'file:///' + (fromDir ? fromDir + '/' : '') + '[import]';
     try {
         const resolution = await esm.resolve(specifier, parentUrl);
-        return resolution.path === undefined ? null : strip(resolution.path);
+        return resolution.path === undefined ? null : stripLeadingSlashes(resolution.path);
     }
     catch (error) {
         if (error instanceof WalkControlFailure)
@@ -645,7 +633,7 @@ export async function resolveDeferredImport(vfs, deferral, progress) {
     });
     const esm = walkEsmResolver(vfs, paced, async (path) => {
         try {
-            return await vfs.readFileString(strip(path));
+            return await vfs.readFileString(stripLeadingSlashes(path));
         }
         catch {
             return null;

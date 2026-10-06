@@ -35,11 +35,9 @@
  *   ./m.cjs  → nothing; bun does not map it to m.cts
  *   ./m      → m.ts, m.tsx
  *
- * `getTypescriptSpecifiersJS()` emits the same mapping for the facet shim.
- * The two bodies are checked against each other mechanically —
- * tests/unit/typescript-specifier-resolution.mjs evaluates the emitted one and
- * compares it to this one over the whole table — because a "keep in sync"
- * comment has never once caught a drift.
+ * The facet shim embeds this code itself (node-shim-resolution.ts, compiled
+ * once into the shim's preamble); tests/unit/typescript-specifier-resolution.mjs
+ * evaluates the embedded copy over the whole table.
  */
 
 import { vfsPathExtension } from '../vfs/path.js';
@@ -74,28 +72,3 @@ export function typescriptFallbackCandidates(base: string): string[] {
 
 /** Directory entry points, probed after node's `index.{js,cjs,mjs,json}`. */
 export const TYPESCRIPT_INDEX_CANDIDATES = ['/index.ts', '/index.tsx'] as const;
-
-/**
- * The same mapping as raw JS, for embedding in the facet shim.
- *
- * The regex and the index list are interpolated from the definitions above so
- * only the four-branch body is written twice, and the equivalence of the two
- * bodies is asserted over the whole table by the unit test rather than
- * asserted by a comment.
- */
-export function getTypescriptSpecifiersJS(): string {
-  return `
-// ── typescript-specifiers (mirrors src/_shared/typescript-specifiers.ts) ──
-const __NON_MAPPING_EXTENSION = ${NON_MAPPING_EXTENSION.toString()};
-const __TYPESCRIPT_INDEX_CANDIDATES = ${JSON.stringify([...TYPESCRIPT_INDEX_CANDIDATES])};
-function __typescriptFallbackCandidates(base) {
-  if (__NON_MAPPING_EXTENSION.test(base)) return [];
-  if (base.endsWith(".mjs")) return [base.slice(0, -4) + ".mts"];
-  if (base.endsWith(".js")) {
-    const stem = base.slice(0, -3);
-    return [stem + ".ts", stem + ".tsx"];
-  }
-  return [base + ".ts", base + ".tsx"];
-}
-`;
-}

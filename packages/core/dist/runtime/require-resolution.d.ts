@@ -38,7 +38,6 @@ export interface BridgeRequireFs extends RequireFs {
     readBytes(path: string): Promise<Uint8Array | null>;
 }
 export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
-export declare function strip(p: string): string;
 /**
  * Sink for package.json files consulted during LOAD_AS_DIRECTORY
  * resolution. The runtime resolver (`__resolveFile` in node-shims.ts)

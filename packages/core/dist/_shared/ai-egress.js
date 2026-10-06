@@ -67,8 +67,11 @@ export const NIMBUS_AI_CREDENTIAL_HEADERS = ['authorization', 'x-api-key'];
 export function mintSessionAiToken() {
     return `sk-nimbus-${crypto.randomUUID().replace(/-/g, '')}`;
 }
-/** The credential a request presents, with any `Bearer ` prefix removed. */
-function presentedCredential(value) {
+/**
+ * The credential a request presents, with any `Bearer ` prefix removed.
+ * Self-contained: the node fetch shim carries its source.
+ */
+export function presentedCredential(value) {
     const trimmed = value.trim();
     return /^bearer\s+/i.test(trimmed) ? trimmed.replace(/^bearer\s+/i, '') : trimmed;
 }

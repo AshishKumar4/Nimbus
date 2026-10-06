@@ -18,6 +18,7 @@
  * part of the spec; the bundler reads from that in-memory map.
  */
 import { getSharedRuntimeExternals } from '@nimbus-sh/core/runtime/esbuild-service.js';
+import { packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 // ── Supervisor-side: build the slice for one specifier ──────────────────
 export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
     const externals = new Set();
@@ -31,8 +32,6 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
     const slice = [];
     let totalBytes = 0;
     const visitedPkgs = new Set();
-    // Bare-specifier → top-level package name (handles @scope/pkg).
-    const pkgNameFor = (spec) => spec.startsWith('@') ? spec.split('/').slice(0, 2).join('/') : spec.split('/')[0];
     const addFile = (path) => {
         try {
             if (vfs.isDirectory(path)) {
@@ -134,7 +133,7 @@ export function buildSliceForSpecifierWithCap(vfs, specifier, nmDir, capBytes) {
         }
         return true;
     };
-    const pkgName = pkgNameFor(specifier);
+    const pkgName = packageNameFromSpecifier(specifier);
     if (!visitPkg(pkgName, true)) {
         // Cap exceeded — caller bails out. Empty caller = caller will fall
         // back to legacy in-supervisor path or skip pre-bundling entirely.

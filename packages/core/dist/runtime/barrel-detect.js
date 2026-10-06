@@ -67,7 +67,14 @@ export function countPackageFiles(vfs, pkgDir, cap = 5000) {
  * → "@radix-ui/react"). Used by callers building the pkgDir path.
  */
 export function packageNameFromSpecifier(specifier) {
-    return specifier.startsWith('@')
-        ? specifier.split('/').slice(0, 2).join('/')
-        : specifier.split('/')[0];
+    return splitBareSpecifier(specifier).name;
+}
+/**
+ * A bare specifier's package name (`@scope/name` or `name`) and the subpath
+ * after it, `''` for the package itself: `@a/b/c/d` → `@a/b` and `c/d`.
+ */
+export function splitBareSpecifier(specifier) {
+    const parts = specifier.split('/');
+    const nameLength = specifier.startsWith('@') ? 2 : 1;
+    return { name: parts.slice(0, nameLength).join('/'), subpath: parts.slice(nameLength).join('/') };
 }

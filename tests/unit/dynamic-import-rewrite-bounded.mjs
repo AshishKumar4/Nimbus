@@ -12,6 +12,7 @@
 import assert from 'node:assert/strict';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { rewriteDynamicImports } from '../../packages/core/src/runtime/dynamic-import-rewrite.ts';
+import { runCell, withProcessImport } from './lib/process-import.mjs';
 const { Parser } = await import(Bun.resolveSync('acorn', new URL('../../packages/core/src/runtime', import.meta.url).pathname));
 
 const parent = 'file:///home/user/bin/catalog.mjs';
@@ -79,11 +80,11 @@ return import('./later.js').then((later) => ({ metadata: read('parameter'), viaM
   }
   // The catalog alone is some 30 tokens an entry.
   assert.ok(tokens < 1000, `Acorn read ${tokens} tokens of a cell of ${count * 30}`);
-  globalThis.__nimbusDynamicImport = async (from, specifier) => ({ from, specifier });
-  try {
+  {
     // A loader skips the hashbang line; so does this.
     const body = result.code.replace(/^#!/, '//');
-    const output = await new Function('exports', 'require', 'module', body)({}, undefined, { __nimbusImportMeta: { url: parent } });
+    const { result: output } = await withProcessImport((specifier, from) => ({ from, specifier }),
+      () => runCell(body, { module: { __nimbusImportMeta: { url: parent } } }));
     assert.deepEqual(output, {
       metadata: ['file:///home/user/bin/', 'parameter', 'escaped user binding'],
       viaMembers: ['object:a', 'class:b', 'object:c'],
@@ -91,8 +92,6 @@ return import('./later.js').then((later) => ({ metadata: read('parameter'), viaM
       count,
       total: count * (count - 1) / 2,
     });
-  } finally {
-    delete globalThis.__nimbusDynamicImport;
   }
   console.log(`  ok  a ${(source.length / 1024).toFixed(0)} KiB cell is rewritten from ${tokens} Acorn tokens, and runs`);
 }

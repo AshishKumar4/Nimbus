@@ -47,14 +47,19 @@
 // WHY dist AND NOT src
 //   dist is what the worker is bundled from, it is committed, and it is plain
 //   JavaScript — no type annotations whose braces would confuse a body scan.
-//   Checking it checks what ships.
+//   Checking it checks what ships. Both packages' dist: the runners that
+//   dispatch facet functions (wasm, bash, clang, ruby, cpython) live in
+//   @nimbus-sh/core, which the worker bundles; the REPLs live in the worker.
+//   Scanning the worker alone missed wasmFacetCall, the very function this
+//   check was written for, once it moved to core.
 //
 // WHY DISCOVERY AND NOT A LIST
 //   The previous version of this check carried a hand-written list of four
 //   files. All four had since been deleted, so it reported "0 pass / 0 fail"
 //   and guarded nothing while the regression it existed to catch shipped.
-//   Facet functions are now found by following `.submit(...)` call sites, and
-//   the run fails outright if discovery collapses.
+//   Facet functions are now found by following `.submit(...)` call sites, to
+//   a named function or to a function literal written in place, and the run
+//   fails outright if discovery collapses.
 
 import { readFileSync, readdirSync, statSync, existsSync } from 'node:fs';
 import { fileURLToPath } from 'node:url';
@@ -63,7 +68,7 @@ import { transform } from 'esbuild';
 
 const __dirname = dirname(fileURLToPath(import.meta.url));
 const REPO = join(__dirname, '..', '..', '..');
-const DIST = join(REPO, 'packages', 'worker', 'dist');
+const DISTS = [join(REPO, 'packages', 'worker', 'dist'), join(REPO, 'packages', 'core', 'dist')];
 
 /** A facet function is reached through `pool.submit(fn, …)`; nothing else serializes one. */
 const SUBMIT = '.submit(';
@@ -71,9 +76,12 @@ const SUBMIT = '.submit(';
 /**
  * The floor that keeps this check from going quiet again. If a refactor
  * renames `submit` or moves dispatch elsewhere, discovery drops and the run
- * fails rather than printing a cheerful zero.
+ * fails rather than printing a cheerful zero. Each package has its own, so
+ * losing either package's dispatch fails the run: the worker's REPL steps
+ * (js-repl, ruby-repl, the fan-out diagnostic's literal), core's runners
+ * (wasm, bash, clang, ruby, cpython).
  */
-const MIN_EXPECTED_FACET_FNS = 3;
+const MIN_EXPECTED_FACET_FNS = { worker: 3, core: 5 };
 
 // ── scanning ────────────────────────────────────────────────────────────────
 //
@@ -172,6 +180,36 @@ function submittedNames(blank) {
   }
 }
 
+/**
+ * The function literal written in place as `.submit(`'s first argument at
+ * `at`, returning its body range: a `function` or a block-bodied arrow.
+ */
+function inlineFacetFnRange(text, at) {
+  const arg = /^\s*(?:async\s+)?(function\b|\(|[A-Za-z_$][A-Za-z0-9_$]*\s*=>)/.exec(text.slice(at));
+  if (!arg) return null;
+  if (arg[1] === 'function') {
+    const open = bodyStart(text, at);
+    const close = open < 0 ? -1 : matchBrace(text, open);
+    return close < 0 ? null : { open, close };
+  }
+  // An arrow: its parameters, `=>`, then a block body.
+  let i = at + arg[0].length - (arg[1] === '(' ? 1 : 0);
+  if (arg[1] === '(') {
+    let depth = 0;
+    for (; i < text.length; i++) {
+      if (text[i] === '(') depth++;
+      else if (text[i] === ')') { depth--; if (depth === 0) { i++; break; } }
+    }
+    while (i < text.length && /\s/.test(text[i])) i++;
+    if (text.slice(i, i + 2) !== '=>') return null;
+    i += 2;
+  }
+  while (i < text.length && /\s/.test(text[i])) i++;
+  if (text[i] !== '{') return null;
+  const close = matchBrace(text, i);
+  return close < 0 ? null : { open: i, close };
+}
+
 /** Locate the function bound to `name`, returning its body range. */
 function facetFnRange(blank, name) {
   const decl = new RegExp(
@@ -202,16 +240,40 @@ const lineOf = (src, offset) => src.slice(0, offset).split('\n').length;
 
 console.log('static-checks/no-this-in-facet-fns');
 
-if (!existsSync(DIST)) {
-  console.log(`  ✗ ${relative(REPO, DIST)} is missing — run \`bun run --cwd packages/worker build\``);
-  process.exit(1);
+for (const dist of DISTS) {
+  if (!existsSync(dist)) {
+    console.log(`  ✗ ${relative(REPO, dist)} is missing — run \`bun run build\``);
+    process.exit(1);
+  }
 }
 
 let pass = 0;
 let fail = 0;
-let discovered = 0;
+const discovered = { worker: 0, core: 0 };
 
-for (const file of jsFiles(DIST)) {
+/** Report one facet function's body (offsets into `bundled`): pass when no `this` survives bundling. */
+function check(rel, label, bundled, range, rawCount) {
+  const body = bundled.slice(range.open, range.close);
+  const live = [...body.matchAll(/\bthis\b/g)];
+  const dropped = Math.max(0, rawCount - live.length);
+  const note = dropped > 0 ? ` (${dropped} more in source, dropped by the bundler)` : '';
+  if (live.length === 0) {
+    console.log(`  ✓ ${rel}::${label} — no \`this\` the bundler would keep${note}`);
+    pass++;
+    return;
+  }
+  console.log(`  ✗ ${rel}::${label} — ${live.length} \`this\` survive(s) bundling${note}:`);
+  // Offsets are into the BUNDLED text, so the surrounding bundled line is
+  // quoted rather than a source line number that would not correspond.
+  const bundledLines = bundled.split('\n');
+  for (const m of live) {
+    const line = lineOf(bundled, range.open + m.index);
+    console.log(`      bundled line ${line}: ${(bundledLines[line - 1] || '').trim().slice(0, 120)}`);
+  }
+  fail++;
+}
+
+for (const [pkg, dist] of [['worker', DISTS[0]], ['core', DISTS[1]]]) for (const file of jsFiles(dist)) {
   const src = readFileSync(file, 'utf-8');
   if (!src.includes(SUBMIT)) continue;
   const rel = relative(REPO, file);
@@ -226,40 +288,31 @@ for (const file of jsFiles(DIST)) {
   for (const name of new Set(submittedNames(blank))) {
     const range = facetFnRange(bundled, name);
     if (!range) continue;   // a parameter, or defined in another module
-    discovered++;
-
-    const body = bundled.slice(range.open, range.close);
+    discovered[pkg]++;
     const rawRange = facetFnRange(blank, name);
     const rawCount = rawRange
       ? [...src.slice(rawRange.open, rawRange.close).matchAll(/\bthis\b/g)].length
       : 0;
-    const live = [...body.matchAll(/\bthis\b/g)];
-    const dropped = Math.max(0, rawCount - live.length);
-    const note = dropped > 0 ? ` (${dropped} more in source, dropped by the bundler)` : '';
+    check(rel, name, bundled, range, rawCount);
+  }
 
-    if (live.length === 0) {
-      console.log(`  ✓ ${rel}::${name} — no \`this\` the bundler would keep${note}`);
-      pass++;
-      continue;
-    }
-    console.log(`  ✗ ${rel}::${name} — ${live.length} \`this\` survive(s) bundling${note}:`);
-    // Offsets are into the BUNDLED text, so the surrounding bundled line is
-    // quoted rather than a source line number that would not correspond.
-    const bundledLines = bundled.split('\n');
-    for (const m of live) {
-      const line = lineOf(bundled, range.open + m.index);
-      console.log(`      bundled line ${line}: ${(bundledLines[line - 1] || '').trim().slice(0, 120)}`);
-    }
-    fail++;
+  // Function literals written in place as `.submit(`'s argument.
+  for (let at = bundled.indexOf(SUBMIT); at >= 0; at = bundled.indexOf(SUBMIT, at + 1)) {
+    const range = inlineFacetFnRange(bundled, at + SUBMIT.length);
+    if (!range) continue;
+    discovered[pkg]++;
+    check(rel, `<function at bundled line ${lineOf(bundled, at)}>`, bundled, range, 0);
   }
 }
 
-if (discovered < MIN_EXPECTED_FACET_FNS) {
-  console.log(
-    `  ✗ discovery found only ${discovered} facet function(s), expected at least ` +
-    `${MIN_EXPECTED_FACET_FNS} — dispatch moved and this check is no longer looking at it`,
-  );
-  fail++;
+for (const [pkg, floor] of Object.entries(MIN_EXPECTED_FACET_FNS)) {
+  if (discovered[pkg] < floor) {
+    console.log(
+      `  ✗ discovery found only ${discovered[pkg]} facet function(s) in packages/${pkg}/dist, expected at least ` +
+      `${floor} — dispatch moved and this check is no longer looking at it`,
+    );
+    fail++;
+  }
 }
 
 console.log(`\n  ──── [static-checks/no-this-in-facet-fns] ${pass} pass / ${fail} fail`);

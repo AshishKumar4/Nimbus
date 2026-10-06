@@ -6,15 +6,9 @@
 // keep an embedder holding two workspaces from leaking one into the other.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
+import { openWorkspace } from './lib/test-box.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 
-const openWorkspace = (options = {}) => {
-  const harness = createSqliteVfsTestHarness(new Database(':memory:'));
-  return NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, ...options });
-};
 
 // ── The same port answers differently in two workspaces ───────────────────
 {

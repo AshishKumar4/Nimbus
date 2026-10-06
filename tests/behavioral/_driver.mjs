@@ -295,6 +295,8 @@ export class Terminal {
     this.wsOptions = options.wsOptions ?? wsHeaders();
     this.ws = null;
     this.buf = '';
+    /** The `spawn` frames the session sent: one per process it started. */
+    this.spawns = [];
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
@@ -315,6 +317,8 @@ export class Terminal {
         const m = JSON.parse(data.toString('utf8'));
         if (m.type === 'output' && typeof m.data === 'string') {
           this.buf += m.data;
+        } else if (m.type === 'spawn') {
+          this.spawns.push(m);
         }
       } catch { /* non-json control frames ignored */ }
     });
@@ -393,6 +397,11 @@ export class Terminal {
     await this.waitForNewPrompt(timeoutMs);
     const elapsed = Date.now() - t0;
     return { elapsed, output: stripAnsi(this.buf) };
+  }
+
+  /** Write `content` to `path` with a quoted heredoc (heredocCommand). */
+  async writeFile(path, content, timeoutMs = 10_000) {
+    return this.run(heredocCommand(path, content), timeoutMs);
   }
 
   async close() {
@@ -488,6 +497,29 @@ export function writeFileViaShell(termCmd, path, content) {
 export function heredocCommand(path, content) {
   // Single-quoted EOF marker prevents shell expansion of $/`/\;
   return `cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${content}\nNIMBUS_HEREDOC_EOF`;
+}
+
+/**
+ * What one `Terminal.run` printed: ANSI stripped, without the command's
+ * echo line (`… $ cmd`) or the prompt it returned to.
+ */
+export function termBody(raw) {
+  const lines = stripAnsi(raw).split(/\r?\n/);
+  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
+  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
+  return lines.join('\n');
+}
+
+/**
+ * Whether some line of `output`, trimmed, is exactly `expected`. A bare
+ * `\r` ends a line as `\n` does: a terminal redraws over it.
+ */
+export function hasOutputLine(output, expected) {
+  return stripAnsi(output)
+    .replace(/\r/g, '\n')
+    .split('\n')
+    .map((line) => line.trim())
+    .includes(expected);
 }
 
 /**

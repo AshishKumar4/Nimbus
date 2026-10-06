@@ -1,8 +1,7 @@
-const textEncoder = new TextEncoder();
-const textDecoder = new TextDecoder();
+import { dec, enc } from './bytes.js';
 const SEALED_JSON_V2 = 'v2.';
 const SEALED_JSON_V1 = 'v1.';
-const HKDF_SALT = textEncoder.encode('nimbus-sh sealed-json v2');
+const HKDF_SALT = enc.encode('nimbus-sh sealed-json v2');
 const BASE64URL_RE = /^[A-Za-z0-9_-]*$/;
 export function randomBase64Url(byteLength) {
     const bytes = new Uint8Array(byteLength);
@@ -10,7 +9,7 @@ export function randomBase64Url(byteLength) {
     return base64Url(bytes);
 }
 export async function sha256Base64Url(input) {
-    const digest = await crypto.subtle.digest('SHA-256', textEncoder.encode(input));
+    const digest = await crypto.subtle.digest('SHA-256', enc.encode(input));
     return base64Url(new Uint8Array(digest));
 }
 export async function pkceChallenge(verifier) {
@@ -18,7 +17,7 @@ export async function pkceChallenge(verifier) {
 }
 /** Lowercase hex SHA-256 — the digest form the staged-artifact integrity checks pin. */
 export async function sha256Hex(input) {
-    return hex(await crypto.subtle.digest('SHA-256', typeof input === 'string' ? textEncoder.encode(input) : input));
+    return hex(await crypto.subtle.digest('SHA-256', typeof input === 'string' ? enc.encode(input) : input));
 }
 /** Web Crypto has no incremental digest: workerd offers `crypto.DigestStream`, Node and Bun `node:crypto`. */
 export function sha256Incremental() {
@@ -54,7 +53,7 @@ export async function sealJson(value, secret, options = {}) {
     const key = await hkdfAesGcmKey(secret, purpose, options.minSecretLength);
     const iv = new Uint8Array(12);
     crypto.getRandomValues(iv);
-    const plaintext = textEncoder.encode(JSON.stringify(value));
+    const plaintext = enc.encode(JSON.stringify(value));
     const ciphertext = new Uint8Array(await crypto.subtle.encrypt({ name: 'AES-GCM', iv, additionalData: aad(purpose) }, key, plaintext));
     const packed = new Uint8Array(iv.length + ciphertext.length);
     packed.set(iv, 0);
@@ -71,7 +70,7 @@ export async function unsealJson(value, secret, options = {}) {
         const ciphertext = packed.slice(12);
         const key = await hkdfAesGcmKey(secret, purpose, options.minSecretLength);
         const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv, additionalData: aad(purpose) }, key, ciphertext);
-        return JSON.parse(textDecoder.decode(plaintext));
+        return JSON.parse(dec.decode(plaintext));
     }
     // Backward compatibility for the original agent OAuth cookie format.
     // New cookies are always v2 and purpose-bound through AES-GCM AAD.
@@ -83,40 +82,18 @@ export async function unsealJson(value, secret, options = {}) {
         const ciphertext = packed.slice(12);
         const key = await legacyShaAesGcmKey(secret, options.minSecretLength);
         const plaintext = await crypto.subtle.decrypt({ name: 'AES-GCM', iv }, key, ciphertext);
-        return JSON.parse(textDecoder.decode(plaintext));
+        return JSON.parse(dec.decode(plaintext));
     }
     return null;
 }
 export function encodeJsonBase64Url(value) {
-    return base64Url(textEncoder.encode(JSON.stringify(value)));
+    return base64Url(enc.encode(JSON.stringify(value)));
 }
 export function decodeJsonBase64Url(value) {
-    return JSON.parse(textDecoder.decode(base64UrlDecode(value)));
+    return JSON.parse(dec.decode(base64UrlDecode(value)));
 }
-export function base64Url(bytes) {
-    let binary = '';
-    const chunk = 0x8000;
-    for (let i = 0; i < bytes.length; i += chunk) {
-        binary += String.fromCharCode(...bytes.subarray(i, i + chunk));
-    }
-    return btoa(binary)
-        .replace(/\+/g, '-')
-        .replace(/\//g, '_')
-        .replace(/=+$/g, '');
-}
-export function base64UrlDecode(value) {
-    if (!BASE64URL_RE.test(value) || value.length % 4 === 1) {
-        throw new Error('Invalid base64url input');
-    }
-    const padded = value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '=');
-    const binary = atob(padded);
-    const bytes = new Uint8Array(binary.length);
-    for (let i = 0; i < binary.length; i++)
-        bytes[i] = binary.charCodeAt(i);
-    return bytes;
-}
-export function base64Utf8(value) {
-    const bytes = textEncoder.encode(value);
+/** Standard base64 (with padding) of `bytes`, in chunks so a large array never overflows the call stack. */
+export function base64(bytes) {
     let binary = '';
     const chunk = 0x8000;
     for (let i = 0; i < bytes.length; i += chunk) {
@@ -124,19 +101,44 @@ export function base64Utf8(value) {
     }
     return btoa(binary);
 }
+/** The bytes standard base64 `value` encodes; throws what `atob` throws. */
+export function base64Decode(value) {
+    const binary = atob(value);
+    const bytes = new Uint8Array(binary.length);
+    for (let i = 0; i < binary.length; i++)
+        bytes[i] = binary.charCodeAt(i);
+    return bytes;
+}
+/** base64url, unpadded (RFC 4648 §5, as JWTs and PKCE carry it). */
+export function base64Url(bytes) {
+    return base64(bytes)
+        .replace(/\+/g, '-')
+        .replace(/\//g, '_')
+        .replace(/=+$/g, '');
+}
+/** The bytes unpadded base64url `value` encodes; throws on any other alphabet or a length no encoding has. */
+export function base64UrlDecode(value) {
+    if (!BASE64URL_RE.test(value) || value.length % 4 === 1) {
+        throw new Error('Invalid base64url input');
+    }
+    return base64Decode(value.replace(/-/g, '+').replace(/_/g, '/').padEnd(Math.ceil(value.length / 4) * 4, '='));
+}
+export function base64Utf8(value) {
+    return base64(enc.encode(value));
+}
 async function hkdfAesGcmKey(secret, purpose, minSecretLength = 32) {
     assertSecret(secret, minSecretLength);
-    const material = await crypto.subtle.importKey('raw', textEncoder.encode(secret), 'HKDF', false, ['deriveKey']);
+    const material = await crypto.subtle.importKey('raw', enc.encode(secret), 'HKDF', false, ['deriveKey']);
     return crypto.subtle.deriveKey({
         name: 'HKDF',
         hash: 'SHA-256',
         salt: HKDF_SALT,
-        info: textEncoder.encode(purpose),
+        info: enc.encode(purpose),
     }, material, { name: 'AES-GCM', length: 256 }, false, ['encrypt', 'decrypt']);
 }
 async function legacyShaAesGcmKey(secret, minSecretLength = 32) {
     assertSecret(secret, minSecretLength);
-    const digest = await crypto.subtle.digest('SHA-256', textEncoder.encode(secret));
+    const digest = await crypto.subtle.digest('SHA-256', enc.encode(secret));
     return crypto.subtle.importKey('raw', digest, 'AES-GCM', false, ['decrypt']);
 }
 function assertSecret(secret, minSecretLength) {
@@ -151,5 +153,5 @@ function normalizePurpose(purpose) {
     return value.slice(0, 128);
 }
 function aad(purpose) {
-    return textEncoder.encode(`nimbus-sh:${purpose}:sealed-json:v2`);
+    return enc.encode(`nimbus-sh:${purpose}:sealed-json:v2`);
 }

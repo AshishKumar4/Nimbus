@@ -118,9 +118,7 @@ try {
   for (const [name, source] of Object.entries(SCENARIOS)) {
     const terminal = await localTerminal(probe, { install: [] });
     try {
-      const b64 = Buffer.from(source).toString('base64');
-      const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/${name}.js', Buffer.from('${b64}', 'base64'))"`);
-      assert.equal(w.status, 0, w.stdout);
+      await terminal.writeFile(`/home/user/${name}.js`, source);
       const started = Date.now();
       // What a scenario held, before, it held for good, or 60 s (children):
       // 40 s tells the two apart on a loaded machine, where eight ES-module

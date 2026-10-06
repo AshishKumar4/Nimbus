@@ -12,7 +12,6 @@
 // one — that is the sweep's job, and its root set is the process table.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -30,6 +29,7 @@ import {
 } from '../../packages/fabric/src/process-fabric.ts';
 import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 // ── writer: the store the coordinator materializes ─────────────────────────
 
@@ -44,15 +44,7 @@ const configs = () => world.boots.map((b) => b.config);
 
 const env = {
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 const processes = new SessionProcessSupervisor();

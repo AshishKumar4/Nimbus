@@ -18,6 +18,7 @@ import type {
   VersionSpec,
 } from 'pip-requirements-js';
 import { z } from 'zod/v4';
+import { errorText } from '../_shared/error-text.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { PYODIDE_PACKAGE_ABI } from './os-contracts.js';
 import {
@@ -550,7 +551,7 @@ async function readVfsText(vfs: PythonPipVfs, path: string): Promise<{ text: str
   try {
     return { text: new TextDecoder('utf-8').decode((await vfs.readFile(path))) };
   } catch (e) {
-    return { error: errorMessage(e) };
+    return { error: errorText(e) };
   }
 }
 
@@ -558,13 +559,10 @@ async function probeVfsPath(vfs: PythonPipVfs, path: string): Promise<{ exists: 
   try {
     return { exists: (await vfs.exists(path)) };
   } catch (e) {
-    return { error: errorMessage(e) };
+    return { error: errorText(e) };
   }
 }
 
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
-}
 
 async function resolveRequirements(
   roots: PackageRequirement[],
@@ -1036,6 +1034,15 @@ function buildPipInstallCode(plan: PipInstallPlan, sitePackages: string): string
     '    sys.path.insert(0, target_site_packages)',
     'def _nimbus_dist_info_dir(name, version):',
     '    return os.path.join(target_site_packages, name.replace("-", "_") + "-" + version + ".dist-info")',
+    // The record pip reads back: a pure wheel with no RECORD entries.
+    'def _nimbus_write_dist_info(dist_info, policy):',
+    '    os.makedirs(dist_info, exist_ok=True)',
+    '    with open(os.path.join(dist_info, "METADATA"), "w", encoding="utf-8") as f:',
+    '        f.write("Metadata-Version: 2.1\\nName: " + policy["canonicalName"] + "\\nVersion: " + policy["version"] + "\\n")',
+    '    with open(os.path.join(dist_info, "WHEEL"), "w", encoding="utf-8") as f:',
+    '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
+    '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
+    '        f.write("")',
     'def _nimbus_load_pyodide_manifest():',
     '    try:',
     '        with open(pyodide_manifest_path, "r", encoding="utf-8") as f:',
@@ -1154,13 +1161,7 @@ function buildPipInstallCode(plan: PipInstallPlan, sitePackages: string): string
     '    dist_info = _nimbus_dist_info_dir(policy["canonicalName"], policy["version"])',
     '    if os.path.isdir(dist_info):',
     '        shutil.rmtree(dist_info)',
-    '    os.makedirs(dist_info, exist_ok=True)',
-    '    with open(os.path.join(dist_info, "METADATA"), "w", encoding="utf-8") as f:',
-    '        f.write("Metadata-Version: 2.1\\nName: " + policy["canonicalName"] + "\\nVersion: " + policy["version"] + "\\n")',
-    '    with open(os.path.join(dist_info, "WHEEL"), "w", encoding="utf-8") as f:',
-    '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
-    '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
-    '        f.write("")',
+    '    _nimbus_write_dist_info(dist_info, policy)',
     // A variant package's code is already inside the interpreter and on its
     // sys.path; only the record is missing, and that record is what makes the
     // next spawn pick the interpreter that has it.
@@ -1168,13 +1169,7 @@ function buildPipInstallCode(plan: PipInstallPlan, sitePackages: string): string
     '    dist_info = _nimbus_dist_info_dir(policy["canonicalName"], policy["version"])',
     '    if os.path.exists(os.path.join(dist_info, "METADATA")):',
     '        return',
-    '    os.makedirs(dist_info, exist_ok=True)',
-    '    with open(os.path.join(dist_info, "METADATA"), "w", encoding="utf-8") as f:',
-    '        f.write("Metadata-Version: 2.1\\nName: " + policy["canonicalName"] + "\\nVersion: " + policy["version"] + "\\n")',
-    '    with open(os.path.join(dist_info, "WHEEL"), "w", encoding="utf-8") as f:',
-    '        f.write("Wheel-Version: 1.0\\nGenerator: Nimbus pip\\nRoot-Is-Purelib: true\\nTag: py3-none-any\\n")',
-    '    with open(os.path.join(dist_info, "RECORD"), "w", encoding="utf-8") as f:',
-    '        f.write("")',
+    '    _nimbus_write_dist_info(dist_info, policy)',
     'for source_package in source_packages:',
     '    _nimbus_install_source_package(source_package)',
     'for variant_package in variant_packages:',

@@ -7,8 +7,6 @@
  */
 /** `name` under `parent`; `''` is the project itself. */
 export declare function nestedPlacement(parent: string, name: string): string;
-/** The containing placement, `''` at root. */
-export declare function parentPlacement(placement: string): string;
 /** The package name a placement holds. */
 export declare function placementName(placement: string): string;
 /** Placements Node's walk visits for `name` from inside `from`, nearest first, root last. */

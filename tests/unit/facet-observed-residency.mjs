@@ -48,6 +48,7 @@ import {
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 // ── Part 1: admission is a budget, not a policy ─────────────────────────────
 //
@@ -210,14 +211,7 @@ const env = {
     },
     get() { throw new Error('a one-shot exec never takes the keyed loader path'); },
   },
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 // A real session ctx, not a bare `{ id, waitUntil }`: the exec's bundle build

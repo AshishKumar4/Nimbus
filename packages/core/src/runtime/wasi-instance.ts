@@ -150,8 +150,6 @@ export interface WasiFsSnapshot {
   root: string;
   /** Preopen list (order matters; preopens are assigned to fd 3, 4, …). */
   preopens: Array<{ wasiPath: string; vfsPath: string }>;
-  /** Largest regular file the codec answers from a resident copy. Defaults to 8 MiB. */
-  residentFileCap?: number;
 }
 
 

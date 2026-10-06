@@ -9,6 +9,7 @@
 // SQLite must fail EAGAIN — loudly — instead of returning wrong bytes.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
@@ -431,6 +432,17 @@ assert.equal(nodeConstants.O_CREAT, C.O_CREAT);
 assert.equal(nodeConstants.O_NOFOLLOW, C.O_NOFOLLOW);
 assert.equal(sandbox.process.binding('fs').constants.O_CREAT, C.O_CREAT);
 for (const k of Object.keys(C)) assert.equal(nodeConstants[k], C[k], `node:constants.${k} mirrors fs.constants`);
+
+// os.constants' errno, signal, priority and dlopen tables are real node's on
+// linux, and node:constants carries each of their entries flat.
+{
+  const real = JSON.parse(spawnSync('node', ['-e', 'const c = require("os").constants; process.stdout.write(JSON.stringify({ errno: c.errno, signals: c.signals, priority: c.priority, dlopen: c.dlopen }))'], { encoding: 'utf8' }).stdout);
+  const osConstants = sandbox.builtins.os.constants;
+  for (const table of ['errno', 'signals', 'priority', 'dlopen']) {
+    assert.deepEqual({ ...osConstants[table] }, real[table], `os.constants.${table} is node's`);
+    for (const [k, v] of Object.entries(real[table])) assert.equal(nodeConstants[k], v, `node:constants.${k} is os.constants.${table}.${k}`);
+  }
+}
 
 // The modern-tar sequence: numeric flags → open creates → write → close → readable.
 const tarPath = '/home/user/extracted/entry.txt';

@@ -10,10 +10,6 @@
 // and a mount's link into SQLite builds the project it names, there.
 
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
@@ -22,34 +18,12 @@ import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { asyncMemoryVfs } from './lib/async-memory-vfs.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
 
 // vite-command.ts transitively imports `cloudflare:workers`; bundled with the stub the route tests use.
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-vite-mount-test-'));
-let createViteCommand;
-try {
-  const bundle = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/vite-command.ts'],
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(bundle.success, true, bundle.logs.map(String).join('\n'));
-  ({ createViteCommand } = await import(pathToFileURL(bundle.outputs.find((o) => o.path.endsWith('/vite-command.js')).path).href));
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+const { createViteCommand } = await importWorkerBundle({ 'packages/worker/src/session/vite-command.ts': ['createViteCommand'] });
 
 const harness = createSqliteVfsTestHarness(new Database(':memory:'));
 const vfs = new SqliteVFS(harness.sql, harness.ctx);

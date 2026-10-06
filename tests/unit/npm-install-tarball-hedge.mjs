@@ -19,7 +19,7 @@
 //      completes from the registry rather than waiting out the full bound.
 
 import assert from 'node:assert/strict';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gunzipSync } from 'node:zlib';
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
 import {
   readableStreamToAsyncIterable,
@@ -30,6 +30,7 @@ import {
   decodeWriteBatchStream,
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
+import { packageTarball, sriOf } from './lib/tarball-fixture.mjs';
 
 globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
@@ -55,53 +56,13 @@ globalThis.DecompressionStream = class DecompressionStream {
 
 // ── tar fixture ─────────────────────────────────────────────────────────
 
-function octal(value, width) {
-  return value.toString(8).padStart(width - 1, '0') + '\0';
-}
-
-function tarFile(name, text) {
-  const data = new TextEncoder().encode(text);
-  const header = new Uint8Array(512);
-  const write = (offset, value, width) => {
-    header.set(new TextEncoder().encode(value).subarray(0, width), offset);
-  };
-  write(0, name, 100);
-  write(100, octal(0o644, 8), 8);
-  write(108, octal(0, 8), 8);
-  write(116, octal(0, 8), 8);
-  write(124, octal(data.length, 12), 12);
-  write(136, octal(0, 12), 12);
-  header.fill(0x20, 148, 156);
-  header[156] = 0x30;
-  write(257, 'ustar\0', 6);
-  write(263, '00', 2);
-  write(148, octal(header.reduce((sum, byte) => sum + byte, 0), 8), 8);
-  const padded = new Uint8Array(Math.ceil(data.length / 512) * 512);
-  padded.set(data);
-  return [header, padded];
-}
-
 function makeTarball() {
-  const parts = [
-    ...tarFile('package/package.json', '{"name":"left-pad","version":"1.3.0"}'),
-    ...tarFile('package/index.js', 'export default 1;'),
-    new Uint8Array(1024),
-  ];
-  const tar = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    tar.set(part, offset);
-    offset += part.length;
-  }
-  return new Uint8Array(gzipSync(tar));
+  return packageTarball({
+    'package/package.json': '{"name":"left-pad","version":"1.3.0"}',
+    'package/index.js': 'export default 1;',
+  });
 }
 
-async function sriOf(bytes) {
-  const digest = new Uint8Array(await crypto.subtle.digest('SHA-512', bytes));
-  let bin = '';
-  for (const byte of digest) bin += String.fromCharCode(byte);
-  return `sha512-${btoa(bin)}`;
-}
 
 const TARBALL = makeTarball();
 const SRI = await sriOf(TARBALL);

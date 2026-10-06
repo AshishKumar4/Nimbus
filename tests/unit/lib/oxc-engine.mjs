@@ -1,10 +1,10 @@
 // The transform engine production runs (the transform facet's: Nimbus's Oxc
 // build over the staged wasm, core runtime/oxc-transform.ts driving it), for
 // tests that drive EsbuildService's transform pipeline in-process. It has
-// esbuild's transform() contract, so a test sets it as the service's engine:
+// esbuild's transform() contract, so a test hands it to the service as its
+// in-isolate engine:
 //
-//   service.ensureInit = async () => {};
-//   service._esbuild = oxcEngine;
+//   new EsbuildService(undefined, { engine: async () => oxcEngine })
 
 import { readFile } from 'node:fs/promises';
 import { createOxcTransform } from '../../../packages/core/src/runtime/oxc-transform.ts';

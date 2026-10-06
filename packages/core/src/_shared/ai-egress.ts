@@ -71,8 +71,11 @@ export function mintSessionAiToken(): string {
   return `sk-nimbus-${crypto.randomUUID().replace(/-/g, '')}`;
 }
 
-/** The credential a request presents, with any `Bearer ` prefix removed. */
-function presentedCredential(value: string): string {
+/**
+ * The credential a request presents, with any `Bearer ` prefix removed.
+ * Self-contained: the node fetch shim carries its source.
+ */
+export function presentedCredential(value: string): string {
   const trimmed = value.trim();
   return /^bearer\s+/i.test(trimmed) ? trimmed.replace(/^bearer\s+/i, '') : trimmed;
 }

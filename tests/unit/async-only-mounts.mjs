@@ -13,15 +13,7 @@ import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-worksp
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { runScript } from './lib/bash-preamble.mjs';
-
-const asyncOnly = (vfs) => new Proxy(vfs, {
-  get(target, key) {
-    if (key === 'sync') return undefined;
-    const value = target[key];
-    return typeof value === 'function' ? value.bind(target) : value;
-  },
-  has(target, key) { return key !== 'sync' && key in target; },
-});
+import { asyncOnly } from './lib/async-memory-vfs.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx });

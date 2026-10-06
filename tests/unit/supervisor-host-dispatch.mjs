@@ -10,43 +10,17 @@ import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { dec } from '../../packages/core/src/_shared/bytes.ts';
 import { SupervisorDeliveries, supervisorDeliveredOp, supervisorJoinedReadOp } from '../../packages/core/src/workspace/supervisor-delivery.ts';
 import { SUPERVISOR_OP_TABLE } from '../../packages/core/src/workspace/supervisor-ops.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const build = await Bun.build({
-  // A virtual entry re-exports the real entrypoint AND composeFabric, so the
-  // bundle's composition state is the one the test configures — a data: URL
-  // cannot share module instances with this file.
-  entrypoints: ['supervisor-host-dispatch-entry'],
-  target: 'bun',
-  plugins: [{
-    name: 'supervisor-entrypoint-host',
-    setup(builder) {
-      builder.onResolve({ filter: /^supervisor-host-dispatch-entry$/ }, () => ({ path: 'entry', namespace: 'test' }));
-      builder.onLoad({ filter: /.*/, namespace: 'test' }, (args) => args.path === 'entry'
-        ? {
-            contents:
-              'export { SupervisorRPC } from ' +
-              JSON.stringify(new URL('../../packages/worker/src/session/supervisor-rpc.ts', import.meta.url).pathname) +
-              '; export { composeFabric } from ' +
-              JSON.stringify(new URL('../../packages/platform/src/composition.ts', import.meta.url).pathname) + ';',
-            loader: 'js',
-          }
-        : args.path === 'sockets'
-          ? { contents: 'export function connect() { throw new Error("no sockets in this test"); }', loader: 'js' }
-          : { contents: 'export class WorkerEntrypoint {}', loader: 'js' });
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'workers', namespace: 'test' }));
-      // The binding's outbound connect (SupervisorRPC.connect) is not driven here.
-      builder.onResolve({ filter: /^cloudflare:sockets$/ }, () => ({ path: 'sockets', namespace: 'test' }));
-      builder.onResolve({ filter: /^@nimbus-sh\/platform\/composition\.js$/ }, () => ({
-        // Bundled, not external: a bare specifier inside a data: URL module
-        // has nothing to resolve against.
-        path: new URL('../../packages/platform/src/composition.ts', import.meta.url).pathname,
-      }));
-    },
-  }],
+// The entrypoint and composeFabric in one graph, so the bundle's composition
+// state is the one the test configures.
+const { SupervisorRPC, composeFabric: bundleComposeFabric } = await importWorkerBundle({
+  'packages/worker/src/session/supervisor-rpc.ts': ['SupervisorRPC'],
+  'packages/platform/src/composition.ts': ['composeFabric'],
+}, {
+  // The binding's outbound connect (SupervisorRPC.connect) is not driven here.
+  stubs: [{ filter: /^cloudflare:sockets$/, contents: 'export function connect() { throw new Error("no sockets in this test"); }' }],
 });
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const bundle = await import('data:text/javascript;base64,' + Buffer.from(await build.outputs[0].text()).toString('base64'));
-const { SupervisorRPC, composeFabric: bundleComposeFabric } = bundle;
 bundleComposeFabric({ supervisorEntrypoint: 'Supervisor', hostNamespace: 'HOSTS', hostDispatchMethod: 'dispatchWorkspace' });
 
 // A real filesystem the native ops can actually run against — the session

@@ -28,7 +28,6 @@
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
 import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
-export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
@@ -43,28 +42,6 @@ export interface ExclusiveMutationLease {
 }
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
-    /**
-     * Make the lease a delegation: its holder decides the subtree's operations
-     * itself and sends them later (as writes under the lease), so another
-     * caller's access recalls them first (RecallRequired) instead of being
-     * refused.
-     */
-    readonly delegation?: DelegationTerms;
-}
-/** What a delegation's holder agreed to (ExclusiveMutationOptions.delegation). */
-export interface DelegationTerms {
-    /** Another caller's reads under the root recall too, not only its writes: the holder's writes may be unsent. */
-    readonly reads: boolean;
-    /**
-     * Bring the holder's decided operations in. Settles once every operation
-     * it decided before the recall is stored here, and the holder has done
-     * what `kind` asks: 'share', send each operation as it decides it from
-     * now on (another caller reads the subtree; the delegation stays), or
-     * 'revoke', give the subtree up (another caller writes it; the lease
-     * ends, and the holder's later writes under it are ESTALE). The engine
-     * joins concurrent recalls of one delegation into one.
-     */
-    recall(kind: 'share' | 'revoke'): Promise<void>;
 }
 export interface VfsOpenDescription {
     /** Inode number the description currently resolves; 0 is never issued. */
@@ -533,10 +510,6 @@ export declare class SqliteVFS {
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
     private activeMutationOwner;
-    /** The lease the running view call presents (callerView): its holder's own lookups recall nothing. */
-    private activeLeaseHolder;
-    /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
-    private activeWrite;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -839,6 +812,12 @@ export declare class SqliteVFS {
      */
     private logicalPath;
     /**
+     * uid 0's view: its writes may use the storage the ledger keeps back from
+     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
+     * Covers each call's synchronous part; the kernel's bookkeeping is that.
+     */
+    private privilegedView;
+    /**
      * Bind credentials and, optionally, the capability of a live mutation
      * lease; `actor` names the principal finer than its uid, in the write
      * events its mutations make (observeWrites).
@@ -850,21 +829,14 @@ export declare class SqliteVFS {
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;
     /**
-     * `view`, each call made as its caller, the one place a view's calls
-     * enter the engine: with the caller's privilege (uid 0 may use the
-     * storage the ledger keeps back from everyone else, N18's kernel reserve,
-     * as ext4 reserves blocks for root), as its principal (the write events
-     * it makes), and, for a synchronous mutation (OWNED_MUTATIONS), within
-     * its mutation lease (spanning work carries the owner per slice). Each
-     * call but a LEAF_READS one first writes every append this VFS holds
-     * (appendThrough): a view is how a caller changes the store or reads more
-     * of it than one file, and none may do either without them. A leaf read
-     * looks at the one file it names, which path resolution writes the
-     * appends of, so a program reading one file while appending to another is
-     * not made to store each append as it comes. Each covers its call's
-     * synchronous part; work it defers re-enters it (asCaller).
+     * `view`, each of its calls but LEAF_READS first writing every append
+     * this VFS holds (appendThrough): a view is how a caller changes the
+     * store or reads more of it than one file, and none may do either
+     * without them. A leaf read looks at the one file it names, which path
+     * resolution writes the appends of, so a program reading one file while
+     * appending to another is not made to store each append as it comes.
      */
-    private callerView;
+    private settlingView;
     private accessInode;
     private accessMode;
     /**
@@ -1066,20 +1038,6 @@ export declare class SqliteVFS {
      */
     rotateExclusiveMutation(owner: string): string;
     hasExclusiveMutation(): boolean;
-    /**
-     * Recall a read-covering delegation `key` lies in, for any caller but its
-     * holder (the lease a mutation scope or a view presents).
-     */
-    private recallReads;
-    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
-    private recallDelegationsAt;
-    /**
-     * The refusal for an access to `key` that `lease`'s holder must answer
-     * first, and the recall it waits on: one per delegation at a time, a
-     * revoke superseding a share. A shared delegation stays; a revoked one
-     * ends here, so its holder's later writes under it are ESTALE.
-     */
-    private recallRequired;
     private withMutationOwner;
     /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
     assertMutationAllowed(path: string, owner?: string): void;
@@ -1108,16 +1066,7 @@ export declare class SqliteVFS {
     /** Where `path` leads, in the caller's names, or null for a loop. */
     private resolveSymlink;
     private readFile;
-    /**
-     * The regular file a pathname read resolved to (live or a snapshot's):
-     * ENOENT when nothing is there, EISDIR for a directory, EINVAL for
-     * anything else that is not a regular file.
-     */
-    private regularFile;
-    /** All of an inode's bytes (a link's text). */
-    private readWhole;
-    /** `length` bytes of an inode's at `offset`, clamped to its size: a read past the end is short. */
-    private readNodeRange;
+    private readInodeBytes;
     /**
      * Read a whole file straight from SQL, bypassing the LRU content cache
      * entirely (neither consulted nor populated). For one-shot bulk reads
@@ -1160,13 +1109,6 @@ export declare class SqliteVFS {
      */
     private manifestRange;
     /** One chunk's bytes, through the LRU when `cached`. */
-    /**
-     * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
-     * statement, by id; a chunk not stored here (cold, pending) is
-     * unreadable. A missing id is absent from the answer: the caller names
-     * what it expected.
-     */
-    private loadChunks;
     private readChunk;
     /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
@@ -1224,11 +1166,7 @@ export declare class SqliteVFS {
      */
     private rewriteFile;
     /** Publish a rewrite in one transaction when it fits; false when it does not. */
-    /**
-     * Publish `node` rewritten to `content` in one transaction. One that would
-     * not fit the transaction bounds is refused (assertTransactionFits), or,
-     * `ifFits`, not made: false, and the caller publishes it another way.
-     */
+    private tryPublishRewrite;
     private publishRewrite;
     /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
     private rewrittenEntry;
@@ -1246,13 +1184,6 @@ export declare class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     private contentUnshared;
     private newPlan;
-    /**
-     * Pieces staged into `staging` (of the file at `path`) in bounded
-     * transactions: each takes pieces until the next would not fit, then
-     * commits through `commit` (the caller's: its authority, its checkpoint
-     * row with `commitRow`). `flush` commits what is held.
-     */
-    private stagingWriter;
     /** Create a state-0 content in its own transaction and hold it live. */
     private beginStaging;
     /**
@@ -1336,15 +1267,13 @@ export declare class SqliteVFS {
      */
     private removeRecursive;
     /**
-     * Every inode strictly under `root`, a bounded page at a time: the live
-     * tree, or the tree as of generation `at` (pageAt, live and history
-     * merged), in path order; or, live, in descending path order (`desc`),
-     * where every entry comes before the directory holding it (a path under a
-     * directory extends the directory's) and each page starts below the last
-     * path read, so removing what was already yielded does not disturb the
-     * walk. `directoriesOnly` takes only directories.
+     * The inodes under `root`, then `root` itself, in descending path order, a
+     * bounded page at a time. A path under a directory extends the directory's
+     * path, so it sorts after it: every entry comes before the directory that
+     * holds it. Each page starts below the last path read, so removing what
+     * was already yielded does not disturb the walk.
      */
-    private subtree;
+    private subtreeDescending;
     private rename;
     /**
      * Unwind the destination inodes a failed move had already published.
@@ -1398,6 +1327,8 @@ export declare class SqliteVFS {
     private copyTreeNow;
     /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
     private reserveCopy;
+    /** Every entry strictly under `root` as of generation `g`, a page at a time. */
+    private subtreeAt;
     /**
      * Run a copyTree job to completion: the root row and the job row in the
      * first transaction, then one page per transaction, the cursor moving in
@@ -1436,12 +1367,11 @@ export declare class SqliteVFS {
         quiesce: true;
     }): Promise<SnapshotInfo>;
     /**
-     * Run `pin` once nothing spans awaits, no plain exclusive lease is held,
-     * and every delegation is shared (its holder's decided operations stored):
-     * the check and `pin` run in one turn, so nothing can start between them.
-     * New spanning work waits behind the gate until then (Kinu N14: await,
-     * never EBUSY). A lease is synchronous and cannot wait, so one taken
-     * meanwhile is waited out too.
+     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
+     * check and `pin` run in one turn, so nothing can start between them. New
+     * spanning work waits behind the gate until then (Kinu N14: await, never
+     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
+     * is waited out too.
      */
     private quiesced;
     /**
@@ -2019,7 +1949,7 @@ export declare class SqliteVFS {
      * 19,429-file tree, on the object's only thread.
      *
      * The subtree is held whole, so only callers that commit it whole use this:
-     * a batch's deletions and a rename. A removal pages (subtree, descending).
+     * a batch's deletions and a rename. A removal pages (subtreeDescending).
      */
     private collectSubtreeInodes;
     /**

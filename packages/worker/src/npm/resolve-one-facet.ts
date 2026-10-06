@@ -54,6 +54,7 @@ import type { ResolvedPackage } from './resolver.js';
 import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, resolveVersion } from './semver.js';
+import { packageRangeSeparator } from './package-spec.js';
 
 declare const RESOLVE_VERSION: typeof resolveVersion;
 declare const IS_SEMVER_RANGE: typeof isSemverRange;
@@ -193,14 +194,7 @@ export function parseRegistryRequest(name: string, range: string) {
     return { installName: name, registryName: name, range: text, alias: false };
   }
   const target = text.slice(4);
-  const findSeparator = (specText: string) => {
-    if (!specText) return -1;
-    if (specText[0] !== '@') return specText.indexOf('@');
-    const slash = specText.indexOf('/');
-    if (slash < 0) return -1;
-    return specText.indexOf('@', slash + 1);
-  };
-  const splitAt = findSeparator(target);
+  const splitAt = packageRangeSeparator(target);
   const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
   const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
   return {

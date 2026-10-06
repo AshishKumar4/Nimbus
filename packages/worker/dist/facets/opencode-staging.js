@@ -25,6 +25,7 @@
 import { z } from 'zod/v4';
 import { fetchNodeFacetSources } from '../runtime/node-shims-artifact.js';
 import { fetchSqliteWasmBytes } from '../runtime/sqlite-wasm-bytes.js';
+import { memoizeUntilRejected } from '../runtime/staged-source.js';
 import { fetchOpencodeBundle, fetchOpencodeChunkSources, fetchOpencodeWasmBytes, fetchOpencodeWorkerSource, } from '../runtime/opencode-artifact.js';
 import { fetchOpenTUIWasmBytes } from '../runtime/opentui-wasm-bytes.js';
 import { OPENTUI_WASM_MODULE_NAME } from '../runtime/opentui-facet-backend.js';
@@ -68,25 +69,16 @@ function requireAssets(env, what) {
 // Each cache holds one ArrayBuffer (integrity-checked at fetch); facet configs
 // share the buffer, workerd compiles the `wasm` module entries ahead of
 // dispatch.
-let sqliteWasmBytes = null;
-let openTuiWasmBytes = null;
-let yogaWasmBytes = null;
-let treeSitterWasmBytes = null;
-function memoized(slot, set, create) {
-    if (!slot) {
-        const p = create();
-        set(p);
-        p.catch(() => set(null));
-        return p;
-    }
-    return slot;
-}
+const sqliteWasmBytes = memoizeUntilRejected(fetchSqliteWasmBytes);
+const openTuiWasmBytes = memoizeUntilRejected(fetchOpenTUIWasmBytes);
+const yogaWasmBytes = memoizeUntilRejected(({ env, file }) => fetchOpencodeWasmBytes(env, file));
+const treeSitterWasmBytes = memoizeUntilRejected(({ env, files }) => Promise.all(files.map(async (file) => [file, await fetchOpencodeWasmBytes(env, file)])));
 /** sql.js wasm `{ wasm }` module entry (shared with the generic facet paths). */
 export async function sqliteWasmModuleEntry(env, usesSqlite) {
     if (!usesSqlite)
         return {};
     const assets = requireAssets(env, 'node:sqlite (sql.js wasm)');
-    const bytes = await memoized(sqliteWasmBytes, (p) => { sqliteWasmBytes = p; }, () => fetchSqliteWasmBytes(assets));
+    const bytes = await sqliteWasmBytes(assets);
     return { [SQLITE_WASM_MODULE_NAME]: { wasm: bytes } };
 }
 async function treeSitterModuleEntries(env) {
@@ -95,11 +87,11 @@ async function treeSitterModuleEntries(env) {
         throw new Error('opencode tree-sitter wasm sidecars are not staged — rerun ' +
             'scripts/bundle-opencode.mjs with the opencode dist present');
     }
-    const entries = await memoized(treeSitterWasmBytes, (p) => { treeSitterWasmBytes = p; }, async () => Promise.all([wasms.core, wasms.bash, wasms.powershell].map(async (file) => [file, await fetchOpencodeWasmBytes(env, file)])));
+    const entries = await treeSitterWasmBytes({ env, files: [wasms.core, wasms.bash, wasms.powershell] });
     return Object.fromEntries(entries.map(([file, bytes]) => [file, { wasm: bytes }]));
 }
 async function openTuiModuleEntry(env) {
-    const bytes = await memoized(openTuiWasmBytes, (p) => { openTuiWasmBytes = p; }, () => fetchOpenTUIWasmBytes(env));
+    const bytes = await openTuiWasmBytes(env);
     return { [OPENTUI_WASM_MODULE_NAME]: { wasm: bytes } };
 }
 async function yogaModuleEntry(env) {
@@ -108,7 +100,7 @@ async function yogaModuleEntry(env) {
         throw new Error('opencode yoga-layout wasm is not staged — rerun scripts/bundle-opencode.mjs ' +
             'with an opencode dist that extracted yoga.wasm (build-node.ts)');
     }
-    const bytes = await memoized(yogaWasmBytes, (p) => { yogaWasmBytes = p; }, () => fetchOpencodeWasmBytes(env, yoga));
+    const bytes = await yogaWasmBytes({ env, file: yoga });
     return { [YOGA_WASM_MODULE_NAME]: { wasm: bytes } };
 }
 async function tuiWorkerModuleEntries(env) {

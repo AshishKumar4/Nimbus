@@ -185,35 +185,26 @@ const CONSOLE_NAMES: readonly string[] = [
 ];
 
 /**
- * One bridge module: re-export a VFS-backed shim builtin (parked on
- * globalThis by the runner at module-init, BEFORE any bridge evaluates) as a
- * proper ESM module with default + named exports.
+ * One bridge module: re-export the object `source` evaluates to as a proper
+ * ESM module with default + named exports. A builtin's source is the
+ * VFS-backed shim builtin the runner parks on globalThis at module-init,
+ * BEFORE any bridge evaluates; `process`'s is the global itself, which is
+ * the shim process by the time the opencode bundle links.
  */
-function generateBuiltinBridge(bridge: BuiltinBridge): string {
-  const names = bridge.names
-    .map((n) => `export const ${n} = __m[${JSON.stringify(n)}];`)
-    .join('\n');
-  return `
-const __m = (globalThis.${BUILTINS_GLOBAL} && globalThis.${BUILTINS_GLOBAL}[${JSON.stringify(bridge.builtin)}]) || {};
-export default __m;
-${names}
-`;
-}
-
-/**
- * A bridge module that re-exports a GLOBAL (process) as a proper ESM module.
- * Evaluates when the opencode bundle links — after the runner's boot block,
- * so `globalThis.process` is already the shim process.
- */
-function generateGlobalBridge(globalName: string, names: readonly string[]): string {
+function bridgeModule(source: string, names: readonly string[]): string {
   const exports = names
     .map((n) => `export const ${n} = __m[${JSON.stringify(n)}];`)
     .join('\n');
   return `
-const __m = globalThis.${globalName};
+const __m = ${source};
 export default __m;
 ${exports}
 `;
+}
+
+/** The source of a shim builtin parked on globalThis, `{}` when it is absent. */
+function parkedBuiltin(builtin: string): string {
+  return `(globalThis.${BUILTINS_GLOBAL} && globalThis.${BUILTINS_GLOBAL}[${JSON.stringify(builtin)}]) || {}`;
 }
 
 /**
@@ -224,12 +215,10 @@ ${exports}
 export function opencodeBuiltinBridgeModules(mode: OpencodeRunnerMode): Record<string, { js: string }> {
   const out: Record<string, { js: string }> = {};
   for (const bridge of BUILTIN_BRIDGES) {
-    out[bridge.specifier] = { js: generateBuiltinBridge(bridge) };
+    out[bridge.specifier] = { js: bridgeModule(parkedBuiltin(bridge.builtin), bridge.names) };
   }
-  if (mode !== 'oneshot') out['node:process'] = { js: generateGlobalBridge('process', PROCESS_NAMES) };
-  if (mode === 'attached') {
-    out['node:console'] = { js: generateBuiltinBridge({ specifier: 'node:console', builtin: 'console', names: CONSOLE_NAMES }) };
-  }
+  if (mode !== 'oneshot') out['node:process'] = { js: bridgeModule('globalThis.process', PROCESS_NAMES) };
+  if (mode === 'attached') out['node:console'] = { js: bridgeModule(parkedBuiltin('console'), CONSOLE_NAMES) };
   return out;
 }
 

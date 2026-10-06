@@ -16,6 +16,10 @@
 // each against a literal.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 
 import {
   buildPipInvocation,
@@ -70,6 +74,34 @@ for (const dir of distInfoDirs) {
     `${dir} is written by pip but does not select the sci variant`);
 }
 console.log('  ok  the record pip writes is the record the selector reads');
+
+// The generated installer itself, run by a real CPython against a scratch
+// site-packages: it writes the record once and leaves an existing one alone.
+{
+  const site = mkdtempSync(join(tmpdir(), 'variant-site-'));
+  try {
+    const code = install.code
+      .replace(/^target_site_packages = .*$/m, `target_site_packages = ${JSON.stringify(site)}`)
+      .replace(/^pyodide_manifest_path = .*$/m, `pyodide_manifest_path = ${JSON.stringify(join(site, '.nimbus-pyodide-packages.json'))}`);
+    const run = () => {
+      const result = spawnSync('python3', ['-c', code], { encoding: 'utf8' });
+      assert.equal(result.status, 0, `generated install failed: ${result.stderr}`);
+      assert.match(result.stdout, /^Successfully installed numpy/m);
+    };
+    run();
+    const distInfo = join(site, distInfoDirs[0]);
+    assert.equal(readFileSync(join(distInfo, 'METADATA'), 'utf8'), 'Metadata-Version: 2.1\nName: numpy\nVersion: 2.4.3\n');
+    assert.equal(readFileSync(join(distInfo, 'WHEEL'), 'utf8'),
+      'Wheel-Version: 1.0\nGenerator: Nimbus pip\nRoot-Is-Purelib: true\nTag: py3-none-any\n');
+    assert.equal(readFileSync(join(distInfo, 'RECORD'), 'utf8'), '');
+    writeFileSync(join(distInfo, 'METADATA'), 'kept');
+    run();
+    assert.equal(readFileSync(join(distInfo, 'METADATA'), 'utf8'), 'kept', 'an installed variant record is not rewritten');
+  } finally {
+    rmSync(site, { recursive: true, force: true });
+  }
+}
+console.log('  ok  the generated installer writes the variant record once');
 
 // ── markupsafe selects it too, and its pin matches the compiled half ────────
 // Its Python half installs from source and its _speedups is compiled into the

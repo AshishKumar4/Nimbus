@@ -66,6 +66,11 @@ export declare const NIMBUS_AI_CREDENTIAL_HEADERS: readonly ["authorization", "x
  */
 export declare function mintSessionAiToken(): string;
 /**
+ * The credential a request presents, with any `Bearer ` prefix removed.
+ * Self-contained: the node fetch shim carries its source.
+ */
+export declare function presentedCredential(value: string): string;
+/**
  * True when `headers` present `token`. False for an empty token, so a session
  * that never seeded one mediates nothing.
  */

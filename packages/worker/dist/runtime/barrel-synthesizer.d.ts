@@ -69,30 +69,64 @@ export type NamedImportMap = Map<string, Set<string>>;
  * `{ Home, AlertTriangle }`.
  */
 export declare function namedImportSignature(pkgName: string, names: ReadonlySet<string> | null | undefined): string | null;
+/** What the browser source of a project imports from packages, read in one walk. */
+export interface ProjectImports {
+    /**
+     * Every bare specifier imported, statically or dynamically: each subpath as
+     * written (query stripped) and its package root, so each can be
+     * pre-bundled with its own externals. A `.jsx`/`.tsx` file in a project
+     * that imports `react` adds `react/jsx-runtime` and
+     * `react/jsx-dev-runtime`, which esbuild's automatic JSX transform imports
+     * though the source never names them.
+     */
+    bareSpecifiers: string[];
+    /** Per package, the names imported from its root: `import { A, B as C } from 'pkg'`. */
+    namedImports: NamedImportMap;
+}
 /**
- * Static-import scanner. Walks the user's source tree under projDir
- * and extracts named-import sets. Returns a map keyed by package name.
+ * Scan the project's browser source under `projDir`: `.ts/.tsx/.jsx/.js/.mjs`
+ * files up to six directories deep, skipping node_modules, .git, dist and
+ * build, and the build tools' own config files at the project root
+ * (vite.config.ts and friends), whose imports run server-side.
  *
- * Recognized syntax:
+ * Named imports recognized:
  *   import { A } from 'pkg'
  *   import { A, B } from 'pkg'
  *   import { A as X, B as Y } from 'pkg'
  *   import D, { A } from 'pkg'   // only A is captured (D is default)
+ *   import { type A } from 'pkg' // captured; the bundle strips it
  *
- * NOT recognized (intentional — these can't be statically tree-shaken):
- *   import * as M from 'pkg'             — caller must bundle whole pkg
- *   import('pkg')                         — dynamic; runtime resolution
- *   const { A } = require('pkg')          — CJS at runtime
+ * NOT recognized as named (intentional — these can't be statically
+ * tree-shaken): `import * as M from 'pkg'`, `import('pkg')`,
+ * `const { A } = require('pkg')`, and named imports from a subpath, which
+ * esbuild resolves file by file.
  *
- * The scanner is intentionally conservative-text-based. We do NOT
- * parse a full AST — that would require shipping acorn or esbuild's
- * parser at runtime in the supervisor. The regex covers the >99% case
- * for browser source code in TS/JS/JSX/TSX.
- *
- * Costs: O(files × content_length). For Mossaic (199 source files,
- * ~150 KiB total source) this is single-digit ms.
+ * Each file is read through core's import lexer (comment-strip.ts
+ * maskSourceForImports: comments, strings, regexes and JSX told apart, as
+ * TypeScript's parser reads them; import-scan-differential.mjs holds it to
+ * the parser over this repository's sources), then the grammars above. A
+ * file the lexer cannot decide is read through `parse` instead
+ * (parsedImportView). The lexer reads ~77 MB/s where Oxc's transform,
+ * in-process, reads ~26 MB/s and costs a transform-facet hop besides, so
+ * the parser is the exception, not the path.
  */
-export declare function scanNamedImports(vfs: CredentialedVfs, projDir: string): NamedImportMap;
+export declare function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser): Promise<ProjectImports>;
+/**
+ * A source file as plain JavaScript (its TypeScript and JSX lowered, module
+ * syntax kept), for a file the import lexer cannot decide: the session's
+ * transform (EsbuildService.transform, through its transform host), as
+ * transformParser builds it.
+ */
+export type SourceParser = (path: string, source: string) => Promise<string>;
+/** A SourceParser over a transform service: `.tsx`/`.ts` as TypeScript, anything else as JavaScript with JSX. */
+export declare function transformParser(service: {
+    transform(code: string, options: {
+        loader: 'ts' | 'tsx' | 'jsx';
+        format: 'esm';
+    }): Promise<{
+        code: string;
+    }>;
+}): SourceParser;
 /**
  * Synthesize a tiny ESM entry that re-exports the given names from
  * the package. We do NOT emit `export { X } from 'pkg'` — that resolves
@@ -170,10 +204,10 @@ export declare function buildSyntheticEntry(vfs: CredentialedVfs, nmDir: string,
  * which empirically covers icon-libraries with up to ~400 imported
  * icons (each pulling 1-2 transitive shared utility files).
  */
-export declare function buildScopedSliceForSynthetic(vfs: CredentialedVfs, nmDir: string, pkgName: string, referencedFiles: string[], transitiveCap?: number): {
+export declare function buildScopedSliceForSynthetic(vfs: CredentialedVfs, nmDir: string, pkgName: string, referencedFiles: string[], parse: SourceParser, transitiveCap?: number): Promise<{
     entries: SliceEntry[];
     totalBytes: number;
-};
+}>;
 /**
  * VFS path where synthetic entries are written. Lives under the
  * project's node_modules in a Nimbus-private namespace so package

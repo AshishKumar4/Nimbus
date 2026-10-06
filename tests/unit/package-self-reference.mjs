@@ -40,6 +40,7 @@ import { prefetchForRequire } from '../../packages/core/src/runtime/require-reso
 import { packageSelfReferenceSubpath } from '../../packages/core/src/_shared/exports-resolver.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SHIMS_STORE_PRELUDE } from './lib/shims-namespace.mjs';
+import { FakeVfs } from './lib/fake-require-fs.mjs';
 
 // ── Fixture tree (VFS paths, no leading slash) ────────────────────────────
 
@@ -175,23 +176,6 @@ try {
   }
 
   // ── Nimbus runtime: the shim's require/import chain ──────────────────
-  class FakeVfs {
-    constructor(files) {
-      this.files = new Map(Object.entries(files));
-      this.dirs = new Set();
-      for (const path of this.files.keys()) {
-        const parts = path.split('/');
-        for (let i = 1; i < parts.length; i++) this.dirs.add(parts.slice(0, i).join('/'));
-      }
-    }
-    exists(path) { return this.files.has(path) || this.dirs.has(path); }
-    isDirectory(path) { return this.dirs.has(path); }
-    readFileString(path) {
-      if (!this.files.has(path)) throw new Error(`missing file: ${path}`);
-      return this.files.get(path);
-    }
-  }
-
   const factory = new Function(
     '__vfsBundle', '__vfsWrites', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + SHIMS_STORE_PRELUDE + generateShimsCode()

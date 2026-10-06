@@ -50,10 +50,6 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('require-resolution/multiline-import');
 
-async function writeFile(path, contents) {
-  await t.run(`cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${contents}\nNIMBUS_HEREDOC_EOF`, 10_000);
-}
-
 function tail(s, n = 400) { return s.slice(Math.max(0, s.length - n)); }
 
 // ── Check 1: synthetic line-comment-after-brace ─────────────────────
@@ -63,16 +59,16 @@ function tail(s, n = 400) { return s.slice(Math.max(0, s.length - n)); }
 // never enters the bundle. Consumer require throws.
 
 await t.run('rm -rf /home/user/ml-line && mkdir -p /home/user/ml-line/node_modules/mypkg/lib', 5_000);
-await writeFile('/home/user/ml-line/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/ml-line/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
-await writeFile('/home/user/ml-line/node_modules/mypkg/lib/x.js',
+await t.writeFile('/home/user/ml-line/node_modules/mypkg/lib/x.js',
   "module.exports = { hello: 'LINE_COMMENT_OK' };");
-await writeFile('/home/user/ml-line/node_modules/mypkg/lib/index.js', `import { // ESLint disable comment after brace
+await t.writeFile('/home/user/ml-line/node_modules/mypkg/lib/index.js', `import { // ESLint disable comment after brace
   hello,
 } from './x.js';
 module.exports = { hello };`);
-await writeFile('/home/user/ml-line/consume.js',
+await t.writeFile('/home/user/ml-line/consume.js',
   "const m = require('mypkg'); console.log('RESULT_LINE=' + m.hello);");
 
 {
@@ -85,16 +81,16 @@ await writeFile('/home/user/ml-line/consume.js',
 // ── Check 2: synthetic block-comment-after-brace ────────────────────
 
 await t.run('rm -rf /home/user/ml-block && mkdir -p /home/user/ml-block/node_modules/mypkg/lib', 5_000);
-await writeFile('/home/user/ml-block/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/ml-block/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
-await writeFile('/home/user/ml-block/node_modules/mypkg/lib/y.js',
+await t.writeFile('/home/user/ml-block/node_modules/mypkg/lib/y.js',
   "module.exports = { hello: 'BLOCK_COMMENT_OK' };");
-await writeFile('/home/user/ml-block/node_modules/mypkg/lib/index.js', `import { /* block c */
+await t.writeFile('/home/user/ml-block/node_modules/mypkg/lib/index.js', `import { /* block c */
   hello,
 } from './y.js';
 module.exports = { hello };`);
-await writeFile('/home/user/ml-block/consume.js',
+await t.writeFile('/home/user/ml-block/consume.js',
   "const m = require('mypkg'); console.log('RESULT_BLOCK=' + m.hello);");
 
 {
@@ -111,16 +107,16 @@ await writeFile('/home/user/ml-block/consume.js',
 // class. Test the export-from variant.
 
 await t.run('rm -rf /home/user/ml-exp && mkdir -p /home/user/ml-exp/node_modules/mypkg/lib', 5_000);
-await writeFile('/home/user/ml-exp/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/ml-exp/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
-await writeFile('/home/user/ml-exp/node_modules/mypkg/lib/z.js',
+await t.writeFile('/home/user/ml-exp/node_modules/mypkg/lib/z.js',
   "module.exports = { greet: () => 'EXPORT_FROM_OK' };");
-await writeFile('/home/user/ml-exp/node_modules/mypkg/lib/index.js', `export {
+await t.writeFile('/home/user/ml-exp/node_modules/mypkg/lib/index.js', `export {
   greet,
   // TODO: remove this re-export in the next major
 } from './z.js';`);
-await writeFile('/home/user/ml-exp/consume.js',
+await t.writeFile('/home/user/ml-exp/consume.js',
   "const m = require('mypkg'); console.log('RESULT_EXPORT=' + m.greet());");
 
 {
@@ -136,16 +132,16 @@ await writeFile('/home/user/ml-exp/consume.js',
 // Stripping comments must not break it.
 
 await t.run('rm -rf /home/user/ml-clean && mkdir -p /home/user/ml-clean/node_modules/mypkg/lib', 5_000);
-await writeFile('/home/user/ml-clean/node_modules/mypkg/package.json', JSON.stringify({
+await t.writeFile('/home/user/ml-clean/node_modules/mypkg/package.json', JSON.stringify({
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
-await writeFile('/home/user/ml-clean/node_modules/mypkg/lib/c.js',
+await t.writeFile('/home/user/ml-clean/node_modules/mypkg/lib/c.js',
   "module.exports = { hello: 'CLEAN_MULTI_OK' };");
-await writeFile('/home/user/ml-clean/node_modules/mypkg/lib/index.js', `import {
+await t.writeFile('/home/user/ml-clean/node_modules/mypkg/lib/index.js', `import {
   hello,
 } from './c.js';
 module.exports = { hello };`);
-await writeFile('/home/user/ml-clean/consume.js',
+await t.writeFile('/home/user/ml-clean/consume.js',
   "const m = require('mypkg'); console.log('RESULT_CLEAN=' + m.hello);");
 
 {
@@ -166,7 +162,7 @@ await writeFile('/home/user/ml-clean/consume.js',
 //   - ./vendor/ansi-styles/index.js (this wave's bug case 2)
 
 await t.run('rm -rf /home/user/wild-chalk && mkdir -p /home/user/wild-chalk', 5_000);
-await writeFile('/home/user/wild-chalk/package.json', JSON.stringify({
+await t.writeFile('/home/user/wild-chalk/package.json', JSON.stringify({
   name: 'wild-chalk', type: 'module',
 }));
 await t.run('cd /home/user/wild-chalk', 5_000);
@@ -175,7 +171,7 @@ await t.run('cd /home/user/wild-chalk', 5_000);
   const installed = /added \d+ packages|up to date/i.test(r.output) && !/npm ERR!/i.test(r.output);
   A.check('Check 5a: npm install chalk@5 succeeded', installed, tail(r.output));
 }
-await writeFile('/home/user/wild-chalk/use.js',
+await t.writeFile('/home/user/wild-chalk/use.js',
   "const chalk = require('chalk'); console.log('CHALK_OK=' + (typeof chalk.green === 'function' || typeof chalk.default?.green === 'function'));");
 
 {

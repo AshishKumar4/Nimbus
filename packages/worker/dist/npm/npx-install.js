@@ -29,6 +29,7 @@
  */
 import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
 import { bundleProfileForNpmBin } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import { packageRangeSeparator } from './package-spec.js';
 /** Path where npx caches packages it installs. Matches the vendored substrate
  * cache layout so tooling that introspects npx state sees the expected path. */
 export const NPX_CACHE_DIR = '/tmp/.npx-cache';
@@ -46,39 +47,30 @@ const NPX_CACHE_NM = `${NPX_CACHE_DIR}/node_modules`;
 function _vfsKey(p) {
     return p.replace(/^\/+/, '');
 }
-function readNpxInvocationHead(rawArgs) {
-    let i = 0;
-    while (i < rawArgs.length) {
+export function parseNpxInvocation(rawArgs) {
+    const invocation = { self: 'missing', command: null, args: [], packageOverride: null, yes: false };
+    for (let i = 0; i < rawArgs.length; i++) {
         const arg = rawArgs[i];
         if (arg === '-y' || arg === '--yes') {
-            i++;
-            continue;
+            invocation.yes = true;
         }
-        if (arg === '--package') {
-            i += 2;
-            continue;
+        else if (arg === '--package') {
+            invocation.packageOverride = rawArgs[++i] ?? null;
         }
-        if (arg.startsWith('--package=')) {
-            i++;
-            continue;
+        else if (arg.startsWith('--package=')) {
+            invocation.packageOverride = arg.slice('--package='.length);
         }
-        if (arg === '--version' || arg === '-v')
-            return { self: 'version', command: null, commandIndex: -1 };
-        if (arg === '--help' || arg === '-h')
-            return { self: 'help', command: null, commandIndex: -1 };
-        return { self: null, command: arg, commandIndex: i };
+        else if (arg === '--version' || arg === '-v') {
+            return { ...invocation, self: 'version' };
+        }
+        else if (arg === '--help' || arg === '-h') {
+            return { ...invocation, self: 'help' };
+        }
+        else {
+            return { ...invocation, self: null, command: arg, args: rawArgs.slice(i + 1) };
+        }
     }
-    return { self: 'missing', command: null, commandIndex: -1 };
-}
-export function describeNpxSelfInvocation(rawArgs) {
-    return readNpxInvocationHead(rawArgs).self;
-}
-export function getNpxCommandWord(rawArgs) {
-    return readNpxInvocationHead(rawArgs).command;
-}
-export function getNpxCommandArgs(rawArgs) {
-    const head = readNpxInvocationHead(rawArgs);
-    return head.commandIndex >= 0 ? rawArgs.slice(head.commandIndex + 1) : [];
+    return invocation;
 }
 export function formatNpxHelp() {
     return [
@@ -93,47 +85,19 @@ export function formatNpxHelp() {
     ].join('\n');
 }
 function parseNpxArgs(rawArgs) {
-    let pkgOverride = null;
-    const consumed = [];
-    let yes = false;
-    let i = 0;
-    while (i < rawArgs.length) {
-        const a = rawArgs[i];
-        if (a === '-y' || a === '--yes') {
-            yes = true;
-            i++;
-            continue;
-        }
-        if (a === '--package' && i + 1 < rawArgs.length) {
-            pkgOverride = rawArgs[i + 1];
-            i += 2;
-            continue;
-        }
-        if (a.startsWith('--package=')) {
-            pkgOverride = a.slice('--package='.length);
-            i++;
-            continue;
-        }
-        if (a === '--version' || a === '-v' || a === '--help' || a === '-h') {
-            // Pass-through to surface npx's own version/help. Caller (init.ts
-            // npx handler) is the one that prints these; this module returns
-            // an error so the caller can branch.
-            return { error: a };
-        }
-        break;
+    const invocation = parseNpxInvocation(rawArgs);
+    // npx's own --help/--version are the caller's to print (hosted/commands.ts).
+    if (invocation.self !== null || invocation.command === null) {
+        return { error: invocation.self === 'missing' || invocation.self === null ? 'missing-cmd' : `--${invocation.self}` };
     }
-    const first = rawArgs[i];
-    if (!first)
-        return { error: 'missing-cmd' };
-    consumed.push(...rawArgs.slice(i + 1));
-    // If --package=<pkg>, the positional arg is the BIN name; the package
-    // installs `<pkg>` and we look for the binary `<first>`.
-    // Else, the positional arg is `<name>[@<version>]`; binary is the
-    // last path segment of `<name>`.
+    // With --package=<pkg>, the positional arg is the BIN name and the package
+    // installs `<pkg>`. Without it, the positional arg is `<name>[@<version>]`
+    // and the binary is the last path segment of `<name>`.
+    const first = invocation.command;
     let pkgSpec;
     let binName;
-    if (pkgOverride) {
-        pkgSpec = pkgOverride;
+    if (invocation.packageOverride) {
+        pkgSpec = invocation.packageOverride;
         binName = first;
     }
     else {
@@ -142,20 +106,12 @@ function parseNpxArgs(rawArgs) {
         binName = namePart.split('/').pop() || namePart;
     }
     const { name: pkgName } = splitSpec(pkgSpec);
-    return { pkgSpec, pkgName, binName, binArgs: consumed, yes };
+    return { pkgSpec, pkgName, binName, binArgs: invocation.args, yes: invocation.yes };
 }
 /** Split `name@version` (or scoped `@scope/name@version`) into parts. */
 function splitSpec(spec) {
-    if (spec.startsWith('@')) {
-        const at = spec.indexOf('@', 1);
-        if (at === -1)
-            return { name: spec, version: null };
-        return { name: spec.slice(0, at), version: spec.slice(at + 1) };
-    }
-    const at = spec.indexOf('@');
-    if (at === -1)
-        return { name: spec, version: null };
-    return { name: spec.slice(0, at), version: spec.slice(at + 1) };
+    const at = packageRangeSeparator(spec);
+    return at === -1 ? { name: spec, version: null } : { name: spec.slice(0, at), version: spec.slice(at + 1) };
 }
 /**
  * Find the absolute path of a binary inside a package's directory.
@@ -259,7 +215,7 @@ async function ensureNpxCachePackageJson(vfs, pkgName, pkgRange) {
  * spawning) makes it testable.
  *
  * Note: deliberately does not format `--version`/`--help` for npx itself.
- * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
+ * Callers can use parseNpxInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
 export async function resolveNpxBinary(installer, 

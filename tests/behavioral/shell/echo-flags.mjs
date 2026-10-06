@@ -9,7 +9,7 @@
 // POSIX flags -n (suppress newline), -e (interpret backslash escapes),
 // -E (default; no interpretation), combined flags (-ne, -en, etc.).
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, termBody } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/echo-flags');
@@ -23,21 +23,9 @@ await t.waitForPrompt(60_000);
 // Helper: extract the output line(s) BETWEEN the echoed command and
 // the next shell prompt. The command echo always starts with `$ `;
 // the prompt always ends with `$ `. Strip both.
-function commandResult(raw) {
-  const ansi = stripAnsi(raw);
-  // Find the last `\r\n` BEFORE the trailing prompt and return the
-  // segment between the command-echo line and that point.
-  const lines = ansi.split(/\r?\n/);
-  // Drop the last line if it's the prompt.
-  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
-  // Drop the first line (command echo with `$ cmd`).
-  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
-  return lines.join('\n');
-}
-
 // Probe 1: `echo hi` baseline.
 const r1 = await t.run('echo hi', 5_000);
-const c1 = commandResult(r1.output);
+const c1 = termBody(r1.output);
 a.check(
   'echo hi → "hi" on its own line',
   c1 === 'hi',
@@ -59,7 +47,7 @@ a.check(
 
 // Probe 3: `echo -e "a\\tb"` — output is `a<TAB>b\n`.
 const r3 = await t.run('echo -e "a\\tb"', 5_000);
-const c3 = commandResult(r3.output);
+const c3 = termBody(r3.output);
 a.check(
   'echo -e interprets \\t as a real tab character',
   c3 === 'a\tb',
