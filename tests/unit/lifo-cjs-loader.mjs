@@ -5,7 +5,8 @@
 // code, ran no cycle (nothing was cached before it ran), and cached a
 // relative require by the name as written, so `./util` from two
 // directories was one module. node's `createRequire(filename)` resolves
-// from that file's directory. A lifo command's entry runs from the source the runtime already read,
+// from that file's directory, a file: URL's path decoded (`a%20b` is `a b`).
+// A lifo command's entry runs from the source the runtime already read,
 // as it did before the loaders were one: a dependency-free entry on a
 // mount that has no synchronous reads (an async-only backend) runs, where
 // a second, synchronous read of it is EAGAIN.
@@ -57,6 +58,13 @@ try {
   const node = await ws.exec(`cd /home/user && node -e "console.log(require('module').createRequire('/home/user/pkg/bin/x.js')('./util'), require('/home/user/pkg/lib/req.js'))"`);
   assert.equal(node.stderr, '');
   assert.equal(node.stdout, 'bin-util lib-util\n');
+
+  await ws.fs.mkdir('/home/user/a b', { recursive: true });
+  await ws.fs.writeFile('/home/user/a b/util.js', "module.exports = 'spaced-util';");
+  await ws.fs.writeFile('/home/user/a b/main.js', "const { createRequire } = require('module'); console.log(createRequire(new URL('file://' + __filename))('./util'), createRequire('file:///home/user/a%20b/main.js')('./util'));");
+  const spaced = await ws.exec(`cd /home/user && node 'a b/main.js'`);
+  assert.equal(spaced.stderr, '');
+  assert.equal(spaced.stdout, 'spaced-util spaced-util\n', 'a file: URL names its decoded path');
 
   // An entry on a mount with no synchronous reads: it runs from the source the runtime read.
   const backing = new MemoryVFS({ uid: 0, gid: 0 });

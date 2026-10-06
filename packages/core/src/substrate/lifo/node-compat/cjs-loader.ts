@@ -19,6 +19,7 @@ import { createModuleMap, ProcessExitError, type NodeContext } from './index.js'
 import { createModuleShim, type RequireFunction } from './module.js';
 import { Buffer } from './buffer.js';
 import { transformEsmToCjs } from './esm-to-cjs.js';
+import { fileURLToPath } from './url.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
 
 export type PackageType = 'module' | 'commonjs' | null;
@@ -132,9 +133,9 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 	const builtins = new Map<string, unknown>();
 	const cache: Record<string, unknown> = Object.create(null);
 
-	// createRequire(filename) is require as a module at `filename` has it.
+	// createRequire(filename) is require as a module at `filename` has it: a path, or a file: URL's decoded path.
 	moduleMap.module = () => createModuleShim(moduleMap, (filename) => {
-		const path = String(filename).replace(/^file:\/\//, '');
+		const path = filename instanceof URL || String(filename).startsWith('file:') ? fileURLToPath(filename) : String(filename);
 		return requireFrom(dirname(path));
 	});
 
