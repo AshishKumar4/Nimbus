@@ -3,7 +3,7 @@ import { isShellIdentifier } from './names.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import type { ProcessView } from '../../../runtime/process-files.js';
 import { expandGlob, globMatch } from '../utils/glob.js';
-import { readBracedExpansion } from './lexer.js';
+import { readBalancedCommand, readBracedExpansion } from './lexer.js';
 import type { ShellOptions } from './interpreter.js';
 
 export interface ExpandContext {
@@ -143,11 +143,11 @@ function findBraceSpan(text: string): { start: number; end: number } | null {
       continue;
     }
     if (text[i] === '$' && text[i + 1] === '{') {
-      i = skipBalanced(text, i + 1, '{', '}');
+      i = readBalancedCommand(text, i + 2, '{', '}').end;
       continue;
     }
     if (text[i] === '$' && text[i + 1] === '(') {
-      i = skipBalanced(text, i + 1, '(', ')');
+      i = readBalancedCommand(text, i + 2, '(', ')').end;
       continue;
     }
     if (text[i] === '{') {
@@ -172,11 +172,11 @@ function findBraceEndWithTopLevelComma(text: string, start: number): number | nu
       continue;
     }
     if (text[i] === '$' && text[i + 1] === '{') {
-      i = skipBalanced(text, i + 1, '{', '}') - 1;
+      i = readBalancedCommand(text, i + 2, '{', '}').end - 1;
       continue;
     }
     if (text[i] === '$' && text[i + 1] === '(') {
-      i = skipBalanced(text, i + 1, '(', ')') - 1;
+      i = readBalancedCommand(text, i + 2, '(', ')').end - 1;
       continue;
     }
     if (text[i] === '{') {
@@ -209,11 +209,11 @@ function splitBraceChoices(inner: string): string[] {
       continue;
     }
     if (inner[i] === '$' && inner[i + 1] === '{') {
-      i = skipBalanced(inner, i + 1, '{', '}') - 1;
+      i = readBalancedCommand(inner, i + 2, '{', '}').end - 1;
       continue;
     }
     if (inner[i] === '$' && inner[i + 1] === '(') {
-      i = skipBalanced(inner, i + 1, '(', ')') - 1;
+      i = readBalancedCommand(inner, i + 2, '(', ')').end - 1;
       continue;
     }
     if (inner[i] === '{') {
@@ -234,25 +234,6 @@ function splitBraceChoices(inner: string): string[] {
   return choices;
 }
 
-function skipBalanced(text: string, openPos: number, open: string, close: string): number {
-  let depth = 1;
-  let i = openPos + 1;
-
-  while (i < text.length && depth > 0) {
-    if (text[i] === '\\') {
-      i += 2;
-      continue;
-    }
-    if (text[i] === open) {
-      depth++;
-    } else if (text[i] === close) {
-      depth--;
-    }
-    i++;
-  }
-
-  return i;
-}
 // ─── Word assembly ───
 
 async function expandParts(parts: WordPart[], ctx: ExpandContext): Promise<Piece[]> {
@@ -350,7 +331,7 @@ async function expandDollar(
   // by the lexer. This branch is retained only for caller-constructed WordPart
   // values that did not pass through the lexer.
   if (next === '(') {
-    const end = skipBalanced(text, pos + 1, '(', ')');
+    const end = readBalancedCommand(text, pos + 2, '(', ')').end;
     const output = await expandCommandSubstitution(text.slice(pos + 2, end - 1), ctx);
     return { pieces: [valuePiece(output, quoted)], end };
   }
@@ -810,7 +791,7 @@ function parameterWordParts(word: string): WordPart[] {
       continue;
     }
     if (ch === '$' && word[i + 1] === '(') {
-      const end = skipBalanced(word, i + 1, '(', ')');
+      const end = readBalancedCommand(word, i + 2, '(', ')').end;
       text += word.slice(i, end);
       i = end;
       continue;
