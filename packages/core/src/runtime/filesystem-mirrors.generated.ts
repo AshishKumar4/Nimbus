@@ -55,6 +55,8 @@ export const FILESYSTEM_RPC_METHODS = {
   writeStream: 'writeBatchStream',
   acquireExclusiveMutation: 'fsAcquireExclusiveMutation',
   releaseExclusiveMutation: 'fsReleaseExclusiveMutation',
+  awaitRecall: 'fsAwaitRecall',
+  recalled: 'fsRecalled',
 } as const satisfies { readonly [K in keyof typeof FILESYSTEM_METHODS]: typeof FILESYSTEM_METHODS[K]['rpc'] };
 
 /** The RPC names a facet calls through `answer`: every method but a streamed one. */
@@ -103,6 +105,8 @@ export const FILESYSTEM_ANSWERED_RPC_METHODS = [
   'writeBatch',
   'fsAcquireExclusiveMutation',
   'fsReleaseExclusiveMutation',
+  'fsAwaitRecall',
+  'fsRecalled',
 ] as const satisfies readonly (keyof FilesystemSupervisor)[];
 
 /** Local facets retain the process-bound bridge and its synchronous capability. */
@@ -154,6 +158,8 @@ export function vfsSupervisor(fs: RuntimeFsBridge): FilesystemSupervisor {
     writeBatchStream: (...args) => fs.writeStream(...args),
     fsAcquireExclusiveMutation: (...args) => fs.acquireExclusiveMutation(...args),
     fsReleaseExclusiveMutation: (...args) => fs.releaseExclusiveMutation(...args),
+    fsAwaitRecall: (...args) => fs.awaitRecall(...args),
+    fsRecalled: (...args) => fs.recalled(...args),
   };
 }
 
@@ -213,5 +219,7 @@ export function bridgeOverSupervisor(
     writeStream: (...args) => answerStream(supervisor.writeBatchStream(...args)),
     acquireExclusiveMutation: (...args) => answerValue(supervisor.fsAcquireExclusiveMutation(...args)),
     releaseExclusiveMutation: (...args) => answerValue(supervisor.fsReleaseExclusiveMutation(...args)),
+    awaitRecall: (...args) => answerValue(supervisor.fsAwaitRecall(...args)),
+    recalled: (...args) => answerValue(supervisor.fsRecalled(...args)),
   };
 }

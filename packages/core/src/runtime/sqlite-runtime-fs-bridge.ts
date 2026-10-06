@@ -1,4 +1,4 @@
-import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
+import { ROOT_DIRECTORY_MODE, ROOT_INODE, type CredentialedVfs, type DelegationTerms, type SqliteVFS, type VfsNameResolution, type VfsOpenDescription } from '../vfs/sqlite-vfs.js';
 import { runtimeStatOf, type CompositeVFS } from '../vfs/composite.js';
 import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, type VfsStat } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
@@ -21,6 +21,8 @@ import type {
   VfsListPage,
   VfsMutationReceipt,
   RuntimeMutationOwner,
+  ExclusiveMutationGrant,
+  ExclusiveMutationRequest,
 } from './os-contracts.js';
 
 interface OpenDescription {
@@ -383,7 +385,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
   /** This caller's view, presenting `owner`'s exclusive mutation lease when it names one. */
   private owned(owner: string | undefined): CredentialedVfs {
-    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor });
+    return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
   }
 
   appendOnce(
@@ -525,7 +527,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       }
 
       const stat = this.vfs.stat(p);
-      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal);
+      const node = this.rawVfs.openDescription(p, this.vfs.cred, { ...normalizedFlags, sync: flags.sync === true }, this.vfs.principal, this.vfs.holds);
       const handle: RuntimeFileHandle = {
         id: this.scope.nextId++,
         path: p,
@@ -806,16 +808,31 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return this.vfs.writeStream(stream, options);
   }
 
-  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }) {
+  /**
+   * A lease, or with `terms` a delegation (made by the process that holds
+   * it: ProcessFiles' bridge, which answers its recalls). This bridge serves
+   * no process, so it delegates nothing itself (`delegate`: EINVAL).
+   */
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest, terms?: DelegationTerms): ExclusiveMutationGrant {
     return called({ syscall: 'acquireExclusiveMutation', path }, () => {
+      if (options?.delegate !== undefined && terms === undefined) throw fsError('EINVAL', 'acquireExclusiveMutation', path);
       const p = this.sqlitePath(path, false, 'acquireExclusiveMutation');
       const parent = parentVfsPath(p);
       if (parent && !(options?.includeMissingAncestors && !this.vfs.exists(parent))) this.vfs.access(parent, 0o3);
-      return this.vfs.acquireExclusiveMutation(p, options);
+      return this.vfs.acquireExclusiveMutation(p, { includeMissingAncestors: options?.includeMissingAncestors, delegation: terms });
     });
   }
 
   releaseExclusiveMutation(owner: string): void { this.rawVfs.releaseExclusiveMutation(owner); }
+
+  /** No process, so no delegation: whatever `owner` names is not one of this bridge's (ESTALE). */
+  awaitRecall(owner: string): never {
+    throw fsError('ESTALE', 'awaitRecall', owner, undefined, { detail: 'no delegation of this process under that lease' });
+  }
+
+  recalled(owner: string): never {
+    throw fsError('ESTALE', 'recalled', owner, undefined, { detail: 'no delegation of this process under that lease' });
+  }
 
   private pathArgument(path: RuntimeFsPath): string {
     if (typeof path === 'string') return path;

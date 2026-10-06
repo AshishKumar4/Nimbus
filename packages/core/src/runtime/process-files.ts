@@ -18,6 +18,7 @@
 import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
 import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
+import { Delegations, type DelegationRevoked } from './delegations.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
 import { CompositeVFS, isAsyncMountRefusal, normalizePath, runtimeStatOf, type MountWalk } from '../vfs/composite.js';
@@ -40,6 +41,9 @@ import {
   type RuntimeFileHandle,
   type RuntimeFsBridge,
   type RuntimeFsPath,
+  type ExclusiveMutationGrant,
+  type ExclusiveMutationRequest,
+  type RecallKind,
   type RuntimeOpenFlags,
   type RuntimeReadOptions,
   type RuntimeSynchronousFs,
@@ -111,6 +115,8 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     private readonly pid: number | undefined,
     /** N17: the lazy-import hydration job, when there is one. */
     private readonly hydrator: Hydrator | null,
+    /** The session's delegations: a process's own are granted, recalled and released here. */
+    private readonly delegations: Delegations,
   ) {}
 
   gateLaunch(named: readonly string[]): Promise<void> {
@@ -237,10 +243,28 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
     return this.target.writeStream(stream, { ...options, signal: linked.signal }).finally(linked.dispose);
   }
-  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
-    this.guard(); return this.target.acquireExclusiveMutation(path, options);
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): ExclusiveMutationGrant {
+    this.guard();
+    const delegate = options?.delegate;
+    if (delegate === undefined || this.pid === undefined) return this.target.acquireExclusiveMutation(path, options);
+    // A delegation is the process's: it ends with the process's scope.
+    return this.delegations.grant(this.pid, delegate.reads, (terms) => this.target.acquireExclusiveMutation(path, options, terms), this.scope);
   }
-  releaseExclusiveMutation(owner: string): void { this.guard(); return this.target.releaseExclusiveMutation(owner); }
+  releaseExclusiveMutation(owner: string): void {
+    this.guard();
+    if (this.pid !== undefined && this.delegations.holds(this.pid, owner)) this.delegations.release(this.pid, owner);
+    else this.target.releaseExclusiveMutation(owner);
+  }
+  awaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> {
+    this.guard();
+    if (this.pid === undefined) return this.target.awaitRecall(owner);
+    return this.delegations.awaitRecall(this.pid, owner, waitMs);
+  }
+  recalled(owner: string, kind: RecallKind): void {
+    this.guard();
+    if (this.pid === undefined) this.target.recalled(owner);
+    else this.delegations.recalled(this.pid, owner, kind);
+  }
 }
 
 /** The session's namespace and the processes bound to it. */
@@ -260,12 +284,28 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
   /** Inode numbers for mounted entries whose backend keeps none: stable per path for the session. */
   /** N17: the lazy-import hydration job, when the embedder supplies a fetch. */
   readonly hydrator: Hydrator | null;
+  /** Subtrees delegated to processes (Delegations): each recalled through its holder's bridge. */
+  readonly delegations: Delegations;
 
   /** Bytes one buffered mount handle holds before EFBIG (VFS-PF-001). */
   private readonly bufferedWriteBytes: number | undefined;
 
-  constructor(readonly engine: SqliteVFS, options: { hydration?: HydratorOptions; bufferedWriteBytes?: number } = {}) {
+  constructor(
+    readonly engine: SqliteVFS,
+    options: {
+      hydration?: HydratorOptions;
+      bufferedWriteBytes?: number;
+      /** Told of a delegation's holder revoked for not answering a recall in time: the host stops it. */
+      delegationRevoked?: (event: DelegationRevoked) => void;
+      delegationRecallTimeoutMs?: number;
+    } = {},
+  ) {
     this.hydrator = options.hydration === undefined ? null : new Hydrator(engine, options.hydration);
+    this.delegations = new Delegations({
+      release: (owner) => engine.releaseExclusiveMutation(owner),
+      revoked: options.delegationRevoked,
+      recallTimeoutMs: options.delegationRecallTimeoutMs,
+    });
     this.bufferedWriteBytes = options.bufferedWriteBytes;
     this.namespace = engine.namespace;
     this.vfs = new CompositeVFS(sqliteFiles(engine, CRED_KERNEL));
@@ -501,8 +541,10 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     // resolving when the process is released or killed, or its lease is
     // disposed, does not land.
     const view = this.vfs.as(cred).scoped(() => assertScopeLive(scope, signal));
-    const target = new SqliteRuntimeFsBridge(this.engine.as(cred), this.engine, scope, view, this.bufferedWriteBytes);
-    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator);
+    // A process's calls are made by the delegations it holds: its own lookups recall none of them.
+    const holds = pid === undefined ? undefined : () => this.delegations.heldBy(pid);
+    const target = new SqliteRuntimeFsBridge(this.engine.as(cred, { holds }), this.engine, scope, view, this.bufferedWriteBytes);
+    const guarded = new GuardedProcessBridge(target, scope, signal, pid, this.hydrator, this.delegations);
     // Every other method forwards to the guarded bridge.
     let awaited = this.awaitedDescriptors.get(scope);
     if (!awaited) { awaited = { opened: new Map(), next: AWAITED_DESCRIPTOR_BASE }; this.awaitedDescriptors.set(scope, awaited); }
@@ -600,10 +642,12 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     stream: ReadableStream<Uint8Array>,
     options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number },
   ): Promise<WriteBatchStreamResult> { return this.bridge.writeStream(stream, options); }
-  acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
+  acquireExclusiveMutation(path: RuntimeFsPath, options?: ExclusiveMutationRequest): ExclusiveMutationGrant {
     return this.bridge.acquireExclusiveMutation(path, options);
   }
   releaseExclusiveMutation(owner: string): void { return this.bridge.releaseExclusiveMutation(owner); }
+  awaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> { return this.bridge.awaitRecall(owner, waitMs); }
+  recalled(owner: string, kind: RecallKind): void { return this.bridge.recalled(owner, kind); }
 
   /** As the guarded bridge's guard: a released or killed process's scope answers EBADF. */
   private live(): void {

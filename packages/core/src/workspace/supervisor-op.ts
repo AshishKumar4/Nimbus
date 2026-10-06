@@ -408,8 +408,14 @@ const NATIVE_OPS = {
   fsRemove: (e, t) => fsFor(e, t).remove(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), force: z.boolean().optional() }).optional().parse(e.args?.[1])),
   fsCopyFile: (e, t) => fsFor(e, t).copyFile(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1])),
   fsCopyTree: (e, t) => fsFor(e, t).copyTree(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), z.object({ preserve: z.boolean().optional() }).optional().parse(e.args?.[2])),
-  fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({ includeMissingAncestors: z.boolean().optional() }).optional().parse(e.args?.[1])),
+  fsAcquireExclusiveMutation: (e, t) => fsFor(e, t).acquireExclusiveMutation(FsPath.parse(e.args?.[0]), z.object({
+    includeMissingAncestors: z.boolean().optional(),
+    delegate: z.object({ reads: z.boolean() }).optional(),
+  }).optional().parse(e.args?.[1])),
   fsReleaseExclusiveMutation: (e, t) => fsFor(e, t).releaseExclusiveMutation(stringArg(e, 0)),
+  // A delegation's holder: its next recall (a long poll), and its answer to one.
+  fsAwaitRecall: (e, t) => fsFor(e, t).awaitRecall(stringArg(e, 0), z.number().int().nonnegative().optional().parse(e.args?.[1])),
+  fsRecalled: (e, t) => fsFor(e, t).recalled(stringArg(e, 0), z.enum(['share', 'revoke']).parse(e.args?.[1])),
   readFileBytes: (e, t) => readWholeFile(e, t, FsPath.parse(e.args?.[0])),
   stat: (e, t) => fsFor(e, t).stat(FsPath.parse(e.args?.[0]), z.object({ followSymlinks: z.boolean().optional() }).optional().parse(e.args?.[1])),
   lstat: (e, t) => fsFor(e, t).stat(stringArg(e, 0), { followSymlinks: false }),

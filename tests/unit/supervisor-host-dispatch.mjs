@@ -87,7 +87,7 @@ const childPid = 42, fd = 1, sinceSeq = 3, signal = 'SIGTERM', kind = 'pure-buil
 // that act on a descriptor, a thunk the loop resolves once the op that mints
 // the handle has run. `fsOpen` is that op, and the canonical list orders it
 // ahead of every op that needs one.
-let fileHandle = null, mutationLease = null;
+let fileHandle = null, mutationLease = null, delegation = null;
 const openHandle = (subject, openFlags) => ops.dispatch({ op: 'fsOpen', args: [subject, openFlags], pid });
 const INPUTS = {
   readFile: [path],
@@ -137,6 +137,9 @@ const INPUTS = {
   fsCopyTree: ['/home/user/tree-src', '/home/user/tree-copy'],
   fsAcquireExclusiveMutation: [mutationPath],
   fsReleaseExclusiveMutation: () => [mutationLease.owner],
+  // A delegation the release's check grants: nothing recalls it, so the poll answers null at once.
+  fsAwaitRecall: () => [delegation.owner, 0],
+  fsRecalled: () => [delegation.owner, 'share'],
   fsRead: () => [fileHandle.id, offset, length],
   fsWrite: () => [fileHandle.id, offset, bytes],
   // Closes a handle of its own: the shared one stays open for the descriptor
@@ -421,6 +424,15 @@ const nativeAssert = {
     // The lease is gone iff the same root can be leased again.
     const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
     assert.notEqual(relet.owner, mutationLease.owner, 'the released root leases again');
+    await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
+    delegation = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath, { delegate: { reads: true } }], pid });
+    assert.equal(typeof delegation.recallTimeoutMs, 'number', 'a delegation says how long a recall waits');
+  },
+  fsAwaitRecall: (r) => assert.equal(r, null, 'fsAwaitRecall answers null when nothing is recalled'),
+  fsRecalled: async (r) => {
+    assert.equal(r, undefined, 'fsRecalled');
+    await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [delegation.owner], pid });
+    const relet = await ops.dispatch({ op: 'fsAcquireExclusiveMutation', args: [mutationPath], pid });
     await ops.dispatch({ op: 'fsReleaseExclusiveMutation', args: [relet.owner], pid });
   },
   writeBatchStream: (r) => assert.ok(r && typeof r === 'object', 'writeBatchStream returned its result'),

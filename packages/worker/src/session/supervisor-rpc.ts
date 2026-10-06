@@ -66,7 +66,7 @@ import { rpcPayloadStart, rpcPayloadEnd } from '@nimbus-sh/platform/diag-counter
 import type { PackumentReadThrough } from '../npm/r2-cache.js';
 import { R2CacheClient, MAX_R2_TARBALL_BYTES } from '../npm/r2-cache.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle } from '@nimbus-sh/core/runtime/os-contracts.js';
+import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationReceipt, RuntimeFsBridge, RuntimeFsPath, RuntimeOpenFlags, RuntimeFileHandle, RecallKind } from '@nimbus-sh/core/runtime/os-contracts.js';
 import {
   isSupervisorAnsweredMethod,
   supervisorAnswer,
@@ -611,6 +611,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
   }
   async fsReleaseExclusiveMutation(...args: Parameters<RuntimeFsBridge['releaseExclusiveMutation']>): Promise<Awaited<ReturnType<RuntimeFsBridge['releaseExclusiveMutation']>>> {
     return this._call(this._fsMutation('fsReleaseExclusiveMutation', args));
+  }
+  /** A delegation's holder waits here for its next recall (a long poll, sent once: a lost one is asked again). */
+  async fsAwaitRecall(owner: string, waitMs?: number): Promise<RecallKind | null> {
+    return this._call(this._fsOp('fsAwaitRecall', waitMs === undefined ? [owner] : [owner, waitMs]));
+  }
+  /** The holder has answered recall `kind`: delivered once. */
+  async fsRecalled(owner: string, kind: RecallKind): Promise<void> {
+    return this._call(this._fsMutation('fsRecalled', [owner, kind]));
   }
 
   async fsClose(handleId: number): Promise<void> {
