@@ -11,7 +11,7 @@
 //
 // Usage: bun scripts/check-published.mjs   (exit 1 names each package to bump)
 import { execFileSync } from 'node:child_process';
-import { mkdir, mkdtemp, readFile, rm } from 'node:fs/promises';
+import { mkdir, mkdtemp, readdir, readFile, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';

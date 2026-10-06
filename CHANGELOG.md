@@ -28,6 +28,76 @@ too. platform, config and cli move because their sources changed since
 their last published versions; core, fabric and worker require platform
 ^0.7.2, and cli config ^0.2.4.
 
+- Added `CompositeVFS.route(path, { follow })` (Kinu's ask 23). It answers
+  `{ point, source, path, absentReason? }`: the mount an operation on that path
+  lands on, the backend view that operation uses, and the path inside the
+  mount. It is the same lookup every operation makes, root links and lexical
+  `..` included. An absent mount answers `source: null` with its reason.
+- Added `observeWrites(observer, { wants? })` on `CompositeVFS` and `SqliteVFS`
+  (Kinu's ask 24). It reports each landed mutation once, as
+  `{ type, path, oldPath?, before, after, principal }`, in commit order:
+  writes, creates, deletes, renames (both paths), truncates, copies and
+  attribute changes. `before` and `after` can be read until the observer's
+  callback settles. A refused or rolled-back write reports nothing. Writes on
+  backends that do not report their own take one turn per namespace while
+  someone observes; unobserved writes cost the same as before.
+- Fixed: the bundled React Fast Refresh plugin shipped react-refresh with
+  `$$typeof` rewritten to `$typeof`, so a `memo` or `forwardRef` component
+  lost its state on every edit. The plugin is now built from the lockfile's
+  pinned inputs inside `bun run bundle`, and checked like every other asset.
+- Fixed: `http://[::1]:<port>` from a node program now reaches the session's
+  own server, as `localhost` does.
+- Fixed: `os.constants` and `node:constants` now come from one errno, signal and
+  priority table, so the two agree with each other and with Node.
+- Fixed: ES module lowering treated a string export named `"*"` as the whole
+  namespace, and a pre-bundle could miss an import that followed JSX or a TSX
+  generic function type. Modules are now read by one JSX/TS-aware import lexer;
+  a file it cannot decide is parsed in full.
+- Fixed: two Durable Objects building at once could fail each other's builds
+  with "Cannot perform I/O on behalf of a different Durable Object", or leave
+  one waiting forever (Kinu's ask 22). Every object's build facet runs in one
+  isolate on one rolldown binding, and the binding ran its work where it was
+  last woken: its pump, started by one object's build, dispatched another
+  object's plugin hooks in the first object's context. The binding still
+  serves every object from one isolate (an isolate per object measured about
+  46 MiB more per workspace that builds), but each facet call now runs in a
+  lane of its own (napi-wasm-loader's `callLanes`): a threadsafe function
+  calls JavaScript in the lane of the call that created it, its release and
+  emnapi's other work (finalizers, a closing function's finalize) run in a
+  call's lane, and the pump runs in the lanes of the calls in flight and where
+  it last ran, so no hook runs in, or waits on, another object's context. A
+  lane ends with its call. An async work completes in the lane of the call
+  that created it and computes in whichever call gets to it first; works past
+  emnapi's pool of four wait in the loader, since emnapi lets a queued work in
+  from inside another work's step, where it then completed. The esbuild facet
+  needed nothing: each call runs its own esbuild, whose timers and callbacks
+  are that call's.
+- Fixed: a build whose Durable Object is reset under it no longer stays on the
+  shared binding for good. Workerd drops a reset object's continuations,
+  `finally` included, so its call never settles; each such build kept its
+  rolldown task, its share of the binding's memory and a call in the facet's
+  in-flight set until the isolate went (fifty resets of one object in workerd:
+  the binding grew from 6.3 to 34.3 MiB, with 50 calls in flight). The facet
+  now runs its calls through an instance of its Durable Object
+  (`callLanes().instance(id)`), of which there is one at a time, so the next
+  instance's first call takes over the lanes the last one left: the binding
+  refuses what it awaited there (the rejection handler it gave each promise's
+  `then` or `catch`), the task ends and its memory is reused. Fifty resets now
+  leave no lane or call behind, and the binding stays at 6.4 MiB. An object
+  that never builds again keeps its lanes until the isolate goes, as before.
+- Fixed: in workerd, emnapi stopped running finalizers once a garbage
+  collection first reached one. Workerd runs FinalizationRegistry callbacks in
+  its global scope, where setting a timer throws ("Disallowed operation called
+  within global scope", logged once per run), and emnapi had marked its
+  finalizer drain scheduled before the timer threw, so it scheduled none
+  again. The drain now runs in a call's lane, or the next call's.
+- Fixed a lost pump wake-up: a napi callback that woke a task while a JSPI
+  pump turn's result was still queued asked for no further turn, so the task
+  waited for some other event.
+- The staged napi-wasm loader is rebuilt through its recipe: it carries the
+  lanes, and the WASI filesystem codec as it stands in core now (the staged
+  one predated core's later filesystem changes).
+
 ### Git at scale
 
 - `git clone` no longer holds a pack in memory, and every clone checks

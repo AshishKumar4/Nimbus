@@ -1,4 +1,4 @@
-// @tier slow — drives a local workerd and streams 48 MiB through each stdin route
+// @tier quiet-cpu — compares 48 MiB stdin route timings under a local workerd
 // @serial
 import assert from 'node:assert/strict';
 const repo=process.env.NIMBUS_BYTE_BASELINE_REPO??new URL('../..',import.meta.url).pathname;
