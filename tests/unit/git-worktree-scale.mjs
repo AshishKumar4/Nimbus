@@ -9,6 +9,8 @@
 // then measured) on every 4096th filesystem call and at its end: the peak at
 // LARGE files may exceed SMALL's by little more than the index's growth.
 // Clean, `status` reads no file; after edits, only the same-size ones.
+// Then every file changes, and status, diff, add -A and commit run over
+// all of them: each change may cost ~1 KiB of heap, nothing more.
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
@@ -229,7 +231,25 @@ async function run(count) {
   realGit(disk, 'reset', '-q', '--hard', 'main');
   await git('reset', '-q', '--hard', 'main');
   await both('status', '--porcelain');
-  return { count, indexBytes, costs };
+
+  // Every file changed: half grow (the size says so), half keep their size (each is hashed).
+  const everyFile = costs.length;
+  await Bun.sleep(1100);
+  for (const file of realGit(disk, 'ls-files', '-z').split('\0').filter(Boolean)) {
+    if (file === '.gitignore' || lstatSync(join(disk, file)).isSymbolicLink()) continue;
+    const text = readFileSync(join(disk, file), 'latin1');
+    edit(file, text.length % 2 ? `${text}grown\n` : text.replace(/^./, (c) => (c === 'X' ? 'Y' : 'X')));
+  }
+  await both('status', '--porcelain');
+  await both('diff', '--stat');
+  realGit(disk, 'add', '-A');
+  await git('add', '-A');
+  await both('diff', '--cached', '--name-status');
+  realGit(disk, 'commit', '-q', '-m', 'everything');
+  await git('commit', '-q', '-m', 'everything');
+  await both('rev-parse', 'HEAD');
+  await both('status', '--porcelain');
+  return { count, indexBytes, costs, everyFile };
 }
 
 const small = await run(SMALL);
@@ -242,10 +262,14 @@ for (const { count, indexBytes, costs } of [small, large]) {
 }
 // The heap may grow with the index (held as its bytes, and written as a copy) and little else: not
 // with the directories (a cache tree of objects held 14 MiB more at 15,000 directories than at 1,500).
+// With every file changed, each change may hold a little more: its line, its pair, its new entry.
 const allowance = (2 * (large.indexBytes - small.indexBytes)) / MB + 4;
+const perChange = Number(process.env.NIMBUS_GIT_SCALE_PER_CHANGE) || 1024;
+const changeAllowance = allowance + ((LARGE - SMALL) * perChange) / MB;
 for (const [i, { command, peakMB }] of large.costs.entries()) {
   const growth = peakMB - small.costs[i].peakMB;
-  assert.ok(growth <= allowance,
-    `git ${command}: its peak heap grew ${growth.toFixed(1)} MiB from ${SMALL} to ${LARGE} files (allowed ${allowance.toFixed(1)})`);
+  const allowed = i >= large.everyFile ? changeAllowance : allowance;
+  assert.ok(growth <= allowed,
+    `git ${command}${i >= large.everyFile ? ' (every file changed)' : ''}: its peak heap grew ${growth.toFixed(1)} MiB from ${SMALL} to ${LARGE} files (allowed ${allowed.toFixed(1)})`);
 }
-console.log(`git-worktree-scale: ${large.costs.length} commands at ${SMALL} and ${LARGE} files agree with real git; peak heap growth within ${allowance.toFixed(1)} MiB`);
+console.log(`git-worktree-scale: ${large.costs.length} commands at ${SMALL} and ${LARGE} files agree with real git; peak heap growth within ${allowance.toFixed(1)} MiB, ${changeAllowance.toFixed(1)} MiB with every file changed`);

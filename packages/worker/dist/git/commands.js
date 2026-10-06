@@ -2298,6 +2298,48 @@ async function statusCommand(ctx, git, vfs, fs, args) {
     await writeBinary(ctx.stdout, out);
     return 0;
 }
+/**
+ * `git merge <theirs>` into the current branch (or HEAD when detached): the
+ * merged tree from cf-git, then the worktree and index moved to it by the
+ * one checkout policy, the branch last, so a merge git refuses ("would be
+ * overwritten by merge") changes nothing. `git pull` merges through here.
+ */
+async function mergeCommand(ctx, git, fs, vfs, dir, theirs, quiet, partial) {
+    const ours = await git.currentBranch({ fs, gitdir: `${dir}/.git`, fullname: true }) ?? 'HEAD';
+    const repo = await discoverRepo(vfs, dir);
+    if (!repo?.worktree) {
+        await ctx.stderr.write(NOT_A_WORK_TREE);
+        return 128;
+    }
+    if ((await worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree).readIndex()).unmergedPaths().length) {
+        await ctx.stderr.write(unmergedRefusal('Merging'));
+        return 128;
+    }
+    const idents = await commitIdents(ctx, git, fs, dir);
+    if ('error' in idents) {
+        await ctx.stderr.write(idents.error);
+        return 128;
+    }
+    if (await partial(repo.gitdir)) {
+        const theirsOid = await git.resolveRef({ fs, gitdir: repo.gitdir, ref: theirs });
+        const oursOid = await git.resolveRef({ fs, gitdir: repo.gitdir, ref: ours });
+        const bases = await git.findMergeBase({ fs, dir, oids: [oursOid, theirsOid] });
+        await prefetchCommits(git, fs, repo.gitdir, [theirsOid, ...bases], partial);
+    }
+    const merged = await git.merge({ fs, dir, ours, theirs, ...idents, noUpdateBranch: true });
+    if (!merged.alreadyMerged) {
+        try {
+            await moveWorktree(ctx, git, vfs, fs, repo, merged.oid, { operation: 'merge' });
+        }
+        catch (e) {
+            return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
+        }
+        await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
+    }
+    if (!quiet)
+        await ctx.stdout.write(`Merged ${theirs}\n`);
+    return 0;
+}
 /** die_resolve_conflict: what git says when unmerged entries stop a commit or a merge. */
 function unmergedRefusal(action) {
     return `error: ${action} is not possible because you have unmerged files.\n`
@@ -2633,13 +2675,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                             exclusiveDestination: true,
                             exclusiveMutationRoot: mutationLease.root,
                             mutationOwner: mutationLease.owner,
-                            // Verification/tuning knob: force a small per-chunk entry bound
-                            // so ordinary repos exercise the multi-invocation chunked
-                            // checkout path. Unset in production → the 10k default applies.
-                            checkoutChunkMaxEntries: ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES
-                                ? Number(ctx.env.NIMBUS_GIT_CHECKOUT_CHUNK_ENTRIES) || undefined
-                                : undefined,
-                            // The same, for the fast clone's blob batches.
+                            // Verification/tuning knobs: smaller pieces make ordinary repos
+                            // exercise many batches, history pieces and continuations.
                             blobsPerBatch: Number(ctx.env.NIMBUS_GIT_BLOBS_PER_BATCH) || undefined,
                             batchConcurrency: Number(ctx.env.NIMBUS_GIT_BATCH_CONCURRENCY) || undefined,
                             historyBlobsPerBatch: Number(ctx.env.NIMBUS_GIT_HISTORY_BLOBS_PER_BATCH) || undefined,
@@ -2890,6 +2927,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 }
             }
             case 'pull': {
+                // git pull is a fetch of the branch, then a merge of it: the merge through the session's one
+                // checkout policy, as `git merge` runs it.
                 const target = await onEngine(dir);
                 if (target === null)
                     return 128;
@@ -2907,28 +2946,27 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                 }
                 if (!quiet)
                     ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
+                const started = Date.now();
                 const result = await execGitNetwork(doCtx, doEnv, {
-                    op: 'pull',
+                    op: 'fetch',
                     pid: ctx.pid,
                     dir: target,
                     remote,
                     ref: branch,
                     quiet,
-                    ...pullIdents,
                     auth: {
                         username: ctx.env.GIT_USERNAME || '',
                         password: ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || '',
                     },
                 });
-                if (result.success) {
-                    if (!quiet)
-                        ctx.stdout.write(`\n[git] pull complete (${result.filesWritten} files in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
-                    return 0;
-                }
-                else {
+                if (!result.success) {
                     ctx.stderr.write(`\n[git] pull failed: ${result.error}\n`);
                     return 1;
                 }
+                const merged = await mergeCommand(ctx, git, fs, repoVfs, dir, `${remote}/${branch}`, true, partial);
+                if (merged === 0 && !quiet)
+                    ctx.stdout.write(`\n[git] pull complete (${((Date.now() - started) / 1000).toFixed(1)}s)\n`);
+                return merged;
             }
             case 'push': {
                 const target = await onEngine(dir);
@@ -2971,47 +3009,8 @@ export async function runGitCommand(ctx, vfs, doCtx, doEnv) {
                     ctx.stderr.write('usage: git merge <branch>\n');
                     return 1;
                 }
-                // Into the current branch, or HEAD when detached. The branch moves only once the worktree
-                // and index have: a checkout git refuses ("would be overwritten by merge") changes nothing.
-                const ours = await git.currentBranch({ fs, dir, fullname: true }) ?? 'HEAD';
-                const mergeRepo = await discoverRepo(repoVfs, dir);
-                if (mergeRepo?.worktree && (await worktreeRepo(ctx, git, repoVfs, fs, mergeRepo.gitdir, mergeRepo.worktree).readIndex()).unmergedPaths().length) {
-                    await ctx.stderr.write(unmergedRefusal('Merging'));
-                    return 128;
-                }
-                const mergeIdents = await commitIdents(ctx, git, fs, dir);
-                if ('error' in mergeIdents) {
-                    await ctx.stderr.write(mergeIdents.error);
-                    return 128;
-                }
-                if (await partial(`${dir}/.git`)) {
-                    const theirsOid = await git.resolveRef({ fs, dir, ref: theirs });
-                    const oursOid = await git.resolveRef({ fs, dir, ref: ours });
-                    const bases = await git.findMergeBase({ fs, dir, oids: [oursOid, theirsOid] });
-                    await prefetchCommits(git, fs, `${dir}/.git`, [theirsOid, ...bases], partial);
-                }
-                const merged = await git.merge({
-                    fs, dir, ours, theirs,
-                    ...mergeIdents,
-                    noUpdateBranch: true,
-                });
-                if (!merged.alreadyMerged) {
-                    try {
-                        const repo = await discoverRepo(repoVfs, dir);
-                        if (!repo?.worktree) {
-                            await ctx.stderr.write(NOT_A_WORK_TREE);
-                            return 128;
-                        }
-                        await moveWorktree(ctx, git, repoVfs, fs, repo, merged.oid, { operation: 'merge' });
-                    }
-                    catch (e) {
-                        return await refusal(ctx, e, merged.fastForward ? undefined : 'ort');
-                    }
-                    await git.writeRef({ fs, dir, ref: ours, value: merged.oid, force: true });
-                }
-                if (!subArgs.includes('-q') && !subArgs.includes('--quiet'))
-                    ctx.stdout.write(`Merged ${theirs}\n`);
-                return 0;
+                const quiet = subArgs.includes('-q') || subArgs.includes('--quiet');
+                return await mergeCommand(ctx, git, fs, repoVfs, dir, theirs, quiet, partial);
             }
             case 'reset':
                 return await resetCommand(ctx, git, repoVfs, fs, subArgs, (gitdir, commits) => prefetchCommits(git, fs, gitdir, commits, partial));

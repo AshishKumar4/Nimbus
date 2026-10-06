@@ -626,18 +626,24 @@ try {
   await realGitAsync(diskRoot, ['clone', '-q', `http://127.0.0.1:${server.port}/types.git`, pulled.disk]);
   mirror(pulled.disk, pulled.virtual);
   await sameWorktree('a clone at the links', pulled);
-  /** Both gits pull `rev` of the served repository; both succeed or both refuse, and the repositories agree. */
+  /**
+   * Both gits pull `rev` of the served repository; both succeed or both refuse, and the repositories
+   * agree. Nimbus's pull is what its `git pull` runs: the facet's fetch of the branch, then the
+   * session's merge of it, through the one checkout policy.
+   */
   const pullBoth = async (label, rev) => {
     sh(servedTypes, ['update-ref', 'refs/heads/main', commitOf(rev)]);
     const child = Bun.spawn(['git', 'pull', '-q', 'origin', 'main'], { cwd: pulled.disk, env: GIT_ENV, stdout: 'pipe', stderr: 'pipe' });
     const [gitStderr, gitCode] = await Promise.all([new Response(child.stderr).text(), child.exited]);
     const response = await facet.default.fetch(new Request('http://git/op', {
       method: 'POST',
-      body: JSON.stringify({ op: 'pull', dir: pulled.virtual, remote: 'origin', ref: 'main', author: { name: 'a', email: 'a@example.com' } }),
+      body: JSON.stringify({ op: 'fetch', dir: pulled.virtual, remote: 'origin', ref: 'main' }),
     }), facetEnv);
-    const pull = await response.json();
-    assert.equal(pull.success, gitCode === 0, `${label}: git exits ${gitCode} (${gitStderr}); nimbus: ${pull.error}`);
-    if (gitCode !== 0) assert.equal(`${pull.error}\n`, gitStderr, `${label}: the refusal`);
+    const fetched = await response.json();
+    assert.ok(fetched.success, `${label}: the fetch: ${fetched.error}`);
+    const merged = await nimbusGit(pulled.virtual, ['merge', '-q', 'origin/main']);
+    assert.equal(merged.code === 0, gitCode === 0, `${label}: git exits ${gitCode} (${gitStderr}); nimbus: ${merged.stderr}`);
+    if (gitCode !== 0) assert.equal(merged.stderr, gitStderr, `${label}: the refusal`);
     assert.equal(realGit(pulled.disk, ['rev-parse', 'HEAD']).stdout.toString(), realGit(copyOf(pulled), ['rev-parse', 'HEAD']).stdout.toString(), `${label}: HEAD`);
     await sameWorktree(label, pulled);
   };

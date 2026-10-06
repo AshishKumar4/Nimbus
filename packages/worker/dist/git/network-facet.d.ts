@@ -24,7 +24,7 @@
  * See docs/analysis in git-network-facet plan — the canonical write-up lives
  * in the PR that introduced this file.
  */
-export type GitNetworkOp = 'clone' | 'fetch' | 'pull' | 'push' | 'fetch-objects';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
 /**
  * The clone's job marker, in its git directory from prepare until the clone
  * is whole: the proof an abort needs that the destination is the clone's,
@@ -73,12 +73,6 @@ export interface GitNetworkOpts {
     exclusiveMutationRoot?: string;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
     mutationOwner?: string;
-    /** Clone-only bounded checkout entries per fresh facet invocation. */
-    checkoutChunkMaxEntries?: number;
-    /** Clone-only decoded blob bytes per fresh facet invocation. */
-    checkoutChunkMaxDecodedBytes?: number;
-    /** Clone-only coarse wall guard per checkout chunk; not a CPU limit. */
-    checkoutChunkMaxWallMs?: number;
     /** fetch: `depth` counts from the current shallow boundary (git fetch --deepen). */
     relative?: boolean;
     /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
@@ -123,7 +117,7 @@ export interface GitMetadataOverlayStats {
     maxEntries: number;
     maxAccountedBytes: number;
 }
-export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish' | 'clone-checkout' | 'clone-abort';
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish' | 'clone-abort';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
     invocationId: string;
@@ -141,8 +135,6 @@ export interface GitNetworkPhaseDiagnostic {
     };
     w7Waves: number;
     supervisorRpc: GitSupervisorRpcCounters;
-    /** Whether clone-checkout started without module-local job state. */
-    cold?: boolean;
     /** The invocation's wave writer: what it published and how long it waited. */
     waves?: GitWaveDiagnostic;
 }
@@ -158,7 +150,7 @@ export interface GitWaveDiagnostic {
     maxWavePaths: number;
     maxWaveBytes: number;
 }
-export type GitNetworkErrorCode = 'GitCloneBudgetExceeded' | 'FreshCheckoutDirectoryLimitError';
+export type GitNetworkErrorCode = 'GitCloneBudgetExceeded';
 export interface GitNetworkResult {
     success: boolean;
     error?: string;
@@ -177,9 +169,9 @@ export interface GitNetworkResult {
 }
 export interface GitCloneBudgetDiagnostic {
     phase: GitCloneInvocationPhase;
-    chunksCompleted: number;
-    processedEntries: number;
-    decodedBytes: number;
+    /** Checkout batches finished, and the files they wrote. */
+    batchesCompleted: number;
+    filesWritten: number;
     elapsedMs: number;
     limitMs: number;
 }

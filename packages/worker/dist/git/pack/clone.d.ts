@@ -18,7 +18,7 @@
 import { type EntryStat } from '../worktree/dircache.js';
 import { oidFromHex } from './format.js';
 import { PackStreamProcessor, type PackProcessResult, type WorkTally } from './processor.js';
-import { type GitTransportAuth } from './upload-pack.js';
+import { type Advertisement, type GitTransportAuth } from './upload-pack.js';
 /** The supervisor calls a clone makes beyond its wave writer's. */
 export interface CloneSupervisor {
     fsWriteRange(path: string, offset: number, bytes: Uint8Array): Promise<unknown>;
@@ -64,6 +64,10 @@ export interface CloneRequest {
     filter?: string;
     /** Blobs per batch; the default suits a 30 s invocation (BLOBS_PER_BATCH). */
     blobsPerBatch?: number;
+    /** `--no-shallow`: a streamed clone fetches all history in its one pack. */
+    history?: boolean;
+    /** A streamed clone's decoding budget per invocation (processor.ts WORK_BUDGET_UNITS by default). */
+    budgetUnits?: number;
 }
 export interface CloneBatchPlan {
     index: number;
@@ -73,8 +77,9 @@ export interface CloneBatchPlan {
     bytes: number;
 }
 export interface ClonePrepared {
-    commit: string;
-    tree: string;
+    /** Null for an empty remote's clone. */
+    commit: string | null;
+    tree: string | null;
     /** Branch HEAD names, or null for a detached HEAD (a tag). */
     headRef: string | null;
     capabilities: string[];
@@ -104,11 +109,18 @@ export interface CloneBatchResult {
     blobs: number;
     files: number;
     indexBytes: number;
-    pack: PackSummary;
+    /** The batch's own pack; null for a streamed clone's batch, read from the clone's pack. */
+    pack: PackSummary | null;
 }
-/** Why the fast path cannot serve this clone: the caller takes the single-stream path. */
-export interface CloneUnsupported {
-    unsupported: string;
+/** A clone whose server takes no wants by id: its one pack, stored, perhaps still to be decoded. */
+export interface CloneStreamed {
+    stream: {
+        commit: string;
+        headRef: string | null;
+        /** Decoding stopped at the budget: continue it (historyResume, kind 'snapshot'). */
+        pending: PendingPack | null;
+        pack: PackSummary | null;
+    };
 }
 export declare const STAGE_DIR = ".git/nimbus-clone";
 export declare const PACK_DIR = ".git/objects/pack";
@@ -149,8 +161,17 @@ export declare function resumePack(context: CloneContext, writer: CloneWriter, p
 /** The tree id a commit object names. */
 export declare function commitTree(commit: Uint8Array, oid: string): string;
 /**
- * The clone's metadata, its commit and trees, and its plan; or why the
- * server cannot serve the fast path.
+ * The remote's refs and capabilities, before the clone writes anything: a
+ * clone the server cannot serve is refused here. git would ignore a filter
+ * the server does not support and clone everything; and a partial clone
+ * whose server cannot send its missing objects by id is no clone.
+ */
+export declare function cloneDiscover(context: CloneContext, request: {
+    filter?: string;
+}): Promise<Advertisement>;
+/**
+ * The clone's metadata, its commit and trees, and its plan; or, from a
+ * server without filter or wants by id, its one pack (cloneStream).
  *
  * Without --filter prepare asks for blob:none and every blob comes in the
  * batches. With one, prepare asks for the user's filter: a blob:limit pack
@@ -159,7 +180,12 @@ export declare function commitTree(commit: Uint8Array, oid: string): string;
  * which one more blob:none request for the root tree brings, as git's lazy
  * fetch would. Every pack of a partial clone is a promisor pack.
  */
-export declare function cloneFast(context: CloneContext, request: CloneRequest): Promise<ClonePrepared | CloneUnsupported>;
+export declare function cloneFast(context: CloneContext, request: CloneRequest, advertisement: Advertisement): Promise<ClonePrepared | CloneStreamed>;
+/** A streamed clone's checkout plan, from its stored pack: the batches then read their blobs from it. */
+export declare function clonePlanFromStore(context: CloneContext, request: {
+    commit: string;
+    blobsPerBatch?: number;
+}): Promise<ClonePrepared>;
 export declare function concat(parts: Uint8Array[]): Uint8Array;
 /** One batch: its blobs fetched by id, written at their paths as they resolve. */
 export declare function cloneBatch(context: CloneContext, request: {
@@ -168,6 +194,8 @@ export declare function cloneBatch(context: CloneContext, request: {
     batchBytes: number;
     capabilities: readonly string[];
     partial?: boolean;
+    /** A streamed clone's batch: its blobs are in the repository's pack already. */
+    local?: boolean;
 }): Promise<CloneBatchResult>;
 /** The index, from the batches' shares; then the staging directory goes. */
 export declare function cloneFinish(context: CloneContext, request: {

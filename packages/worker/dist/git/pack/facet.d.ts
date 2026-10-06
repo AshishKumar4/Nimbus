@@ -12,7 +12,7 @@ export { encodeIdxV2, ENTRY_BYTES } from './idx.js';
 export { discover, requestPack, UploadPackError } from './upload-pack.js';
 export { CheckoutPlan, encodeBatch, decodeBatch, parseTree } from './plan.js';
 export { oidToHex, oidFromHex, PackFormatError } from './format.js';
-export { cloneFast, cloneBatch, cloneFinish, fetchObjects } from './clone.js';
+export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, fetchObjects } from './clone.js';
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
 export { facetPacks } from './facet-packs.js';
 //# sourceMappingURL=facet.d.ts.map
