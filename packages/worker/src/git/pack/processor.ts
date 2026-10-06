@@ -20,6 +20,7 @@ import { crc32, deflateSync, inflateSync } from 'node:zlib';
 
 import { ByteLru } from './byte-lru.js';
 import {
+  MAX_OBJECT_HEADER_BYTES,
   OBJ_OFS_DELTA,
   OBJ_REF_DELTA,
   PACK_HEADER_BYTES,
@@ -42,6 +43,7 @@ import {
 } from './format.js';
 import { ENTRY_BYTES, entryOffset, sortEntries, writeEntry } from './idx.js';
 import {
+  ENTRY_PROBE_BYTES,
   MissingBaseError,
   PackObjectResolver,
   runAsync,
@@ -242,6 +244,11 @@ class PackOutput {
   /** Recently sent pieces, oldest first, with their pack offsets. */
   private readonly sent: { offset: number; bytes: Uint8Array }[] = [];
   private window: { offset: number; bytes: Uint8Array } | null = null;
+  /**
+   * An entry's leading bytes, read with its header: a delta chain's walk
+   * reads each link's header alone (reader.ts objectAt), and its entry next.
+   */
+  private probe: { offset: number; bytes: Uint8Array } | null = null;
 
   constructor(
     private readonly store: PackStore,
@@ -291,12 +298,17 @@ class PackOutput {
       }
       return out;
     }
-    const window = this.window;
-    if (window !== null && offset >= window.offset && offset + length <= window.offset + window.bytes.byteLength) {
-      return window.bytes.subarray(offset - window.offset, offset - window.offset + length);
+    for (const held of [this.window, this.probe]) {
+      if (held !== null && offset >= held.offset && offset + length <= held.offset + held.bytes.byteLength) {
+        return held.bytes.subarray(offset - held.offset, offset - held.offset + length);
+      }
     }
     await this.flush();
     this.storeReads++;
+    if (length <= MAX_OBJECT_HEADER_BYTES) {
+      this.probe = { offset, bytes: await this.store.read(offset, Math.min(ENTRY_PROBE_BYTES, this.written - offset)) };
+      return this.probe.bytes.subarray(0, length);
+    }
     return await this.store.read(offset, length);
   }
 
