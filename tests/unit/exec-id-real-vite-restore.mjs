@@ -13,44 +13,20 @@
 
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const root = new URL('../../', import.meta.url).pathname;
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-exec-id-real-vite-'));
-let routes;
-let realVite;
-try {
-  const entryPath = join(outputDir, 'entry.ts');
-  await writeFile(entryPath, [
-    `export { handleFetch, restorePersistedDevServer } from '${root}packages/worker/src/session/routes.ts';`,
-    `export { startRealVite } from '${root}packages/worker/src/session/start-real-vite.ts';`,
-    '',
-  ].join('\n'));
-  const build = await Bun.build({
-    entrypoints: [entryPath],
-    outdir: join(outputDir, 'out'),
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cirrus-real-test-stubs',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'stub' }));
-        builder.onResolve({ filter: /facets\/cirrus-real\.js$/ }, () => ({ path: 'cirrus', namespace: 'stub' }));
-        builder.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => {
-          if (args.path === 'cf') {
-            return { contents: 'export class DurableObject {}; export class WorkerEntrypoint {};', loader: 'js' };
-          }
-          return {
-            loader: 'js',
-            contents: `
+const routes = await importWorkerBundle({
+  'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer'],
+  'packages/worker/src/session/start-real-vite.ts': ['startRealVite'],
+}, {
+  stubs: [{
+    filter: /facets\/cirrus-real\.js$/,
+    contents: `
               export function shouldUseRealVite() { return true; }
               export class CirrusReal {
                 constructor(opts) { this.opts = opts; this._running = false; }
@@ -61,18 +37,9 @@ try {
                 get stats() { return { snapshot: null, viteVersion: 'test' }; }
               }
             `,
-          };
-        });
-      },
-    }],
-  });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  const entry = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/entry.js')).path).href);
-  routes = entry;
-  realVite = entry.startRealVite;
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+  }],
+});
+const realVite = routes.startRealVite;
 
 const BASE_PATH = '/s/nimble-otter-4271';
 const ROOT = 'home/user/example-app';

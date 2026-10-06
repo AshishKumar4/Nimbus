@@ -265,18 +265,6 @@ export declare class NpmInstaller {
      */
     private prebundleUsedModules;
     /**
-     * Scan project source files for bare import specifiers.
-     * Returns unique bare specifiers including subpaths (e.g., both `react`
-     * AND `react/jsx-runtime` so each can be pre-bundled separately with the
-     * correct externals for shared-runtime isolation).
-     *
-     * Also injects common JSX-runtime subpaths derived from esbuild's automatic
-     * JSX transform: if `react` is imported, we also queue `react/jsx-runtime`
-     * and `react/jsx-dev-runtime` because the compiled JSX output imports from
-     * them even if the source never wrote `import ... from "react/jsx-runtime"`.
-     */
-    private scanBareImports;
-    /**
      * Resolve a package's entry point to a VFS path.
      */
     /**

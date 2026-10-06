@@ -9,7 +9,6 @@ import { readFileSync } from 'node:fs';
 import { ContentCutter, cutContent } from '../../packages/core/src/vfs/content-chunking.ts';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/fastcdc.json', import.meta.url), 'utf8'));
-assert.equal(fixture.fixture, 'fastcdc');
 
 function bytes(seed, n, runs) {
   let s = (Math.imul(seed, 2654435761) + 1) >>> 0;

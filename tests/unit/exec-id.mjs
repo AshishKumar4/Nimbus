@@ -24,64 +24,29 @@
 //       the workspace shell).
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
-const root = new URL('../../', import.meta.url).pathname;
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-exec-id-'));
-let bundle;
-try {
-  const entryPath = join(outputDir, 'entry.ts');
-  await writeFile(entryPath, [
-    `export { composeHostedRuntime } from '${root}packages/worker/src/workspace-host.ts';`,
-    `export { handleNimbusRemoteApi } from '${root}packages/worker/src/router/remote-api.ts';`,
-    `export { issueNimbusToken } from '${root}packages/worker/src/auth/token.ts';`,
-    `export { Nimbus } from '${root}packages/sdk/src/sandbox.ts';`,
-    `export { NimbusWorkspace } from '${root}packages/core/src/workspace/nimbus-workspace.ts';`,
-    `export { SessionProcessSupervisor } from '${root}packages/core/src/runtime/session-process-supervisor.ts';`,
-    `export { PortRegistry } from '${root}packages/core/src/runtime/port-registry.ts';`,
-    `export { SqliteVFS } from '${root}packages/core/src/vfs/sqlite-vfs.ts';`,
-    `export { PID_GEN_STRIDE } from '${root}packages/core/src/runtime/process-table.ts';`,
-    `export { CRED_KERNEL } from '${root}packages/core/src/runtime/os-contracts.ts';`,
-    `export { composeFabric } from '${root}packages/fabric/src/composition.ts';`,
-    '',
-  ].join('\n'));
-  const build = await Bun.build({
-    entrypoints: [entryPath],
-    outdir: join(outputDir, 'out'),
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {}; export class RpcTarget {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(build.success, true, build.logs.map(String).join('\n'));
-  bundle = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/entry.js')).path).href);
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+const bundle = await importWorkerBundle({
+  'packages/worker/src/workspace-host.ts': ['composeHostedRuntime'],
+  'packages/worker/src/router/remote-api.ts': ['handleNimbusRemoteApi'],
+  'packages/worker/src/auth/token.ts': ['issueNimbusToken'],
+  'packages/sdk/src/sandbox.ts': ['Nimbus'],
+  'packages/core/src/workspace/nimbus-workspace.ts': ['NimbusWorkspace'],
+  'packages/core/src/runtime/session-process-supervisor.ts': ['SessionProcessSupervisor'],
+  'packages/core/src/runtime/port-registry.ts': ['PortRegistry'],
+  'packages/core/src/vfs/sqlite-vfs.ts': ['SqliteVFS'],
+  'packages/core/src/runtime/process-table.ts': ['PID_GEN_STRIDE'],
+  'packages/core/src/runtime/os-contracts.ts': ['CRED_KERNEL'],
+  'packages/fabric/src/composition.ts': ['composeFabric'],
+});
 
 bundle.composeFabric({ supervisorEntrypoint: 'SupervisorRPC', hostNamespace: 'WORKSPACES', hostDispatchMethod: 'supervisorOp' });
 
-const ASSETS = {
-  async fetch(request) {
-    const path = new URL(request.url).pathname.replace(/^\//, '');
-    return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-  },
-};
+const ASSETS = stagedAssets;
 
 const world = createFacetWorld(() => ({
   async startProcess() { return { ok: true }; },

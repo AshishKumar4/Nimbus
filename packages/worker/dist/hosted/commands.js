@@ -1304,25 +1304,25 @@ export async function registerHostedCommands(self, workspace) {
     // Nimbus's NpmInstaller and execute the package bin via the Node runtime.
     registry.register('npx', async (ctx) => {
         const npxArgs = ctx.args || [];
-        const { describeNpxSelfInvocation, formatNpxHelp, getNpxCommandArgs, getNpxCommandWord, resolveNpxBinary, } = await import('../npm/npx-install.js');
-        const selfInvocation = describeNpxSelfInvocation(npxArgs);
-        if (selfInvocation === 'missing') {
+        const { formatNpxHelp, parseNpxInvocation, resolveNpxBinary } = await import('../npm/npx-install.js');
+        const invocation = parseNpxInvocation(npxArgs);
+        if (invocation.self === 'missing') {
             ctx.stderr.write('Usage: npx <command> [args...]\n');
             return 1;
         }
-        if (selfInvocation === 'version') {
+        if (invocation.self === 'version') {
             ctx.stdout.write(NPM_VERSION + '\n');
             return 0;
         }
-        if (selfInvocation === 'help') {
+        if (invocation.self === 'help') {
             ctx.stdout.write(formatNpxHelp());
             return 0;
         }
-        const cmd = getNpxCommandWord(npxArgs);
+        const cmd = invocation.command;
         // Check if it's a built-in command (vite, esbuild, etc.)
         const resolved = cmd ? await registry.resolve(cmd, resolveContext(ctx.cwd, ctx.env, ctx.vfs)) : null;
         if (resolved) {
-            return await resolved({ ...ctx, args: getNpxCommandArgs(npxArgs) });
+            return await resolved({ ...ctx, args: invocation.args });
         }
         // Nimbus-native npx install + run path. Routes package installation
         // through NpmInstaller's full-packument resolver.

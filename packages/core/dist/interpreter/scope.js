@@ -161,33 +161,57 @@ export function childNodes(node) {
 }
 /**
  * Whether evaluating `node` awaits or yields in the function it sits in
- * (await and yield are valid only where that function suspends). The
- * compiler refuses a few such places (UnsupportedSyntax); the analysis of a
- * unit, which covers every function in it, refuses them before any of the
- * unit runs, as the compiler, compiling a function on its first call, could
- * not.
+ * (await and yield are valid only where that function suspends): an await or
+ * yield, a `for await`, or one in a child, where a nested function is a
+ * boundary and a class's heritage and computed keys are not (they are
+ * evaluated where the class sits; a static block is the class's own
+ * function). A compiler passes `memo` to answer each node once.
+ *
+ * The compiler lowers a node to a generator flavor where this holds and
+ * refuses a few such places (UnsupportedSyntax); the analysis of a unit,
+ * which covers every function in it, refuses them before any of the unit
+ * runs, as the compiler, compiling a function on its first call, could not.
  */
-function suspendsHere(node) {
-    if (node.type === 'AwaitExpression' || node.type === 'YieldExpression')
-        return true;
-    if (node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression' || node.type === 'FunctionDeclaration')
-        return false;
-    if (node.type === 'ClassExpression' || node.type === 'ClassDeclaration') {
-        if (node.superClass && suspendsHere(node.superClass))
-            return true;
-        const members = node.body.body;
-        for (let i = 0; i < members.length; i++) {
-            const m = members[i];
-            if (m.type !== 'StaticBlock' && m.computed && suspendsHere(m.key))
+export function suspendsInFunction(node, memo) {
+    if (memo === undefined)
+        return suspendsWalk(node, undefined);
+    const cached = memo.get(node);
+    if (cached !== undefined)
+        return cached;
+    const result = suspendsWalk(node, memo);
+    memo.set(node, result);
+    return result;
+}
+function suspendsWalk(node, memo) {
+    switch (node.type) {
+        case 'AwaitExpression':
+        case 'YieldExpression': return true;
+        case 'ForOfStatement':
+            return node.await || suspendsInFunction(node.left, memo) || suspendsInFunction(node.right, memo)
+                || suspendsInFunction(node.body, memo);
+        case 'FunctionExpression':
+        case 'FunctionDeclaration':
+        case 'ArrowFunctionExpression': return false;
+        case 'ClassExpression':
+        case 'ClassDeclaration': {
+            if (node.superClass && suspendsInFunction(node.superClass, memo))
                 return true;
+            const members = node.body.body;
+            for (let i = 0; i < members.length; i++) {
+                const m = members[i];
+                if (m.type !== 'StaticBlock' && m.computed && suspendsInFunction(m.key, memo))
+                    return true;
+            }
+            return false;
         }
-        return false;
+        default: {
+            const children = childNodes(node);
+            for (let i = 0; i < children.length; i++)
+                if (suspendsInFunction(children[i], memo))
+                    return true;
+            return false;
+        }
     }
-    const children = childNodes(node);
-    for (let i = 0; i < children.length; i++)
-        if (suspendsHere(children[i]))
-            return true;
-    return false;
 }
 /** Each child node of `node`. */
 export function forEachChildNode(node, visit) {
@@ -1049,7 +1073,7 @@ class Analyzer {
                 this.visitExpression(node.right, scope);
                 return;
             case 'MemberExpression':
-                if (node.object.type === 'Super' && node.computed && suspendsHere(node.property)) {
+                if (node.object.type === 'Super' && node.computed && suspendsInFunction(node.property)) {
                     throw new UnsupportedSyntax('await or yield in the key of a super member');
                 }
                 if (node.object.type === 'Super')

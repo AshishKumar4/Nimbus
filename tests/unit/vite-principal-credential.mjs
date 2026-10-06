@@ -15,10 +15,6 @@
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
@@ -27,6 +23,7 @@ import { CommandRegistry } from '../../packages/core/src/substrate/lifo/commands
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { createRequire } from 'node:module';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const AGENT = { uid: 2000, gid: 2000, groups: [2000], umask: 0o022 };
 const SECRET = 'only the session user may read this';
@@ -63,69 +60,24 @@ user.writeFile('home/user/rv/secret.js', `export default ${JSON.stringify(SECRET
 user.writeFile('home/user/rv/vite.config.js', "import secret from './secret.js';\nexport default { define: { SECRET: JSON.stringify(secret) } };\n");
 
 // vite-command.ts transitively imports `cloudflare:workers`; bundled with the stub the route tests use.
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-vite-principal-'));
-let createViteCommand;
-try {
-  const bundle = await Bun.build({
-    entrypoints: ['./packages/worker/src/session/vite-command.ts'],
-    outdir: outputDir,
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cloudflare-workers-test-stub',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-        builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-          contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-          loader: 'js',
-        }));
-      },
-    }],
-  });
-  assert.equal(bundle.success, true, bundle.logs.map(String).join('\n'));
-  ({ createViteCommand } = await import(pathToFileURL(bundle.outputs.find((o) => o.path.endsWith('/vite-command.js')).path).href));
-} finally {
-  await rm(outputDir, { recursive: true, force: true });
-}
+const { createViteCommand } = await importWorkerBundle({ 'packages/worker/src/session/vite-command.ts': ['createViteCommand'] });
 
 // start-real-vite.ts with its facet stubbed: what it hands CirrusReal is what is observed.
-const realViteDir = await mkdtemp(join(tmpdir(), 'nimbus-vite-principal-real-'));
-let startRealVite;
-try {
-  const entryPath = join(realViteDir, 'entry.ts');
-  await Bun.write(entryPath, `export { startRealVite } from '${new URL('../../packages/worker/src/session/start-real-vite.ts', import.meta.url).pathname}';\n`);
-  const bundle = await Bun.build({
-    entrypoints: [entryPath],
-    outdir: join(realViteDir, 'out'),
-    target: 'bun',
-    format: 'esm',
-    plugins: [{
-      name: 'cirrus-real-test-stubs',
-      setup(builder) {
-        builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'stub' }));
-        builder.onResolve({ filter: /facets\/cirrus-real\.js$/ }, () => ({ path: 'cirrus', namespace: 'stub' }));
-        builder.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => ({
-          loader: 'js',
-          contents: args.path === 'cf'
-            ? 'export class DurableObject {}; export class WorkerEntrypoint {};'
-            : `export function shouldUseRealVite() { return true; }
-               export class CirrusReal {
-                 constructor(opts) { globalThis.__cirrusRealOpts = opts; this._running = false; }
-                 get isRunning() { return this._running; }
-                 async start() { this._running = true; }
-                 stop() { this._running = false; }
-                 async handleRequest() { return new Response('real-vite'); }
-                 get stats() { return { snapshot: null, viteVersion: 'test' }; }
-               }`,
-        }));
-      },
-    }],
-  });
-  assert.equal(bundle.success, true, bundle.logs.map(String).join('\n'));
-  ({ startRealVite } = await import(pathToFileURL(bundle.outputs.find((o) => o.path.endsWith('/entry.js')).path).href));
-} finally {
-  await rm(realViteDir, { recursive: true, force: true });
-}
+const { startRealVite } = await importWorkerBundle(
+  { 'packages/worker/src/session/start-real-vite.ts': ['startRealVite'] },
+  { stubs: [{
+    filter: /facets\/cirrus-real\.js$/,
+    contents: `export function shouldUseRealVite() { return true; }
+         export class CirrusReal {
+           constructor(opts) { globalThis.__cirrusRealOpts = opts; this._running = false; }
+           get isRunning() { return this._running; }
+           async start() { this._running = true; }
+           stop() { this._running = false; }
+           async handleRequest() { return new Response('real-vite'); }
+           get stats() { return { snapshot: null, viteVersion: 'test' }; }
+         }`,
+  }] },
+);
 
 const { EsbuildService } = await import('../../packages/core/src/runtime/esbuild-service.ts');
 const { prebundleCacheKey, prebundleRequest } = await import('../../packages/worker/src/npm/cache-keys.ts');

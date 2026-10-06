@@ -27,6 +27,7 @@
  * host hook, so page-level accounting is unreachable for a natively-compiled
  * module.
  */
+import { encodeVaruint, isWasmBinary, WASM_SECTION, WasmReader, wasmSections } from './wasm-binary.js';
 /** wasm page size. Fixed by the specification. */
 export const WASM_PAGE_BYTES = 65536;
 /** wasm32 address-space ceiling: 65536 pages of 64 KiB = 4 GiB. */
@@ -48,76 +49,6 @@ export const WASM32_MAX_PAGES = 65536;
  * `memory.grow` can see it.
  */
 export const DEFAULT_WASM_PROCESS_LIMIT_BYTES = 128 * 1024 * 1024;
-// ── binary walking ───────────────────────────────────────────────────────────
-//
-// Only two sections matter here: the import section (id 2), which tells us
-// whether the memory is supplied by the host, and the memory section (id 5),
-// which declares it. Everything else is copied through byte-for-byte.
-const SECTION_MEMORY = 5;
-class Cursor {
-    bytes;
-    offset;
-    constructor(bytes, offset = 0) {
-        this.bytes = bytes;
-        this.offset = offset;
-    }
-    u8() {
-        if (this.offset >= this.bytes.length)
-            throw new Error('wasm: truncated');
-        return this.bytes[this.offset++];
-    }
-    /** Unsigned LEB128. */
-    varuint() {
-        let result = 0;
-        let shift = 0;
-        for (;;) {
-            const byte = this.u8();
-            result += (byte & 0x7f) * 2 ** shift;
-            if ((byte & 0x80) === 0)
-                return result;
-            shift += 7;
-            if (shift > 35)
-                throw new Error('wasm: varuint too long');
-        }
-    }
-    skip(n) {
-        this.offset += n;
-    }
-}
-function encodeVaruint(value) {
-    const out = [];
-    let v = value;
-    do {
-        let byte = v & 0x7f;
-        v = Math.floor(v / 128);
-        if (v !== 0)
-            byte |= 0x80;
-        out.push(byte);
-    } while (v !== 0);
-    return out;
-}
-function readLimits(cursor) {
-    const flags = cursor.varuint();
-    const minPages = cursor.varuint();
-    const maxPages = (flags & 1) !== 0 ? cursor.varuint() : null;
-    return { flags, minPages, maxPages };
-}
-function* sections(bytes) {
-    if (bytes.length < 8)
-        throw new Error('wasm: not a module (too short)');
-    if (bytes[0] !== 0x00 || bytes[1] !== 0x61 || bytes[2] !== 0x73 || bytes[3] !== 0x6d) {
-        throw new Error('wasm: bad magic');
-    }
-    const cursor = new Cursor(bytes, 8);
-    while (cursor.offset < bytes.length) {
-        const start = cursor.offset;
-        const id = cursor.u8();
-        const size = cursor.varuint();
-        const payload = cursor.offset;
-        yield { id, start, payload, size };
-        cursor.offset = payload + size;
-    }
-}
 /**
  * Return a copy of `bytes` whose defined memory carries an explicit maximum of
  * at most `limitBytes`.
@@ -136,30 +67,36 @@ export function withMemoryLimit(bytes, limitBytes) {
         throw new RangeError(`withMemoryLimit: limitBytes must be positive, got ${limitBytes}`);
     }
     const limitPages = Math.min(Math.floor(limitBytes / WASM_PAGE_BYTES), WASM32_MAX_PAGES);
-    for (const section of sections(bytes)) {
-        if (section.id !== SECTION_MEMORY)
+    if (bytes.length < 8)
+        throw new Error('wasm: not a module (too short)');
+    if (!isWasmBinary(bytes))
+        throw new Error('wasm: bad magic');
+    // Only the memory section (id 5) declares the memory this rewrites; an
+    // imported memory is the host's to size. Everything else is copied through.
+    for (const section of wasmSections(bytes)) {
+        if (section.id !== WASM_SECTION.memory)
             continue;
-        const cursor = new Cursor(bytes, section.payload);
-        const count = cursor.varuint();
+        const reader = new WasmReader(bytes, section.payload);
+        const count = reader.varuint();
         if (count === 0)
             return bytes;
-        const entryStart = cursor.offset;
-        const limits = readLimits(cursor);
-        const entryEnd = cursor.offset;
-        if (limits.minPages > limitPages) {
+        const entryStart = reader.offset;
+        const limits = reader.limits();
+        const entryEnd = reader.offset;
+        if (limits.min > limitPages) {
             throw new RangeError(`withMemoryLimit: limit of ${limitPages} pages is below the module's ` +
-                `declared minimum of ${limits.minPages} pages`);
+                `declared minimum of ${limits.min} pages`);
         }
-        const maxPages = limits.maxPages === null
+        const maxPages = limits.max === null
             ? limitPages
-            : Math.min(limits.maxPages, limitPages);
-        if (limits.maxPages === maxPages)
+            : Math.min(limits.max, limitPages);
+        if (limits.max === maxPages)
             return bytes;
         // Re-encode this one entry with the has-maximum bit set, preserving the
         // shared and memory64 bits, then rebuild the section around it.
         const entry = [
             ...encodeVaruint(limits.flags | 1),
-            ...encodeVaruint(limits.minPages),
+            ...encodeVaruint(limits.min),
             ...encodeVaruint(maxPages),
         ];
         const tail = bytes.subarray(entryEnd, section.payload + section.size);

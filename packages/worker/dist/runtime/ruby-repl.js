@@ -28,6 +28,9 @@ import { ReplSession } from './repl-session.js';
 import { buildRubyPreamble } from '@nimbus-sh/core/runtime/ruby-runner.js';
 import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
+import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
+import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { getFacetManagerLoaderHost } from './facet-loader-host.js';
 class RubyReplAdapter {
     pool = null;
     deps;
@@ -136,7 +139,7 @@ class RubyReplAdapter {
     async close() {
         if (this.pool) {
             try {
-                this.pool.dispose?.();
+                this.pool.dispose();
             }
             catch { /* fail-soft */ }
             this.pool = null;
@@ -147,7 +150,7 @@ class RubyReplAdapter {
             return;
         const { installRoot, facetMgr } = this.deps;
         const wasmPath = `${installRoot}/share/ruby/ruby+stdlib.wasm`;
-        this.wasmBytesAB = toAB(await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
+        this.wasmBytesAB = toArrayBuffer(await withHostView(this.deps.authority, CRED_KERNEL, async (vfs) => {
             if (!(await vfs.exists(wasmPath))) {
                 throw new Error(`ruby+stdlib.wasm missing at ${wasmPath} (run 'nimbus install ruby')`);
             }
@@ -157,9 +160,7 @@ class RubyReplAdapter {
         // drifted (it lacked the language-prelude const __rubyRun requires, so
         // every REPL eval died on boot) — compose it in exactly one place.
         const preamble = buildRubyPreamble();
-        const { IsolatePool } = await import('@nimbus-sh/fabric/isolate-pool.js');
-        const env = facetMgr.env;
-        const ctx = facetMgr.ctx;
+        const { env, ctx } = getFacetManagerLoaderHost(facetMgr);
         // The caller's filesystem, under the caller's credential: the prompt
         // starts in the shell's working directory and reads and writes there.
         this.pool = new IsolatePool(env, ctx, {
@@ -171,11 +172,13 @@ class RubyReplAdapter {
         });
     }
     async submitFacetFn(userCode) {
-        const wasmModules = { 'ruby+stdlib.wasm': this.wasmBytesAB };
+        const { pool, wasmBytesAB } = this;
+        if (!pool || !wasmBytesAB)
+            throw new Error('Ruby REPL is not initialized');
         const { home, cwd, binName } = this.deps;
         const step = { userCode, home, cwd, binName };
-        return await this.pool.submit(rubyReplStepFacetFn, step, {
-            wasmModules,
+        return await pool.submit(rubyReplStepFacetFn, step, {
+            wasmModules: { 'ruby+stdlib.wasm': wasmBytesAB },
             timeoutMs: 60_000,
         });
     }
@@ -225,9 +228,6 @@ export function rubyReplStepFacetFn(args, facetEnv) {
             error: r.error,
         };
     })();
-}
-function toAB(u8) {
-    return u8.buffer.slice(u8.byteOffset, u8.byteOffset + u8.byteLength);
 }
 /**
  * Top-level wrapper: builds a Ruby REPL adapter, drives a ReplSession

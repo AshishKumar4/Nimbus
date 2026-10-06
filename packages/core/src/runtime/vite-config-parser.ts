@@ -11,6 +11,7 @@ import {
 } from './javascript-ast.js';
 import type { Pattern } from 'acorn';
 import { full, simple } from 'acorn-walk';
+import { isJsonRecord } from './jsonc.js';
 
 export interface ParsedViteConfig {
   root?: string;
@@ -212,7 +213,7 @@ function readViteConfig(ast: AstNode): ParsedViteConfig {
     if (esbuild) {
       const computed: string[] = [];
       const value = staticValue(esbuild, 'esbuild', computed);
-      if (value === false || isPlainObject(value)) config.esbuild = value;
+      if (value === false || isJsonRecord(value)) config.esbuild = value;
       else computed.splice(0, computed.length, 'esbuild');
       if (computed.length > 0) config.esbuildComputed = computed;
     }
@@ -397,9 +398,6 @@ function defineValue(node: AstNode | undefined): string | undefined {
 /** What `staticValue` gives a value it cannot read. */
 const COMPUTED = Symbol('computed');
 
-const isPlainObject = (value: unknown): value is Record<string, unknown> =>
-  value !== null && typeof value === 'object' && !Array.isArray(value);
-
 /**
  * A literal value: strings, numbers, booleans, null, template literals with
  * nothing substituted, negated numbers, arrays and objects of them. An
@@ -463,7 +461,7 @@ function pluginCalls(plugins: AstNode, imports: Map<string, string>): NonNullabl
     const argument = nodeList(element, 'arguments')[0];
     const computed: string[] = [];
     const options = argument ? staticValue(argument, 'options', computed) : {};
-    calls.push({ specifier, options: isPlainObject(options) ? options : {}, computed: isPlainObject(options) || !argument ? computed : ['options'] });
+    calls.push({ specifier, options: isJsonRecord(options) ? options : {}, computed: isJsonRecord(options) || !argument ? computed : ['options'] });
   }
   return calls;
 }

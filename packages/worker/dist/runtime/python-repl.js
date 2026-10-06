@@ -1,4 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView } from '@nimbus-sh/core/runtime/process-files.js';
 import { z } from 'zod/v4';
 import { ReplSession } from './repl-session.js';
@@ -24,9 +25,6 @@ const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
 const CPYTHON_SCI_WASM_REL = 'share/cpython/python-sci.wasm';
 const CPYTHON_SCI_PACKAGES_REL = 'lib/sci-packages.zip';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
-function toArrayBuffer(bytes) {
-    return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength);
-}
 /**
  * The per-submission driver, as Python source.
  *

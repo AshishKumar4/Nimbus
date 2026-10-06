@@ -8,7 +8,7 @@
 // Post-fix: src/shell/unix-commands.ts mkType registered in registry.
 // Resolves via the same registry that lifo-sh's builtins use.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, termBody } from '../../../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell/compat/r3/new/type-builtin');
@@ -19,28 +19,20 @@ const t = new Terminal(sid);
 await t.connect();
 await t.waitForPrompt(60_000);
 
-function body(raw) {
-  const ansi = stripAnsi(raw);
-  const lines = ansi.split(/\r?\n/);
-  if (lines.length && /\$\s*$/.test(lines[lines.length - 1])) lines.pop();
-  if (lines.length && /\$\s/.test(lines[0])) lines.shift();
-  return lines.join('\n');
-}
-
 // Probe 1: type echo (registered builtin)
 const r1 = await t.run('type echo', 5_000);
 a.check(
   '`type echo` reports shell builtin',
-  /echo is a shell builtin/.test(body(r1.output)),
-  `body=${JSON.stringify(body(r1.output))}`,
+  /echo is a shell builtin/.test(termBody(r1.output)),
+  `body=${JSON.stringify(termBody(r1.output))}`,
 );
 
 // Probe 2: type rm
 const r2 = await t.run('type rm', 5_000);
 a.check(
   '`type rm` reports shell builtin',
-  /rm is a shell builtin/.test(body(r2.output)),
-  `body=${JSON.stringify(body(r2.output))}`,
+  /rm is a shell builtin/.test(termBody(r2.output)),
+  `body=${JSON.stringify(termBody(r2.output))}`,
 );
 
 // Probe 3: type unknown

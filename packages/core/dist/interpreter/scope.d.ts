@@ -16,7 +16,7 @@
  * are the frame of a call.
  */
 import type { AnonymousClassDeclaration, AnonymousFunctionDeclaration, AnyNode, ArrowFunctionExpression, BlockStatement, CatchClause, ClassDeclaration, ClassExpression, ForInStatement, ForOfStatement, ForStatement, FunctionDeclaration, FunctionExpression, Identifier, MethodDefinition, ModuleDeclaration, Pattern, PrivateIdentifier, Program, PropertyDefinition, Statement, StaticBlock, SwitchStatement, VariableDeclaration } from 'acorn';
-import { type SafeList } from './intrinsics.js';
+import { type SafeList, type SafeWeakMap } from './intrinsics.js';
 import type { Owned } from './tree.js';
 export type FunctionNode = FunctionDeclaration | AnonymousFunctionDeclaration | FunctionExpression | ArrowFunctionExpression;
 export type ClassNode = ClassDeclaration | AnonymousClassDeclaration | ClassExpression;
@@ -107,6 +107,20 @@ export declare function hasUseStrict(body: readonly (Statement | ModuleDeclarati
 export declare function patternIdentifiers(pattern: Pattern, out?: SafeList<Identifier>): SafeList<Identifier>;
 /** The child nodes of `node`, in a new array. */
 export declare function childNodes(node: AnyNode): AnyNode[];
+/**
+ * Whether evaluating `node` awaits or yields in the function it sits in
+ * (await and yield are valid only where that function suspends): an await or
+ * yield, a `for await`, or one in a child, where a nested function is a
+ * boundary and a class's heritage and computed keys are not (they are
+ * evaluated where the class sits; a static block is the class's own
+ * function). A compiler passes `memo` to answer each node once.
+ *
+ * The compiler lowers a node to a generator flavor where this holds and
+ * refuses a few such places (UnsupportedSyntax); the analysis of a unit,
+ * which covers every function in it, refuses them before any of the unit
+ * runs, as the compiler, compiling a function on its first call, could not.
+ */
+export declare function suspendsInFunction(node: AnyNode, memo?: SafeWeakMap<AnyNode, boolean>): boolean;
 /** Each child node of `node`. */
 export declare function forEachChildNode(node: AnyNode, visit: (child: AnyNode) => void): void;
 export interface ClassScopes {

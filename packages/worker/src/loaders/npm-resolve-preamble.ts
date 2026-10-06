@@ -53,6 +53,7 @@ import {
   semverComparators,
 } from '../npm/semver.js';
 import { parseRegistryRequest } from '../npm/resolve-one-facet.js';
+import { packageRangeSeparator } from '../npm/package-spec.js';
 
 export const NPM_RESOLVE_PREAMBLE: string = `
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
@@ -105,6 +106,7 @@ ${resolveVersion.toString()}
 // ── Spec parsing (embedded from src/npm/resolve-one-facet.ts) ───────────
 // Generated the same way — the facet body references the bare
 // parseRegistryRequest binding.
+${packageRangeSeparator.toString()}
 ${parseRegistryRequest.toString()}
 function PARSE_SEMVER(v) { return parseSemver(v); }
 function COMPARE_SEMVER(a, b) { return compareSemver(a, b); }

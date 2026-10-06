@@ -1,5 +1,6 @@
 import { direntTypeIn } from '../vfs/dirent-type.js';
 import { extractTarball } from '../_shared/tarball.js';
+import { toArrayBuffer } from '../_shared/bytes.js';
 import { normalizeVfsPath, parentVfsPath, resolveVfsPath } from '../vfs/path.js';
 import { isVfsError } from '../vfs/vfs-error.js';
 const RUBYGEMS_API = 'https://rubygems.org';
@@ -425,11 +426,6 @@ async function extractGemData(gemBytes) {
         throw new Error('RubyGems archive missing data.tar.gz');
     return await extractTarball(toArrayBuffer(data));
 }
-function toArrayBuffer(bytes) {
-    const out = new ArrayBuffer(bytes.byteLength);
-    new Uint8Array(out).set(bytes);
-    return out;
-}
 function findNativeExtensionPath(paths) {
     for (const path of paths) {
         const clean = normalizeVfsPath(path);
@@ -619,23 +615,8 @@ function splitVersion(version) {
     push();
     return out;
 }
-function normalizeGemName(name) {
-    const clean = name.trim();
-    if (!clean)
-        throw new Error('empty gem name');
-    for (const ch of clean) {
-        const ok = ch === '-' || ch === '_' || ch === '.' ||
-            ch >= '0' && ch <= '9' ||
-            ch >= 'a' && ch <= 'z' ||
-            ch >= 'A' && ch <= 'Z';
-        if (!ok)
-            throw new Error(`unsupported gem name '${name}'`);
-    }
-    return clean;
-}
-function isValidGemExecutableName(name) {
-    if (!name || name === '.' || name === '..' || name.includes('/'))
-        return false;
+/** Every character is one a gem or gem executable name may hold: `[-_.0-9A-Za-z]`. */
+function isGemNameCharset(name) {
     for (const ch of name) {
         const ok = ch === '-' || ch === '_' || ch === '.' ||
             ch >= '0' && ch <= '9' ||
@@ -645,6 +626,19 @@ function isValidGemExecutableName(name) {
             return false;
     }
     return true;
+}
+function normalizeGemName(name) {
+    const clean = name.trim();
+    if (!clean)
+        throw new Error('empty gem name');
+    if (!isGemNameCharset(clean))
+        throw new Error(`unsupported gem name '${name}'`);
+    return clean;
+}
+function isValidGemExecutableName(name) {
+    if (!name || name === '.' || name === '..' || name.includes('/'))
+        return false;
+    return isGemNameCharset(name);
 }
 async function ensureDir(vfs, path) {
     const clean = normalizeVfsPath(path);

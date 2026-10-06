@@ -10,32 +10,7 @@ import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts'
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-
-const bytes = (length, seed = 0) => {
-  const data = new Uint8Array(length);
-  for (let index = 0; index < length; index++) data[index] = (index + seed) % 251;
-  return data;
-};
-
-const payload = (path, data) => ({
-  inodes: [{
-    path,
-    parentPath: path.includes('/') ? path.slice(0, path.lastIndexOf('/')) : '',
-    isDir: false,
-    size: data.length,
-    mtime: 1,
-    mode: 0o644,
-    chunkCount: data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE),
-  }],
-  chunks: Array.from(
-    { length: data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE) },
-    (_, chunkId) => ({
-      path,
-      chunkId,
-      data: data.slice(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-    }),
-  ),
-});
+import { bytes, filePayload } from './lib/staged-import.mjs';
 
 function instrumentPulledBytes(stream, onPulled) {
   const reader = stream.getReader();
@@ -70,7 +45,7 @@ const TRANSPORT_SLACK_BYTES = 256 * 1024 + 64 * 1024 + 4 * 1024;
   const startTransactions = harness.transactionCount;
   let checked = false;
   const stream = instrumentPulledBytes(
-    encodeWriteBatchStream(payload('boundary.bin', data)),
+    encodeWriteBatchStream(filePayload('boundary.bin', data)),
     (pulled) => {
       if (pulled > MAX_TX_BLOB_BYTES + TRANSPORT_SLACK_BYTES && !checked) {
         checked = true;
@@ -103,7 +78,7 @@ const TRANSPORT_SLACK_BYTES = 256 * 1024 + 64 * 1024 + 4 * 1024;
     data: bytes(MAX_TX_BLOB_BYTES * 2 + index + 1, index * 13),
   }));
   const writes = entries.map((entry) => vfs.writeStream(
-    encodeWriteBatchStream(payload(entry.path, entry.data)),
+    encodeWriteBatchStream(filePayload(entry.path, entry.data)),
   ));
   let timeout;
   const deadline = new Promise((_, reject) => {
@@ -169,7 +144,7 @@ function corruptFileEndCheck(frame) {
   const replacement = bytes(MAX_TX_BLOB_BYTES + 7, 29);
   vfs.writeFile('atomic.bin', oldData);
   const malformed = corruptFileEndCheck(
-    await collect(encodeWriteBatchStream(payload('atomic.bin', replacement))),
+    await collect(encodeWriteBatchStream(filePayload('atomic.bin', replacement))),
   );
   const stream = new ReadableStream({
     type: 'bytes',
@@ -198,7 +173,7 @@ function corruptFileEndCheck(frame) {
   const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
   const vfs = rawVfs.as(CRED_KERNEL);
   const abort = new AbortController();
-  const source = encodeWriteBatchStream(payload(
+  const source = encodeWriteBatchStream(filePayload(
     'cancelled.bin',
     bytes(MAX_TX_BLOB_BYTES * 2 + CHUNK_SIZE, 41),
   ));

@@ -185,6 +185,13 @@ interface OpenTUICallbackEntry {
   readonly instance: OpenTUIFfiCallbackInstance;
 }
 
+/** An arena allocation holding a copy of `view`, copied back and freed after the call. */
+interface ArenaScratch {
+  readonly offset: number;
+  readonly size: number;
+  readonly view: ArrayBufferView;
+}
+
 export const ARENA_ALIGN = 16;
 
 /**
@@ -218,11 +225,7 @@ export class OpenTUIWasmBackend {
    * `VisualCursorStruct`, stats, terminal capabilities), while span-feed drains
    * use typed arrays. Both forms must observe Zig's writes.
    */
-  readonly #pendingPtrScratch: Array<{
-    offset: number;
-    size: number;
-    view: ArrayBufferView;
-  }> = [];
+  readonly #pendingPtrScratch: ArenaScratch[] = [];
 
   /**
    * Cached `Uint8Array` over `memory.buffer`, invalidated whenever a grow may
@@ -340,18 +343,9 @@ export class OpenTUIWasmBackend {
   // arena bytes back after the call so bare struct buffers and typed-array
   // windows have identical semantics.
   ptr(value: ArrayBuffer | ArrayBufferView): OpenTUIPointer {
-    const { bytes, byteOffset, byteLength } = viewBytes(value);
-    const size = byteLength === 0 ? ARENA_ALIGN : byteLength;
-    const offset = this.#alloc(size);
-    if (byteLength > 0) {
-      this.#u8().set(bytes.subarray(byteOffset, byteOffset + byteLength), offset);
-    }
-    this.#pendingPtrScratch.push({
-      offset,
-      size,
-      view: ArrayBuffer.isView(value) ? value : new Uint8Array(value),
-    });
-    return offset;
+    const scratch = this.#copyIn(value);
+    this.#pendingPtrScratch.push(scratch);
+    return scratch.offset;
   }
 
   // ── toArrayBuffer(ptr, offset, length): a snapshot copy of linear memory ────
@@ -457,7 +451,7 @@ export class OpenTUIWasmBackend {
       // this call, so a callback that re-enters another symbol mid-execution
       // cannot free a pointer this call is still reading.
       const claimedPtr = this.#pendingPtrScratch.splice(0);
-      const scratch: Array<{ offset: number; size: number; view: ArrayBufferView | null }> = [];
+      const scratch: ArenaScratch[] = [];
       const marshaled: unknown[] = new Array(argTypes.length);
 
       for (let i = 0; i < argTypes.length; i++) {
@@ -481,27 +475,11 @@ export class OpenTUIWasmBackend {
       try {
         result = fn(...marshaled);
       } finally {
-        // Copy-back out-params, then free, in reverse alloc order. The copy-back
-        // spans the view's own byteLength (which may be < the padded alloc size).
-        for (let i = scratch.length - 1; i >= 0; i--) {
-          const s = scratch[i];
-          if (s.view && s.view.byteLength > 0) {
-            const dst = new Uint8Array(s.view.buffer, s.view.byteOffset, s.view.byteLength);
-            dst.set(this.#u8().subarray(s.offset, s.offset + s.view.byteLength));
-          }
-          this.#exports.nimbus_free(s.offset, s.size);
-        }
-        // Release this call's transient ptr() scratch (reverse alloc order),
-        // copying writable views back first so `ptr(outBuffer)` OUT-params (the
-        // span-feed drain, FFIRenderLib getters) reflect Zig's writes.
-        for (let i = claimedPtr.length - 1; i >= 0; i--) {
-          const s = claimedPtr[i];
-          if (s.view && s.view.byteLength > 0) {
-            const dst = new Uint8Array(s.view.buffer, s.view.byteOffset, s.view.byteLength);
-            dst.set(this.#u8().subarray(s.offset, s.offset + s.view.byteLength));
-          }
-          this.#exports.nimbus_free(s.offset, s.size);
-        }
+        // Copy-back out-params, then free: the marshaled args first, then
+        // this call's transient ptr() scratch, so `ptr(outBuffer)` OUT-params
+        // (the span-feed drain, FFIRenderLib getters) reflect Zig's writes.
+        this.#release(scratch);
+        this.#release(claimedPtr);
       }
 
       if (diag) {
@@ -527,27 +505,47 @@ export class OpenTUIWasmBackend {
    * for copy-back + free. A view that is writable is treated as a potential
    * out-param (copied back after the call); read-only buffers are copy-in only.
    */
-  #marshalPtrArg(
-    a: OpenTUIPointerArg,
-    scratch: Array<{ offset: number; size: number; view: ArrayBufferView | null }>,
-  ): number {
+  #marshalPtrArg(a: OpenTUIPointerArg, scratch: ArenaScratch[]): number {
     if (a === null || a === undefined) return 0;
     if (typeof a === 'number') return a >>> 0;
     if (typeof a === 'bigint') return Number(a) >>> 0;
+    // A typed-array/ArrayBuffer view is copied back so out-buffer/out-struct
+    // params (statsBuffer, outCountBuf, reserveBuffer, bufferGetId, …) work
+    // through the same path.
+    const copied = this.#copyIn(a);
+    scratch.push(copied);
+    return copied.offset;
+  }
 
-    const { bytes, byteOffset, byteLength } = viewBytes(a);
-    const offset = this.#alloc(byteLength === 0 ? ARENA_ALIGN : byteLength);
+  /**
+   * Copy a view/buffer into a fresh arena allocation. The returned `view`
+   * is the caller's own storage (an ArrayBuffer wrapped in a Uint8Array) for
+   * {@link #release} to copy Zig's writes back into.
+   */
+  #copyIn(value: ArrayBuffer | ArrayBufferView): ArenaScratch {
+    const { bytes, byteOffset, byteLength } = viewBytes(value);
+    const size = byteLength === 0 ? ARENA_ALIGN : byteLength;
+    const offset = this.#alloc(size);
     if (byteLength > 0) {
       this.#u8().set(bytes.subarray(byteOffset, byteOffset + byteLength), offset);
     }
-    // A typed-array/ArrayBuffer view is copied back so out-buffer/out-struct
-    // params (statsBuffer, outCountBuf, reserveBuffer, bufferGetId, …) work
-    // through the same path. ArrayBuffers are wrapped in a Uint8Array so the
-    // copy-back targets the same storage.
-    const writableView: ArrayBufferView =
-      ArrayBuffer.isView(a) ? a : new Uint8Array(a as ArrayBuffer);
-    scratch.push({ offset, size: byteLength === 0 ? ARENA_ALIGN : byteLength, view: writableView });
-    return offset;
+    return { offset, size, view: ArrayBuffer.isView(value) ? value : new Uint8Array(value) };
+  }
+
+  /**
+   * Copy each allocation back into its view, then free it, in reverse alloc
+   * order. The copy-back spans the view's own byteLength (which may be < the
+   * padded alloc size).
+   */
+  #release(list: readonly ArenaScratch[]): void {
+    for (let i = list.length - 1; i >= 0; i--) {
+      const s = list[i];
+      if (s.view.byteLength > 0) {
+        const dst = new Uint8Array(s.view.buffer, s.view.byteOffset, s.view.byteLength);
+        dst.set(this.#u8().subarray(s.offset, s.offset + s.view.byteLength));
+      }
+      this.#exports.nimbus_free(s.offset, s.size);
+    }
   }
 
   // ── createCallback(fn, signature): mint a non-zero token, decode on dispatch ─

@@ -15,7 +15,7 @@
  * rather than the shim. Before this, cirrus-real wrote nothing at all and every
  * such session was unrecoverable after eviction.
  */
-import { CRED_KERNEL } from '@nimbus-sh/core/runtime/os-contracts.js';
+import { CRED_KERNEL, isVfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { supervisorEsbuildService } from '../facets/esbuild-transform.js';
 import { rewriteCirrusViteConfigBundle } from '@nimbus-sh/core/runtime/cirrus-vite-config-rewriter.js';
@@ -37,8 +37,8 @@ export function persistedIdentity(value) {
     const identity = value;
     if (typeof identity?.cwd !== 'string' || !Array.isArray(identity.argv))
         return undefined;
-    const cred = persistedCred(identity.cred);
-    if (cred === undefined)
+    const cred = identity.cred;
+    if (!isVfsCred(cred))
         return undefined;
     return {
         cwd: identity.cwd,
@@ -46,13 +46,6 @@ export function persistedIdentity(value) {
         cred,
         ...(typeof identity.execId === 'string' ? { execId: identity.execId } : {}),
     };
-}
-function persistedCred(value) {
-    const cred = value;
-    const id = (n) => Number.isInteger(n) && Number(n) >= 0;
-    if (!id(cred?.uid) || !id(cred.gid) || !id(cred.umask) || !Array.isArray(cred.groups) || !cred.groups.every(id))
-        return undefined;
-    return { uid: cred.uid, gid: cred.gid, groups: cred.groups, umask: cred.umask };
 }
 /**
  * Boot a cirrus-real dev server on `self`, register its port, and persist the

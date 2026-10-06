@@ -23,6 +23,7 @@
  */
 import { parse, tokenizer, tokTypes } from 'acorn';
 import { full } from 'acorn-walk';
+import { calleeName } from './javascript-ast.js';
 const PATH_MODULES = new Set(['path', 'node:path', 'path/posix', 'node:path/posix']);
 /** Calls whose first argument is a path the call reads, stats or lists. */
 const FS_SINKS = new Set([
@@ -136,7 +137,7 @@ export function findStaticFsReferences(source, filename) {
                 bind(String(id.name), init);
                 if (requiresPath(init))
                     pathBindings.add(String(id.name));
-                if (init && init.type === 'CallExpression' && calleeName(init) === 'createRequire')
+                if (init && init.type === 'CallExpression' && calleeName(init.callee) === 'createRequire')
                     resolvers.add(String(id.name));
             }
             else if (id.type === 'ObjectPattern' && requiresPath(init)) {
@@ -260,7 +261,7 @@ export function findStaticFsReferences(source, filename) {
             case 'CallExpression': {
                 const callee = node.callee;
                 const args = node.arguments.map((a) => evaluate(a));
-                const name = calleeName(node);
+                const name = calleeName(node.callee);
                 if (name === 'fileURLToPath')
                     return args[0] ? urlToPath(args[0]) : undefined;
                 if (name === 'pathToFileURL') {
@@ -303,7 +304,7 @@ export function findStaticFsReferences(source, filename) {
         }
         if (node.type !== 'CallExpression')
             return;
-        const name = calleeName(node);
+        const name = calleeName(node.callee);
         const args = node.arguments;
         if (name === 'resolve' && args.length >= 1 && isResolver(node.callee)) {
             const spec = evaluate(args[0]);
@@ -346,7 +347,7 @@ export function findStaticFsReferences(source, filename) {
         const obj = c.object;
         if (obj.type === 'Identifier')
             return obj.name === 'require' || resolvers.has(String(obj.name));
-        return obj.type === 'CallExpression' && calleeName(obj) === 'createRequire';
+        return obj.type === 'CallExpression' && calleeName(obj.callee) === 'createRequire';
     }
     function record(value, sync = false) {
         if (!value)
@@ -474,16 +475,6 @@ export function scanStaticFsTokens(source, filename) {
     refs.exact = mergeRefs(refs.exact);
     refs.listed = [...new Set(refs.listed)];
     return refs;
-}
-function calleeName(call) {
-    let c = call.callee;
-    if (c.type === 'SequenceExpression')
-        c = c.expressions.at(-1);
-    if (c.type === 'Identifier')
-        return String(c.name);
-    if (c.type === 'MemberExpression' && !c.computed)
-        return String(c.property.name);
-    return null;
 }
 function flatten(v) {
     if (!v)

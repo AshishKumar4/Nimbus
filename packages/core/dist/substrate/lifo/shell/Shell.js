@@ -1,5 +1,6 @@
 import { bindProcessView } from '../../../runtime/process-files.js';
 import { resolveContext } from '../commands/registry.js';
+import { isVfsCred } from '../../../runtime/os-contracts.js';
 import { resolve } from '../utils/path.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 import { ExitSignal, Interpreter, assignScalar, } from './interpreter.js';
@@ -2077,16 +2078,4 @@ function replaceSet(target, source) {
     target.clear();
     for (const value of source.values())
         target.add(value);
-}
-function isVfsCred(value) {
-    if (typeof value !== 'object' || value === null)
-        return false;
-    if (!('uid' in value) || typeof value.uid !== 'number')
-        return false;
-    if (!('gid' in value) || typeof value.gid !== 'number')
-        return false;
-    if (!('umask' in value) || typeof value.umask !== 'number')
-        return false;
-    return 'groups' in value && Array.isArray(value.groups)
-        && value.groups.every((group) => typeof group === 'number');
 }

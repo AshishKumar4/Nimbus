@@ -15,7 +15,7 @@ export interface VirtualResponse {
 }
 export type VirtualRequestHandler = (req: VirtualRequest, res: VirtualResponse) => void;
 export type LoopbackRouter = (port: number, request: Request) => Promise<Response | null>;
-export declare function isLoopbackHost(host: string): boolean;
+export { isLoopbackHost } from '../../../_shared/loopback.js';
 /**
  * What a session's processes share besides their filesystem (which is
  * ProcessFiles'): the process table, the virtual ports and the network stack,

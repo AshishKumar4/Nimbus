@@ -11,42 +11,16 @@
 // instance.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processFiles } from './lib/process-bridge.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
+import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
 
-const world = createFacetWorld(() => ({
-  async startProcess() { return { ok: true }; },
-  async handleHttpRequest() { return new Response('ok'); },
-}));
-const ctx = createFacetCtx(world, 'signal-before-boot');
-const env = {
-  LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-    },
-  },
-};
-const processes = new SessionProcessSupervisor();
 const exits = [];
-const manager = new FacetManager(ctx, env, processes, new PortRegistry(), processHostFor, {
-  onExternalExit: (pid, code, reason) => exits.push({ pid, code, reason }),
+const { world, ctx, processes, manager, vfs } = launchManager('signal-before-boot', {
+  hooks: { onExternalExit: (pid, code, reason) => exits.push({ pid, code, reason }) },
 });
-const harness = createSqliteVfsTestHarness();
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
-manager.setVfs(vfs, processFiles(vfs));
 
 // The npm-bin runner's shape: the pid exists with its terminal open, then the
 // launch is handed to the manager, which returns before building anything.

@@ -5,9 +5,7 @@ import { PortBridge } from './network/PortBridge.js';
 const DEFAULT_HOSTS = `127.0.0.1       localhost
 ::1             localhost ip6-localhost ip6-loopback
 `;
-export function isLoopbackHost(host) {
-    return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]';
-}
+export { isLoopbackHost } from '../../../_shared/loopback.js';
 /**
  * What a session's processes share besides their filesystem (which is
  * ProcessFiles'): the process table, the virtual ports and the network stack,

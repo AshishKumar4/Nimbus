@@ -15,7 +15,7 @@
 //
 // Category: R (runtime-behavioral)
 
-import { mintSession, Terminal, makeAsserter, stripAnsi, sleep } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('shell-polish/heredoc-cmd-stdout');
@@ -29,11 +29,6 @@ await t.waitForPrompt(60_000);
 // Use EXACT-line matching — the WS terminal echoes the command line +
 // the `> ` continuation prompts; only the cat-stdout lines come out
 // as their own lines.
-function hasOutputLine(stripped, marker) {
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  return lines.some((l) => l === marker);
-}
-
 // 1. cat << 'EOF' with quoted delimiter (no expansion).
 {
   const r = await t.run(`cat << 'POLISH_EOF'\nhi-stdout-A\n2nd-line-B\nPOLISH_EOF`, 15_000);

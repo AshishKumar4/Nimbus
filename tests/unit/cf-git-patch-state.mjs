@@ -58,7 +58,7 @@ function layout(name, { index, linkTo }) {
   const root = join(scratch, name);
   const scripts = join(root, 'packages/worker/scripts');
   mkdirSync(scripts, { recursive: true });
-  for (const script of ['bundle-git.mjs', 'cf-git-patch.mjs', 'resolve-package-dir.mjs', 'patch-install-deps.mjs']) {
+  for (const script of ['bundle-git.mjs', 'cf-git-patch.mjs', 'resolve-package-dir.mjs', 'patch-install-deps.mjs', 'stage-asset.mjs']) {
     cpSync(join(worker, 'scripts', script), join(scripts, script));
   }
   mkdirSync(join(root, 'packages/worker/patches'));

@@ -3,7 +3,7 @@ import { ProcessView } from '../../../runtime/process-files.js';
 import { type CommandRegistry } from '../commands/registry.js';
 import type { CommandInputStream } from '../commands/types.js';
 import type { ChildExit, CommandRunAsHost } from '../commands/types.js';
-import type { NimbusFilesystemAuthority, VfsCred } from '../../../runtime/os-contracts.js';
+import { type NimbusFilesystemAuthority, type VfsCred } from '../../../runtime/os-contracts.js';
 import type { TerminalInputStream } from '../commands/types.js';
 import { type ProgramSpec, type ShellOptions, type TerminalFdState } from './interpreter.js';
 import { JobTable } from './jobs.js';

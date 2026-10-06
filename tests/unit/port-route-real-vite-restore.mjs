@@ -9,44 +9,24 @@
 // never accepted an HMR upgrade. Driven through `handleFetch`, the DO's public
 // entrypoint, with only the heavy facet internals stubbed.
 
-import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import assert from 'node:assert/strict';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
+import { HIBERNATED_REAL, ROOT, VITE_PORT, hostRequest, makeWokenSession, pathRequest, readOnlyVfs } from './lib/vite-route-rig.mjs';
 
-const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-real-vite-restore-test-'));
-const build = await Bun.build({
-  entrypoints: ['./packages/worker/src/session/routes.ts'],
-  outdir: outputDir,
-  target: 'bun',
-  format: 'esm',
-  plugins: [{
-    name: 'cirrus-real-test-stubs',
-    setup(builder) {
-      builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cf', namespace: 'stub' }));
-      builder.onResolve({ filter: /facets\/cirrus-real\.js$/ }, () => ({ path: 'cirrus', namespace: 'stub' }));
-      builder.onResolve({ filter: /observability\/heavy-alloc-coord\.js$/ }, () => ({ path: 'heavy', namespace: 'stub' }));
-      builder.onLoad({ filter: /.*/, namespace: 'stub' }, (args) => {
-        if (args.path === 'cf') {
-          return { contents: 'export class DurableObject {}; export class WorkerEntrypoint {};', loader: 'js' };
-        }
-        if (args.path === 'heavy') {
-          return {
-            contents: 'export const acquireHeavyAlloc = async () => () => {};\n'
-              + 'export const acquireSupervisorReadAllocation = async () => () => {};\n',
-            loader: 'js',
-          };
-        }
-        // A fake real-vite controller: no facet, no ASSETS, just enough shape
-        // for start-real-vite.ts to register it and for the port proxy to serve.
-        return {
-          loader: 'js',
-          contents: `
+const routes =
+  await importWorkerBundle({ 'packages/worker/src/session/routes.ts': ['handleFetch', 'restorePersistedDevServer', 'acceptCirrusHmrWs'] }, {
+    stubs: [
+      {
+        filter: /observability\/heavy-alloc-coord\.js$/,
+        contents: 'export const acquireHeavyAlloc = async () => () => {};\n'
+          + 'export const acquireSupervisorReadAllocation = async () => () => {};\n',
+      },
+      // A fake real-vite controller: no facet, no ASSETS, just enough shape
+      // for start-real-vite.ts to register it and for the port proxy to serve.
+      {
+        filter: /facets\/cirrus-real\.js$/,
+        contents: `
             export function shouldUseRealVite() { return true; }
             export class CirrusReal {
               constructor(opts) { this.opts = opts; this._running = false; }
@@ -62,96 +42,19 @@ const build = await Bun.build({
               get stats() { return { snapshot: null, viteVersion: 'test' }; }
             }
           `,
-        };
-      });
-    },
-  }],
-});
-assert.equal(build.success, true, build.logs.map(String).join('\n'));
-const entry = build.outputs.find((o) => o.path.endsWith('/routes.js'));
-assert.ok(entry, 'the routes bundle was emitted');
-const { handleFetch, restorePersistedDevServer: sessionRestorePersistedDevServer, acceptCirrusHmrWs: sessionAcceptCirrusHmrWs } = await import(pathToFileURL(entry.path).href);
-
-const SID = 'nimble-otter-4271';
-const BASE_PATH = `/s/${SID}`;
-const PREVIEW_BASE = `${BASE_PATH}/preview`;
-const VITE_PORT = 5173;
-const ROOT = 'home/user/example-app';
-
-function makeVfs() {
-  // No vite.config.* on disk → start-real-vite skips esbuild bundling entirely.
-  const files = new Map([[`${ROOT}/package.json`, '{"name":"app"}']]);
-  const view = {
-    exists: (p) => files.has(p),
-    isDirectory: () => false,
-    readFileString: (p) => files.get(p),
-    readFile: (p) => new TextEncoder().encode(files.get(p) ?? ''),
-  };
-  return { as: () => view, events: { on: () => () => {} } };
-}
-
-function makeWokenSession(storage = {}) {
-  const store = new Map(Object.entries(storage));
-  let nextPid = 200;
-  const self = {
-    runtimeWorkspace: { network: ISOLATE_NETWORK },
-    env: {},
-    sqliteFs: null,
-    esbuildService: null,
-    viteDevServer: null,
-    cirrusReal: null,
-    _viteShimPid: null,
-    _viteShimPort: null,
-    _realViteRestore: null,
-    sessionBasePath: BASE_PATH,
-    sessionBasePathHydrated: true,
-    portRegistry: new PortRegistry(),
-    // An entry as the process table makes one: under the credential asked for, else the session user's.
-    processes: { spawn: (command, argv, cwd, opts = {}) => ({ pid: nextPid++, command, argv, cwd, cred: opts.cred ?? CRED_SESSION_USER }), appendOutput: () => {} },
-    ctx: {
-      storage: {
-        async get(k) { return store.get(k); },
-        async put(k, v) { store.set(k, v); },
-        async delete(k) { store.delete(k); },
-        // The reservation paths run read-modify-write inside one unit; the
-        // stub serializes them the way the DO storage does.
-        async transaction(body) { return body(this); },
       },
-      acceptWebSocket() {},
-    },
-    get nimbusDebug() { return false; },
-    get viteBasePath() { return (this.sessionBasePath || '') + '/preview'; },
-    async hydrateSessionBasePath() {},
-    ensureSqliteFs() { if (!this.sqliteFs) this.sqliteFs = makeVfs(); },
-    // No facet pool in this harness: cold /@modules/ misses take the legacy path.
-    ensureBundlePool() { return null; },
-    restorePersistedDevServer: (onlyPort) => sessionRestorePersistedDevServer(self, onlyPort),
-    acceptCirrusHmrWs: (request) => sessionAcceptCirrusHmrWs(self, request),
-  };
-  self.store = store;
-  return self;
-}
+    ],
+  });
+const { handleFetch } = routes;
 
-// What cirrus-real persists at start (see start-real-vite.ts).
-const HIBERNATED_REAL = {
-  'vite-config': {
-    devServer: 'real', root: ROOT, port: VITE_PORT,
-    basePath: PREVIEW_BASE, configDir: 'home/user/example-app',
-    identity: { cwd: `/${ROOT}`, argv: ['vite'], cred: CRED_SESSION_USER },
-  },
-};
-
-function hostRequest(path, init = {}) {
-  return new Request(`https://nimbus-os.dev${path}`, { headers: { 'X-Nimbus-Base': '', ...(init.headers || {}) }, ...init });
-}
-function pathRequest(path, init = {}) {
-  return new Request(`https://nimbus-os.dev${path}`, { headers: { 'X-Nimbus-Base': BASE_PATH, ...(init.headers || {}) }, ...init });
-}
+// No vite.config.* on disk → start-real-vite skips esbuild bundling entirely.
+const makeVfs = () => readOnlyVfs(new Map([[`${ROOT}/package.json`, '{"name":"app"}']]));
+const wake = (storage = {}) => makeWokenSession(storage, { vfs: makeVfs, routes, pidBase: 200 });
 
 // 1. `/port/N/` (the host's forwarding target) restores real-vite, not the
 //    Cirrus shim, and serves through it.
 {
-  const self = makeWokenSession(HIBERNATED_REAL);
+  const self = wake(HIBERNATED_REAL);
   const res = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/`));
   assert.equal(res.status, 200, `expected real-vite to serve, got ${res.status}`);
   assert.equal(res.headers.get('X-Served-By'), 'cirrus-real', 'served by the real-vite facet');
@@ -163,7 +66,7 @@ function pathRequest(path, init = {}) {
 
 // 2. `/preview/` restores the same real-vite server — one restore path.
 {
-  const self = makeWokenSession(HIBERNATED_REAL);
+  const self = wake(HIBERNATED_REAL);
   const res = await handleFetch(self, pathRequest('/preview/'));
   assert.equal(res.status, 200);
   assert.equal(res.headers.get('X-Served-By'), 'cirrus-real');
@@ -175,7 +78,7 @@ function pathRequest(path, init = {}) {
 //    reaches acceptCirrusHmrWs and gets its 426 — proof the port route now
 //    routes `/__nimbus_hmr` to the in-DO handler rather than the registry.
 {
-  const self = makeWokenSession(HIBERNATED_REAL);
+  const self = wake(HIBERNATED_REAL);
   // Wake it first so cirrusReal is running.
   await handleFetch(self, hostRequest(`/port/${VITE_PORT}/`));
   const res = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/__nimbus_hmr`));
@@ -185,7 +88,7 @@ function pathRequest(path, init = {}) {
 
 // 4. The same in-DO HMR handling still works on `/preview/`.
 {
-  const self = makeWokenSession(HIBERNATED_REAL);
+  const self = wake(HIBERNATED_REAL);
   await handleFetch(self, pathRequest('/preview/'));
   const res = await handleFetch(self, pathRequest('/preview/__nimbus_hmr'));
   assert.equal(res.status, 426);
@@ -194,7 +97,7 @@ function pathRequest(path, init = {}) {
 
 // 5. Concurrent wake requests coalesce onto a single boot (no double facet).
 {
-  const self = makeWokenSession(HIBERNATED_REAL);
+  const self = wake(HIBERNATED_REAL);
   const [a, b] = await Promise.all([
     handleFetch(self, hostRequest(`/port/${VITE_PORT}/`)),
     handleFetch(self, hostRequest(`/port/${VITE_PORT}/index.html`)),
@@ -209,7 +112,7 @@ function pathRequest(path, init = {}) {
 //    served a navigation, for the shell's offer; `/preview/?port=N` is that
 //    port's document (the port registry's to report), not the door's.
 {
-  const self = makeWokenSession(HIBERNATED_REAL);
+  const self = wake(HIBERNATED_REAL);
   self.appDocuments = { vite: null, worker: null };
   const navigate = { headers: { 'Sec-Fetch-Mode': 'navigate' } };
   await handleFetch(self, pathRequest('/preview/', navigate));
@@ -222,6 +125,5 @@ function pathRequest(path, init = {}) {
   console.log('  [6] /preview/ reports its document policy; ?port=N and subresources do not');
 }
 
-await rm(outputDir, { recursive: true, force: true });
 
 console.log('port-route-real-vite-restore OK: real-vite persists, restores everywhere, and serves HMR in-DO');

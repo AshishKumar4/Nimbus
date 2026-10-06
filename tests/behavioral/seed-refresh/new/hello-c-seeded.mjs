@@ -9,7 +9,7 @@
 // AND `nimbus install clang && clang hello.c -o hello && ./hello`
 // produces the expected output, exercising the full integration.
 
-import { mintSession, Terminal, makeAsserter, stripAnsi } from '../../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, stripAnsi, hasOutputLine } from '../../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('seed-refresh/hello-c-seeded');
@@ -22,11 +22,6 @@ await t.waitForPrompt(60_000);
 
 // EXACT-line matcher — terminal echoes the command line itself, so
 // substring search would falsely match the echo.
-function hasOutputLine(stripped, marker) {
-  const lines = stripped.split(/\r?\n/).map((l) => l.trim());
-  return lines.some((l) => l === marker);
-}
-
 // 1. ~/hello.c exists on a fresh session.
 {
   const r = await t.run('ls /home/user/hello.c 2>&1', 10_000);

@@ -17,7 +17,7 @@
  * Self-contained but for the exports resolver: the build facet's runtime
  * bundles it (scripts/rolldown-facet/entry.mjs).
  */
-import { resolveExports, resolvePackageEntry } from '../_shared/exports-resolver.js';
+import { BUNDLER_IMPORT_CONDITIONS, bundlerConditions, createSyncBundlerResolver } from './bundler-resolution.js';
 /**
  * What a Vite dev server's modules read of their environment, as Vite's dev
  * values: `process.env.NODE_ENV` so React's CommonJS (and every other
@@ -51,7 +51,7 @@ export function prebundleBuildOptions(define) {
         format: 'esm',
         target: 'esnext',
         platform: 'browser',
-        conditions: ESM_CONDITIONS,
+        conditions: BUNDLER_IMPORT_CONDITIONS,
         mainFields: ['module', 'browser', 'main'],
         define: define && Object.keys(define).length > 0 ? { ...define } : undefined,
     };
@@ -60,22 +60,6 @@ export function prebundleBuildOptions(define) {
 export function sliceSources(slice) {
     return slice.flatMap((entry) => (entry.isDir ? [] : [entry.path]));
 }
-const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
-const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
-// Bundler-style swap: import './x.js' → ./x.ts on disk.
-const SWAPS = { js: ['.ts', '.tsx'], jsx: ['.tsx', '.ts'], mjs: ['.mts', '.ts'], cjs: ['.cts', '.ts'] };
-// Conditions per resolution. CJS `require('X')` callers need the `require`
-// condition so packages that ship a dual-export CJS trick (e.g.
-// @babel/runtime/helpers/X — `module.exports = fn; module.exports.default =
-// module.exports;`) resolve to the CJS file: the ESM helper declares only
-// `export { fn as default }`, which a CommonJS require would see as
-// `{ default: fn }`, and a caller that calls what it required crashes.
-// Node selects by the same rule: `require()` triggers `require`, `import`
-// triggers `import`. Affects every CJS package compiled with
-// @babel/preset-env's transform-runtime (react-textarea-autosize, the
-// @emotion/* CJS bundles, ...).
-const ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
-const CJS_CONDITIONS = ['require', 'node', 'browser', 'default'];
 function loaderOf(path) {
     if (path.endsWith('.ts') || path.endsWith('.mts') || path.endsWith('.cts'))
         return 'ts';
@@ -90,21 +74,6 @@ function loaderOf(path) {
     if (path.endsWith('.wasm') || path.endsWith('.node'))
         return 'binary';
     return 'js';
-}
-/** `p` with `.` and `..` segments resolved, its leading `/` kept. */
-function normalizePath(p) {
-    const out = [];
-    for (const seg of p.split('/')) {
-        if (seg === '' || seg === '.')
-            continue;
-        if (seg === '..') {
-            if (out.length > 0)
-                out.pop();
-            continue;
-        }
-        out.push(seg);
-    }
-    return (p.startsWith('/') ? '/' : '') + out.join('/');
 }
 const bare = (path) => !path.startsWith('/') && !path.startsWith('.') && !path.startsWith('#');
 /** Bundle `spec.specifier` from its slice with `build`. Never throws: a failure is a result. */
@@ -128,67 +97,16 @@ export async function prebundleSlice(spec, build) {
         for (let slash = p.lastIndexOf('/'); slash > 0; slash = p.lastIndexOf('/', slash - 1))
             dirs.add(p.slice(0, slash));
     }
-    const fileExists = (p) => files.has(norm(p));
-    const dirExists = (p) => dirs.has(norm(p));
-    const packageJson = (path) => {
-        try {
-            return JSON.parse(new TextDecoder().decode(files.get(norm(path))));
-        }
-        catch {
-            return null;
-        }
-    };
-    const tryResolve = (base) => {
-        const n = normalizePath(base);
-        for (const ext of EXTS)
-            if (fileExists(n + ext))
-                return n + ext;
-        const swap = /\.(js|mjs|cjs|jsx)$/.exec(n);
-        if (swap) {
-            const without = n.slice(0, n.length - swap[0].length);
-            for (const ext of SWAPS[swap[1]] ?? [])
-                if (fileExists(without + ext))
-                    return without + ext;
-        }
-        if (dirExists(n)) {
-            for (const index of INDEX_FILES)
-                if (fileExists(n + '/' + index))
-                    return n + '/' + index;
-        }
-        return null;
-    };
-    // `#name` against the `imports` of the importing module's own package:
-    // the first package.json up from it decides, as Node's spec says.
-    const resolvePackageImport = (specifier, fromDir) => {
-        for (let dir = fromDir.replace(/^\/+/, ''); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
-            const pkgJsonPath = '/' + dir + '/package.json';
-            if (!fileExists(pkgJsonPath))
-                continue;
-            const pkg = packageJson(pkgJsonPath);
-            const target = pkg?.imports ? resolveExports(pkg.imports, specifier) : null;
-            return target ? tryResolve('/' + dir + '/' + target.replace(/^\.\//, '')) : null;
-        }
-        return null;
-    };
-    const resolveBarePkg = (specifier, fromDir, conditions) => {
-        const parts = specifier.split('/');
-        const scoped = specifier.startsWith('@');
-        const pkgName = parts.slice(0, scoped ? 2 : 1).join('/');
-        const subpath = parts.slice(scoped ? 2 : 1).join('/');
-        for (let dir = fromDir.replace(/^\/+/, ''); dir; dir = dir.slice(0, Math.max(0, dir.lastIndexOf('/')))) {
-            const nm = '/' + dir + '/node_modules/' + pkgName;
-            if (!dirExists(nm))
-                continue;
-            const pkg = fileExists(nm + '/package.json') ? packageJson(nm + '/package.json') : null;
-            const entry = pkg ? resolvePackageEntry(pkg, subpath ? './' + subpath : '.', conditions) : null;
-            const resolved = (entry && tryResolve(nm + '/' + entry.replace(/^\.\//, '')))
-                || (subpath && tryResolve(nm + '/' + subpath))
-                || tryResolve(nm + '/index');
-            if (resolved)
-                return resolved;
-        }
-        return null;
-    };
+    // Synchronous, so the plugin's answer is settled when rolldown gets it
+    // (createSyncBundlerResolver).
+    const resolver = createSyncBundlerResolver({
+        isFile: (p) => files.has(norm(p)),
+        isDirectory: (p) => dirs.has(norm(p)),
+        readText: (p) => {
+            const bytes = files.get(norm(p));
+            return bytes ? new TextDecoder().decode(bytes) : null;
+        },
+    });
     const externalExact = new Set();
     const externalPrefixes = [];
     for (const pattern of spec.externals) {
@@ -204,7 +122,7 @@ export async function prebundleSlice(spec, build) {
             const at = (path) => (path ? { path, namespace: 'nimbus-slice' } : null);
             // `#name` first, so it never falls through to external and reaches the browser.
             if (args.path.startsWith('#') && args.resolveDir) {
-                const resolved = at(resolvePackageImport(args.path, args.resolveDir));
+                const resolved = at(resolver.resolvePackageImport(args.path, args.resolveDir));
                 if (resolved)
                     return resolved;
                 warnings.push(`unresolved subpath import "${args.path}" from ${args.importer || '?'} (no owning package.json#imports entry); marked external`);
@@ -216,18 +134,17 @@ export async function prebundleSlice(spec, build) {
             if (bare(args.path) && isExternal(args.path))
                 return { external: true };
             if (args.path.startsWith('/')) {
-                const resolved = at(tryResolve(args.path));
+                const resolved = at(resolver.resolveFile(args.path));
                 if (resolved)
                     return resolved;
             }
             if (args.path.startsWith('.') && args.resolveDir) {
-                const resolved = at(tryResolve(args.resolveDir + '/' + args.path));
+                const resolved = at(resolver.resolveFile(args.resolveDir + '/' + args.path));
                 if (resolved)
                     return resolved;
             }
             if (bare(args.path)) {
-                const conditions = args.kind === 'require-call' || args.kind === 'require-resolve' ? CJS_CONDITIONS : ESM_CONDITIONS;
-                const resolved = at(resolveBarePkg(args.path, args.resolveDir || '/home/user', conditions));
+                const resolved = at(resolver.resolveBarePackage(args.path, args.resolveDir || '/home/user', bundlerConditions(args.kind)));
                 if (resolved)
                     return resolved;
                 warnings.push(`unresolved bare import "${args.path}" from ${args.importer || '?'} → marked external`);

@@ -32,6 +32,7 @@ import type {
 import { CRED_KERNEL, type PackageRejectEntry, type VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { engineKey, type ProcessFiles, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { npmBinMap } from '@nimbus-sh/core/runtime/npm-bin-map.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { direntTypeIn } from '@nimbus-sh/core/vfs/dirent-type.js';
 import { handKernelArtifact, projectFs, type ProjectFs } from '../runtime/project-fs.js';
@@ -39,7 +40,7 @@ import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js'
 import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache, type LockfileEntry } from './cache.js';
 import {
-  computeHoistPlan, hoistPlacements,
+  hoistPlacements,
   type ResolvedPackage, type HoistPlan, type FetchFn, type PackagePlacement,
 } from './resolver.js';
 import { nestedPlacement, visiblePlacements } from './placement.js';
@@ -96,14 +97,15 @@ import {
   PRE_BUNDLE_SLICE_CAP_BYTES,
 } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { packageRangeSeparator } from './package-spec.js';
 import {
-  scanNamedImports,
+  scanProjectImports,
+  transformParser,
   namedImportSignature,
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
-  type NamedImportMap,
 } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
@@ -263,7 +265,19 @@ export class NpmInstaller {
     // installer is shared, the terminal it should speak to is not.
     const previousProgress = this.onProgress;
     if (opts?.onProgress !== undefined) this.onProgress = opts.onProgress;
-    const log = (msg: string) => this.onProgress?.(msg);
+    // This invocation's terminal, while the command runs. Work that outlives
+    // it (the background pre-bundle) still logs through `log`, and once the
+    // command has returned and the prompt is back, that goes to the console
+    // instead: never into the next command's output, nor this one's prompt.
+    const progress = this.onProgress;
+    let returned = false;
+    const log = (msg: string) => {
+      if (!returned) {
+        progress?.(msg);
+        return;
+      }
+      try { console.log('[npm:late] ' + msg); } catch {}
+    };
     this.npmLog = opts?.npmLog ?? (() => {});
 
     // Reset phase to 'idle' on any exit path so /api/_diag/memory
@@ -272,6 +286,7 @@ export class NpmInstaller {
     // a non-fatal mid-install throw.
     try { return await this._installInner(projDir, nmDir, opts, log, start); }
     finally {
+      returned = true;
       setInstallPhase('idle');
       this.npmLog = () => {};
       this.onProgress = previousProgress;
@@ -415,7 +430,7 @@ export class NpmInstaller {
     // ── Phase 2: Hoist ────────────────────────────────────────────────
     phaseStart = Date.now();
     setInstallPhase('hoist');
-    const hoistPlan = computeHoistPlan(resolved, nested);
+    const hoistPlan: HoistPlan = { root: resolved, nested };
     phases['hoist'] = Date.now() - phaseStart;
 
     // ── Prune ────────────────────────────────────────────────────────
@@ -556,88 +571,14 @@ export class NpmInstaller {
       await this.handKernelArtifact(principal, `/${engineDir}/node_modules/.nimbus-synthetic`);
       phaseStart = Date.now();
       setInstallPhase('bundle');
-      // ── Bug 1 (production reliability P4) — late-progress gating ───────────────
-      //
-      // Background:
-      //   The install command MUST resolve immediately (see the long
-      //   note above re: workerd isolate-kill paths that defeat
-      //   try/catch on awaits). We keep that invariant intact.
-      //
-      // Symptom we are fixing:
-      //   prebundleUsedModules's `finally` block emits a "Pre-bundle
-      //   complete:" line via this.onProgress (installer.ts:1548).
-      //   onProgress is the closure
-      //   `(msg) => ctx.stdout.write('[npm] ' + msg + '\n')` captured
-      //   from the npm registry handler in
-      //   src/session/init.ts:1228 / :1723. After install() returns,
-      //   the npm command-handler returns to the shell, the shell
-      //   prints its prompt, and THEN the orphan promise's safeProgress
-      //   fires — visually corrupting the freshly-rendered prompt
-      //   ("user@nimbus:~/example-app$ [npm] Pre-bundle complete: ...").
-      //
-      // Fix:
-      //   Suppress writes to ctx.stdout once install() has returned.
-      //   Pre-bundle progress is still observable via wrangler dev
-      //   console (console.log) and via /api/_diag/memory's
-      //   recordPreBundleSummary aggregate, but it does NOT touch the
-      //   user's interactive terminal after the prompt has redrawn.
-      //
-      // Why a flag instead of swapping `this.onProgress`:
-      //   ensureNpmInstaller (nimbus-session.ts:892) caches the
-      //   installer on `this.npmInstaller` for the DO's lifetime. A
-      //   subsequent `npm install` invocation has a different ctx,
-      //   so the persistent onProgress reference is doubly wrong:
-      //   it's stale-after-this-invocation AND it would clobber the
-      //   next install's progress channel. Gating without mutating
-      //   keeps the swap simple and idempotent.
-      const installInvocationActive = { v: true };
-      // Replace this.onProgress (the persistent ctx.stdout closure)
-      // with a wrapper for the duration of pre-bundle. While the
-      // outer install() call is on the stack the wrapper forwards to
-      // the original; once we flip the flag in the cleanup below,
-      // the wrapper drops to a console.log fallback so traces aren't
-      // lost but ctx.stdout never sees them.
-      const persistentProgress = this.onProgress;
-      this.onProgress = (msg: string) => {
-        if (installInvocationActive.v) {
-          persistentProgress?.(msg);
-        } else {
-          // Late progress — pre-bundle finished AFTER install()
-          // returned. Surface to the wrangler dev console only so
-          // the user's shell prompt isn't corrupted.
-          try { console.log('[npm:late] ' + msg); } catch {}
-        }
-      };
-      // Fire-and-forget. Capture rejections so the orphan promise
-      // never raises an "unhandled rejection" warning. We do NOT
-      // await here — see Phase 7 design note above for why.
-      const prebundlePromise = this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred))
-        .catch((e: any) => {
-          // Routes through the installInvocationActive gate above,
-          // so this is safe to call from after-return: it lands on
-          // console.log instead of ctx.stdout.
-          log(`pre-bundle skipped: ${e?.message || String(e)}`);
-        })
-        .finally(() => {
-          // Always restore the persistent reference so a subsequent
-          // ensureNpmInstaller call (which doesn't reconstruct the
-          // installer) can still wire a fresh ctx.stdout closure.
-          this.onProgress = persistentProgress;
-        });
-      // Mark `void` so the linter / human reader knows we intentionally
-      // don't await this. The promise outlives the install command.
-      void prebundlePromise;
+      // Fire-and-forget: the install resolves now and the bundle finishes in
+      // the background (see the Phase 7 design note above). Its progress goes
+      // through this invocation's `log`, which turns to the console once the
+      // command has returned, so a late line never lands on the redrawn
+      // prompt or in another install's output.
+      void this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log)
+        .catch((e: unknown) => log(`pre-bundle skipped: ${errorText(e)}`));
       phases['bundle'] = Date.now() - phaseStart;
-      // The flag flip happens AFTER install() returns its result.
-      // We schedule it inline by closing over the same object;
-      // the `finally` at install()'s top level (line 173) gets us
-      // to the right boundary. We piggyback there via a deferred
-      // microtask: when the outer try{} returns the result object,
-      // the microtask flips the flag; pre-bundle's safeProgress
-      // calls after this point land on console.log.
-      queueMicrotask(() => {
-        installInvocationActive.v = false;
-      });
     }
 
     setInstallPhase('done');
@@ -2037,6 +1978,7 @@ export class NpmInstaller {
     projDir: string,
     installed: Map<string, ResolvedPackage>,
     fs: CredentialedVfs,
+    progress: (msg: string) => void,
   ): Promise<void> {
     // Pre-bundle runs in the session's build facet (facets/prebundle-pool.ts),
     // from slices the supervisor walks (npm/pre-bundle-facet.ts); the
@@ -2063,7 +2005,8 @@ export class NpmInstaller {
       return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
     };
 
-    const usedSpecifiers = this.scanBareImports(fs, projDir);
+    const parse = transformParser(this.esbuild);
+    const { bareSpecifiers: usedSpecifiers, namedImports } = await scanProjectImports(fs, projDir, parse);
 
     // Vite plugins / postcss plugins / build-time tools NEVER ship to the
     // browser — they're invoked server-side by vite's own plugin
@@ -2098,9 +2041,7 @@ export class NpmInstaller {
 
     // Determine which specifiers can actually be resolved to an installed package.
     const toBuild = usedSpecifiers.filter(spec => {
-      const pkgName = spec.startsWith('@')
-        ? spec.split('/').slice(0, 2).join('/')
-        : spec.split('/')[0];
+      const pkgName = packageNameFromSpecifier(spec);
       if (isServerPluginPkg(pkgName)) return false;
       return installed.has(pkgName);
     });
@@ -2148,8 +2089,6 @@ export class NpmInstaller {
       syntheticReferencedFiles?: string[];
     };
     const pending: PendingSpec[] = [];
-    // Scan once up front; reused across barrel packages.
-    const namedImports: NamedImportMap = scanNamedImports(fs, projDir);
     for (const specifier of toBuild) {
       const existing = this.cache.getEsmBundle(specifier);
 
@@ -2157,7 +2096,7 @@ export class NpmInstaller {
       if (!entryPath) continue;
 
       if (/\.(wasm|node)$/i.test(entryPath)) {
-        this.onProgress?.(`  skipped pre-bundle for ${specifier} (native/WASM)`);
+        progress(`  skipped pre-bundle for ${specifier} (native/WASM)`);
         continue;
       }
 
@@ -2179,7 +2118,7 @@ export class NpmInstaller {
           // hard-error with a remediation message if a request comes
           // in for it. Users who hit this need to add a static named
           // import for the icons they reference dynamically.
-          this.onProgress?.(
+          progress(
             `  skipped pre-bundle for ${specifier}: barrel (${fileCount} files) ` +
             `with no static named imports detected. Add explicit imports to enable bundling.`,
           );
@@ -2195,12 +2134,12 @@ export class NpmInstaller {
           fs.mkdir(entryPath.substring(0, entryPath.lastIndexOf('/')), { recursive: true });
           fs.writeFile(entryPath, synth.code);
         } catch (e: any) {
-          this.onProgress?.(
+          progress(
             `  failed to write synthetic entry for ${specifier}: ${e?.message || e}`,
           );
           continue;
         }
-        this.onProgress?.(
+        progress(
           `  synthesized entry for ${specifier} (barrel: ${fileCount} files; ` +
           `${names.size} static imports → tree-shaken bundle)`,
         );
@@ -2237,7 +2176,7 @@ export class NpmInstaller {
     // allocation sources from runtime counters that ARE accurate
     // (DiagCounters singleton + SqliteVFS.getStats()).
     const memBefore = this._estimateSupervisorHeapMiB();
-    this.onProgress?.(
+    progress(
       `Pre-bundling ${pending.length} modules... (supervisor heap ${memBefore.toFixed(1)} MiB)`,
     );
 
@@ -2306,7 +2245,7 @@ export class NpmInstaller {
     // pre-bundle phase keeps running. Same pattern is used in the
     // summary finally block below.
     const safeProgress = (msg: string): void => {
-      try { this.onProgress?.(msg); } catch (e: any) {
+      try { progress(msg); } catch (e: any) {
         try { console.error('[pre-bundle] onProgress threw:', e?.message || e); } catch {}
       }
     };
@@ -2376,9 +2315,9 @@ export class NpmInstaller {
               // 28 MiB cap. (lucide-react@0.460 ships ~5-15 MiB across
               // 3940 files; full walk hits cap on Mossaic-scale projects
               // with 70+ imported icons.)
-              const scoped = buildScopedSliceForSynthetic(
+              const scoped = await buildScopedSliceForSynthetic(
                 fs, nmDir, packageNameFromSpecifier(next.specifier),
-                next.syntheticReferencedFiles,
+                next.syntheticReferencedFiles, parse,
               );
               const built = { slice: scoped.entries, totalBytes: scoped.totalBytes };
               // Append the synthetic entry file itself (lives outside
@@ -2571,97 +2510,6 @@ export class NpmInstaller {
   }
 
   /**
-   * Scan project source files for bare import specifiers.
-   * Returns unique bare specifiers including subpaths (e.g., both `react`
-   * AND `react/jsx-runtime` so each can be pre-bundled separately with the
-   * correct externals for shared-runtime isolation).
-   *
-   * Also injects common JSX-runtime subpaths derived from esbuild's automatic
-   * JSX transform: if `react` is imported, we also queue `react/jsx-runtime`
-   * and `react/jsx-dev-runtime` because the compiled JSX output imports from
-   * them even if the source never wrote `import ... from "react/jsx-runtime"`.
-   */
-  private scanBareImports(fs: CredentialedVfs, projDir: string): string[] {
-    const imports = new Set<string>();
-    const scanExts = new Set(['.ts', '.tsx', '.jsx', '.js', '.mjs']);
-    // Files we deliberately skip at the project root: their imports run
-    // server-side (vite plugins, postcss/tailwind config, etc.), never in
-    // the browser, so pre-bundling their bare specifiers as if they were
-    // browser modules is wasted work that exposes us to esbuild fs-shim
-    // limits (e.g. @tailwindcss/vite triggers `readdir(".")` inside
-    // esbuild → "Cannot read directory '.': not implemented on js" → the
-    // ensuing combined heap pressure of 30+ pending pre-bundles + dev
-    // start has been observed crashing the supervisor on Mossaic-scale
-    // projects). The /preview/@modules/ path never serves these
-    // specifiers; vite's own plugin resolver loads them at server boot.
-    const isServerOnlyTopLevel = (name: string): boolean => {
-      // vite.config.ts/js/mjs/cjs and *.config.{ts,js,mjs,cjs} at the
-      // project root. Limited to depth 0 to avoid filtering legitimate
-      // browser code that happens to live under e.g. src/config/foo.ts.
-      return /^(?:vite|vitest|astro|rollup|tsup|tailwind|postcss|prettier|eslint|stylelint|rolldown)\.config\.[mc]?[jt]s$/.test(name)
-          || /\.config\.[mc]?[jt]s$/.test(name) && name.split('.').length === 3;
-    };
-
-    const walk = (dir: string, depth: number) => {
-      if (depth > 5) return;
-      try {
-        for (const entry of fs.readdir(dir)) {
-          if (entry.name === 'node_modules' || entry.name === '.git' ||
-              entry.name === 'dist' || entry.name === 'build') continue;
-          const path = dir + '/' + entry.name;
-          if (entry.type === 'directory') {
-            walk(path, depth + 1);
-            continue;
-          }
-          // Server-only config files at the project root (depth 0) are
-          // skipped — their imports are not browser modules.
-          if (depth === 0 && isServerOnlyTopLevel(entry.name)) continue;
-          const dotIdx = entry.name.lastIndexOf('.');
-          if (dotIdx < 0) continue;
-          const ext = entry.name.substring(dotIdx);
-          if (!scanExts.has(ext)) continue;
-
-          try {
-            const code = fs.readFileString(path);
-            const re = /(?:from\s+|import\s*\(?\s*)["']([^./][^"']*?)["']/g;
-            let m;
-            while ((m = re.exec(code)) !== null) {
-              const spec = m[1];
-              // Keep the full specifier (including subpaths) so each is
-              // pre-bundled separately with the appropriate externals.
-              // Strip any trailing query string (?v=... etc.)
-              const clean = spec.split('?')[0];
-              imports.add(clean);
-
-              // Also add the top-level package name so its main entry is
-              // pre-bundled even if only a subpath was imported.
-              const pkgName = clean.startsWith('@')
-                ? clean.split('/').slice(0, 2).join('/')
-                : clean.split('/')[0];
-              imports.add(pkgName);
-            }
-
-            // If any .tsx/.jsx file is present and uses JSX automatic runtime
-            // (the default), esbuild injects imports from react/jsx-runtime
-            // even though the source never wrote them explicitly. Queue the
-            // runtime packages so they get pre-bundled with the correct
-            // externals.
-            if (ext === '.tsx' || ext === '.jsx') {
-              if (imports.has('react')) {
-                imports.add('react/jsx-runtime');
-                imports.add('react/jsx-dev-runtime');
-              }
-            }
-          } catch { /* skip unreadable files */ }
-        }
-      } catch { /* skip unreadable dirs */ }
-    };
-
-    walk(projDir, 0);
-    return [...imports];
-  }
-
-  /**
    * Resolve a package's entry point to a VFS path.
    */
   /**
@@ -2678,18 +2526,7 @@ export class NpmInstaller {
    *   4. Try extensions and index-file fallbacks
    */
   private resolvePackageEntryPath(fs: CredentialedVfs, specifier: string, nmDir: string): string | null {
-    // Parse out pkgName and subpath
-    let pkgName: string;
-    let subpath: string;
-    if (specifier.startsWith('@')) {
-      const parts = specifier.split('/');
-      pkgName = parts.slice(0, 2).join('/');
-      subpath = parts.slice(2).join('/');
-    } else {
-      const parts = specifier.split('/');
-      pkgName = parts[0];
-      subpath = parts.slice(1).join('/');
-    }
+    const { name: pkgName, subpath } = splitBareSpecifier(specifier);
 
     const pkgDir = nmDir + '/' + pkgName;
     const pkgJsonPath = pkgDir + '/package.json';
@@ -2846,7 +2683,7 @@ function parseExplicitPackageSpec(spec: string): { name: string; range: string }
     };
   }
 
-  const rangeAt = findPackageRangeSeparator(spec);
+  const rangeAt = packageRangeSeparator(spec);
   if (rangeAt >= 0) {
     return {
       name: spec.slice(0, rangeAt),
@@ -2854,14 +2691,6 @@ function parseExplicitPackageSpec(spec: string): { name: string; range: string }
     };
   }
   return { name: spec, range: 'latest' };
-}
-
-function findPackageRangeSeparator(spec: string): number {
-  if (!spec) return -1;
-  if (spec[0] !== '@') return spec.indexOf('@');
-  const slash = spec.indexOf('/');
-  if (slash < 0) return -1;
-  return spec.indexOf('@', slash + 1);
 }
 
 function safeJsonParse<T>(json: string, fallback: T): T {

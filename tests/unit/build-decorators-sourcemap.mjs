@@ -9,6 +9,7 @@ import assert from 'node:assert/strict';
 import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { buildWithRolldown } from '../../packages/core/src/runtime/rolldown-build.ts';
+import { originalPosition } from './lib/sourcemap-vlq.mjs';
 
 const fromWorker = createRequire(new URL('../../packages/worker/package.json', import.meta.url));
 const api = {
@@ -17,28 +18,6 @@ const api = {
   parseSync: (await import(fromWorker.resolve('rolldown/experimental'))).parseSync,
 };
 
-/** The original line (1-based) a generated position maps to: the source map's `mappings`, decoded. */
-function originalLine(sourceMap, line, column) {
-  const B64 = 'ABCDEFGHIJKLMNOPQRSTUVWXYZabcdefghijklmnopqrstuvwxyz0123456789+/';
-  const state = [0, 0, 0, 0];
-  let found = null;
-  sourceMap.mappings.split(';').forEach((segments, generated) => {
-    let col = 0;
-    for (const segment of segments.split(',').filter(Boolean)) {
-      const fields = [];
-      for (let i = 0, value = 0, shift = 0; i < segment.length; i++) {
-        const digit = B64.indexOf(segment[i]);
-        value += (digit & 31) << shift;
-        if (digit & 32) shift += 5;
-        else { fields.push(value & 1 ? -(value >>> 1) : value >>> 1); value = 0; shift = 0; }
-      }
-      col += fields[0];
-      for (let i = 1; i < fields.length; i++) state[i - 1] += fields[i];
-      if (generated === line - 1 && fields.length > 1 && col <= column) found = state[1] + 1;
-    }
-  });
-  return found;
-}
 
 const FLAT = `const order: string[] = [];
 const d = (tag: string) => () => { order.push(tag); };
@@ -110,7 +89,7 @@ for (const [name, SOURCE, expected, calls] of [
   for (const call of calls) {
     const at = lines.findIndex((line) => line.includes(call));
     assert.ok(at >= 0, `${name}: the call ${call} is in the output`);
-    const original = originalLine(map, at + 1, lines[at].indexOf(call));
+    const [original] = originalPosition(map, at + 1, lines[at].indexOf(call)) ?? [];
     const decorator = `@${call.replace(/"/g, "'")}`;
     assert.equal(sourceLines[original - 1]?.trim().startsWith(decorator), true, `${name}: ${call} maps to line ${original}: ${sourceLines[original - 1]}`);
   }

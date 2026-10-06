@@ -14,17 +14,9 @@
 // runs, 7.4M states), ran once with no violation (83 CPU-minutes); these
 // files are the sample that fits the suite's per-file budget.
 
-import { checkFamilies } from './lib/ledger-protocol-model.mjs';
+import { checkFamilies, threeHolderCases } from './lib/ledger-protocol-model.mjs';
 
-const cases = [];
-const rotations = [[['q'], ['q', 'b'], ['q', 's']], [['q', 'b'], ['q', 's'], ['q']], [['q', 's'], ['q'], ['q', 'b']]];
 // Side by side and a chain here; a fork in dynamic-worker-protocol-model-three-fork.
-for (const [shape, parents] of [['side', ['R', 'R', 'R']], ['chain', ['R', 0, 1]]]) {
-  for (const children of rotations) {
-    const family = children.map((c, i) => ({ parent: parents[i], children: c }));
-    for (const focus of shape === 'side' ? [null] : [10, 20, 30]) cases.push([family, focus]);
-  }
-}
-
+const cases = [...threeHolderCases('side'), ...threeHolderCases('chain')];
 await checkFamilies(cases);
 console.log('ok - dynamic-worker-protocol-model-three (three holders: no refusal while one can progress, and one whenever all are stuck)');

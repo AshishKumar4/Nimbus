@@ -14,28 +14,18 @@
 
 import { OXC_WASM_ASSET_PATH, OXC_WASM_SHA256 } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_ASSET_PATH, OXC_FACET_SHA256 } from '../oxc-facet-artifact.generated.js';
-import { fetchStagedBytes, fetchStagedText, type StagedAsset, type StagedSourceEnv } from './staged-source.js';
+import { fetchStagedBytes, fetchStagedText, stagedAsset, type StagedSourceEnv } from './staged-source.js';
 
-function oxcAsset(label: string, path: string, sha256: string, contentType: string, stagedBy: string): StagedAsset {
-  return {
-    path,
-    l2Key: `https://nimbus-cache.invalid${path}`,
-    sha256,
-    contentType,
-    poisonedCache: 'reject',
-    missingBinding: `Nimbus: the transform facet requires an env.ASSETS binding (serves ${path})`,
-    fetchFailed: (res) => `${label} asset fetch failed: ${res.status} ${res.statusText} for ${path} — deploy is missing the asset`,
-    integrityFailed: (digest, from) =>
-      `${label} integrity check failed: expected ${sha256}, got ${digest} (${from}) for ${path} — ` +
-      `the staged asset is corrupt or out of sync; rerun ${stagedBy} and redeploy`,
-  };
-}
-
-const OXC_WASM_ASSET = oxcAsset('Oxc wasm', OXC_WASM_ASSET_PATH, OXC_WASM_SHA256, 'application/wasm', 'scripts/bundle-oxc-wasm.mjs');
-const OXC_FACET_ASSET = oxcAsset(
-  'transform facet runtime', OXC_FACET_ASSET_PATH, OXC_FACET_SHA256, 'text/javascript; charset=utf-8',
-  'scripts/bundle-facet-workers.mjs',
-);
+const OXC_WASM_ASSET = stagedAsset({
+  label: 'Oxc wasm', path: OXC_WASM_ASSET_PATH, l2Key: `https://nimbus-cache.invalid${OXC_WASM_ASSET_PATH}`,
+  sha256: OXC_WASM_SHA256, contentType: 'application/wasm',
+  requiredBy: 'the transform facet', stagedBy: 'scripts/bundle-oxc-wasm.mjs',
+});
+const OXC_FACET_ASSET = stagedAsset({
+  label: 'transform facet runtime', path: OXC_FACET_ASSET_PATH, l2Key: `https://nimbus-cache.invalid${OXC_FACET_ASSET_PATH}`,
+  sha256: OXC_FACET_SHA256, contentType: 'text/javascript; charset=utf-8',
+  requiredBy: 'the transform facet', stagedBy: 'scripts/bundle-facet-workers.mjs',
+});
 
 /** The Oxc wasm's bytes, for the transform facet's module map. */
 export function fetchOxcWasmBytes(env: StagedSourceEnv): Promise<ArrayBuffer> {

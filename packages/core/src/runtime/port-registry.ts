@@ -29,6 +29,7 @@
  */
 
 import { sanitizeUntrustedHeaders } from '../_shared/untrusted-request.js';
+import { errorText } from '../_shared/error-text.js';
 import { documentPolicyOf, type DocumentPolicy } from './document-policy.js';
 import type { RouteableFacetTarget } from './os-contracts.js';
 
@@ -475,7 +476,7 @@ export class PortRegistry {
       // see the full error + stack in Worker logs.
       console.error('[port-registry] routeRequest failed for port', port, ':', error);
       return new Response(
-        JSON.stringify({ error: errorMessage(error) }),
+        JSON.stringify({ error: errorText(error) }),
         {
           status: 502,
           headers: { 'Content-Type': 'application/json' },
@@ -538,8 +539,4 @@ function routeableFacetTarget(value: unknown): RouteableFacetTarget | null {
       ? { handleWebSocketRequest: webSocketMethod.bind(value) }
       : {}),
   };
-}
-
-function errorMessage(error: unknown): string {
-  return error instanceof Error ? error.message : String(error);
 }

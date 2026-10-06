@@ -24,9 +24,7 @@ export type VirtualRequestHandler = (req: VirtualRequest, res: VirtualResponse) 
 
 export type LoopbackRouter = (port: number, request: Request) => Promise<Response | null>;
 
-export function isLoopbackHost(host: string): boolean {
-	return host === 'localhost' || host === '127.0.0.1' || host === '0.0.0.0' || host === '[::1]';
-}
+export { isLoopbackHost } from '../../../_shared/loopback.js';
 
 /**
  * What a session's processes share besides their filesystem (which is
