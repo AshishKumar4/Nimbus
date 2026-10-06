@@ -225,6 +225,64 @@ function remote(files, delayMs = 2) {
   }
 }
 
+// ── A file copied onto a link is captured as the copy writes it: through
+//    the link, to the file it leads to; a copied link is its own ──
+{
+  const { vfs, pc } = namespace();
+  pc.writeFile('/docs/real.txt', enc.encode('old'));
+  pc.symlink('/docs/real.txt', '/docs/link');
+  await vfs.writeFile('/home/user/src.txt', enc.encode('copied'));
+  const { events } = record(vfs);
+  await vfs.copy('/home/user/src.txt', '/pc/docs/link');
+  assert.deepEqual(events.map(({ type, path, before, after }) => [type, path, before, after]), [
+    ['modify', '/pc/docs/link', 'old', 'copied'],
+  ]);
+}
+
+// ── Writes that change one file take turns, whatever path names it: a link
+//    on the backend, or the same backend mounted twice ──
+{
+  const { vfs } = namespace();
+  const backing = new MemoryVFS();
+  backing.writeFile('/real', enc.encode('old'));
+  backing.symlink('/real', '/link');
+  const shared = remote(backing);
+  vfs.mount('/r1', shared, { resolvesPaths: true });
+  vfs.mount('/r2', shared, { resolvesPaths: true });
+  const { events } = record(vfs);
+  await Promise.all([
+    vfs.writeFile('/r1/link', enc.encode('a')),
+    vfs.writeFile('/r1/real', enc.encode('b')),
+    vfs.writeFile('/r2/real', enc.encode('c')),
+  ]);
+  const chain = events.map(({ before, after }) => [before, after]);
+  assert.equal(chain.length, 3);
+  assert.equal(chain[0][0], 'old');
+  for (let index = 1; index < chain.length; index++) {
+    assert.equal(chain[index][0], chain[index - 1][1], `writes to one file under two names read each other's content: ${JSON.stringify(chain)}`);
+  }
+}
+
+// ── A synchronous write cannot run inside an asynchronous one's section on
+//    a backend with both faces: it is refused, as an asynchronous mount
+//    refuses a caller that cannot wait ──
+{
+  const { vfs } = namespace();
+  const backing = new MemoryVFS();
+  backing.writeFile('/f', enc.encode('old'));
+  const dual = remote(backing, 5);
+  const both = new Proxy(dual, { get: (target, key) => (key === 'sync' ? backing : Reflect.get(target, key)) });
+  vfs.mount('/dual', both, { resolvesPaths: true });
+  const { events } = record(vfs);
+  const pending = vfs.writeFile('/dual/f', enc.encode('async'));
+  await new Promise((resolve) => setTimeout(resolve, 1));
+  assert.throws(() => vfs.sync.writeFile('/dual/f', enc.encode('sync')), (error) => error.code === 'EAGAIN' && error.asyncMount === true,
+    'a synchronous write ran inside an asynchronous write\'s section');
+  await pending;
+  vfs.sync.writeFile('/dual/f', enc.encode('sync'));
+  assert.deepEqual(events.map(({ before, after }) => [before, after]), [['old', 'async'], ['async', 'sync']]);
+}
+
 // ── A root write the namespace does not show (beneath a mount point) is not
 //    the namespace's; a rename half shown is the delete it is there ──
 {
