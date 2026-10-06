@@ -694,10 +694,21 @@ export function checkConfig(relPath, {
   };
 }
 
+/**
+ * The preflight: every deployable target's isolation, and production's own
+ * config read, not deployed. A production deploy goes through checkConfig
+ * with its env (the pin, nothing else); reading it here as well means a pin
+ * removed from production alone fails this check, not the deploy.
+ */
 export function checkAll({ root = REPO_ROOT, configs = DEPLOYABLE_CONFIGS } = {}) {
-  return deployableTargets({ root, configs }).map(({ config, envName, preview }) => (preview
+  const results = deployableTargets({ root, configs }).map(({ config, envName, preview }) => (preview
     ? checkPreview(config, { root, envName, configs })
     : checkConfig(config, { root, envName, configs })));
+  for (const relPath of configs) {
+    if (loadConfig(relPath, root).env?.[PRODUCTION_ENV] === undefined) continue;
+    results.push(checkConfig(relPath, { root, envName: PRODUCTION_ENV, configs }));
+  }
+  return results;
 }
 
 /**

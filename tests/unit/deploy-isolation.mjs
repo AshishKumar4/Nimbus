@@ -61,13 +61,15 @@ const PROD_D1 = {
     [],
     'a non-production deploy resolves a production resource',
   );
-  assert.equal(results.length, deployableTargets().length);
+  // Every deploy target, and each config's production block read for its pin.
+  const productionBlocks = DEPLOYABLE_CONFIGS.filter((c) => loadConfig(c).env?.production !== undefined).length;
+  assert.equal(results.length, deployableTargets().length + productionBlocks);
   assert.ok(results.length > DEPLOYABLE_CONFIGS.length, 'env blocks are enumerated, not just defaults');
   assert.ok(
     results.some((r) => r.config === 'apps/hosted-demo/wrangler.jsonc' && r.env === 'staging'),
     'the staging environment is one of the checked targets',
   );
-  console.log(`  [1] ${results.length} deploy targets: none reaches production`);
+  console.log(`  [1] ${deployableTargets().length} deploy targets: none reaches production; ${productionBlocks} production pin(s) read`);
 }
 
 // [1b] The three tiers of apps/hosted-demo name three different databases
@@ -373,6 +375,18 @@ const PROD_D1 = {
     .violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256')), 'a throwaway without the pin is refused');
   assert.ok(checkConfig('wrangler.jsonc', { root, configs: ['wrangler.jsonc'], envName: 'production' })
     .violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256')), 'production without the pin is refused');
+  // The normal preflight (checkAll, the script's own run) reads production's
+  // pin too, though it never deploys it: a pin removed from production
+  // alone is caught before a production deploy is attempted.
+  const pinned = { ...cache, vars: { NIMBUS_RUNTIME_CATALOG_SHA256: hex } };
+  const productionOnly = fixture({ 'wrangler.jsonc': {
+    name: 'app', ...pinned,
+    env: { staging: { name: 'app-staging', ...pinned }, production: { name: 'app-prod', ...cache, vars: {} } },
+  } });
+  const preflight = checkAll({ root: productionOnly, configs: ['wrangler.jsonc'] });
+  assert.ok(preflight.some((r) => r.env === 'production' && r.violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256'))),
+    'production without the pin fails the normal preflight');
+  assert.ok(preflight.filter((r) => r.env !== 'production').every((r) => r.violations.length === 0), 'and only production');
   // Every block of the repo's own configs carries it.
   for (const result of checkAll()) {
     assert.ok(!result.violations.some((v) => v.includes('NIMBUS_RUNTIME_CATALOG_SHA256')), `${result.config} ${result.env ?? ''}`);
