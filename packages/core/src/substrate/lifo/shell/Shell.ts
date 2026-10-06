@@ -9,6 +9,7 @@ import { resolve } from '../utils/path.js';
 import { echoOutput } from '../utils/backslash-escapes.js';
 import { singleQuote } from '../../../_shared/shell-quote.js';
 import { isDecimalInteger, isShellIdentifier } from './names.js';
+import { assignArray, assignVariable, cloneArrays, type VariableStore } from './variables.js';
 import { DEFAULT_HOME } from '../../../constants.js';
 import { BOLD, GREEN, BLUE, RESET } from '../utils/colors.js';
 
@@ -22,7 +23,6 @@ import {
   type ProgramSpec,
   type ShellOptions,
   type TerminalFdState,
-  assignScalar,
 } from './interpreter.js';
 import { continuationState, lex } from './lexer.js';
 import { TokenKind } from './types.js';
@@ -1668,21 +1668,19 @@ export class Shell {
       for (const token of lex(text.slice(1, -1))) {
         if (token.kind === TokenKind.Word) elements.push(unquoteWord(token));
       }
-      delete this.env[name];
-      this.arrays.set(name, elements);
-      return true;
+      return assignArray(this.variableStore(), name, elements);
     }
-    assignScalar(this.env, this.arrays, name, text);
-    return true;
+    return assignVariable(this.variableStore(), name, text);
   }
 
   private async assignEnv(name: string, value: string, stderr: CommandOutputStream): Promise<boolean> {
-    if (this.readonlyNames.has(name)) {
-      (await stderr.write(`${name}: readonly variable\n`));
-      return false;
-    }
-    assignScalar(this.env, this.arrays, name, value);
-    return true;
+    if (assignVariable(this.variableStore(), name, value)) return true;
+    (await stderr.write(`${name}: readonly variable\n`));
+    return false;
+  }
+
+  private variableStore(): VariableStore {
+    return { env: this.env, arrays: this.arrays, readonlyNames: this.readonlyNames };
   }
 
   private snapshotShellState(): ShellStateFrame {
@@ -2091,13 +2089,6 @@ function restoreShellOptions(target: ShellOptions, source: ShellOptions): void {
 }
 
 /** Arrays are mutated in place, so a snapshot has to copy each one. */
-function cloneArrays(
-  arrays: Map<string, (string | undefined)[]>,
-): Map<string, (string | undefined)[]> {
-  const copy = new Map<string, (string | undefined)[]>();
-  for (const [name, elements] of arrays) copy.set(name, [...elements]);
-  return copy;
-}
 
 function replaceMap<K, V>(target: Map<K, V>, source: Map<K, V>): void {
   target.clear();

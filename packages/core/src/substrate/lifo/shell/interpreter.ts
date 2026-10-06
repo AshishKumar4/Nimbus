@@ -38,6 +38,7 @@ import {
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
 import { JobTable } from './jobs.js';
+import { arrayFor, assignArray, assignVariable, cloneArrays, restoreVariable, saveVariable, type SavedVariable } from './variables.js';
 import { ProcessRegistry } from './ProcessRegistry.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
@@ -277,11 +278,6 @@ type PositionalFrame = {
   args: string[];
 };
 
-/** A variable's complete binding: its scalar value, or its array, or neither. */
-type SavedVariable = {
-  scalar: string | undefined;
-  array: (string | undefined)[] | undefined;
-};
 
 export interface InterpreterConfig {
   env: Record<string, string>;
@@ -313,16 +309,6 @@ export interface InterpreterConfig {
  * `a=(x y); a=plain` sets `a[0]` and leaves `a[1]` alone, which is bash's rule
  * and the reason a variable's type only changes through `unset`.
  */
-export function assignScalar(
-  env: Record<string, string>,
-  arrays: Map<string, (string | undefined)[]>,
-  name: string,
-  value: string,
-): void {
-  const array = arrays.get(name);
-  if (array === undefined) env[name] = value;
-  else array[0] = value;
-}
 
 
 
@@ -372,7 +358,7 @@ export class Interpreter {
       ...parent,
       env,
       jobTable: parent.jobTable.fork(),
-      arrays: new Map(Array.from(parent.arrays, ([name, elements]) => [name, [...elements]])),
+      arrays: cloneArrays(parent.arrays),
       getCwd: () => cwd,
       setCwd: (next: string) => { cwd = next; env.PWD = next; },
       options: { ...parent.options },
@@ -980,7 +966,7 @@ export class Interpreter {
     // Apply per-command assignments (temporary env)
     const saved = new Map<string, SavedVariable>();
     for (const assign of cmd.assignments) {
-      if (!saved.has(assign.name)) saved.set(assign.name, this.saveVariable(assign.name));
+      if (!saved.has(assign.name)) saved.set(assign.name, saveVariable(this.config, assign.name));
       if (!await this.applyAssignment(assign, expandCtx)) {
         (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
         return 1;
@@ -1134,7 +1120,7 @@ export class Interpreter {
     } finally {
       writeFailed = await this.flushFds(fds, name);
       // Restore env from per-command assignments
-      for (const [name, value] of saved) this.restoreVariable(name, value);
+      for (const [name, value] of saved) restoreVariable(this.config, name, value);
     }
     if (writeFailed && exitCode === 0) exitCode = 1;
 
@@ -1279,9 +1265,7 @@ export class Interpreter {
   }
 
   private assignEnv(name: string, value: string): boolean {
-    if (this.config.readonlyNames.has(name)) return false;
-    assignScalar(this.config.env, this.config.arrays, name, value);
-    return true;
+    return assignVariable(this.config, name, value);
   }
 
   /**
@@ -1291,57 +1275,17 @@ export class Interpreter {
   private async applyAssignment(assign: AssignmentNode, ctx: ExpandContext): Promise<boolean> {
     const { name } = assign;
     if (this.config.readonlyNames.has(name)) return false;
-
-    if (assign.elements !== undefined) {
-      const values = await expandWords(assign.elements, ctx);
-      const existing = assign.append ? this.config.arrays.get(name) ?? [] : [];
-      delete this.config.env[name];
-      this.config.arrays.set(name, [...existing, ...values]);
-      return true;
-    }
+    if (assign.elements !== undefined) return assignArray(this.config, name, await expandWords(assign.elements, ctx), assign.append);
 
     const value = await expandWord(assign.value, ctx);
-
     if (assign.subscript !== undefined) {
-      const array = this.arrayFor(name);
+      const array = arrayFor(this.config, name);
       const index = await evaluateSubscript(assign.subscript, array.length, ctx);
       array[index] = assign.append ? (array[index] ?? '') + value : value;
       return true;
     }
-
-    // A plain assignment to an array name lands on its first element, and
-    // `arr+=x` appends to that element rather than adding one.
-    const array = this.config.arrays.get(name);
-    if (array !== undefined) {
-      array[0] = assign.append ? (array[0] ?? '') + value : value;
-      return true;
-    }
-
-    this.config.env[name] = assign.append ? (this.config.env[name] ?? '') + value : value;
-    return true;
-  }
-
-  /** One variable's whole binding, so a scope can put it back exactly. */
-  private saveVariable(name: string): SavedVariable {
-    return { scalar: this.config.env[name], array: this.config.arrays.get(name) };
-  }
-
-  private restoreVariable(name: string, saved: SavedVariable): void {
-    if (saved.array === undefined) this.config.arrays.delete(name);
-    else this.config.arrays.set(name, saved.array);
-    if (saved.scalar === undefined) delete this.config.env[name];
-    else this.config.env[name] = saved.scalar;
-  }
-
-  /** The array behind a subscripted assignment, promoting a scalar if needed. */
-  private arrayFor(name: string): (string | undefined)[] {
-    const existing = this.config.arrays.get(name);
-    if (existing !== undefined) return existing;
-    const scalar = this.config.env[name];
-    const array: (string | undefined)[] = scalar === undefined ? [] : [scalar];
-    delete this.config.env[name];
-    this.config.arrays.set(name, array);
-    return array;
+    // On an array name, `arr=x` and `arr+=x` land on its first element.
+    return assignVariable(this.config, name, value, assign.append);
   }
 
   private async executeFunction(body: CompoundCommandNode, args: string[], io: ExecutionIo): Promise<number> {
@@ -1360,7 +1304,7 @@ export class Interpreter {
     } finally {
       const frame = this.localFrames.pop();
       if (frame !== undefined) {
-        for (const [name, saved] of frame) this.restoreVariable(name, saved);
+        for (const [name, saved] of frame) restoreVariable(this.config, name, saved);
       }
     }
 
@@ -1377,7 +1321,7 @@ export class Interpreter {
   private declareLocal(name: string): boolean {
     const frame = this.localFrames[this.localFrames.length - 1];
     if (frame === undefined) return false;
-    if (!frame.has(name)) frame.set(name, this.saveVariable(name));
+    if (!frame.has(name)) frame.set(name, saveVariable(this.config, name));
     delete this.config.env[name];
     this.config.arrays.delete(name);
     return true;
