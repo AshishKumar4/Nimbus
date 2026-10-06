@@ -1,5 +1,4 @@
 // @serial
-// The unchanged <100 ms launch-cost assertions need an uncontended sample.
 // A program in the inline node's realm cannot take its host down, and its
 // realm lives exactly as long as a Node process would (Kinu ask 17, review).
 //
@@ -21,7 +20,8 @@
 //   vfserror  a filesystem refusal keeps its class: rm({ force: true }) of a
 //             missing path succeeds; a plain error keeps its errno;
 //   cost      a trivial ES module, and CommonJS and ES modules that load http
-//             without a server, end as soon as their event loop is empty.
+//             without a server, end as soon as their event loop is empty:
+//             their run returns within 100 ms of their main script's end.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -208,24 +208,31 @@ switch (process.env.CASE) {
     break;
   }
   case 'cost': {
+    // Each program prints the time its main script ends, its event loop then
+    // empty; what is measured is how long after that its run returns. The
+    // launch before it (reading and compiling the modules) is not: it is CPU,
+    // and a loaded machine stretches it past any bound (a whole run took
+    // 60-136 ms on a machine at load 107, against 21 ms quiet), while the
+    // wait this guards against is idle (runNodeProgram's polls, five 30 ms
+    // sleeps after a trivial module's main script, 167 ms in all).
     await ws.fs.mkdir('/home/user/m', { recursive: true });
-    await ws.fs.writeFile('/home/user/m/one.mjs', 'export {};\nconsole.log(1);\n');
+    await ws.fs.writeFile('/home/user/m/one.mjs', 'export {};\nconsole.log(Date.now());\n');
     await run('node m/one.mjs');
     const time = async (line) => {
       const times = [];
       for (let i = 0; i < 5; i++) {
-        const t = performance.now();
         const r = await run(line);
+        const returned = Date.now();
         assert.equal(r.code, 0, r.err);
-        times.push(performance.now() - t);
+        times.push(returned - Number(r.out.trim()));
       }
       return times.sort((a, b) => a - b)[2];
     };
-    await ws.fs.writeFile('/home/user/m/http.mjs', "import 'http';\nconsole.log(1);\n");
+    await ws.fs.writeFile('/home/user/m/http.mjs', "import 'http';\nconsole.log(Date.now());\n");
     const trivial = await time('node m/one.mjs');
-    const http = await time(`node -e "require('http'); console.log(1)"`);
+    const http = await time(`node -e "require('http'); console.log(Date.now())"`);
     const esmHttp = await time('node m/http.mjs');
-    console.log(`  a trivial ES module: ${trivial.toFixed(1)} ms; loading http without a server: ${http.toFixed(1)} ms (CommonJS), ${esmHttp.toFixed(1)} ms (ES module)`);
+    console.log(`  from its main script's end to its run's return: a trivial ES module ${trivial.toFixed(1)} ms; loading http without a server ${http.toFixed(1)} ms (CommonJS), ${esmHttp.toFixed(1)} ms (ES module)`);
     assert.ok(trivial < 100, `a trivial ES module ends as its event loop empties (${trivial.toFixed(0)} ms)`);
     assert.ok(http < 100, `loading http without a server ends as its event loop empties (${http.toFixed(0)} ms)`);
     assert.ok(esmHttp < 100, `an ES module loading http without a server ends as its event loop empties (${esmHttp.toFixed(0)} ms)`);
