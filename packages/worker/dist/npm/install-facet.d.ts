@@ -30,7 +30,5 @@ export interface FacetPackageSpec {
     installRoot: string;
     /** mtime for every inode written by this package (ms since epoch). */
     mtime: number;
-    /** Chunk size used by the VFS (must match sqlite-vfs.ts CHUNK_SIZE). */
-    chunkSize: number;
 }
 //# sourceMappingURL=install-facet.d.ts.map

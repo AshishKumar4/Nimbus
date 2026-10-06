@@ -1,22 +1,47 @@
 /**
- * git/wave-writer.ts — a producer's writes into the session, as W7 waves.
+ * wave-writer.ts — a producer's writes into the session, as W7 waves.
  *
- * Every git write a facet makes (a clone's files, fetch and pull's objects
- * and refs) is a record: a file, a link, a directory, or a removal. The
- * writer buffers records into a wave and publishes the wave through one
- * supervisor.writeBatchStream() call. A wave closes before it would pass
- * W7's owned-path bound (files, removals and the directories above them, up
- * to the root) or its byte budget; a file larger than the budget travels in
- * a wave of its own, and one streamed from a source is never held whole.
+ * The one W7 producer: git's network facet (a clone's files, fetch and
+ * pull's objects and refs), npm's install facet (package files), and the
+ * session's own bulk writes (npm bin shims, the clang sysroot). Each write
+ * is a record: a file, a link, a directory, or a removal. The writer buffers
+ * records into a wave and publishes the wave through one writeBatchStream()
+ * call. A wave closes before it would pass W7's owned-path bounds (count and
+ * bytes: files, removals and the directories above them, up to the root) or
+ * its byte budget; a file larger than the budget travels in a wave of its
+ * own, and one streamed from a source is never held whole.
  *
  * Pipelining: one wave is in flight while the next one buffers. A wave
  * starts only once its predecessor has published, so a producer waits only
  * when it fills a second wave, and a failed wave is the last this writer
  * sends: the failure names its wave, and every later call rejects with it.
+ * Waves publish in order, so a record written after another is durable only
+ * if that one is: a completion marker written last proves what came before.
+ *
+ * Lost transport: a wave whose call failed before the session answered
+ * (classifyDoCall: a dropped connection, a replaced isolate, a storage
+ * reset, or an object that shed it as overloaded) or stayed unanswered past
+ * WAVE_ATTEMPT_DEADLINE_MS is sent again after a backoff, once the
+ * abandoned attempt's stream is errored so it reads nothing more.
+ * Re-sending is safe: a wave is the same paths and bytes, replacing. A shed
+ * wave never ran; the platform's advice is not to retry an overloaded
+ * object, but these waves are few and backed off, and npm measured the
+ * re-send recover a 119-package install that otherwise lost 31 packages to
+ * one shed. A wave the session answered (ok: false) is its verdict and is
+ * never retried, nor is a wave with a streamed source (its source is spent).
+ *
+ * Fault domains: with `failPerOwner`, a record's `meta` is its owner (an
+ * npm package), and a failed wave whose records all have owners fails those
+ * owners (their later records reject, their buffered ones are not sent)
+ * while the writer goes on for the rest. Otherwise, and for a failed wave
+ * carrying anything unowned (a directory or removal record, the pin, a
+ * record without meta), the failed wave is the last one sent.
  *
  * Admitting a record costs its own new directories, never a recount of the
  * wave: the owned set grows as records arrive, and a directory chain walk
  * stops at the first directory already owned (whose chain is owned).
+ * Records may be written concurrently (an install writes several packages
+ * at once): each is admitted and buffered in call order.
  *
  * Several writers may publish into one session at once (a clone's parallel
  * producers); each is its own stream, and the session takes them
@@ -27,6 +52,17 @@ export declare const WAVE_PATHS: number;
 export declare const WAVE_PATH_BYTES: number;
 /** Buffered content bytes that close a wave. */
 export declare const WAVE_BYTES: number;
+/**
+ * An attempt unanswered this long is taken as dropped. Measured on a
+ * throwaway (2026-09-28): an install shard held one writeBatchStream
+ * unanswered for 160 s.
+ */
+export declare const WAVE_ATTEMPT_DEADLINE_MS = 60000;
+/**
+ * Waits before each re-send of a wave whose transport was lost (±25%
+ * jitter): ~42 s in all, to outlast a coordinator queue deep enough to shed.
+ */
+export declare const WAVE_RETRY_BACKOFF_MS: readonly number[];
 /** The supervisor surface a writer publishes through. */
 export interface WaveSupervisor {
     writeBatchStream(stream: ReadableStream<Uint8Array>): Promise<unknown>;
@@ -82,6 +118,13 @@ export interface WaveWriterOptions<Meta = undefined> {
     onCut?: (cut: WaveCut<Meta>) => void;
     /** Called once per published wave, in order. */
     onWave?: (report: WaveReport) => void;
+    /** A record's `meta` names its owner, and a failed wave fails only the owners it carried. */
+    failPerOwner?: boolean;
+    /** The lost-transport policy's timings; tests shorten them. */
+    retry?: {
+        backoffMs: readonly number[];
+        attemptDeadlineMs: number;
+    };
 }
 export interface WaveStats {
     waves: number;
@@ -94,6 +137,8 @@ export interface WaveStats {
     ownershipVisits: number;
     maxWavePaths: number;
     maxWaveBytes: number;
+    /** Waves sent again after their transport was lost. */
+    retries: number;
 }
 export declare class WaveFailure extends Error {
     readonly wave: number;
@@ -118,8 +163,14 @@ export declare class WaveWriter<Meta = undefined> {
     private cutQueue;
     private sequence;
     private failure;
+    /** Owners (records' `meta`) whose records a failed wave carried. */
+    private readonly failedOwners;
     private readonly counters;
+    /** Mutations run one at a time, in call order: concurrent writers interleave by record. */
+    private mutations;
     constructor(options: WaveWriterOptions<Meta>);
+    /** Run `mutate` once every mutation called before it has finished. */
+    private exclusive;
     /**
      * A regular file. The writer takes `bytes`; a view sharing its buffer is
      * copied. `meta` rides with the record, back to the caller as it is cut.
@@ -165,11 +216,14 @@ export declare class WaveWriter<Meta = undefined> {
     };
     /** Whether a link is buffered or in flight: written, not yet published. */
     get hasUnpublishedSymlinks(): boolean;
-    /** Every record accepted so far is durable; rejects with the first failed wave. */
+    /** Every record written before this call is durable; rejects with the first failed wave. */
     flush(): Promise<void>;
     /** The wave in flight has settled; nothing new is cut. */
     settled(): Promise<void>;
     assertHealthy(): void;
+    /** The failure of the wave that carried `owner`'s records, if one failed. */
+    failureOf(owner: Meta): WaveFailure | undefined;
+    private assertOwnerHealthy;
     get failed(): WaveFailure | null;
     stats(): WaveStats;
     private key;
@@ -189,6 +243,11 @@ export declare class WaveWriter<Meta = undefined> {
      */
     private cut;
     private cutNow;
+    /**
+     * Send one wave, again while its transport is lost (see the module's
+     * comment), and answer with what the session answered.
+     */
+    private send;
     /** The directories the buffered records publish, shallowest first. */
     private publishedDirectories;
     private bufferPin;

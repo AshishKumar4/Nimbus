@@ -21,7 +21,8 @@ const payload = () => {
   return { inodes, chunks };
 };
 
-const reader = encodeWriteBatchStream(payload()).getReader();
+const given = payload();
+const reader = encodeWriteBatchStream(given).getReader();
 const parts = [];
 for (;;) {
   const { value, done } = await reader.read();
@@ -31,6 +32,21 @@ for (;;) {
 const bytes = parts.reduce((total, part) => total + part.byteLength, 0);
 assert.ok(parts.length <= Math.ceil(bytes / (256 * 1024)) + 2,
   `the encoder enqueued ${parts.length} chunks for a ${bytes}-byte wave of ${FILES} files`);
+
+// The encoder copied the caller's chunk bytes into buffers it built: none
+// was transferred, so a payload can be encoded again (a writer's re-send).
+assert.ok(given.chunks.every((chunk) => chunk.data.byteLength > 0 && chunk.data.buffer.byteLength > 0),
+  'encoding detached a caller buffer');
+const again = await decodeWriteBatchStream(encodeWriteBatchStream(given));
+let againBytes = 0;
+for await (const record of again.records) {
+  if (record.type === 'file-chunk') {
+    againBytes += record.data.byteLength;
+    record.retention.release();
+  }
+}
+assert.equal(againBytes, given.chunks.reduce((total, chunk) => total + chunk.data.byteLength, 0),
+  'the payload did not encode again whole');
 
 // The coalesced bytes decode to the same wave.
 const wire = new Uint8Array(bytes);

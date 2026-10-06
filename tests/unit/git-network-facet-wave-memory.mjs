@@ -12,13 +12,14 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 // A W7 wave holding a file larger than CHUNK_SIZE must not materialize a
-// second full copy of the file beside the writeBuffer original: chunk-record
-// copies are created lazily, one per encoder pull, while the stream is being
-// drained. An eager per-chunk slice() in buildPayload made the oversize
-// single-file wave (a packfile) peak at 2× its size — the facet OOM shape.
-// This test pins pull-time materialization by counting slices taken from the
-// pack-sized parent while the receiver drains the wave. The writes come from
-// a git fetch: its buffered fs is the facet's one wave writer.
+// second full copy of the file beside the writer's original. An eager
+// per-chunk slice() made the oversize single-file wave (a packfile) peak at
+// 2× its size — the facet OOM shape. Chunk records are views into the
+// record's bytes, and the encoder copies each into the bounded pull it
+// enqueues: no copy of the pack is ever sliced off it, at build time or
+// while the receiver drains the wave. This test pins that by counting slices
+// taken from the pack-sized parent. The writes come from a git fetch: its
+// buffered fs is the facet's one wave writer.
 
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-wave-memory-'));
 
@@ -55,12 +56,15 @@ export const git = {
   const vfs = rawVfs.as(CRED_KERNEL);
   const bridge = new SqliteRuntimeFsBridge(vfs, rawVfs);
 
-  // Count slices taken from the pack-sized parent while a wave is drained.
+  // Count slices taken from the pack-sized parent, while a wave is drained
+  // and outside one.
   let drainSliceLengths = null;
+  const buildSlices = [];
   Uint8Array.prototype.slice = function slice(...args) {
     const result = originalSlice.apply(this, args);
-    if (drainSliceLengths !== null && this.byteLength === PACK_SIZE) {
-      drainSliceLengths.push(result.byteLength);
+    if (this.byteLength === PACK_SIZE) {
+      if (drainSliceLengths !== null) drainSliceLengths.push(result.byteLength);
+      else buildSlices.push(result.byteLength);
     }
     return result;
   };
@@ -99,14 +103,9 @@ export const git = {
   const fetched = await response.json();
   assert.equal(fetched.success, true, fetched.error);
 
-  // Every chunk-sized copy of the pack was materialized while the receiver
-  // drained the wave — none eagerly at payload-build time. Exactly one copy
-  // per chunk, in chunk order.
-  assert.deepEqual(
-    allDrainSlices,
-    [CHUNK_SIZE, CHUNK_SIZE, CHUNK_SIZE, PACK_SIZE - 3 * CHUNK_SIZE],
-    'pack chunk copies were not materialized lazily during the wave drain',
-  );
+  // No copy of the pack was sliced off it, during the drain or before.
+  assert.deepEqual(allDrainSlices, [], 'the wave sliced copies of the pack');
+  assert.deepEqual(buildSlices, [], 'the wave sliced copies of the pack before it was sent');
 
   // The lazily-copied pack round-tripped byte-identically.
   const persisted = vfs.readFile(`wave-repo/.git/objects/pack/pack-${PACK_SHA}.pack`);

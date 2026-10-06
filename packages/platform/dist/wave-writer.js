@@ -1,39 +1,76 @@
 /**
- * git/wave-writer.ts — a producer's writes into the session, as W7 waves.
+ * wave-writer.ts — a producer's writes into the session, as W7 waves.
  *
- * Every git write a facet makes (a clone's files, fetch and pull's objects
- * and refs) is a record: a file, a link, a directory, or a removal. The
- * writer buffers records into a wave and publishes the wave through one
- * supervisor.writeBatchStream() call. A wave closes before it would pass
- * W7's owned-path bound (files, removals and the directories above them, up
- * to the root) or its byte budget; a file larger than the budget travels in
- * a wave of its own, and one streamed from a source is never held whole.
+ * The one W7 producer: git's network facet (a clone's files, fetch and
+ * pull's objects and refs), npm's install facet (package files), and the
+ * session's own bulk writes (npm bin shims, the clang sysroot). Each write
+ * is a record: a file, a link, a directory, or a removal. The writer buffers
+ * records into a wave and publishes the wave through one writeBatchStream()
+ * call. A wave closes before it would pass W7's owned-path bounds (count and
+ * bytes: files, removals and the directories above them, up to the root) or
+ * its byte budget; a file larger than the budget travels in a wave of its
+ * own, and one streamed from a source is never held whole.
  *
  * Pipelining: one wave is in flight while the next one buffers. A wave
  * starts only once its predecessor has published, so a producer waits only
  * when it fills a second wave, and a failed wave is the last this writer
  * sends: the failure names its wave, and every later call rejects with it.
+ * Waves publish in order, so a record written after another is durable only
+ * if that one is: a completion marker written last proves what came before.
+ *
+ * Lost transport: a wave whose call failed before the session answered
+ * (classifyDoCall: a dropped connection, a replaced isolate, a storage
+ * reset, or an object that shed it as overloaded) or stayed unanswered past
+ * WAVE_ATTEMPT_DEADLINE_MS is sent again after a backoff, once the
+ * abandoned attempt's stream is errored so it reads nothing more.
+ * Re-sending is safe: a wave is the same paths and bytes, replacing. A shed
+ * wave never ran; the platform's advice is not to retry an overloaded
+ * object, but these waves are few and backed off, and npm measured the
+ * re-send recover a 119-package install that otherwise lost 31 packages to
+ * one shed. A wave the session answered (ok: false) is its verdict and is
+ * never retried, nor is a wave with a streamed source (its source is spent).
+ *
+ * Fault domains: with `failPerOwner`, a record's `meta` is its owner (an
+ * npm package), and a failed wave whose records all have owners fails those
+ * owners (their later records reject, their buffered ones are not sent)
+ * while the writer goes on for the rest. Otherwise, and for a failed wave
+ * carrying anything unowned (a directory or removal record, the pin, a
+ * record without meta), the failed wave is the last one sent.
  *
  * Admitting a record costs its own new directories, never a recount of the
  * wave: the owned set grows as records arrive, and a directory chain walk
  * stops at the first directory already owned (whose chain is owned).
+ * Records may be written concurrently (an install writes several packages
+ * at once): each is admitted and buffered in call order.
  *
  * Several writers may publish into one session at once (a clone's parallel
  * producers); each is its own stream, and the session takes them
  * concurrently.
  */
-import { encodeWriteBatchStream, W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from '@nimbus-sh/platform/w7-frame.js';
-import { CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
-import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
+import { encodeWriteBatchStream, W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from './w7-frame.js';
+import { CHUNK_SIZE } from './limits.js';
+import { classifyDoCall, isRetryableDoCall } from './oom-classify.js';
+import { disposeRpcResource } from './rpc-dispose.js';
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
 export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 export const WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
 /** Buffered content bytes that close a wave. */
 export const WAVE_BYTES = 4 * 1024 * 1024;
+/**
+ * An attempt unanswered this long is taken as dropped. Measured on a
+ * throwaway (2026-09-28): an install shard held one writeBatchStream
+ * unanswered for 160 s.
+ */
+export const WAVE_ATTEMPT_DEADLINE_MS = 60_000;
+/**
+ * Waits before each re-send of a wave whose transport was lost (±25%
+ * jitter): ~42 s in all, to outlast a coordinator queue deep enough to shed.
+ */
+export const WAVE_RETRY_BACKOFF_MS = [250, 1_000, 3_000, 6_000, 12_000, 20_000];
 export class WaveFailure extends Error {
     wave;
     constructor(wave, cause) {
-        super(`git write wave ${wave} failed: ${cause instanceof Error ? cause.message : String(cause)}`);
+        super(`write wave ${wave} failed: ${cause instanceof Error ? cause.message : String(cause)}`, { cause });
         this.name = 'WaveFailure';
         this.wave = wave;
     }
@@ -83,8 +120,9 @@ function parseReceipts(result) {
     });
 }
 /**
- * A view of `bytes` that owns its buffer: the stream transfers what it
- * enqueues, and a view sharing a buffer with anything else would detach it.
+ * A view of `bytes` that owns its buffer. The writer holds a record until
+ * its wave publishes, and may send it again: a view would pin its whole
+ * parent buffer for that long, and see whatever the caller wrote to it next.
  */
 function ownedBytes(bytes) {
     if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength)
@@ -110,6 +148,8 @@ export class WaveWriter {
     cutQueue = Promise.resolve();
     sequence = 0;
     failure = null;
+    /** Owners (records' `meta`) whose records a failed wave carried. */
+    failedOwners = new Map();
     counters = {
         waves: 0,
         files: 0,
@@ -120,73 +160,94 @@ export class WaveWriter {
         ownershipVisits: 0,
         maxWavePaths: 0,
         maxWaveBytes: 0,
+        retries: 0,
     };
+    /** Mutations run one at a time, in call order: concurrent writers interleave by record. */
+    mutations = Promise.resolve();
     constructor(options) {
         this.options = options;
     }
     // ── Records ──────────────────────────────────────────────────────────
+    /** Run `mutate` once every mutation called before it has finished. */
+    exclusive(mutate) {
+        const run = this.mutations.then(mutate);
+        this.mutations = run.catch(() => { });
+        return run;
+    }
     /**
      * A regular file. The writer takes `bytes`; a view sharing its buffer is
      * copied. `meta` rides with the record, back to the caller as it is cut.
      */
-    async file(path, mode, bytes, meta) {
-        const key = this.key(path);
-        await this.admit(key, bytes.byteLength, true);
-        this.buffer(key, { kind: 'file', mode: mode & 0o111 ? 0o755 : 0o644, bytes: ownedBytes(bytes), meta });
-        await this.cutIfFull();
+    file(path, mode, bytes, meta) {
+        return this.exclusive(async () => {
+            const key = this.key(path);
+            this.assertOwnerHealthy(meta);
+            await this.admit(key, bytes.byteLength, true);
+            this.buffer(key, { kind: 'file', mode: mode & 0o111 ? 0o755 : 0o644, bytes: ownedBytes(bytes), meta });
+            await this.cutIfFull();
+        });
     }
     /** A symbolic link to `target`. */
-    async symlink(path, target, meta) {
-        const key = this.key(path);
-        const bytes = encoder.encode(target);
-        await this.admit(key, bytes.byteLength, true);
-        this.buffer(key, { kind: 'symlink', mode: 0o777, bytes, meta });
-        await this.cutIfFull();
+    symlink(path, target, meta) {
+        return this.exclusive(async () => {
+            const key = this.key(path);
+            const bytes = encoder.encode(target);
+            this.assertOwnerHealthy(meta);
+            await this.admit(key, bytes.byteLength, true);
+            this.buffer(key, { kind: 'symlink', mode: 0o777, bytes, meta });
+            await this.cutIfFull();
+        });
     }
     /**
      * A regular file of `size` bytes read from `chunks` as its wave drains:
      * the buffered wave is sent first, then this file travels alone, and the
      * call resolves once its source is consumed.
      */
-    async fileChunks(path, mode, size, chunks, meta) {
-        if (!Number.isSafeInteger(size) || size < 0)
-            throw new Error(`git write: ${path}: invalid size ${size}`);
-        const key = this.key(path);
-        this.assertHealthy();
-        if (this.hasBuffered())
+    fileChunks(path, mode, size, chunks, meta) {
+        return this.exclusive(async () => {
+            if (!Number.isSafeInteger(size) || size < 0)
+                throw new Error(`write wave: ${path}: invalid size ${size}`);
+            const key = this.key(path);
+            this.assertOwnerHealthy(meta);
+            if (this.hasBuffered())
+                await this.cut();
+            this.buffer(key, { kind: 'stream', mode: mode & 0o111 ? 0o755 : 0o644, size, source: chunks, meta });
             await this.cut();
-        this.buffer(key, { kind: 'stream', mode: mode & 0o111 ? 0o755 : 0o644, size, source: chunks, meta });
-        await this.cut();
-        if (this.inFlight)
-            await this.inFlight;
+            if (this.inFlight)
+                await this.inFlight;
+        });
     }
     /** A directory (an empty one, a gitlink): files' directories need no record. */
-    async directory(path) {
-        const key = this.key(path);
-        await this.admit(key, 0, true);
-        this.directories.add(key);
-        this.deletes.delete(key);
-        const tally = this.tally();
-        this.ownPath(key, true, tally);
-        this.walkChain(key, true, tally);
-        this.ownedPathBytes = tally.pathBytes;
-        await this.cutIfFull();
+    directory(path) {
+        return this.exclusive(async () => {
+            const key = this.key(path);
+            await this.admit(key, 0, true);
+            this.directories.add(key);
+            this.deletes.delete(key);
+            const tally = this.tally();
+            this.ownPath(key, true, tally);
+            this.walkChain(key, true, tally);
+            this.ownedPathBytes = tally.pathBytes;
+            await this.cutIfFull();
+        });
     }
     /**
      * Remove what stands at `path`, its subtree included. A buffered record at
      * the path is dropped; with `directory`, a buffered mkdir of it too.
      */
-    async remove(path, directory = false) {
-        const key = this.key(path);
-        await this.admit(key, 0, false);
-        this.drop(key);
-        if (directory)
-            this.directories.delete(key);
-        this.deletes.add(key);
-        const tally = this.tally();
-        this.ownPath(key, true, tally);
-        this.ownedPathBytes = tally.pathBytes;
-        await this.cutIfFull();
+    remove(path, directory = false) {
+        return this.exclusive(async () => {
+            const key = this.key(path);
+            await this.admit(key, 0, false);
+            this.drop(key);
+            if (directory)
+                this.directories.delete(key);
+            this.deletes.add(key);
+            const tally = this.tally();
+            this.ownPath(key, true, tally);
+            this.ownedPathBytes = tally.pathBytes;
+            await this.cutIfFull();
+        });
     }
     /**
      * A file every wave re-asserts until a wave carrying it publishes (a
@@ -230,12 +291,14 @@ export class WaveWriter {
         return this.symlinks > 0 || this.inFlightSymlinks > 0;
     }
     // ── Publication ──────────────────────────────────────────────────────
-    /** Every record accepted so far is durable; rejects with the first failed wave. */
-    async flush() {
-        await this.cut();
-        if (this.inFlight)
-            await this.inFlight;
-        this.assertHealthy();
+    /** Every record written before this call is durable; rejects with the first failed wave. */
+    flush() {
+        return this.exclusive(async () => {
+            await this.cut();
+            if (this.inFlight)
+                await this.inFlight;
+            this.assertHealthy();
+        });
     }
     /** The wave in flight has settled; nothing new is cut. */
     async settled() {
@@ -246,6 +309,18 @@ export class WaveWriter {
     assertHealthy() {
         if (this.failure)
             throw this.failure;
+    }
+    /** The failure of the wave that carried `owner`'s records, if one failed. */
+    failureOf(owner) {
+        return this.failedOwners.get(owner);
+    }
+    assertOwnerHealthy(owner) {
+        this.assertHealthy();
+        if (owner === undefined)
+            return;
+        const failure = this.failedOwners.get(owner);
+        if (failure)
+            throw failure;
     }
     get failed() {
         return this.failure;
@@ -318,10 +393,10 @@ export class WaveWriter {
         if (withParents)
             this.walkChain(parentOf(path), false, tally);
         if (tally.pathCount > W7_MAX_PATHS_PER_BATCH) {
-            throw new Error('git write wave exceeds ' + W7_MAX_PATHS_PER_BATCH + ' owned paths');
+            throw new Error('write wave exceeds ' + W7_MAX_PATHS_PER_BATCH + ' owned paths');
         }
         if (tally.pathBytes > W7_MAX_OWNED_PATH_BYTES) {
-            throw new Error('git write wave exceeds ' + W7_MAX_OWNED_PATH_BYTES + ' owned path bytes');
+            throw new Error('write wave exceeds ' + W7_MAX_OWNED_PATH_BYTES + ' owned path bytes');
         }
     }
     buffer(path, record) {
@@ -370,13 +445,22 @@ export class WaveWriter {
             this.counters.producerWaitMs += Date.now() - waitStarted;
         }
         this.assertHealthy();
+        // A wave that failed took its owners with it: their records still
+        // buffered are not sent (an owner's later record must not publish
+        // without its earlier ones).
+        if (this.failedOwners.size > 0) {
+            for (const [path, record] of [...this.records]) {
+                if (record.meta !== undefined && this.failedOwners.has(record.meta))
+                    this.drop(path);
+            }
+        }
         this.bufferPin();
         if (!this.hasBuffered())
             return;
         // A wave already sent can still publish after the deadline; none starts after it.
         const { deadline = null } = this.options;
         if (deadline !== null && Date.now() >= deadline) {
-            throw new Error('git clone phase deadline reached before starting a new write wave');
+            throw new Error('phase deadline reached before starting a new write wave');
         }
         const wave = ++this.sequence;
         const sentPin = this.pin;
@@ -407,22 +491,20 @@ export class WaveWriter {
                 streams.push({ path, source: record.source });
                 continue;
             }
+            // Views: the encoder copies a chunk's bytes into the buffers it
+            // enqueues, so the record's bytes stay whole for a re-send.
             const data = record.bytes;
-            if (size === 0)
-                continue;
-            if (size <= CHUNK_SIZE) {
-                chunks.push({ path, chunkId: 0, data });
-                continue;
-            }
-            // One chunk-sized copy at a time, made as the encoder reaches it: an
-            // eager copy per chunk would hold the file twice (a packfile's peak).
             for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
-                const start = chunkId * CHUNK_SIZE;
-                const end = Math.min(size, start + CHUNK_SIZE);
-                chunks.push({ path, chunkId, get data() { return data.slice(start, end); } });
+                chunks.push({ path, chunkId, data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
             }
         }
         const deletePaths = this.deletes.size > 0 ? [...this.deletes] : undefined;
+        const ownedOnly = this.options.failPerOwner === true
+            && files.length > 0
+            && files.every((file) => file.meta !== undefined)
+            && this.directories.size === 0
+            && this.deletes.size === 0
+            && (sentPin === null || !this.records.has(sentPin.path));
         const paths = this.owned.size;
         const symlinks = this.symlinks;
         this.options.onCut?.({ wave, mtimeMs: mtime, files, directories });
@@ -438,10 +520,9 @@ export class WaveWriter {
         this.symlinks = 0;
         this.counters.maxWavePaths = Math.max(this.counters.maxWavePaths, paths);
         this.counters.maxWaveBytes = Math.max(this.counters.maxWaveBytes, waveBytes);
-        const stream = encodeWriteBatchStream({ inodes, chunks, deletePaths, streams });
         this.inFlightSymlinks = symlinks;
         const sentAt = Date.now();
-        const published = this.options.supervisor.writeBatchStream(stream).then((result) => {
+        const published = this.send({ inodes, chunks, deletePaths, streams }).then((result) => {
             try {
                 const error = waveResultError(result);
                 if (error)
@@ -462,6 +543,16 @@ export class WaveWriter {
             }
         }).catch((error) => {
             const failure = error instanceof WaveFailure ? error : new WaveFailure(wave, error);
+            this.inFlightSymlinks = 0;
+            // A wave whose every record has an owner fails those owners; the
+            // writer goes on for the rest. Anything unowned in it (a directory,
+            // a removal, the pin, a record without meta) fails the writer.
+            if (ownedOnly) {
+                for (const file of files)
+                    if (file.meta !== undefined)
+                        this.failedOwners.set(file.meta, failure);
+                return;
+            }
             if (this.failure === null)
                 this.failure = failure;
             throw this.failure;
@@ -472,6 +563,44 @@ export class WaveWriter {
         // Its failure reaches whoever waits next; it is never unobserved.
         published.catch(() => { });
         this.inFlight = published;
+    }
+    /**
+     * Send one wave, again while its transport is lost (see the module's
+     * comment), and answer with what the session answered.
+     */
+    async send(payload) {
+        const { backoffMs, attemptDeadlineMs } = this.options.retry
+            ?? { backoffMs: WAVE_RETRY_BACKOFF_MS, attemptDeadlineMs: WAVE_ATTEMPT_DEADLINE_MS };
+        for (let attempt = 0;; attempt++) {
+            const attemptStream = abortable(encodeWriteBatchStream(payload));
+            const answer = this.options.supervisor.writeBatchStream(attemptStream.stream);
+            let deadline = null;
+            try {
+                return await Promise.race([
+                    answer,
+                    new Promise((_, reject) => {
+                        deadline = setTimeout(() => reject(new Error(`writeBatchStream unanswered after ${attemptDeadlineMs} ms`)), attemptDeadlineMs);
+                    }),
+                ]);
+            }
+            catch (error) {
+                const unanswered = error instanceof Error && error.message.startsWith('writeBatchStream unanswered');
+                const kind = classifyDoCall(error);
+                const lost = unanswered || isRetryableDoCall(kind) || kind === 'overloaded';
+                if (!lost || (payload.streams?.length ?? 0) > 0 || attempt >= backoffMs.length)
+                    throw error;
+                // The abandoned attempt can commit nothing more, and its late answer is dropped.
+                attemptStream.abort(error);
+                answer.then(disposeRpcResource, () => { });
+                this.counters.retries++;
+                const base = backoffMs[attempt];
+                await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(base * (0.75 + Math.random() * 0.5)))));
+            }
+            finally {
+                if (deadline !== null)
+                    clearTimeout(deadline);
+            }
+        }
     }
     /** The directories the buffered records publish, shallowest first. */
     publishedDirectories() {
@@ -512,6 +641,37 @@ export class WaveWriter {
             return;
         this.buffer(pin.path, { kind: 'file', mode: 0o644, bytes: pin.bytes.slice(), meta: undefined });
     }
+}
+/** A stream the writer can fail from its side: an abandoned attempt reads nothing more. */
+function abortable(stream) {
+    const reader = stream.getReader();
+    let target = null;
+    const source = {
+        type: 'bytes',
+        start(controller) {
+            target = controller;
+        },
+        async pull(controller) {
+            const next = await reader.read();
+            if (next.done)
+                controller.close();
+            else
+                controller.enqueue(next.value);
+        },
+        cancel(reason) {
+            return reader.cancel(reason);
+        },
+    };
+    return {
+        stream: new ReadableStream(source, { highWaterMark: 0 }),
+        abort(reason) {
+            try {
+                target?.error(reason);
+            }
+            catch { /* already closed */ }
+            reader.cancel(reason).catch(() => { });
+        },
+    };
 }
 export function createWaveWriter(options) {
     return new WaveWriter(options);

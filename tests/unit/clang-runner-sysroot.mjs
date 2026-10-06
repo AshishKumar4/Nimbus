@@ -11,8 +11,27 @@
 import assert from 'node:assert/strict';
 
 import { SYSROOT_FILES, commandContext, makeInvocationVfs } from './clang-runner-test-harness.mjs';
+import { W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH } from '../../packages/platform/src/w7-frame.ts';
 
 const SYSROOT = 'runtime/clang/share/clang/sysroot';
+
+// A sysroot whose paths are long unpacks whole: its waves close on owned
+// path bytes, not on a count alone. Red before: waves of W7_MAX_PATHS_PER_BATCH
+// - 8 paths of ~290 bytes passed W7's 256 KiB owned-path bound, and the
+// unpack failed "batch exceeds 262144 owned path bytes".
+{
+  const files = { ...SYSROOT_FILES };
+  const deep = 'd'.repeat(140);
+  for (let i = 0; i < W7_MAX_PATHS_PER_BATCH + 100; i++) files[`include/${deep}/${'h'.repeat(90)}-${i}.h`] = `#define X${i} ${i}\n`;
+  const pathBytes = `${SYSROOT}/include/${deep}/${'h'.repeat(90)}-0.h`.length;
+  assert.ok((W7_MAX_PATHS_PER_BATCH - 8) * pathBytes > W7_MAX_OWNED_PATH_BYTES, 'the fixture must pass the byte bound at the count bound');
+  const { root, run, user } = makeInvocationVfs({ sysroot: files });
+  user.writeFile('home/user/main.c', 'int main(void) { return 0; }');
+  assert.equal(await run(commandContext(['main.c', '-o', 'main.wasm']).ctx), 0);
+  const rel = `include/${deep}/${'h'.repeat(90)}-${W7_MAX_PATHS_PER_BATCH + 99}.h`;
+  assert.equal(user.readFileString(`${SYSROOT}/${rel}`), `#define X${W7_MAX_PATHS_PER_BATCH + 99} ${W7_MAX_PATHS_PER_BATCH + 99}\n`);
+  assert.equal(JSON.parse(root.readFileString(`${SYSROOT}/.nimbus-sysroot.json`)).files, Object.keys(files).length);
+}
 
 // The unpacked tree: every archive member, at its path, readable by the user.
 {

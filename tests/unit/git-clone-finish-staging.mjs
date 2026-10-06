@@ -12,7 +12,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { cloneFinish } from '../../packages/worker/src/git/pack/clone.ts';
 import { encodeIndexEntry } from '../../packages/worker/src/git/worktree/dircache.ts';
-import { createWaveWriter } from '../../packages/worker/src/git/wave-writer.ts';
+import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 
 const harness = createSqliteVfsTestHarness();
