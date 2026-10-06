@@ -71,9 +71,28 @@ export type EsmRecord =
     readonly expression: { readonly start: number; readonly end: number };
   };
 
+/**
+ * Names for code generated around `source`: a prefix its text does not hold
+ * anywhere, then a number, so no binding of the source is one of them.
+ */
+export function generatedNames(source: string): () => string {
+  let prefix = '__nimbus_m';
+  while (source.includes(prefix)) prefix += '_';
+  let count = 0;
+  return () => `${prefix}${count++}`;
+}
+
 export interface CommonJsEmitOptions {
   /** `async`: the module in an async IIFE (top-level await); `sync`: at the wrapper's top level. */
   readonly body: 'sync' | 'async';
+  /**
+   * Where the emitter's own names come from: generatedNames over the source,
+   * by default. A caller that generates names of its own around the module
+   * (a wrapper's parameters, rewritten expressions) passes the allocator it
+   * drew them from, generatedNames over its original source, so the two never
+   * meet.
+   */
+  readonly names?: () => string;
   /** The CommonJS exports object, as an expression. Default `module.exports`. */
   readonly exportsObject?: string;
   /** The CommonJS require function, as an expression. Default `require`. */
@@ -157,10 +176,7 @@ export function readEsmRecords(source: string): EsmRecord[] {
 
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string {
-  let prefix = '__nimbus_m';
-  while (source.includes(prefix)) prefix += '_';
-  let temps = 0;
-  const temp = () => `${prefix}${temps++}`;
+  const temp = options.names ?? generatedNames(source);
   const key = (name: string) => `[${JSON.stringify(name)}]`;
   const requireFunction = options.requireFunction ?? 'require';
   const requireOf = (specifier: string) => `${requireFunction}(${JSON.stringify(specifier)})`;

@@ -71,13 +71,16 @@ switch (process.env.CASE) {
     break;
   }
   case 'port': {
-    // CommonJS, so the import() is the realm's own, not node-compat's.
-    const reach = await run(`node -e "const p = import('node:worker_threads'); p.then(({ workerData }) => console.log('PORTS ' + JSON.stringify(Object.keys(workerData ?? {}))))"`);
+    // The realm's own import(), through an indirect eval: an import() in the
+    // program's text loads through the lifo loader (node-compat's
+    // worker_threads), as its require does; code a program builds at run
+    // time reaches the realm's real module.
+    const reach = await run(`node -e "const p = (0, eval)('import(\\'node:worker_threads\\')'); p.then(({ workerData }) => console.log('PORTS ' + JSON.stringify(Object.keys(workerData ?? {}))))"`);
     assert.equal(reach.out, 'PORTS []\n', `the realm's workerData holds no port: ${reach.err}`);
     // The real route: take the port off the guest's own next post, then send
     // the host what no host method answers.
     const escape = [
-      "const p = import('node:worker_threads');",
+      "const p = (0, eval)('import(\\'node:worker_threads\\')');",
       'p.then(({ MessagePort }) => {',
       '  const post = MessagePort.prototype.postMessage;',
       '  let taken = null;',
