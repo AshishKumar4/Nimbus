@@ -58,6 +58,8 @@ import {
 import { enc, dec } from '../_shared/bytes.js';
 import {
   decodeWriteBatchStream,
+  w7ChunkCount,
+  w7Chunks,
   type BatchChunkEntry,
   type BatchInodeEntry,
   type BatchWritePayload,
@@ -3677,7 +3679,7 @@ export class SqliteVFS {
         : made?.mode ?? this.creationMode(options?.mode ?? 0o666, cred),
       uid: prior?.uid ?? cred.uid,
       gid: prior?.gid ?? made!.gid,
-      chunkCount: size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE),
+      chunkCount: w7ChunkCount(size),
     };
   }
 
@@ -3690,16 +3692,8 @@ export class SqliteVFS {
   ): void {
     const data = typeof content === 'string' ? enc.encode(content) : content;
     const inode = this.fileWriteInode(path, data.length, options, cred);
-    const chunks: BatchChunkEntry[] = [];
-    for (let chunkId = 0; chunkId < inode.chunkCount; chunkId++) {
-      chunks.push({
-        path: inode.path,
-        chunkId,
-        data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-      });
-    }
     try {
-      this.writeBatch({ inodes: [inode], chunks }, cred, onCommit);
+      this.writeBatch({ inodes: [inode], chunks: w7Chunks(inode.path, data) }, cred, onCommit);
     } catch (error) {
       if (!(error instanceof SqliteVfsTransactionTooLargeError)) throw error;
       this.replaceFileWithStagedContent(inode, data, onCommit);
@@ -3719,7 +3713,6 @@ export class SqliteVFS {
     this.checkParentAccess(placed, cred);
     const data = enc.encode(target);
     const now = this.now();
-    const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
     const inode: BatchInodeEntry = {
       path: placed,
       parentPath: this.parentPath(placed),
@@ -3731,13 +3724,9 @@ export class SqliteVFS {
       mode: inodeTypeBits('symlink') | 0o777,
       uid: cred.uid,
       gid: this.creationAttrs(placed, 0o777, cred, false).gid,
-      chunkCount,
+      chunkCount: w7ChunkCount(data.length),
     };
-    const chunks = Array.from({ length: chunkCount }, (_, chunkId) => ({
-      path: placed,
-      chunkId,
-      data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-    }));
+    const chunks = w7Chunks(placed, data);
     this.writeBatch({ inodes: [inode], chunks }, cred);
   }
 
@@ -10249,9 +10238,7 @@ export class SqliteVFS {
     if (kind === 'directory' && inode.size !== 0) {
       throw vfsError('EINVAL', inode.path, 'directory size must be zero');
     }
-    const expectedChunkCount = kind === 'directory' || inode.size === 0
-      ? 0
-      : Math.ceil(inode.size / CHUNK_SIZE);
+    const expectedChunkCount = kind === 'directory' ? 0 : w7ChunkCount(inode.size);
     if (inode.chunkCount !== expectedChunkCount) {
       throw vfsError(
         'EINVAL',

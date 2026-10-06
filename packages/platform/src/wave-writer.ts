@@ -59,12 +59,13 @@ import {
   encodeWriteBatchStream,
   W7_MAX_OWNED_PATH_BYTES,
   W7_MAX_PATHS_PER_BATCH,
+  w7ChunkCount,
+  w7Chunks,
   type BatchChunkEntry,
   type BatchInodeEntry,
   type BatchStreamEntry,
   type BatchWritePayload,
 } from './w7-frame.js';
-import { CHUNK_SIZE } from './limits.js';
 import {
   LOST_CALL_RESEND_BACKOFF_MS,
   LOST_STREAM_ANSWER_MS,
@@ -653,7 +654,7 @@ export class WaveWriter<Meta = undefined> {
     for (const [path, record] of this.records) {
       files.push({ path, meta: record.meta });
       const size = record.kind === 'stream' ? record.size : record.bytes.byteLength;
-      const chunkCount = size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+      const chunkCount = w7ChunkCount(size);
       waveBytes += size;
       inodes.push({
         path, parentPath: parentOf(path),
@@ -666,10 +667,7 @@ export class WaveWriter<Meta = undefined> {
       }
       // Views: the encoder copies a chunk's bytes into the buffers it
       // enqueues, so the record's bytes stay whole for a re-send.
-      const data = record.bytes;
-      for (let chunkId = 0; chunkId < chunkCount; chunkId++) {
-        chunks.push({ path, chunkId, data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
-      }
+      chunks.push(...w7Chunks(path, record.bytes));
     }
     const deletePaths = this.deletes.size > 0 ? [...this.deletes] : undefined;
     const ownedOnly = this.options.failPerOwner === true

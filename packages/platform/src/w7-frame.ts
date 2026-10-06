@@ -75,6 +75,20 @@ export const W7_MAX_PATHS_PER_BATCH = 1024;
 export const W7_MAX_OWNED_PATH_BYTES = 256 * 1024;
 export const W7_MAX_RECORD_BYTES = 5 + 4 + MAX_CONTENT_ID_BYTES + 8 + CHUNK_SIZE;
 
+/** The wire chunks a file or link of `size` bytes travels as: CHUNK_SIZE each, the last short, none when empty. */
+export function w7ChunkCount(size: number): number {
+  return size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+}
+
+/** `data`, the content at `path`, as its wire chunks (w7ChunkCount): views of it, not copies. */
+export function w7Chunks(path: string, data: Uint8Array): BatchChunkEntry[] {
+  const chunks: BatchChunkEntry[] = [];
+  for (let chunkId = 0, count = w7ChunkCount(data.byteLength); chunkId < count; chunkId++) {
+    chunks.push({ path, chunkId, data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE) });
+  }
+  return chunks;
+}
+
 const enum RecordTag {
   BatchBegin = 1,
   Delete = 2,
@@ -743,7 +757,7 @@ function parseFileBegin(bytes: Uint8Array): FileBeginMetadata {
   }
   const size = safeInteger(value.size, 'file size');
   const chunkCount = u32(value.chunkCount, 'file chunk count');
-  const expected = size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
+  const expected = w7ChunkCount(size);
   if (chunkCount !== expected) {
     throw new Error(`w7-frame: ${base.path}: expected ${expected} chunks, got ${chunkCount}`);
   }
@@ -836,7 +850,7 @@ function normalizeInode(inode: BatchInodeEntry): W7DirectoryInode | W7ContentIno
     throw new Error(`w7-frame: directory ${inode.path} must have zero size and chunks`);
   }
   if (kind !== 'directory') {
-    const expected = inode.size === 0 ? 0 : Math.ceil(inode.size / CHUNK_SIZE);
+    const expected = w7ChunkCount(inode.size);
     if (inode.chunkCount !== expected) {
       throw new Error(`w7-frame: ${inode.path}: expected ${expected} chunks, got ${inode.chunkCount}`);
     }
