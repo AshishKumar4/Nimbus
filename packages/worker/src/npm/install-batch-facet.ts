@@ -30,6 +30,8 @@
 import type { FacetPackageSpec } from './install-facet.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
+
 declare const __nimbusWaveWriter: typeof import('@nimbus-sh/platform/wave-writer.js');
 
 declare const __nimbusUseRpcResult: <T, R>(
@@ -128,7 +130,7 @@ export const installPackagesInFacet = async function installPackagesInFacet(
       // [W7] Streaming bulk-write RPC. Bypasses the 32 MiB structured-clone
       // cap by sending the batch as a type:'bytes' ReadableStream<Uint8Array>
       // (W7 wire protocol — see src/_shared/w7-frame.ts).
-      writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<WriteBatchStreamResult>;
+      writeBatchStream: (stream: ReadableStream<Uint8Array>, fence: WaveFence) => Promise<WriteBatchStreamResult>;
       // [W4] Optional R2-cache RPC, addressed by the tarball's npm
       // integrity digest. The supervisor re-hashes whatever the shared
       // bucket returned before handing it back, so `bytes` need no
@@ -258,8 +260,8 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     onWave(report) {
       lastPublishedWave = report.wave;
     },
-    onResend(resend) {
-      console.warn(`[npm] write wave re-sent (${resend.attempt}/${resend.of}): ${resend.reason}`);
+    onResend(lost) {
+      console.warn('[npm] write wave re-sent', JSON.stringify(lost));
     },
   });
   const writeOwnedFile = async (ownerId: number, path: string, data: Uint8Array): Promise<void> => {

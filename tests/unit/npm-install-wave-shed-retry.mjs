@@ -36,7 +36,8 @@ globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
 // holds: the encoder copies a chunk's bytes into buffers it builds, so a
 // payload is never detached by sending it (w7-encode-coalesce pins that).
 globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
-const { WAVE_PATHS, WAVE_RETRY_BACKOFF_MS } = globalThis.__nimbusWaveWriter;
+const { WAVE_PATHS } = globalThis.__nimbusWaveWriter;
+const { LOST_CALL_RESEND_BACKOFF_MS: WAVE_RETRY_BACKOFF_MS } = await import('../../packages/platform/src/lost-call.ts');
 // The policy's backoffs (~42 s) and attempt deadline (60 s) run a thousand
 // times faster here.
 const realSetTimeout = globalThis.setTimeout;

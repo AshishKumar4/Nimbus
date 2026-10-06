@@ -8175,7 +8175,7 @@ export class SqliteVFS {
    */
   private writeStream(
     stream: ReadableStream<Uint8Array>,
-    options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string } = {},
+    options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string; admit?: () => void } = {},
     cred: VfsCred,
   ): Promise<WriteBatchStreamResult> {
     return this.spanning(() => this.consumeStream(stream, options, cred), options.mutationOwner);
@@ -8183,7 +8183,7 @@ export class SqliteVFS {
 
   private async consumeStream(
     stream: ReadableStream<Uint8Array>,
-    options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string },
+    options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string; admit?: () => void },
     cred: VfsCred,
   ): Promise<WriteBatchStreamResult> {
     const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
@@ -8241,6 +8241,8 @@ export class SqliteVFS {
 
     const flushGroup = (): void => {
       if (group.empty) return;
+      // In the turn that commits: a fenced wave overtaken by its re-send stops here.
+      options.admit?.();
       const plan = group.build();
       const leases = groupLeases;
       const inodes = groupInodes;
@@ -8313,6 +8315,7 @@ export class SqliteVFS {
 
     const flushDirectories = (): void => {
       if (pendingDirectories.length === 0) return;
+      options.admit?.();
       const inodes = pendingDirectories;
       pendingDirectories = [];
       const result = this.withMutationOwner(options.mutationOwner, () => (
@@ -8426,6 +8429,7 @@ export class SqliteVFS {
             phase = 'publish';
             flushGroup();
             flushDirectories();
+            options.admit?.();
             const affected = Math.max(1, this.collectSubtreeInodes([record.path]).length);
             this.withMutationOwner(options.mutationOwner, () => {
               this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);

@@ -347,7 +347,7 @@ function lossy(loss, losses = 1) {
   assert.equal(calls, 2);
   assert.ok(waited < 10 * policy.stallMs, `a wave nothing read was re-sent only after ${waited} ms`);
   assert.equal(resends.length, 1);
-  assert.match(resends[0].reason, /stalled: nothing read it for 300 ms/);
+  assert.match(resends[0]['do_call.lost_reason'], /stalled: nothing read it for 300 ms/);
   assert.deepEqual(new Uint8Array(target.files.get('r/f199').bytes), payloadOf(199));
 }
 

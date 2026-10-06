@@ -36,7 +36,7 @@
  * Delivery: every call reaches the session over a Durable Object stub the
  * platform can drop ("Network connection lost.", `retryable`). Reads are
  * re-sent on a fresh stub, and hedged: one unanswered after
- * SUPERVISOR_READ_HEDGE_AFTER_MS is sent again while it stays in flight.
+ * LOST_CALL_HEDGE_AFTER_MS is sent again while it stays in flight.
  * Filesystem mutations, on a binding that names its
  * host's incarnation, are re-sent under one delivery id that host applies at
  * most once (`_fsMutation`); on any other binding they are sent once.
@@ -74,6 +74,8 @@ import {
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { fsReadBatchRequestBytes, type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
 import { W7_MAX_RECORD_BYTES } from '@nimbus-sh/platform/w7-frame.js';
+import { LOST_CALL_HEDGE_AFTER_MS } from '@nimbus-sh/platform/lost-call.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 // cache metrics support: per-tier hit/miss counters.
 //
 // CRITICAL — SupervisorRPC is a WorkerEntrypoint (loopback service
@@ -137,16 +139,9 @@ function _estimateWriteBatchBytes(payload: any): number {
 // with composeFabric.
 
 // A process's filesystem read (SupervisorRPC → session) still unanswered
-// after this long is sent again on a fresh stub, the first left running and
-// the first answer taken (fabric do-calls `hedgeAfterMs`). Measured on a
-// throwaway under three concurrent sessions, 2026-09-28: none of the 521
-// read batches that answered took more than 5 s at the facet's side, the
-// session served each read it received without waiting on I/O, and the 11
-// attempts that stalled — none of which reached the session — were still
-// pending 110–560 s later. So an attempt past 5 s is one that is not coming
-// back, and a hedge then costs a duplicate read only when that measurement
-// was wrong.
-export const SUPERVISOR_READ_HEDGE_AFTER_MS = 5_000;
+// after LOST_CALL_HEDGE_AFTER_MS is sent again on a fresh stub, the first left
+// running and the first answer taken (fabric do-calls `hedgeAfterMs`): the
+// platform's lost call, measured and timed in @nimbus-sh/platform lost-call.ts.
 
 export class SupervisorRPC extends WorkerEntrypoint {
   /**
@@ -190,7 +185,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * from one facet left some attempts pending for minutes without reaching
    * the host, and the program waiting on them never exited
    * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
-   * after SUPERVISOR_READ_HEDGE_AFTER_MS is hedged: sent again on a fresh
+   * after LOST_CALL_HEDGE_AFTER_MS is hedged: sent again on a fresh
    * stub, the first attempt left running, the first answer taken.
    *
    * A read can equally be slow at the session — queued behind the read
@@ -205,7 +200,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
     return this._resent<T>(
       { op, args, pid: this._pid(), readId: crypto.randomUUID() },
       { kind: 'read' },
-      { hedgeAfterMs: SUPERVISOR_READ_HEDGE_AFTER_MS },
+      { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
     );
   }
 
@@ -697,8 +692,17 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * is unknown up-front (-1 sentinel); it is the supervisor's
    * decoder that observes the actual byte count.
    */
+  /**
+   * A write wave, sent once: its stream is consumed by the attempt that
+   * carries it, so the writer that minted it re-sends a lost wave itself,
+   * re-encoded under a newer fence (platform wave-writer.ts, lost-call.ts).
+   * On a binding whose host names its incarnation the fence rides with it,
+   * and that host instance refuses an attempt older than one it has seen
+   * from the same writer; any other instance refuses it outright.
+   */
   async writeBatchStream(
     stream: ReadableStream<Uint8Array>,
+    fence?: WaveFence,
   ): Promise<WriteBatchStreamResult> {
     // The encoder emits one bounded v2 record per pull. This wrapper-isolate
     // estimate covers that record; the receiving VFS separately reports and
@@ -708,7 +712,15 @@ export class SupervisorRPC extends WorkerEntrypoint {
     rpcPayloadStart(STREAM_RESIDENT_BYTES);
     try {
       const mutationOwner = (this.ctx as any).props?.mutationOwner;
-      return await this._call(this._op('writeBatchStream', [], { pid: this._pid(), mutationOwner: typeof mutationOwner === 'string' ? mutationOwner : undefined, stream }));
+      const hostIncarnation = this._hostIncarnation();
+      return await this._call(this._resent<WriteBatchStreamResult>({
+        op: 'writeBatchStream',
+        args: [],
+        pid: this._pid(),
+        mutationOwner: typeof mutationOwner === 'string' ? mutationOwner : undefined,
+        stream,
+        waveFence: fence && hostIncarnation !== undefined ? { ...fence, hostIncarnation } : undefined,
+      }, { kind: 'deliver', operationId: fence ? `${fence.writer}:${fence.wave}:${fence.attempt}` : undefined }, { maxAttempts: 1 }));
     } finally {
       rpcPayloadEnd(STREAM_RESIDENT_BYTES);
     }
