@@ -1,8 +1,9 @@
 #!/usr/bin/env bun
-// monaco-polish/new/resize-persists-localStorage — a pane size the user
-// drags is kept: dragging the editor↔terminal handle stores the new split
-// under this session's key (nimbus.pane.dims./s/<sid>), and a reload of the
-// page lays the panes out at that split again. Driven in a real Chrome.
+// monaco-polish/new/resize-persists-localStorage — the pane sizes the user
+// drags are kept: dragging the editor↔terminal handle and the file tree's
+// edge stores the split and the tree width under this session's key
+// (nimbus.pane.dims./s/<sid>), and a reload of the page lays the panes out
+// at that split and that width again. Driven in a real Chrome.
 
 import { BASE, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
 import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
@@ -43,6 +44,25 @@ try {
   const dragged = await editorHeight();
   a.check('the drag shrank the editor', before - dragged > 75, `editor ${before} -> ${dragged}`);
 
+  // Drag the tree's edge right by 120px: the tree widens, and the width is stored.
+  const treeWidth = () => page.evaluate(() => document.getElementById('treePanel').getBoundingClientRect().width);
+  const treeBefore = await treeWidth();
+  const edge = await page.evaluate(() => {
+    const r = document.getElementById('treeResizeHandle').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.move(edge.x, edge.y);
+  await page.mouse.down();
+  await page.mouse.move(edge.x + 120, edge.y, { steps: 12 });
+  await page.mouse.up();
+  const widened = await treeWidth();
+  const storedWidth = await page.waitForFunction(
+    (key, width) => Math.abs((JSON.parse(localStorage.getItem(key) ?? 'null')?.treeWidth ?? -1) - width) <= 2,
+    { timeout: 10_000 }, KEY, widened).then(() => true, () => false);
+  a.check('dragging the tree edge widens the tree', widened - treeBefore > 60, `tree ${treeBefore} -> ${widened}`);
+  a.check('the tree width is stored under this session\'s key', storedWidth,
+    `stored=${await stored()} widened=${widened}`);
+
   // A reload lays the panes out at the stored split.
   await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
   await page.waitForSelector('#editorTerminalResizeHandle', { visible: true, timeout: 30_000 });
@@ -51,6 +71,11 @@ try {
     { timeout: 10_000 }, dragged).then(() => true, () => false);
   const after = await editorHeight();
   a.check('a reload restores the dragged split', restored, `editor after reload ${after}, dragged ${dragged}, default ${before}`);
+  const treeRestored = await page.waitForFunction(
+    (width) => Math.abs(document.getElementById('treePanel').getBoundingClientRect().width - width) <= 2,
+    { timeout: 10_000 }, widened).then(() => true, () => false);
+  a.check('a reload restores the dragged tree width', treeRestored,
+    `tree after reload ${await treeWidth()}, widened ${widened}, default ${treeBefore}`);
 
   a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 2)));
 } finally {
