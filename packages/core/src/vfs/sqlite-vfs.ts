@@ -50,6 +50,7 @@ import {
 } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import {
   acquireSupervisorAllocation,
   tryAcquireSupervisorAllocation,
@@ -656,18 +657,6 @@ interface StoredInodeEntry {
   knownPrior?: KnownPrior;
 }
 
-/**
- * What authorising one batch learned that the next can reuse while no
- * transaction has committed since (`gen`): where each name was placed, and
- * which committed directories were found writable to place into. A stream
- * authorises file by file; this makes its directories cost once each.
- */
-interface AuthorizationMemo {
-  gen: number;
-  placed: Map<string, string>;
-  placedParents: Set<string>;
-}
-
 /** A path's committed inode (undefined: none) as read at generation `gen`. */
 interface KnownPrior {
   inode: INode | undefined;
@@ -775,6 +764,17 @@ class TransactionPlanBuilder {
 
   /** `history`: a snapshot is pinned, so replaced rows keep before-images. */
   constructor(private readonly history: boolean, private readonly commitRow = false) {}
+
+  /**
+   * An entry already added now lands at `entry.path`, not `from` (a stream
+   * authorises its group's files as the group commits, and a link may have
+   * appeared above a name since it was first placed).
+   */
+  moveInode(from: string, entry: StoredInodeEntry): void {
+    if (from === entry.path) return;
+    if (!this.inodes.some((other) => other !== entry && other.path === from)) this.affectedPaths.delete(from);
+    this.affectedPaths.add(entry.path);
+  }
 
   addInode(entry: StoredInodeEntry): void {
     this.inodes.push(entry);
@@ -1314,6 +1314,14 @@ class InodeTable {
   /** The cached object, if any, without reading SQLite. */
   peek(path: string): INode | undefined {
     return this.young.get(path) ?? this.old.get(path);
+  }
+
+  /** Admit `inode`, read from SQLite for a lookup, as `get` would; the resident object if one is. */
+  fill(inode: INode): INode {
+    const resident = this.peek(inode.path);
+    if (resident !== undefined) return resident;
+    this.admit(inode.path, inode);
+    return inode;
   }
 
   /** A committed entry replaces the resident one; a path not resident stays out. */
@@ -1947,6 +1955,38 @@ export class SqliteVFS {
   // ── INode loading ─────────────────────────────────────────────────────
 
   /** The cache's loader: the inode at `path`, read from SQLite. */
+  /**
+   * Fill `priors` with what stands at each of `paths` now: the cached inode,
+   * or one read of all the rest (bounded by the bound-parameter limit), each
+   * found row admitted to the cache like any lookup's and each absence
+   * recorded as undefined. Valid for the turn it is read in.
+   */
+  private readPriors(paths: string[], priors: Map<string, INode | undefined>): void {
+    const missing: string[] = [];
+    for (const path of new Set(paths)) {
+      if (priors.has(path)) continue;
+      const cached = this.inodes.peek(path);
+      if (cached !== undefined) priors.set(path, cached);
+      else missing.push(path);
+    }
+    if (missing.length === 1) {
+      priors.set(missing[0]!, this.inodes.get(missing[0]!));
+      return;
+    }
+    for (let at = 0; at < missing.length; at += SQL_MAX_BOUND_PARAMETERS) {
+      const slice = missing.slice(at, at + SQL_MAX_BOUND_PARAMETERS);
+      const rows = this.sql.exec(
+        `SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path IN (${slice.map(() => '?').join(', ')})`,
+        ...slice,
+      );
+      for (const row of rows) {
+        const inode = this.inodeFromRow(row);
+        priors.set(inode.path, this.inodes.fill(inode));
+      }
+      for (const path of slice) if (!priors.has(path)) priors.set(path, undefined);
+    }
+  }
+
   private loadInode(path: string): INode | undefined {
     const row = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path = ?`, path)][0];
     return row === undefined ? undefined : this.inodeFromRow(row);
@@ -7865,7 +7905,7 @@ export class SqliteVFS {
       throw vfsError('EINVAL', literal, `parentPath ${namedParent} does not match ${this.parentPath(literal)}`);
     }
     const path = this.createdPath(literal, cred, memo);
-    const prior = this.inodes.get(path);
+    const prior = priors?.has(path) ? priors.get(path) : this.inodes.get(path);
     priors?.set(path, prior);
     const directory = inodeKind(entry) === 'directory';
     const made = prior ? undefined : this.creationAttrs(path, entry.mode, cred, directory, staged);
@@ -7896,10 +7936,11 @@ export class SqliteVFS {
     payload: BatchWritePayload,
     cred: VfsCred,
     priors: Map<string, INode | undefined> = new Map(),
-    memo?: AuthorizationMemo,
   ): BatchWritePayload {
-    const placed = memo?.placed ?? new Map<string, string>();
+    const placed = new Map<string, string>();
     const staged = new Map<string, { mode: number; gid: number; defaultAcl: number | null }>();
+    // What stands at every place the batch writes, in one read rather than one per row.
+    this.readPriors(payload.inodes.map((entry) => this.createdPath(this.storageKey(entry.path, cred), cred, placed)), priors);
     const inodes = payload.inodes.map((entry) => this.normalizeBatchInode(entry, cred, placed, staged, priors));
     const pending = new Map(inodes.map((entry) => [entry.path, entry]));
     // A batch writes each row at its literal key, so the permission it checks
@@ -7910,7 +7951,7 @@ export class SqliteVFS {
     // keep the rule they had: they remove rows, wherever they were left.
     const unplaceable = (key: string): Error => vfsError('ENOTDIR', key, 'not a directory the entry can be placed in');
     const checkedParents = new Set<string>();
-    const placedParents = memo?.placedParents ?? new Set<string>();
+    const placedParents = new Set<string>();
     const checkParent = (path: string, placing: boolean): void => {
       const parent = this.parentPath(path);
       if (parent === '') { this.checkRootWritable(path, cred); return; }
@@ -8227,9 +8268,10 @@ export class SqliteVFS {
       /** Staged mode: chunks go to this content as groups flush. */
       staging: StagingContent | null;
       stagedBytes: number;
-      /** The placed inode as normalized at file-begin, against the prior read then. */
-      normalized: BatchInodeEntry;
-      prior: KnownPrior;
+      /** The inode as streamed: what a whole file's group authorises. */
+      raw: BatchInodeEntry;
+      /** A staged file's prior, read when it was authorised at file-begin. */
+      prior: KnownPrior | null;
     } | null = null;
     const progress: WriteBatchStreamProgress = {
       committedGroupSequence: 0,
@@ -8253,12 +8295,42 @@ export class SqliteVFS {
     // committed inode tree for its parent, so directories flush before the
     // first file record rather than sharing the file group.
     let pendingDirectories: BatchInodeEntry[] = [];
-    let authorization: AuthorizationMemo = { gen: -1, placed: new Map(), placedParents: new Set() };
+    // Where each streamed name lands (links followed), while nothing has
+    // committed since it was worked out.
+    let placement = { gen: -1, placed: new Map<string, string>() };
+    // The group's whole files, entered with their names as streamed:
+    // authorised together in the turn the group commits.
+    let unauthorized: { raw: BatchInodeEntry; entry: StoredInodeEntry }[] = [];
 
     const flushGroup = (): void => {
       if (group.empty) return;
       // In the turn that commits: a fenced wave overtaken by its re-send stops here.
       options.admit?.();
+      // The group's whole files are authorised here, together, in the turn
+      // that commits them: nothing between the check and the write can
+      // change a mode, an owner or a link (one read finds what each replaces).
+      if (unauthorized.length > 0) {
+        const pending = unauthorized;
+        unauthorized = [];
+        const priors = new Map<string, INode | undefined>();
+        this.withMutationOwner(options.mutationOwner, () => {
+          const normalized = this.authorizeBatch({ inodes: pending.map((file) => file.raw), chunks: [] }, cred, priors).inodes;
+          normalized.forEach((inode, index) => {
+            const { entry } = pending[index]!;
+            const from = entry.path;
+            Object.assign(entry, this.fileEntry(inode, entry.content, { inode: priors.get(inode.path), gen: this._gen }));
+            if (inode.path !== from) {
+              // A link appeared above it since its name was placed.
+              group.moveInode(from, entry);
+              const named = groupNames.get(from);
+              groupNames.delete(from);
+              if (named !== undefined) groupNames.set(inode.path, named);
+              const at = groupInodes.indexOf(from);
+              if (at >= 0) groupInodes[at] = inode.path;
+            }
+          });
+        });
+      }
       const plan = group.build();
       const leases = groupLeases;
       const inodes = groupInodes;
@@ -8475,23 +8547,31 @@ export class SqliteVFS {
             phase = 'validation';
             // The file lands where its name resolves (links followed, as a
             // batch places it), and that is the path its lease is checked on.
-            const priors = new Map<string, INode | undefined>();
-            if (authorization.gen !== this._gen) {
-              authorization = { gen: this._gen, placed: new Map(), placedParents: new Set() };
-            }
-            const memo = authorization;
-            const placedInode = this.withMutationOwner(options.mutationOwner, () => {
-              const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors, memo).inodes;
-              this.assertMutationsAllowed([placed!.path]);
-              return placed!;
-            });
-            const placedPrior: KnownPrior = { inode: priors.get(placedInode.path), gen: this._gen };
-            phase = 'stage';
             // Close the group before the file that would overflow it, so a
             // file either fits whole or begins a group of its own; one too
             // large for any group stages across several.
             if (group.wouldExceedFile(record.inode.size) !== null) flushGroup();
             const whole = group.wouldExceedFile(record.inode.size) === null;
+            if (placement.gen !== this._gen) placement = { gen: this._gen, placed: new Map() };
+            let placedInode: BatchInodeEntry;
+            let placedPrior: KnownPrior | null = null;
+            if (whole) {
+              // Held whole until its group commits, and authorised there.
+              const path = this.createdPath(this.storageKey(record.inode.path, cred), cred, placement.placed);
+              this.withMutationOwner(options.mutationOwner, () => this.assertMutationsAllowed([path]));
+              placedInode = { ...record.inode, path, parentPath: this.parentPath(path) };
+            } else {
+              // Too large for one group: its chunks commit as they arrive, so it
+              // is authorised before the first of them.
+              const priors = new Map<string, INode | undefined>();
+              placedInode = this.withMutationOwner(options.mutationOwner, () => {
+                const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
+                this.assertMutationsAllowed([placed!.path]);
+                return placed!;
+              });
+              placedPrior = { inode: priors.get(placedInode.path), gen: this._gen };
+            }
+            phase = 'stage';
             activeFile = {
               streamContentId: record.streamContentId,
               named: record.inode.path,
@@ -8503,7 +8583,7 @@ export class SqliteVFS {
               heldLeases: [],
               staging: null,
               stagedBytes: 0,
-              normalized: placedInode,
+              raw: record.inode,
               prior: placedPrior,
             };
             break;
@@ -8544,15 +8624,6 @@ export class SqliteVFS {
               throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
             }
             phase = 'publish';
-            // Normalized against what stood at the path; read again only if a
-            // transaction has committed since file-begin read it.
-            let inode = file.normalized;
-            let prior = file.prior;
-            if (prior.gen !== this._gen) {
-              const priors = new Map<string, INode | undefined>();
-              inode = this.normalizeBatchInode(file.inode, cred, undefined, undefined, priors);
-              prior = { inode: priors.get(inode.path), gen: this._gen };
-            }
             let content: InodeContent;
             if (file.inode.size === 0) content = { type: 'none' };
             else if (file.inode.size <= CHUNK_SIZE) {
@@ -8573,12 +8644,17 @@ export class SqliteVFS {
               ? group.wouldExceedFile(file.inode.size)
               : group.wouldExceedInode();
             if (overflows !== null) flushGroup();
-            this.withMutationOwner(options.mutationOwner, () => {
-              group.addInode(this.fileEntry(inode, content, prior));
-            });
+            // Every file of the group, staged ones included, is authorised
+            // (again) in the turn its group commits; until then its entry
+            // holds the group's place and accounting, and claims no prior.
+            const entry = this.withMutationOwner(options.mutationOwner, () => (
+              this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })
+            ));
+            group.addInode(entry);
+            unauthorized.push({ raw: file.raw, entry });
             groupLeases.push(...file.heldLeases);
-            groupInodes.push(inode.path);
-            groupNames.set(inode.path, file.named);
+            groupInodes.push(entry.path);
+            groupNames.set(entry.path, file.named);
             groupPublishedChunks += record.chunkCount;
             groupStagedBytes += file.stagedBytes;
             groupPaths++;
@@ -10492,12 +10568,6 @@ export function pendingChunkError(path: string): Error & { code: string; nimbusP
  */
 const entryBytesBesidePath = new WeakMap<VfsListEntry, number>();
 
-const ASCII = /^[\x00-\x7f]*$/;
-
-/** The UTF-8 length of `text`: its length when it is ASCII, as a listing's JSON almost always is. */
-function utf8Length(text: string): number {
-  return ASCII.test(text) ? text.length : enc.encode(text).byteLength;
-}
 
 /**
  * The byte bound of one listing page (VfsListPage): the page's frame, each

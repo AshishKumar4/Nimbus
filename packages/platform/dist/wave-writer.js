@@ -54,6 +54,7 @@ import { encodeWriteBatchStream, W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH
 import { CHUNK_SIZE } from './limits.js';
 import { LOST_CALL_RESEND_BACKOFF_MS, LOST_STREAM_ANSWER_MS, LOST_STREAM_STALL_MS, WAVE_EPOCH_TTL_MS, isLostFencedCall, lostCallAttributes, } from './lost-call.js';
 import { disposeRpcResource } from './rpc-dispose.js';
+import { utf8Length } from './utf8.js';
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
 export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 export const WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
@@ -337,7 +338,7 @@ export class WaveWriter {
         if (this.owned.has(path))
             return;
         tally.pathCount++;
-        tally.pathBytes += encoder.encode(path).byteLength;
+        tally.pathBytes += utf8Length(path);
         if (admit)
             this.owned.add(path);
     }
@@ -357,7 +358,7 @@ export class WaveWriter {
                 this.ownedDirectories.add(current);
             if (!this.owned.has(current)) {
                 tally.pathCount++;
-                tally.pathBytes += encoder.encode(current).byteLength;
+                tally.pathBytes += utf8Length(current);
                 if (admit)
                     this.owned.add(current);
             }
@@ -601,13 +602,15 @@ export class WaveWriter {
      * never sent under an epoch about to close.
      */
     async currentEpoch() {
-        const open = this.options.supervisor.openWaveWriter;
-        if (open === undefined)
+        const supervisor = this.options.supervisor;
+        if (supervisor.openWaveWriter === undefined)
             return null;
         const now = Date.now();
         const held = this.epoch === null ? null : await this.epoch;
         if (held === null || (held.writer !== null && now - held.openedAt >= WAVE_EPOCH_TTL_MS / 2)) {
-            this.epoch = open.call(this.options.supervisor).then((writer) => ({ writer, openedAt: now }));
+            // Called as a method of the supervisor, never through .call/.apply:
+            // on an RPC stub those are remote method names too.
+            this.epoch = supervisor.openWaveWriter().then((writer) => ({ writer, openedAt: now }));
         }
         return (await this.epoch).writer;
     }

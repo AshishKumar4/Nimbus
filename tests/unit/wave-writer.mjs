@@ -412,4 +412,39 @@ function lossy(loss, losses = 1) {
   assert.ok(target.waves.length >= 2, 'a thousand 300-byte paths were sent as one wave');
 }
 
+// ── An RPC stub supervisor ─────────────────────────────────────────────
+// A facet's env.SUPERVISOR is an RPC stub: every property is a remote
+// method, `.call` and `.apply` included. The writer calls its methods as
+// methods. Red before: it opened its epoch with openWaveWriter.call(...),
+// which a stub sends as a remote method "call"; every npm install wave
+// failed live ("The RPC receiver does not implement the method \"call\"").
+{
+  const target = session();
+  const methods = {
+    writeBatchStream: (stream, fence) => target.supervisor.writeBatchStream(stream, fence),
+    openWaveWriter: async () => 'epoch-1',
+  };
+  const remote = (name) => {
+    const method = methods[name];
+    if (!method) return async () => { throw new Error(`The RPC receiver does not implement the method "${name}".`); };
+    return new Proxy(method, {
+      get(fn, property) {
+        if (property === 'call' || property === 'apply' || property === 'bind') {
+          return async () => { throw new Error(`The RPC receiver does not implement the method "${String(property)}".`); };
+        }
+        return Reflect.get(fn, property);
+      },
+    });
+  };
+  const stub = new Proxy({}, { get: (_, name) => (typeof name === 'string' ? remote(name) : undefined) });
+  const fences = [];
+  const original = methods.writeBatchStream;
+  methods.writeBatchStream = (stream, fence) => { fences.push(fence); return original(stream, fence); };
+  const writer = createWaveWriter({ supervisor: stub, root: 'r', base: 'r' });
+  await writer.file('a', 0o644, payloadOf(1));
+  await writer.flush();
+  assert.equal(new TextDecoder().decode(target.files.get('r/a').bytes.subarray(0, 8)), 'record 1');
+  assert.deepEqual(fences, [{ writer: 'epoch-1', wave: 1, attempt: 1 }]);
+}
+
 console.log('wave writer: ok');

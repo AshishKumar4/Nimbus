@@ -4,6 +4,7 @@ import { readDeclaredSource, readRangeOrWhole } from '../vfs/vfs.js';
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry } from '../vfs/symlink-registry.js';
 import { errnoDescription } from '../vfs/vfs-error.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 export function createSqliteDescriptorScope() {
     return { nextId: 1, handles: new Map(), closed: false, abort: new AbortController(), subscriptions: new Set() };
 }
@@ -183,7 +184,7 @@ export class SqliteRuntimeFsBridge {
                     ino: 0,
                     nlink: 1,
                     type: 'symlink',
-                    size: new TextEncoder().encode(target).byteLength,
+                    size: utf8Length(target),
                     ctime: now,
                     atime: now,
                     mtime: now,

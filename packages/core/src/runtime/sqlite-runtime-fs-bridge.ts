@@ -4,6 +4,7 @@ import { readDeclaredSource, readRangeOrWhole, type SyncVFS, type VfsRemoval, ty
 import { normalizeVfsPath, parentVfsPath } from '../vfs/path.js';
 import { getSymlinkRegistry, type SymlinkRegistry } from '../vfs/symlink-registry.js';
 import { errnoDescription } from '../vfs/vfs-error.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import type {
   RuntimeFileHandle,
   RuntimeFsPath,
@@ -207,7 +208,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
           ino: 0,
           nlink: 1,
           type: 'symlink',
-          size: new TextEncoder().encode(target).byteLength,
+          size: utf8Length(target),
           ctime: now,
           atime: now,
           mtime: now,

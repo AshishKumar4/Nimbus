@@ -5,6 +5,7 @@
 
 import { crc32 } from './crc32.js';
 import { CHUNK_SIZE } from './limits.js';
+import { utf8Length } from './utf8.js';
 
 // The batch payload types live WITH the wire format that encodes them: every
 // producer and consumer of a W7 stream speaks exactly these records, and the
@@ -310,6 +311,8 @@ async function* decodeRecords(
   const contentIds = new Set<string>();
   let active: {
     metadata: FileBeginMetadata;
+    /** The content id as the wire carries it: what each chunk must repeat. */
+    contentIdBytes: Uint8Array;
     inode: W7ContentInode;
     nextChunkId: number;
     receivedBytes: number;
@@ -337,26 +340,28 @@ async function* decodeRecords(
 
       if (envelope.tag === RecordTag.FileChunk) {
         if (!active) throw new Error('w7-frame: file-chunk without active file');
-        const prefixLength = Math.min(envelope.length, 4 + MAX_CONTENT_ID_BYTES + 8);
-        const idLengthBytes = await buffer.readExact(4, 'file-chunk content-id length');
-        const idLength = readU32LE(idLengthBytes, 0);
+        // The chunk must name its file's content id, so its prefix is that
+        // id's length plus the id-length, chunk-id and data-length fields:
+        // read whole, then checked field by field.
+        const expectedId = active.contentIdBytes;
+        const prefixLength = 4 + expectedId.byteLength + 8;
+        if (prefixLength > envelope.length) {
+          throw new Error('w7-frame: malformed file-chunk record length');
+        }
+        const headerPayload = await buffer.readExact(prefixLength, 'file-chunk header');
+        const idLength = readU32LE(headerPayload, 0);
         if (idLength === 0 || idLength > MAX_CONTENT_ID_BYTES) {
           throw new Error(`w7-frame: invalid file-chunk content-id length ${idLength}`);
         }
-        const remainingPrefixLength = idLength + 8;
-        if (4 + remainingPrefixLength > prefixLength || 4 + remainingPrefixLength > envelope.length) {
-          throw new Error('w7-frame: malformed file-chunk record length');
+        if (idLength !== expectedId.byteLength || !sameBytes(headerPayload.subarray(4, 4 + idLength), expectedId)) {
+          throw new Error(`w7-frame: file-chunk content id does not own ${active.inode.path}`);
         }
-        const rest = await buffer.readExact(remainingPrefixLength, 'file-chunk header');
-        const contentId = decodeText(rest.subarray(0, idLength), 'file-chunk content id');
-        const chunkId = readU32LE(rest, idLength);
-        const dataLength = readU32LE(rest, idLength + 4);
+        const chunkId = readU32LE(headerPayload, 4 + idLength);
+        const dataLength = readU32LE(headerPayload, 8 + idLength);
         if (envelope.length !== 4 + idLength + 8 + dataLength) {
           throw new Error('w7-frame: file-chunk payload length mismatch');
         }
-        if (contentId !== active.metadata.contentId) {
-          throw new Error(`w7-frame: file-chunk content id ${contentId} does not own ${active.inode.path}`);
-        }
+        const contentId = active.metadata.contentId;
         if (chunkId !== active.nextChunkId) {
           throw new Error(
             `w7-frame: ${active.inode.path}: expected chunk ${active.nextChunkId}, got ${chunkId}`,
@@ -374,7 +379,6 @@ async function* decodeRecords(
             `w7-frame: ${active.inode.path}: chunk ${chunkId} has ${dataLength} bytes; expected ${expectedBytes}`,
           );
         }
-        const headerPayload = concatBytes(idLengthBytes, rest);
         let retention: W7ChunkRetention | null = null;
         try {
           retention = options.retainChunk
@@ -443,6 +447,7 @@ async function* decodeRecords(
           summary.fileCount++;
           active = {
             metadata,
+            contentIdBytes: TEXT_ENCODER.encode(metadata.contentId),
             inode,
             nextChunkId: 0,
             receivedBytes: 0,
@@ -911,7 +916,7 @@ class PathOwnership {
     if (this.paths.size >= W7_MAX_PATHS_PER_BATCH) {
       throw new Error(`w7-frame: batch exceeds ${W7_MAX_PATHS_PER_BATCH} owned paths`);
     }
-    const nextPathBytes = this.pathBytes + new TextEncoder().encode(path).byteLength;
+    const nextPathBytes = this.pathBytes + utf8Length(path);
     if (nextPathBytes > W7_MAX_OWNED_PATH_BYTES) {
       throw new Error(
         `w7-frame: owned path bytes exceed ${W7_MAX_OWNED_PATH_BYTES}`,
@@ -947,8 +952,7 @@ function boundedString(value: unknown, label: string, maxBytes: number): string 
   if (typeof value !== 'string' || value.length === 0) {
     throw new Error(`w7-frame: ${label} must be a non-empty string`);
   }
-  const length = new TextEncoder().encode(value).byteLength;
-  if (length > maxBytes) throw new Error(`w7-frame: ${label} exceeds ${maxBytes} bytes`);
+  if (utf8Length(value) > maxBytes) throw new Error(`w7-frame: ${label} exceeds ${maxBytes} bytes`);
   return value;
 }
 
@@ -1018,14 +1022,27 @@ function noopRetention(bytes: number): W7ChunkRetention {
   return { bytes, release() {} };
 }
 
+// One decoder for every record: a non-streaming decode() starts from a
+// clean state each call, so sharing it changes nothing but the cost of
+// constructing one per record (three per small file).
+// Both options stated: workers-types declares TextDecoderConstructorOptions
+// with every property required, and ignoreBOM's default is false anyway.
+const UTF8 = new TextDecoder('utf-8', { fatal: true, ignoreBOM: false });
+
 function decodeText(bytes: Uint8Array, label: string): string {
   try {
-    // Both options stated: workers-types declares TextDecoderConstructorOptions
-    // with every property required, and ignoreBOM's default is false anyway.
-    return new TextDecoder('utf-8', { fatal: true, ignoreBOM: false }).decode(bytes);
+    return UTF8.decode(bytes);
   } catch (error) {
     throw new Error(`w7-frame: invalid UTF-8 in ${label}: ${errorMessage(error)}`);
   }
+}
+
+const TEXT_ENCODER = new TextEncoder();
+
+function sameBytes(left: Uint8Array, right: Uint8Array): boolean {
+  if (left.byteLength !== right.byteLength) return false;
+  for (let index = 0; index < left.byteLength; index++) if (left[index] !== right[index]) return false;
+  return true;
 }
 
 function concatBytes(...parts: Uint8Array[]): Uint8Array {

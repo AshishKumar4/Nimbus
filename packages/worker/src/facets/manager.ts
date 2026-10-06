@@ -77,6 +77,7 @@ const READ_PROFILE_LAUNCH_BYTES = Math.floor(VFS_BUNDLE_MAX_BYTES / 8);
 import { NpmCache } from '../npm/cache.js';
 import { mayHaveDynamicImport } from '@nimbus-sh/core/runtime/dynamic-import-rewrite.js';
 import { recordFailure, getLastRpcFrame, getLastFacetId } from '@nimbus-sh/platform/oom-discriminator.js';
+import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
@@ -1707,7 +1708,7 @@ function residentCellCost(cell: string | Uint8Array): number {
   const size = isText ? cell.length : cell.byteLength;
   const limit = isText ? Math.floor(RESIDENT_CHUNK_BYTES / 3) : RESIDENT_CHUNK_BYTES;
   const chunks = Math.max(1, Math.ceil(size / limit));
-  const bytes = isText ? new TextEncoder().encode(cell).byteLength : size;
+  const bytes = isText ? utf8Length(cell) : size;
   return Math.ceil(bytes * 1.01) + (chunks + 1) * LEDGER_ROW_BYTES + 4096;
 }
 

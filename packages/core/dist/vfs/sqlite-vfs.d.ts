@@ -611,6 +611,13 @@ export declare class SqliteVFS {
     private queueAbandonedStaging;
     private tableColumns;
     /** The cache's loader: the inode at `path`, read from SQLite. */
+    /**
+     * Fill `priors` with what stands at each of `paths` now: the cached inode,
+     * or one read of all the rest (bounded by the bound-parameter limit), each
+     * found row admitted to the cache like any lookup's and each absence
+     * recorded as undefined. Valid for the turn it is read in.
+     */
+    private readPriors;
     private loadInode;
     private inodeFromRow;
     /**
