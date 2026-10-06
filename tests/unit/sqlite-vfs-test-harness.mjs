@@ -162,16 +162,19 @@ export function inodeTableScans(harness, from = 0) {
 /**
  * Chunk bytes written to vfs_chunks since statement `from`: new chunk rows
  * plus in-place rewrites. What an edit costs in content, independent of how
- * its chunks are keyed.
+ * its chunks are keyed or stored.
  */
 export function chunkBytesWritten(harness, from = 0) {
   let bytes = 0;
   for (const statement of harness.statements.slice(from)) {
     if (/^\s*INSERT INTO vfs_chunks\b/.test(statement.sql)) {
-      // (id, hash, data) per row: size is length(data).
-      for (let i = 2; i < statement.params.length; i += 3) bytes += statement.params[i].byteLength;
+      // A row is (id, hash, length(data), data, 0) as stored, or
+      // (id, hash, size, data, 3) deflated: its size is the bytes'.
+      for (const [, asStored, size] of statement.sql.matchAll(/\(\?\d+, \?\d+, (?:length\(\?(\d+)\)|\?(\d+)), \?\d+, \d+\)/g)) {
+        bytes += asStored === undefined ? statement.params[Number(size) - 1] : statement.params[Number(asStored) - 1].byteLength;
+      }
     } else if (/^\s*UPDATE vfs_chunks SET hash/.test(statement.sql)) {
-      bytes += statement.params[2].byteLength;
+      bytes += statement.params[1];
     }
   }
   return bytes;
