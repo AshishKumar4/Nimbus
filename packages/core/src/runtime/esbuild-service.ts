@@ -19,7 +19,7 @@ import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { lowerAsyncModule } from './async-module-lowering.js';
+import { emitCommonJs, lowerAsyncModule, type EsmExportName, type EsmImportBinding, type EsmRecord } from './async-module-lowering.js';
 import {
   applySourceEdits,
   literalStringValue,
@@ -295,37 +295,29 @@ function hasUnscopedAwait(source: string): boolean {
   }
 }
 
-interface ConvertedModuleDeclarations {
-  imports: string;
-  exports: string;
-}
 
-function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boolean): ConvertedModuleDeclarations | null {
-  const imports: string[] = [];
-  const exports: string[] = [];
-  // Only generated references use wrapper arguments. Source declarations
-  // named module/require/exports retain their own meanings.
-  const moduleTarget = moduleFactory ? 'arguments[2]' : 'module';
-  const requireTarget = moduleFactory ? 'arguments[1]' : 'module.require';
-  let importIndex = 0;
-  let markedEsm = false;
-
-  for (const snippet of snippets) {
+/**
+ * The records (async-module-lowering.ts) of a bundle's top-level module
+ * declarations, each `declarations[i]`'s range in `source`; null for a
+ * declaration this bounded rewrite leaves to the full transform (an
+ * exported declaration, a re-export, `export *`, `export default` of a
+ * function or class).
+ */
+function bundledModuleRecords(source: string, declarations: readonly ModuleDeclarationRange[]): EsmRecord[] | null {
+  const records: EsmRecord[] = [];
+  for (const { start, end } of declarations) {
+    const snippet = source.slice(start, end);
+    // `export { a, b as c }` names bindings acorn would want declared in the
+    // snippet, so a plain list is read by its shape.
     const bindingList = snippet.match(/^[ \t]*export\s*\{([\s\S]*)\}\s*;?\s*$/);
     if (bindingList && !/\}\s*from\b/.test(snippet)) {
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
+      const names: EsmExportName[] = [];
       for (const binding of bindingList[1].split(',')) {
         const match = binding.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
         if (!match) return null;
-        const local = match[1];
-        const exported = match[2] || local;
-        exports.push(
-          `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
-        );
+        names.push({ exported: match[2] || match[1], local: match[1] });
       }
+      records.push({ kind: 'export', start, end, source: null, names });
       continue;
     }
     let ast: ReturnType<typeof parseJavaScriptModule>;
@@ -339,47 +331,36 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
     const declaration = body[0];
 
     if (declaration.type === 'ImportDeclaration') {
-      const source = literalStringValue(nodeProp(declaration, 'source'));
-      if (!source) return null;
-      const specifiers = nodeList(declaration, 'specifiers');
-      if (specifiers.length === 0) {
-        imports.push(`${requireTarget}(${JSON.stringify(source)});`);
-        continue;
-      }
-      const moduleName = `__nimbus_import_${importIndex++}`;
-      imports.push(`const ${moduleName} = ${requireTarget}(${JSON.stringify(source)});`);
-      for (const specifier of specifiers) {
+      const from = literalStringValue(nodeProp(declaration, 'source'));
+      if (!from) return null;
+      const bindings: EsmImportBinding[] = [];
+      for (const specifier of nodeList(declaration, 'specifiers')) {
         const local = nodeName(nodeProp(specifier, 'local'));
         if (!local) return null;
-        if (specifier.type === 'ImportDefaultSpecifier') {
-          imports.push(`const ${local} = ${moduleName} && ${moduleName}.__esModule ? ${moduleName}.default : ${moduleName};`);
-        } else if (specifier.type === 'ImportNamespaceSpecifier') {
-          imports.push(`const ${local} = ${moduleName};`);
-        } else if (specifier.type === 'ImportSpecifier') {
+        if (specifier.type === 'ImportDefaultSpecifier') bindings.push({ local, imported: 'default' });
+        else if (specifier.type === 'ImportNamespaceSpecifier') bindings.push({ local, imported: '*' });
+        else if (specifier.type === 'ImportSpecifier') {
           const imported = nodeName(nodeProp(specifier, 'imported'));
           if (!imported) return null;
-          imports.push(`const ${local} = ${moduleName}[${JSON.stringify(imported)}];`);
+          bindings.push({ local, imported });
         } else {
           return null;
         }
       }
+      records.push({ kind: 'import', start, end, source: from, bindings });
       continue;
     }
 
     if (declaration.type === 'ExportNamedDeclaration') {
       if (nodeProp(declaration, 'source') || nodeProp(declaration, 'declaration')) return null;
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
+      const names: EsmExportName[] = [];
       for (const specifier of nodeList(declaration, 'specifiers')) {
         const local = nodeName(nodeProp(specifier, 'local'));
         const exported = nodeName(nodeProp(specifier, 'exported'));
         if (!local || !exported) return null;
-        exports.push(
-          `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
-        );
+        names.push({ exported, local });
       }
+      records.push({ kind: 'export', start, end, source: null, names });
       continue;
     }
 
@@ -387,20 +368,13 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
       const value = nodeProp(declaration, 'declaration');
       if (!value || typeof value.start !== 'number' || typeof value.end !== 'number') return null;
       if (value.type === 'FunctionDeclaration' || value.type === 'ClassDeclaration') return null;
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
-      exports.push(
-        `Object.defineProperty(${moduleTarget}.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`,
-      );
+      records.push({ kind: 'export-default', start, end, expression: { start: start + value.start, end: start + value.end } });
       continue;
     }
 
     return null;
   }
-
-  return { imports: imports.join('\n'), exports: exports.join('\n') };
+  return records;
 }
 
 function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boolean): SourceEdit[] | null {
@@ -532,30 +506,21 @@ export function rewriteBundledEsmToCjs(
   if (hasUnscopedAwait(source)) return null;
   const declarations = topLevelModuleDeclarationRanges(source);
   if (!declarations || declarations.length === 0) return null;
-  const declarationSnippets = declarations.map(({ start, end }) => source.slice(start, end));
-  for (let i = 0; i < declarations.length; i++) {
-    if (/^[ \t]*export\s+default\b/.test(declarationSnippets[i])
-      && source.slice(declarations[i].end).trim() !== '') return null;
-  }
-  const converted = convertBundledModuleDeclarations(declarationSnippets, moduleFactory);
-  if (!converted) return null;
+  const records = bundledModuleRecords(source, declarations);
+  if (!records) return null;
   const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
   if (!metaEdits) return null;
 
-  // An import.meta is one token run, so it is inside a declaration or outside
-  // every one: the edits never overlap.
-  const body = applySourceEdits(source, [
-    ...declarations.map(({ start, end }) => ({ start, end, text: '' })),
-    ...metaEdits.filter((edit) =>
-      !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)
-    ),
-  ]);
-
-  return {
-    code: (moduleFactory ? '"use strict";\n' : '') + converted.imports + '\n' + body + '\n' + converted.exports,
-    map: '',
-    warnings: [],
-  };
+  // Only generated references use wrapper arguments. Source declarations
+  // named module/require/exports retain their own meanings. An import.meta
+  // is one token run, so it is inside a declaration or outside every one.
+  const code = emitCommonJs(source, records, {
+    body: 'sync',
+    exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
+    requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
+    edits: metaEdits.filter((edit) => !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+  });
+  return { code: (moduleFactory ? '"use strict";\n' : '') + code, map: '', warnings: [] };
 }
 
 // ── The in-isolate engine ───────────────────────────────────────────────
