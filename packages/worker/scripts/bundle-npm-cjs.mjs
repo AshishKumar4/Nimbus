@@ -39,6 +39,7 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { createRequire } from 'node:module';
 import esbuild from 'esbuild';
+import { NODE_BUILTINS, ensureBuildInstall } from './cirrus-bundle-shared.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -109,39 +110,18 @@ const TARGETS = [
   },
 ];
 
-const NODE_BUILTINS = [
-  'node:assert', 'node:buffer', 'node:child_process', 'node:crypto',
-  'node:dns', 'node:events', 'node:fs', 'node:fs/promises', 'node:http',
-  'node:https', 'node:module', 'node:net', 'node:os', 'node:path',
-  'node:perf_hooks', 'node:process', 'node:querystring', 'node:readline',
-  'node:stream', 'node:string_decoder', 'node:timers', 'node:timers/promises',
-  'node:tls', 'node:tty', 'node:url', 'node:util', 'node:v8',
-  'node:worker_threads', 'node:zlib',
-  'fs', 'path', 'url', 'util', 'os', 'net', 'crypto', 'child_process',
-  'dns', 'tty', 'worker_threads', 'assert', 'process', 'v8', 'events',
-  'http', 'https', 'zlib', 'stream', 'buffer', 'readline', 'module',
-  'string_decoder', 'timers', 'querystring', 'perf_hooks',
-];
-
-async function ensureInstalled() {
-  const SRC_DIR = path.join(ROOT, '.cirrus-npm-cjs-src');
-  const haveReact = await fs.access(path.join(SRC_DIR, 'node_modules/react/package.json')).then(() => true).catch(() => false);
-  const haveLexer = await fs.access(path.join(SRC_DIR, 'node_modules/cjs-module-lexer/package.json')).then(() => true).catch(() => false);
-  if (haveReact && haveLexer) return SRC_DIR;
-  await fs.mkdir(SRC_DIR, { recursive: true });
-  await fs.writeFile(path.join(SRC_DIR, 'package.json'), JSON.stringify({
-    name: 'cirrus-npm-cjs-build', private: true, version: '0.0.0',
+function ensureInstalled() {
+  return ensureBuildInstall(path.join(ROOT, '.cirrus-npm-cjs-src'), {
+    name: 'cirrus-npm-cjs-build',
+    log: '[bundle-npm-cjs]',
+    markers: ['react', 'cjs-module-lexer'],
     dependencies: {
       ...Object.fromEntries(
         TARGETS.filter((t) => t.version !== '*').map((t) => [t.pkg, t.version]),
       ),
       'cjs-module-lexer': '^2',
     },
-  }, null, 2));
-  const { execSync } = await import('node:child_process');
-  console.log('[bundle-npm-cjs] installing react/react-dom/scheduler + cjs-module-lexer...');
-  execSync('bun install', { cwd: SRC_DIR, stdio: 'inherit' });
-  return SRC_DIR;
+  });
 }
 
 /**
