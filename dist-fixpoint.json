@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "f9ca10d6da18a3f2ab7a528278d41de88151a3e7bba677025107ce288f061a19",
+  "fingerprint": "50a133f07e3147a745bc3a6bdef5362905763880735790d9995a490a7c25a027",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -245,7 +245,7 @@
     "packages/core/dist/runtime/cirrus-vite-config-rewriter.js": "cc3cfc064f240e398a5a7271252010142cab9ec87ad32cc9853541eae10f37b2",
     "packages/core/dist/runtime/cjs-export-names.d.ts": "1b9591b88079ec0eb31430679ab955fdd6e1f6b8293fd6f566a2f8ad1954f6c4",
     "packages/core/dist/runtime/cjs-export-names.d.ts.map": "4d2a8014a9b1ab5e5301fa6f7d8ccf5b164f1fcc5b0fe66d732d7f104ceca488",
-    "packages/core/dist/runtime/cjs-export-names.js": "1072365536ecbe27a464ed1ecc815fee54820060e944d9b7f01efd32dc5def07",
+    "packages/core/dist/runtime/cjs-export-names.js": "e23bdbfc53b3ec8b89603e64efdbef2dac2f169d55e12c8d6c52c9023dd97655",
     "packages/core/dist/runtime/clang-runner.d.ts": "34ae6dec20d2f7c058175540aa309c46b945f251509776a91eadc4bd0c5f2e3c",
     "packages/core/dist/runtime/clang-runner.d.ts.map": "41059dfa93edf1906a8f70d77896292a8500b9bd5cd1a692d3725427371305e2",
     "packages/core/dist/runtime/clang-runner.js": "df4ea83d2c1bc2b7f1f144ebdf0f0d0762e5201eca13b4b19adaae70e57b5db4",
@@ -1103,7 +1103,7 @@
     "packages/core/src/runtime/bundle-profile.ts": "b0dca375c1de19bcec6a228ed79e8c4675ec047a521158826c15d0ff828516af",
     "packages/core/src/runtime/bundler-resolution.ts": "a2071170e5efd2abd634d526bb0b8414a8b14c32284d4a07af4d916761c6d6f4",
     "packages/core/src/runtime/cirrus-vite-config-rewriter.ts": "27d2e853d32dfcbb6aaf8c6b180ba0421a1612d2e23108166948da7645ef44a7",
-    "packages/core/src/runtime/cjs-export-names.ts": "a8ee134ba2c0eec906af6d72508f203989b8efc18680415db4d893232b48d616",
+    "packages/core/src/runtime/cjs-export-names.ts": "b41d04df4d8869784c85b78c1b163c77515ba2fcdf780ad94c27ce2116100003",
     "packages/core/src/runtime/clang-runner.ts": "2094800204e13f6fa51011c7c8e463127b89215bca6f29bd2a31f5da41efcd29",
     "packages/core/src/runtime/cli-flags.ts": "23b203c999b01585cb6e4ddc5e6234066f10edb80fa2a4bb7f3f3dc260b8fd80",
     "packages/core/src/runtime/comment-strip.ts": "cbfea67bdc8c7bd618716a71d80bf3be0527386f3128ba64fd51a199f4532c38",
