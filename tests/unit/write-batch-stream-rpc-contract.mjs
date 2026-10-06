@@ -35,7 +35,7 @@ assert.deepEqual(result, {
   error: {
     code: 'ERR_WRITE_BATCH_STREAM',
     phase: 'decode',
-    message: 'w7-frame: bad magic, expected NW7\\x03, got 42 41 44 21',
+    message: 'w7-frame: bad magic, expected NW7\\x04, got 42 41 44 21',
   },
 });
 
