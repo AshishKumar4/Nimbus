@@ -55,8 +55,15 @@ export class SupervisorAllocationBudget {
     acquireWithoutLifecycle(bytes, signal) {
         return this._acquire(bytes, signal, false);
     }
+    /** Reserve bytes now or not at all, driving the lifecycle as acquire does. */
+    tryAcquire(bytes) {
+        const credit = this.credits.tryAcquire(bytes);
+        return credit ? this.wrap(credit, true) : null;
+    }
     async _acquire(bytes, signal, drivesLifecycle) {
-        const credit = await this.credits.acquire(bytes, signal);
+        return this.wrap(await this.credits.acquire(bytes, signal), drivesLifecycle);
+    }
+    wrap(credit, drivesLifecycle) {
         if (drivesLifecycle) {
             this.lifecycleHolders++;
             if (!this.active) {
@@ -159,6 +166,10 @@ const supervisorAllocationBudget = new SupervisorAllocationBudget(SUPERVISOR_IN_
  */
 export function acquireSupervisorAllocation(bytes, signal) {
     return supervisorAllocationBudget.acquire(bytes, signal);
+}
+/** Reserve bytes now if they can be granted without waiting, else null. */
+export function tryAcquireSupervisorAllocation(bytes) {
+    return supervisorAllocationBudget.tryAcquire(bytes);
 }
 /**
  * Reserve bytes for a filesystem READ. Takes the same byte credit as any

@@ -50,7 +50,10 @@ import {
 } from '@nimbus-sh/platform/limits.js';
 import { recordFailure } from '@nimbus-sh/platform/oom-discriminator.js';
 import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
-import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
+import {
+  acquireSupervisorAllocation,
+  tryAcquireSupervisorAllocation,
+} from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
 import {
   decodeWriteBatchStream,
@@ -8333,37 +8336,56 @@ export class SqliteVFS {
       group.addStagedPiece(file.staging, piece, file.inode.path);
     };
 
-    const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
-      if (group.wouldExceedPieces(byteLength, 1) !== null) flushGroup();
-      let writeLease = this.writeStreamCredits.tryAcquire(byteLength);
-      if (!writeLease && !group.empty) {
-        flushGroup();
-        writeLease = this.writeStreamCredits.tryAcquire(byteLength);
+    // Give back every lease this stream holds: commit its group, and stage
+    // the file it holds whole so far, whose pieces then commit with it.
+    const releaseHeldCredit = (): void => {
+      const file = activeFile;
+      if (file !== null && file.held !== null && file.held.length > 0) {
+        const pieces = file.held;
+        file.held = null;
+        groupLeases.push(...file.heldLeases);
+        file.heldLeases = [];
+        for (const piece of pieces) stagePiece(file, piece);
       }
-      if (!writeLease) {
-        const waitToken = {};
-        const waitStartedAt = performance.now();
-        this._creditWaitStarts.set(waitToken, waitStartedAt);
-        try {
-          writeLease = await this.writeStreamCredits.acquire(byteLength, signal);
-        } finally {
-          this._creditWaitStarts.delete(waitToken);
-          this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
-        }
-      }
+      if (!group.empty) flushGroup();
+    };
 
-      let supervisorLease: CreditLease;
+    // A stream waits for credit only once it holds none: a lease it kept
+    // while waiting could be the one its wait needs (two streams over the
+    // small-request reserve each waited on the other's held chunks, for good).
+    const awaitCredit = async <T>(
+      tryAcquire: () => T | null,
+      acquire: () => Promise<T>,
+    ): Promise<T> => {
+      const granted = tryAcquire();
+      if (granted !== null) return granted;
+      releaseHeldCredit();
       const waitToken = {};
       const waitStartedAt = performance.now();
       this._creditWaitStarts.set(waitToken, waitStartedAt);
       try {
-        supervisorLease = await acquireSupervisorAllocation(byteLength, signal);
-      } catch (error) {
-        writeLease.release();
-        throw error;
+        return tryAcquire() ?? await acquire();
       } finally {
         this._creditWaitStarts.delete(waitToken);
         this.recordDuration(this._creditWaitDuration, performance.now() - waitStartedAt);
+      }
+    };
+
+    const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
+      if (group.wouldExceedPieces(byteLength, 1) !== null) flushGroup();
+      const writeLease = await awaitCredit(
+        () => this.writeStreamCredits.tryAcquire(byteLength),
+        () => this.writeStreamCredits.acquire(byteLength, signal),
+      );
+      let supervisorLease: CreditLease;
+      try {
+        supervisorLease = await awaitCredit(
+          () => tryAcquireSupervisorAllocation(byteLength),
+          () => acquireSupervisorAllocation(byteLength, signal),
+        );
+      } catch (error) {
+        writeLease.release();
+        throw error;
       }
 
       let released = false;

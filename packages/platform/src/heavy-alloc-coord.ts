@@ -82,12 +82,21 @@ export class SupervisorAllocationBudget {
     return this._acquire(bytes, signal, false);
   }
 
+  /** Reserve bytes now or not at all, driving the lifecycle as acquire does. */
+  tryAcquire(bytes: number): ResizableCreditLease | null {
+    const credit = this.credits.tryAcquire(bytes);
+    return credit ? this.wrap(credit, true) : null;
+  }
+
   private async _acquire(
     bytes: number,
     signal: AbortSignal | undefined,
     drivesLifecycle: boolean,
   ): Promise<ResizableCreditLease> {
-    const credit = await this.credits.acquire(bytes, signal);
+    return this.wrap(await this.credits.acquire(bytes, signal), drivesLifecycle);
+  }
+
+  private wrap(credit: ResizableCreditLease, drivesLifecycle: boolean): ResizableCreditLease {
     if (drivesLifecycle) {
       this.lifecycleHolders++;
       if (!this.active) {
@@ -210,6 +219,11 @@ export function acquireSupervisorAllocation(
   signal?: AbortSignal,
 ): Promise<ResizableCreditLease> {
   return supervisorAllocationBudget.acquire(bytes, signal);
+}
+
+/** Reserve bytes now if they can be granted without waiting, else null. */
+export function tryAcquireSupervisorAllocation(bytes: number): ResizableCreditLease | null {
+  return supervisorAllocationBudget.tryAcquire(bytes);
 }
 
 /**
