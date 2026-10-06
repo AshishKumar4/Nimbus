@@ -31,7 +31,9 @@ import { VFS_DELIVERY_RECEIPT_RETENTION_MS, VFS_DELIVERY_TOMBSTONE_LIMIT, VFS_DE
  * The filesystem mutations a process's supervisor delivers exactly once.
  *
  * Not here, so sent once: `writeBatchStream` (its stream is consumed by the
- * first delivery), the descriptor read `fsRead` (it advances the position and
+ * first delivery: its writer re-sends a lost wave re-encoded, under a newer
+ * fence the host checks instead — {@link SupervisorDeliveries.admitWave}),
+ * the descriptor read `fsRead` (it advances the position and
  * answers bytes a receipt would have to hold), `fsAppend`/`fsAppendAck` (the
  * append ledger's own writer/module/operation identity already makes them
  * repeatable), and the process, socket and storage-grant ops.
@@ -74,6 +76,10 @@ const JOINED_READ_OP_NAMES = new Map(SUPERVISOR_JOINED_READ_OPS.map((op) => [op,
 /** The joined read `op` names, or undefined for any op that is not one. */
 export function supervisorJoinedReadOp(op) {
     return JOINED_READ_OP_NAMES.get(op);
+}
+/** Whether `a` came after `b` from the same writer. */
+function newerAttempt(a, b) {
+    return a.wave > b.wave || (a.wave === b.wave && a.attempt > b.attempt);
 }
 function isDeliveryAnswer(value) {
     if (value === undefined || value === null)
@@ -155,6 +161,10 @@ export class SupervisorDeliveries {
     rotatedAt = Number.NEGATIVE_INFINITY;
     running = new Map();
     readsInFlight = new Map();
+    /** The newest wave attempt seen from each writer, by `${pid}:${writer}`, in two generations. */
+    waveFences = new Map();
+    olderWaveFences = new Map();
+    waveFencesSince = Number.NEGATIVE_INFINITY;
     tombstones = new Set();
     olderTombstones = new Set();
     tombstonesSince = Number.NEGATIVE_INFINITY;
@@ -267,6 +277,41 @@ export class SupervisorDeliveries {
         };
         answer.then(settled, settled);
         return { joined: false, answer };
+    }
+    /**
+     * Admit attempt (`wave`, `attempt`) of a write wave from `writer`, a
+     * process's wave writer, and answer whether it may still commit: it may
+     * while no newer attempt from that writer has been admitted. An attempt
+     * older than one already admitted is refused at once, ESTALE: its writer
+     * gave up on it and re-sent the wave (or has moved on), so applying it
+     * now could only put back bytes a newer write replaced. `check` is asked
+     * again before each of the attempt's commits, which is what stops an
+     * attempt overtaken while it runs.
+     *
+     * An attempt is held for at least the tombstone retention after it was
+     * last admitted (a call the platform lost was measured arriving up to
+     * 560 s late), and a writer forgotten by then has re-sent nothing for
+     * that long.
+     */
+    admitWave(pid, writer, wave, attempt) {
+        const now = Date.now();
+        if (now - this.waveFencesSince >= this.tombstoneMs) {
+            this.olderWaveFences = now - this.waveFencesSince < 2 * this.tombstoneMs ? this.waveFences : new Map();
+            this.waveFences = new Map();
+            this.waveFencesSince = now;
+        }
+        const key = `${pid}:${writer}`;
+        const mine = { wave, attempt };
+        const check = () => {
+            const newest = this.waveFences.get(key) ?? this.olderWaveFences.get(key);
+            if (newest !== undefined && newerAttempt(newest, mine)) {
+                throw Object.assign(new Error(`ESTALE: write wave ${wave} attempt ${attempt} was overtaken by wave ${newest.wave} attempt ${newest.attempt}`), { code: 'ESTALE' });
+            }
+        };
+        check();
+        this.olderWaveFences.delete(key);
+        this.waveFences.set(key, mine);
+        return { check };
     }
     /** Reads being served, which repeats of them would join. */
     get readsServing() {

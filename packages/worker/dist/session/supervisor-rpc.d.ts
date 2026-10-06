@@ -36,7 +36,7 @@
  * Delivery: every call reaches the session over a Durable Object stub the
  * platform can drop ("Network connection lost.", `retryable`). Reads are
  * re-sent on a fresh stub, and hedged: one unanswered after
- * SUPERVISOR_READ_HEDGE_AFTER_MS is sent again while it stays in flight.
+ * LOST_CALL_HEDGE_AFTER_MS is sent again while it stays in flight.
  * Filesystem mutations, on a binding that names its
  * host's incarnation, are re-sent under one delivery id that host applies at
  * most once (`_fsMutation`); on any other binding they are sent once.
@@ -50,6 +50,7 @@ import type { VfsAcquireOptions, VfsAcquireResult, VfsListPage, VfsMutationRecei
 import { type SupervisorAnswer, type SupervisorAnsweredMethod } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { type FsAcquireArgs, type FsAcquiredAnswer, type FsReadBatchEntry, type FsReadBatchRequest, type VfsDeliveredAcquire } from './rpc.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 /**
  * Per-call cache-stat event surfaced from supervisor R2CacheClient to
@@ -69,7 +70,6 @@ export type SupervisorCacheStatEvent = {
     tier: CacheTier;
     cacheKind: CacheKind;
 };
-export declare const SUPERVISOR_READ_HEDGE_AFTER_MS = 5000;
 export declare class SupervisorRPC extends WorkerEntrypoint {
     /**
      * A fresh stub for the host, by the route the binding carries, per call.
@@ -91,7 +91,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * from one facet left some attempts pending for minutes without reaching
      * the host, and the program waiting on them never exited
      * (preview/new/lucide-barrel-cache-widens). So a read still unanswered
-     * after SUPERVISOR_READ_HEDGE_AFTER_MS is hedged: sent again on a fresh
+     * after LOST_CALL_HEDGE_AFTER_MS is hedged: sent again on a fresh
      * stub, the first attempt left running, the first answer taken.
      *
      * A read can equally be slow at the session — queued behind the read
@@ -328,7 +328,15 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * is unknown up-front (-1 sentinel); it is the supervisor's
      * decoder that observes the actual byte count.
      */
-    writeBatchStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
+    /**
+     * A write wave, sent once: its stream is consumed by the attempt that
+     * carries it, so the writer that minted it re-sends a lost wave itself,
+     * re-encoded under a newer fence (platform wave-writer.ts, lost-call.ts).
+     * On a binding whose host names its incarnation the fence rides with it,
+     * and that host instance refuses an attempt older than one it has seen
+     * from the same writer; any other instance refuses it outright.
+     */
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence): Promise<WriteBatchStreamResult>;
     /**
      * Bulk-write npm registry cache entries (resolved packument metadata)
      * in ONE RPC. Used by the resolver-facet to flush a wave of resolved

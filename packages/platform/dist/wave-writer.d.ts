@@ -18,12 +18,14 @@
  * Waves publish in order, so a record written after another is durable only
  * if that one is: a completion marker written last proves what came before.
  *
- * Lost transport: a wave whose call failed before the session answered
- * (classifyDoCall: a dropped connection, a replaced isolate, a storage
- * reset, or an object that shed it as overloaded), or that nothing read or
- * answered in time (WAVE_LOST_TRANSPORT_POLICY), is sent again after a
- * backoff, at most WAVE_RETRY_BACKOFF_MS.length times, once the abandoned
- * attempt's stream is errored so it reads nothing more.
+ * Lost transport (lost-call.ts, the one policy for it): a wave whose call
+ * failed before the session answered (isLostFencedCall), or that nothing
+ * read for LOST_STREAM_STALL_MS before its end, or that stayed unanswered
+ * LOST_STREAM_ANSWER_MS after it, is sent again after a backoff, at most
+ * LOST_CALL_RESEND_BACKOFF_MS.length times. The abandoned attempt's stream
+ * is errored so it reads nothing more, and every attempt carries its fence
+ * (writer, wave, attempt): the session refuses an attempt older than one it
+ * has seen, so a late original never applies over its re-send.
  * Re-sending is safe: a wave is the same paths and bytes, replacing. A shed
  * wave never ran; the platform's advice is not to retry an overloaded
  * object, but these waves are few and backed off, and npm measured the
@@ -54,29 +56,18 @@ export declare const WAVE_PATH_BYTES: number;
 /** Buffered content bytes that close a wave. */
 export declare const WAVE_BYTES: number;
 /**
- * Waits before each re-send of a wave whose transport was lost (±25%
- * jitter): ~42 s in all, to outlast a coordinator queue deep enough to shed.
+ * Which attempt of which wave of which writer a stream is: the session
+ * refuses an attempt older than one it has seen from the same writer, so an
+ * attempt the writer gave up on never applies after its re-send.
  */
-export declare const WAVE_RETRY_BACKOFF_MS: readonly number[];
-/**
- * When an attempt is taken as lost. Some SupervisorRPC → session calls
- * never reach the session (SUPERVISOR_READ_HEDGE_AFTER_MS: 11 of 521 read
- * batches, pending 110-560 s; a clone wave stopped at the transport's
- * ~1 MiB window with the session holding no stream, credit or transaction
- * for it; an install shard held one unanswered for 160 s). A wave read by
- * nothing for `stallMs` before its stream ended, or unanswered
- * `answerDeadlineMs` after, is sent again. Healthy, with 8 producers
- * saturating one session (w7-bench, 2026-10-06): the longest gap between a
- * wave's reads was 2.5 s and the slowest whole wave 5.3 s.
- */
-export declare const WAVE_LOST_TRANSPORT_POLICY: {
-    readonly backoffMs: readonly number[];
-    readonly stallMs: 10000;
-    readonly answerDeadlineMs: 20000;
-};
+export interface WaveFence {
+    writer: string;
+    wave: number;
+    attempt: number;
+}
 /** The supervisor surface a writer publishes through. */
 export interface WaveSupervisor {
-    writeBatchStream(stream: ReadableStream<Uint8Array>): Promise<unknown>;
+    writeBatchStream(stream: ReadableStream<Uint8Array>, fence: WaveFence): Promise<unknown>;
 }
 /** A published file as the session will stat it: what a warm index entry needs. */
 export interface WaveFileReceipt {
@@ -131,18 +122,14 @@ export interface WaveWriterOptions<Meta = undefined> {
     onWave?: (report: WaveReport) => void;
     /** A record's `meta` names its owner, and a failed wave fails only the owners it carried. */
     failPerOwner?: boolean;
-    /** The lost-transport policy's timings; tests shorten them. */
+    /** The lost-call policy's timings (lost-call.ts); tests shorten them. */
     retry?: {
         backoffMs: readonly number[];
         stallMs: number;
         answerDeadlineMs: number;
     };
-    /** Called before each re-send of a lost wave: which attempt, out of how many, and why. */
-    onResend?: (resend: {
-        attempt: number;
-        of: number;
-        reason: string;
-    }) => void;
+    /** Called before each re-send of a lost wave, with its lost-call attributes (lost-call.ts). */
+    onResend?: (lost: Record<string, string | number>) => void;
 }
 export interface WaveStats {
     waves: number;
@@ -184,6 +171,8 @@ export declare class WaveWriter<Meta = undefined> {
     /** Owners (records' `meta`) whose records a failed wave carried. */
     private readonly failedOwners;
     private readonly counters;
+    /** This writer, as its fences name it. */
+    private readonly id;
     /** Mutations run one at a time, in call order: concurrent writers interleave by record. */
     private mutations;
     constructor(options: WaveWriterOptions<Meta>);

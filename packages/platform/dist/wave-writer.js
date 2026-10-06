@@ -18,12 +18,14 @@
  * Waves publish in order, so a record written after another is durable only
  * if that one is: a completion marker written last proves what came before.
  *
- * Lost transport: a wave whose call failed before the session answered
- * (classifyDoCall: a dropped connection, a replaced isolate, a storage
- * reset, or an object that shed it as overloaded), or that nothing read or
- * answered in time (WAVE_LOST_TRANSPORT_POLICY), is sent again after a
- * backoff, at most WAVE_RETRY_BACKOFF_MS.length times, once the abandoned
- * attempt's stream is errored so it reads nothing more.
+ * Lost transport (lost-call.ts, the one policy for it): a wave whose call
+ * failed before the session answered (isLostFencedCall), or that nothing
+ * read for LOST_STREAM_STALL_MS before its end, or that stayed unanswered
+ * LOST_STREAM_ANSWER_MS after it, is sent again after a backoff, at most
+ * LOST_CALL_RESEND_BACKOFF_MS.length times. The abandoned attempt's stream
+ * is errored so it reads nothing more, and every attempt carries its fence
+ * (writer, wave, attempt): the session refuses an attempt older than one it
+ * has seen, so a late original never applies over its re-send.
  * Re-sending is safe: a wave is the same paths and bytes, replacing. A shed
  * wave never ran; the platform's advice is not to retry an overloaded
  * object, but these waves are few and backed off, and npm measured the
@@ -50,34 +52,13 @@
  */
 import { encodeWriteBatchStream, W7_MAX_OWNED_PATH_BYTES, W7_MAX_PATHS_PER_BATCH, } from './w7-frame.js';
 import { CHUNK_SIZE } from './limits.js';
-import { classifyDoCall, isRetryableDoCall } from './oom-classify.js';
+import { LOST_CALL_RESEND_BACKOFF_MS, LOST_STREAM_ANSWER_MS, LOST_STREAM_STALL_MS, isLostFencedCall, lostCallAttributes, } from './lost-call.js';
 import { disposeRpcResource } from './rpc-dispose.js';
 /** Paths a wave holds back from W7's bound, for its pinned marker and the marker's directories. */
 export const WAVE_PATHS = W7_MAX_PATHS_PER_BATCH - 8;
 export const WAVE_PATH_BYTES = W7_MAX_OWNED_PATH_BYTES - 4 * 1024;
 /** Buffered content bytes that close a wave. */
 export const WAVE_BYTES = 4 * 1024 * 1024;
-/**
- * Waits before each re-send of a wave whose transport was lost (±25%
- * jitter): ~42 s in all, to outlast a coordinator queue deep enough to shed.
- */
-export const WAVE_RETRY_BACKOFF_MS = [250, 1_000, 3_000, 6_000, 12_000, 20_000];
-/**
- * When an attempt is taken as lost. Some SupervisorRPC → session calls
- * never reach the session (SUPERVISOR_READ_HEDGE_AFTER_MS: 11 of 521 read
- * batches, pending 110-560 s; a clone wave stopped at the transport's
- * ~1 MiB window with the session holding no stream, credit or transaction
- * for it; an install shard held one unanswered for 160 s). A wave read by
- * nothing for `stallMs` before its stream ended, or unanswered
- * `answerDeadlineMs` after, is sent again. Healthy, with 8 producers
- * saturating one session (w7-bench, 2026-10-06): the longest gap between a
- * wave's reads was 2.5 s and the slowest whole wave 5.3 s.
- */
-export const WAVE_LOST_TRANSPORT_POLICY = {
-    backoffMs: WAVE_RETRY_BACKOFF_MS,
-    stallMs: 10_000,
-    answerDeadlineMs: 20_000,
-};
 export class WaveFailure extends Error {
     wave;
     constructor(wave, cause) {
@@ -173,6 +154,8 @@ export class WaveWriter {
         maxWaveBytes: 0,
         retries: 0,
     };
+    /** This writer, as its fences name it. */
+    id = crypto.randomUUID();
     /** Mutations run one at a time, in call order: concurrent writers interleave by record. */
     mutations = Promise.resolve();
     constructor(options) {
@@ -533,7 +516,7 @@ export class WaveWriter {
         this.counters.maxWaveBytes = Math.max(this.counters.maxWaveBytes, waveBytes);
         this.inFlightSymlinks = symlinks;
         const sentAt = Date.now();
-        const published = this.send({ inodes, chunks, deletePaths, streams }).then((result) => {
+        const published = this.send({ inodes, chunks, deletePaths, streams }, wave).then((result) => {
             try {
                 const error = waveResultError(result);
                 if (error)
@@ -579,24 +562,30 @@ export class WaveWriter {
      * Send one wave, again while its transport is lost (see the module's
      * comment), and answer with what the session answered.
      */
-    async send(payload) {
-        const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry ?? WAVE_LOST_TRANSPORT_POLICY;
+    async send(payload, wave) {
+        const { backoffMs, stallMs, answerDeadlineMs } = this.options.retry
+            ?? { backoffMs: LOST_CALL_RESEND_BACKOFF_MS, stallMs: LOST_STREAM_STALL_MS, answerDeadlineMs: LOST_STREAM_ANSWER_MS };
         for (let attempt = 0;; attempt++) {
             const attemptStream = abortable(encodeWriteBatchStream(payload), stallMs, answerDeadlineMs);
-            const answer = this.options.supervisor.writeBatchStream(attemptStream.stream);
+            const fence = { writer: this.id, wave, attempt: attempt + 1 };
+            const answer = this.options.supervisor.writeBatchStream(attemptStream.stream, fence);
             try {
                 return await Promise.race([answer, attemptStream.lost]);
             }
             catch (error) {
-                const kind = classifyDoCall(error);
-                const lost = error instanceof WaveLost || isRetryableDoCall(kind) || kind === 'overloaded';
+                const lost = error instanceof WaveLost || isLostFencedCall(error);
                 if (!lost || (payload.streams?.length ?? 0) > 0 || attempt >= backoffMs.length)
                     throw error;
                 // The abandoned attempt can read nothing more, and its late answer is dropped.
                 attemptStream.abort(error);
                 answer.then(disposeRpcResource, () => { });
                 this.counters.retries++;
-                this.options.onResend?.({ attempt: attempt + 1, of: backoffMs.length, reason: error instanceof Error ? error.message : String(error) });
+                this.options.onResend?.(lostCallAttributes({
+                    operation: 'writeBatchStream',
+                    attempt: attempt + 1,
+                    of: backoffMs.length,
+                    reason: error instanceof Error ? error.message : String(error),
+                }));
                 const base = backoffMs[attempt];
                 await new Promise((resolve) => setTimeout(resolve, Math.max(0, Math.round(base * (0.75 + Math.random() * 0.5)))));
             }

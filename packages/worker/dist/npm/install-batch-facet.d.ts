@@ -28,6 +28,7 @@
  */
 import type { FacetPackageSpec } from './install-facet.js';
 import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 export interface InstallBatchSpec {
     /** All packages to install in this batch. ≈456 entries × ~200 B = ~90 KB,
      *  well under workerd's 32 MiB RPC arg cap. */
@@ -107,7 +108,7 @@ export interface InstallBatchResult {
 }
 export declare const installPackagesInFacet: (batch: InstallBatchSpec, env: {
     SUPERVISOR: {
-        writeBatchStream: (stream: ReadableStream<Uint8Array>) => Promise<WriteBatchStreamResult>;
+        writeBatchStream: (stream: ReadableStream<Uint8Array>, fence: WaveFence) => Promise<WriteBatchStreamResult>;
         getCachedTarball?: (integrity: string) => Promise<{
             bytes: Uint8Array | null;
             events: Array<{

@@ -7105,6 +7105,8 @@ export class SqliteVFS {
         const flushGroup = () => {
             if (group.empty)
                 return;
+            // In the turn that commits: a fenced wave overtaken by its re-send stops here.
+            options.admit?.();
             const plan = group.build();
             const leases = groupLeases;
             const inodes = groupInodes;
@@ -7181,6 +7183,7 @@ export class SqliteVFS {
         const flushDirectories = () => {
             if (pendingDirectories.length === 0)
                 return;
+            options.admit?.();
             const inodes = pendingDirectories;
             pendingDirectories = [];
             const result = this.withMutationOwner(options.mutationOwner, () => (this.writeBatch({ inodes, chunks: [] }, cred)));
@@ -7286,6 +7289,7 @@ export class SqliteVFS {
                         phase = 'publish';
                         flushGroup();
                         flushDirectories();
+                        options.admit?.();
                         const affected = Math.max(1, this.collectSubtreeInodes([record.path]).length);
                         this.withMutationOwner(options.mutationOwner, () => {
                             this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);

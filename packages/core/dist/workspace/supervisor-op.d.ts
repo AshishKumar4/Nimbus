@@ -33,6 +33,20 @@ export interface SupervisorOpEnvelope {
      * predates it ignores it and serves each attempt, which a read allows.
      */
     readonly readId?: string;
+    /**
+     * Which attempt of which write wave a writeBatchStream carries, and the
+     * host instance its binding names (platform wave-writer.ts `WaveFence`):
+     * the instance refuses an attempt older than one it has seen from the
+     * same writer (`SupervisorDeliveries.admitWave`), and any other instance
+     * refuses it outright. Only on writeBatchStream.
+     */
+    readonly waveFence?: SupervisorWaveFence;
+}
+export interface SupervisorWaveFence {
+    readonly writer: string;
+    readonly wave: number;
+    readonly attempt: number;
+    readonly hostIncarnation: string;
 }
 /**
  * `writeFileStat`'s answer: the write's revision, and the path's lstat after
