@@ -973,7 +973,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
    * confined caller's /tmp/x is its private file, not the shared tmp/x.
    */
   private leaseAllows(path: string, owner?: string): void {
-    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner);
+    this.rawVfs.assertMutationAllowed(this.vfs.storageKey(normalizeVfsPath(path)), owner, this.vfs.holds);
   }
 
 

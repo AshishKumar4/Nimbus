@@ -123,6 +123,17 @@ async function holder({ op, pid }, root, { answers = true } = {}) {
   assert.equal(s.kernel.exists('home/user/repo/b'), false);
 }
 
+// ── The holder's own calls into its delegation (not sent in a wave) go
+//    through, and recall nothing: it decides there ──
+{
+  const s = session();
+  const h = await holder(s, '/home/user/repo');
+  await s.op({ op: 'writeFile', args: ['/home/user/repo/direct', 'by the holder, directly'], pid: s.pid });
+  assert.equal(new TextDecoder().decode(await s.op({ op: 'readFileBytes', args: ['/home/user/repo/direct'], pid: s.pid })), 'by the holder, directly');
+  assert.deepEqual(h.recalls, [], "the holder's own call recalled its delegation");
+  await h.stop();
+}
+
 // ── Only the holder answers for its delegation ──
 {
   const s = session();

@@ -779,9 +779,14 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * and that host instance refuses an attempt older than one it has seen
    * from the same writer; any other instance refuses it outright.
    */
+  /**
+   * `owner`: the lease the wave is written under, when it is not the one this
+   * binding was made with: a delegation the process took at run time.
+   */
   async writeBatchStream(
     stream: ReadableStream<Uint8Array>,
     fence?: WaveFence,
+    owner?: string,
   ): Promise<WriteBatchStreamResult> {
     // The encoder emits one bounded v2 record per pull. This wrapper-isolate
     // estimate covers that record; the receiving VFS separately reports and
@@ -795,7 +800,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
         op: 'writeBatchStream',
         args: [],
         pid: this._pid(),
-        mutationOwner: this._mutationOwner(),
+        mutationOwner: owner ?? this._mutationOwner(),
         stream,
         waveFence: fence && hostIncarnation !== undefined ? { ...fence, hostIncarnation } : undefined,
       }, { kind: 'deliver', operationId: fence ? `${fence.writer}:${fence.wave}:${fence.attempt}` : undefined }, { maxAttempts: 1 }));

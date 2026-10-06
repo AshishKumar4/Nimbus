@@ -3774,9 +3774,12 @@ export class SqliteVFS {
     }
   }
 
-  /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
-  assertMutationAllowed(path: string, owner?: string): void {
-    this.withMutationOwner(owner, () => this.assertMutationsAllowed([path]));
+  /**
+   * Refuse a mutation at `path` another lease covers; `owner` presents the
+   * caller's own lease, `holds` the delegations the caller's process holds.
+   */
+  assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>): void {
+    this.withHolds(holds === undefined ? this.activeHolds : holds(), () => this.withMutationOwner(owner, () => this.assertMutationsAllowed([path])));
   }
 
   /**
@@ -3804,8 +3807,9 @@ export class SqliteVFS {
       const { root } = lease;
       if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner) continue;
       if (lease.delegation !== null) {
-        // Its holder writes there under the delegation (its lease), in the order it decided.
-        if (this.isHolder(owner)) return { code: 'EBUSY', detail: `delegated to this process at /${root}: write under its lease` };
+        // Its holder decides there: a call it makes itself rather than sends
+        // in a wave follows what it sent before (it sends first), in order.
+        if (this.isHolder(owner)) continue;
         // Another's holder may have decided what this would change: it gives the subtree up first.
         throw this.recallRequired(owner, lease, 'revoke', normalized);
       }
