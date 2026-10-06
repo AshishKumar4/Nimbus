@@ -51,6 +51,10 @@ export declare const W7_MAGIC: Uint8Array<ArrayBuffer>;
 export declare const W7_MAX_PATHS_PER_BATCH = 1024;
 export declare const W7_MAX_OWNED_PATH_BYTES: number;
 export declare const W7_MAX_RECORD_BYTES: number;
+/** The wire chunks a file or link of `size` bytes travels as: CHUNK_SIZE each, the last short, none when empty. */
+export declare function w7ChunkCount(size: number): number;
+/** `data`, the content at `path`, as its wire chunks (w7ChunkCount): views of it, not copies. */
+export declare function w7Chunks(path: string, data: Uint8Array): BatchChunkEntry[];
 declare const MODE: "path-atomic-committed-prefix";
 export interface W7BatchSummary {
     recordCount: number;

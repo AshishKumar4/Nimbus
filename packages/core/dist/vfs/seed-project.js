@@ -18,7 +18,7 @@
  *   - No auto-start of vite (surprising; README says `npm run dev`)
  *   - Basename injection (commit 2) handles the /preview/ basepath wiring.
  */
-import { CHUNK_SIZE } from '@nimbus-sh/platform/limits.js';
+import { w7ChunkCount, w7Chunks } from '@nimbus-sh/platform/w7-frame.js';
 import { enc } from '../_shared/bytes.js';
 import { errorText } from '../_shared/error-text.js';
 import { CRED_KERNEL } from '../runtime/os-contracts.js';
@@ -985,33 +985,18 @@ export function seedProject(vfs, opts) {
         if (lastSlash > 0)
             addDir(path.substring(0, lastSlash));
         const data = enc.encode(content);
-        const size = data.length;
-        const chunkCount = size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE);
         inodes.push({
             path,
             parentPath: lastSlash > 0 ? path.substring(0, lastSlash) : '',
             isDir: false,
-            size,
+            size: data.length,
             mtime,
             mode: 0o644,
             uid: 1000,
             gid: 1000,
-            chunkCount,
+            chunkCount: w7ChunkCount(data.length),
         });
-        if (size > 0) {
-            if (size <= CHUNK_SIZE) {
-                chunks.push({ path, chunkId: 0, data });
-            }
-            else {
-                for (let i = 0; i < chunkCount; i++) {
-                    chunks.push({
-                        path,
-                        chunkId: i,
-                        data: data.slice(i * CHUNK_SIZE, (i + 1) * CHUNK_SIZE),
-                    });
-                }
-            }
-        }
+        chunks.push(...w7Chunks(path, data));
     }
     // Add dir inodes (deduplicated by set)
     for (const dir of dirSet) {
@@ -1051,9 +1036,9 @@ export function seedProject(vfs, opts) {
                     mode: 0o644,
                     uid: 1000,
                     gid: 1000,
-                    chunkCount: 1,
+                    chunkCount: w7ChunkCount(sentinelData.length),
                 }],
-            chunks: [{ path: SEED_SENTINEL_PATH, chunkId: 0, data: sentinelData }],
+            chunks: w7Chunks(SEED_SENTINEL_PATH, sentinelData),
         });
         log?.(`[seed] sentinel written → ${SEED_SENTINEL_PATH}`);
     }
