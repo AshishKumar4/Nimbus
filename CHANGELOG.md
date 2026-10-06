@@ -5,6 +5,18 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A pre-bundle's slice plugin resolves through the one bundler resolver the
+  VFS plugin uses, awaiting each answer, again; the synchronous driver added
+  as a workaround (`createSyncBundlerResolver`) is gone. Its stall (Markflow's
+  background pre-bundles waiting past 120 s once the resolver awaited) was the
+  lost pump wake-up fixed in the last release: a resolve hook that awaited
+  settled after a JSPI pump turn's poll loop returned but before its result
+  was handled, and the loader asked for no further turn while one was in
+  flight. On throwaways with the awaited resolver, Markflow failed its
+  navigation 2 of 2 times with the loader before that fix, and passed 3 of 3
+  with it (the one line apart); on this tree, two Markflow sessions at once
+  passed 6 of 6.
+
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been
