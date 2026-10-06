@@ -3,6 +3,7 @@ import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runti
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
+import { processHost } from '@nimbus-sh/core/runtime/wasi/processes.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
 const __WASI_EAGAIN = 6;
@@ -11,6 +12,7 @@ const __WASI_EBADF = 8;
 const __WASI_ECONNREFUSED = 14;
 const __WASI_EEXIST = 20;
 const __WASI_EHOSTUNREACH = 23;
+const __WASI_EINTR = 27;
 const __WASI_EINVAL = 28;
 const __WASI_EIO = 29;
 const __WASI_EISDIR = 31;
@@ -111,7 +113,7 @@ const __WASI_STREAM_DEV = 1n << 32n;
 // before init answers EBADF against an empty descriptor table, which is true,
 // rather than trapping the guest.
 function __wasiEmptyFS() {
-    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null };
+    return { root: '', residentFileCap: WASI_RESIDENT_FILE_CAP_BYTES, cred: null, pid: 0 };
 }
 let __wasiFS = __wasiEmptyFS();
 let __wasiPreopens = [];
@@ -264,6 +266,7 @@ export function __wasiInitFS(opts) {
         // Largest regular file the codec answers from a resident copy.
         residentFileCap: Number(opts.residentFileCap ?? WASI_RESIDENT_FILE_CAP_BYTES),
         cred: opts.cred ? { uid: Number(opts.cred.uid), gid: Number(opts.cred.gid), groups: [...(opts.cred.groups || [])].map(Number) } : null,
+        pid: Number(opts.pid ?? 0),
     };
     // A new process holds nothing of the last one's filesystem. Its run settled
     // what it held (__wasiSettleWrites); anything still held goes to the session
@@ -660,6 +663,22 @@ export function __wasiMakeImports(opts) {
                 stderrBuf += s;
         }
     }
+    // Children and pipes (wasi/processes.ts): the nimbus_proc imports, and the
+    // pipe descriptors they make, answered ahead of every other kind (below,
+    // after the watchdog) and polled with the rest (poll_oneoff). A wait on a
+    // child or a pipe is bounded there (EINTR at PROCESS_PARK_MS), so the guest
+    // retries instead of being handed the watchdog's EAGAIN.
+    const proc = processHost({
+        fds: fdTable,
+        allocateFd: __wasiAllocateFd,
+        memory: opts.getMemory,
+        supervisor: () => __wasiSup,
+        pid: __wasiFS.pid,
+        output: (fd, bytes) => appendStream(fd === 1 ? 'stdout' : 'stderr', bytes),
+        release: async () => { if (__wasiResident?.fs.holding())
+            await __wasiResident.fs.flush(); },
+        inbound: () => { __wasiResident?.fs.inbound(); },
+    });
     const imports = {
         // ── args / env ──
         args_get(argvPtr, argvBufPtr) {
@@ -841,7 +860,7 @@ export function __wasiMakeImports(opts) {
                 return __WASI_EBADF;
             // Sockets track the mask too: guests set O_NONBLOCK on a socket and
             // then read it back through fd_fdstat_get.
-            if (entry.kind === 'socket' || entry.kind === 'listener')
+            if (entry.kind === 'socket' || entry.kind === 'listener' || entry.kind === 'pipe')
                 entry.fdflags = flags;
             return __WASI_ESUCCESS;
         },
@@ -1216,6 +1235,16 @@ export function __wasiMakeImports(opts) {
                         idx: s.idx, error: __WASI_EBADF, type: s.tag, nbytes: 0n, flags: 0,
                     });
                 }
+                // A pipe (wasi/processes.ts): ready as its other end makes it. One
+                // that waited PROCESS_PARK_MS gives up, and so does the poll (EINTR,
+                // below), before the watchdog's EAGAIN, which git's poll loop dies on.
+                if (entry.kind === 'pipe') {
+                    const toEvent = (r) => r === null
+                        ? { idx: s.idx, error: __WASI_EINTR, type: s.tag, nbytes: 0n, flags: 0 }
+                        : { idx: s.idx, error: __WASI_ESUCCESS, type: s.tag, nbytes: BigInt(r.nbytes), flags: r.hangup ? 1 : 0 };
+                    const ready = proc.readiness(s.fd, s.tag === __WASI_EVENTTYPE_FD_READ ? 'read' : 'write');
+                    return ready instanceof Promise ? ready.then(toEvent) : Promise.resolve(toEvent(ready));
+                }
                 // Regular files, dirs, stdio: always ready (POSIX: regular files
                 // never block — read returns immediately even if at EOF). Files and
                 // directories are the authority's descriptors; leaving them out made
@@ -1358,6 +1387,11 @@ export function __wasiMakeImports(opts) {
                         timerIds[i] = null;
                     }
                 }
+            }
+            // Only a pipe's wait that gave up wins with EINTR: nothing else was ready.
+            if (winnerResult.error === __WASI_EINTR) {
+                writeU32LE(retNeventsPtr, 0);
+                return __WASI_EINTR;
             }
             // Write events.
             let nevents = 0;
@@ -1697,6 +1731,43 @@ export function __wasiMakeImports(opts) {
             return kind === 'socket' || kind === 'listener' ? __wasiInbound(result) : result;
         };
     }
+    {
+        const readAll = imports.fd_read;
+        const writeAll = imports.fd_write;
+        const closeAll = imports.fd_close;
+        const fdstat = imports.fd_fdstat_get;
+        imports.fd_read = function pipeRead(...args) {
+            const [fd, iovs, iovsLen, nread] = args;
+            return proc.read(fd, iovs, iovsLen, nread) ?? readAll.apply(this, args);
+        };
+        imports.fd_write = function pipeWrite(...args) {
+            const [fd, iovs, iovsLen, nwritten] = args;
+            return proc.write(fd, iovs, iovsLen, nwritten) ?? writeAll.apply(this, args);
+        };
+        imports.fd_close = function pipeClose(...args) {
+            return proc.close(args[0]) ?? closeAll.apply(this, args);
+        };
+        imports.fd_fdstat_get = function pipeFdstat(...args) {
+            const [fd, statPtr] = args;
+            const entry = fdTable.get(fd);
+            if (entry?.kind !== 'pipe')
+                return fdstat.apply(this, args);
+            // A pipe: no file type of its own in WASI, read/write per its end.
+            const dv = view();
+            dv.setUint8(statPtr, __WASI_FT_UNKNOWN);
+            dv.setUint8(statPtr + 1, 0);
+            dv.setUint16(statPtr + 2, entry.fdflags ?? 0, true);
+            dv.setBigUint64(statPtr + 8, 0x3fffffffn, true);
+            dv.setBigUint64(statPtr + 16, 0n, true);
+            return __WASI_ESUCCESS;
+        };
+    }
+    const procImport = { ...proc.imports };
+    if (opts.parking !== 'none' && typeof WebAssembly !== 'undefined' && typeof WebAssembly.Suspending === 'function') {
+        for (const name of Object.keys(procImport)) {
+            procImport[name] = new WebAssembly.Suspending(procImport[name]);
+        }
+    }
     // How this instance is allowed to block — a parameter, because it is a
     // property of the CALLER, not of WASI.
     //
@@ -1774,6 +1845,7 @@ export function __wasiMakeImports(opts) {
     }
     return {
         wasiImport: imports,
+        procImport,
         getStdout: () => stdoutBuf,
         getStderr: () => stderrBuf,
     };

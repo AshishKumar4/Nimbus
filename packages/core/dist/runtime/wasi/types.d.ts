@@ -23,7 +23,7 @@ import type { VirtualSocketKernel } from '../virtual-socket-kernel.js';
  * widened at a use site. Numbers are the preview1 enum, which is alphabetical
  * and therefore not guessable; check the spec before adding one.
  */
-export type Errno = 0 | 2 | 6 | 8 | 10 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 63 | 64 | 69 | 70 | 71 | 72 | 73 | 75 | 76;
+export type Errno = 0 | 2 | 6 | 8 | 10 | 12 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 63 | 64 | 69 | 70 | 71 | 72 | 73 | 75 | 76;
 /**
  * What a syscall body may hand back. A cache hit answers synchronously; a body
  * that has to reach the supervisor answers with a Promise the JSPI Suspending
@@ -90,7 +90,7 @@ export interface ListenerFdEntry extends FdEntryCommon {
  * unrepresentable: reaching a handle requires having narrowed to a kind that
  * has one.
  */
-export type FdEntry = StdioFdEntry | PreopenFdEntry | SocketFdEntry | ListenerFdEntry | import('./filesystem.js').AuthorityFd | import('./filesystem.js').ResidentFd;
+export type FdEntry = StdioFdEntry | PreopenFdEntry | SocketFdEntry | ListenerFdEntry | import('./filesystem.js').AuthorityFd | import('./filesystem.js').ResidentFd | import('./processes.js').PipeFdEntry;
 /** The per-process filesystem view: the root the preopens are cut from and the resident cap. */
 export interface WasiFsState {
     root: string;
@@ -98,6 +98,8 @@ export interface WasiFsState {
     residentFileCap: number;
     /** The credential the process's files are read as; null keeps every call on the authority. */
     cred: WasiCred | null;
+    /** The session pid the process runs as, 0 when unknown (wasi/processes.ts). */
+    pid: number;
 }
 /** A process credential, as the session bound the facet's supervisor to it. */
 export interface WasiCred {
@@ -120,6 +122,8 @@ export interface WasiInitOptions {
      * rules the session applies; without it, every call goes to the session.
      */
     cred?: WasiCred;
+    /** The session pid this process runs as: the parent of any child it starts (wasi/processes.ts). */
+    pid?: number;
 }
 /** What a live stat answers with. */
 export type WasiStatResult = RuntimeVfsStat;
@@ -248,6 +252,8 @@ export interface WasiPollEvent {
 /** What `__wasiMakeImports` hands back. */
 export interface WasiInstanceBundle {
     wasiImport: WasiImports;
+    /** The `nimbus_proc` imports (wasi/processes.ts), for a guest built to start children through the host. */
+    procImport: Record<string, (...args: number[]) => SyscallResult>;
     getStdout(): string;
     getStderr(): string;
 }
