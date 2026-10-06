@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -721,6 +722,12 @@ export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBund
  */
 export interface FacetManagerHooks {
     /**
+     * The workspace's network (`workspace.network`): every process the manager
+     * runs goes out through it, its binding carrying the egress. The session's
+     * composition supplies it; absent, the isolate's own network.
+     */
+    network?: () => WorkspaceNetwork;
+    /**
      * Fired when a process was terminated OUTSIDE the facet's own try/
      * finally (timeout via abort, explicit kill, etc.) — the facet never
      * runs its own `reportExit`, so the session side won't hear about the
@@ -990,6 +997,7 @@ export declare class FacetManager {
      * gone inside one call.
      */
     private processHost;
+    private readonly network;
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     private debugEnabled;
     private processRpcResources;
@@ -1148,14 +1156,15 @@ export declare class FacetManager {
      *  authority over the same disk. */
     setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority): void;
     /**
-     * The env/ctx pair every loader-backed runtime builds its facet pools
-     * from. A pool is constructed from exactly these two, so the manager
-     * exposes them as one narrow accessor rather than every runtime reaching
-     * into its private fields.
+     * What every loader-backed runtime builds its facet pools from: the env and
+     * ctx a pool is constructed over, and the workspace's network its facets go
+     * out through. One narrow accessor rather than every runtime reaching into
+     * the manager's private fields.
      */
     loaderHost(): {
         env: unknown;
         ctx: DurableObjectState;
+        network: WorkspaceNetwork;
     };
     /**
      * The image store's disk: this session's VFS, as the kernel — the store is

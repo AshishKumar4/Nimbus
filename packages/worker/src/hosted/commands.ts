@@ -124,7 +124,7 @@ registry.register('chsh', makeChshCommand({
 // first `git` invocation so it stays out of the cold script-eval graph.
 registry.register('git', async (ctx: any) => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env);
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
 });
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.
@@ -189,6 +189,7 @@ workspace.runtimes.registerRunner(
     return await makeCPythonRunnerFactory({
       facets: facetHostForManager(facetMgr),
       startResident: cpythonResidentStart(facetMgr),
+      network: workspace.network,
     })(manifest, installRoot, binName, binKind)(ctx);
   },
 );
@@ -228,6 +229,7 @@ workspace.runtimes.registerRunner(
       registry,
       startResident: rubyResidentStart(facetMgr),
       getHome: () => workspace.shell.getEnv().HOME ?? DEFAULT_HOME,
+      network: workspace.network,
     })(manifest, installRoot, binName, binKind);
     return runner(ctx);
   },
@@ -578,7 +580,7 @@ const bunSpec: RuntimeSpec = {
       const { loaderFacetHost } = await import('../runtime/facet-loader-host.js');
       const wasmSpec: RuntimeSpec = wasmRunnerSpec({
         filesystem: workspace.filesystem,
-        facets: loaderFacetHost(self.env, self.ctx),
+        facets: loaderFacetHost(self.env, self.ctx, workspace.network),
         processes: self.processes,
       });
       wasmHandler = buildRuntimeHandler(wasmSpec, {
@@ -735,6 +737,7 @@ const wranglerHandler = (invokedAs: 'wrangler' | 'nimbus-wrangler') =>
     }
 
     self.nimbusWrangler = new NimbusWrangler({
+      network: workspace.network,
       vfs: kernelFs,
       vfsEvents: sqliteFs.events,
       esbuild: self.esbuildService!,

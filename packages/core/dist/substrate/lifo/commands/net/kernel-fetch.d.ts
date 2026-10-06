@@ -3,7 +3,8 @@
  *
  * curl and wget are each bound to one kernel, and a loopback hop — including
  * one a redirect lands on — is served by that kernel's port registry or its
- * host's loopback router, never by fetch. The outcome is explicit rather
+ * host's loopback router, never by fetch; any other hop goes off the box
+ * through the workspace's network. The outcome is explicit rather
  * than null: 'aborted' and 'timeout' surface to the caller's own reporting
  * instead of being mistaken for "no listener".
  */
@@ -49,10 +50,11 @@ export declare function hopInit(hop: HopRequest, signal: AbortSignal): RequestIn
 /**
  * One hop as a kernel serves it: a loopback URL (by name through its
  * resolver) from its port registry or loopback router, refused there if
- * nothing listens, never fetched; any other with fetch. With no kernel,
- * every hop is fetched.
+ * nothing listens, never fetched; any other off the box through the
+ * workspace's network (its host's egress, when it supplied one). With no
+ * kernel, every hop goes through the isolate's own network.
  */
-export declare function sendHop(kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback'> & Partial<Pick<Kernel, 'dns'>> | undefined, url: URL, init: RequestInit): Promise<WorkspaceRequestResult>;
+export declare function sendHop(kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback' | 'network'> & Partial<Pick<Kernel, 'dns'>> | undefined, url: URL, init: RequestInit): Promise<WorkspaceRequestResult>;
 /** Where a walk ended: its final response and the URL it came from, the hop that failed, or the cap. */
 export type RedirectWalkResult = {
     kind: 'response';

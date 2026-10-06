@@ -1,3 +1,4 @@
+import { type WorkspaceNetwork } from '../../../_shared/workspace-network.js';
 import { ProcessRegistry } from '../shell/ProcessRegistry.js';
 import { DNSResolver } from './dns-resolver.js';
 export interface VirtualRequest {
@@ -23,6 +24,13 @@ export declare function createHostsResolver(): DNSResolver;
  */
 export declare class Kernel {
     portRegistry: Map<number, VirtualRequestHandler>;
+    /**
+     * The network its commands reach off the box through: the workspace's
+     * egress when its host supplied one (NimbusWorkspaceOptions.egress), else
+     * the isolate's own. Loopback never goes here: the port registry and
+     * `routeLoopback` answer it.
+     */
+    network: WorkspaceNetwork;
     routeLoopback?: LoopbackRouter;
     processRegistry: ProcessRegistry;
     readonly dns: DNSResolver;

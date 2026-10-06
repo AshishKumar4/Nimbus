@@ -15,6 +15,7 @@
  * Long-running processes use a dynamic Worker entrypoint that stays
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
@@ -690,6 +691,8 @@ ${VFS_CURSOR_SEED_SOURCE}
     // run that made one cannot stop to be run again.
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+    // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
+    globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     // The same store, namespace and data plan a resident boots on, backed by
     // this run's heap (runOnce hosts no SQLite; vfs/facet-resident-store.ts).
     // Declared inside the request, beside the shims, so a loader that reuses
@@ -1133,6 +1136,8 @@ ${VFS_CURSOR_SEED_SOURCE}
     });
     const __supervisor = workerEnv?.SUPERVISOR
       ? __nimbusStopReplay.ledger(globalThis.__nimbusAnsweringSupervisor(workerEnv.SUPERVISOR)) : null;
+    // Its network goes through its workspace's egress: node:tls refuses a TLS socket by name.
+    globalThis.__nimbusEgress = workerEnv?.NIMBUS_EGRESS === true;
     __nimbusRuntimeCodeReporter = () => {
       const report = __nimbusFlushRuntimeCode(__supervisor).catch(async (error) => {
         await __nimbusReportLearningFailure(__supervisor, error);
@@ -3961,6 +3966,7 @@ export class FacetManager {
      * gone inside one call.
      */
     processHost;
+    network;
     /** NIMBUS_DEBUG=1: placement diagnostics into the process log store. */
     debugEnabled = false;
     processRpcResources = new Map();
@@ -4103,7 +4109,9 @@ export class FacetManager {
         this.processes = processes;
         this.portRegistry = portRegistry;
         this.hooks = hooks;
-        this.processHost = host(ctx, env, () => this._residentDisk());
+        // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
+        this.network = hooks.network ?? (() => ISOLATE_NETWORK);
+        this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
         this.processFabric = new ProcessFabric(this.processHost);
         const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
             ? Reflect.get(env, 'NIMBUS_DEBUG')
@@ -4264,13 +4272,13 @@ export class FacetManager {
      *  authority over the same disk. */
     setVfs(vfs, filesystem) { this.vfs = vfs; this.filesystem = filesystem; }
     /**
-     * The env/ctx pair every loader-backed runtime builds its facet pools
-     * from. A pool is constructed from exactly these two, so the manager
-     * exposes them as one narrow accessor rather than every runtime reaching
-     * into its private fields.
+     * What every loader-backed runtime builds its facet pools from: the env and
+     * ctx a pool is constructed over, and the workspace's network its facets go
+     * out through. One narrow accessor rather than every runtime reaching into
+     * the manager's private fields.
      */
     loaderHost() {
-        return { env: this.env, ctx: this.ctx };
+        return { env: this.env, ctx: this.ctx, network: this.network() };
     }
     /**
      * The image store's disk: this session's VFS, as the kernel — the store is
@@ -6080,7 +6088,7 @@ export class FacetManager {
         // the Worker-Loader cache-miss path (with SUPERVISOR bound to THIS call's
         // context, which stays open for the whole run), never in this DO.
         const writerId = crypto.randomUUID();
-        const supervisor = supervisorBindingProps(this.ctx, staged.pid, { writerId });
+        const supervisor = supervisorBindingProps(this.ctx, staged.pid, { writerId, network: this.network() });
         const ctxExports = getNimbusCtxExports();
         let entrypoint;
         let writerActivated = false;

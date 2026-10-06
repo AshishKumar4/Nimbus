@@ -15,7 +15,7 @@ import { execFileSync } from 'node:child_process';
 import { DatabaseSync } from 'node:sqlite';
 
 import yes from '../../packages/core/src/substrate/lifo/commands/io/yes.ts';
-import { NimbusWorkspace, localFacetHost } from '../../packages/core/src/index.ts';
+import { ISOLATE_NETWORK, NimbusWorkspace, localFacetHost } from '../../packages/core/src/index.ts';
 
 // ── The command: exact output, buffer-sized writes ──────────────────────────
 {
@@ -52,7 +52,7 @@ import { NimbusWorkspace, localFacetHost } from '../../packages/core/src/index.t
   const db = new DatabaseSync(':memory:');
   const sql = { exec: (query, ...bindings) => db.prepare(query).all(...bindings) };
   const transactions = { storage: { transactionSync(cb) { db.exec('BEGIN'); try { const r = cb(); db.exec('COMMIT'); return r; } catch (e) { db.exec('ROLLBACK'); throw e; } } } };
-  const workspace = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: localFacetHost(), runtimes: [] });
+  const workspace = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user', facets: localFacetHost(ISOLATE_NETWORK), runtimes: [] });
   const CMD = 'yes abcdef | head -c 300000 | wc -c';
   const bashOut = execFileSync('bash', ['-c', CMD], { encoding: 'utf8' });
   // Counted, not timed: the 45 s was one timer turn per 7-byte line (42,858

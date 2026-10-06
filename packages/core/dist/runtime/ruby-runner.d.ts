@@ -43,6 +43,7 @@
  *     ruby-init-loadpath, rb-eval-string-protect, cabi_realloc,
  *     canonical_abi_drop_rb-abi-value, memory.
  */
+import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
@@ -64,6 +65,8 @@ export declare function makeRubyRunnerFactory(deps: {
     startResident?: RubyResidentStart;
     /** The session user's home, whose gems are registered when the runtime loads. */
     getHome(): string;
+    /** The workspace's network: `gem` and `bundle` reach RubyGems through its egress. */
+    network: WorkspaceNetwork;
 }): RubyRunnerFactory;
 /** What one invocation hands the VM. Identical for both process shapes. */
 export interface RubyFacetCallArgs {

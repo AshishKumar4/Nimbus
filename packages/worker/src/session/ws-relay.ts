@@ -35,6 +35,8 @@
  */
 
 /** A frame or lifecycle event, as the facet receives it. */
+
+import type { WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 export type WsRelayEvent =
   | { kind: 'open'; protocol: string }
   | { kind: 'message'; text: string | null; bytes: Uint8Array | null }
@@ -83,6 +85,9 @@ export class WebSocketRelay {
   private entries = new Map<number, RelayEntry>();
   private nextId = 1;
 
+  /** `network`: the workspace's, whose egress opens every socket a process asks for. */
+  constructor(private readonly network: () => WorkspaceNetwork) {}
+
   /**
    * Open the real socket and start buffering for the facet.
    *
@@ -95,7 +100,7 @@ export class WebSocketRelay {
   async open(pid: number, url: string, protocols: string[]): Promise<{ id: number; protocol: string }> {
     const headers: Record<string, string> = { Upgrade: 'websocket' };
     if (protocols.length > 0) headers['Sec-WebSocket-Protocol'] = protocols.join(', ');
-    const response = await fetch(upgradeUrl(url), { headers });
+    const response = await this.network().fetch(upgradeUrl(url), { headers });
     const socket = response.webSocket;
     if (!socket) {
       throw new Error(

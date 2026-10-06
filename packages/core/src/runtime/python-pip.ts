@@ -4,6 +4,7 @@ import {
   valid as validPep440Version,
   validRange as validPep440Range,
 } from '@renovatebot/pep440';
+import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import {
   parsePipRequirementsFile,
   parsePipRequirementsLine,
@@ -191,6 +192,8 @@ type PyodideLockfile = z.infer<typeof PyodideLockfileSchema>;
 export interface PythonPipRuntimeContext {
   /** The installing user's home: packages go to its {@link pythonSitePackages}. */
   home: string;
+  /** The workspace's network: PyPI is reached through its egress, when it has one. */
+  network: WorkspaceNetwork;
   pyodideLockfileText?: string | null;
   runtimeArtifacts?: RuntimeArtifactMetadata[];
 }
@@ -607,7 +610,7 @@ async function resolveRequirements(
       : null;
     const metadata = dependencyLines
       ? null
-      : await fetchPypiJson(name, resolvedPkg.package.version);
+      : await fetchPypiJson(runtimeContext.network, name, resolvedPkg.package.version);
     if (metadata && 'error' in metadata) return metadata;
     for (const depLine of dependencyLines ?? metadata?.data.info.requires_dist ?? []) {
       let dep: Requirement | null;
@@ -675,7 +678,7 @@ async function resolveOneRequirement(
   const sourcePolicy = PIP_SOURCE_PACKAGES[req.name];
   if (sourcePolicy) return resolveSourcePolicy(req, sourcePolicy);
 
-  const metadata = await fetchPypiJson(req.name);
+  const metadata = await fetchPypiJson(runtimeContext.network, req.name);
   if ('error' in metadata) return metadata;
   const releases = metadata.data.releases || {};
   const versions = Object.keys(releases).filter((version) =>
@@ -686,7 +689,7 @@ async function resolveOneRequirement(
     return { error: `no PyPI release of ${req.name} satisfies ${range || '>=0'}` };
   }
 
-  const versionMetadata = await fetchPypiJson(req.name, version);
+  const versionMetadata = await fetchPypiJson(runtimeContext.network, req.name, version);
   if ('error' in versionMetadata) return versionMetadata;
   const files = versionMetadata.data.urls || releases[version] || [];
   const wheel = selectPureWheel(req.name, version, files);
@@ -751,16 +754,17 @@ function findBestVersion(versions: string[], range: string): string | null {
   }
 }
 
-async function fetchPypiJson(name: string, version?: string): Promise<{ data: PypiJson } | { error: string }> {
+async function fetchPypiJson(network: WorkspaceNetwork, name: string, version?: string): Promise<{ data: PypiJson } | { error: string }> {
   const canonical = canonicalPackageName(name);
-  const key = version ? `${canonical}@${version}` : canonical;
+  // Cached per network: what one workspace's egress answered is never another's.
+  const key = `${network.id}|` + (version ? `${canonical}@${version}` : canonical);
   let entry = pypiCache.get(key);
   if (!entry) {
     const url = version
       ? `${PYPI_API}/${encodeURIComponent(canonical)}/${encodeURIComponent(version)}/json`
       : `${PYPI_API}/${encodeURIComponent(canonical)}/json`;
     entry = {
-      promise: fetch(url).then(async (resp) => {
+      promise: network.fetch(url).then(async (resp) => {
         if (!resp.ok) throw new Error(`HTTP ${resp.status}`);
         return PypiJsonSchema.parse(await resp.json());
       }),

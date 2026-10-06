@@ -14,7 +14,9 @@
  *     asynchronously (fd 0, read to its end) holds the guest exactly as a
  *     blocking read holds a Node program;
  *   - events: its output, the requests its loopback clients make, the
- *     requests this side forwards to its servers, its exit.
+ *     requests this side forwards to its servers, its exit, and under an
+ *     egress the requests it makes off the box, whose responses cross back
+ *     as they arrive (runtime/realm-egress.ts).
  *
  * Everything the program sends is untrusted: this side answers only the calls
  * it names below, with arguments of their kind, and never lets a message, an
@@ -33,10 +35,11 @@ import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
+import { isEgressGuestEvent, isEgressHostEvent, RealmEgress, type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node.js';
 
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
 
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
@@ -49,30 +52,41 @@ export type NodeCall =
   | { readonly op: 'unlisten'; readonly port: number }
   | { readonly op: 'watch'; readonly on: boolean };
 
-/** A response, as data, either way across. */
+/** A response to a request that stayed on the box, as data, either way across. */
 export interface RealmResponse {
   readonly status: number;
   readonly headers: Record<string, string>;
-  readonly body: string;
+  readonly body: string | Uint8Array;
 }
 
 /** What the guest posts on `events`. */
 export type GuestEvent =
   | { readonly type: 'output'; readonly fd: 1 | 2; readonly data: string | Uint8Array }
-  | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | null }
+  | { readonly type: 'fetch'; readonly id: number; readonly port: number; readonly url: string; readonly method: string; readonly headers: Record<string, string>; readonly body: string | Uint8Array | null }
   | { readonly type: 'served'; readonly id: number; readonly response: RealmResponse | null }
-  | { readonly type: 'exit'; readonly code: number };
+  | { readonly type: 'exit'; readonly code: number }
+  | EgressGuestEvent;
 
 /** What this side posts on `events`. */
 export type HostEvent =
   | { readonly type: 'fetched'; readonly id: number; readonly response: RealmResponse | null }
   | { readonly type: 'serve'; readonly id: number; readonly port: number; readonly request: VirtualRequest }
-  | { readonly type: 'changed' };
+  | { readonly type: 'changed' }
+  | EgressHostEvent;
 
-/** What the realm starts with: the program, and the kernel's /etc/hosts its dns.lookup answers from. */
+/**
+ * What the realm starts with: the program, the kernel's /etc/hosts its
+ * dns.lookup answers from, and whether its network goes through an egress.
+ */
 export interface NodeRealmPayload {
   readonly program: NodeProgram;
   readonly hosts?: string;
+  /**
+   * The workspace's network goes through its host's egress: every request
+   * the program makes off the box crosses here (`egress`) and leaves through
+   * it; a WebSocket, which cannot cross, is refused by name.
+   */
+  readonly egress: boolean;
 }
 
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
@@ -83,15 +97,18 @@ const stringRecord = (value: unknown): value is Record<string, string> =>
   record(value) && Object.values(value).every((entry) => typeof entry === 'string');
 
 const isResponse = (value: unknown): value is RealmResponse | null =>
-  value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers) && typeof value.body === 'string');
+  value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
+    && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 
 export function isGuestEvent(value: unknown): value is GuestEvent {
+  if (isEgressGuestEvent(value)) return true;
   if (!record(value)) return false;
   switch (value.type) {
     case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
     case 'fetch':
       return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
-        && typeof value.method === 'string' && stringRecord(value.headers) && (value.body === null || typeof value.body === 'string');
+        && typeof value.method === 'string' && stringRecord(value.headers)
+        && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
     case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
     case 'exit': return Number.isSafeInteger(value.code);
     default: return false;
@@ -99,6 +116,7 @@ export function isGuestEvent(value: unknown): value is GuestEvent {
 }
 
 export function isHostEvent(value: unknown): value is HostEvent {
+  if (isEgressHostEvent(value)) return true;
   if (!record(value)) return false;
   switch (value.type) {
     case 'fetched': return typeof value.id === 'number' && isResponse(value.response);
@@ -110,7 +128,7 @@ export function isHostEvent(value: unknown): value is HostEvent {
 
 export function isNodeRealmPayload(value: unknown): value is NodeRealmPayload {
   return record(value) && record(value.program) && typeof value.program.source === 'string'
-    && (value.hosts === undefined || typeof value.hosts === 'string');
+    && (value.hosts === undefined || typeof value.hosts === 'string') && typeof value.egress === 'boolean';
 }
 
 export function isStat(value: unknown): value is RuntimeVfsStat {
@@ -282,7 +300,9 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   };
 
   let code: number | null = null;
-  const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile() };
+  const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile(), egress: kernel?.network?.egress !== undefined };
+  const network = kernel?.network;
+  const egress = network?.egress === undefined ? null : new RealmEgress(network, (event) => { post(event); });
   const realm = await startRealm({
     entry: new URL('./node-guest.js', import.meta.url),
     payload,
@@ -305,6 +325,11 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
             post({ type: 'fetched', id: event.id, response });
           });
           return;
+        case 'egress':
+        case 'egress-pull':
+        case 'egress-cancel':
+          egress?.handle(event);
+          return;
       }
     },
   });
@@ -323,6 +348,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   ctx.signal.removeEventListener('abort', abort);
   for (const port of ports) kernel?.portRegistry.delete(port);
   for (const respond of pending.values()) respond(null);
+  egress?.close();
   unwatch?.();
   await written;
   if (end.terminated) return exitCodeForAbortSignal(ctx.signal);

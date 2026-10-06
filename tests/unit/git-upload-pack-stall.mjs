@@ -7,6 +7,7 @@
 import assert from 'node:assert/strict';
 
 import { UploadPackError, requestPack } from '../../packages/worker/src/git/pack/upload-pack.ts';
+import { RETRY_ATTEMPTS, RETRY_BACKOFF_MS, STALL_MS } from '../../packages/worker/src/git/pack/transport.ts';
 
 const encoder = new TextEncoder();
 const pkt = (text) => encoder.encode((text.length + 4).toString(16).padStart(4, '0') + text);
@@ -43,12 +44,21 @@ function respondWith(start) {
 }
 
 {
-  // No response at all: the request gives up after the stall time, each of its attempts.
-  const fetch = () => new Promise(() => {});
+  // No response at all: the request gives up after the stall time, each of
+  // its attempts. It waits the retry schedule between them, each wait
+  // jittered by up to a quarter: 3.3 s to 5.3 s in all with a 100 ms stall,
+  // so a fixed 5 s bound failed one run in sixteen on jitter alone. The
+  // bound is the schedule's longest, plus scheduling slack; an attempt that
+  // ignored stallMs would wait STALL_MS.
+  let attempts = 0;
+  const fetch = () => { attempts++; return new Promise(() => {}); };
   const started = Date.now();
   await assert.rejects(requestPack({ url: 'https://example.invalid/r.git', fetch, stallMs: 100 }, advertised, { wants }),
     (error) => error instanceof UploadPackError && /no response for/.test(error.message));
-  assert.ok(Date.now() - started < 5000);
+  const elapsed = Date.now() - started;
+  assert.equal(attempts, RETRY_ATTEMPTS, 'each attempt is made, and each gives up');
+  const longest = RETRY_ATTEMPTS * 100 + RETRY_BACKOFF_MS.slice(0, RETRY_ATTEMPTS - 1).reduce((sum, ms) => sum + ms * 1.25, 0);
+  assert.ok(elapsed < longest + 2000 && elapsed < STALL_MS, `gave up after the stall time, each attempt (${elapsed} ms; the schedule's longest is ${longest} ms)`);
 }
 
 console.log('git-upload-pack-stall: ok');

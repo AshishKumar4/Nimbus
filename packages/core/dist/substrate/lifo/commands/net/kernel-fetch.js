@@ -3,12 +3,14 @@
  *
  * curl and wget are each bound to one kernel, and a loopback hop — including
  * one a redirect lands on — is served by that kernel's port registry or its
- * host's loopback router, never by fetch. The outcome is explicit rather
+ * host's loopback router, never by fetch; any other hop goes off the box
+ * through the workspace's network. The outcome is explicit rather
  * than null: 'aborted' and 'timeout' surface to the caller's own reporting
  * instead of being mistaken for "no listener".
  */
 import { isLoopbackHost, } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
+import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 /**
  * The loopback port a URL asks for, or null when it is not loopback. A name
  * is resolved through the kernel's /etc/hosts; a caller that holds no
@@ -104,14 +106,15 @@ export function hopInit(hop, signal) {
 /**
  * One hop as a kernel serves it: a loopback URL (by name through its
  * resolver) from its port registry or loopback router, refused there if
- * nothing listens, never fetched; any other with fetch. With no kernel,
- * every hop is fetched.
+ * nothing listens, never fetched; any other off the box through the
+ * workspace's network (its host's egress, when it supplied one). With no
+ * kernel, every hop goes through the isolate's own network.
  */
 export async function sendHop(kernel, url, init) {
     const port = kernel ? workspaceRequestPort(kernel, url) : null;
     if (kernel && port !== null)
         return await dispatchWorkspaceRequest(kernel, port, new Request(url, init));
-    return { kind: 'response', response: await fetch(url, init) };
+    return { kind: 'response', response: await (kernel?.network ?? ISOLATE_NETWORK).fetch(url, init) };
 }
 /**
  * Send `start`, and while `follow` holds and the answer is a 3xx with a

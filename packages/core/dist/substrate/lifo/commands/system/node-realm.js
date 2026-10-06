@@ -14,7 +14,9 @@
  *     asynchronously (fd 0, read to its end) holds the guest exactly as a
  *     blocking read holds a Node program;
  *   - events: its output, the requests its loopback clients make, the
- *     requests this side forwards to its servers, its exit.
+ *     requests this side forwards to its servers, its exit, and under an
+ *     egress the requests it makes off the box, whose responses cross back
+ *     as they arrive (runtime/realm-egress.ts).
  *
  * Everything the program sends is untrusted: this side answers only the calls
  * it names below, with arguments of their kind, and never lets a message, an
@@ -28,25 +30,32 @@ import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
 import { dispatchWorkspaceRequest } from '../net/kernel-fetch.js';
+import { isEgressGuestEvent, isEgressHostEvent, RealmEgress } from '../../../../runtime/realm-egress.js';
 // ── The protocol's messages, narrowed where they arrive ─────────────────────
 // Each side receives a structured clone it must narrow: a guard per shape.
 const record = (value) => typeof value === 'object' && value !== null;
 const stringRecord = (value) => record(value) && Object.values(value).every((entry) => typeof entry === 'string');
-const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers) && typeof value.body === 'string');
+const isResponse = (value) => value === null || (record(value) && typeof value.status === 'number' && stringRecord(value.headers)
+    && (typeof value.body === 'string' || value.body instanceof Uint8Array));
 export function isGuestEvent(value) {
+    if (isEgressGuestEvent(value))
+        return true;
     if (!record(value))
         return false;
     switch (value.type) {
         case 'output': return (value.fd === 1 || value.fd === 2) && (typeof value.data === 'string' || value.data instanceof Uint8Array);
         case 'fetch':
             return Number.isSafeInteger(value.id) && Number.isSafeInteger(value.port) && typeof value.url === 'string'
-                && typeof value.method === 'string' && stringRecord(value.headers) && (value.body === null || typeof value.body === 'string');
+                && typeof value.method === 'string' && stringRecord(value.headers)
+                && (value.body === null || typeof value.body === 'string' || value.body instanceof Uint8Array);
         case 'served': return Number.isSafeInteger(value.id) && isResponse(value.response);
         case 'exit': return Number.isSafeInteger(value.code);
         default: return false;
     }
 }
 export function isHostEvent(value) {
+    if (isEgressHostEvent(value))
+        return true;
     if (!record(value))
         return false;
     switch (value.type) {
@@ -58,7 +67,7 @@ export function isHostEvent(value) {
 }
 export function isNodeRealmPayload(value) {
     return record(value) && record(value.program) && typeof value.program.source === 'string'
-        && (value.hosts === undefined || typeof value.hosts === 'string');
+        && (value.hosts === undefined || typeof value.hosts === 'string') && typeof value.egress === 'boolean';
 }
 export function isStat(value) {
     return record(value) && typeof value.type === 'string' && typeof value.mode === 'number' && typeof value.size === 'number';
@@ -229,7 +238,9 @@ export async function runNodeInRealm(program, ctx, kernel) {
         },
     };
     let code = null;
-    const payload = { program, hosts: kernel?.dns?.hostsFile() };
+    const payload = { program, hosts: kernel?.dns?.hostsFile(), egress: kernel?.network?.egress !== undefined };
+    const network = kernel?.network;
+    const egress = network?.egress === undefined ? null : new RealmEgress(network, (event) => { post(event); });
     const realm = await startRealm({
         entry: new URL('./node-guest.js', import.meta.url),
         payload,
@@ -253,6 +264,11 @@ export async function runNodeInRealm(program, ctx, kernel) {
                         post({ type: 'fetched', id: event.id, response });
                     });
                     return;
+                case 'egress':
+                case 'egress-pull':
+                case 'egress-cancel':
+                    egress?.handle(event);
+                    return;
             }
         },
     });
@@ -273,6 +289,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
         kernel?.portRegistry.delete(port);
     for (const respond of pending.values())
         respond(null);
+    egress?.close();
     unwatch?.();
     await written;
     if (end.terminated)

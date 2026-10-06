@@ -5,6 +5,31 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- A workspace's network can go through its host's egress
+  (`NimbusWorkspaceOptions.egress`; for the session Durable Object a
+  `NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint
+  one per session). Every request made for the workspace's commands and
+  programs goes through it: git (every facet it loads), npm (the install
+  facets here and in peers; the shared packument cache is bypassed), curl,
+  wget, dig, ping, `npm view`/`search`, pip (metadata and downloads), gem,
+  a program's fetch, `http`/`https` (node-fetch, undici) and WebSocket, the
+  one-shot runtimes and REPLs, a plain TCP socket (the egress's
+  `connect()`), and the workers and dev servers a command starts; an inline
+  `node` program's fetch streams through it and follows redirects as Node
+  does. A program's TLS socket (`tls.connect`) is refused by name under an
+  egress (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain
+  TCP only (measured in workerd: `startTls()` on such a socket has no TLS
+  starter); so is an inline `node` program's WebSocket. Nimbus's own
+  traffic (R2, catalog, OAuth, AI, assets) is not routed. The egress is a
+  `Pick<Fetcher, 'fetch' | 'connect'>`. Process bindings carry the egress
+  (`supervisorBindingProps` now requires the workspace's network), and every
+  facet host, pool and fanout takes the network its facets go out through:
+  `loaderFacetHost(env, ctx, network)`, `localFacetHost(network)` (whose
+  facets' fetch crosses to the host and out through the egress),
+  `IsolatePoolOptions.network`, `FanoutOptions.network`; Nimbus's own work
+  states `ISOLATE_NETWORK`, exported with `workspaceNetwork` from
+  `@nimbus-sh/core`. See docs/sandbox-sdk.md.
+
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been

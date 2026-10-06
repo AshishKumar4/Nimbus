@@ -9065,6 +9065,30 @@ const ${binding} = arguments[2];
     for (let at2 = scope; at2; at2 = at2.parent) if (at2.names.has(name)) return at2;
     return null;
   }
+  function namesBinding(parent, key) {
+    switch (parent.type) {
+      case "MemberExpression":
+        return key !== "property" || parent.computed === true;
+      case "Property":
+      case "MethodDefinition":
+      case "PropertyDefinition":
+        return key !== "key" || parent.computed === true;
+      case "ImportAttribute":
+        return key !== "key";
+      case "LabeledStatement":
+      case "BreakStatement":
+      case "ContinueStatement":
+      case "MetaProperty":
+      case "ImportSpecifier":
+      case "ImportDefaultSpecifier":
+      case "ImportNamespaceSpecifier":
+      case "ExportSpecifier":
+      case "ExportAllDeclaration":
+        return false;
+      default:
+        return true;
+    }
+  }
 
   function generatedNames(source) {
     let prefix = "__nimbus_m";
@@ -9168,30 +9192,6 @@ const ${binding} = arguments[2];
       found.push({ start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
     }
     return references;
-  }
-  function namesBinding(parent, key) {
-    switch (parent.type) {
-      case "MemberExpression":
-        return key !== "property" || parent.computed === true;
-      case "Property":
-      case "MethodDefinition":
-      case "PropertyDefinition":
-        return key !== "key" || parent.computed === true;
-      case "ImportAttribute":
-        return key !== "key";
-      case "LabeledStatement":
-      case "BreakStatement":
-      case "ContinueStatement":
-      case "MetaProperty":
-      case "ImportSpecifier":
-      case "ImportDefaultSpecifier":
-      case "ImportNamespaceSpecifier":
-      case "ExportSpecifier":
-      case "ExportAllDeclaration":
-        return false;
-      default:
-        return true;
-    }
   }
   function useOf(parent, key, patternProperties) {
     switch (parent.type) {

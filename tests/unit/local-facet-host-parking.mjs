@@ -22,6 +22,7 @@ import { Database } from 'bun:sqlite';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';
+import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { BASH_RUNNER } from '../../packages/core/src/runtime/os-contracts.ts';
 
 const WASM_DIR = new URL('../../packages/worker/wasm/', import.meta.url).pathname;
@@ -37,7 +38,7 @@ if (files.some(([, disk]) => !existsSync(disk))) {
 
 // ── The contract: parking follows the engine ────────────────────────────────
 const engineParks = typeof WebAssembly.Suspending === 'function' && typeof WebAssembly.promising === 'function';
-const host = localFacetHost();
+const host = localFacetHost(ISOLATE_NETWORK);
 assert.equal(host.parking, engineParks ? 'jspi' : 'none', 'the local host parks exactly when the engine can suspend wasm');
 // Under the same engine with JSPI hidden, the host says 'none' and nothing
 // else about it changes: the capability is read at construction.
@@ -45,14 +46,14 @@ assert.equal(host.parking, engineParks ? 'jspi' : 'none', 'the local host parks 
   const descriptor = Object.getOwnPropertyDescriptor(WebAssembly, 'Suspending');
   Object.defineProperty(WebAssembly, 'Suspending', { value: undefined, configurable: true, writable: true });
   try {
-    const bare = localFacetHost();
+    const bare = localFacetHost(ISOLATE_NETWORK);
     assert.equal(bare.parking, 'none', 'no Suspending: the host answers syscalls on the guest stack');
     assert.equal(bare.memoryBudgetBytes, host.memoryBudgetBytes, 'the budget is the same either way');
   } finally {
     if (descriptor) Object.defineProperty(WebAssembly, 'Suspending', descriptor);
     else Reflect.deleteProperty(WebAssembly, 'Suspending');
   }
-  assert.equal(localFacetHost().parking, host.parking, 'restored: the same answer as before');
+  assert.equal(localFacetHost(ISOLATE_NETWORK).parking, host.parking, 'restored: the same answer as before');
 }
 console.log(`  ok  localFacetHost().parking = ${host.parking} on this engine`);
 
@@ -79,7 +80,7 @@ const ws = await NimbusWorkspace.create({ sql: harness.sql, transactions: harnes
   }));
 }
 await ws.close();
-const shell = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, cwd: '/home/user', facets: localFacetHost() });
+const shell = await NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, generation: 1, cwd: '/home/user', facets: localFacetHost(ISOLATE_NETWORK) });
 
 const run = async (command, seconds = 30) => Promise.race([
   shell.exec(`bash -c '${command.replaceAll("'", "'\\''")}'`),

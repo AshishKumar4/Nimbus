@@ -1,7 +1,11 @@
 import type { Command } from '../types.js';
+import type { Kernel } from '../../kernel/index.js';
+import { ISOLATE_NETWORK, type WorkspaceNetwork } from '../../../../_shared/workspace-network.js';
 import { waitForAbortOrTimeout } from '../signal.js';
 
-const command: Command = async (ctx) => {
+/** `ping` over `network`: each probe is an HTTP HEAD that leaves the box like any other request. */
+function createPingImpl(network: () => WorkspaceNetwork): Command {
+  return async (ctx) => {
   let count = 4;
   let host: string | undefined;
 
@@ -38,7 +42,7 @@ const command: Command = async (ctx) => {
 
     const start = performance.now();
     try {
-      await fetch(url, { method: 'HEAD', signal: ctx.signal });
+      await network().fetch(url, { method: 'HEAD', signal: ctx.signal });
       const elapsed = performance.now() - start;
       times.push(elapsed);
       await ctx.stdout.write(`Response from ${host}: time=${elapsed.toFixed(1)}ms\n`);
@@ -69,6 +73,14 @@ const command: Command = async (ctx) => {
   }
 
   return failures === total ? 1 : 0;
-};
+  };
+}
+
+/** A `ping` bound to one kernel: its probes go through that workspace's network. */
+export function createPingCommand(kernel: Kernel): Command {
+  return createPingImpl(() => kernel.network);
+}
+
+const command: Command = createPingImpl(() => ISOLATE_NETWORK);
 
 export default command;

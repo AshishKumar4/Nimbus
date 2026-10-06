@@ -63,6 +63,7 @@
  * {@link HOSTED_WEBSOCKET_KEY_HEADER} — and a per-process capability makes
  * that pair unforgeable by anything that did not open the process.
  */
+import { type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { type ProcessHost, type ResidentDiskReader } from './process-fabric.js';
 import type { HostRoute } from './composition.js';
 /** The substrates this deployment can be configured for. */
@@ -75,7 +76,9 @@ export type ProcessHostMode = 'facet' | 'peer';
  * `disk` is the coordinator's own filesystem reader; the peer host does not
  * take it, because a peer reads the same disk through the supervisor instead.
  */
-export declare function createProcessHost(mode: ProcessHostMode, ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader): ProcessHost;
+export declare function createProcessHost(mode: ProcessHostMode, ctx: DurableObjectState, env: unknown, disk: () => ResidentDiskReader, 
+/** The workspace's network: every process's binding carries it, and with it its egress. */
+network: () => WorkspaceNetwork): ProcessHost;
 export declare function isolateToken(): string;
 /** Options the coordinator hands a hosting peer. */
 export interface HostProcessOpts {
@@ -86,6 +89,8 @@ export interface HostProcessOpts {
     writerId: string;
     /** The coordinator instance's delivery incarnation, minted into the SUPERVISOR binding (ResidentSupervisorProps). */
     hostIncarnation?: string;
+    /** The coordinator workspace's egress, when it has one: the process's network. */
+    network?: WorkspaceNetworkRef;
     workerKey: string;
     /** Unforgeable capability for the fetch-semantic WebSocket hop. */
     webSocketCapability: string;

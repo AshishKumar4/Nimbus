@@ -105,8 +105,11 @@ http.createServer((req, res) => {
   res.writeHead(200, { 'content-type': 'text/plain' });
   res.end('ok:' + req.url);
   if (req.url === '/race' || req.url === '/same-race') {
+    // A newer write from a timer, once the case says the older write's RPC
+    // is in flight (globalThis.__raceHooks); it tells the case when written.
     const next = req.url === '/race' ? 'newer' : 'same';
-    setTimeout(() => fs.writeFileSync('/home/user/request-result.txt', next), 0);
+    const { started, written } = globalThis.__raceHooks;
+    started.then(() => setTimeout(() => { fs.writeFileSync('/home/user/request-result.txt', next); written(); }, 0));
   }
 }).listen(4387);
 `;
@@ -1374,12 +1377,21 @@ function request(path = 'first') {
     { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
 
+  // The program's newer write lands while the older RPC is in flight: it
+  // waits for that RPC to start, and the case for the write. One timer turn
+  // after the start stood in for both before; under contention the
+  // program's timer ran before the response's flush began, which then sent
+  // 'newer' alone, and the older RPC this case waits on never came (a hang,
+  // 3 in 96 runs eight at a time).
+  let newerWritten;
+  const newerWrite = new Promise((resolve) => { newerWritten = resolve; });
+  globalThis.__raceHooks = { started: olderCall, written: newerWritten };
   const raced = worker.handleHttpRequest(request('race'));
   await olderCall;
-  const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
-  await new Promise((resolve) => rawSetTimeout(resolve, 0));
+  await newerWrite;
   releaseOlder();
   assert.equal((await raced).status, 200);
+  delete globalThis.__raceHooks;
 
   const next = await worker.handleHttpRequest(request('after-race'));
   assert.equal(next.status, 200);
@@ -1421,12 +1433,18 @@ function request(path = 'first') {
     { SUPERVISOR: asLaunchSupervisor(supervisor) },
   );
 
+  // As above: the second 'same' is written while the first one's RPC is in
+  // flight (before, a timer turn stood in, and the second write could land
+  // before the flush: ['same', 'after-same-race'], 1 in 96).
+  let secondWritten;
+  const secondWrite = new Promise((resolve) => { secondWritten = resolve; });
+  globalThis.__raceHooks = { started: firstCall, written: secondWritten };
   const raced = worker.handleHttpRequest(request('same-race'));
   await firstCall;
-  const rawSetTimeout = globalThis.__nimbusRawSetTimeout || setTimeout;
-  await new Promise((resolve) => rawSetTimeout(resolve, 0));
+  await secondWrite;
   releaseFirst();
   assert.equal((await raced).status, 200);
+  delete globalThis.__raceHooks;
 
   const next = await worker.handleHttpRequest(request('after-same-race'));
   assert.equal(next.status, 200);

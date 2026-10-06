@@ -1,8 +1,9 @@
 // @serial
 // @tier slow — drives a local workerd; CI median 20 s wall, 18 s CPU, 1.3 GiB peak (6 runs, 2026-10-06)
 // process.exit() ends a Nimbus process as it ends a Node one: at once,
-// whatever it still holds open. Two cases, each run under host node and in a
-// Nimbus session, with equal output and about the same time:
+// whatever it still holds open. Each case runs under host node and in a
+// Nimbus session, with equal output, and ends there though what it holds
+// outlives the run's bound:
 //
 //   - stdin: children each read one chunk of a stdin their parent keeps open,
 //     print it and call process.exit(0). Before, each child's run, having
@@ -92,7 +93,8 @@ c.on('close', (code) => { console.log('close ' + code); console.log('T ' + (Date
   children: `
 const { spawn } = require('child_process');
 const t0 = Date.now();
-const c = spawn('node', ['-e', "console.log('up'); setTimeout(() => {}, 60000)"]);
+// The child lives 10 min, or until its stdin ends, which the parent's exit does.
+const c = spawn('node', ['-e', "console.log('up'); setTimeout(() => {}, 600000); process.stdin.on('end', () => process.exit(0)).resume()"]);
 c.on('close', (code) => console.log('child closed ' + code));
 c.stdout.once('data', () => { console.log('parent exits'); console.log('T ' + (Date.now() - t0)); process.exit(0); });
 `,
@@ -121,15 +123,22 @@ try {
     try {
       await terminal.writeFile(`/home/user/${name}.js`, source);
       const started = Date.now();
-      // What a scenario held, before, it held for good, or 60 s (children):
-      // 40 s tells the two apart on a loaded machine, where eight ES-module
-      // children (written) take 20 s to launch and end.
-      const r = await terminal.run(`node /home/user/${name}.js`, 90_000);
+      // What a scenario holds when it exits it holds for good (stdin, an
+      // unread stream) or for 10 min (children, until the parent's exit
+      // ends its stdin): a program that ended only when what it held did
+      // never ends within this bound. Not a deadline on how fast it ends:
+      // eight ES-module children (written) took 20 to 41 s to launch and
+      // end on a loaded machine, against 11 s alone.
+      let r;
+      try {
+        r = await terminal.run(`node /home/user/${name}.js`, 240_000);
+      } catch (error) {
+        throw new Error(`${name}: the program did not end when it exited: still running after ${Date.now() - started} ms, held by what it held open (${String(error.message).split('\n')[0].slice(0, 300)})`);
+      }
       const ms = Date.now() - started;
       console.log(`  ${name}: ${ms} ms (host node ${host[name].ms} ms; the program's own T ${elapsed(r.stdout)} ms)`);
       assert.equal(r.status, 0, r.stdout);
       assert.deepEqual(lines(r.stdout), host[name].lines, `${name}: the same output as under host node`);
-      assert.ok(ms < 40_000, `${name}: the program ended when it exited (${ms} ms), not when what it held did`);
     } catch (error) {
       console.log(`  ${name}: FAILED ${String(error.message).split('\n')[0].slice(0, 300)}`);
       failures.push(`${name}: ${error.message.slice(0, 800)}`);

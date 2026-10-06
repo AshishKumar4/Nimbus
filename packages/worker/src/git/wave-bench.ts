@@ -10,6 +10,7 @@
  * the session sustained, and what the producers waited on.
  */
 
+import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import * as workers from 'cloudflare:workers';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
@@ -266,7 +267,7 @@ export async function runWaveBench(
   if (!isBenchEnv(env)) throw new Error('w7-bench: env.LOADER.load is not available');
   const exports = getCtxExports();
   if (!exports?.SupervisorRPC) throw new Error('w7-bench: SupervisorRPC binding is not available');
-  const supervisor = exports.SupervisorRPC({ props: supervisorBindingProps(ctx, options.pid, { writerId: crypto.randomUUID() }) });
+  const supervisor = exports.SupervisorRPC({ props: supervisorBindingProps(ctx, options.pid, { writerId: crypto.randomUUID(), network: ISOLATE_NETWORK }) });
   const started = Date.now();
   try {
     const perProducer = await Promise.all(Array.from({ length: options.producers }, async (_, index) => {

@@ -212,6 +212,7 @@ export async function initSession(
       terminal: self.terminal,
       processes: self.processes,
       runtimeSource: runtimeCatalogSource(self.env),
+      egress: self.egressForWorkspace(),
     });
     self.runtimeWorkspace = workspace;
     self.shellProcessPid = workspace.shellProcessPid;

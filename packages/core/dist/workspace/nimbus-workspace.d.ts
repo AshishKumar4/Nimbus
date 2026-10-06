@@ -23,6 +23,7 @@ import { Kernel } from '../substrate/lifo/kernel/index.js';
 import { Shell } from '../substrate/lifo/shell/Shell.js';
 import type { ShellCommandIdentity } from '../substrate/lifo/shell/Shell.js';
 import type { CommandRegistry } from '../substrate/lifo/commands/registry.js';
+import { type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
 import { type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
@@ -123,9 +124,11 @@ export interface NimbusWorkspaceOptions {
      * and `wasm-runner` joins them, which is what makes a `\0asm` file on the
      * PATH executable (see shell/exec-dispatch.ts).
      *
-     * A plain process passes `localFacetHost()`. A Durable Object passes nothing
-     * here and registers its own runners instead, because the ones it needs
-     * carry REPLs and a resident-process substrate this cannot reach.
+     * A plain process passes `localFacetHost(network)`, its network the
+     * workspace's: `workspaceNetwork(egress)` beside `egress`, else
+     * `ISOLATE_NETWORK`. A Durable Object passes nothing here and registers its
+     * own runners instead, because the ones it needs carry REPLs and a
+     * resident-process substrate this cannot reach.
      */
     readonly facets?: FacetHost;
     /**
@@ -164,6 +167,41 @@ export interface NimbusWorkspaceOptions {
      *  install stubs can resolve against. Supplied packages win same-name
      *  lookups. */
     readonly runtimeSource?: RuntimeSource;
+    /**
+     * The workspace's egress: every network request made on behalf of the
+     * workspace's commands and programs goes through it. A Fetcher's `fetch`
+     * and `connect` (`WorkspaceEgress`): `fetch` sees HTTP and WebSocket
+     * upgrades, `connect` plain TCP sockets. Typically a service binding or a
+     * `ctx.exports` entrypoint minted with the workspace's identity in its
+     * props, which may record, rewrite or refuse each request.
+     *
+     * Covered: git's clone, fetch, pull and push (every Dynamic Worker they
+     * load) and its on-demand object fetches; npm's registry and tarball
+     * requests (the install facets, in this Durable Object and in peers);
+     * curl, wget, dig and ping; pip's and gem's index requests and downloads;
+     * a process's fetch, http/https, WebSocket and plain TCP
+     * sockets; the one-shot runtimes and REPLs, whose facets go out through it
+     * (with `facets`, bind them to this network: `loaderFacetHost(env, ctx,
+     * workspaceNetwork(egress))`, `localFacetHost(workspaceNetwork(egress))`),
+     * TLS CPython makes itself included; an inline
+     * `node` program's fetch and http/https, streamed and redirected as Node's
+     * fetch does; a worker or dev server a command starts.
+     *
+     * Refused: a process's TLS socket (`tls.connect`), because a Fetcher's
+     * `connect()` carries plain TCP only and the TLS session could only be
+     * made off the egress (HTTPS by fetch or `https` is not affected); the
+     * WebSocket of an inline `node` program or a `localFacetHost` facet, which
+     * cannot cross its realm.
+     *
+     * Not covered: responses from Nimbus's shared npm packument cache are not
+     * used under an egress, so the egress sees every registry read, but
+     * integrity-checked tarballs may still come from the shared tarball cache;
+     * Nimbus's own infrastructure traffic (R2, the runtime catalog, OAuth, AI
+     * inference, static assets, its own Durable Objects).
+     *
+     * Absent, the workspace uses the isolate's own network, as before.
+     */
+    readonly egress?: WorkspaceEgress;
 }
 /**
  * A durable filesystem and a shell over it.
@@ -197,6 +235,13 @@ export declare class NimbusWorkspace {
     /** The raw durable filesystem, for hosts that need uid-aware operations. */
     readonly vfs: SqliteVFS;
     readonly kernel: Kernel;
+    /**
+     * The network the workspace's commands and programs use: its egress when
+     * the host supplied one ({@link NimbusWorkspaceOptions.egress}), else the
+     * isolate's. Everything that loads a Dynamic Worker for the workspace
+     * gives it `loaderOutbound(workspace.network)`.
+     */
+    get network(): WorkspaceNetwork;
     readonly shell: Shell;
     /** What the shell resolves a command name against. A host adds its own. */
     readonly registry: CommandRegistry;

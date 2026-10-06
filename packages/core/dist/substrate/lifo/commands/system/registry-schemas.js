@@ -16,6 +16,7 @@ export const RegistryVersionInfoSchema = z.object({
 }).passthrough();
 export const RegistryPackumentSchema = z.object({
     versions: z.record(z.string(), RegistryVersionInfoSchema),
+    'dist-tags': z.record(z.string(), z.string()).optional(),
 }).passthrough();
 export const RegistrySearchResponseSchema = z.object({
     objects: z.array(z.object({

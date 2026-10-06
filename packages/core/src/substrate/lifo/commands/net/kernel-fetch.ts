@@ -3,7 +3,8 @@
  *
  * curl and wget are each bound to one kernel, and a loopback hop — including
  * one a redirect lands on — is served by that kernel's port registry or its
- * host's loopback router, never by fetch. The outcome is explicit rather
+ * host's loopback router, never by fetch; any other hop goes off the box
+ * through the workspace's network. The outcome is explicit rather
  * than null: 'aborted' and 'timeout' surface to the caller's own reporting
  * instead of being mistaken for "no listener".
  */
@@ -15,6 +16,7 @@ import {
   type VirtualResponse,
 } from '../../kernel/index.js';
 import { waitForSignalOrTimeout } from '../signal.js';
+import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 
 /** Outcomes of one workspace-local hop, for callers that report failure. */
 export type WorkspaceRequestResult =
@@ -135,17 +137,18 @@ export function hopInit(hop: HopRequest, signal: AbortSignal): RequestInit {
 /**
  * One hop as a kernel serves it: a loopback URL (by name through its
  * resolver) from its port registry or loopback router, refused there if
- * nothing listens, never fetched; any other with fetch. With no kernel,
- * every hop is fetched.
+ * nothing listens, never fetched; any other off the box through the
+ * workspace's network (its host's egress, when it supplied one). With no
+ * kernel, every hop goes through the isolate's own network.
  */
 export async function sendHop(
-  kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback'> & Partial<Pick<Kernel, 'dns'>> | undefined,
+  kernel: Pick<Kernel, 'portRegistry' | 'routeLoopback' | 'network'> & Partial<Pick<Kernel, 'dns'>> | undefined,
   url: URL,
   init: RequestInit,
 ): Promise<WorkspaceRequestResult> {
   const port = kernel ? workspaceRequestPort(kernel, url) : null;
   if (kernel && port !== null) return await dispatchWorkspaceRequest(kernel, port, new Request(url, init));
-  return { kind: 'response', response: await fetch(url, init) };
+  return { kind: 'response', response: await (kernel?.network ?? ISOLATE_NETWORK).fetch(url, init) };
 }
 
 /** Where a walk ended: its final response and the URL it came from, the hop that failed, or the cap. */

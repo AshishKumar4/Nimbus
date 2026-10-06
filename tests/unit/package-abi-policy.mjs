@@ -28,7 +28,7 @@ import {
   applyStagedArtifact,
 } from '../../packages/worker/src/facets/wasm-swap-registry.ts';
 import { NPM_RESOLVE_PREAMBLE } from '../../packages/worker/src/loaders/npm-resolve-preamble.ts';
-import { parseRegistryRequest } from '../../packages/worker/src/npm/resolve-one-facet.ts';
+import { parseRegistryRequest } from '../../packages/core/src/_shared/npm-spec.ts';
 
 // ── 1. Preamble parity: extract the injected policy + functions ────────
 

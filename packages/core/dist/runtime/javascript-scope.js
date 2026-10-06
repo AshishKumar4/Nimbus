@@ -174,6 +174,36 @@ export function bindingScope(scope, name) {
             return at;
     return null;
 }
+/**
+ * Whether an identifier under `parent` by `key` reads or writes a binding,
+ * rather than naming a property, a key or a label, `import.meta`'s parts, or
+ * an import or export specifier's names (the declaration's, or the other
+ * module's).
+ */
+export function namesBinding(parent, key) {
+    switch (parent.type) {
+        case 'MemberExpression':
+            return key !== 'property' || parent.computed === true;
+        case 'Property':
+        case 'MethodDefinition':
+        case 'PropertyDefinition':
+            return key !== 'key' || parent.computed === true;
+        case 'ImportAttribute':
+            return key !== 'key';
+        case 'LabeledStatement':
+        case 'BreakStatement':
+        case 'ContinueStatement':
+        case 'MetaProperty':
+        case 'ImportSpecifier':
+        case 'ImportDefaultSpecifier':
+        case 'ImportNamespaceSpecifier':
+        case 'ExportSpecifier':
+        case 'ExportAllDeclaration':
+            return false;
+        default:
+            return true;
+    }
+}
 /** Whether a program's code is sloppy: a script without "use strict". */
 export function isSloppy(program) {
     if (program.sourceType === 'module')
