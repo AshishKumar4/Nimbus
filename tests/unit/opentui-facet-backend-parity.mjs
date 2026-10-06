@@ -18,7 +18,7 @@ import {
   OPENTUI_BACKEND_FACET_SRC,
 } from '../../packages/worker/src/runtime/opentui-facet-backend.ts';
 import { OPENTUI_WASM_ENTRY } from '../../packages/worker/src/opentui-wasm-artifact.generated.ts';
-import { ZIG_FFI_SYMBOLS } from './opentui-zig-symbols.mjs';
+import { ZIG_FFI_SYMBOLS } from './lib/opentui-zig-symbols.mjs';
 
 const workerRoot = path.resolve(
   path.dirname(fileURLToPath(import.meta.url)),
