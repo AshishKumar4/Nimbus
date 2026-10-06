@@ -216,10 +216,11 @@ export function childNodes(node: AnyNode): AnyNode[] {
  * runs, as the compiler, compiling a function on its first call, could not.
  */
 export function suspendsInFunction(node: AnyNode, memo?: SafeWeakMap<AnyNode, boolean>): boolean {
-  const cached = memo?.get(node);
+  if (memo === undefined) return suspendsWalk(node, undefined);
+  const cached = memo.get(node);
   if (cached !== undefined) return cached;
   const result = suspendsWalk(node, memo);
-  memo?.set(node, result);
+  memo.set(node, result);
   return result;
 }
 
