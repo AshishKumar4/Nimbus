@@ -258,6 +258,9 @@ export const installPackagesInFacet = async function installPackagesInFacet(
     onWave(report) {
       lastPublishedWave = report.wave;
     },
+    onResend(resend) {
+      console.warn(`[npm] write wave re-sent (${resend.attempt}/${resend.of}): ${resend.reason}`);
+    },
   });
   const writeOwnedFile = async (ownerId: number, path: string, data: Uint8Array): Promise<void> => {
     uncut.set(ownerId, (uncut.get(ownerId) ?? 0) + 1);

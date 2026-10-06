@@ -20,9 +20,10 @@
  *
  * Lost transport: a wave whose call failed before the session answered
  * (classifyDoCall: a dropped connection, a replaced isolate, a storage
- * reset, or an object that shed it as overloaded) or stayed unanswered past
- * WAVE_ATTEMPT_DEADLINE_MS is sent again after a backoff, once the
- * abandoned attempt's stream is errored so it reads nothing more.
+ * reset, or an object that shed it as overloaded), or that nothing read or
+ * answered in time (WAVE_LOST_TRANSPORT_POLICY), is sent again after a
+ * backoff, at most WAVE_RETRY_BACKOFF_MS.length times, once the abandoned
+ * attempt's stream is errored so it reads nothing more.
  * Re-sending is safe: a wave is the same paths and bytes, replacing. A shed
  * wave never ran; the platform's advice is not to retry an overloaded
  * object, but these waves are few and backed off, and npm measured the
@@ -53,16 +54,26 @@ export declare const WAVE_PATH_BYTES: number;
 /** Buffered content bytes that close a wave. */
 export declare const WAVE_BYTES: number;
 /**
- * An attempt unanswered this long is taken as dropped. Measured on a
- * throwaway (2026-09-28): an install shard held one writeBatchStream
- * unanswered for 160 s.
- */
-export declare const WAVE_ATTEMPT_DEADLINE_MS = 60000;
-/**
  * Waits before each re-send of a wave whose transport was lost (±25%
  * jitter): ~42 s in all, to outlast a coordinator queue deep enough to shed.
  */
 export declare const WAVE_RETRY_BACKOFF_MS: readonly number[];
+/**
+ * When an attempt is taken as lost. Some SupervisorRPC → session calls
+ * never reach the session (SUPERVISOR_READ_HEDGE_AFTER_MS: 11 of 521 read
+ * batches, pending 110-560 s; a clone wave stopped at the transport's
+ * ~1 MiB window with the session holding no stream, credit or transaction
+ * for it; an install shard held one unanswered for 160 s). A wave read by
+ * nothing for `stallMs` before its stream ended, or unanswered
+ * `answerDeadlineMs` after, is sent again. Healthy, with 8 producers
+ * saturating one session (w7-bench, 2026-10-06): the longest gap between a
+ * wave's reads was 2.5 s and the slowest whole wave 5.3 s.
+ */
+export declare const WAVE_LOST_TRANSPORT_POLICY: {
+    readonly backoffMs: readonly number[];
+    readonly stallMs: 10000;
+    readonly answerDeadlineMs: 20000;
+};
 /** The supervisor surface a writer publishes through. */
 export interface WaveSupervisor {
     writeBatchStream(stream: ReadableStream<Uint8Array>): Promise<unknown>;
@@ -123,8 +134,15 @@ export interface WaveWriterOptions<Meta = undefined> {
     /** The lost-transport policy's timings; tests shorten them. */
     retry?: {
         backoffMs: readonly number[];
-        attemptDeadlineMs: number;
+        stallMs: number;
+        answerDeadlineMs: number;
     };
+    /** Called before each re-send of a lost wave: which attempt, out of how many, and why. */
+    onResend?: (resend: {
+        attempt: number;
+        of: number;
+        reason: string;
+    }) => void;
 }
 export interface WaveStats {
     waves: number;

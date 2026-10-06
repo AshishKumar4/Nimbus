@@ -1266,6 +1266,9 @@ function createBufferedFs(
       stats.filesWritten += report.files;
       stats.bytesWritten += report.bytes;
     },
+    onResend(resend) {
+      console.warn('[git] write wave re-sent (' + resend.attempt + '/' + resend.of + '): ' + resend.reason);
+    },
   });
 
   function assertFlushHealthy() {

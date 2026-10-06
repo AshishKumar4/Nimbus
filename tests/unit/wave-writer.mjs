@@ -199,7 +199,7 @@ function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
 
 
 // ── Lost transport: a wave is sent again; an answered one never is ─────
-const quick = { backoffMs: [1, 1, 1], attemptDeadlineMs: 200 };
+const quick = { backoffMs: [1, 1, 1], stallMs: 200, answerDeadlineMs: 200 };
 const payloadOf = (index) => new TextEncoder().encode(`record ${index}\n`.padEnd(20_000, '.'));
 
 /** A session whose first `losses` calls fail as `loss` does, after reading part of the stream. */
@@ -215,7 +215,7 @@ function lossy(loss, losses = 1) {
         await reader.read();
         if (loss === 'unanswered') {
           // Stuck past the deadline, then reads on: the writer has errored its stream.
-          abandoned.push(new Promise((resolve) => setTimeout(resolve, 3 * quick.attemptDeadlineMs))
+          abandoned.push(new Promise((resolve) => setTimeout(resolve, 3 * quick.stallMs))
             .then(() => reader.read())
             .then((next) => (next.done ? 'ended' : 'read'), (error) => `errored: ${error?.message ?? error}`));
           return new Promise(() => {});
@@ -244,7 +244,7 @@ function lossy(loss, losses = 1) {
   for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
   await writer.flush();
   assert.equal(lost.calls, 2, 'an unanswered wave was not sent again');
-  assert.match(await lost.abandoned[0], /^errored: writeBatchStream unanswered/,
+  assert.match(await lost.abandoned[0], /^errored: writeBatchStream (unanswered|stalled)/,
     'the abandoned attempt could still read its stream');
   assert.deepEqual(new Uint8Array(lost.target.files.get('r/f49').bytes), payloadOf(49));
 }
@@ -313,6 +313,44 @@ function lossy(loss, losses = 1) {
   assert.equal(lost.calls, 1);
 }
 
+// A call that never reached the session: the transport read a window of
+// the stream (~1 MiB live) and nothing more, and no answer came. It is sent
+// again once nothing has read it for stallMs, not after a long answer
+// deadline. Red before: the writer waited its 60 s answer deadline (live:
+// a 4 s clone batch took 63 s).
+{
+  const target = session();
+  let calls = 0;
+  const supervisor = {
+    async writeBatchStream(stream) {
+      calls++;
+      if (calls === 1) {
+        const reader = stream.getReader();
+        let taken = 0;
+        while (taken < 1_000_000) {
+          const next = await reader.read();
+          if (next.done) break;
+          taken += next.value.byteLength;
+        }
+        return new Promise(() => {});
+      }
+      return target.supervisor.writeBatchStream(stream);
+    },
+  };
+  const policy = { backoffMs: [1, 1], stallMs: 300, answerDeadlineMs: 60_000 };
+  const resends = [];
+  const writer = createWaveWriter({ supervisor, root: 'r', base: 'r', retry: policy, onResend: (resend) => resends.push(resend) });
+  for (let index = 0; index < 200; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+  const started = Date.now();
+  await writer.flush();
+  const waited = Date.now() - started;
+  assert.equal(calls, 2);
+  assert.ok(waited < 10 * policy.stallMs, `a wave nothing read was re-sent only after ${waited} ms`);
+  assert.equal(resends.length, 1);
+  assert.match(resends[0].reason, /stalled: nothing read it for 300 ms/);
+  assert.deepEqual(new Uint8Array(target.files.get('r/f199').bytes), payloadOf(199));
+}
+
 // An abandoned attempt commits nothing after its re-send: the writer errors
 // its stream, so a receiver that only gets to it late reads no record of it.
 // Same path, different bytes in a later wave: the later bytes stay.
@@ -329,7 +367,7 @@ function lossy(loss, losses = 1) {
       calls++;
       if (calls === 1) {
         // Delivered only after the writer gave up on it and moved on.
-        zombie = new Promise((resolve) => setTimeout(resolve, 3 * quick.attemptDeadlineMs))
+        zombie = new Promise((resolve) => setTimeout(resolve, 3 * quick.stallMs))
           .then(() => vfs.writeStream(stream));
         return new Promise(() => {});
       }
