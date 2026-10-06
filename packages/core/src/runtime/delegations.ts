@@ -23,6 +23,7 @@
 
 import type { DelegationTerms } from '../vfs/sqlite-vfs.js';
 import type { ExclusiveMutationGrant, RecallKind } from './os-contracts.js';
+import { pathsOverlap } from '../vfs/path.js';
 
 /**
  * How long a holder has to answer a recall (T): send what it decided and
@@ -32,6 +33,14 @@ import type { ExclusiveMutationGrant, RecallKind } from './os-contracts.js';
  * revoked. See the core README's process model for its measurement.
  */
 export const DELEGATION_RECALL_TIMEOUT_MS = 5_000;
+
+/**
+ * The session's own stores (engine keys): a process may not hold them, so
+ * the session's synchronous use of them (durable launch images, inline wasm
+ * images, staged bindings) never meets a delegation. A subtree at or above
+ * one is not delegated (EPERM).
+ */
+export const SESSION_KERNEL_ROOTS: readonly string[] = ['.nimbus', 'var/lib/nimbus'];
 
 /** How long one awaitRecall waits before it answers that nothing is asked (the holder asks again). */
 export const DELEGATION_RECALL_POLL_MS = 25_000;
@@ -95,6 +104,12 @@ export class Delegations {
     let held: Held | null = null;
     const terms: DelegationTerms = {
       reads,
+      admit: (root) => {
+        const kernelRoot = SESSION_KERNEL_ROOTS.find((store) => pathsOverlap(root, store));
+        if (kernelRoot !== undefined) {
+          throw Object.assign(new Error(`EPERM: /${root} holds the session's own /${kernelRoot}; it is not delegated`), { code: 'EPERM' });
+        }
+      },
       recall: (kind) => {
         if (held === null || this.held.get(held.owner) !== held) return Promise.resolve();
         return this.recall(held, kind);

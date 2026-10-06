@@ -119,6 +119,7 @@ import {
 // ── Types ───────────────────────────────────────────────────────────────
 
 import type { InstallPhase } from '@nimbus-sh/platform/install-phase.js';
+import { withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 export interface InstallProgress {
   phase: InstallPhase;
@@ -519,7 +520,8 @@ export class NpmInstaller {
     const keptBins = opts?.packages && await project.exists(npmBinManifestPath(nmDir))
       ? Object.values(parseNpmBinManifest(await project.readFileString(npmBinManifestPath(nmDir)))?.bins ?? {})
       : [];
-    await this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins);
+    // Linking a bin again links it as before: repeatable, so it waits for a delegation it meets.
+    await withRecall(() => this.linkBins(resolved, engineDir === null ? { fs: project, nmDir } : { engine: this.store.as(opts.cred), nmDir: `${engineDir}/node_modules` }, keptBins));
     phases['link-bins'] = Date.now() - phaseStart;
 
     // ── Write lockfile ──────────────────────────────────────────────
@@ -570,7 +572,7 @@ export class NpmInstaller {
       // through this invocation's `log`, which turns to the console once the
       // command has returned, so a late line never lands on the redrawn
       // prompt or in another install's output.
-      void this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log)
+      void withRecall(() => this.prebundleUsedModules(engineDir, resolved, this.store.as(opts.cred), log))
         .catch((e: unknown) => log(`pre-bundle skipped: ${errorText(e)}`));
       phases['bundle'] = Date.now() - phaseStart;
     }
@@ -1304,7 +1306,8 @@ export class NpmInstaller {
     }
     const staging = this.store.as(principal.cred);
     const stage = `${tmp}/${STAGE_PREFIX}${principal.pid}-${Date.now().toString(36)}`;
-    staging.mkdir(stage, { recursive: true });
+    // The engine's own calls here wait for a delegation they meet (withRecall): each is repeatable.
+    await withRecall(() => staging.mkdir(stage, { recursive: true }));
     this.placing.add(stage);
     try {
       const result = await this.fetchViaBatchFacet(toFetch, `${stage}/node_modules`, principal.pid);
@@ -1324,7 +1327,7 @@ export class NpmInstaller {
       const swept = new Set<string>();
       for (const placement of tops) {
         const from = `${stage}/node_modules/${placement}`;
-        if (!staging.exists(from)) continue;
+        if (!await withRecall(() => staging.exists(from))) continue;
         const dst = `/${nmDir}/${placement}`;
         const parent = dst.slice(0, dst.lastIndexOf('/'));
         try {
@@ -2618,10 +2621,15 @@ export class NpmInstaller {
 const STAGE_PREFIX = '.npm-stage-';
 const COPY_PREFIX = '.nimbus-copy-';
 
-/** `src`'s tree on the engine written into `dst` through `to`; with `packageJsonLast`, its own package.json goes last. */
+/**
+ * `src`'s tree on the engine written into `dst` through `to`; with
+ * `packageJsonLast`, its own package.json goes last. Each read of the engine
+ * waits for a delegation it meets (withRecall); the writes go through the
+ * view, which waits itself.
+ */
 async function copyTreeInto(from: CredentialedVfs, src: string, to: ProcessView, dst: string, packageJsonLast: boolean): Promise<void> {
   await to.mkdir(dst, { recursive: true });
-  const entries = from.readdir(src);
+  const entries = await withRecall(() => from.readdir(src));
   if (packageJsonLast) entries.sort((a, b) => Number(a.name === 'package.json') - Number(b.name === 'package.json'));
   for (const entry of entries) {
     const source = `${src}/${entry.name}`;
@@ -2630,9 +2638,10 @@ async function copyTreeInto(from: CredentialedVfs, src: string, to: ProcessView,
       await copyTreeInto(from, source, to, target, false);
     } else if (entry.type === 'symlink') {
       if ((await to.stat(target, { follow: false })) !== null) await to.unlink(target);
-      await to.symlink(from.readlink(source), target);
+      await to.symlink(await withRecall(() => from.readlink(source)), target);
     } else {
-      await to.writeFile(target, from.readFile(source), { mode: from.stat(source).mode & 0o7777 });
+      const [bytes, mode] = await withRecall(() => [from.readFile(source), from.stat(source).mode & 0o7777] as const);
+      await to.writeFile(target, bytes, { mode });
     }
   }
 }

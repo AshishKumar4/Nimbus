@@ -28,7 +28,7 @@
  */
 
 import { VfsEventEmitter, type VfsEvent, type VfsEventType } from './events.js';
-import { normalizeVfsPath, parentVfsPath } from './path.js';
+import { normalizeVfsPath, parentVfsPath, pathsOverlap } from './path.js';
 import { PathRevisions, type OwnGeneration } from './path-revisions.js';
 import { z } from 'zod/v4';
 import {
@@ -73,7 +73,7 @@ import {
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
-import { RecallRequired } from './recall.js';
+import { RecallRequired, withRecall } from './recall.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource, type Principal, type VfsContentRef, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf, type StorageLedgerView } from '../runtime/storage-ledger.js';
@@ -182,6 +182,8 @@ export interface DelegationTerms {
    * joins concurrent recalls of one delegation into one.
    */
   recall(kind: 'share' | 'revoke'): Promise<void>;
+  /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
+  admit?(root: string): void;
 }
 
 /** A lease: its root, and its terms when it is a delegation. */
@@ -3060,6 +3062,10 @@ export class SqliteVFS {
   ): VfsNameResolution | null {
     const root = this.confinedTmpRoots.get(cred.uid);
     const current = this.nameOf(path, cred);
+    // As resolvePath: a lookup into a delegated subtree recalls it first.
+    // A walk that follows a link answers null below (the caller walks it by
+    // components, through resolvePath, which recalls where the link leads).
+    if (tree === this.inodes && this.exclusiveMutationLeases.size > 0) this.recallReads(this.keyOfName(current, root));
     // A namespace's claim includes every ancestor of a mount. Even a
     // reusable inode walk asks the current namespace first: mount/unmount
     // is not an engine mutation.
@@ -3575,10 +3581,13 @@ export class SqliteVFS {
         if (inode.kind !== 'directory') break;
       }
     }
-    for (const lease of this.exclusiveMutationLeases.values()) {
-      if (pathsOverlap(root, lease.root)) {
-        throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
-      }
+    // A subtree the delegation's maker will not have delegated is refused before anything is recalled for it.
+    options.delegation?.admit?.(root);
+    for (const [held, lease] of this.exclusiveMutationLeases) {
+      if (!pathsOverlap(root, lease.root)) continue;
+      // A delegation it overlaps is given up first (its holder's decided operations stored).
+      if (lease.delegation !== null && !this.isHolder(held)) throw this.recallRequired(held, lease, 'revoke', root);
+      throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
     }
     const owner = crypto.randomUUID();
     this.exclusiveMutationLeases.set(owner, { root, delegation: options.delegation ?? null, shared: false, recalling: null });
@@ -8384,8 +8393,9 @@ export class SqliteVFS {
       this.privileged = cred.uid === 0;
       try { return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, fn)); } finally { this.privileged = prior; }
     };
-    // Refused before a byte is read, as writeFile would refuse it.
-    const target = asCaller(() => this.fileWriteInode(path, size, options, cred)).path;
+    // Refused before a byte is read, as writeFile would refuse it; a
+    // delegation it meets is recalled first, so the source is read once.
+    const target = (await withRecall(() => asCaller(() => this.fileWriteInode(path, size, options, cred)))).path;
     const sourceMismatch = (received: number) => vfsError(
       'EINVAL',
       `${target}: source ${received > size ? 'ran past' : `ended after ${received} of`} the ${size} bytes declared`,
@@ -10953,13 +10963,6 @@ function batchMutationPaths(payload: BatchWritePayload): Set<string> {
   return paths;
 }
 
-function pathsOverlap(left: string, right: string): boolean {
-  return left === ''
-    || right === ''
-    || left === right
-    || left.startsWith(`${right}/`)
-    || right.startsWith(`${left}/`);
-}
 
 /**
  * The paths strictly under `root`, as a range of the path index: `lower` <

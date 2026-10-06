@@ -20,6 +20,7 @@ import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import { emitCommonJs, lowerAsyncModule, type EsmExportName, type EsmImportBinding, type EsmRecord } from './async-module-lowering.js';
+import { withRecall } from '../vfs/recall.js';
 import {
   applySourceEdits,
   literalStringValue,
@@ -1313,7 +1314,16 @@ export class EsbuildService {
     vitePublicDir?: string;
     fs?: EsbuildReadFs;
   }): esbuild.Plugin {
-    const vfs = opts?.fs ?? this.requireVfs();
+    const project = opts?.fs ?? this.requireVfs();
+    // A build reads a project a process may be writing: each read waits for a
+    // delegation it meets to be recalled (withRecall), so a held file is read
+    // as its holder decided it, never taken for one that is not there.
+    const vfs: EsbuildReadFs = {
+      exists: (path) => withRecall(() => project.exists(path)),
+      isDirectory: (path) => withRecall(() => project.isDirectory(path)),
+      readFile: (path) => withRecall(() => project.readFile(path)),
+      readFileString: (path) => withRecall(() => project.readFileString(path)),
+    };
     const resolver = createBundlerResolver({
       isFile: async (path) => await vfs.exists(stripLeadingSlashes(path)) && !await vfs.isDirectory(stripLeadingSlashes(path)),
       isDirectory: async (path) => await vfs.exists(stripLeadingSlashes(path)) && await vfs.isDirectory(stripLeadingSlashes(path)),

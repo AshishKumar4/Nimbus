@@ -75,6 +75,7 @@ import {
   getTailwindPlayBundle,
   TAILWIND_PLAY_VERSION,
 } from '../tailwind-play.generated.js';
+import { recallOf, withRecall } from '@nimbus-sh/core/vfs/recall.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
 
@@ -1850,7 +1851,15 @@ export class ViteDevServer {
     // `<port>--<sid>` host serves at the root. Callers that omit it fall back
     // to the construction-time basePath.
     const base = this.normBase(mountBase ?? this.basePath);
-    const resp = await this._handleRequestInner(request, pathname, base);
+    // Serving reads the project as the server's principal; a read that meets
+    // a process's delegation waits for its recall and the request is served
+    // again (a request without a body is served the same way twice).
+    const resp = await (request.body === null
+      ? withRecall(() => this._handleRequestInner(request, pathname, base))
+      : this._handleRequestInner(request, pathname, base).catch((e: unknown) => {
+        if (recallOf(e) === null) throw e;
+        return new Response('503 Service Unavailable: the project is being written; send the request again', { status: 503, headers: { 'Retry-After': '1' } });
+      }));
     const elapsed = Date.now() - t0;
     // Strip query for the log line — keeps it scannable. The original
     // pathname (with query) is what was served; we trim purely for
@@ -1940,6 +1949,8 @@ export class ViteDevServer {
       // read the server's principal is refused lands in the catch below.
       return await this.serveFile(request, pathname, query, headers, base);
     } catch (e: any) {
+      // A delegation a read meets is waited for by handleRequest, which serves the request again.
+      if (recallOf(e) !== null) throw e;
       // The server reads as the principal who started it: a file that
       // principal may not read is forbidden, not an error of the server's.
       if (e?.code === 'EACCES' || e?.code === 'EPERM') {
