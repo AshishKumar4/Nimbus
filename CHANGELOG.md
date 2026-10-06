@@ -5,6 +5,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Removed the legacy synchronous filesystem methods on `NimbusSession`
+  (`vfsReadFile`, `vfsReadFileString`, `vfsStat`, `vfsExists`, `vfsReaddir`,
+  `vfsWriteFile`) and their functions in `@nimbus-sh/worker/session/rpc`.
+  They always acted as the kernel, stripped leading slashes and turned every
+  error into `null` or an empty answer; nothing in Nimbus called them. Use
+  the session's files API (`files.read`, `files.write`, and the rest) or the
+  credentialed `_rpc*` methods, which act as a process's credential and
+  report errors. A breaking change to a published API: `@nimbus-sh/worker`
+  moves to 0.14.0, and `@nimbus-sh/sdk` to its next minor, since its
+  `@nimbus-sh/sdk/worker` entry re-exports `NimbusSession`.
+
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been

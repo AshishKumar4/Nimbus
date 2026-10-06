@@ -1043,14 +1043,6 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcDestroy(options?: _programmatic.ProgrammaticDestroyOptions) { return _programmatic.rpcDestroy(this as any, options); }
 
-  // Legacy VFS (direct method calls)
-  vfsReadFile(path: string): ArrayBuffer | null { return _rpc.vfsReadFile(this as any, path); }
-  vfsReadFileString(path: string): string | null { return _rpc.vfsReadFileString(this as any, path); }
-  vfsStat(path: string): { type: string; size: number; atime: number; ctime: number; mtime: number; mode: number } | null { return _rpc.vfsStat(this as any, path); }
-  vfsExists(path: string): boolean { return _rpc.vfsExists(this as any, path); }
-  vfsReaddir(path: string): { name: string; type: string }[] { return _rpc.vfsReaddir(this as any, path); }
-  vfsWriteFile(path: string, data: ArrayBuffer): void { return _rpc.vfsWriteFile(this as any, path, data); }
-
 
   // ── HTTP handler ──────────────────────────────────────────────────────
 
