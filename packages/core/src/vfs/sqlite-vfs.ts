@@ -9385,9 +9385,9 @@ export class SqliteVFS {
         pinGen = Number(state.pin_gen);
         const inodeLimit = Number(state.next_ino);
         if (!Number.isSafeInteger(inodeLimit)) throw vfsError('ENOSPC', 'inode identity space exhausted');
-        let nextIno = inodeLimit - reserve.inos;
-        let nextChunk = Number(state.next_chunk) - reserve.chunks;
-        let nextContent = Number(state.next_content) - reserve.contents;
+        const nextIno = inodeLimit - reserve.inos;
+        const nextChunk = Number(state.next_chunk) - reserve.chunks;
+        const nextContent = Number(state.next_content) - reserve.contents;
         const limits = { ino: nextIno + reserve.inos, chunk: nextChunk + reserve.chunks, content: nextContent + reserve.contents };
         const queue = new GcQueue();
 
@@ -9401,316 +9401,21 @@ export class SqliteVFS {
           );
         }
 
-        const deletes = [...deletedPaths];
-        for (let i = 0; i < deletes.length; i += KEYS_PER_SQL_EXEC) {
-          const batch = deletes.slice(i, i + KEYS_PER_SQL_EXEC);
-          this.sql.exec(`DELETE FROM vfs_inodes WHERE path IN (${batch.map(() => '?').join(',')})`, ...batch);
-        }
-        this.insertRows(
-          'vfs_tombstones (path, gen)',
-          2,
-          deletes.flatMap((path) => [path, gen]),
-          'INSERT OR REPLACE',
-        );
-        if (deletes.length > 0) {
-          if (this._tombstoneRows !== null) this._tombstoneRows += deletes.length;
-          if (this.tombstoneRows() > this.tombstoneRetain) this.maintenancePending = true;
-        }
-        for (const entry of plan.deletes) {
-          if (!entry.dereference || !entry.prior) continue;
-          if (entry.prior.chunkId !== null) queue.add(GC_CHUNK, entry.prior.chunkId);
-          if (entry.prior.contentId !== null) queue.add(GC_CONTENT, entry.prior.contentId);
-        }
-
-        if (plan.stagingCreated.length > 0) {
-          const rows: unknown[] = [];
-          for (const staging of plan.stagingCreated) {
-            staging.id = nextContent++;
-            created.push(staging);
-            rows.push(staging.id, 0, 0, null, CONTENT_STAGING, committedAt);
-          }
-          this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, rows);
-        }
-
-        // ── Chunks, by hash ───────────────────────────────────────────────
-        const pieces: Piece[] = [];
-        const rewrites: { entry: StoredInodeEntry; chunkId: number; piece: Piece }[] = [];
-        for (const entry of plan.inodes) {
-          const content = entry.content;
-          if (content.type === 'small') pieces.push(content.piece);
-          else if (content.type === 'large') pieces.push(...content.pieces);
-          else if (content.type === 'edit') for (const edit of content.pieces) pieces.push(edit.piece);
-          else if (content.type === 'rewrite') {
-            pieces.push(content.piece);
-            rewrites.push({ entry, chunkId: content.chunkId, piece: content.piece });
-          }
-        }
-        for (const staged of plan.staged) if (!staged.named) pieces.push(staged.piece);
-        const chunkIds = new Map<string, number>();
-        const wanted = new Map<string, Piece>();
-        for (const piece of pieces) wanted.set(hashKey(piece.hash), piece);
-        // Imported chunks named without bytes must already be stored.
-        const named = new Map<string, Uint8Array>();
-        for (const staged of plan.staged) {
-          if (staged.named && !wanted.has(hashKey(staged.piece.hash))) named.set(hashKey(staged.piece.hash), staged.piece.hash);
-        }
-        for (const entry of plan.inodes) {
-          if (entry.content.type !== 'imported') continue;
-          for (const piece of entry.content.pieces) {
-            const key = hashKey(piece.hash);
-            if (piece.data !== null) wanted.set(key, { hash: piece.hash, data: piece.data });
-            else if (!wanted.has(key)) named.set(key, piece.hash);
-          }
-        }
-        for (const key of wanted.keys()) named.delete(key);
-        const lookup = new Map<string, Uint8Array>(named);
-        const remote = new Set<string>();
-        const pending = new Set<string>();
-        for (const [key, piece] of wanted) lookup.set(key, piece.hash);
-        const keys = [...lookup.keys()];
-        for (let i = 0; i < keys.length; i += KEYS_PER_SQL_EXEC) {
-          const batch = keys.slice(i, i + KEYS_PER_SQL_EXEC);
-          for (const row of this.sql.exec(
-            `SELECT id, hash, state FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`,
-            ...batch.map((key) => lookup.get(key)!),
-          )) {
-            const key = hashKey(this.blobToUint8Array(row.hash));
-            chunkIds.set(key, Number(row.id));
-            if (Number(row.state) !== CHUNK_LOCAL) remote.add(key);
-            if (Number(row.state) === CHUNK_PENDING) pending.add(key);
-          }
-        }
-        for (const [key, hash] of named) {
-          // A pending chunk (a lazy import's, N17) is named as it stands.
-          if (!chunkIds.has(key) || (remote.has(key) && !pending.has(key))) throw vfsError('EIO', `import names chunk ${hex(hash)}, which is not stored`);
-        }
-        // A write whose bytes a cold chunk already names brings them back:
-        // no live row ever names a chunk that is not local.
-        for (const key of remote) {
-          const piece = wanted.get(key);
-          if (piece === undefined) continue;
-          this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, piece.data, chunkIds.get(key)!);
-        }
-        // An unshared chunk is rewritten in place unless its new bytes
-        // already exist. A piece that deduplicated onto its old bytes must
-        // not follow them, so the old hash stops resolving to it.
-        for (const rewrite of rewrites) {
-          const key = hashKey(rewrite.piece.hash);
-          if (chunkIds.has(key)) continue;
-          for (const [other, id] of chunkIds) if (id === rewrite.chunkId) chunkIds.delete(other);
-          this.sql.exec(
-            'UPDATE vfs_chunks SET hash = ?, size = ?, data = ? WHERE id = ?',
-            rewrite.piece.hash,
-            rewrite.piece.data.byteLength,
-            rewrite.piece.data,
-            rewrite.chunkId,
-          );
-          chunkIds.set(key, rewrite.chunkId);
-          rewritten.push(rewrite.chunkId);
-        }
-        const inserts: unknown[] = [];
-        for (const [key, piece] of wanted) {
-          if (chunkIds.has(key)) continue;
-          const id = nextChunk++;
-          chunkIds.set(key, id);
-          inserts.push(id, piece.hash, piece.data);
-        }
-        this.insertChunkRows(inserts);
-        const chunkOf = (piece: Piece): number => chunkIds.get(hashKey(piece.hash))!;
-
-        // ── Manifests ─────────────────────────────────────────────────────
-        const manifest: unknown[] = [];
-        for (const staged of plan.staged) {
-          manifest.push(staged.content.id, staged.off, staged.size, chunkOf(staged.piece));
-        }
-        // Whole large files and published stagings resolve by digest first:
-        // identical bytes written twice share one content.
-        const digests = new Map<string, Uint8Array>();
-        const stagedDigests = new Map<StagingContent, Uint8Array>();
-        for (const entry of plan.inodes) {
-          if (entry.content.type === 'large') digests.set(hex(entry.content.digest), entry.content.digest);
-          else if (entry.content.type === 'imported' && entry.content.digest !== null) {
-            digests.set(hex(entry.content.digest), entry.content.digest);
-          }
-          else if (entry.content.type === 'staged') {
-            const digest = entry.content.digest ?? (entry.content.content.hashed ? entry.content.content.digest.digest(entry.size) : undefined);
-            if (digest !== undefined) {
-              stagedDigests.set(entry.content.content, digest);
-              digests.set(hex(digest), digest);
-            }
-          }
-        }
-        const contentByDigest = new Map<string, number>();
-        const digestKeys = [...digests.keys()];
-        for (let i = 0; i < digestKeys.length; i += KEYS_PER_SQL_EXEC) {
-          const batch = digestKeys.slice(i, i + KEYS_PER_SQL_EXEC);
-          for (const row of this.sql.exec(
-            `SELECT id, digest FROM vfs_contents WHERE digest IN (${batch.map(() => '?').join(',')})`,
-            ...batch.map((key) => digests.get(key)!),
-          )) contentByDigest.set(hex(this.blobToUint8Array(row.digest)), Number(row.id));
-        }
-        const contentRows: unknown[] = [];
-        for (const entry of plan.inodes) {
-          const content = entry.content;
-          let chunkId: number | null = null;
-          let contentId: number | null = null;
-          switch (content.type) {
-            case 'none':
-              break;
-            case 'small':
-            case 'rewrite':
-              chunkId = chunkOf(content.piece);
-              break;
-            case 'ref':
-              chunkId = content.chunkId;
-              contentId = content.contentId;
-              break;
-            case 'large': {
-              const key = hex(content.digest);
-              contentId = contentByDigest.get(key) ?? null;
-              if (contentId === null) {
-                contentId = nextContent++;
-                contentByDigest.set(key, contentId);
-                contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, committedAt);
-                let off = 0;
-                for (const piece of content.pieces) {
-                  manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
-                  off += piece.data.byteLength;
-                }
-              }
-              break;
-            }
-            case 'imported': {
-              if (!content.manifest) {
-                chunkId = chunkIds.get(hashKey(content.pieces[0]!.hash))!;
-                break;
-              }
-              const key = hex(content.digest!);
-              contentId = contentByDigest.get(key) ?? null;
-              if (contentId === null) {
-                contentId = nextContent++;
-                contentByDigest.set(key, contentId);
-                contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, committedAt);
-                let off = 0;
-                for (const piece of content.pieces) {
-                  manifest.push(contentId, off, piece.size, chunkIds.get(hashKey(piece.hash))!);
-                  off += piece.size;
-                }
-              }
-              break;
-            }
-            case 'staged': {
-              const staging = content.content;
-              const digest = stagedDigests.get(staging) ?? null;
-              const existing = digest === null ? undefined : contentByDigest.get(hex(digest));
-              if (existing !== undefined && existing !== staging.id) {
-                contentId = existing;
-                queue.add(GC_CONTENT, staging.id);
-              } else {
-                contentId = staging.id;
-                if (digest !== null) contentByDigest.set(hex(digest), staging.id);
-                this.sql.exec(
-                  'UPDATE vfs_contents SET state = ?, digest = ?, size = ?, chunk_count = ? WHERE id = ?',
-                  CONTENT_LIVE,
-                  digest,
-                  entry.size,
-                  staging.count,
-                  staging.id,
-                );
-              }
-              published.push(staging);
-              break;
-            }
-            case 'edit': {
-              contentId = content.contentId;
-              const removed = [...this.sql.exec(
-                'SELECT chunk_id FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?',
-                contentId,
-                content.from,
-                content.to,
-              )];
-              for (const row of removed) queue.add(GC_CHUNK, Number(row.chunk_id));
-              this.sql.exec(
-                'DELETE FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?',
-                contentId,
-                content.from,
-                content.to,
-              );
-              for (const { off, piece } of content.pieces) {
-                manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
-              }
-              this.sql.exec(
-                'UPDATE vfs_contents SET size = ?, chunk_count = chunk_count - ? + ?, digest = NULL WHERE id = ?',
-                entry.size,
-                removed.length,
-                content.pieces.length,
-                contentId,
-              );
-              this.contentKeyMemo.delete(contentId);
-              this.manifestWindows.delete(contentId);
-              break;
-            }
-          }
-          entry.chunkId = chunkId;
-          entry.contentId = contentId;
-        }
-        this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, contentRows);
-        this.insertManifestRows(manifest);
-
-        // ── Inodes ────────────────────────────────────────────────────────
-        const rows: unknown[] = [];
-        for (let i = 0; i < plan.inodes.length; i++) {
-          const inode = plan.inodes[i]!;
-          const before = prior[i];
-          // Identity order: an explicit ino travels with moves and metadata
-          // changes; an existing row at this path keeps its number (write
-          // preserves identity, unlink+recreate allocates fresh); anything
-          // else takes the counter.
-          inode.ino ??= before?.ino ?? nextIno++;
-          inode.gen = gen;
-          if (inode.defaultAcl === undefined) inode.defaultAcl = before?.defaultAcl ?? null;
-          inode.ctime ??= committedAt;
-          if (before) {
-            if (before.chunkId !== null && before.chunkId !== inode.chunkId) queue.add(GC_CHUNK, before.chunkId);
-            if (before.contentId !== null && before.contentId !== inode.contentId) queue.add(GC_CONTENT, before.contentId);
-          }
-          if (inode.detached) {
-            // Nothing durable names it; GC steps over it while it is pinned.
-            if (inode.chunkId !== null && inode.chunkId !== undefined) queue.add(GC_CHUNK, inode.chunkId);
-            if (inode.contentId !== null && inode.contentId !== undefined) queue.add(GC_CONTENT, inode.contentId);
-            continue;
-          }
-          rows.push(
-            inode.path,
-            inode.parentPath,
-            inodeKindCode(inode.kind),
-            inode.size,
-            inode.atime !== undefined && Number.isFinite(inode.atime) ? inode.atime : inode.mtime,
-            inode.mtime,
-            inode.ctime,
-            inode.mode,
-            inode.uid,
-            inode.gid,
-            inode.ino,
-            gen,
-            inode.chunkId,
-            inode.contentId,
-            inode.defaultAcl,
-          );
-        }
-        this.insertRows(
-          'vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)',
-          INODE_ROW_COLUMNS,
-          rows,
-          'INSERT OR REPLACE',
-        );
-        this.touchDirectoryRows(touched, committedAt, gen);
+        const x: PlanExecution = {
+          plan, gen, committedAt, queue,
+          next: { ino: nextIno, chunk: nextChunk, content: nextContent },
+          created, published, rewritten,
+        };
+        this.applyPlanDeletes(x, deletedPaths);
+        this.createPlanStagings(x);
+        this.publishPlanContents(x, this.storePlanChunks(x));
+        this.upsertPlanInodes(x, prior, touched);
 
         const queued = queue.rows();
         this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
         if (queued.length > 0) this.maintenancePending = true;
         onCommit?.();
-        if (nextIno > limits.ino || nextChunk > limits.chunk || nextContent > limits.content) {
+        if (x.next.ino > limits.ino || x.next.chunk > limits.chunk || x.next.content > limits.content) {
           throw new Error('[sqlite-vfs] a transaction allocated more ids than it reserved');
         }
       });
@@ -9731,6 +9436,334 @@ export class SqliteVFS {
     // leave an import's path leading elsewhere: the next sweep ends it.
     if (this.importJobsExist && (plan.deletes.length > 0 || plan.inodes.length > 0)) this.importSweepPending = true;
   }
+  /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
+  private applyPlanDeletes(x: PlanExecution, deletedPaths: ReadonlySet<string>): void {
+    const deletes = [...deletedPaths];
+    for (let i = 0; i < deletes.length; i += KEYS_PER_SQL_EXEC) {
+      const batch = deletes.slice(i, i + KEYS_PER_SQL_EXEC);
+      this.sql.exec(`DELETE FROM vfs_inodes WHERE path IN (${batch.map(() => '?').join(',')})`, ...batch);
+    }
+    this.insertRows(
+      'vfs_tombstones (path, gen)',
+      2,
+      deletes.flatMap((path) => [path, x.gen]),
+      'INSERT OR REPLACE',
+    );
+    if (deletes.length > 0) {
+      if (this._tombstoneRows !== null) this._tombstoneRows += deletes.length;
+      if (this.tombstoneRows() > this.tombstoneRetain) this.maintenancePending = true;
+    }
+    for (const entry of x.plan.deletes) {
+      if (!entry.dereference || !entry.prior) continue;
+      if (entry.prior.chunkId !== null) x.queue.add(GC_CHUNK, entry.prior.chunkId);
+      if (entry.prior.contentId !== null) x.queue.add(GC_CONTENT, entry.prior.contentId);
+    }
+  }
+
+  /** The plan's new staging contents, numbered and stored (state staging). */
+  private createPlanStagings(x: PlanExecution): void {
+    if (x.plan.stagingCreated.length > 0) {
+      const rows: unknown[] = [];
+      for (const staging of x.plan.stagingCreated) {
+        staging.id = x.next.content++;
+        x.created.push(staging);
+        rows.push(staging.id, 0, 0, null, CONTENT_STAGING, x.committedAt);
+      }
+      this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, rows);
+    }
+  }
+
+  /**
+   * Every chunk the plan's pieces name, by hash: found, brought back from
+   * cold, rewritten in place, or inserted. Its id, by hash key.
+   */
+  private storePlanChunks(x: PlanExecution): Map<string, number> {
+    // ── Chunks, by hash ───────────────────────────────────────────────
+    const pieces: Piece[] = [];
+    const rewrites: { entry: StoredInodeEntry; chunkId: number; piece: Piece }[] = [];
+    for (const entry of x.plan.inodes) {
+      const content = entry.content;
+      if (content.type === 'small') pieces.push(content.piece);
+      else if (content.type === 'large') pieces.push(...content.pieces);
+      else if (content.type === 'edit') for (const edit of content.pieces) pieces.push(edit.piece);
+      else if (content.type === 'rewrite') {
+        pieces.push(content.piece);
+        rewrites.push({ entry, chunkId: content.chunkId, piece: content.piece });
+      }
+    }
+    for (const staged of x.plan.staged) if (!staged.named) pieces.push(staged.piece);
+    const chunkIds = new Map<string, number>();
+    const wanted = new Map<string, Piece>();
+    for (const piece of pieces) wanted.set(hashKey(piece.hash), piece);
+    // Imported chunks named without bytes must already be stored.
+    const named = new Map<string, Uint8Array>();
+    for (const staged of x.plan.staged) {
+      if (staged.named && !wanted.has(hashKey(staged.piece.hash))) named.set(hashKey(staged.piece.hash), staged.piece.hash);
+    }
+    for (const entry of x.plan.inodes) {
+      if (entry.content.type !== 'imported') continue;
+      for (const piece of entry.content.pieces) {
+        const key = hashKey(piece.hash);
+        if (piece.data !== null) wanted.set(key, { hash: piece.hash, data: piece.data });
+        else if (!wanted.has(key)) named.set(key, piece.hash);
+      }
+    }
+    for (const key of wanted.keys()) named.delete(key);
+    const lookup = new Map<string, Uint8Array>(named);
+    const remote = new Set<string>();
+    const pending = new Set<string>();
+    for (const [key, piece] of wanted) lookup.set(key, piece.hash);
+    const keys = [...lookup.keys()];
+    for (let i = 0; i < keys.length; i += KEYS_PER_SQL_EXEC) {
+      const batch = keys.slice(i, i + KEYS_PER_SQL_EXEC);
+      for (const row of this.sql.exec(
+        `SELECT id, hash, state FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`,
+        ...batch.map((key) => lookup.get(key)!),
+      )) {
+        const key = hashKey(this.blobToUint8Array(row.hash));
+        chunkIds.set(key, Number(row.id));
+        if (Number(row.state) !== CHUNK_LOCAL) remote.add(key);
+        if (Number(row.state) === CHUNK_PENDING) pending.add(key);
+      }
+    }
+    for (const [key, hash] of named) {
+      // A pending chunk (a lazy import's, N17) is named as it stands.
+      if (!chunkIds.has(key) || (remote.has(key) && !pending.has(key))) throw vfsError('EIO', `import names chunk ${hex(hash)}, which is not stored`);
+    }
+    // A write whose bytes a cold chunk already names brings them back:
+    // no live row ever names a chunk that is not local.
+    for (const key of remote) {
+      const piece = wanted.get(key);
+      if (piece === undefined) continue;
+      this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, piece.data, chunkIds.get(key)!);
+    }
+    // An unshared chunk is rewritten in place unless its new bytes
+    // already exist. A piece that deduplicated onto its old bytes must
+    // not follow them, so the old hash stops resolving to it.
+    for (const rewrite of rewrites) {
+      const key = hashKey(rewrite.piece.hash);
+      if (chunkIds.has(key)) continue;
+      for (const [other, id] of chunkIds) if (id === rewrite.chunkId) chunkIds.delete(other);
+      this.sql.exec(
+        'UPDATE vfs_chunks SET hash = ?, size = ?, data = ? WHERE id = ?',
+        rewrite.piece.hash,
+        rewrite.piece.data.byteLength,
+        rewrite.piece.data,
+        rewrite.chunkId,
+      );
+      chunkIds.set(key, rewrite.chunkId);
+      x.rewritten.push(rewrite.chunkId);
+    }
+    const inserts: unknown[] = [];
+    for (const [key, piece] of wanted) {
+      if (chunkIds.has(key)) continue;
+      const id = x.next.chunk++;
+      chunkIds.set(key, id);
+      inserts.push(id, piece.hash, piece.data);
+    }
+    this.insertChunkRows(inserts);
+    return chunkIds;
+  }
+
+  /**
+   * Each inode's content reference (entry.chunkId, entry.contentId): a
+   * chunk, a manifest found by digest or made, a staging published, or an
+   * edit of a manifest in place.
+   */
+  private publishPlanContents(x: PlanExecution, chunkIds: ReadonlyMap<string, number>): void {
+    const chunkOf = (piece: Piece): number => chunkIds.get(hashKey(piece.hash))!;
+    // ── Manifests ─────────────────────────────────────────────────────
+    const manifest: unknown[] = [];
+    for (const staged of x.plan.staged) {
+      manifest.push(staged.content.id, staged.off, staged.size, chunkOf(staged.piece));
+    }
+    // Whole large files and published stagings resolve by digest first:
+    // identical bytes written twice share one content.
+    const digests = new Map<string, Uint8Array>();
+    const stagedDigests = new Map<StagingContent, Uint8Array>();
+    for (const entry of x.plan.inodes) {
+      if (entry.content.type === 'large') digests.set(hex(entry.content.digest), entry.content.digest);
+      else if (entry.content.type === 'imported' && entry.content.digest !== null) {
+        digests.set(hex(entry.content.digest), entry.content.digest);
+      }
+      else if (entry.content.type === 'staged') {
+        const digest = entry.content.digest ?? (entry.content.content.hashed ? entry.content.content.digest.digest(entry.size) : undefined);
+        if (digest !== undefined) {
+          stagedDigests.set(entry.content.content, digest);
+          digests.set(hex(digest), digest);
+        }
+      }
+    }
+    const contentByDigest = new Map<string, number>();
+    const digestKeys = [...digests.keys()];
+    for (let i = 0; i < digestKeys.length; i += KEYS_PER_SQL_EXEC) {
+      const batch = digestKeys.slice(i, i + KEYS_PER_SQL_EXEC);
+      for (const row of this.sql.exec(
+        `SELECT id, digest FROM vfs_contents WHERE digest IN (${batch.map(() => '?').join(',')})`,
+        ...batch.map((key) => digests.get(key)!),
+      )) contentByDigest.set(hex(this.blobToUint8Array(row.digest)), Number(row.id));
+    }
+    const contentRows: unknown[] = [];
+    for (const entry of x.plan.inodes) {
+      const content = entry.content;
+      let chunkId: number | null = null;
+      let contentId: number | null = null;
+      switch (content.type) {
+        case 'none':
+          break;
+        case 'small':
+        case 'rewrite':
+          chunkId = chunkOf(content.piece);
+          break;
+        case 'ref':
+          chunkId = content.chunkId;
+          contentId = content.contentId;
+          break;
+        case 'large': {
+          const key = hex(content.digest);
+          contentId = contentByDigest.get(key) ?? null;
+          if (contentId === null) {
+            contentId = x.next.content++;
+            contentByDigest.set(key, contentId);
+            contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, x.committedAt);
+            let off = 0;
+            for (const piece of content.pieces) {
+              manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
+              off += piece.data.byteLength;
+            }
+          }
+          break;
+        }
+        case 'imported': {
+          if (!content.manifest) {
+            chunkId = chunkIds.get(hashKey(content.pieces[0]!.hash))!;
+            break;
+          }
+          const key = hex(content.digest!);
+          contentId = contentByDigest.get(key) ?? null;
+          if (contentId === null) {
+            contentId = x.next.content++;
+            contentByDigest.set(key, contentId);
+            contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, x.committedAt);
+            let off = 0;
+            for (const piece of content.pieces) {
+              manifest.push(contentId, off, piece.size, chunkIds.get(hashKey(piece.hash))!);
+              off += piece.size;
+            }
+          }
+          break;
+        }
+        case 'staged': {
+          const staging = content.content;
+          const digest = stagedDigests.get(staging) ?? null;
+          const existing = digest === null ? undefined : contentByDigest.get(hex(digest));
+          if (existing !== undefined && existing !== staging.id) {
+            contentId = existing;
+            x.queue.add(GC_CONTENT, staging.id);
+          } else {
+            contentId = staging.id;
+            if (digest !== null) contentByDigest.set(hex(digest), staging.id);
+            this.sql.exec(
+              'UPDATE vfs_contents SET state = ?, digest = ?, size = ?, chunk_count = ? WHERE id = ?',
+              CONTENT_LIVE,
+              digest,
+              entry.size,
+              staging.count,
+              staging.id,
+            );
+          }
+          x.published.push(staging);
+          break;
+        }
+        case 'edit': {
+          contentId = content.contentId;
+          const removed = [...this.sql.exec(
+            'SELECT chunk_id FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?',
+            contentId,
+            content.from,
+            content.to,
+          )];
+          for (const row of removed) x.queue.add(GC_CHUNK, Number(row.chunk_id));
+          this.sql.exec(
+            'DELETE FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?',
+            contentId,
+            content.from,
+            content.to,
+          );
+          for (const { off, piece } of content.pieces) {
+            manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
+          }
+          this.sql.exec(
+            'UPDATE vfs_contents SET size = ?, chunk_count = chunk_count - ? + ?, digest = NULL WHERE id = ?',
+            entry.size,
+            removed.length,
+            content.pieces.length,
+            contentId,
+          );
+          this.contentKeyMemo.delete(contentId);
+          this.manifestWindows.delete(contentId);
+          break;
+        }
+      }
+      entry.chunkId = chunkId;
+      entry.contentId = contentId;
+    }
+    this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, contentRows);
+    this.insertManifestRows(manifest);
+  }
+
+  /** The plan's inode rows: identity, generation and content; what each replaced is queued for collection. */
+  private upsertPlanInodes(x: PlanExecution, prior: readonly (INode | undefined)[], touched: readonly string[]): void {
+    // ── Inodes ────────────────────────────────────────────────────────
+    const rows: unknown[] = [];
+    for (let i = 0; i < x.plan.inodes.length; i++) {
+      const inode = x.plan.inodes[i]!;
+      const before = prior[i];
+      // Identity order: an explicit ino travels with moves and metadata
+      // changes; an existing row at this path keeps its number (write
+      // preserves identity, unlink+recreate allocates fresh); anything
+      // else takes the counter.
+      inode.ino ??= before?.ino ?? x.next.ino++;
+      inode.gen = x.gen;
+      if (inode.defaultAcl === undefined) inode.defaultAcl = before?.defaultAcl ?? null;
+      inode.ctime ??= x.committedAt;
+      if (before) {
+        if (before.chunkId !== null && before.chunkId !== inode.chunkId) x.queue.add(GC_CHUNK, before.chunkId);
+        if (before.contentId !== null && before.contentId !== inode.contentId) x.queue.add(GC_CONTENT, before.contentId);
+      }
+      if (inode.detached) {
+        // Nothing durable names it; GC steps over it while it is pinned.
+        if (inode.chunkId !== null && inode.chunkId !== undefined) x.queue.add(GC_CHUNK, inode.chunkId);
+        if (inode.contentId !== null && inode.contentId !== undefined) x.queue.add(GC_CONTENT, inode.contentId);
+        continue;
+      }
+      rows.push(
+        inode.path,
+        inode.parentPath,
+        inodeKindCode(inode.kind),
+        inode.size,
+        inode.atime !== undefined && Number.isFinite(inode.atime) ? inode.atime : inode.mtime,
+        inode.mtime,
+        inode.ctime,
+        inode.mode,
+        inode.uid,
+        inode.gid,
+        inode.ino,
+        x.gen,
+        inode.chunkId,
+        inode.contentId,
+        inode.defaultAcl,
+      );
+    }
+    this.insertRows(
+      'vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)',
+      INODE_ROW_COLUMNS,
+      rows,
+      'INSERT OR REPLACE',
+    );
+    this.touchDirectoryRows(touched, x.committedAt, x.gen);
+  }
+
 
   /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
   /**
@@ -11062,6 +11095,23 @@ function hashKey(hash: Uint8Array): string {
 }
 
 /** The (kind, id) rows one transaction queues for GC, each once. */
+/**
+ * One transaction plan as it executes (executeTransactionPlan): its
+ * generation and time, the ids it reserved (`next`, each taken in turn),
+ * what it queues for collection, and the stagings it made, published and
+ * the chunks it rewrote, for its caller to settle after the commit.
+ */
+interface PlanExecution {
+  readonly plan: TransactionPlan;
+  readonly gen: number;
+  readonly committedAt: number;
+  readonly queue: GcQueue;
+  readonly next: { ino: number; chunk: number; content: number };
+  readonly created: StagingContent[];
+  readonly published: StagingContent[];
+  readonly rewritten: number[];
+}
+
 class GcQueue {
   private readonly seen = new Set<string>();
   private readonly values: number[] = [];
