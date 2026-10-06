@@ -582,8 +582,6 @@ const __WASI_PARK_DEADLINE_MS = 10000;
 void __WASI_PARK_CEILING_MS;
 /** Bytes a process's live output may have on their way to the session before a writer waits. */
 const __WASI_OUTPUT_IN_FLIGHT_BYTES = 1 << 20;
-/** The longest a writer waits for the session to take its output: under the watchdog's 10 s. */
-const __WASI_OUTPUT_WAIT_MS = 5000;
 /**
  * A process's stdout and stderr live, through the session's stdout and
  * stderr calls, as a node process's go: in order, byte for byte, and without
@@ -601,17 +599,27 @@ function __wasiSupervisorOutput(sup) {
     const send = (fd, bytes) => {
         if (bytes.byteLength === 0)
             return;
-        inFlight += bytes.byteLength;
-        chain = chain
-            .then(() => (fd === 1 ? target.stdout(bytes) : target.stderr(bytes)))
-            .catch((error) => { lost ??= error instanceof Error ? error.message : String(error); })
-            .finally(() => { inFlight -= bytes.byteLength; });
-        if (inFlight <= __WASI_OUTPUT_IN_FLIGHT_BYTES)
-            return;
-        return new Promise((resolve) => {
-            const timer = setTimeout(resolve, __WASI_OUTPUT_WAIT_MS);
-            void chain.then(() => { clearTimeout(timer); resolve(); });
-        });
+        let at = 0;
+        const admit = () => {
+            if (lost !== null)
+                throw new Error(lost);
+            while (at < bytes.byteLength) {
+                const room = __WASI_OUTPUT_IN_FLIGHT_BYTES - inFlight;
+                // Capacity is admission, not a best-effort timer. A blocked writer
+                // resumes only when queued RPCs settle, or fails when one rejects.
+                if (room === 0)
+                    return chain.then(admit);
+                const size = Math.min(room, bytes.byteLength - at);
+                const part = at === 0 && size === bytes.byteLength ? bytes : bytes.subarray(at, at + size);
+                at += size;
+                inFlight += size;
+                chain = chain
+                    .then(() => (fd === 1 ? target.stdout(part) : target.stderr(part)))
+                    .catch((error) => { lost ??= error instanceof Error ? error.message : String(error); })
+                    .finally(() => { inFlight -= size; });
+            }
+        };
+        return admit();
     };
     return {
         stdoutBytes: (bytes) => send(1, bytes),
@@ -737,6 +745,7 @@ export function __wasiMakeImports(opts) {
     // retries instead of being handed the watchdog's EAGAIN.
     const proc = processHost({
         fds: fdTable,
+        input: opts.stdinRead,
         allocateFd: __wasiAllocateFd,
         memory: opts.getMemory,
         supervisor: () => __wasiSup,
