@@ -1,7 +1,7 @@
 // agent/new/session-agent-chronological-turns — assistant turns render as
-// chronological parts, and the backend agent loop has no step-count stop cap.
+// chronological parts. (That the agent loop has no step-count cap is pinned
+// behaviorally in tests/unit/agent-chat-turns.mjs: a 40-tool-round turn.)
 
-import { readFileSync } from 'node:fs';
 import { BASE, makeAsserter, mintSession } from '../../_driver.mjs';
 import { applyProbeCookies, exchangeAttachCookie, launchBrowser } from '../../_runtime-behavioral-template.mjs';
 
@@ -9,14 +9,6 @@ if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit
 
 const a = makeAsserter('agent/new/session-agent-chronological-turns');
 console.log(`agent/new/session-agent-chronological-turns — BASE=${BASE}`);
-
-const source = readFileSync(new URL('../../../../packages/worker/src/session/agent.ts', import.meta.url), 'utf8');
-a.check('Agent loop uses unlimited AI SDK stop condition',
-  /stopWhen:\s*isLoopFinished\(\)/.test(source),
-  'isLoopFinished stop condition missing');
-a.check('Agent loop does not keep a step-count cap',
-  !/stepCountIs|MAX_TOOL_ROUNDS|MAX_MODEL_MESSAGES/.test(source),
-  'step-count or context cap symbol still present');
 
 const sid = await mintSession();
 const browser = await launchBrowser();

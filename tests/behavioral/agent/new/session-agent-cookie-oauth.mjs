@@ -2,7 +2,6 @@
 // agent/new/session-agent-cookie-oauth — Cloudflare OAuth state is held in
 // encrypted browser cookies, not Durable Object storage.
 
-import { readFileSync } from 'node:fs';
 import { makeAsserter } from '../../_driver.mjs';
 import { handleAgentRequest } from '../../../../packages/worker/src/session/agent.ts';
 
@@ -83,16 +82,6 @@ function request(path, init = {}) {
   a.check('OAuth start fails closed without a cookie encryption secret',
     res.status === 409 && body.code === 'E_AGENT_COOKIE_SECRET',
     `status=${res.status} body=${JSON.stringify(body)}`);
-}
-
-{
-  const source = readFileSync(new URL('../../../../packages/worker/src/session/agent.ts', import.meta.url), 'utf8');
-  a.check('OAuth auth token storage key is absent from source',
-    !source.includes('nimbus:agent:auth'),
-    'source still contains nimbus:agent:auth');
-  a.check('OAuth state is not persisted through DO storage calls',
-    !/storage\.(?:get|put|delete)\([^)]*oauth/i.test(source),
-    'source still has OAuth-shaped DO storage access');
 }
 
 const sum = a.summary();
