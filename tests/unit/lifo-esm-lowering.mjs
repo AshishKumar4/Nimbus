@@ -12,9 +12,8 @@
 // the names the lowering generates are ones the module's text does not hold
 // (a module declaring `__nimbusModule` ran into a TDZ). A CommonJS program's
 // import() loads through the same loader, from the workspace (it was left
-// to the host's native import(), which cannot see the workspace). import()
-// answers what require does: of a CommonJS module, its exports, where Node's
-// namespace would also carry them as `default`.
+// to the host's native import(), which cannot see the workspace); what it
+// answers, Node's namespace, lifo-cjs-namespace.mjs pins.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';

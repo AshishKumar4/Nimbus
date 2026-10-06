@@ -23,6 +23,7 @@ import type { AnyNode } from 'acorn';
 import { emitCommonJs, generatedNames, readEsmRecords } from '../../../runtime/async-module-lowering.js';
 import { applySourceEdits, forEachNode, hasTopLevelModuleSyntax, parseJavaScriptModule, parseJavaScriptProgram } from '../../../runtime/javascript-ast.js';
 import { fileURLToPath } from './url.js';
+import { scanCjsExports } from '../../../runtime/cjs-export-names.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
 import {
 	DEFAULT_CJS_CONDITIONS,
@@ -162,6 +163,29 @@ export interface ModuleScope {
 	readonly process: unknown;
 }
 
+/**
+ * A module namespace as Node builds one for a CommonJS module or a built-in:
+ * `default` is `exports`, each other name its value on `exports` when it
+ * has one as its own (undefined otherwise, and when reading it throws), in
+ * code-unit order, on a frozen null-prototype object tagged `Module`.
+ */
+function namespaceObject(exports: unknown, names: readonly string[]): object {
+	const namespace: Record<string | symbol, unknown> = Object.create(null);
+	const values = new Map<string, unknown>([['default', exports]]);
+	for (const name of names) {
+		if (name === 'default' || values.has(name)) continue;
+		let value: unknown;
+		const holder = (typeof exports === 'object' && exports !== null) || typeof exports === 'function' ? exports : null;
+		try {
+			if (holder !== null && Object.hasOwn(holder, name)) value = Reflect.get(holder, name);
+		} catch { /* a throwing getter reads as undefined, as Node's does */ }
+		values.set(name, value);
+	}
+	for (const name of [...values.keys()].sort()) namespace[name] = values.get(name);
+	Object.defineProperty(namespace, Symbol.toStringTag, { value: 'Module' });
+	return Object.freeze(namespace);
+}
+
 export interface CjsLoader {
 	/** The built-ins `require` serves; `module`'s createRequire is this loader's. */
 	readonly moduleMap: Record<string, () => unknown>;
@@ -206,6 +230,8 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 	const filesystem = context.filesystem;
 	const moduleMap = createModuleMap(context);
 	const builtins = new Map<string, unknown>();
+	/** The files this loader ran as ES modules: their exports are their namespaces. */
+	const lowered = new Set<string>();
 	const cache: Record<string, unknown> = Object.create(null);
 
 	// createRequire(filename) is require as a module at `filename` has it: a path, or a file: URL's decoded path.
@@ -334,8 +360,8 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 			require,
 			resolve: (specifier: string) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); },
 		};
-		// import() as Node's: a promise, rejected (never thrown) when the module cannot load.
-		const importDynamic = (specifier: string) => Promise.resolve().then(() => require(specifier));
+		// import() as Node's: a promise of the module's namespace, rejected (never thrown) when it cannot load.
+		const importDynamic = (specifier: string) => Promise.resolve().then(() => importNamespace(specifier, dir));
 		return [
 			module.exports, require, module, filename, dir,
 			moduleScope.console, moduleScope.process, Buffer,
@@ -344,6 +370,37 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 			{ process: moduleScope.process, Buffer, console: moduleScope.console },
 			importMeta, importDynamic, require, module,
 		];
+	}
+
+	/**
+	 * What import() of `id` from `dir` answers, as Node's: an ES module's own
+	 * namespace (its lowered exports); for a built-in or a CommonJS module, a
+	 * namespace whose `default` is module.exports, with the names Node gives
+	 * it, read off module.exports once it has run (a built-in's own keys; a
+	 * CommonJS module's statically detected exports, its reexports' followed).
+	 */
+	function importNamespace(id: string, dir: string): unknown {
+		const exports = requireModule(id, dir);
+		const name = id.startsWith('node:') ? id.slice(5) : id;
+		if (moduleMap[name]) return namespaceObject(exports, typeof exports === 'object' && exports !== null ? Object.keys(exports) : []);
+		const filename = resolveFilename(name, dir);
+		if (filename === null || lowered.has(filename)) return exports;
+		return namespaceObject(exports, filename.endsWith('.json') ? [] : [...cjsExportNames(filename, new Set())]);
+	}
+
+	/** A CommonJS module's export names as Node's ESM loader detects them (cjs-module-lexer), reexports followed. */
+	function cjsExportNames(filename: string, seen: Set<string>): Set<string> {
+		const names = new Set<string>();
+		if (seen.has(filename)) return names;
+		seen.add(filename);
+		const found = scanCjsExports(filesystem().readFileString(filename));
+		for (const specifier of found.reexports) {
+			const resolved = resolveFilename(specifier, dirname(filename));
+			if (resolved === null || resolved.endsWith('.json') || resolved.endsWith('.node')) continue;
+			for (const reexported of cjsExportNames(resolved, seen)) names.add(reexported);
+		}
+		for (const exported of found.names) names.add(exported);
+		return names;
 	}
 
 	function load(filename: string, preread?: { readonly source: string; readonly esm: boolean }): unknown {
@@ -361,6 +418,7 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 
 		const clean = stripShebang(source);
 		const esm = preread?.esm ?? treatAsEsm(clean, filename, () => packageType(filename, filesystem()));
+		if (esm) lowered.add(filename);
 		let fn: (...args: unknown[]) => void;
 		try {
 			// A module that does not compile, lowered or as written, names its file.
