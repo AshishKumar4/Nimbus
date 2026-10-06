@@ -13,6 +13,10 @@
  */
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import * as esbuild from 'esbuild';
 import { emitCommonJs, readEsmRecords } from '../../packages/core/src/runtime/async-module-lowering.ts';
 import { rewriteBundledEsmToCjs } from '../../packages/core/src/runtime/esbuild-service.ts';
@@ -126,6 +130,63 @@ for (const [label, source] of Object.entries(CASES)) {
   for (const body of ['sync', 'async']) {
     const exports = await run(emitCommonJs(source, readEsmRecords(source), { body }));
     assert.deepEqual(exports.seen, ['P2', 'mine'], `${body} body`);
+  }
+}
+
+// String export names, "*" among them, against real Node: a name "*" is a
+// name like any other, never the namespace, in an import, a re-export and
+// a re-export of the namespace beside it.
+{
+  const dir = mkdtempSync(join(tmpdir(), 'esm-to-cjs-'));
+  try {
+    writeFileSync(join(dir, 'dep.mjs'), 'const star = "star-value"; const d = "D"; export { star as "*", d as default }; export const a = 1;\n');
+    const MODULES = {
+      'import { "*" as value }': 'import { "*" as value } from "./dep.mjs"; await 0; export { value };',
+      'export { "*" as again } from': 'export { "*" as again } from "./dep.mjs"; export const own = 1;',
+      'export * as ns beside a "*" re-export': 'export * as ns from "./dep.mjs"; export { "*" as star, default as d } from "./dep.mjs";',
+      'import * as and import { "*" as }': 'import * as all from "./dep.mjs"; import { "*" as one } from "./dep.mjs"; export const seen = [Object.keys(all).sort(), one];',
+      // The shape a bundle prints, which the bounded rewrite takes.
+      'a bundle importing "*"': 'import * as all from "./dep.mjs"; import { "*" as one } from "./dep.mjs"; var seen = [Object.keys(all).sort(), one]; export { seen };',
+    };
+    /** A module's exports as plain data: a namespace's sorted entries, so Node's and ours compare. */
+    const plain = (value) => value !== null && typeof value === 'object'
+      ? Object.fromEntries(Object.keys(value).sort().map((k) => [k, plain(value[k])]))
+      : value;
+    const nodeRun = spawnSync('node', ['--input-type=module', '-e', `
+      import { writeFileSync } from 'node:fs';
+      const out = {};
+      out.dep = { ...(await import(${JSON.stringify(join(dir, 'dep.mjs'))})) };
+      for (const [label, source] of Object.entries(${JSON.stringify(MODULES)})) {
+        const file = ${JSON.stringify(dir)} + '/m' + Object.keys(out).length + '.mjs';
+        writeFileSync(file, source);
+        out[label] = await import(file);
+      }
+      const plain = ${plain.toString()};
+      process.stdout.write(JSON.stringify(plain(out)));
+    `], { encoding: 'utf8' });
+    assert.equal(nodeRun.status, 0, nodeRun.stderr);
+    const node = JSON.parse(nodeRun.stdout);
+    const dep = Object.defineProperty({ ...node.dep }, '__esModule', { value: true });
+    const bundled = [];
+    for (const [label, source] of Object.entries(MODULES)) {
+      const lowerings = { sync: () => emitCommonJs(source, readEsmRecords(source), { body: 'sync' }), async: () => emitCommonJs(source, readEsmRecords(source), { body: 'async' }) };
+      if (source.includes('await')) delete lowerings.sync;
+      const rewritten = rewriteBundledEsmToCjs(source, 'file:///m.mjs');
+      if (rewritten) {
+        lowerings.bundle = () => rewritten.code;
+        bundled.push(label);
+      }
+      for (const [body, lower] of Object.entries(lowerings)) {
+        const require = (name) => { assert.equal(name, './dep.mjs'); return dep; };
+        const module = { exports: {}, require };
+        const done = new Function('module', 'exports', 'require', lower())(module, module.exports, require);
+        if (done && typeof done.then === 'function') await done;
+        assert.deepEqual(plain(module.exports), node[label], `${label} (${body}) exports what Node's module does`);
+      }
+    }
+    assert.deepEqual(bundled, ['a bundle importing "*"'], 'the bundle shape takes the bounded rewrite');
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
   }
 }
 

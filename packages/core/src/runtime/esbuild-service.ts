@@ -315,7 +315,7 @@ function bundledModuleRecords(source: string, declarations: readonly ModuleDecla
       for (const binding of bindingList[1].split(',')) {
         const match = binding.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
         if (!match) return null;
-        names.push({ exported: match[2] || match[1], local: match[1] });
+        names.push({ kind: 'named', exported: match[2] || match[1], local: match[1] });
       }
       records.push({ kind: 'export', start, end, source: null, names });
       continue;
@@ -337,12 +337,12 @@ function bundledModuleRecords(source: string, declarations: readonly ModuleDecla
       for (const specifier of nodeList(declaration, 'specifiers')) {
         const local = nodeName(nodeProp(specifier, 'local'));
         if (!local) return null;
-        if (specifier.type === 'ImportDefaultSpecifier') bindings.push({ local, imported: 'default' });
-        else if (specifier.type === 'ImportNamespaceSpecifier') bindings.push({ local, imported: '*' });
+        if (specifier.type === 'ImportDefaultSpecifier') bindings.push({ kind: 'named', local, imported: 'default' });
+        else if (specifier.type === 'ImportNamespaceSpecifier') bindings.push({ kind: 'namespace', local });
         else if (specifier.type === 'ImportSpecifier') {
           const imported = nodeName(nodeProp(specifier, 'imported'));
           if (!imported) return null;
-          bindings.push({ local, imported });
+          bindings.push({ kind: 'named', local, imported });
         } else {
           return null;
         }
@@ -358,7 +358,7 @@ function bundledModuleRecords(source: string, declarations: readonly ModuleDecla
         const local = nodeName(nodeProp(specifier, 'local'));
         const exported = nodeName(nodeProp(specifier, 'exported'));
         if (!local || !exported) return null;
-        names.push({ exported, local });
+        names.push({ kind: 'named', exported, local });
       }
       records.push({ kind: 'export', start, end, source: null, names });
       continue;

@@ -35,17 +35,23 @@
 import { Parser, type Pattern } from 'acorn';
 import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
 
-/** One name an import binds: `imported` is `default`, `*` for the namespace, or the export's name. */
-export interface EsmImportBinding {
-  readonly local: string;
-  readonly imported: string;
-}
+/**
+ * One name an import binds: the module's namespace, or one of its exports
+ * by name (`default` included, which `import d from` binds too). A string
+ * name is any string, `"*"` included: only `namespace` is the namespace.
+ */
+export type EsmImportBinding =
+  | { readonly kind: 'namespace'; readonly local: string }
+  | { readonly kind: 'named'; readonly local: string; readonly imported: string };
 
-/** A name a module exports: `local` is the binding (or the source module's export, `*` for its namespace). */
-export interface EsmExportName {
-  readonly exported: string;
-  readonly local: string;
-}
+/**
+ * A name a module exports: one of its own bindings, or, re-exported from
+ * the record's source, one of that module's exports by name or its
+ * namespace (`export * as ns from`).
+ */
+export type EsmExportName =
+  | { readonly kind: 'named'; readonly exported: string; readonly local: string }
+  | { readonly kind: 'namespace'; readonly exported: string };
 
 /**
  * An import or export declaration of a module, with the source range the
@@ -93,24 +99,27 @@ export function readEsmRecords(source: string): EsmRecord[] {
       case 'ImportDeclaration':
         records.push({
           kind: 'import', start: node.start, end: node.end, source: String(node.source.value),
-          bindings: node.specifiers.map((specifier) => ({
-            local: specifier.local.name,
-            imported: specifier.type === 'ImportNamespaceSpecifier' ? '*'
-              : specifier.type === 'ImportDefaultSpecifier' ? 'default'
-              : nameOf(specifier.imported),
-          })),
+          bindings: node.specifiers.map((specifier): EsmImportBinding => (
+            specifier.type === 'ImportNamespaceSpecifier'
+              ? { kind: 'namespace', local: specifier.local.name }
+              : {
+                kind: 'named',
+                local: specifier.local.name,
+                imported: specifier.type === 'ImportDefaultSpecifier' ? 'default' : nameOf(specifier.imported),
+              }
+          )),
         });
         break;
       case 'ExportNamedDeclaration':
         if (node.declaration) {
           records.push({
             kind: 'export', start: node.start, end: node.declaration.start, source: null,
-            names: declaredNames(node.declaration).map((name) => ({ exported: name, local: name })),
+            names: declaredNames(node.declaration).map((name): EsmExportName => ({ kind: 'named', exported: name, local: name })),
           });
         } else {
           records.push({
             kind: 'export', start: node.start, end: node.end, source: node.source ? String(node.source.value) : null,
-            names: node.specifiers.map((s) => ({ exported: nameOf(s.exported), local: nameOf(s.local) })),
+            names: node.specifiers.map((s): EsmExportName => ({ kind: 'named', exported: nameOf(s.exported), local: nameOf(s.local) })),
           });
         }
         break;
@@ -119,7 +128,7 @@ export function readEsmRecords(source: string): EsmRecord[] {
         if ((declaration.type === 'FunctionDeclaration' || declaration.type === 'ClassDeclaration') && declaration.id) {
           records.push({
             kind: 'export', start: node.start, end: declaration.start, source: null,
-            names: [{ exported: 'default', local: declaration.id.name }],
+            names: [{ kind: 'named', exported: 'default', local: declaration.id.name }],
           });
         } else {
           records.push({
@@ -133,7 +142,7 @@ export function readEsmRecords(source: string): EsmRecord[] {
         if (node.exported) {
           records.push({
             kind: 'export', start: node.start, end: node.end, source: String(node.source.value),
-            names: [{ exported: nameOf(node.exported), local: '*' }],
+            names: [{ kind: 'namespace', exported: nameOf(node.exported) }],
           });
         } else {
           records.push({ kind: 'export-all', start: node.start, end: node.end, source: String(node.source.value) });
@@ -194,10 +203,11 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
         }
         const mod = temp();
         requires.push(`const ${mod} = ${requireOf(record.source)};`);
-        for (const { local, imported: name } of record.bindings) {
-          if (name === '*') imported.push(`const ${local} = ${namespace(mod)};`);
-          else if (name === 'default') imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
-          else imported.push(`const ${local} = ${mod}${key(name)};`);
+        for (const binding of record.bindings) {
+          const { local } = binding;
+          if (binding.kind === 'namespace') imported.push(`const ${local} = ${namespace(mod)};`);
+          else if (binding.imported === 'default') imported.push(`const ${local} = ${mod} && ${mod}.__esModule ? ${mod}.default : ${mod};`);
+          else imported.push(`const ${local} = ${mod}${key(binding.imported)};`);
         }
         break;
       }
@@ -205,12 +215,18 @@ export function emitCommonJs(source: string, records: readonly EsmRecord[], opti
         exportsAnything = true;
         edits.push({ start: record.start, end: record.end, text: '' });
         if (record.source === null) {
-          for (const { exported, local } of record.names) getters.push([exported, local]);
+          for (const name of record.names) {
+            // A module's own export names a binding of its own; nothing else parses.
+            if (name.kind !== 'named') throw new Error(`export of the namespace ${name.exported} without a source module`);
+            getters.push([name.exported, name.local]);
+          }
           break;
         }
         const mod = temp();
         requires.push(`const ${mod} = ${requireOf(record.source)};`);
-        for (const { exported, local } of record.names) getters.push([exported, local === '*' ? namespace(mod) : `${mod}${key(local)}`]);
+        for (const name of record.names) {
+          getters.push([name.exported, name.kind === 'namespace' ? namespace(mod) : `${mod}${key(name.local)}`]);
+        }
         break;
       }
       case 'export-default': {
