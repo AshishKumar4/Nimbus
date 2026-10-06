@@ -205,6 +205,14 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
  * A terminal session on a local probe with `nimbus install <runtime>` done,
  * running commands through the real shell. `run(command)` returns the
  * command's own output (the echo and prompts stripped) and its exit status.
+ *
+ * A command is done when its completion marker has printed its status and
+ * the prompt is back, not at the first output that ends like a prompt.
+ * `timeoutMs` bounds the wait. Work a loaded machine can stretch past any
+ * bound passes `{ progress, stalledMs }` too: `progress()` fingerprints what
+ * the command is doing (the session's Dynamic Worker ledger, say), and the
+ * wait then fails once neither it nor the terminal's output has changed for
+ * `stalledMs`, or at `timeoutMs` however it moves.
  */
 export async function localTerminal(probe, { install = ['bash'] } = {}) {
   process.env.BASE = probe.base;
@@ -215,11 +223,42 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   await terminal.connect();
   await terminal.waitForPrompt(60_000);
   const strip = (text) => text.replace(/\x1b\[[0-9;?]*[A-Za-z]/g, '').replace(/\r/g, '');
+  /** Its answer, or `undefined` if it has none within `ms` (a session too busy to answer has not moved). */
+  const within = (promise, ms) => {
+    let timer;
+    return Promise.race([promise, new Promise((resolve) => { timer = setTimeout(resolve, ms); })]).finally(() => clearTimeout(timer));
+  };
+  const wait = async (line, done, timeoutMs, progress, stalledMs) => {
+    if (!progress) return terminal.waitFor(done, timeoutMs, line.slice(0, 80));
+    const started = Date.now();
+    const look = async () => JSON.stringify([await within(progress().catch((error) => `progress: ${error.message}`), 30_000), terminal.buf.length]);
+    let seen = await look();
+    let moved = Date.now();
+    for (;;) {
+      try {
+        return await terminal.waitFor(done, Math.max(1, Math.min(5_000, timeoutMs - (Date.now() - started))), line.slice(0, 80));
+      } catch (error) {
+        if (!/timeout after/.test(error.message)) throw error;
+      }
+      const now = await look();
+      if (now !== seen) { seen = now; moved = Date.now(); }
+      const still = Date.now() - moved;
+      if (still >= stalledMs || Date.now() - started >= timeoutMs) {
+        throw new Error(`${line}: ${still >= stalledMs ? `nothing moved for ${still} ms` : `not done after ${timeoutMs} ms, still moving`}; `
+          + `progress ${seen.slice(0, 1500)}; tail: ${JSON.stringify(strip(terminal.buf).slice(-400))}`);
+      }
+    }
+  };
   let serial = 0;
-  const run = async (command, timeoutMs = 120_000) => {
+  const run = async (command, timeoutMs = 120_000, { progress, stalledMs = 120_000 } = {}) => {
     const mark = `__NIMBUS_DONE_${++serial}__`;
-    const { output } = await terminal.run(`${command}; echo "${mark}$?"`, timeoutMs);
-    const text = strip(output);
+    const line = `${command}; echo "${mark}$?"`;
+    // The echoed line carries the marker too, followed by `$?`, never by digits.
+    const done = new RegExp(`${mark}\\d+[\\s\\S]*[$#>]\\s*$`);
+    terminal.reset();
+    terminal.cmd(line);
+    await wait(line, (b) => done.test(b.trimEnd()), timeoutMs, progress, stalledMs);
+    const text = strip(terminal.buf);
     const end = text.lastIndexOf(mark);
     if (end < 0) throw new Error(`${command}: no completion marker within ${timeoutMs} ms:\n${text.slice(-800)}`);
     const status = Number(/^\d+/.exec(text.slice(end + mark.length))?.[0]);
