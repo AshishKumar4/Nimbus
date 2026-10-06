@@ -202,4 +202,28 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
   }
 }
 
+// ── curl -L and wget share one redirect walk: the same 20-follow cap ──────
+{
+  const ws = await openWorkspace();
+  let fetches = 0;
+  const origFetch = globalThis.fetch;
+  globalThis.fetch = async (input) => {
+    fetches++;
+    return new Response('', { status: 302, headers: { location: `${new URL(String(input)).pathname}x` } });
+  };
+  try {
+    const curl = await ws.exec('curl -sL http://ext.test/r');
+    assert.equal(curl.exitCode, 47);
+    assert.match(curl.stderr, /curl: \(47\) Maximum \(20\) redirects followed/);
+    assert.equal(fetches, 21, 'curl sends the request and follows 20 redirects');
+    fetches = 0;
+    const wget = await ws.exec('wget -q -O /tmp/x http://ext.test/r');
+    assert.equal(wget.exitCode, 1);
+    assert.equal(wget.stderr, 'wget: too many redirects\n');
+    assert.equal(fetches, 21, 'wget sends the request and follows 20 redirects');
+  } finally {
+    globalThis.fetch = origFetch;
+  }
+}
+
 console.log('nimbus-workspace-net: all assertions passed');
