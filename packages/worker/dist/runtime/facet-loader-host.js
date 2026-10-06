@@ -1,4 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 /**
  * The transforms and builds a host's own Durable Object runs outside the
  * session, composed the way the supervisor's are: transforms in the object's
@@ -20,6 +21,7 @@ export function loaderFacetHost(env, ctx) {
                 wasmModules: spec.wasmModules,
                 omitSupervisor: spec.syscalls === undefined,
                 supervisorPid: spec.syscalls?.pid,
+                processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID() }) : undefined,
                 cacheScope: spec.reuse,
             });
         },
