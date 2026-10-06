@@ -70,6 +70,7 @@ import {
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
+import { posixAccess } from './posix-access.js';
 import { readDeclaredSource, type Principal, type VfsContentRef, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import {
@@ -2850,19 +2851,7 @@ export class SqliteVFS {
   }
 
   private accessMode(mode: number, uid: number, gid: number, want: number, cred: VfsCred): boolean {
-    const requested = want & 0o7;
-    if (requested === 0) return true;
-    const permissions = mode & 0o777;
-    if (cred.uid === 0) {
-      return (requested & 0o1) === 0 || (permissions & 0o111) !== 0;
-    }
-    const shift = cred.uid === uid
-      ? 6
-      : cred.gid === gid || cred.groups.includes(gid)
-        ? 3
-        : 0;
-    const granted = (permissions >> shift) & 0o7;
-    return (granted & requested) === requested;
+    return posixAccess({ mode, uid, gid }, want, cred);
   }
 
   /**

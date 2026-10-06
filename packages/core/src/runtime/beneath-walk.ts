@@ -8,6 +8,7 @@
 
 import type { RuntimeFsPath } from './os-contracts.js';
 import { errnoDescription } from '../vfs/vfs-error.js';
+import { posixAccess } from '../vfs/posix-access.js';
 
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export const MAX_LINK_HOPS = 40;
@@ -38,14 +39,10 @@ export function fsError(
   });
 }
 
-/** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
+/** POSIX rwx for `cred` on a stat (posixAccess); a stat without a mode allows. An absent owner or group is no one's. */
 export function modeAllows(stat: { mode?: number; uid?: number; gid?: number }, want: number, cred: { uid: number; gid: number; groups: readonly number[] }): boolean {
-  const requested = want & 7;
-  if (requested === 0 || stat.mode === undefined) return true;
-  const perms = stat.mode & 0o777;
-  if (cred.uid === 0) return (requested & 1) === 0 || (perms & 0o111) !== 0;
-  const shift = cred.uid === stat.uid ? 6 : cred.gid === stat.gid || cred.groups.includes(stat.gid ?? -1) ? 3 : 0;
-  return ((perms >> shift) & requested) === requested;
+  if (stat.mode === undefined) return true;
+  return posixAccess({ mode: stat.mode, uid: stat.uid ?? -1, gid: stat.gid ?? -1 }, want, cred);
 }
 
 /** One lookup a walk beneath a root asks of its filesystem: a stat that does not follow a link (null when absent), or a link's target. */
