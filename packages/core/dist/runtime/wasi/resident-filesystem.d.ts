@@ -90,10 +90,21 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
     /** Whether writes are held that the session does not have yet. */
     holding(): boolean;
     /**
-     * Send every held write to the session: before anything leaves the process
-     * (a socket send) and when its run ends, so what it did is in the session
-     * before anyone can learn it happened. Returns the files whose bytes did not
-     * all arrive, none reported before (by their close or fsync).
+     * Send every held write to the session, before something leaves the
+     * process (a socket send): what it wrote is there before anyone hears from
+     * it. A refusal stays recorded for the writer's close, fsync or settle.
+     */
+    flush(): Promise<void>;
+    /**
+     * fsync(2) through a descriptor this process holds no writes for (the
+     * codec's own copy of a file): the file's held writes go to the session
+     * first, and what they met is this call's answer.
+     */
+    syncInode(dev: number, ino: number): void | Promise<void>;
+    /**
+     * The end of a run: every held write goes to the session, and every refusal
+     * not yet reported (by its descriptor's close or fsync) is returned, naming
+     * the file, and forgotten.
      */
     settle(): Promise<UnsettledWrite[]>;
     /** What the process has asked so far, and who answered: a run's filesystem cost, in calls. */

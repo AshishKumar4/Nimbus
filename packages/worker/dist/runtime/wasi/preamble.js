@@ -215,7 +215,7 @@ function __wasiSettleFirst(body) {
     const resident = __wasiResident;
     if (resident === null || !resident.fs.holding())
         return body();
-    return resident.fs.settle().then(() => body());
+    return resident.fs.flush().then(() => body());
 }
 /** Input from outside entered the guest: its next filesystem answer takes the barrier first. */
 function __wasiInbound(result) {
@@ -735,7 +735,7 @@ export function __wasiMakeImports(opts) {
             // Reading a listening socket is accept(2); the Suspending wrapper awaits
             // the returned Promise, so the guest's accept loop simply blocks.
             if (entry.kind === 'listener') {
-                return __wasiInbound(__wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, view, u8));
+                return __wasiAcceptRead(entry, iovsPtr, iovsLen, nreadPtr, writeU32LE, view, u8);
             }
             if (entry.kind === 'preopen')
                 return __WASI_EISDIR;
@@ -1631,18 +1631,7 @@ export function __wasiMakeImports(opts) {
         synchronous: opts.parking === 'none',
         residentBytes: __wasiFS.residentFileCap,
     });
-    // Where input from outside enters the guest: a socket's bytes, an accepted
-    // connection, a poll that woke. What the guest reads after one may follow
-    // from a change it caused elsewhere, so its next filesystem answer takes
-    // the barrier first (__wasiInbound). Before the raw capture below, so a
-    // socket read through fd_read is the same entry point.
-    for (const name of ['poll_oneoff', 'sock_recv', 'sock_accept']) {
-        const body = imports[name];
-        if (typeof body !== 'function')
-            continue;
-        imports[name] = function inbound(...args) { return __wasiInbound(body.apply(this, args)); };
-    }
-    // And where something leaves it: a socket's bytes (fd_write on a socket
+    // Where something leaves the guest: a socket's bytes (fd_write on a socket
     // comes here too, through the raw capture below). A peer that hears from
     // the guest then finds what the guest wrote before it spoke.
     const send = imports.sock_send;
@@ -1678,6 +1667,27 @@ export function __wasiMakeImports(opts) {
     for (const name of parkable) {
         if (typeof imports[name] === 'function')
             imports[name] = withParkDeadline(imports[name]);
+    }
+    // Where input from outside enters the guest: a socket's bytes, an accepted
+    // connection, a poll that woke, and the watchdog's wake from any of them
+    // (time passed). What the guest reads after one may follow from a change it
+    // caused elsewhere, so its next filesystem answer takes the barrier first
+    // (__wasiInbound). Marked on what the guest is handed, so a deadline's
+    // EAGAIN counts as surely as an answer.
+    for (const name of ['poll_oneoff', 'sock_recv', 'sock_accept']) {
+        const body = imports[name];
+        if (typeof body !== 'function')
+            continue;
+        imports[name] = function inbound(...args) { return __wasiInbound(body.apply(this, args)); };
+    }
+    // A read of a socket or a listener through fd_read is the same entry.
+    const readAny = imports.fd_read;
+    if (typeof readAny === 'function') {
+        imports.fd_read = function inboundRead(...args) {
+            const kind = fdTable.get(args[0])?.kind;
+            const result = readAny.apply(this, args);
+            return kind === 'socket' || kind === 'listener' ? __wasiInbound(result) : result;
+        };
     }
     // How this instance is allowed to block — a parameter, because it is a
     // property of the CALLER, not of WASI.
