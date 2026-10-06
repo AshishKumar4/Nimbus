@@ -27,7 +27,11 @@ export async function withProcessImport(answer, cell) {
   }
 }
 
-/** A rewritten CommonJS-shaped cell, run as the process's module wrapper runs it. */
+/**
+ * A rewritten CommonJS-shaped cell, run as the process's module wrapper runs it.
+ * @param {string} code
+ * @param {{ exports?: object, require?: (id: string) => unknown, module?: object }} [wrapper]
+ */
 export function runCell(code, { exports = {}, require, module = {} } = {}) {
   return new Function('exports', 'require', 'module', code)(exports, require, module);
 }

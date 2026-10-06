@@ -33,6 +33,9 @@ export function installedRuntime(files = {}) {
  * One command invocation in /home/user as `cred`: its view of `filesystem`
  * (or `vfs`, when the test stands one in), and `output()` for what it wrote.
  * Any `extra` fields (setUmask, runAs) reach the context as given.
+ *
+ * @param {any} filesystem
+ * @param {{ args?: string[], env?: Record<string, string>, pid?: number, cred?: object, vfs?: object, [extra: string]: unknown }} [options]
  */
 export function runtimeContext(filesystem, { args = [], env = {}, pid = 41, cred = SESSION_USER, vfs, ...extra } = {}) {
   let stdout = '';

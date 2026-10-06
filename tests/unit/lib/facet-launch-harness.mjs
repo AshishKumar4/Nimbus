@@ -34,6 +34,10 @@ export function launchSession({ disk = createSqliteVfsTestHarness() } = {}) {
  * (an instance after a reset allocates past the last one's pids); `env`
  * adds bindings beside LOADER and ASSETS; `hooks` are the manager's;
  * `crashable` is the facet ctx's (its storage writes can be lost).
+ *
+ * @param {string} label
+ * @param {{ evaluate?: () => object, session?: ReturnType<typeof launchSession>, env?: object, hooks?: object,
+ *   generation?: number, processes?: SessionProcessSupervisor, ports?: PortRegistry, crashable?: boolean }} [options]
  */
 export function launchManager(label, {
   evaluate = idleProgram, session = launchSession(), env = {}, hooks = {}, generation,

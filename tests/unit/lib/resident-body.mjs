@@ -116,7 +116,8 @@ export function createAuthority(vfsOptions) {
     if (typeof handler !== 'function') throw new Error(`no rpc.ts implementation of the routed ${method}`);
     return [method, (...args) => Reflect.apply(handler, undefined, [host, ...args])];
   }));
-  attachSupervisorOps(host, buildSessionSupervisorOps(host, undefined, routed));
+  // The host double carries what the session supervisor ops read of a session.
+  attachSupervisorOps(host, buildSessionSupervisorOps(/** @type {any} */ (host), undefined, routed));
   return {
     rawVfs,
     kfs,
@@ -140,6 +141,7 @@ export function facetSupervisor(authority, overrides = {}) {
   const { pid } = host.processes.spawn('node', ['main.js'], '/home/user/app', { longRunning: true, cred: CRED });
   rawVfs.activateAppendWriter(pid, WRITER_ID);
   const log = { pid, stdout: '', stderr: '', calls: {}, exit: null, ports: new Set() };
+  /** @type {Record<string, any>} */
   const own = {
     stdout: async (bytes) => { log.stdout += dec.decode(bytes); },
     stderr: async (bytes) => { log.stderr += dec.decode(bytes); },
@@ -261,11 +263,11 @@ export async function launchResident({
 /** data-plan.ts over `authority` as the process's credential sees it. */
 export async function residentDataPlan(authority, cwd, closure = []) {
   const view = authority.rawVfs.as(CRED);
-  const plan = await planFacetData({
+  const plan = await planFacetData(/** @type {any} */ ({
     list: async (after) => { const page = view.list(after); return { entries: page.entries, next: page.next }; },
     readText: async (path) => { try { return view.readFileString(path); } catch { return null; } },
     stat: async (path) => { try { const st = view.stat(path); return { kind: st.type, size: st.size }; } catch { return null; } },
-  }, { cwd, home: '/home/user', closure, refs: [] });
+  }), { cwd, home: '/home/user', closure, refs: [] });
   return plan.paths;
 }
 

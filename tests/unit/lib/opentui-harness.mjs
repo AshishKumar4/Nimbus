@@ -56,34 +56,35 @@ export function openTUICoreDirOrSkip(test) {
 
 /** A raw-mode-capable TTY stdin that never produces input. */
 export function makeSyntheticStdin() {
-  const stdin = new EventEmitter();
-  stdin.isTTY = true;
-  stdin.isRaw = false;
-  stdin.setRawMode = (mode) => { stdin.isRaw = !!mode; return stdin; };
-  stdin.resume = () => stdin;
-  stdin.pause = () => stdin;
-  stdin.setEncoding = () => stdin;
-  stdin.ref = () => stdin;
-  stdin.unref = () => stdin;
-  stdin.read = () => null;
+  const stdin = Object.assign(new EventEmitter(), {
+    isTTY: true,
+    isRaw: false,
+    setRawMode: (mode) => { stdin.isRaw = !!mode; return stdin; },
+    resume: () => stdin,
+    pause: () => stdin,
+    setEncoding: () => stdin,
+    ref: () => stdin,
+    unref: () => stdin,
+    read: () => null,
+  });
   return stdin;
 }
 
 /** A `width`×`height` 24-bit TTY stdout whose writes are pushed to `sink`. */
 export function makeSyntheticStdout(width, height, sink) {
-  const stdout = new EventEmitter();
-  stdout.isTTY = true;
-  stdout.columns = width;
-  stdout.rows = height;
-  stdout.write = (chunk, enc, cb) => {
-    sink.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('latin1'));
-    const done = typeof enc === 'function' ? enc : cb;
-    if (typeof done === 'function') done();
-    return true;
-  };
-  stdout.getColorDepth = () => 24;
-  stdout.hasColors = () => true;
-  return stdout;
+  return Object.assign(new EventEmitter(), {
+    isTTY: true,
+    columns: width,
+    rows: height,
+    write: (chunk, enc, cb) => {
+      sink.push(typeof chunk === 'string' ? chunk : Buffer.from(chunk).toString('latin1'));
+      const done = typeof enc === 'function' ? enc : cb;
+      if (typeof done === 'function') done();
+      return true;
+    },
+    getColorDepth: () => 24,
+    hasColors: () => true,
+  });
 }
 
 /** The WASI host the wasm backend takes: the real wasi-instance.ts preamble. */

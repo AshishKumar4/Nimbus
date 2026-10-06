@@ -90,7 +90,7 @@ let warnedPortable = false;
 function installCleanup() {
   if (installed) return;
   installed = true;
-  for (const [signal, code] of [['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]]) {
+  for (const [signal, code] of /** @type {const} */ ([['SIGINT', 130], ['SIGTERM', 143], ['SIGHUP', 129]])) {
     process.on(signal, () => {
       interrupted = signal;
       process.exitCode = code;
@@ -104,6 +104,15 @@ function installCleanup() {
   process.on('exit', () => { for (const job of active) job.kill(); });
 }
 
+/**
+ * Run `command` with `args` bounded in time and output, its whole process
+ * tree killed when it is over.
+ *
+ * @param {string} command
+ * @param {string[]} [args]
+ * @param {{ env?: NodeJS.ProcessEnv, timeoutMs?: number, maxOutputBytes?: number, name?: string, cwd?: string, encoding?: BufferEncoding | null }} [options]
+ *   `encoding: null` answers stdout and stderr as Buffers.
+ */
 export function runBoundedProcess(command, args = [], { env = process.env, timeoutMs = DEFAULT_TEST_TIMEOUT_MS, maxOutputBytes = 1024 * 1024, name = command, cwd, encoding = 'utf8' } = {}) {
   if (!Number.isSafeInteger(timeoutMs) || timeoutMs <= 0 || !Number.isSafeInteger(maxOutputBytes) || maxOutputBytes <= 0) throw new Error('timeoutMs and maxOutputBytes must be positive finite integers');
   installCleanup();

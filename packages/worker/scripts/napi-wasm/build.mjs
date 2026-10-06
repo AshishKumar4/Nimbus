@@ -226,6 +226,7 @@ async function buildSpec(spec, npmDir) {
 
   const targetDir = path.join(root, 'target');
   const cargoHome = process.env.CARGO_HOME ?? path.join(process.env.HOME ?? '/', '.cargo');
+  /** @type {NodeJS.ProcessEnv} */
   const env = {
     ...toolchain.env,
     CARGO_TARGET_DIR: targetDir,

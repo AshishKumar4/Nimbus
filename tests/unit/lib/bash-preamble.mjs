@@ -59,6 +59,13 @@ function wasmTable() {
  * @param {Record<string,WebAssembly.Module>} [opts.extraWasm]  extra `__NIMBUS_WASM`
  *   entries; a `cu_<name>.wasm` key becomes a command at /bin/<name>.
  * @param {boolean} [opts.remote]
+ * @param {string} [opts.preambleSource]  the runner preamble to evaluate (default BASH_RUNNER_PREAMBLE)
+ * @param {Record<string, object>} [opts.mounts]  mount point → backend
+ * @param {Record<string, object>} [opts.mountOptions]  mount point → its mount options
+ * @param {string[]} [opts.dirs]  extra directories to create
+ * @param {Record<string, string | Uint8Array>} [opts.files]  path → contents
+ * @param {Record<string, number | string>} [opts.modes]  path → owner permission bits (rwx as 0-7)
+ * @param {string} [opts.parking]  how a blocking call parks (default 'jspi' when remote, else 'none')
  */
 export function loadPreamble(opts = {}) {
   const { table, applets } = wasmTable();
