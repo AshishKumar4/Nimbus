@@ -57,6 +57,7 @@ export interface RunFreshResult {
     longRunning: boolean;
 }
 export interface RunFreshOpts {
+    output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
     argv?: string[];
     env?: Record<string, string>;
     cwd?: string;

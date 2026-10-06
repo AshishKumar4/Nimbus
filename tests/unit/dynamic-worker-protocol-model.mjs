@@ -35,7 +35,7 @@
 //     truly stuck that never refuses.
 
 import assert from 'node:assert/strict';
-import { CHILD_NEWS_SOURCE } from '../../packages/worker/src/runtime/child-news.ts';
+import { CHILD_NEWS_SOURCE } from '../../packages/core/src/runtime/child-news.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { PRODUCTION, checkFamilies, childSets, describe, explore, guestNewsFrom } from './lib/ledger-protocol-model.mjs';
 

@@ -418,12 +418,14 @@ export class Shell {
     const onStdout = options?.onStdout;
     const onStderr = options?.onStderr;
     const stdoutStream: CommandOutputStream = {
+      ...(onStdout ? { writeBytes: (bytes: Uint8Array) => onStdout(bytes) } : {}),
       write: async (text: string) => {
         if (onStdout) return (await onStdout(enc.encode(text)));
         stdoutBuf += text;
       },
     };
     const stderrStream: CommandOutputStream = {
+      ...(onStderr ? { writeBytes: (bytes: Uint8Array) => onStderr(bytes) } : {}),
       write: async (text: string) => {
         if (onStderr) return (await onStderr(enc.encode(text)));
         stderrBuf += text;

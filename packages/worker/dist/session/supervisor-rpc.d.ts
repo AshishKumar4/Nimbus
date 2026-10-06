@@ -498,7 +498,7 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * other connection is proxied as it is.
      */
     connect(socket: Socket): Promise<void>;
-    cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs): Promise<{
+    cpReadStdin(childPid: number, waitMs: number, acquire?: FsAcquireArgs, maxBytes?: number): Promise<{
         data: Uint8Array;
         ended: boolean;
         resize?: {

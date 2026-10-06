@@ -855,15 +855,12 @@ export async function registerHostedCommands(self, workspace) {
         // AND captured in the ring buffer keyed by this PID.
         const tee = (stream, target) => {
             const toTarget = textSink((text) => target.write(text));
-            return (d) => {
-                try {
-                    self.processes.appendOutputBytes(pid, stream, d);
-                }
-                catch { }
-                try {
+            return async (d) => {
+                await self.processes.appendOutputBytes(pid, stream, d);
+                if (target.writeBytes)
+                    await target.writeBytes(d);
+                else
                     toTarget(d);
-                }
-                catch { }
             };
         };
         // The script runs as the wrapper, on a shell of its own (as npm runs a

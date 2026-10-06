@@ -11,9 +11,8 @@
  *   - Buffer every stdout/stderr chunk in a fixed-byte ring, keyed by PID.
  *   - Split oversize chunks at 4 KB so no single write can swamp a PID's
  *     allotted 64 KB.
- *   - Tag binary chunks (null bytes / high non-printable ratio) as
- *     `{type: 'binary', size: N}` so replay shows `[N bytes of binary
- *     output]` instead of garbled terminal state.
+ *   - Store raw bytes once; text log readers may render a binary placeholder,
+ *     while foreground pipes and subscribers always receive exact bytes.
  *   - Track process exit separately from the append stream so `logs` can
  *     print a clean footer and `_emitExitDump` can fire exactly once.
  *   - Retain logs for `retainAfterExitMs` (default 10 min) past exit —
@@ -22,10 +21,7 @@
  *   - Provide pub-sub via `subscribe(pid, cb)` so `logs -f` is O(1) per
  *     chunk, not a poll loop.
  *
- * Non-goals:
- *   - Holding raw Uint8Array. The RPC boundary carries bytes
- *     (SupervisorRPC.stdout(data: Uint8Array)); the supervisor decodes them
- *     at its edge, per (pid, stream), and this ring holds text lines.
+ * Text is a derived read-time view, never another stored output path.
  *
  * Hibernation persistence:
  *   The store optionally accepts a `PersistAdapter` (set via
@@ -44,6 +40,7 @@
  */
 
 import { ProcessLogRetention, type PersistedLogPid } from './process-log-retention.js';
+import { StreamTextDecoders } from '../_shared/bytes.js';
 
 export type { PersistedLogPid };
 
@@ -53,9 +50,8 @@ export interface LogChunk {
   ts: number;
   stream: LogStream;
   /**
-   * `data` is the raw chunk content (ANSI escapes preserved). For
-   * binary-detected chunks it's a placeholder like
-   * `[237 bytes of binary output]\n`; the original bytes are dropped.
+   * A derived text view (ANSI preserved), or a binary placeholder. The
+   * underlying byte log is retained independently of this rendering.
    */
   data: string;
   /** Set for chunks we flagged as binary — lets UI render differently. */
@@ -66,12 +62,20 @@ export interface SequencedLogChunk extends LogChunk {
   seq: number;
 }
 
+/** The stored and relayed log is bytes; text is a read-time view only. */
+export interface ByteLogChunk { ts: number; stream: LogStream; data: Uint8Array; }
+export interface SequencedByteLogChunk extends ByteLogChunk { seq: number; }
+
 /**
  * A chunk as a persist adapter hands it back on load. `seq` is the sequence
  * number the adapter stored alongside it; hydration falls back to array
  * position for a row that carries none.
  */
-export interface PersistedLogChunk extends LogChunk {
+export interface PersistedLogChunk {
+  ts: number;
+  stream: LogStream;
+  data: string | Uint8Array;
+  binary?: boolean;
   seq?: number;
 }
 
@@ -90,13 +94,13 @@ export interface ProcessExitInfo {
 }
 
 interface PidState {
-  chunks: LogChunk[];
+  chunks: ByteLogChunk[];
   /** Total bytes of `data` across all chunks (for ring eviction). */
   bytes: number;
   exit: ProcessExitInfo | null;
   /** Last touch (append, markExit) — used by dropOlderThan. */
   lastActivity: number;
-  subscribers: Set<(c: LogChunk) => void>;
+  subscribers: Set<(c: ByteLogChunk) => void | Promise<void>>;
   exitSubscribers: Set<(e: ProcessExitInfo) => void>;
   /**
    * W9: monotonic per-pid sequence. Each `append` increments by 1
@@ -112,7 +116,7 @@ interface PidState {
    * the chunks array out from under a pending flush. The flush path
    * iterates this list and posts to `persistChunks`.
    */
-  dirtyChunks: { seq: number; chunk: LogChunk }[];
+  dirtyChunks: { seq: number; chunk: ByteLogChunk }[];
   /** W9: set when `markExit` ran but exit not yet flushed. */
   dirtyExit: boolean;
   /** W9: hydrated from the adapter at least once this isolate-gen. */
@@ -148,7 +152,7 @@ interface PidState {
  */
 export interface PersistAdapter {
   load(pid: number): { chunks: PersistedLogChunk[]; exit: ProcessExitInfo | null } | null;
-  persistChunks(pid: number, rows: { seq: number; chunk: LogChunk }[]): void;
+  persistChunks(pid: number, rows: { seq: number; chunk: ByteLogChunk }[]): void;
   persistExit(pid: number, info: ProcessExitInfo): void;
   dropPid(pid: number): void;
   pruneBeforeSeq(pid: number, seq: number): void;
@@ -197,6 +201,12 @@ function looksBinary(s: string): boolean {
     bad++;
   }
   return bad / sample.length > 0.1;
+}
+
+function renderLogChunk(chunk: ByteLogChunk, decoders: StreamTextDecoders<string>, key: string): LogChunk | null {
+  const text = decoders.decode(key, chunk.data);
+  if (looksBinary(text)) return { ts: chunk.ts, stream: chunk.stream, data: `[${chunk.data.byteLength} bytes of binary output]\n`, binary: true };
+  return text.length > 0 ? { ts: chunk.ts, stream: chunk.stream, data: text } : null;
 }
 
 /**
@@ -353,41 +363,33 @@ export class ProcessLogStore {
    * needed. Notifies any `subscribe()`rs for this pid.
    */
   append(pid: number, stream: LogStream, data: string): void {
+    this.appendBytes(pid, stream, new TextEncoder().encode(data));
+  }
+
+  async appendBytes(pid: number, stream: LogStream, data: Uint8Array): Promise<void> {
     if (!data) return;
     const begins = !this.pids.has(pid);
     const state = this._getOrCreate(pid);
     // Logs that begin may already have a deadline: an orphan's (its process is gone).
     if (begins) this._onRetention?.();
 
-    // Binary detection on the raw incoming chunk (before splitting).
-    if (looksBinary(data)) {
-      const placeholder = `[${data.length} bytes of binary output]\n`;
-      const chunk: LogChunk = {
-        ts: Date.now(),
-        stream,
-        data: placeholder,
-        binary: true,
-      };
-      this._appendChunk(pid, state, chunk);
-      return;
-    }
-
     // Split oversize writes into multiple chunks.
     let offset = 0;
     while (offset < data.length) {
-      const slice = data.substring(offset, offset + this.maxChunkBytes);
-      const chunk: LogChunk = {
+      const slice = data.slice(offset, offset + this.maxChunkBytes);
+      const chunk: ByteLogChunk = {
         ts: Date.now(),
         stream,
         data: slice,
       };
-      this._appendChunk(pid, state, chunk);
+      const delivery = this._appendChunk(pid, state, chunk);
+      if (delivery) await delivery;
       offset += slice.length;
     }
   }
 
   /** W9: shared insert path — assigns a seq, marks dirty, evicts, fans out. */
-  private _appendChunk(pid: number, state: PidState, chunk: LogChunk): void {
+  private _appendChunk(pid: number, state: PidState, chunk: ByteLogChunk): Promise<void> | undefined {
     const seq = state.nextSeq++;
     state.chunks.push(chunk);
     state.bytes += chunk.data.length;
@@ -396,10 +398,12 @@ export class ProcessLogStore {
       state.dirtyChunks.push({ seq, chunk });
     }
     this._evict(state, pid);
-    this._fanout(state, chunk);
+    const delivery = this._fanout(state, chunk);
     if (this._broadcastChunk) {
-      try { this._broadcastChunk(pid, chunk); } catch { /* swallow broadcast errors */ }
+      const rendered = renderLogChunk(chunk, this.broadcastDecoders, `${pid}:${chunk.stream}`);
+      if (rendered) { try { this._broadcastChunk(pid, rendered); } catch { /* swallow broadcast errors */ } }
     }
+    return delivery;
   }
 
   /**
@@ -423,28 +427,36 @@ export class ProcessLogStore {
     const truncated = cursor !== null && Math.floor(cursor) < firstSeq;
 
     return {
-      chunks: state.chunks.slice(start).map((chunk, index) => ({
-        ...chunk,
-        seq: firstSeq + start + index,
-      })),
+      chunks: this._render(state).filter(c => c.seq >= firstSeq + start),
       cursor: state.nextSeq,
       truncated,
     };
+  }
+
+  readBytes(pid: number, opts: ProcessLogReadOptions = {}): { chunks: SequencedByteLogChunk[]; cursor: number; truncated: boolean } {
+    const state = this._maybeHydrateRead(pid);
+    if (!state) return { chunks: [], cursor: 0, truncated: false };
+    const first = state.nextSeq - state.chunks.length;
+    const cursor = Number.isFinite(opts.cursor) ? Number(opts.cursor) : null;
+    const start = cursor === null ? this._tailStartIndex(state, opts) : Math.max(0, Math.floor(cursor) - first);
+    return { chunks: state.chunks.slice(start).map((chunk, i) => ({ ...chunk, seq: first + start + i })),
+      cursor: state.nextSeq, truncated: cursor !== null && cursor < first };
   }
 
   /** Return the last N chunks (by line count) in chronological order. */
   tail(pid: number, opts: Pick<ProcessLogReadOptions, 'lines' | 'bytes'> = {}): LogChunk[] {
     const state = this._maybeHydrateRead(pid);
     if (!state) return [];
-    if (opts.lines === undefined && opts.bytes === undefined) return [...state.chunks];
+    const rendered = this._render(state).map(({ seq, ...chunk }) => chunk);
+    if (opts.lines === undefined && opts.bytes === undefined) return rendered;
     if (opts.lines === 0 || opts.bytes === 0) return [];
 
     // Walk from newest → oldest, accumulate until we hit the limit.
     const out: LogChunk[] = [];
     let lines = 0;
     let bytes = 0;
-    for (let i = state.chunks.length - 1; i >= 0; i--) {
-      const c = state.chunks[i];
+    for (let i = rendered.length - 1; i >= 0; i--) {
+      const c = rendered[i];
       out.unshift(c);
       bytes += c.data.length;
       if (opts.lines !== undefined) {
@@ -468,7 +480,7 @@ export class ProcessLogStore {
       bytes += chunk.data.length;
       if (opts.lines !== undefined) {
         for (let j = 0; j < chunk.data.length; j++) {
-          if (chunk.data.charCodeAt(j) === 10) lines++;
+          if (chunk.data[j] === 10) lines++;
         }
         if (lines >= opts.lines) return i;
       }
@@ -480,7 +492,7 @@ export class ProcessLogStore {
   /** All chunks for a pid, chronological. */
   all(pid: number): LogChunk[] {
     const state = this._maybeHydrateRead(pid);
-    return state ? [...state.chunks] : [];
+    return state ? this._render(state).map(({ seq, ...chunk }) => chunk) : [];
   }
 
   /**
@@ -495,7 +507,24 @@ export class ProcessLogStore {
    */
   buffered(pid: number): LogChunk[] {
     const state = this.pids.get(pid);
-    return state ? [...state.chunks] : [];
+    return state ? this._render(state).map(({ seq, ...chunk }) => chunk) : [];
+  }
+
+  private readonly broadcastDecoders = new StreamTextDecoders<string>();
+
+  private _render(state: PidState): SequencedLogChunk[] {
+    const decoder = new StreamTextDecoders<string>();
+    const first = state.nextSeq - state.chunks.length;
+    const out: SequencedLogChunk[] = [];
+    state.chunks.forEach((chunk, i) => {
+      const text = renderLogChunk(chunk, decoder, chunk.stream);
+      if (text) out.push({ ...text, seq: first + i });
+    });
+    if (state.exit) for (const stream of ['stdout', 'stderr'] as const) {
+      const tail = decoder.drop(stream);
+      if (tail) out.push({ stream, data: tail, ts: state.exit.at, seq: state.nextSeq - 1 });
+    }
+    return out;
   }
 
   /** Record exit. Idempotent: second call is ignored (preserves first). */
@@ -504,6 +533,10 @@ export class ProcessLogStore {
     if (state.exit) return;
     const info: ProcessExitInfo = { code, at: Date.now(), reason };
     state.exit = info;
+    for (const stream of ['stdout', 'stderr'] as const) {
+      const tail = this.broadcastDecoders.drop(`${pid}:${stream}`);
+      if (tail && this._broadcastChunk) this._broadcastChunk(pid, { ts: info.at, stream, data: tail });
+    }
     state.lastActivity = info.at;
     if (this._persist) state.dirtyExit = true;
     for (const cb of state.exitSubscribers) {
@@ -522,6 +555,17 @@ export class ProcessLogStore {
    * subscriber sees pre-hibernate context in the next backlog frame.
    */
   subscribe(pid: number, cb: (c: LogChunk) => void): () => void {
+    const decoders = new StreamTextDecoders<string>();
+    const chunks = this.subscribeBytes(pid, c => { const text = renderLogChunk(c, decoders, c.stream); if (text) cb(text); });
+    const exit = this.subscribeExit(pid, info => {
+      for (const stream of ['stdout','stderr'] as const) {
+        const tail = decoders.drop(stream); if (tail) cb({ts:info.at,stream,data:tail});
+      }
+    });
+    return () => { chunks(); exit(); };
+  }
+
+  subscribeBytes(pid: number, cb: (c: ByteLogChunk) => void | Promise<void>): () => void {
     const state = this._getOrCreate(pid);
     state.subscribers.add(cb);
     // A reader holds the pid past its deadline, so its leaving may bring one.
@@ -766,7 +810,7 @@ export class ProcessLogStore {
     // Trim to perPidBytes from the newest end. Each persisted chunk has
     // a `seq` (we appended it during `persistChunks`); fall back to
     // index-based seq when a chunk lacks it (defensive).
-    const newest: LogChunk[] = [];
+    const newest: ByteLogChunk[] = [];
     let bytes = 0;
     let oldestKeptSeq = Number.POSITIVE_INFINITY;
     let highestSeq = -1;
@@ -774,13 +818,14 @@ export class ProcessLogStore {
       const c = loaded.chunks[i];
       const seq = c.seq ?? i;
       if (seq > highestSeq) highestSeq = seq;
-      const size = c.data.length;
+      const data = typeof c.data === 'string' ? new TextEncoder().encode(c.data) : c.data;
+      const size = data.byteLength;
       if (bytes + size > this.perPidBytes && newest.length > 0) {
         // Anything below this seq is overshoot — schedule a prune.
         this._pruneQueue.set(pid, oldestKeptSeq);
         break;
       }
-      newest.unshift({ ts: c.ts, stream: c.stream, data: c.data, binary: c.binary });
+      newest.unshift({ ts: c.ts, stream: c.stream, data });
       bytes += size;
       oldestKeptSeq = seq;
     }
@@ -911,10 +956,11 @@ export class ProcessLogStore {
     }
   }
 
-  private _fanout(state: PidState, chunk: LogChunk): void {
-    if (state.subscribers.size === 0) return;
+  private _fanout(state: PidState, chunk: ByteLogChunk): Promise<void> | undefined {
+    const writes: Promise<void>[] = [];
     for (const cb of state.subscribers) {
-      try { cb(chunk); } catch { /* swallow subscriber errors */ }
+      try { const write = cb(chunk); if (write) writes.push(write); } catch (error) { writes.push(Promise.reject(error)); }
     }
+    return writes.length ? Promise.all(writes).then(() => {}) : undefined;
   }
 }

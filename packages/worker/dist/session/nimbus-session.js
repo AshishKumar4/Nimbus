@@ -815,7 +815,7 @@ export class NimbusSession extends CloudflareDurableObject {
     async _rpcCpSpawn(req) { return _rpc._rpcCpSpawn(this, req); }
     async _rpcCpStdinWrite(childPid, data) { return _rpc._rpcCpStdinWrite(this, childPid, data); }
     async _rpcCpStdinEnd(childPid) { return _rpc._rpcCpStdinEnd(this, childPid); }
-    async _rpcCpReadStdin(childPid, waitMs, acquire, pid, writerId) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid, writerId); }
+    async _rpcCpReadStdin(childPid, waitMs, acquire, pid, writerId, maxBytes) { return _rpc._rpcCpReadStdin(this, childPid, waitMs, acquire, pid, writerId, maxBytes); }
     async _rpcCpReadOutput(childPid, fd, sinceSeq, waitMs, acquire, pid) { return _rpc._rpcCpReadOutput(this, childPid, fd, sinceSeq, waitMs, acquire, pid); }
     async _rpcCpDrainOutput(childPid) { return _rpc._rpcCpDrainOutput(this, childPid); }
     async _rpcCpKill(childPid, signal) { return _rpc._rpcCpKill(this, childPid, signal); }

@@ -785,7 +785,7 @@ export interface FacetManagerHooks {
 }
 export interface ForegroundLaunch {
     signal: AbortSignal;
-    write(stream: 'stdout' | 'stderr', text: string): void;
+    write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }
 export interface LongRunningWorkerSpawnOptions {
     /** Interpreter residents share Node's atomic derived-owner claim. */
@@ -1430,6 +1430,7 @@ export declare class FacetManager {
          * starts; the program is never held for the pipe to end.
          */
         stdinPipe?: StdinBytes;
+        foreground?: ForegroundLaunch;
         /**
          * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
          * program reads the file ahead before it starts (a run after one that

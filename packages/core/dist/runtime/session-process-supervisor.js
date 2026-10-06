@@ -22,7 +22,6 @@
 import { ProcessTable } from './process-table.js';
 import { ProcessInputStore } from './process-input.js';
 import { ProcessLogStore, } from './process-logs.js';
-import { StreamTextDecoders } from '../_shared/bytes.js';
 /** Signals whose default action terminates the process, by number. */
 const DEFAULT_TERMINATING_SIGNALS = {
     SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15,
@@ -31,12 +30,6 @@ export class SessionProcessSupervisor {
     table = new ProcessTable();
     input = new ProcessInputStore();
     logs = new ProcessLogStore();
-    /**
-     * The log ring holds text lines; a process's output arrives as bytes. One
-     * streaming decoder per (pid, stream) is this text consumer's edge, so a
-     * character split across two chunks survives. Dropped at markExit.
-     */
-    outputDecoders = new StreamTextDecoders();
     /** Terminators for processes whose work is a promise this session owns. */
     terminators = new Map();
     /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -360,6 +353,8 @@ export class SessionProcessSupervisor {
     openInput(pid) {
         this.input.open(pid);
     }
+    inheritInput(pid, parentPid) { this.input.inherit(pid, parentPid); }
+    pumpInput(pid, source) { return this.input.pump(pid, source); }
     hasInput(pid) {
         return this.input.has(pid);
     }
@@ -370,6 +365,8 @@ export class SessionProcessSupervisor {
     writeInputBytes(pid, data) {
         return this.input.writeBytes(pid, data);
     }
+    writeInputBytesWait(pid, data) { return this.input.writeBytesWait(pid, data); }
+    endInputAfterWrites(pid) { return this.input.endAfterWrites(pid); }
     /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
     whenInputWritable(pid) {
         return this.input.whenWritable(pid);
@@ -382,8 +379,8 @@ export class SessionProcessSupervisor {
     closeInput(pid) {
         this.input.close(pid);
     }
-    readInput(pid, waitMs) {
-        return this.input.read(pid, waitMs);
+    readInput(pid, waitMs, maxBytes) {
+        return this.input.read(pid, waitMs, maxBytes);
     }
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid, packets) {
@@ -450,19 +447,14 @@ export class SessionProcessSupervisor {
         this.logs.append(pid, stream, data);
         this.logActivity?.();
     }
-    /** A process's own output: bytes on the relay, decoded at this edge. */
+    /** Store bytes once, and await the live byte sink's pipe backpressure. */
     appendOutputBytes(pid, stream, data) {
-        const text = this.outputDecoders.decode(`${pid}:${stream}`, data);
-        if (text.length > 0)
-            this.appendOutput(pid, stream, text);
+        const delivery = this.logs.appendBytes(pid, stream, data);
+        this.logActivity?.();
+        return delivery;
     }
     /** Record exit in the log store. Idempotent: the first record wins. */
     markExit(pid, code, reason) {
-        for (const stream of ['stdout', 'stderr']) {
-            const tail = this.outputDecoders.drop(`${pid}:${stream}`);
-            if (tail.length > 0)
-                this.logs.append(pid, stream, tail);
-        }
         this.logs.markExit(pid, code, reason);
         this.logActivity?.();
     }
@@ -494,6 +486,7 @@ export class SessionProcessSupervisor {
     subscribeLogs(pid, cb) {
         return this.logs.subscribe(pid, cb);
     }
+    subscribeOutputBytes(pid, cb) { return this.logs.subscribeBytes(pid, cb); }
     subscribeExit(pid, cb) {
         return this.logs.subscribeExit(pid, cb);
     }

@@ -56,6 +56,10 @@ export interface RuntimeRunResult {
  * Options the handler passes to the runner. Mirrors RunFreshOpts.
  */
 export interface RuntimeRunOpts {
+    /** Host-local byte sink. Runners stream here instead of a text capture result. */
+    output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
+    /** Existing fd-0 channel (a broker child or attached terminal), inherited without read-ahead. */
+    stdinPid?: number;
     argv: string[];
     env: Record<string, string> | undefined;
     cwd: string | undefined;

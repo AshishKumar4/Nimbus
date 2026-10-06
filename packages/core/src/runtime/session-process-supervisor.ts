@@ -25,6 +25,7 @@ import { ProcessInputStore, type ProcessInputPacket } from './process-input.js';
 import {
   ProcessLogStore,
   type LogChunk,
+  type ByteLogChunk,
   type LogStream,
   type PersistAdapter,
   type ProcessExitInfo,
@@ -33,7 +34,6 @@ import {
 } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
 import type { VfsCred } from './os-contracts.js';
-import { StreamTextDecoders } from '../_shared/bytes.js';
 
 export interface ProcessSpawnOptions {
   /** Long-lived process (dev server, watcher, attached CLI). Surfaces a process tab. */
@@ -71,12 +71,7 @@ export class SessionProcessSupervisor {
   private readonly table = new ProcessTable();
   private readonly input = new ProcessInputStore();
   private logs = new ProcessLogStore();
-  /**
-   * The log ring holds text lines; a process's output arrives as bytes. One
-   * streaming decoder per (pid, stream) is this text consumer's edge, so a
-   * character split across two chunks survives. Dropped at markExit.
-   */
-  private readonly outputDecoders = new StreamTextDecoders<string>();
+
   /** Terminators for processes whose work is a promise this session owns. */
   private terminators = new Map<number, () => void>();
   /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -411,6 +406,9 @@ export class SessionProcessSupervisor {
     this.input.open(pid);
   }
 
+  inheritInput(pid: number, parentPid: number): void { this.input.inherit(pid, parentPid); }
+  pumpInput(pid: number, source: { readBytes(maxLength: number): Promise<Uint8Array | null> }): { stop(): void; done: Promise<void> } { return this.input.pump(pid, source); }
+
   hasInput(pid: number): boolean {
     return this.input.has(pid);
   }
@@ -423,6 +421,10 @@ export class SessionProcessSupervisor {
   writeInputBytes(pid: number, data: Uint8Array): { ok: boolean; full?: boolean } {
     return this.input.writeBytes(pid, data);
   }
+
+  writeInputBytesWait(pid: number, data: Uint8Array): Promise<{ ok: boolean }> { return this.input.writeBytesWait(pid, data); }
+
+  endInputAfterWrites(pid: number): Promise<void> { return this.input.endAfterWrites(pid); }
 
   /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
   whenInputWritable(pid: number): Promise<boolean> {
@@ -439,8 +441,8 @@ export class SessionProcessSupervisor {
     this.input.close(pid);
   }
 
-  readInput(pid: number, waitMs?: number): Promise<ProcessInputPacket> {
-    return this.input.read(pid, waitMs);
+  readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket> {
+    return this.input.read(pid, waitMs, maxBytes);
   }
 
   /** See ProcessInputStore.unread: input taken back to the front of the queue. */
@@ -513,18 +515,15 @@ export class SessionProcessSupervisor {
     this.logActivity?.();
   }
 
-  /** A process's own output: bytes on the relay, decoded at this edge. */
-  appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): void {
-    const text = this.outputDecoders.decode(`${pid}:${stream}`, data);
-    if (text.length > 0) this.appendOutput(pid, stream, text);
+  /** Store bytes once, and await the live byte sink's pipe backpressure. */
+  appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): Promise<void> {
+    const delivery = this.logs.appendBytes(pid, stream, data);
+    this.logActivity?.();
+    return delivery;
   }
 
   /** Record exit in the log store. Idempotent: the first record wins. */
   markExit(pid: number, code: number, reason?: string): void {
-    for (const stream of ['stdout', 'stderr'] as const) {
-      const tail = this.outputDecoders.drop(`${pid}:${stream}`);
-      if (tail.length > 0) this.logs.append(pid, stream, tail);
-    }
     this.logs.markExit(pid, code, reason);
     this.logActivity?.();
   }
@@ -568,6 +567,8 @@ export class SessionProcessSupervisor {
   subscribeLogs(pid: number, cb: (chunk: LogChunk) => void): () => void {
     return this.logs.subscribe(pid, cb);
   }
+
+  subscribeOutputBytes(pid: number, cb: (chunk: ByteLogChunk) => void | Promise<void>): () => void { return this.logs.subscribeBytes(pid, cb); }
 
   subscribeExit(pid: number, cb: (exit: ProcessExitInfo) => void): () => void {
     return this.logs.subscribeExit(pid, cb);

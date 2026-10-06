@@ -50,6 +50,7 @@
 import type { RuntimeRunOpts, RuntimeRunResult, RuntimeSpec } from './runtime-registry.js';
 import type { Facet, FacetHost } from './facet-host.js';
 import type { SessionProcessSupervisor } from './session-process-supervisor.js';
+import { stdinBytesOf } from '../shell/stdin-adapter.js';
 import { gateSyncLaunch, requireVfsCred, WASM32_WASI_NIMBUS_ABI, type NimbusFilesystemAuthority } from './os-contracts.js';
 import { withHostView } from './process-files.js';
 import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS, WASI_ABI_NAMESPACE } from './wasi-instance.js';
@@ -73,6 +74,11 @@ import { exists } from '../vfs/vfs.js';
 declare const __wasiMakeImports: (opts: WasiMakeImportsOptions) => WasiInstanceBundle;
 declare const __wasiInitFS: (opts: WasiInitOptions) => void;
 declare const __wasiAdoptSupervisor: (sup: unknown) => void;
+declare const __wasiSupervisorOutput: (sup: unknown) => {
+  stdoutBytes(bytes: Uint8Array): void | Promise<void>;
+  stderrBytes(bytes: Uint8Array): void | Promise<void>;
+  drain(): Promise<string | null>;
+};
 /** The green-thread scheduler — see runtime/wasi-threads.ts. */
 interface WasiThreadScheduler {
   hostImports: () => Record<string, WebAssembly.ModuleImports>;
@@ -363,6 +369,7 @@ export function makeWasmRunner(deps: {
       exports?: string[];
       stdout?: string;
       stderr?: string;
+      streamedOutput?: boolean;
       exitCode?: number;
       error?: string;
       fsDiff?: {
@@ -391,6 +398,8 @@ export function makeWasmRunner(deps: {
     const facetFn = async function wasmFacetCall(
       args: {
         mode: 'direct' | 'wasi';
+        processPid?: number;
+        liveOutput?: boolean;
         exportName?: string;
         intArgs?: number[];
         wasiArgv?: string[];
@@ -475,7 +484,7 @@ export function makeWasmRunner(deps: {
         // Install the preopens. fd 3 = the user's session root preopen. The
         // shim's fd table is reset by initFS each call.
         if (args.wasiFs) {
-          initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens });
+          initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens, pid: args.processPid });
           // initFS resets the live state, so adoption has to follow it. Every
           // file the guest touches is then read from and written to the
           // authority through the stub.
@@ -488,11 +497,15 @@ export function makeWasmRunner(deps: {
         }
         const memRef: { mem: WebAssembly.Memory | null } = { mem: null };
         const abi = args.wasiAbi || 'preview1';
+        const sup = facetEnv?.SUPERVISOR as { cpReadStdin?(pid: number, waitMs: number, acquire?: unknown, maxBytes?: number): Promise<{ data: Uint8Array; ended: boolean; signal?: string }>; stdout?: unknown } | undefined;
+        const live = args.liveOutput && typeof sup?.stdout === 'function' ? __wasiSupervisorOutput(sup) : null;
         const wasi = mk({
           argv: args.wasiArgv || [],
           env: args.wasiEnv || {},
           abi,
           threads: !!args.threads,
+          ...(live ? { stdoutBytes: live.stdoutBytes, stderrBytes: live.stderrBytes } : {}),
+          ...(typeof sup?.cpReadStdin === 'function' ? { stdinRead: (maxBytes: number) => sup.cpReadStdin!(args.processPid!, 8000, undefined, maxBytes) } : {}),
           // Non-null by ordering, not by check. The import table is only ever
           // CALLED from inside the guest, and the guest cannot run before
           // `_start` below, by which point memRef.mem is assigned or the call
@@ -512,6 +525,8 @@ export function makeWasmRunner(deps: {
         // describe an import object as an untyped index signature. Widening
         // here keeps the precision on the shim's side of the boundary.
         const importObject: Record<string, WebAssembly.ModuleImports> = {
+          nimbus_proc: wasi.procImport as unknown as WebAssembly.ModuleImports,
+          nimbus_fs: wasi.fsImport as unknown as WebAssembly.ModuleImports,
           [args.wasiNamespace || 'wasi_snapshot_preview1']:
             wasi.wasiImport as unknown as WebAssembly.ModuleImports,
         };
@@ -589,14 +604,17 @@ export function makeWasmRunner(deps: {
           : runStartAsync
             ? await runStartAsync(inst, { memory: memRef.mem })
             : runStart(inst, { memory: memRef.mem });
+        const lost = await live?.drain();
+        wasi.procDispose();
         return {
-          ok: r.exitCode === 0 && !r.error,
+          ok: r.exitCode === 0 && !r.error && !lost,
           mode: 'wasi',
+          streamedOutput: live !== null,
           stdout: wasi.getStdout(),
           stderr: wasi.getStderr(),
-          exitCode: r.exitCode,
+          exitCode: lost && r.exitCode === 0 ? 1 : r.exitCode,
           exports: Object.keys(inst.exports),
-          error: r.error,
+          error: lost ?? r.error,
         };
       }
 
@@ -667,6 +685,16 @@ export function makeWasmRunner(deps: {
       { parentPid: opts.invokerPid, cred },
     );
     const pid = procEntry.pid;
+    const killed = new AbortController();
+    const runSignal = opts.signal ? AbortSignal.any([opts.signal,killed.signal]) : killed.signal;
+    deps.processes.setTerminator(pid, () => killed.abort());
+    const inputPump = opts.stdinPid !== undefined
+      ? (deps.processes.inheritInput(pid, opts.stdinPid), null)
+      : opts.stdin ? deps.processes.pumpInput(pid, stdinBytesOf(opts.stdin)) : null;
+    if (!deps.processes.hasInput(pid)) { deps.processes.openInput(pid); deps.processes.endInput(pid); }
+    const releaseOutput = opts.output
+      ? deps.processes.subscribeOutputBytes(pid, chunk => opts.output!(chunk.stream, chunk.data)) : null;
+    if (releaseOutput) deps.processes.setForeground(pid, true);
 
     // Pass-through env vars (Nimbus shell sets HOME/USER/PATH/etc.). The
     // runtime-registry's RuntimeRunOpts carries env on the way in; we
@@ -712,7 +740,7 @@ export function makeWasmRunner(deps: {
         // filesystem with the live session VFS instead of a spawn-time copy.
         // Direct (compute-only) mode has no filesystem at all, so it asks for
         // no capability and the facet boots fast.
-        syscalls: processFs ? { vfs: processFs, pid } : undefined,
+        syscalls: processFs ? { vfs: processFs, pid, processes: deps.processes } : undefined,
         // WASI mode: ship the WASI shim source as a facet preamble so
         // `__wasiMakeImports` is in scope when the facet fn runs. Direct mode:
         // no preamble (saves a few KB per submit).
@@ -721,6 +749,8 @@ export function makeWasmRunner(deps: {
 
       const submitArgs = isWasi
         ? {
+            processPid: pid,
+            liveOutput: opts.output !== undefined,
             mode: 'wasi' as const,
             wasiArgv,
             wasiEnv,
@@ -740,16 +770,20 @@ export function makeWasmRunner(deps: {
           // abandon the facet surfaces a timeout as exitCode 1 + stderr.
           timeoutMs: 30_000,
           // A kill or Ctrl-C ends the facet too, where the host can.
-          signal: opts.signal,
+          signal: runSignal,
         },
       )) as DispatchOutcome;
     } catch (e) {
       // Killed: the program ends as an interrupted one does, with no error of its own.
-      outcome = opts.signal?.aborted
+      outcome = runSignal.aborted
         ? { ok: false, mode: 'wasi', exitCode: 130, stdout: '', stderr: '' }
         : { ok: false, error: `dispatch failed: ${errorText(e)}` };
     } finally {
       facet?.dispose();
+      inputPump?.stop();
+      deps.processes.closeInput(pid);
+      releaseOutput?.();
+      if (releaseOutput) deps.processes.setForeground(pid, false);
     }
 
     let exitCode: number;
@@ -794,10 +828,10 @@ export function makeWasmRunner(deps: {
     // and the Process tab WS log stream see the output. The
     // append-then-markExit ordering matches what shellExecuteTracked
     // does in init.ts:1559+ (Fix 5 contract).
-    if (stdout) {
+    if (stdout && !opts.output) {
       try { deps.processes.appendOutput(pid, 'stdout', stdout); } catch {}
     }
-    if (stderr) {
+    if (stderr && !opts.output) {
       try { deps.processes.appendOutput(pid, 'stderr', stderr); } catch {}
     }
     try { deps.processes.exit(pid, exitCode); } catch {}
@@ -807,7 +841,8 @@ export function makeWasmRunner(deps: {
       }
     } catch {}
 
-    return { exitCode, stdout, stderr };
+    const streamed = 'streamedOutput' in outcome && outcome.streamedOutput === true;
+    return { exitCode, stdout: streamed ? '' : stdout, stderr };
   };
 }
 

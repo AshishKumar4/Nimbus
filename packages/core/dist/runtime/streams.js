@@ -56,6 +56,11 @@ const __streamMod = (() => {
     if (r) { r.destroyed = true; stream.readable = false; }
     if (w) {
       w.destroyed = true;
+      if (stream.__nimbusTransformReadCallback) {
+        const pending = stream.__nimbusTransformReadCallback;
+        stream.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending(err ?? _destroyedError('write')));
+      }
       // A write in flight answers the queue when it calls back.
       if (!w.writing) queueMicrotask(() => _errorBuffer(w));
     }
@@ -122,6 +127,11 @@ const __streamMod = (() => {
       const state = this._readableState;
       const chunk = state.buffer.shift();
       state.readableLength -= (chunk?.length || 0);
+      if (this.__nimbusTransformReadCallback && state.readableLength < state.highWaterMark) {
+        const pending = this.__nimbusTransformReadCallback;
+        this.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending());
+      }
       return this._decode(chunk);
     }
 
@@ -548,6 +558,8 @@ const __streamMod = (() => {
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
 
   // ── Duplex ──────────────────────────────────────────────────────────
@@ -567,6 +579,8 @@ const __streamMod = (() => {
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
 
   // ── Transform ───────────────────────────────────────────────────────
@@ -584,7 +598,11 @@ const __streamMod = (() => {
       this._transform(chunk, encoding, (err, data) => {
         if (err) return callback(err);
         if (data !== null && data !== undefined) this.push(data);
-        callback();
+        // A Transform's two sides are one bounded pipe: completing this
+        // write while the readable side is full would drain the broker into
+        // an unbounded local buffer. The consumer's _shift releases it.
+        if (this._readableState.readableLength >= this._readableState.highWaterMark) this.__nimbusTransformReadCallback = callback;
+        else callback();
       });
     }
 

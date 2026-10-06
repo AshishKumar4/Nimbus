@@ -1,5 +1,6 @@
 import type { Awaitable, RuntimeFileHandle, RuntimeFsBridge, RuntimeFsPath, RuntimeSynchronousFs, RuntimeVfsStat } from '../os-contracts.js';
-import type { SyscallResult, Errno, WasiImports } from './types.js';
+import type { SyscallResult, Errno, NimbusFsImports, WasiImports } from './types.js';
+import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
 import type { PinnedContent } from './resident-filesystem.js';
 
 /** WASI encoding only. Paths, permissions, inode identity and storage belong to fs. */
@@ -153,6 +154,22 @@ export interface AuthorityFilesystemOptions {
    * instance and clears them itself (a bash process reused for another fork).
    */
   resident?: Map<string, { revision: number; bytes: Uint8Array }>;
+  /**
+   * The Nimbus filesystem extension's table (NimbusFsImports), filled for
+   * the descriptors and paths this codec answers. A call on any other
+   * descriptor goes to what the table held.
+   */
+  extension?: Partial<NimbusFsImports>;
+}
+
+/**
+ * st_mode of a stat: its type's format bits, and its permission bits, or
+ * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
+ * keeps none, as a node process's fs.stat reports them.
+ */
+export function statMode(st: Pick<RuntimeVfsStat, 'mode' | 'type'>): number {
+  const permissions = st.mode !== undefined ? st.mode & 0o7777 : st.type === 'directory' ? 0o755 : 0o644;
+  return DIRENT_TYPES[direntTypeOfStat(st)].format | permissions;
 }
 
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
@@ -271,6 +288,13 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
     u64(ptr + base + 8, BigInt(Math.trunc(st.atime)) * 1000000n);
     u64(ptr + base + 16, BigInt(Math.trunc(st.mtime)) * 1000000n);
     u64(ptr + base + 24, BigInt(Math.trunc(st.ctime)) * 1000000n);
+    return 0;
+  };
+  /** The extension's stat: preview1's filestat, then mode, uid, gid. */
+  const writeNimbusStat = (ptr: number, st: RuntimeVfsStat): Errno => {
+    if (options.abi === 'preview0') fail('ENOSYS');
+    writeStat(ptr, st);
+    u32(ptr + 64, statMode(st)); u32(ptr + 68, st.uid ?? 0); u32(ptr + 72, st.gid ?? 0); u32(ptr + 76, 0);
     return 0;
   };
   const guard = <A extends (number | bigint)[]>(
@@ -508,6 +532,29 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   };
   imports.fd_filestat_set_times = guard(imports.fd_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, a: bigint, m: bigint, flags: number) => { right(fd, 23); return after(stat(fs, fd), st =>
     after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0)); }, owns);
+  const ext = options.extension;
+  if (ext) {
+    ext.path_stat = guard(ext.path_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, out: number) =>
+      { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT'))); });
+    ext.fd_stat = guard(ext.fd_stat, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, out: number) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
+    ext.path_chmod = guard(ext.path_chmod, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, mode: number) => {
+      pathRight(fd, 20);
+      if (!(flags & 1)) fail('ENOTSUP');
+      return after(fs.chmod(at(fd, path(p, n)), mode & 0o7777), () => 0);
+    });
+    ext.path_access = guard(ext.path_access, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, flags: number, p: number, n: number, mode: number) => {
+      pathRight(fd, 18);
+      // Linux's faccessat has no AT_SYMLINK_NOFOLLOW check of a link's own bits: it follows.
+      void flags;
+      return after(fs.access(at(fd, path(p, n)), mode & 7), () => 0);
+    });
+    // A read-only copy (a resident descriptor) has no descriptor on the
+    // authority to change it through.
+    ext.fd_chmod = guard(ext.fd_chmod, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, mode: number) => {
+      right(fd, 21);
+      return after(fs.fchmod(handle(fd).handle.id, mode & 0o7777), () => 0);
+    }, owns);
+  }
   imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, a: bigint, m: bigint, flags: number) => { pathRight(fd, 20); 
     const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);
     return after(fs.stat(target, { followSymlinks }), st => after(fs.utimes(target, ...times(st ?? fail('ENOENT'), a, m, flags), { followSymlinks }), () => 0));

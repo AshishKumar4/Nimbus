@@ -24,6 +24,7 @@
  * and binding types used by this implementation.
  */
 import { type HostRoute } from './composition.js';
+import { type SupervisorBindingProps } from './supervisor-props.js';
 import { type DynamicWorkerClaim } from './budgets.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { WorkerLoader } from './vendor/types.js';
@@ -132,6 +133,8 @@ export interface IsolatePoolOptions {
      * (npm resolve, pre-bundle), which never call `_pid()`.
      */
     supervisorPid?: number;
+    /** A runtime program's explicit pid/run capability; helpers keep their infrastructure binding. */
+    processSupervisor?: SupervisorBindingProps;
     /**
      * Raw JavaScript source prepended to every generated worker module.
      * Lets callers inject bundled helpers, such as a tar parser. The user

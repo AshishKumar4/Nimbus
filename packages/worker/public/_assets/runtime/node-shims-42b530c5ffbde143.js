@@ -5942,6 +5942,11 @@ const __streamMod = (() => {
     if (r) { r.destroyed = true; stream.readable = false; }
     if (w) {
       w.destroyed = true;
+      if (stream.__nimbusTransformReadCallback) {
+        const pending = stream.__nimbusTransformReadCallback;
+        stream.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending(err ?? _destroyedError('write')));
+      }
       // A write in flight answers the queue when it calls back.
       if (!w.writing) queueMicrotask(() => _errorBuffer(w));
     }
@@ -6008,6 +6013,11 @@ const __streamMod = (() => {
       const state = this._readableState;
       const chunk = state.buffer.shift();
       state.readableLength -= (chunk?.length || 0);
+      if (this.__nimbusTransformReadCallback && state.readableLength < state.highWaterMark) {
+        const pending = this.__nimbusTransformReadCallback;
+        this.__nimbusTransformReadCallback = null;
+        queueMicrotask(() => pending());
+      }
       return this._decode(chunk);
     }
 
@@ -6434,6 +6444,8 @@ const __streamMod = (() => {
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
 
   // ── Duplex ──────────────────────────────────────────────────────────
@@ -6453,6 +6465,8 @@ const __streamMod = (() => {
     get writableEnded() { return this._writableState.ending; }
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
+    get writableNeedDrain() { return this._writableState.needDrain; }
+    get writableHighWaterMark() { return this._writableState.highWaterMark; }
   }
 
   // ── Transform ───────────────────────────────────────────────────────
@@ -6470,7 +6484,11 @@ const __streamMod = (() => {
       this._transform(chunk, encoding, (err, data) => {
         if (err) return callback(err);
         if (data !== null && data !== undefined) this.push(data);
-        callback();
+        // A Transform's two sides are one bounded pipe: completing this
+        // write while the readable side is full would drain the broker into
+        // an unbounded local buffer. The consumer's _shift releases it.
+        if (this._readableState.readableLength >= this._readableState.highWaterMark) this.__nimbusTransformReadCallback = callback;
+        else callback();
       });
     }
 
@@ -9113,7 +9131,8 @@ const __childProcessMod = (() => {
       const piece = data.subarray(at, Math.min(data.byteLength, at + __NIMBUS_STDIN_PIECE_BYTES));
       for (let wait = 10; ; wait = Math.min(wait * 2, 250)) {
         const answer = await __nimbusUseRpcResult(__supervisor.cpStdinWrite(child._brokerPid, piece), (result) => result);
-        if (!answer || (!answer.ok && !answer.full) || __nimbusProgramStopped) return;
+        if (__nimbusProgramStopped) return;
+        if (!answer || (!answer.ok && !answer.full)) throw Object.assign(new Error('write EPIPE'), { code: 'EPIPE', errno: -32, syscall: 'write' });
         if (answer.ok) break;
         await new Promise((resolve) => setTimeout(resolve, wait));
       }
@@ -9166,7 +9185,9 @@ const __childProcessMod = (() => {
     let ended = false;
     return {
       write(bytes) {
-        if (!ended) (fd === 1 ? __processMod.stdout : __processMod.stderr).write(bytes);
+        if (ended) return;
+        const parent = fd === 1 ? __processMod.stdout : __processMod.stderr;
+        if (!parent.write(bytes)) return new Promise((resolve) => parent.once('drain', resolve));
       },
       end() {
         if (ended) return;
@@ -9379,7 +9400,14 @@ const __childProcessMod = (() => {
           for (const c of chunks) {
             // The queue hands back bytes; a Readable given a string would
             // encode it again.
-            stream.write(__BufferMod.from(c.data));
+            const written = stream.write(__BufferMod.from(c.data));
+            if (written && typeof written.then === 'function') await written;
+            else if (written === false && stream.writableNeedDrain) {
+              await new Promise((resolve) => {
+                const done = () => { stream.removeListener('drain', done); stream.removeListener('close', done); resolve(); };
+                stream.once('drain', done); stream.once('close', done);
+              });
+            }
             if (typeof c.seq === "number" && c.seq > sinceSeqRef.value) {
               sinceSeqRef.value = c.seq;
             }
@@ -9568,7 +9596,10 @@ const __childProcessMod = (() => {
             args,
             env: { ...(__processMod.env || {}), ...(opts.env || {}) },
             cwd: opts.cwd || cwd || "/home/user",
-            stdio: opts.stdio || ["pipe", "pipe", "pipe"],
+            // Node has already buffered stdin in the guest. Its inherited
+            // descriptor is a byte source into the SAME broker pipe, whereas
+            // a WASI fd is inherited directly from the supervisor channel.
+            stdio: child._stdioModes[0] === 'inherit' ? ['pipe', ...child._stdioModes.slice(1)] : child._stdioModes,
             detached: !!opts.detached,
             shell: opts.shell || false,
           }),
@@ -10634,6 +10665,36 @@ function __makeProcessOutputStream(streamName) {
   Object.defineProperty(stream, "rows", { enumerable: true, get() { return __nimbusTtyRows; } });
   __nimbusTerminalOutputStreams.push(stream);
   return stream;
+}
+
+// Every live output stream uses the same Writable accounting. The producer
+// gets false at its existing high-water mark and drain only once the
+// supervisor/foreground pipe has acknowledged the bytes, not at enqueue.
+function __nimbusWriteLiveOutput(streamName, data, encoding, callback, send) {
+  if (typeof encoding === 'function') callback = encoding;
+  if (__nimbusProgramStopped) return true;
+  const bytes = __nimbusOutBytes(data, encoding);
+  const stream = __processMod[streamName];
+  const text = __nimbusOutText(streamName, bytes);
+  if (streamName === 'stderr') stderr += text; else stdout += text;
+  stream.writableLength += bytes.byteLength;
+  const ready = stream.writableLength < stream.writableHighWaterMark;
+  if (!ready) stream.writableNeedDrain = true;
+  const sent = Promise.resolve(send(streamName, bytes));
+  stream.__nimbusOutputPending = sent;
+  sent.then(() => {
+    stream.writableLength -= bytes.byteLength;
+    if (typeof callback === 'function') callback();
+    if (stream.writableLength === 0 && stream.writableNeedDrain) {
+      stream.writableNeedDrain = false;
+      stream.emit('drain');
+    }
+  }, (error) => {
+    stream.writableLength -= bytes.byteLength;
+    if (typeof callback === 'function') callback(error);
+    else stream.emit('error', error);
+  });
+  return ready;
 }
 
 function __nimbusReportProcessExit(code, reason) {

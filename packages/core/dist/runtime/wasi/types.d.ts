@@ -23,7 +23,7 @@ import type { VirtualSocketKernel } from '../virtual-socket-kernel.js';
  * widened at a use site. Numbers are the preview1 enum, which is alphabetical
  * and therefore not guessable; check the spec before adding one.
  */
-export type Errno = 0 | 2 | 6 | 8 | 10 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 63 | 64 | 69 | 70 | 71 | 72 | 73 | 75 | 76;
+export type Errno = 0 | 2 | 6 | 8 | 10 | 12 | 14 | 20 | 21 | 22 | 23 | 27 | 28 | 29 | 31 | 32 | 33 | 37 | 41 | 44 | 48 | 51 | 52 | 53 | 54 | 55 | 57 | 58 | 59 | 63 | 64 | 69 | 70 | 71 | 72 | 73 | 75 | 76;
 /**
  * What a syscall body may hand back. A cache hit answers synchronously; a body
  * that has to reach the supervisor answers with a Promise the JSPI Suspending
@@ -90,7 +90,7 @@ export interface ListenerFdEntry extends FdEntryCommon {
  * unrepresentable: reaching a handle requires having narrowed to a kind that
  * has one.
  */
-export type FdEntry = StdioFdEntry | PreopenFdEntry | SocketFdEntry | ListenerFdEntry | import('./filesystem.js').AuthorityFd | import('./filesystem.js').ResidentFd;
+export type FdEntry = StdioFdEntry | PreopenFdEntry | SocketFdEntry | ListenerFdEntry | import('./filesystem.js').AuthorityFd | import('./filesystem.js').ResidentFd | import('./processes.js').PipeFdEntry;
 /** The per-process filesystem view: the root the preopens are cut from and the resident cap. */
 export interface WasiFsState {
     root: string;
@@ -98,6 +98,8 @@ export interface WasiFsState {
     residentFileCap: number;
     /** The credential the process's files are read as; null keeps every call on the authority. */
     cred: WasiCred | null;
+    /** The session pid the process runs as, 0 when unknown (wasi/processes.ts). */
+    pid: number;
 }
 /** A process credential, as the session bound the facet's supervisor to it. */
 export interface WasiCred {
@@ -120,6 +122,8 @@ export interface WasiInitOptions {
      * rules the session applies; without it, every call goes to the session.
      */
     cred?: WasiCred;
+    /** The session pid this process runs as: the parent of any child it starts (wasi/processes.ts). */
+    pid?: number;
 }
 /** What a live stat answers with. */
 export type WasiStatResult = RuntimeVfsStat;
@@ -136,6 +140,11 @@ export interface WasiThreadScheduler {
 }
 /** How an instance is permitted to block — a property of the caller, not of WASI. */
 export type WasiParking = 'jspi' | 'none';
+export interface WasiInputPacket {
+    data: Uint8Array;
+    ended: boolean;
+    signal?: string;
+}
 export interface WasiMakeImportsOptions {
     argv?: string[];
     env?: Record<string, string>;
@@ -145,6 +154,18 @@ export interface WasiMakeImportsOptions {
     threads?: boolean;
     stdoutWrite?: (s: string) => void;
     stderrWrite?: (s: string) => void;
+    /**
+     * The guest's output exactly as it wrote it, each write's bytes: for a
+     * program whose output need not be UTF-8 (git's cat-file, archive or a diff
+     * of a Latin-1 file) or splits a character across writes. Given, it takes
+     * the stream's place in stdoutWrite/stderrWrite and the readable buffer.
+     * A sink that returns a promise holds the writer until it settles (the
+     * bytes are the sink's either way): how output relayed live pushes back.
+     */
+    stdoutBytes?: (bytes: Uint8Array) => void | Promise<void>;
+    stderrBytes?: (bytes: Uint8Array) => void | Promise<void>;
+    /** Read at most maxBytes from one process channel; excess stays there. */
+    stdinRead?: (maxBytes: number) => WasiInputPacket | Promise<WasiInputPacket>;
 }
 /**
  * The WASI import table, exhaustively.
@@ -237,9 +258,56 @@ export interface WasiPollEvent {
     nbytes: bigint;
     flags: number;
 }
+/** The import module of the Nimbus filesystem extension ({@link NimbusFsImports}). */
+export declare const NIMBUS_FS_MODULE = "nimbus_fs";
+/**
+ * Bytes of the extension's stat: preview1's filestat (64 bytes, its layout:
+ * dev, ino, filetype and padding, nlink, size, atim, mtim, ctim), then
+ * st_mode (type and permission bits), uid and gid as u32, and four bytes of
+ * zero. Aligned to 8.
+ */
+export declare const NIMBUS_STAT_SIZE = 80;
+/**
+ * The Nimbus extension to WASI's filesystem, import module `nimbus_fs`: what
+ * preview1's filestat leaves out of a file's status (its mode and owner), and
+ * the chmod preview1 has no call for. One table for every WASI runtime, built
+ * by the shared codec (wasi/filesystem.ts) with paths and descriptors
+ * resolved exactly as path_filestat_get and fd_filestat_get resolve them, so
+ * a runtime's libc shim reads it where it would read preview1's filestat.
+ * git's does (packages/worker/wasm/git/git-wasi-compat.c); CPython's os.stat
+ * (st_mode, st_uid, st_gid) and a clang-built program's chmod +x are the
+ * next to take it.
+ *
+ * A file a guest creates gets preview1's creation mode (0666 under the
+ * umask); a shim that creates with execute bits asks for them after, with
+ * fd_chmod.
+ */
+export interface NimbusFsImports {
+    /** stat(2) (lookupflags SYMLINK_FOLLOW) or lstat(2) of `path` beneath `fd`, into `out` (NIMBUS_STAT_SIZE). */
+    path_stat(fd: number, lookupflags: number, path: number, pathLen: number, out: number): SyscallResult;
+    /** fstat(2) of `fd` into `out`: a file's or directory's, or a stream's (stdio, a pipe, a socket) by its kind. */
+    fd_stat(fd: number, out: number): SyscallResult;
+    /** chmod(2) of `path` beneath `fd`, the link followed (Linux has no lchmod: without SYMLINK_FOLLOW it is ENOTSUP). */
+    path_chmod(fd: number, lookupflags: number, path: number, pathLen: number, mode: number): SyscallResult;
+    /** fchmod(2). */
+    fd_chmod(fd: number, mode: number): SyscallResult;
+    /**
+     * access(2) of `path` beneath `fd` for `mode` (R_OK 4, W_OK 2, X_OK 1;
+     * F_OK 0) as the session's credential for this process may: EACCES when
+     * it may not. preview1 has no call for it, and wasi-libc's answers from a
+     * filestat with no permission bits (every file executable).
+     */
+    path_access(fd: number, lookupflags: number, path: number, pathLen: number, mode: number): SyscallResult;
+}
 /** What `__wasiMakeImports` hands back. */
 export interface WasiInstanceBundle {
     wasiImport: WasiImports;
+    /** The `nimbus_proc` imports (wasi/processes.ts), for a guest built to start children through the host. */
+    procImport: Record<string, (...args: number[]) => SyscallResult>;
+    /** The Nimbus filesystem extension, for import module NIMBUS_FS_MODULE. */
+    fsImport: NimbusFsImports;
+    /** Once the guest exited: stop following its children (they run on, as orphans do). */
+    procDispose(): void;
     getStdout(): string;
     getStderr(): string;
 }

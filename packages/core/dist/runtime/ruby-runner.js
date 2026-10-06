@@ -212,7 +212,10 @@ export function makeRubyRunnerFactory(deps) {
                     argv: [binName, ...argv],
                     invokerPid: ctx.pid,
                     signal: ctx.signal,
-                    write: (stream, text) => (stream === 'stdout' ? ctx.stdout : ctx.stderr).write(text),
+                    write: (stream, bytes) => {
+                        const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
+                        return sink.writeBytes ? sink.writeBytes(bytes) : sink.write(new TextDecoder().decode(bytes));
+                    },
                 });
             }
             else {

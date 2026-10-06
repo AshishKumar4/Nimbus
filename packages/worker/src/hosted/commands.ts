@@ -959,11 +959,12 @@ const shellExecuteTracked = async (
 
   // Wrap the caller-supplied streams so every chunk is both displayed
   // AND captured in the ring buffer keyed by this PID.
-  const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void }) => {
+  const tee = (stream: 'stdout' | 'stderr', target: { write: (d: string) => void | Promise<void>; writeBytes?(d: Uint8Array): void | Promise<void> }) => {
     const toTarget = textSink((text) => target.write(text));
-    return (d: Uint8Array) => {
-      try { self.processes.appendOutputBytes(pid, stream, d); } catch {}
-      try { toTarget(d); } catch {}
+    return async (d: Uint8Array) => {
+      await self.processes.appendOutputBytes(pid, stream, d);
+      if (target.writeBytes) await target.writeBytes(d);
+      else toTarget(d);
     };
   };
 

@@ -249,7 +249,10 @@ export function makeRubyRunnerFactory(deps: {
           argv: [binName, ...argv],
           invokerPid: ctx.pid,
           signal: ctx.signal,
-          write: (stream, text) => (stream === 'stdout' ? ctx.stdout : ctx.stderr).write(text),
+          write: (stream, bytes) => {
+            const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
+            return sink.writeBytes ? sink.writeBytes(bytes) : sink.write(new TextDecoder().decode(bytes));
+          },
         });
       } else {
         result = await dispatchRubyFacet(
@@ -614,7 +617,7 @@ export type RubyResidentStart = (spawn: {
   invokerPid: number;
   /** The launching command: what the program prints until it binds or exits, and its interrupt. */
   signal: AbortSignal;
-  write(stream: 'stdout' | 'stderr', text: string): void;
+  write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }) => Promise<RubyFacetResult>;
 
 const RubyFacetResultSchema = z.object({

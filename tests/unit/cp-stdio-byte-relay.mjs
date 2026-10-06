@@ -101,6 +101,7 @@ console.log('  stdin carries all 65536 bytes unmodified');
 // ── child → parent ───────────────────────────────────────────────────────
 // The parent's Readable must hand back the queue's bytes untouched.
 const stdoutSeen = [];
+
 child.stdout.on('data', (d) => stdoutSeen.push(Buffer.from(d)));
 const outputDeadline = Date.now() + 5000;
 while (Buffer.concat(stdoutSeen).length < payload.length && Date.now() < outputDeadline) await sleep(20);
@@ -179,7 +180,8 @@ console.log('  the child\'s reported text decodes split characters as one');
   for (const [label, code] of [['one-shot wrapper', oneShot], ['resident wrapper', resident], ['opencode wrapper', opencode]]) {
     assert.doesNotThrow(() => parse(code, { ecmaVersion: 'latest', sourceType: 'module' }), `${label} parses`);
     for (const sink of ['"stdout"', '"stderr"']) {
-      assert.ok(code.includes(`__queueRpcWrite(${sink}, b)`), `${label} sends the stream's bytes, not a string`);
+      const write = label === 'opencode wrapper' ? `__queueRpcWrite(${sink}, b)` : `__nimbusWriteLiveOutput(${sink}, d, enc, cb, __queueRpcWrite)`;
+      assert.ok(code.includes(write), `${label} sends the stream's bytes through its delivery-accounted sink`);
     }
   }
   console.log('  both generated wrappers parse and relay bytes');

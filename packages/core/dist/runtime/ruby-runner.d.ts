@@ -100,7 +100,7 @@ export type RubyResidentStart = (spawn: {
     invokerPid: number;
     /** The launching command: what the program prints until it binds or exits, and its interrupt. */
     signal: AbortSignal;
-    write(stream: 'stdout' | 'stderr', text: string): void;
+    write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }) => Promise<RubyFacetResult>;
 /**
  * A facet's answer, checked at the trust boundary. Exported for the resident

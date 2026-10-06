@@ -170,10 +170,17 @@ export function buildRuntimeHandler(spec, ctx0) {
         // synchronous read that needs more than has arrived waits for it in the
         // runner, which stops the run and runs it again once the input is there
         // (worker runtime/stop-replay.ts).
-        const programStdin = pipedStdin === undefined ? {}
-            : pipedStdin.file
-                ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-                : { stdin: pipedStdin };
+        const programStdin = {
+            ...(nimbusCtx.__nimbusBinSpawn?.liveInput ? { stdinPid: nimbusCtx.__nimbusBinSpawn.callerPid } : {}),
+            output: binSpawn?.liveInput ? undefined : (stream, bytes) => {
+                const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
+                return sink.writeBytes ? sink.writeBytes(bytes) : sink.write(new TextDecoder().decode(bytes));
+            },
+            ...(pipedStdin === undefined ? (spec.bypassesScriptRead && ctx.stdin ? { stdin: ctx.stdin } : {})
+                : pipedStdin.file
+                    ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
+                    : { stdin: pipedStdin }),
+        };
         // ── Flag-span computation (primitive #1) ──
         //
         // Real-Node only treats args UP TO the first non-flag token as
@@ -263,6 +270,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -`,
+                output: programStdin.output,
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
@@ -297,6 +305,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename,
                 dirname,
                 command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+                ...programStdin,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
             });

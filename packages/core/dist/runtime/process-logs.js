@@ -11,9 +11,8 @@
  *   - Buffer every stdout/stderr chunk in a fixed-byte ring, keyed by PID.
  *   - Split oversize chunks at 4 KB so no single write can swamp a PID's
  *     allotted 64 KB.
- *   - Tag binary chunks (null bytes / high non-printable ratio) as
- *     `{type: 'binary', size: N}` so replay shows `[N bytes of binary
- *     output]` instead of garbled terminal state.
+ *   - Store raw bytes once; text log readers may render a binary placeholder,
+ *     while foreground pipes and subscribers always receive exact bytes.
  *   - Track process exit separately from the append stream so `logs` can
  *     print a clean footer and `_emitExitDump` can fire exactly once.
  *   - Retain logs for `retainAfterExitMs` (default 10 min) past exit —
@@ -22,10 +21,7 @@
  *   - Provide pub-sub via `subscribe(pid, cb)` so `logs -f` is O(1) per
  *     chunk, not a poll loop.
  *
- * Non-goals:
- *   - Holding raw Uint8Array. The RPC boundary carries bytes
- *     (SupervisorRPC.stdout(data: Uint8Array)); the supervisor decodes them
- *     at its edge, per (pid, stream), and this ring holds text lines.
+ * Text is a derived read-time view, never another stored output path.
  *
  * Hibernation persistence:
  *   The store optionally accepts a `PersistAdapter` (set via
@@ -43,6 +39,7 @@
  *   When NOT set: behaviour is byte-identical to pre-W9 (in-memory only).
  */
 import { ProcessLogRetention } from './process-log-retention.js';
+import { StreamTextDecoders } from '../_shared/bytes.js';
 /** Detect binary content — rough but good enough for "this is not text". */
 function looksBinary(s) {
     if (s.length === 0)
@@ -61,6 +58,12 @@ function looksBinary(s) {
         bad++;
     }
     return bad / sample.length > 0.1;
+}
+function renderLogChunk(chunk, decoders, key) {
+    const text = decoders.decode(key, chunk.data);
+    if (looksBinary(text))
+        return { ts: chunk.ts, stream: chunk.stream, data: `[${chunk.data.byteLength} bytes of binary output]\n`, binary: true };
+    return text.length > 0 ? { ts: chunk.ts, stream: chunk.stream, data: text } : null;
 }
 /**
  * Strip ANSI CSI escape sequences (colors, cursor, etc.) for --plain mode.
@@ -202,6 +205,9 @@ export class ProcessLogStore {
      * needed. Notifies any `subscribe()`rs for this pid.
      */
     append(pid, stream, data) {
+        this.appendBytes(pid, stream, new TextEncoder().encode(data));
+    }
+    async appendBytes(pid, stream, data) {
         if (!data)
             return;
         const begins = !this.pids.has(pid);
@@ -209,28 +215,18 @@ export class ProcessLogStore {
         // Logs that begin may already have a deadline: an orphan's (its process is gone).
         if (begins)
             this._onRetention?.();
-        // Binary detection on the raw incoming chunk (before splitting).
-        if (looksBinary(data)) {
-            const placeholder = `[${data.length} bytes of binary output]\n`;
-            const chunk = {
-                ts: Date.now(),
-                stream,
-                data: placeholder,
-                binary: true,
-            };
-            this._appendChunk(pid, state, chunk);
-            return;
-        }
         // Split oversize writes into multiple chunks.
         let offset = 0;
         while (offset < data.length) {
-            const slice = data.substring(offset, offset + this.maxChunkBytes);
+            const slice = data.slice(offset, offset + this.maxChunkBytes);
             const chunk = {
                 ts: Date.now(),
                 stream,
                 data: slice,
             };
-            this._appendChunk(pid, state, chunk);
+            const delivery = this._appendChunk(pid, state, chunk);
+            if (delivery)
+                await delivery;
             offset += slice.length;
         }
     }
@@ -244,13 +240,17 @@ export class ProcessLogStore {
             state.dirtyChunks.push({ seq, chunk });
         }
         this._evict(state, pid);
-        this._fanout(state, chunk);
+        const delivery = this._fanout(state, chunk);
         if (this._broadcastChunk) {
-            try {
-                this._broadcastChunk(pid, chunk);
+            const rendered = renderLogChunk(chunk, this.broadcastDecoders, `${pid}:${chunk.stream}`);
+            if (rendered) {
+                try {
+                    this._broadcastChunk(pid, rendered);
+                }
+                catch { /* swallow broadcast errors */ }
             }
-            catch { /* swallow broadcast errors */ }
         }
+        return delivery;
     }
     /**
      * Return chunks with stable per-PID sequence numbers. `cursor` is an
@@ -269,29 +269,37 @@ export class ProcessLogStore {
             : Math.max(0, Math.floor(cursor) - firstSeq);
         const truncated = cursor !== null && Math.floor(cursor) < firstSeq;
         return {
-            chunks: state.chunks.slice(start).map((chunk, index) => ({
-                ...chunk,
-                seq: firstSeq + start + index,
-            })),
+            chunks: this._render(state).filter(c => c.seq >= firstSeq + start),
             cursor: state.nextSeq,
             truncated,
         };
+    }
+    readBytes(pid, opts = {}) {
+        const state = this._maybeHydrateRead(pid);
+        if (!state)
+            return { chunks: [], cursor: 0, truncated: false };
+        const first = state.nextSeq - state.chunks.length;
+        const cursor = Number.isFinite(opts.cursor) ? Number(opts.cursor) : null;
+        const start = cursor === null ? this._tailStartIndex(state, opts) : Math.max(0, Math.floor(cursor) - first);
+        return { chunks: state.chunks.slice(start).map((chunk, i) => ({ ...chunk, seq: first + start + i })),
+            cursor: state.nextSeq, truncated: cursor !== null && cursor < first };
     }
     /** Return the last N chunks (by line count) in chronological order. */
     tail(pid, opts = {}) {
         const state = this._maybeHydrateRead(pid);
         if (!state)
             return [];
+        const rendered = this._render(state).map(({ seq, ...chunk }) => chunk);
         if (opts.lines === undefined && opts.bytes === undefined)
-            return [...state.chunks];
+            return rendered;
         if (opts.lines === 0 || opts.bytes === 0)
             return [];
         // Walk from newest → oldest, accumulate until we hit the limit.
         const out = [];
         let lines = 0;
         let bytes = 0;
-        for (let i = state.chunks.length - 1; i >= 0; i--) {
-            const c = state.chunks[i];
+        for (let i = rendered.length - 1; i >= 0; i--) {
+            const c = rendered[i];
             out.unshift(c);
             bytes += c.data.length;
             if (opts.lines !== undefined) {
@@ -319,7 +327,7 @@ export class ProcessLogStore {
             bytes += chunk.data.length;
             if (opts.lines !== undefined) {
                 for (let j = 0; j < chunk.data.length; j++) {
-                    if (chunk.data.charCodeAt(j) === 10)
+                    if (chunk.data[j] === 10)
                         lines++;
                 }
                 if (lines >= opts.lines)
@@ -333,7 +341,7 @@ export class ProcessLogStore {
     /** All chunks for a pid, chronological. */
     all(pid) {
         const state = this._maybeHydrateRead(pid);
-        return state ? [...state.chunks] : [];
+        return state ? this._render(state).map(({ seq, ...chunk }) => chunk) : [];
     }
     /**
      * The chunks already buffered for a pid, without consulting the
@@ -347,7 +355,25 @@ export class ProcessLogStore {
      */
     buffered(pid) {
         const state = this.pids.get(pid);
-        return state ? [...state.chunks] : [];
+        return state ? this._render(state).map(({ seq, ...chunk }) => chunk) : [];
+    }
+    broadcastDecoders = new StreamTextDecoders();
+    _render(state) {
+        const decoder = new StreamTextDecoders();
+        const first = state.nextSeq - state.chunks.length;
+        const out = [];
+        state.chunks.forEach((chunk, i) => {
+            const text = renderLogChunk(chunk, decoder, chunk.stream);
+            if (text)
+                out.push({ ...text, seq: first + i });
+        });
+        if (state.exit)
+            for (const stream of ['stdout', 'stderr']) {
+                const tail = decoder.drop(stream);
+                if (tail)
+                    out.push({ stream, data: tail, ts: state.exit.at, seq: state.nextSeq - 1 });
+            }
+        return out;
     }
     /** Record exit. Idempotent: second call is ignored (preserves first). */
     markExit(pid, code, reason) {
@@ -356,6 +382,11 @@ export class ProcessLogStore {
             return;
         const info = { code, at: Date.now(), reason };
         state.exit = info;
+        for (const stream of ['stdout', 'stderr']) {
+            const tail = this.broadcastDecoders.drop(`${pid}:${stream}`);
+            if (tail && this._broadcastChunk)
+                this._broadcastChunk(pid, { ts: info.at, stream, data: tail });
+        }
         state.lastActivity = info.at;
         if (this._persist)
             state.dirtyExit = true;
@@ -380,6 +411,19 @@ export class ProcessLogStore {
      * subscriber sees pre-hibernate context in the next backlog frame.
      */
     subscribe(pid, cb) {
+        const decoders = new StreamTextDecoders();
+        const chunks = this.subscribeBytes(pid, c => { const text = renderLogChunk(c, decoders, c.stream); if (text)
+            cb(text); });
+        const exit = this.subscribeExit(pid, info => {
+            for (const stream of ['stdout', 'stderr']) {
+                const tail = decoders.drop(stream);
+                if (tail)
+                    cb({ ts: info.at, stream, data: tail });
+            }
+        });
+        return () => { chunks(); exit(); };
+    }
+    subscribeBytes(pid, cb) {
         const state = this._getOrCreate(pid);
         state.subscribers.add(cb);
         // A reader holds the pid past its deadline, so its leaving may bring one.
@@ -618,13 +662,14 @@ export class ProcessLogStore {
             const seq = c.seq ?? i;
             if (seq > highestSeq)
                 highestSeq = seq;
-            const size = c.data.length;
+            const data = typeof c.data === 'string' ? new TextEncoder().encode(c.data) : c.data;
+            const size = data.byteLength;
             if (bytes + size > this.perPidBytes && newest.length > 0) {
                 // Anything below this seq is overshoot — schedule a prune.
                 this._pruneQueue.set(pid, oldestKeptSeq);
                 break;
             }
-            newest.unshift({ ts: c.ts, stream: c.stream, data: c.data, binary: c.binary });
+            newest.unshift({ ts: c.ts, stream: c.stream, data });
             bytes += size;
             oldestKeptSeq = seq;
         }
@@ -755,13 +800,17 @@ export class ProcessLogStore {
         }
     }
     _fanout(state, chunk) {
-        if (state.subscribers.size === 0)
-            return;
+        const writes = [];
         for (const cb of state.subscribers) {
             try {
-                cb(chunk);
+                const write = cb(chunk);
+                if (write)
+                    writes.push(write);
             }
-            catch { /* swallow subscriber errors */ }
+            catch (error) {
+                writes.push(Promise.reject(error));
+            }
         }
+        return writes.length ? Promise.all(writes).then(() => { }) : undefined;
     }
 }

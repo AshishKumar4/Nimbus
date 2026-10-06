@@ -302,6 +302,7 @@ export class Shell {
         const onStdout = options?.onStdout;
         const onStderr = options?.onStderr;
         const stdoutStream = {
+            ...(onStdout ? { writeBytes: (bytes) => onStdout(bytes) } : {}),
             write: async (text) => {
                 if (onStdout)
                     return (await onStdout(enc.encode(text)));
@@ -309,6 +310,7 @@ export class Shell {
             },
         };
         const stderrStream = {
+            ...(onStderr ? { writeBytes: (bytes) => onStderr(bytes) } : {}),
             write: async (text) => {
                 if (onStderr)
                     return (await onStderr(enc.encode(text)));

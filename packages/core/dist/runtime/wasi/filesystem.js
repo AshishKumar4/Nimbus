@@ -1,3 +1,4 @@
+import { DIRENT_TYPES, direntTypeOfStat } from '../../vfs/dirent-type.js';
 /**
  * Synthetic paths that name a socket rather than a file, and the one place
  * their spelling lives — the codec recognises them to hand them back, the host
@@ -54,6 +55,15 @@ const num = (value) => {
         fail('EINVAL');
     return n;
 };
+/**
+ * st_mode of a stat: its type's format bits, and its permission bits, or
+ * Node's defaults (0755 for a directory, 0644 otherwise) where the backend
+ * keeps none, as a node process's fs.stat reports them.
+ */
+export function statMode(st) {
+    const permissions = st.mode !== undefined ? st.mode & 0o7777 : st.type === 'directory' ? 0o755 : 0o644;
+    return DIRENT_TYPES[direntTypeOfStat(st)].format | permissions;
+}
 /** Installs the same filesystem codec in the generic WASI and Bash fd domains. */
 export function installAuthorityFilesystem(imports, options) {
     const fds = options.fds;
@@ -198,6 +208,17 @@ export function installAuthorityFilesystem(imports, options) {
         u64(ptr + base + 8, BigInt(Math.trunc(st.atime)) * 1000000n);
         u64(ptr + base + 16, BigInt(Math.trunc(st.mtime)) * 1000000n);
         u64(ptr + base + 24, BigInt(Math.trunc(st.ctime)) * 1000000n);
+        return 0;
+    };
+    /** The extension's stat: preview1's filestat, then mode, uid, gid. */
+    const writeNimbusStat = (ptr, st) => {
+        if (options.abi === 'preview0')
+            fail('ENOSYS');
+        writeStat(ptr, st);
+        u32(ptr + 64, statMode(st));
+        u32(ptr + 68, st.uid ?? 0);
+        u32(ptr + 72, st.gid ?? 0);
+        u32(ptr + 76, 0);
         return 0;
     };
     const guard = (previous, body, owns) => (...args) => {
@@ -517,6 +538,29 @@ export function installAuthorityFilesystem(imports, options) {
         right(fd, 23);
         return after(stat(fs, fd), st => after(fs.futimes(handle(fd).handle.id, ...times(st, a, m, flags)), () => 0));
     }, owns);
+    const ext = options.extension;
+    if (ext) {
+        ext.path_stat = guard(ext.path_stat, (fs, fd, flags, p, n, out) => { pathRight(fd, 18); return after(fs.stat(at(fd, path(p, n)), { followSymlinks: !!(flags & 1) }), st => writeNimbusStat(out, st ?? fail('ENOENT'))); });
+        ext.fd_stat = guard(ext.fd_stat, (fs, fd, out) => { pathRight(fd, 21); return after(stat(fs, fd), st => writeNimbusStat(out, st)); }, owns);
+        ext.path_chmod = guard(ext.path_chmod, (fs, fd, flags, p, n, mode) => {
+            pathRight(fd, 20);
+            if (!(flags & 1))
+                fail('ENOTSUP');
+            return after(fs.chmod(at(fd, path(p, n)), mode & 0o7777), () => 0);
+        });
+        ext.path_access = guard(ext.path_access, (fs, fd, flags, p, n, mode) => {
+            pathRight(fd, 18);
+            // Linux's faccessat has no AT_SYMLINK_NOFOLLOW check of a link's own bits: it follows.
+            void flags;
+            return after(fs.access(at(fd, path(p, n)), mode & 7), () => 0);
+        });
+        // A read-only copy (a resident descriptor) has no descriptor on the
+        // authority to change it through.
+        ext.fd_chmod = guard(ext.fd_chmod, (fs, fd, mode) => {
+            right(fd, 21);
+            return after(fs.fchmod(handle(fd).handle.id, mode & 0o7777), () => 0);
+        }, owns);
+    }
     imports.path_filestat_set_times = guard(imports.path_filestat_set_times, (fs, fd, lookup, p, n, a, m, flags) => {
         pathRight(fd, 20);
         const target = at(fd, path(p, n)), followSymlinks = !!(lookup & 1);

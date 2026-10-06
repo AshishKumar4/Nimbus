@@ -237,9 +237,6 @@ function* launchNames(
   }
 }
 
-// A piped stdin's largest single write to the process input channel, a
-// quarter of that queue's bound (core/runtime/process-input.ts).
-const STDIN_PIPE_PIECE_BYTES = 64 * 1024;
 
 /** A pipe or redirect's bytes, exactly as written, until it ends (null). */
 export interface StdinBytes {
@@ -1031,6 +1028,7 @@ ${sources.residentStore}
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
+      return __task;
     };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
@@ -1052,8 +1050,8 @@ ${RESIDENCY_MISS_REPORT}
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => __nimbusWriteLiveOutput("stdout", d, enc, cb, __queueRpcWrite);
+      __processMod.stderr.write = (d, enc, cb) => __nimbusWriteLiveOutput("stderr", d, enc, cb, __queueRpcWrite);
     }
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -1552,6 +1550,7 @@ ${VFS_CURSOR_SEED_SOURCE}
         .catch((e) => __onRpcDrop(__chunk.b.byteLength, e));
       __rpcWriteChain = __task.then(() => {}, () => {});
       __pendingIO.push(__task);
+      return __task;
     };
     let cwd = _cwd || "/home/user";
     let stdout = "", stderr = "";
@@ -1572,8 +1571,8 @@ ${RESIDENCY_MISS_REPORT}
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
-      __processMod.stdout.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stdout += __nimbusOutText("stdout", b); __queueRpcWrite("stdout", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
-      __processMod.stderr.write = (d, enc, cb) => { if (typeof enc === "function") cb = enc; if (__nimbusProgramStopped) return true; const b = __nimbusOutBytes(d, enc); stderr += __nimbusOutText("stderr", b); __queueRpcWrite("stderr", b); if (typeof cb === "function") queueMicrotask(cb); return true; };
+      __processMod.stdout.write = (d, enc, cb) => __nimbusWriteLiveOutput("stdout", d, enc, cb, __queueRpcWrite);
+      __processMod.stderr.write = (d, enc, cb) => __nimbusWriteLiveOutput("stderr", d, enc, cb, __queueRpcWrite);
     }
 
     try { globalThis.console = __consoleMod; } catch {}
@@ -4449,7 +4448,7 @@ export interface FacetManagerHooks {
 
 export interface ForegroundLaunch {
   signal: AbortSignal;
-  write(stream: 'stdout' | 'stderr', text: string): void;
+  write(stream: 'stdout' | 'stderr', bytes: Uint8Array): void | Promise<void>;
 }
 
 export interface LongRunningWorkerSpawnOptions {
@@ -5962,6 +5961,7 @@ export class FacetManager {
        * starts; the program is never held for the pipe to end.
        */
       stdinPipe?: StdinBytes;
+      foreground?: ForegroundLaunch;
       /**
        * A `< file` redirect: fd 0 is this file from `offset`. `syncRead`: the
        * program reads the file ahead before it starts (a run after one that
@@ -6012,6 +6012,7 @@ export class FacetManager {
     // guest takes what is queued then, for its synchronous reads of fd 0
     // (node-shims.ts, __nimbusPrepareStdin).
     const stdinPump = opts.stdinPipe ? this._pumpStdinPipe(entry.pid, opts.stdinPipe) : null;
+    const foreground = opts.foreground ? this._holdForeground(entry.pid, opts.foreground) : null;
 
     const diagOn = isExecDiagEnabled();
     const __bundleStart = diagOn ? Date.now() : 0;
@@ -6042,6 +6043,7 @@ export class FacetManager {
       // and the remedy — the same shape the got/next guards print.
       pacer.settle();
       stdinPump?.stop();
+      foreground?.release();
       if (err instanceof ClosureBoundExceededError) {
         const o = err.outcome;
         const mib = (n: number) => `${(n / 1048576).toFixed(1)} MiB`;
@@ -6240,6 +6242,7 @@ export class FacetManager {
       opts.signal?.removeEventListener('abort', onShellAbort);
       pacer.settle();
       stdinPump?.stop();
+      foreground?.release();
       if (inputChannel > 0) this.stdinTaken.get(inputChannel)?.release();
       this.stdinTaken.delete(inputChannel);
       held.give();
@@ -6395,7 +6398,7 @@ export class FacetManager {
   /** A process's output, delivered as its own supervisor RPC delivers it. */
   private async _deliverOutput(pid: number, stream: 'stdout' | 'stderr', bytes: Uint8Array): Promise<void> {
     if (this.hooks.deliverOutput) await this.hooks.deliverOutput(pid, stream, bytes);
-    else this.processes.appendOutputBytes(pid, stream, bytes);
+    else await this.processes.appendOutputBytes(pid, stream, bytes);
   }
 
   /**
@@ -6653,27 +6656,7 @@ export class FacetManager {
    * shell.
    */
   private _pumpStdinPipe(pid: number, pipe: StdinBytes): { stop(): void } {
-    const opened = !this.processes.hasInput(pid);
-    if (opened) this.processes.openInput(pid);
-    let stopped = false;
-    void (async () => {
-      for (;;) {
-        // A piece at a time: the queue is bounded, and one larger than its
-        // room would never fit.
-        const piece = await pipe.readBytes(STDIN_PIPE_PIECE_BYTES);
-        if (stopped) return;
-        if (piece === null) { this.processes.endInput(pid); return; }
-        while (!this.processes.writeInputBytes(pid, piece).ok) {
-          if (stopped || !(await this.processes.whenInputWritable(pid)) || stopped) return;
-        }
-      }
-    })().catch(() => { if (!stopped) this.processes.endInput(pid); });
-    return {
-      stop: () => {
-        stopped = true;
-        if (opened) this.processes.closeInput(pid);
-      },
-    };
+    return this.processes.pumpInput(pid, pipe);
   }
 
   /**
@@ -8315,7 +8298,7 @@ export class FacetManager {
 
   private _holdForeground(pid: number, launch: ForegroundLaunch): { interrupted: Promise<never>; release(): void } {
     this.processes.setForeground(pid, true);
-    const unsubscribe = this.processes.subscribeLogs(pid, (chunk) => launch.write(chunk.stream, chunk.data));
+    const unsubscribe = this.processes.subscribeOutputBytes(pid, (chunk) => launch.write(chunk.stream, chunk.data));
     let onAbort = (): void => {};
     const interrupted = new Promise<never>((_, reject) => {
       onAbort = () => {

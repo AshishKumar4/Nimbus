@@ -3,7 +3,8 @@ import type { VfsCred } from '../runtime/os-contracts.js';
 import type { ProcessView as VFS } from '../runtime/process-files.js';
 import { type ShellInvocationOptions } from './shell-invocation.js';
 type Output = {
-    write(s: string): void | Promise<void>;
+    write(text: string): void | Promise<void>;
+    writeBytes?(bytes: Uint8Array): void | Promise<void>;
 };
 type ShellCommandContext = {
     args?: string[];

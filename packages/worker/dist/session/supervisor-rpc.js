@@ -1055,11 +1055,11 @@ export class SupervisorRPC extends WorkerEntrypoint {
             upstream.readable.pipeTo(socket.writable).catch(() => socket.close().catch(() => { })),
         ]);
     }
-    async cpReadStdin(childPid, waitMs, acquire) {
+    async cpReadStdin(childPid, waitMs, acquire, maxBytes) {
         // The run reading: a run of the process that has stopped takes nothing
         // (worker runtime/stop-replay.ts StdinTaken).
         const writerId = this.ctx.props?.writerId;
-        return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null], {
+        return this._call(this._op('cpReadStdin', [childPid, waitMs, acquire ?? null, ...(maxBytes === undefined ? [] : [maxBytes])], {
             pid: this._reportingPid(),
             ...(typeof writerId === 'string' && writerId.length > 0 ? { writerId } : {}),
         }));

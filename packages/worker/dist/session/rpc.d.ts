@@ -445,7 +445,7 @@ export declare function _rpcCpStdinWrite(self: RpcHost, childPid: number, data: 
     full?: boolean;
 }>;
 export declare function _rpcCpStdinEnd(self: RpcHost, childPid: number): Promise<void>;
-export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string): Promise<{
+export declare function _rpcCpReadStdin(self: RpcHost, childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number): Promise<{
     data: Uint8Array;
     ended: boolean;
     resize?: {

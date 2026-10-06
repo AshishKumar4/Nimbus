@@ -21,7 +21,7 @@
  */
 import { ProcessTable, type ProcessEntry } from './process-table.js';
 import { type ProcessInputPacket } from './process-input.js';
-import { ProcessLogStore, type LogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
+import { ProcessLogStore, type LogChunk, type ByteLogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
 import type { VfsCred } from './os-contracts.js';
 export interface ProcessSpawnOptions {
@@ -53,12 +53,6 @@ export declare class SessionProcessSupervisor {
     private readonly table;
     private readonly input;
     private logs;
-    /**
-     * The log ring holds text lines; a process's output arrives as bytes. One
-     * streaming decoder per (pid, stream) is this text consumer's edge, so a
-     * character split across two chunks survives. Dropped at markExit.
-     */
-    private readonly outputDecoders;
     /** Terminators for processes whose work is a promise this session owns. */
     private terminators;
     /** Fires after every appendOutput/markExit once log persistence is wired. */
@@ -201,6 +195,13 @@ export declare class SessionProcessSupervisor {
     get pidBase(): number;
     /** Open the process's input channel. Until opened, input writes fail. */
     openInput(pid: number): void;
+    inheritInput(pid: number, parentPid: number): void;
+    pumpInput(pid: number, source: {
+        readBytes(maxLength: number): Promise<Uint8Array | null>;
+    }): {
+        stop(): void;
+        done: Promise<void>;
+    };
     hasInput(pid: number): boolean;
     writeInput(pid: number, data: string): {
         ok: boolean;
@@ -210,13 +211,17 @@ export declare class SessionProcessSupervisor {
         ok: boolean;
         full?: boolean;
     };
+    writeInputBytesWait(pid: number, data: Uint8Array): Promise<{
+        ok: boolean;
+    }>;
+    endInputAfterWrites(pid: number): Promise<void>;
     /** Resolves when a write refused for a full queue may succeed; false once the channel is ended or gone. */
     whenInputWritable(pid: number): Promise<boolean>;
     /** Signal stdin EOF. Queued packets still drain; further writes fail. */
     endInput(pid: number): void;
     /** End and drop the input channel entirely. */
     closeInput(pid: number): void;
-    readInput(pid: number, waitMs?: number): Promise<ProcessInputPacket>;
+    readInput(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket>;
     /** See ProcessInputStore.unread: input taken back to the front of the queue. */
     unreadInput(pid: number, packets: readonly ProcessInputPacket[]): void;
     resize(pid: number, columns: number, rows: number): {
@@ -240,8 +245,8 @@ export declare class SessionProcessSupervisor {
     /** Controlling-terminal descriptor; null when no input channel is open. */
     terminal(pid: number): ProcessTerminalDescriptor | null;
     appendOutput(pid: number, stream: LogStream, data: string): void;
-    /** A process's own output: bytes on the relay, decoded at this edge. */
-    appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): void;
+    /** Store bytes once, and await the live byte sink's pipe backpressure. */
+    appendOutputBytes(pid: number, stream: LogStream, data: Uint8Array): Promise<void>;
     /** Record exit in the log store. Idempotent: the first record wins. */
     markExit(pid: number, code: number, reason?: string): void;
     getExit(pid: number): ProcessExitInfo | null;
@@ -262,6 +267,7 @@ export declare class SessionProcessSupervisor {
         exit: ProcessExitInfo | null;
     } | null;
     subscribeLogs(pid: number, cb: (chunk: LogChunk) => void): () => void;
+    subscribeOutputBytes(pid: number, cb: (chunk: ByteLogChunk) => void | Promise<void>): () => void;
     subscribeExit(pid: number, cb: (exit: ProcessExitInfo) => void): () => void;
     get logStats(): ProcessLogStore['stats'];
     /**

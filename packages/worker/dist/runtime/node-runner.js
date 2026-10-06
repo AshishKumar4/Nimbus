@@ -40,6 +40,7 @@
  * All under the 250ms warm-pool gate; no warm-pool needed.
  */
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
+import { stdinBytesOf } from '@nimbus-sh/core/shell/stdin-adapter.js';
 /**
  * Argv long-running detection. Signals we honour:
  *   --watch       (node --watch / bun --watch)
@@ -84,7 +85,9 @@ export async function runFresh(facetMgr, code, opts) {
         const { stdin, stdinFile, ...execOpts } = opts;
         const stdinOpts = stdinFile ? { stdinFile: { ...stdinFile, syncRead: false } }
             : stdin ? { stdinPipe: stdinBytesOf(stdin) } : {};
-        const r = await facetMgr.exec(code, { ...execOpts, ...stdinOpts });
+        const r = await facetMgr.exec(code, { ...execOpts, ...stdinOpts,
+            ...(opts.output ? { captureOutput: false, foreground: { signal: opts.signal ?? new AbortController().signal, write: opts.output } } : {}),
+        });
         return {
             exitCode: r.exitCode,
             stdout: r.stdout,
@@ -152,30 +155,5 @@ export async function runFresh(facetMgr, code, opts) {
         stderr: '',
         spawnedPid: spawned.pid,
         longRunning: true,
-    };
-}
-function isByteStream(stream) {
-    return !!stream.readBytes;
-}
-/** A shell stream's bytes: exact through readBytes, else its text encoded. */
-function stdinBytesOf(stream) {
-    if (isByteStream(stream))
-        return { readBytes: (maxLength) => stream.readBytes(maxLength) };
-    // A text-only stream: at most `maxLength` bytes a read, as readBytes gives,
-    // so a piece is never more than the pump asked for.
-    const encoder = new TextEncoder();
-    let rest = null;
-    return {
-        readBytes: async (maxLength) => {
-            if (rest === null) {
-                const text = await stream.read();
-                if (text === null)
-                    return null;
-                rest = encoder.encode(text);
-            }
-            const piece = rest.subarray(0, maxLength);
-            rest = piece.byteLength < rest.byteLength ? rest.subarray(piece.byteLength) : null;
-            return piece;
-        },
     };
 }

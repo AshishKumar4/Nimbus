@@ -64,6 +64,10 @@ export interface RuntimeRunResult {
  * Options the handler passes to the runner. Mirrors RunFreshOpts.
  */
 export interface RuntimeRunOpts {
+  /** Host-local byte sink. Runners stream here instead of a text capture result. */
+  output?: (stream: 'stdout' | 'stderr', bytes: Uint8Array) => void | Promise<void>;
+  /** Existing fd-0 channel (a broker child or attached terminal), inherited without read-ahead. */
+  stdinPid?: number;
   argv: string[];
   env: Record<string, string> | undefined;
   cwd: string | undefined;
@@ -354,10 +358,17 @@ export function buildRuntimeHandler(
     // synchronous read that needs more than has arrived waits for it in the
     // runner, which stops the run and runs it again once the input is there
     // (worker runtime/stop-replay.ts).
-    const programStdin: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile'> = pipedStdin === undefined ? {}
+    const programStdin: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile' | 'output' | 'stdinPid'> = {
+      ...(nimbusCtx.__nimbusBinSpawn?.liveInput ? { stdinPid: nimbusCtx.__nimbusBinSpawn.callerPid } : {}),
+      output: binSpawn?.liveInput ? undefined : (stream, bytes) => {
+        const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
+        return sink.writeBytes ? sink.writeBytes(bytes) : sink.write(new TextDecoder().decode(bytes));
+      },
+      ...(pipedStdin === undefined ? (spec.bypassesScriptRead && ctx.stdin ? { stdin: ctx.stdin } : {})
       : pipedStdin.file
         ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
-        : { stdin: pipedStdin };
+        : { stdin: pipedStdin }),
+    };
 
     // ── Flag-span computation (primitive #1) ──
     //
@@ -452,6 +463,7 @@ export function buildRuntimeHandler(
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
+        output: programStdin.output,
         ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
@@ -485,6 +497,7 @@ export function buildRuntimeHandler(
         filename,
         dirname,
         command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+        ...programStdin,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
       });

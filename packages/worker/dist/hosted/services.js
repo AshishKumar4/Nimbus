@@ -4,7 +4,8 @@ import { FacetProcessManager, textBytes } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
 import { bindProcessTable, isDynamicWorkerDeadlock, issueProcessNews, withLaunchAdmission, } from "@nimbus-sh/fabric/budgets.js";
 import { CRED_KERNEL, CRED_SESSION_USER } from "@nimbus-sh/core/runtime/os-contracts.js";
-import { ProcessFiles, ProcessView } from "@nimbus-sh/core/runtime/process-files.js";
+import { ProcessFiles, ProcessView, X_OK } from "@nimbus-sh/core/runtime/process-files.js";
+import { resolutionOf } from '@nimbus-sh/core/shell/exec-dispatch.js';
 import { KILLED_BY_SIGPIPE } from "@nimbus-sh/core/substrate/lifo/shell/signals.js";
 import { isBrokenPipe } from "@nimbus-sh/core/substrate/lifo/utils/bytes-io.js";
 import { resolveContext } from "@nimbus-sh/core/substrate/lifo/commands/registry.js";
@@ -86,23 +87,6 @@ export function ensureFacetManager(self, runtimeContext) {
                 onExternalExit: (pid, code, reason) => self._reportExternalExit(pid, code, reason),
                 deliverOutput: (pid, stream, bytes) => (stream === 'stdout' ? self._rpcStdout(pid, bytes) : self._rpcStderr(pid, bytes)),
                 rewindProcessFiles: (pid) => self.supervisorRewindBridge(pid),
-                // Where cpReadStdin reads a pid's stdin (session/rpc.ts): the input
-                // store when it has a channel there, else the broker's child queue.
-                stdinChannel: (pid) => {
-                    if (self.processes.hasInput(pid)) {
-                        return {
-                            read: (waitMs) => self.processes.readInput(pid, waitMs),
-                            unread: (packets) => self.processes.unreadInput(pid, packets),
-                        };
-                    }
-                    const broker = self.facetProcessManager;
-                    if (!broker || !broker.isChild(pid))
-                        return null;
-                    return {
-                        read: (waitMs) => broker.cpReadStdin(pid, waitMs),
-                        unread: (packets) => broker.unreadStdin(pid, packets.flatMap((p) => (p.data instanceof Uint8Array && p.data.byteLength > 0 ? [p.data] : []))),
-                    };
-                },
                 requestLaunchTurn: (notBefore) => runtimeContext.requestLaunchTurn(notBefore),
                 resolveWorkerLaunch: runtimeContext.resolveWorkerLaunch,
                 notify: (line) => runtimeContext.notify(line),
@@ -264,14 +248,22 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         resolve: async (name, from) => {
             const commandName = normalizeCpCommandName(name);
             const classified = _classifyCommand(commandName);
-            if (classified)
-                return classified;
             const registry = self._cpRegistry;
             if (!registry)
                 return null;
             const view = processView(from.pid, self.processes.cred(from.pid));
+            if (commandName.includes('/'))
+                await view.access(commandName.startsWith('/') ? commandName : `${from.cwd}/${commandName}`, X_OK);
             const registered = await registry.resolve(commandName, { ...resolveContext(from.cwd, from.env, view), search: false });
-            return { kind: registered && !isRuntimeInstallHint(registered) ? 'pure-builtin' : 'facet-direct' };
+            if (registered && !isRuntimeInstallHint(registered))
+                return classified ?? { kind: 'pure-builtin' };
+            const program = await registry.resolve(commandName, resolveContext(from.cwd, from.env, view));
+            if (!program || isRuntimeInstallHint(program))
+                return null;
+            const resolved = resolutionOf(program);
+            if (resolved?.kind === 'program')
+                await view.access(resolved.path, X_OK);
+            return { kind: 'facet-direct' };
         },
         runPureBuiltin: async (pid, name, args, env, cwd, stdin, hooks) => {
             const registry = self._cpRegistry;
@@ -298,8 +290,8 @@ export function _ensureFacetProcessManager(self, runtimeContext) {
         pid,
         env,
         cwd,
-        stdout: { write: (d) => hooks.onStdout(textBytes(String(d))) },
-        stderr: { write: (d) => hooks.onStderr(textBytes(String(d))) },
+        stdout: { write: (d) => hooks.onStdout(textBytes(String(d))), writeBytes: (d) => hooks.onStdout(d) },
+        stderr: { write: (d) => hooks.onStderr(textBytes(String(d))), writeBytes: (d) => hooks.onStderr(d) },
         stdin,
         isFdTerminal: () => false,
     });

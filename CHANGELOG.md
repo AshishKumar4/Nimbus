@@ -5,6 +5,14 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: process stdin is one bounded byte channel for Node, WASI and registry
+  children. Inherited fd 0 keeps queued bytes, future writes and EOF; full
+  pipes hold their writers until a reader makes room. Registry and shebang
+  children stream byte-exact stdout/stderr, and foreground output no longer
+  passes through a decoded log or binary placeholder. Logs persist bytes and
+  derive their text view on read. Missing/nonexecutable children fail spawn
+  with ENOENT/EACCES, and a vanished reader releases a blocked writer.
+
 ## 2026-10-06: platform 0.7.2, config 0.2.4, cli 0.2.3, core 0.15.1, fabric 0.10.1, worker 0.13.3, loom 0.2.3
 
 core 0.15.1, fabric 0.10.1, worker 0.13.3 and loom 0.2.3 had not been

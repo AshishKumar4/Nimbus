@@ -950,7 +950,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   async _rpcCpSpawn(req: any): Promise<{ childPid: number }> { return _rpc._rpcCpSpawn(this as any, req); }
   async _rpcCpStdinWrite(childPid: number, data: Uint8Array): Promise<{ ok: boolean }> { return _rpc._rpcCpStdinWrite(this as any, childPid, data); }
   async _rpcCpStdinEnd(childPid: number): Promise<void> { return _rpc._rpcCpStdinEnd(this as any, childPid); }
-  async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid, writerId); }
+  async _rpcCpReadStdin(childPid: number, waitMs: number, acquire?: unknown, pid?: number, writerId?: string, maxBytes?: number) { return _rpc._rpcCpReadStdin(this as any, childPid, waitMs, acquire, pid, writerId, maxBytes); }
   async _rpcCpReadOutput(childPid: number, fd: 1 | 2, sinceSeq: number, waitMs: number, acquire?: unknown, pid?: number) { return _rpc._rpcCpReadOutput(this as any, childPid, fd, sinceSeq, waitMs, acquire, pid); }
   async _rpcCpDrainOutput(childPid: number) { return _rpc._rpcCpDrainOutput(this as any, childPid); }
   async _rpcCpKill(childPid: number, signal: string): Promise<boolean> { return _rpc._rpcCpKill(this as any, childPid, signal); }

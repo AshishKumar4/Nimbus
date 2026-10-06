@@ -300,6 +300,7 @@ const WASI_REQUIRED_TOP_LEVEL = [
   '__wasiRunStart',
   '__wasiRunStartAsync',
   '__wasiAdoptSupervisor',
+  '__wasiSupervisorOutput',
   'fdTable',
 ];
 
@@ -357,6 +358,8 @@ async function bundleWasiInstance() {
   }
   src = `const __wasiResidentStore = (function wasiResidentStore() {\n${FACET_RESIDENT_STORE_SOURCE}\n`
     + `return { ${WASI_RESIDENT_STORE_TOP_LEVEL.join(', ')} };\n})();\n${src}`;
+  const { CHILD_NEWS_SOURCE } = await import(pathToFileURL(join(root, '..', 'core', 'dist', 'runtime', 'child-news.js')).href);
+  src = `const __wasiCreateChildNews = (${CHILD_NEWS_SOURCE});\n${src}`;
 
   const missing = WASI_REQUIRED_TOP_LEVEL.filter(
     (name) => !new RegExp(`^(?:async\\s+)?(?:function|const|let|var|class)\\s+${name}\\b`, 'm').test(src)

@@ -90,6 +90,8 @@ export interface FacetSpec {
 export interface FacetSyscalls {
     readonly vfs: import('./os-contracts.js').RuntimeFsBridge;
     readonly pid: number;
+    /** Local hosts bind the same stdio channels that a remote host reaches by pid. */
+    readonly processes?: import('./session-process-supervisor.js').SessionProcessSupervisor;
 }
 export interface FacetSubmitOptions {
     /**

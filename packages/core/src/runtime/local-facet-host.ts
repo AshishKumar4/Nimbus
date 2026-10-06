@@ -38,7 +38,7 @@ import type {
 } from './facet-host.js';
 import type { RuntimeFsBridge } from './os-contracts.js';
 import { fromRealmError, isRealmAnswer, startRealm, type Realm, type RealmOutcome } from './realm.js';
-import { FILESYSTEM_RPC_METHODS, vfsSupervisor, type FilesystemSupervisor } from './vfs-supervisor.js';
+import { FILESYSTEM_RPC_METHODS, vfsSupervisor } from './vfs-supervisor.js';
 import type { WasiParking } from './wasi/types.js';
 
 // ── The facet's protocol (facet-guest.ts is the other side) ──────────────────
@@ -200,12 +200,27 @@ class RealmFacet implements Facet {
   private disposed = false;
   /** Why the realm ended, once it has. */
   private over: Error | null = null;
-  private readonly supervisor: FilesystemSupervisor | null;
+  private readonly supervisor: object | null;
+  private readonly supervisorMethods: readonly string[];
   private readonly synchronous: RuntimeFsBridge['synchronous'];
   private readonly isolation = facetIsolation();
 
   constructor(private readonly spec: FacetSpec) {
     this.supervisor = spec.syscalls ? vfsSupervisor(spec.syscalls.vfs) : null;
+    this.supervisorMethods = SUPERVISOR_METHODS;
+    const processes = spec.syscalls?.processes;
+    if (this.supervisor && processes && spec.syscalls) {
+      const pid = spec.syscalls.pid;
+      Object.assign(this.supervisor, {
+        stdout: (bytes: Uint8Array) => processes.appendOutputBytes(pid, 'stdout', bytes),
+        stderr: (bytes: Uint8Array) => processes.appendOutputBytes(pid, 'stderr', bytes),
+        cpReadStdin: async (_child: number, waitMs: number, _acquire?: unknown, maxBytes?: number) => {
+          const packet = await processes.readInput(pid, waitMs, maxBytes);
+          return { ...packet, data: typeof packet.data === 'string' ? new TextEncoder().encode(packet.data) : packet.data };
+        },
+      });
+      this.supervisorMethods = [...SUPERVISOR_METHODS, 'stdout', 'stderr', 'cpReadStdin'];
+    }
     this.synchronous = spec.syscalls?.vfs.synchronous;
   }
 
@@ -226,7 +241,7 @@ class RealmFacet implements Facet {
       tag: this.spec.tag,
       parking: engineParks(),
       preamble: this.spec.preamble,
-      supervisor: this.supervisor ? { methods: SUPERVISOR_METHODS, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+      supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
     };
     const realm = await startRealm({
       entry: new URL('./facet-guest.js', import.meta.url),
@@ -254,7 +269,7 @@ class RealmFacet implements Facet {
   private serve(call: unknown): unknown {
     if (!isSupervisorCall(call)) throw new TypeError('Nimbus: a facet called nothing its host answers');
     const target = call.view === 'synchronous' ? this.synchronous : this.supervisor;
-    const names = call.view === 'synchronous' ? SYNCHRONOUS_METHODS : SUPERVISOR_METHODS;
+    const names = call.view === 'synchronous' ? SYNCHRONOUS_METHODS : this.supervisorMethods;
     const method = target && names.includes(call.method) ? Reflect.get(target, call.method) : undefined;
     if (typeof method !== 'function') throw new TypeError(`Nimbus: a facet's ${call.view} has no method ${JSON.stringify(call.method)}`);
     return Reflect.apply(method, target, call.args);

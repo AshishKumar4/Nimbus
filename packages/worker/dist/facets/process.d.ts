@@ -19,12 +19,12 @@
  *                    recursion (that was the BLOCKER-2 deadlock vector
  *                    in the initial plan; see W8-plan.md §8.5).
  *
- * stdin / stdout / stderr stream through per-child queues maintained on
- * this manager instance. cpReadOutput long-polls for incremental delivery
+ * stdin uses the shared process input channel; stdout/stderr use bounded
+ * per-child pipes. cpReadOutput long-polls for incremental delivery
  * to the parent; cpDrainOutput is a one-shot full-flush invoked from the
  * parent's exit path so unawaited children don't lose output. A child's
  * stdin is a pipe: what runs it here reads the queue as a stream, as the
- * parent writes it (`_stdinOf`), and a runtime's facet reads the same queue
+ * parent writes it (`_stdinOf`), and a runtime's facet reads the same channel
  * through cpReadStdin.
  *
  * Children run concurrently, as Node's do: each is dispatched on its own,
@@ -80,11 +80,6 @@ interface ChildEntry {
     env: Record<string, string>;
     startedAt: number;
     endedAt: number | null;
-    stdinChunks: Uint8Array[];
-    stdinClosed: boolean;
-    stdinTotalBytes: number;
-    /** Woken when stdin gains a chunk, closes, or the child exits; each takes from `stdinChunks` itself. */
-    stdinWaiters: Array<() => void>;
     outputs: {
         1: OutputChunk[];
         2: OutputChunk[];
@@ -93,6 +88,16 @@ interface ChildEntry {
         1: number;
         2: number;
     };
+    outputBytes: {
+        1: number;
+        2: number;
+    };
+    outputDrained: Array<() => void>;
+    outputWrites: {
+        1: Promise<void>;
+        2: Promise<void>;
+    };
+    parentClosed: (() => void) | null;
     outputWaiters: Array<{
         fd: 1 | 2;
         sinceSeq: number;
@@ -171,8 +176,8 @@ export interface DrainResult {
  * its own edge (see `textBytes`).
  */
 export interface OutputHooks {
-    onStdout: (data: Uint8Array) => void;
-    onStderr: (data: Uint8Array) => void;
+    onStdout: (data: Uint8Array) => void | Promise<void>;
+    onStderr: (data: Uint8Array) => void | Promise<void>;
     /** The runner has started the program: a facet program's launch was let in (ChildEntry.started). */
     onStarted?: () => void;
 }
@@ -246,6 +251,8 @@ export interface FacetProcessManagerDeps {
 }
 /** Cap recursion depth to defend against runaway spawn loops. */
 export declare const CHILD_PROCESS_MAX_DEPTH = 8;
+/** A pipe holds its writer here until its reader acknowledges consumed chunks. */
+export declare const CHILD_STDIO_QUEUE_MAX_BYTES: number;
 export declare class FacetProcessManager {
     private children;
     private deps;
@@ -262,8 +269,8 @@ export declare class FacetProcessManager {
     /**
      * Run the child to its end and stamp its exit. A facet program or a shell
      * line reads live stdin (NIMBUS_CP_CHILD_PID, cpReadStdin), as a Node
-     * child_process pipe does; a pure builtin takes the stdin the parent queued
-     * as one string. Output goes straight to the child's queues while it runs,
+     * child_process pipe does; a pure builtin reads that same live byte channel.
+     * Output goes straight to the child's bounded pipes while it runs,
      * so a prompt reaches the parent before the child waits for an answer.
      *
      * Runs in this isolate, on its own: a child that never exits holds nothing
@@ -283,24 +290,21 @@ export declare class FacetProcessManager {
     /** The shell's program: its `-c` text, its script, or (`sh` alone) its stdin, which it then has none left of. */
     private _shellCommandLineForPlan;
     private _runShellLine;
-    stdinWrite(childPid: number, data: Uint8Array): {
+    stdinWrite(childPid: number, data: Uint8Array): Promise<{
         ok: boolean;
-        full?: boolean;
-    };
-    stdinEnd(childPid: number): void;
+    }>;
+    stdinEnd(childPid: number): Promise<void>;
     /**
      * Put stdin the child took back in front of its queue, as it was, past the
      * queue's cap and after its end too: a run of the child that stopped
      * before using it, run again (runtime/stop-replay.ts).
      */
     unreadStdin(childPid: number, chunks: readonly Uint8Array[]): void;
-    /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
-    private _takeStdin;
     /**
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
      * Returns immediately if data is already queued OR if stdin is closed.
      */
-    cpReadStdin(childPid: number, waitMs: number): Promise<{
+    cpReadStdin(childPid: number, waitMs: number, maxBytes?: number): Promise<{
         data: Uint8Array;
         ended: boolean;
     }>;
@@ -311,9 +315,10 @@ export declare class FacetProcessManager {
     /** Whether this pid is a child of this broker that has not ended. */
     isRunning(pid: number): boolean;
     /** Runtime stdout/stderr for a broker-owned pid goes to its parent, not the shell. */
-    routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): boolean;
+    routeOutput(pid: number, fd: 1 | 2, bytes: Uint8Array): Promise<void> | null;
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
     private _appendOutput;
+    private _pushOutput;
     /**
      * A read's answer: the chunks past `sinceSeq`, whether the stream has
      * ended, and the parent's news it delivers: each chunk's, the child's

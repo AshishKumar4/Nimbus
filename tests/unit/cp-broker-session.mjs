@@ -139,6 +139,37 @@ try {
     const output = await session._rpcCpDrainOutput(childPid);
     return { exitCode: waited.exitCode, signal: waited.signal, stdout: decoder.decode(output.stdout), stderr: decoder.decode(output.stderr) };
   };
+  await assert.rejects(spawn('does-not-exist-byte-test', []), error => error.code === 'ENOENT', 'command resolution fails the spawn, not a child exit 127');
+  rootVfs.writeFile('home/user/no-exec-byte-test', '#!/bin/sh\ncat\n', { mode: 0o644 });
+  await assert.rejects(spawn('/home/user/no-exec-byte-test', []), error => error.code === 'EACCES', 'a nonexecutable path fails the spawn');
+
+  // Registry commands have the same byte descriptors as facet children.
+  // Reply to each write while stdin remains open, including invalid UTF-8;
+  // the command exits only after EOF and its final stderr reaches the parent.
+  registry.register('byte-duplex', async (ctx) => {
+    for (;;) {
+      const bytes = await ctx.stdin.readBytes(65536);
+      if (bytes === null) break;
+      await ctx.stdout.writeBytes(bytes);
+    }
+    await ctx.stderr.writeBytes(new Uint8Array([0xff, 0x00, 0xfe]));
+    return 0;
+  });
+  {
+    const pid = await spawn('byte-duplex', []);
+    let seq = 0;
+    for (const bytes of [new Uint8Array([0xff, 0xfe, 0x00, 0x80]), new Uint8Array([0xc3, 0x28, 0xf0, 0x9f, 0x00])]) {
+      assert.equal((await session._rpcCpStdinWrite(pid, bytes)).ok, true);
+      const output = await session._rpcCpReadOutput(pid, 1, seq, 1000);
+      assert.deepEqual(Buffer.concat(output.chunks.map(c => Buffer.from(c.data))), Buffer.from(bytes), 'a registry response is byte-exact and delivered before stdin ends');
+      assert.equal(output.closed, false); seq = output.maxSeq;
+    }
+    await session._rpcCpStdinEnd(pid);
+    assert.equal((await session._rpcCpWait(pid, 5000)).exitCode, 0);
+    assert.deepEqual((await session._rpcCpReadOutput(pid, 2, 0, 0)).chunks.map(c => [...c.data]), [[255, 0, 254]]);
+    assert.equal((await session._rpcCpReadOutput(pid, 1, seq, 0)).closed, true);
+    assert.equal((await session._rpcCpStdinWrite(pid, new Uint8Array([1]))).ok, false, 'a departed reader is EPIPE, not a full queue');
+  }
 
   // ── (1) two sh children at once: each its own cwd and environment ────────
   {

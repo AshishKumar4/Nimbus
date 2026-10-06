@@ -19,12 +19,12 @@
  *                    recursion (that was the BLOCKER-2 deadlock vector
  *                    in the initial plan; see W8-plan.md §8.5).
  *
- * stdin / stdout / stderr stream through per-child queues maintained on
- * this manager instance. cpReadOutput long-polls for incremental delivery
+ * stdin uses the shared process input channel; stdout/stderr use bounded
+ * per-child pipes. cpReadOutput long-polls for incremental delivery
  * to the parent; cpDrainOutput is a one-shot full-flush invoked from the
  * parent's exit path so unawaited children don't lose output. A child's
  * stdin is a pipe: what runs it here reads the queue as a stream, as the
- * parent writes it (`_stdinOf`), and a runtime's facet reads the same queue
+ * parent writes it (`_stdinOf`), and a runtime's facet reads the same channel
  * through cpReadStdin.
  *
  * Children run concurrently, as Node's do: each is dispatched on its own,
@@ -64,16 +64,9 @@ function concatBytes(chunks) {
 }
 /** Cap recursion depth to defend against runaway spawn loops. */
 export const CHILD_PROCESS_MAX_DEPTH = 8;
-/**
- * Cap stdin queue per child to avoid unbounded memory consumption from a
- * fast parent against a slow child. cpStdinWrite returns ok=false past
- * the cap; the parent's Writable will then surface a 'drain'-needed
- * signal (real Node would return false from .write).
- */
-const STDIN_QUEUE_MAX_BYTES = 256 * 1024; // 256 KiB
-/** The most of a child's queued stdin one read takes. */
-const STDIN_TAKE_BYTES = 64 * 1024;
 const EMPTY_BYTES = new Uint8Array(0);
+/** A pipe holds its writer here until its reader acknowledges consumed chunks. */
+export const CHILD_STDIO_QUEUE_MAX_BYTES = 256 * 1024;
 /**
  * How long the parent's cpReadOutput long-poll waits for new chunks
  * before returning empty. 250ms is the plan §3 target.
@@ -199,12 +192,12 @@ export class FacetProcessManager {
             env: childEnv,
             startedAt: Date.now(),
             endedAt: null,
-            stdinChunks: [],
-            stdinClosed: false,
-            stdinTotalBytes: 0,
-            stdinWaiters: [],
             outputs: { 1: [], 2: [] },
             outputSeq: { 1: 0, 2: 0 },
+            outputBytes: { 1: 0, 2: 0 },
+            outputDrained: [],
+            outputWrites: { 1: Promise.resolve(), 2: Promise.resolve() },
+            parentClosed: null,
             outputWaiters: [],
             exitCode: null,
             signal: null,
@@ -218,22 +211,44 @@ export class FacetProcessManager {
             exitWaiters: [],
         };
         this.children.set(pid, child);
+        child.parentClosed = this.deps.processes.subscribeExit(req.parentPid, () => {
+            if (child.exitCode === null)
+                this.kill(pid, 'SIGTERM');
+        });
+        // Every child kind owns an fd onto the same input store. Runners in
+        // this isolate consume it through _stdinOf; facets through cpReadStdin.
+        if (child.stdio[0] === 'inherit')
+            this.deps.processes.inheritInput(pid, req.parentPid);
+        else
+            this.deps.processes.openInput(pid);
+        if (child.stdio[0] === 'ignore')
+            this.deps.processes.endInput(pid);
         const shellPlan = this._shellPlanFor(req);
         const normalizedCommand = shellPlan ? 'sh' : normalizeVirtualCommand(req.command);
         const dispatchReq = shellPlan
             ? req
             : { ...req, command: normalizedCommand };
-        // Classify and dispatch after the cpSpawn RPC has had a chance to return
+        let reg;
+        try {
+            reg = shellPlan ? { kind: 'shell-direct' } : await this.deps.commandRegistry.resolve(normalizedCommand, { pid, cwd: req.cwd, env: childEnv });
+            if (!reg || reg.kind === 'unknown')
+                throw Object.assign(new Error(`spawn ${req.command} ENOENT`), { code: 'ENOENT', errno: -2, path: req.command });
+        }
+        catch (error) {
+            this.deps.processes.closeInput(pid);
+            child.parentClosed?.();
+            this.children.delete(pid);
+            this.deps.processes.exit(pid, 127);
+            throw error;
+        }
+        // Dispatch after the cpSpawn RPC has had a chance to return
         // to the parent facet. That lets immediate child.stdin.write();
         // child.stdin.end() calls land in the stdin queue before a preseeded
-        // child runtime starts. Nothing found to run is exit 127 (command not
-        // found), no facet at all, as in the shell.
+        // child runtime starts. Resolution already succeeded before publishing
+        // the child: an absent program is a spawn ENOENT, not an exit 127.
         setTimeout(() => {
             void (async () => {
-                const reg = shellPlan
-                    ? { kind: 'shell-direct' }
-                    : await this.deps.commandRegistry.resolve(normalizedCommand, { pid, cwd: req.cwd, env: childEnv });
-                await this._dispatch(child, reg ? reg.kind : 'unknown', dispatchReq);
+                await this._dispatch(child, reg.kind, dispatchReq);
             })().catch((e) => {
                 // Last resort: a classification or both runners threw (a registered
                 // command's module that fails to load). Exit 1 with the error on stderr.
@@ -246,8 +261,8 @@ export class FacetProcessManager {
     /**
      * Run the child to its end and stamp its exit. A facet program or a shell
      * line reads live stdin (NIMBUS_CP_CHILD_PID, cpReadStdin), as a Node
-     * child_process pipe does; a pure builtin takes the stdin the parent queued
-     * as one string. Output goes straight to the child's queues while it runs,
+     * child_process pipe does; a pure builtin reads that same live byte channel.
+     * Output goes straight to the child's bounded pipes while it runs,
      * so a prompt reaches the parent before the child waits for an answer.
      *
      * Runs in this isolate, on its own: a child that never exits holds nothing
@@ -256,6 +271,8 @@ export class FacetProcessManager {
      * spawn queued behind it, a kill included.)
      */
     async _dispatch(child, kind, req) {
+        if (child.exitCode !== null)
+            return;
         if (kind === 'unknown') {
             this._markStarted(child);
             this._appendText(child, 2, `${req.command}: command not found\n`);
@@ -342,10 +359,11 @@ export class FacetProcessManager {
     _stdinOf(child) {
         return pulledStdinReader(async () => {
             for (;;) {
-                const packet = this._takeStdin(child);
-                if (packet)
-                    return packet.ended ? null : packet.data;
-                await new Promise((resolve) => child.stdinWaiters.push(resolve));
+                const packet = await this.cpReadStdin(child.pid, 5000);
+                if (packet.data.byteLength > 0)
+                    return packet.data;
+                if (packet.ended)
+                    return null;
             }
         });
     }
@@ -410,31 +428,17 @@ export class FacetProcessManager {
         return this.deps.shellExecutor.execute(pid, commandLine, env, cwd || '/home/user', stdin, hooks);
     }
     // ── stdin queue ─────────────────────────────────────────────────────────
-    stdinWrite(childPid, data) {
+    async stdinWrite(childPid, data) {
         const child = this.children.get(childPid);
-        if (!child || child.stdinClosed || child.exitCode !== null)
+        if (!child || child.exitCode !== null)
             return { ok: false };
-        // The cap counts BYTES. It used to count the string's UTF-16 code units,
-        // which undercounts any multibyte character and overcounts a surrogate
-        // pair, so the queue's own limit did not mean what it said. A write
-        // refused for room says so: the writer waits and writes again, as a full
-        // pipe makes it, where one refused because nothing reads any more is gone.
-        if (child.stdinTotalBytes + data.byteLength > STDIN_QUEUE_MAX_BYTES) {
-            return { ok: false, full: true };
-        }
-        child.stdinChunks.push(data);
-        child.stdinTotalBytes += data.byteLength;
-        for (const w of child.stdinWaiters.splice(0))
-            w();
-        return { ok: true };
+        return this.deps.processes.writeInputBytesWait(childPid, data);
     }
-    stdinEnd(childPid) {
+    async stdinEnd(childPid) {
         const child = this.children.get(childPid);
         if (!child)
             return;
-        child.stdinClosed = true;
-        for (const w of child.stdinWaiters.splice(0))
-            w();
+        await this.deps.processes.endInputAfterWrites(childPid);
     }
     /**
      * Put stdin the child took back in front of its queue, as it was, past the
@@ -445,67 +449,15 @@ export class FacetProcessManager {
         const child = this.children.get(childPid);
         if (!child || chunks.length === 0)
             return;
-        child.stdinChunks = chunks.concat(child.stdinChunks);
-        for (const chunk of chunks)
-            child.stdinTotalBytes += chunk.byteLength;
-        // A reader already waiting takes what came back.
-        for (const w of child.stdinWaiters.splice(0))
-            w();
-    }
-    /** The child's next stdin packet: a queued chunk, else the end once stdin closed or the child exited; null while neither. */
-    _takeStdin(child) {
-        const first = child.stdinChunks.shift();
-        if (first !== undefined) {
-            // Chunks queued back to back leave together, up to a read's worth: a
-            // writer's small writes cost the reader one round trip, not one each.
-            let size = first.byteLength;
-            const run = [first];
-            while (child.stdinChunks.length > 0 && size + child.stdinChunks[0].byteLength <= STDIN_TAKE_BYTES) {
-                const next = child.stdinChunks.shift();
-                run.push(next);
-                size += next.byteLength;
-            }
-            child.stdinTotalBytes -= size;
-            if (run.length === 1)
-                return { data: first, ended: false };
-            const data = new Uint8Array(size);
-            let at = 0;
-            for (const piece of run) {
-                data.set(piece, at);
-                at += piece.byteLength;
-            }
-            return { data, ended: false };
-        }
-        if (child.stdinClosed || child.exitCode !== null)
-            return { data: EMPTY_BYTES, ended: true };
-        return null;
+        this.deps.processes.unreadInput(childPid, chunks.map(data => ({ data, ended: false })));
     }
     /**
      * Long-poll: child facet asks the supervisor for its next stdin chunk.
      * Returns immediately if data is already queued OR if stdin is closed.
      */
-    async cpReadStdin(childPid, waitMs) {
-        const child = this.children.get(childPid);
-        if (!child)
-            return { data: EMPTY_BYTES, ended: true };
-        const ready = this._takeStdin(child);
-        if (ready)
-            return ready;
-        // Long-poll. The chunk that wakes this reader stays queued until taken
-        // here, so no other reader is handed it too.
-        return new Promise((resolve) => {
-            const timer = setTimeout(() => {
-                const idx = child.stdinWaiters.indexOf(wrapped);
-                if (idx >= 0)
-                    child.stdinWaiters.splice(idx, 1);
-                resolve({ data: EMPTY_BYTES, ended: false });
-            }, Math.min(waitMs, 5000));
-            const wrapped = () => {
-                clearTimeout(timer);
-                resolve(this._takeStdin(child) ?? { data: EMPTY_BYTES, ended: false });
-            };
-            child.stdinWaiters.push(wrapped);
-        });
+    async cpReadStdin(childPid, waitMs, maxBytes) {
+        const packet = await this.deps.processes.readInput(childPid, waitMs, maxBytes);
+        return { ...packet, data: typeof packet.data === 'string' ? textBytes(packet.data) : packet.data };
     }
     // ── output queue ────────────────────────────────────────────────────────
     /** A broker-side text message onto the child's byte ring. */
@@ -520,19 +472,37 @@ export class FacetProcessManager {
     routeOutput(pid, fd, bytes) {
         const child = this.children.get(pid);
         if (!child)
-            return false;
-        if (child.exitCode === null)
-            this._appendOutput(child, fd, bytes);
-        return true;
+            return null;
+        return child.exitCode === null ? this._appendOutput(child, fd, bytes) : Promise.resolve();
     }
     /** Internal: push a chunk to fd 1 or 2, fire log-store + waiters. */
     _appendOutput(child, fd, data) {
+        const task = child.outputWrites[fd].then(async () => {
+            if (child.stdio[fd] === 'ignore')
+                return;
+            for (let at = 0; at < data.byteLength; at += CHILD_STDIO_QUEUE_MAX_BYTES) {
+                const piece = data.subarray(at, Math.min(data.byteLength, at + CHILD_STDIO_QUEUE_MAX_BYTES));
+                while (child.outputBytes[fd] + piece.byteLength > CHILD_STDIO_QUEUE_MAX_BYTES) {
+                    if (child.exitCode !== null)
+                        throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+                    await new Promise(resolve => child.outputDrained.push(resolve));
+                }
+                if (child.exitCode !== null)
+                    throw Object.assign(new Error('EPIPE: child output reader is gone'), { code: 'EPIPE' });
+                this._pushOutput(child, fd, piece);
+            }
+        });
+        child.outputWrites[fd] = task.catch(() => { });
+        return task;
+    }
+    _pushOutput(child, fd, data) {
         if (data.byteLength === 0)
             return;
         child.outputSeq[fd]++;
         const news = child.stdio[fd] !== 'ignore' ? this._news(child) : 0;
         const chunk = { seq: child.outputSeq[fd], data, news };
         child.outputs[fd].push(chunk);
+        child.outputBytes[fd] += data.byteLength;
         // Tee to the process supervisor's log ring for `logs <pid>` parity
         // with facet processes; the ring decodes at its own edge.
         try {
@@ -579,6 +549,15 @@ export class FacetProcessManager {
         const child = this.children.get(childPid);
         if (!child) {
             return { chunks: [], closed: true, maxSeq: 0 };
+        }
+        // The next cursor acknowledges exactly what its reader consumed.
+        const acknowledged = child.outputs[fd].filter(c => c.seq <= sinceSeq);
+        if (acknowledged.length > 0) {
+            child.outputs[fd] = child.outputs[fd].filter(c => c.seq > sinceSeq);
+            for (const chunk of acknowledged)
+                child.outputBytes[fd] -= chunk.data.byteLength;
+            for (const wake of child.outputDrained.splice(0))
+                wake();
         }
         if (child.exitCode !== null || child.outputs[fd].some((c) => c.seq > sinceSeq)) {
             return this._readResult(child, fd, sinceSeq);
@@ -658,9 +637,15 @@ export class FacetProcessManager {
      * Stamp the exit slot. Idempotent — first call wins.
      * Wakes all waiters (exit, output, stdin) so callers don't hang.
      */
-    _stampExit(child, exitCode, signal) {
+    _stampExit(child, exitCode, signal, flushed = false) {
         if (child.exitCode !== null)
             return; // first writer wins
+        // A command may issue writes without awaiting them. Its normal exit
+        // waits for those bounded pipes; a kill cuts them off and wakes them.
+        if (!flushed && signal === null) {
+            void Promise.all([child.outputWrites[1], child.outputWrites[2]]).then(() => this._stampExit(child, exitCode, signal, true));
+            return;
+        }
         child.exitCode = exitCode;
         child.signal = signal;
         child.endedAt = Date.now();
@@ -689,9 +674,11 @@ export class FacetProcessManager {
         // Wake output waiters with closed=true so polling parents stop.
         for (const w of child.outputWaiters.splice(0))
             w.resolve(this._readResult(child, w.fd, w.sinceSeq));
-        // A child blocked on cpReadStdin is told stdin ended, and exits cleanly.
-        for (const w of child.stdinWaiters.splice(0))
-            w();
+        for (const wake of child.outputDrained.splice(0))
+            wake();
+        this.deps.processes.closeInput(child.pid);
+        child.parentClosed?.();
+        child.parentClosed = null;
     }
     /** A stamped child's end, as Node reports it (ChildExitStatus), with the news it delivers. */
     _exitStatus(child) {

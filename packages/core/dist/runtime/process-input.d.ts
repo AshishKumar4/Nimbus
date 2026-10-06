@@ -12,12 +12,23 @@ export interface ProcessInputPacket {
 export interface ProcessInputStoreOptions {
     maxQueuedBytes?: number;
 }
+export declare const PROCESS_INPUT_MAX_QUEUED_BYTES: number;
+export declare const PROCESS_INPUT_READ_MAX_BYTES: number;
 export declare class ProcessInputStore {
     private readonly maxQueuedBytes;
     private pids;
     constructor(options?: ProcessInputStoreOptions);
     private createState;
+    /** The one pump for shell pipes/redirects, regardless of which runtime consumes fd 0. */
+    pump(pid: number, source: {
+        readBytes(maxLength: number): Promise<Uint8Array | null>;
+    }): {
+        stop(): void;
+        done: Promise<void>;
+    };
     open(pid: number): void;
+    /** dup/inherit fd 0: one consuming channel, including queued bytes and future EOF. */
+    inherit(pid: number, parentPid: number): void;
     has(pid: number): boolean;
     /** Whether the process behind `pid` has started reading its input channel. */
     hasReader(pid: number): boolean;
@@ -32,6 +43,11 @@ export declare class ProcessInputStore {
         ok: boolean;
         full?: boolean;
     };
+    /** A pipe write: ordered, split at the bound, waiting for room instead of dropping bytes. */
+    writeBytesWait(pid: number, data: Uint8Array): Promise<{
+        ok: boolean;
+    }>;
+    endAfterWrites(pid: number): Promise<void>;
     resize(pid: number, columns: number, rows: number): {
         ok: boolean;
     };
@@ -58,6 +74,6 @@ export declare class ProcessInputStore {
     unread(pid: number, packets: readonly ProcessInputPacket[]): void;
     end(pid: number): void;
     close(pid: number): void;
-    read(pid: number, waitMs?: number): Promise<ProcessInputPacket>;
+    read(pid: number, waitMs?: number, maxBytes?: number): Promise<ProcessInputPacket>;
 }
 //# sourceMappingURL=process-input.d.ts.map
