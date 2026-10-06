@@ -54,11 +54,24 @@ a.check('post-rm: readlink l.txt does NOT report stale "t.txt" target',
   !/^t\.txt$/m.test(r3body),
   `body=${JSON.stringify(r3body)}`);
 
+// Probe 3b: the path itself is gone, not just its symlink-ness.
+const r3b = await t.run('ls l.txt 2>&1; echo EX=$?', 5_000);
+const r3bbody = termBody(r3b.output);
+a.check('post-rm: ls l.txt fails with "No such file"',
+  /No such file|cannot access|ENOENT/i.test(r3bbody) && !/EX=0/.test(r3bbody),
+  `body=${JSON.stringify(r3bbody)}`);
+
 // Probe 4: target file t.txt UNAFFECTED.
 const r4 = await t.run('cat t.txt', 5_000);
 a.check('post-rm: cat t.txt → "data" (target preserved)',
   termBody(r4.output) === 'data',
   `body=${JSON.stringify(termBody(r4.output))}`);
+
+// Probe 5: the removed path takes a new symlink (the registry slot is free).
+const r5 = await t.run('ln -s t.txt l.txt && readlink l.txt', 5_000);
+a.check('ln -s at the removed path → readlink "t.txt"',
+  termBody(r5.output) === 't.txt',
+  `body=${JSON.stringify(termBody(r5.output))}`);
 
 await t.close();
 const sum = a.summary();

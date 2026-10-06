@@ -55,6 +55,13 @@ a.check('ls -l <symlink> — shows lrwxrwxrwx + arrow',
   /lrwxrwxrwx/.test(r3body) && /->/.test(r3body),
   `body=${JSON.stringify(r3body)}`);
 
+// Probe 4: a directory listing piped through grep keeps the arrow row.
+const r4 = await t.run('ls -la /tmp/r6ls | grep l.txt', 5_000);
+const r4body = termBody(r4.output);
+a.check('ls -la <dir> | grep — symlink row keeps "l.txt -> t.txt"',
+  r4body.split('\n').some((line) => /^l.*l\.txt\s*->\s*t\.txt\s*$/.test(line.trim())),
+  `body=${JSON.stringify(r4body)}`);
+
 await t.close();
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
