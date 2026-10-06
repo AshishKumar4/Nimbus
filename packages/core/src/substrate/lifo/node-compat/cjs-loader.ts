@@ -18,7 +18,9 @@ import type { NodeFilesystem } from './filesystem.js';
 import { createModuleMap, ProcessExitError, type NodeContext } from './index.js';
 import { createModuleShim, type RequireFunction } from './module.js';
 import { Buffer } from './buffer.js';
-import { transformEsmToCjs } from './esm-to-cjs.js';
+import type { AnyNode } from 'acorn';
+import { emitCommonJs, readEsmRecords } from '../../../runtime/async-module-lowering.js';
+import { applySourceEdits, forEachNode, hasTopLevelModuleSyntax, parseJavaScriptModule } from '../../../runtime/javascript-ast.js';
 import { fileURLToPath } from './url.js';
 import { resolve, dirname, join, extname } from '../utils/path.js';
 
@@ -39,9 +41,31 @@ export function stripShebang(src: string): string {
 	return src;
 }
 
-/** Whether `source` has ESM import/export syntax: at a line start, after `;`, or minified (`import{`, `import*`). */
+/** The `import.meta` and dynamic `import()` expressions of module `source`, as acorn parses it. */
+function moduleOnlyExpressions(source: string): { meta: AnyNode[]; dynamic: AnyNode[] } {
+	const found = { meta: [] as AnyNode[], dynamic: [] as AnyNode[] };
+	// Neither can occur without the keyword followed by `.` or `(`: a module without one needs no second parse.
+	if (!/\bimport\s*[.(]/.test(source)) return found;
+	forEachNode(parseJavaScriptModule(source), (node) => {
+		if (node.type === 'MetaProperty' && node.meta.name === 'import') found.meta.push(node);
+		else if (node.type === 'ImportExpression') found.dynamic.push(node);
+	});
+	return found;
+}
+
+/**
+ * Whether `source` is an ES module by its syntax, as Node's detection reads
+ * it: a top-level import or export declaration (not `import(`, not one
+ * inside a string), or an `import.meta`.
+ */
 export function isEsmSource(source: string): boolean {
-	return /(?:^|\n|;)\s*(?:import\s*[\w{*('".]|export\s+|export\s*\{)/.test(source);
+	if (hasTopLevelModuleSyntax(source)) return true;
+	if (!source.includes('import.meta')) return false;
+	try {
+		return moduleOnlyExpressions(source).meta.length > 0;
+	} catch {
+		return false;
+	}
 }
 
 /** A package.json's "type", when it declares one. */
@@ -72,12 +96,36 @@ export function treatAsEsm(source: string, filename: string, declared: () => Pac
 }
 
 // The wrapper every module runs in: CommonJS's five names, the globals a
-// module may find as free variables, and import.meta for lowered ESM.
-const WRAPPER_PARAMS = 'exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMetaUrl, __importMeta, __importMetaResolve';
+// module may find as free variables, and for a lowered ES module its
+// import.meta, its dynamic import, and the require and module the lowering's
+// own lines use (names the module's bindings cannot shadow: a module may
+// declare its own `require` with createRequire).
+const WRAPPER_PARAMS = 'exports, require, module, __filename, __dirname, console, process, Buffer, setTimeout, setInterval, clearTimeout, clearInterval, global, __importMeta, __importDynamic, __nimbusRequire, __nimbusModule';
 
-/** `source`, ESM lowered when `esm`, as the module wrapper's function text. */
+/**
+ * ES module `source` as the CommonJS the module wrapper runs: its import.meta
+ * the wrapper's __importMeta, its import() the wrapper's __importDynamic, and
+ * its declarations through the shared emitter (async-module-lowering.ts). The
+ * whole is one block, so the module's own bindings (`const __dirname`, `import
+ * process from`) shadow the wrapper's parameters as module scope does.
+ */
+function lowerModule(source: string): string {
+	const { meta, dynamic } = moduleOnlyExpressions(source);
+	const rewritten = applySourceEdits(source, [
+		...meta.map((node) => ({ start: node.start, end: node.end, text: '__importMeta' })),
+		...dynamic.map((node) => ({ start: node.start, end: node.start + 'import'.length, text: '__importDynamic' })),
+	]);
+	const lowered = emitCommonJs(rewritten, readEsmRecords(rewritten), {
+		body: 'sync',
+		requireFunction: '__nimbusRequire',
+		exportsObject: '__nimbusModule.exports',
+	});
+	return `{\n${lowered}\n}`;
+}
+
+/** `source`, ESM lowered when `esm`, as the module wrapper's function text. Throws a SyntaxError for an ES module that does not parse. */
 export function moduleWrapper(source: string, esm: boolean, async = false): string {
-	const body = esm ? `"use strict";\n${transformEsmToCjs(source)}` : `\n${source}`;
+	const body = esm ? `"use strict";\n${lowerModule(source)}` : `\n${source}`;
 	return `(${async ? 'async ' : ''}function(${WRAPPER_PARAMS}) {${body}\n})`;
 }
 
@@ -304,15 +352,23 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 
 	function wrapperArguments(filename: string, module: { exports: unknown }, moduleScope: ModuleScope): unknown[] {
 		const dir = filename === '[eval]' ? context.cwd : dirname(filename);
-		const importMetaUrl = `file://${filename}`;
+		const require = requireFrom(dir);
+		const importMeta = {
+			url: `file://${filename}`,
+			dirname: dir,
+			filename,
+			require,
+			resolve: (specifier: string) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); },
+		};
+		// import() as Node's: a promise, rejected (never thrown) when the module cannot load.
+		const importDynamic = (specifier: string) => Promise.resolve().then(() => require(specifier));
 		return [
-			module.exports, requireFrom(dir), module, filename, dir,
+			module.exports, require, module, filename, dir,
 			moduleScope.console, moduleScope.process, Buffer,
 			globalThis.setTimeout, globalThis.setInterval,
 			globalThis.clearTimeout, globalThis.clearInterval,
 			{ process: moduleScope.process, Buffer, console: moduleScope.console },
-			importMetaUrl, { url: importMetaUrl, dirname: dir, filename },
-			(specifier: string) => { throw new Error(`import.meta.resolve('${specifier}') is not supported`); },
+			importMeta, importDynamic, require, module,
 		];
 	}
 
@@ -330,10 +386,11 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 		cache[filename] = initialExports;
 
 		const clean = stripShebang(source);
-		const wrapped = moduleWrapper(clean, preread?.esm ?? treatAsEsm(clean, filename, () => packageType(filename, filesystem())));
+		const esm = preread?.esm ?? treatAsEsm(clean, filename, () => packageType(filename, filesystem()));
 		let fn: (...args: unknown[]) => void;
 		try {
-			fn = new Function(`return ${wrapped}`)();
+			// A module that does not compile, lowered or as written, names its file.
+			fn = new Function(`return ${moduleWrapper(clean, esm)}`)();
 		} catch (e) {
 			const err = e instanceof Error ? e : new Error(String(e));
 			err.message = `[${filename}] ${err.message}`;

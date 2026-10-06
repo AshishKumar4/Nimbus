@@ -211,9 +211,6 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		const module = { exports: {} as Record<string, unknown> };
 		const cleanMainSource = stripShebang(source);
 		const isEsm = treatAsEsm(cleanMainSource, filename, () => mainType);
-		// An ES module runs as an async function (its top-level await), strict.
-		const wrapped = moduleWrapper(cleanMainSource, isEsm, isEsm);
-
 		// The realm is the program's: npm bundles that reach globalThis.process
 		// (not the wrapper param) find the program's, and the bundlers' interop
 		// helpers are its globals too.
@@ -225,7 +222,8 @@ export async function runNodeProgram(program: NodeProgram, host: NodeProgramHost
 		for (const k of Object.keys(_rollupHelpers)) ga[k] = _rollupHelpers[k];
 
 		try {
-			const fn = new Function('return ' + wrapped)();
+			// An ES module runs as an async function (its top-level await), strict; one that does not parse is a SyntaxError here.
+			const fn = new Function(`return ${moduleWrapper(cleanMainSource, isEsm, isEsm)}`)();
 			const result = fn(...loader.wrapperArguments(filename, module, main));
 
 			// Await if ESM (async IIFE returns a promise)
