@@ -9,24 +9,75 @@
  * content addressing stores every byte. The answer is the files/s and MB/s
  * the session sustained, and what the producers waited on.
  */
+import { RpcTarget } from 'cloudflare:workers';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { GIT_WAVE_WRITER_SRC } from './wave-writer.generated.js';
-// The producer: the writer, fed random files as fast as it takes them.
+// The producer: the writer, fed random files as fast as it takes them. Each
+// wave's stream is observed where it leaves the producer: when it was sent,
+// when the transport first and last pulled from it, and when its answer
+// came back.
 const PRODUCER_SOURCE = GIT_WAVE_WRITER_SRC + `
-export default {
-  async fetch(request, env) {
-    const { root, base, files, sizes, pings } = await request.json();
-    const writer = __nimbusGitWaveWriter.createWaveWriter({ supervisor: env.SUPERVISOR, root, base });
+function observed(send, waves) {
+  return {
+    writeBatchStream(stream) {
+      const wave = { sentAt: Date.now(), firstPullAt: 0, lastPullAt: 0, pulls: 0, bytes: 0, answeredAt: 0 };
+      const reader = stream.getReader();
+      const tapped = new ReadableStream({
+        type: 'bytes',
+        async pull(controller) {
+          const pulledAt = Date.now();
+          if (wave.firstPullAt === 0) wave.firstPullAt = pulledAt;
+          const next = await reader.read();
+          if (next.done) {
+            wave.lastPullAt = Date.now();
+            controller.close();
+            return;
+          }
+          wave.pulls++;
+          wave.bytes += next.value.byteLength;
+          controller.enqueue(next.value);
+        },
+        cancel(reason) { return reader.cancel(reason); },
+      });
+      return send(tapped).then((result) => {
+        wave.answeredAt = Date.now();
+        waves.push(wave);
+        return result;
+      });
+    },
+  };
+}
+
+import { WorkerEntrypoint } from 'cloudflare:workers';
+
+function sender(mode, env, sink) {
+  switch (mode) {
+    case 'supervisor': return (stream) => env.SUPERVISOR.writeBatchStream(stream);
+    case 'vfs': return (stream) => sink.vfs(stream);
+    case 'drain': return (stream) => sink.drain(stream);
+    case 'drain-writing': return (stream) => sink.drainWriting(stream);
+    case 'vfs-bytes': return async (stream) => sink.vfsBytes(new Uint8Array(await new Response(stream).arrayBuffer()));
+  }
+  throw new Error('w7-bench: unknown sink ' + mode);
+}
+
+export class Producer extends WorkerEntrypoint {
+  async run(params, sink) {
+    const { root, base, files, sizes, pings, mode } = params;
+    const env = this.env;
+    const waves = [];
+    const writer = __nimbusGitWaveWriter.createWaveWriter({ supervisor: observed(sender(mode, env, sink), waves), root, base });
     const pingStarted = Date.now();
     for (let index = 0; index < pings; index++) {
       await writer.file('ping/p' + index, 0o644, new Uint8Array([index & 0xff]));
       await writer.flush();
     }
     const pingMs = pings > 0 ? (Date.now() - pingStarted) / pings : 0;
+    waves.length = 0;
     const started = Date.now();
     let bytes = 0;
     for (let index = 0; index < files; index++) {
@@ -40,20 +91,63 @@ export default {
     }
     await writer.flush();
     const stats = writer.stats();
-    return Response.json({
+    return {
       pingMs, files, bytes, wallMs: Date.now() - started, waves: stats.waves,
       rpcWallMs: stats.rpcWallMs, maxRpcWallMs: stats.maxRpcWallMs, producerWaitMs: stats.producerWaitMs,
-    });
-  },
-};
+      timeline: waves,
+    };
+  }
+}
+
+export default { fetch() { return new Response('w7-bench producer', { status: 404 }); } };
 `;
+/** The session end of a direct mode, handed to each producer as an RPC stub. */
+class WaveBenchSink extends RpcTarget {
+    session;
+    constructor(session) {
+        super();
+        this.session = session;
+    }
+    async vfs(stream) {
+        return this.session.writeStream(stream);
+    }
+    async vfsBytes(bytes) {
+        return this.session.writeStream(new Response(bytes).body);
+    }
+    async drain(stream) {
+        return this.read(stream, false);
+    }
+    async drainWriting(stream) {
+        return this.read(stream, true);
+    }
+    async read(stream, writing) {
+        const reader = stream.getReader({ mode: 'byob' });
+        let reads = 0;
+        let bytes = 0;
+        let buffer = new ArrayBuffer(64 * 1024);
+        if (writing)
+            this.session.sql.exec('CREATE TABLE IF NOT EXISTS nimbus_bench_drain (id INTEGER PRIMARY KEY, n INTEGER)');
+        for (;;) {
+            const next = await reader.read(new Uint8Array(buffer));
+            if (next.done)
+                break;
+            reads++;
+            bytes += next.value.byteLength;
+            buffer = next.value.buffer;
+            if (writing)
+                this.session.sql.exec('INSERT INTO nimbus_bench_drain (n) VALUES (?)', next.value.byteLength);
+        }
+        return { ok: true, committedGroupSequence: 0, committedPathCount: 0, inodes: 0, chunks: 0, receipts: [], reads, bytes };
+    }
+}
 function isBenchEnv(env) {
     if (typeof env !== 'object' || env === null || !('LOADER' in env))
         return false;
     const loader = env.LOADER;
     return typeof loader === 'object' && loader !== null && 'load' in loader && typeof loader.load === 'function';
 }
-export async function runWaveBench(ctx, env, options) {
+export async function runWaveBench(ctx, env, options, session) {
+    const sink = new WaveBenchSink(session);
     if (!isBenchEnv(env))
         throw new Error('w7-bench: env.LOADER.load is not available');
     const exports = getCtxExports();
@@ -74,25 +168,20 @@ export async function runWaveBench(ctx, env, options) {
                     modules: { 'w7-bench-producer.js': PRODUCER_SOURCE },
                     env: { SUPERVISOR: supervisor },
                 });
-                entrypoint = worker.getEntrypoint();
-                const response = await entrypoint.fetch(new Request('http://w7-bench/', {
-                    method: 'POST',
-                    body: JSON.stringify({
-                        root: options.root,
-                        base: `${options.root}/p${index}`,
-                        files: options.files,
-                        sizes: options.sizes,
-                        pings: options.pings ?? 0,
-                    }),
-                }));
+                entrypoint = worker.getEntrypoint('Producer');
+                const result = await entrypoint.run({
+                    root: options.root,
+                    base: `${options.root}/p${index}`,
+                    files: options.files,
+                    sizes: options.sizes,
+                    pings: options.pings ?? 0,
+                    mode: options.sink,
+                }, sink);
                 try {
-                    if (!response.ok)
-                        throw new Error(`w7-bench producer ${index}: ${await response.text()}`);
-                    const result = await response.json();
-                    return result;
+                    return { ...result, timeline: result.timeline.map((wave) => ({ ...wave })) };
                 }
                 finally {
-                    disposeRpcResource(response);
+                    disposeRpcResource(result);
                 }
             }
             finally {

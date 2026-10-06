@@ -9,9 +9,24 @@
  * content addressing stores every byte. The answer is the files/s and MB/s
  * the session sustained, and what the producers waited on.
  */
+/**
+ * Where a producer's waves go, to tell the costs on the way apart:
+ * - supervisor: SupervisorRPC.writeBatchStream, as a clone's facet (two hops);
+ * - vfs: straight to the session's VFS.writeStream (one hop);
+ * - vfs-bytes: the encoded wave as one RPC argument, no stream (one hop);
+ * - drain: the session reads the stream and writes nothing;
+ * - drain-writing: the session reads it, committing one small row per read.
+ */
+export type WaveBenchSinkMode = 'supervisor' | 'vfs' | 'vfs-bytes' | 'drain' | 'drain-writing';
+/** The session side of the bench's direct modes. */
+export interface WaveBenchSession {
+    writeStream(stream: ReadableStream<Uint8Array>): Promise<unknown>;
+    sql: SqlStorage;
+}
 export interface WaveBenchOptions {
     /** The process whose credential the producers write as. */
     pid: number;
+    sink: WaveBenchSinkMode;
     /** VFS directory the producers write below (p0, p1, …). */
     root: string;
     producers: number;
@@ -22,9 +37,23 @@ export interface WaveBenchOptions {
     /** One-file waves each producer sends first, flushed one at a time: the per-wave round trip. */
     pings?: number;
 }
+/**
+ * One wave as its producer saw it: sent, first and last pulled by the
+ * transport, answered. (A Durable Object's clock stands still while it
+ * computes, so the session cannot time its side of a wave.)
+ */
+export interface WaveBenchWave {
+    sentAt: number;
+    firstPullAt: number;
+    lastPullAt: number;
+    pulls: number;
+    bytes: number;
+    answeredAt: number;
+}
 export interface WaveBenchProducer {
     /** Mean wall of a one-file wave, sent and published alone. */
     pingMs: number;
+    timeline: WaveBenchWave[];
     files: number;
     bytes: number;
     wallMs: number;
@@ -42,5 +71,5 @@ export interface WaveBenchResult {
     mbPerSecond: number;
     perProducer: WaveBenchProducer[];
 }
-export declare function runWaveBench(ctx: DurableObjectState, env: unknown, options: WaveBenchOptions): Promise<WaveBenchResult>;
+export declare function runWaveBench(ctx: DurableObjectState, env: unknown, options: WaveBenchOptions, session: WaveBenchSession): Promise<WaveBenchResult>;
 //# sourceMappingURL=wave-bench.d.ts.map

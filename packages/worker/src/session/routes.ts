@@ -105,6 +105,7 @@ const SqlBenchBodySchema = z.object({
 });
 
 const W7BenchBodySchema = z.object({
+  sink: z.enum(['supervisor', 'vfs', 'vfs-bytes', 'drain', 'drain-writing']).default('supervisor'),
   pings: z.number().int().min(0).max(1_000).optional(),
   producers: z.number().int().min(1).max(8),
   files: z.number().int().min(1).max(50_000),
@@ -970,7 +971,11 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
           const kernel = self.ensureSqliteFs().as(CRED_KERNEL);
           kernel.mkdir(root, { recursive: true, mode: 0o755 });
           kernel.chown(root, cred.uid, cred.gid);
-          const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body });
+          const writer = self.ensureSqliteFs().as(cred);
+          const result = await runWaveBench(self.ctx, self.env, { pid: entry.pid, root, ...body }, {
+            writeStream: (stream) => writer.writeStream(stream),
+            sql: self.ctx.storage.sql,
+          });
           return Response.json({ ...result, vfs: self.ensureSqliteFs().getStats().sql.phases });
         } catch (e: any) {
           return Response.json({ error: e?.message || String(e) }, { status: 500 });
@@ -1047,18 +1052,10 @@ async function routeFetch(self: RoutesHost, request: Request): Promise<Response>
             while (!(await reader.read()).done) { /* drain */ }
           }
         });
-        // As the network delivers a wave: its bytes in large chunks.
+        // As the network delivers a wave: its bytes already encoded, read in large chunks.
         const wire = async (prefix: string, from: number): Promise<ReadableStream<Uint8Array>> => {
           const bytes = new Uint8Array(await new Response(encodeWriteBatchStream(payload(prefix, from))).arrayBuffer());
-          return new ReadableStream<Uint8Array>({
-            type: 'bytes',
-            start(controller: ReadableByteStreamController) {
-              for (let offset = 0; offset < bytes.byteLength; offset += 64 * 1024) {
-                controller.enqueue(bytes.slice(offset, offset + 64 * 1024));
-              }
-              controller.close();
-            },
-          } as never);
+          return new Response(bytes).body!;
         };
         await phase('w7EncodeBytes', async () => {
           for (let i = 0; i < body.files; i += body.perWave) await wire('bytes', i);
