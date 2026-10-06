@@ -601,6 +601,8 @@ function registerWasmRuntimes(deps) {
             .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
             .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
+        'git-runner': lazy(async () => (await import('../runtime/git-runner.js'))
+            .makeGitRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
     };
     for (const [key, factory] of Object.entries(runners)) {
         deps.runtimes.registerRunner(key, factory);
