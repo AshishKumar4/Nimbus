@@ -1,16 +1,24 @@
 #include <errno.h>
 #include <fcntl.h>
+#include <limits.h>
+#include <stdarg.h>
+#include <stdint.h>
 #include <stdlib.h>
 #include <string.h>
 #include <sys/stat.h>
 #include <unistd.h>
 #include <netinet/in.h>
+#include <wasi/api.h>
+#include <wasi/libc-find-relpath.h>
 #include "git-wasi-compat.h"
+/* This file defines what those name; the calls below are wasi-libc's own. */
+#undef stat
+#undef lstat
+#undef fstat
+#undef chmod
+#undef fchmod
+#undef open
 
-uid_t geteuid(void) { return 0; }
-uid_t getuid(void) { return 0; }
-gid_t getgid(void) { return 0; }
-gid_t getegid(void) { return 0; }
 pid_t getppid(void) { return 1; }
 pid_t getpgid(pid_t p) { (void)p; return 1; }
 pid_t fork(void) { errno = ENOSYS; return -1; }
@@ -76,9 +84,6 @@ int setsockopt(int f, int l, int o, const void *v, unsigned int n) { (void)f; (v
 struct hostent;
 struct hostent *gethostbyname(const char *n) { (void)n; h_errno = 1; return NULL; }
 int gethostname(char *n, size_t l) { if (l) { strncpy(n, "nimbus", l); n[l - 1] = 0; } return 0; }
-/* WASI preview1 has no permission bits: chmod succeeds and changes nothing (spike). */
-int git_wasi_chmod(const char *p, mode_t m) { (void)p; (void)m; return 0; }
-int git_wasi_fchmod(int f, mode_t m) { (void)f; (void)m; return 0; }
 
 /* ---- processes and pipes: the host's (nimbus_proc imports) ---- */
 
@@ -97,6 +102,21 @@ static int nimbus_result(int error, int value) {
   if (error) { errno = error; return -1; }
   return value;
 }
+
+/* The credential the session runs this process as: git's repository ownership check compares it with a stat's st_uid. */
+NIMBUS_PROC_IMPORT("ids") int __nimbus_ids(uint32_t *ids);
+static uint32_t process_ids[2];
+static int ids_known;
+static void know_ids(void) {
+  if (ids_known) return;
+  uint32_t ids[2] = { 0, 0 };
+  if (__nimbus_ids(ids) == 0) { process_ids[0] = ids[0]; process_ids[1] = ids[1]; }
+  ids_known = 1;
+}
+uid_t getuid(void) { know_ids(); return process_ids[0]; }
+uid_t geteuid(void) { know_ids(); return process_ids[0]; }
+gid_t getgid(void) { know_ids(); return process_ids[1]; }
+gid_t getegid(void) { know_ids(); return process_ids[1]; }
 
 int pipe(int fds[2]) { return nimbus_result(__nimbus_pipe(fds), 0); }
 int dup(int fd) { int out = -1; int error = __nimbus_dup(fd, &out); return nimbus_result(error, out); }
@@ -177,4 +197,117 @@ pid_t nimbus_spawnvpe(const char *file, const char **argv, char **deltaenv, cons
    */
   do error = __nimbus_start(pid); while (error == EINTR);
   return nimbus_result(error, pid);
+}
+
+/* ---- file status and modes: the Nimbus filesystem extension (nimbus_fs imports) ---- */
+
+#define NIMBUS_FS_IMPORT(name) __attribute__((import_module("nimbus_fs"), import_name(name)))
+/* preview1's filestat, then st_mode, uid and gid (core runtime/wasi/types.ts NIMBUS_STAT_SIZE). */
+struct nimbus_stat {
+  __wasi_filestat_t filestat;
+  uint32_t mode, uid, gid, zero;
+};
+_Static_assert(sizeof(struct nimbus_stat) == 80, "nimbus_stat is the host's 80 bytes");
+NIMBUS_FS_IMPORT("path_stat") int __nimbus_path_stat(int fd, int lookupflags, const char *path, size_t len, struct nimbus_stat *out);
+NIMBUS_FS_IMPORT("fd_stat") int __nimbus_fd_stat(int fd, struct nimbus_stat *out);
+NIMBUS_FS_IMPORT("path_chmod") int __nimbus_path_chmod(int fd, int lookupflags, const char *path, size_t len, uint32_t mode);
+NIMBUS_FS_IMPORT("fd_chmod") int __nimbus_fd_chmod(int fd, uint32_t mode);
+
+/* Present when the program changes directory (git does, for -C). */
+int __wasilibc_find_relpath_alloc(const char *path, const char **abs, char **relative, size_t *relative_len, int can_realloc) __attribute__((__weak__));
+
+/* The preopen `path` is beneath and the path relative to it, as wasi-libc's own path calls find them. */
+static int beneath(const char *path, char **relative) {
+  static char *buf = NULL;
+  static size_t len = 0;
+  const char *abs;
+  if (__wasilibc_find_relpath_alloc) {
+    int fd = __wasilibc_find_relpath_alloc(path, &abs, &buf, &len, 1);
+    *relative = buf;
+    return fd;
+  }
+  if (!buf) {
+    buf = malloc(PATH_MAX);
+    if (!buf) { errno = ENOMEM; return -1; }
+    len = PATH_MAX;
+  }
+  *relative = buf;
+  return __wasilibc_find_relpath(path, &abs, relative, len);
+}
+
+static struct timespec from_ns(uint64_t ns) {
+  return (struct timespec){ .tv_sec = (time_t)(ns / 1000000000ull), .tv_nsec = (long)(ns % 1000000000ull) };
+}
+
+static void to_stat(const struct nimbus_stat *in, struct stat *out) {
+  memset(out, 0, sizeof *out);
+  out->st_dev = in->filestat.dev;
+  out->st_ino = in->filestat.ino;
+  out->st_nlink = in->filestat.nlink;
+  out->st_size = in->filestat.size;
+  out->st_atim = from_ns(in->filestat.atim);
+  out->st_mtim = from_ns(in->filestat.mtim);
+  out->st_ctim = from_ns(in->filestat.ctim);
+  out->st_mode = in->mode;
+  out->st_uid = in->uid;
+  out->st_gid = in->gid;
+}
+
+static int path_stat(const char *path, int follow, struct stat *st) {
+  char *relative;
+  int dirfd = beneath(path, &relative);
+  if (dirfd < 0) return -1;
+  struct nimbus_stat ns;
+  int error = __nimbus_path_stat(dirfd, follow ? __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW : 0, relative, strlen(relative), &ns);
+  if (error) { errno = error; return -1; }
+  to_stat(&ns, st);
+  return 0;
+}
+
+int git_wasi_stat(const char *path, struct stat *st) { return path_stat(path, 1, st); }
+int git_wasi_lstat(const char *path, struct stat *st) { return path_stat(path, 0, st); }
+
+int git_wasi_fstat(int fd, struct stat *st) {
+  struct nimbus_stat ns;
+  int error = __nimbus_fd_stat(fd, &ns);
+  if (error) { errno = error; return -1; }
+  to_stat(&ns, st);
+  return 0;
+}
+
+int git_wasi_chmod(const char *path, mode_t mode) {
+  char *relative;
+  int dirfd = beneath(path, &relative);
+  if (dirfd < 0) return -1;
+  return nimbus_result(__nimbus_path_chmod(dirfd, __WASI_LOOKUPFLAGS_SYMLINK_FOLLOW, relative, strlen(relative), mode), 0);
+}
+
+int git_wasi_fchmod(int fd, mode_t mode) { return nimbus_result(__nimbus_fd_chmod(fd, mode), 0); }
+
+/*
+ * open(2), and for a file it creates with execute bits (a checkout's
+ * executable, a template hook) those bits, which preview1's create cannot
+ * carry: execute wherever the umask let read through, as mode & ~umask
+ * gives for any umask that masks a class's read and execute together.
+ */
+int git_wasi_open(const char *path, int flags, ...) {
+  mode_t mode = 0;
+  if (flags & O_CREAT) {
+    va_list ap;
+    va_start(ap, flags);
+    mode = (mode_t)va_arg(ap, int);
+    va_end(ap);
+  }
+  int fd = open(path, flags, mode);
+  if (fd < 0 || !(flags & O_CREAT) || !(flags & O_EXCL) || !(mode & 0111)) return fd;
+  struct stat st;
+  if (git_wasi_fstat(fd, &st) == 0) {
+    mode_t readable = st.st_mode & 0444;
+    if (git_wasi_fchmod(fd, (st.st_mode & 07777) | ((readable >> 2) & mode & 0111)) == 0) return fd;
+  }
+  int error = errno;
+  close(fd);
+  unlink(path);
+  errno = error;
+  return -1;
 }

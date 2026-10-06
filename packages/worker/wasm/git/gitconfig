@@ -20,7 +20,8 @@
 	# no templates here, and an empty value says so instead of a warning.
 	templateDir =
 [maintenance]
-	# Maintenance runs as a child process, which a session's git cannot start yet.
+	# Auto-maintenance is a child git after every commit, fetch and merge: a
+	# facet started each time, for work that is rarely due.
 	auto = false
 [gc]
 	auto = 0

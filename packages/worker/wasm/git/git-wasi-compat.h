@@ -48,19 +48,9 @@ typedef unsigned long sigset_t_compat;
 #define SIG_BLOCK 0
 #define SIG_UNBLOCK 1
 #define SIG_SETMASK 2
-#include <sys/stat.h>
-int git_wasi_chmod(const char *, mode_t);
-int git_wasi_fchmod(int, mode_t);
-#define chmod git_wasi_chmod
-#define fchmod git_wasi_fchmod
 #endif
 #ifndef SA_RESTART
 #define SA_RESTART 0x10000000
-#include <sys/stat.h>
-int git_wasi_chmod(const char *, mode_t);
-int git_wasi_fchmod(int, mode_t);
-#define chmod git_wasi_chmod
-#define fchmod git_wasi_fchmod
 #endif
 struct sigaction { void (*sa_handler)(int); sigset_t sa_mask; int sa_flags; };
 int sigaction(int, const struct sigaction *, struct sigaction *);
@@ -80,9 +70,24 @@ int socket(int, int, int);
 struct sockaddr;
 int connect(int, const struct sockaddr *, unsigned int);
 int setsockopt(int, int, int, const void *, unsigned int);
+/*
+ * A file's mode and owner, which WASI preview1's filestat leaves out, and
+ * chmod, which it has no call for: the Nimbus filesystem extension (the
+ * nimbus_fs imports, core runtime/wasi/types.ts NimbusFsImports). A file
+ * created with execute bits gets them through it too (git_wasi_open).
+ */
+#include <fcntl.h>
 #include <sys/stat.h>
+int git_wasi_stat(const char *, struct stat *);
+int git_wasi_lstat(const char *, struct stat *);
+int git_wasi_fstat(int, struct stat *);
 int git_wasi_chmod(const char *, mode_t);
 int git_wasi_fchmod(int, mode_t);
+int git_wasi_open(const char *, int, ...);
+#define stat(path, buf) git_wasi_stat(path, buf)
+#define lstat git_wasi_lstat
+#define fstat git_wasi_fstat
 #define chmod git_wasi_chmod
 #define fchmod git_wasi_fchmod
+#define open(...) git_wasi_open(__VA_ARGS__)
 #endif
