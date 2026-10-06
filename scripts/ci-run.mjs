@@ -49,8 +49,8 @@ const has = (name) => {
 
 // Anything that throws past here is this script failing, not the commit's
 // tests (a full disk while saving the report, a malformed answer): exit 2.
-process.on('uncaughtException', (error) => infra(`ci-run itself failed: ${error?.stack ?? error}`));
-process.on('unhandledRejection', (error) => infra(`ci-run itself failed: ${error?.stack ?? error}`));
+process.on('uncaughtException', (error) => infra(`ci-run itself failed: ${error.stack ?? error}`));
+process.on('unhandledRejection', (error) => infra(`ci-run itself failed: ${error instanceof Error ? error.stack : error}`));
 
 function usage(message) {
   console.error(`ci-run: ${message}\nusage: bun scripts/ci-run.mjs [<commit>] [--tier fast|slow|all] [--shards N] [--jobs J] [--only a,b] [--timeout MS] [--label TEXT] [--logs]\n       bun scripts/ci-run.mjs --status <run-id> | --cancel <run-id>`);
@@ -66,7 +66,13 @@ function infra(message) {
 const token = process.env.NIMBUS_CI_TOKEN?.trim() || (existsSync(TOKEN_FILE) ? readFileSync(TOKEN_FILE, 'utf8').trim() : '');
 if (!token) infra(`no CI token: set NIMBUS_CI_TOKEN or create ${TOKEN_FILE} (apps/ci-runner/scripts/deploy.mjs writes it)`);
 
-/** One request, retried once on a network error or a 5xx. */
+/**
+ * One request, retried once on a network error or a 5xx.
+ *
+ * @param {string} method
+ * @param {string} path
+ * @param {{ body?: BodyInit, headers?: Record<string, string>, ok?: number[] }} [options]
+ */
 async function api(method, path, { body, headers = {}, ok = [200, 201] } = {}) {
   for (let attempt = 1; ; attempt++) {
     let response;
