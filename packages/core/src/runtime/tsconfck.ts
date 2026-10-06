@@ -20,6 +20,7 @@
 
 import { normalizeVfsPath } from '../vfs/path.js';
 import { jsoncToJson } from './jsonc.js';
+import { splitBareSpecifier } from './barrel-detect.js';
 import { parseResolvablePackageJson } from '../_shared/exports-resolver.js';
 
 /** What tsconfck reads through. */
@@ -242,10 +243,7 @@ function requireResolve(request: string, from: string, fs: TsconfckFs): string |
     const at = resolve(dirname(from), request);
     return asFile(at) ?? asDirectory(at);
   }
-  const parts = request.split('/');
-  const nameLength = request.startsWith('@') ? 2 : 1;
-  const name = parts.slice(0, nameLength).join('/');
-  const subpath = parts.slice(nameLength).join('/');
+  const { name, subpath } = splitBareSpecifier(request);
   for (let dir = dirname(from); ; dir = dirname(dir)) {
     if (basename(dir) !== 'node_modules') {
       const pkgDir = `${dir === '/' ? '' : dir}/node_modules/${name}`;

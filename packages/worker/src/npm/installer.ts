@@ -96,7 +96,8 @@ import {
   PRE_BUNDLE_SLICE_CAP_BYTES,
 } from '@nimbus-sh/platform/limits.js';
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
-import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
+import { packageRangeSeparator } from './package-spec.js';
 import {
   scanNamedImports,
   namedImportSignature,
@@ -2031,9 +2032,7 @@ export class NpmInstaller {
 
     // Determine which specifiers can actually be resolved to an installed package.
     const toBuild = usedSpecifiers.filter(spec => {
-      const pkgName = spec.startsWith('@')
-        ? spec.split('/').slice(0, 2).join('/')
-        : spec.split('/')[0];
+      const pkgName = packageNameFromSpecifier(spec);
       if (isServerPluginPkg(pkgName)) return false;
       return installed.has(pkgName);
     });
@@ -2568,10 +2567,7 @@ export class NpmInstaller {
 
               // Also add the top-level package name so its main entry is
               // pre-bundled even if only a subpath was imported.
-              const pkgName = clean.startsWith('@')
-                ? clean.split('/').slice(0, 2).join('/')
-                : clean.split('/')[0];
-              imports.add(pkgName);
+              imports.add(packageNameFromSpecifier(clean));
             }
 
             // If any .tsx/.jsx file is present and uses JSX automatic runtime
@@ -2611,18 +2607,7 @@ export class NpmInstaller {
    *   4. Try extensions and index-file fallbacks
    */
   private resolvePackageEntryPath(fs: CredentialedVfs, specifier: string, nmDir: string): string | null {
-    // Parse out pkgName and subpath
-    let pkgName: string;
-    let subpath: string;
-    if (specifier.startsWith('@')) {
-      const parts = specifier.split('/');
-      pkgName = parts.slice(0, 2).join('/');
-      subpath = parts.slice(2).join('/');
-    } else {
-      const parts = specifier.split('/');
-      pkgName = parts[0];
-      subpath = parts.slice(1).join('/');
-    }
+    const { name: pkgName, subpath } = splitBareSpecifier(specifier);
 
     const pkgDir = nmDir + '/' + pkgName;
     const pkgJsonPath = pkgDir + '/package.json';
@@ -2779,7 +2764,7 @@ function parseExplicitPackageSpec(spec: string): { name: string; range: string }
     };
   }
 
-  const rangeAt = findPackageRangeSeparator(spec);
+  const rangeAt = packageRangeSeparator(spec);
   if (rangeAt >= 0) {
     return {
       name: spec.slice(0, rangeAt),
@@ -2787,14 +2772,6 @@ function parseExplicitPackageSpec(spec: string): { name: string; range: string }
     };
   }
   return { name: spec, range: 'latest' };
-}
-
-function findPackageRangeSeparator(spec: string): number {
-  if (!spec) return -1;
-  if (spec[0] !== '@') return spec.indexOf('@');
-  const slash = spec.indexOf('/');
-  if (slash < 0) return -1;
-  return spec.indexOf('@', slash + 1);
 }
 
 function safeJsonParse<T>(json: string, fallback: T): T {

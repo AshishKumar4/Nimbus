@@ -18,6 +18,7 @@
 
 import { resolveExports, resolvePackageEntry, type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath } from '../vfs/path.js';
+import { splitBareSpecifier } from './barrel-detect.js';
 import type { Awaitable } from '../vfs/vfs.js';
 
 /** The filesystem a resolution reads, by absolute `/`-rooted path. */
@@ -103,10 +104,7 @@ export function createBundlerResolver(fs: BundlerResolveFs): BundlerResolver {
     },
 
     async resolveBarePackage(specifier, fromDir, conditions) {
-      const parts = specifier.split('/');
-      const nameLength = specifier.startsWith('@') ? 2 : 1;
-      const name = parts.slice(0, nameLength).join('/');
-      const subpath = parts.slice(nameLength).join('/');
+      const { name, subpath } = splitBareSpecifier(specifier);
       for (const dir of ancestors(fromDir)) {
         const packageDir = dir + '/node_modules/' + name;
         if (!(await fs.isDirectory(packageDir))) continue;
