@@ -503,8 +503,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
 
       const exists = this.vfs.exists(p);
       if (normalizedFlags.exclusive && normalizedFlags.create && exists) throw fsError('EEXIST', 'open', path);
-      if (normalizedFlags.directory && (!exists || !this.vfs.isDirectory(p))) throw fsError('ENOTDIR', 'open', path);
+      // open(2): a missing name is ENOENT, O_DIRECTORY or not; ENOTDIR is for a name that is not a directory.
       if (!exists && !normalizedFlags.create) throw fsError('ENOENT', 'open', path);
+      if (normalizedFlags.directory && (!exists || !this.vfs.isDirectory(p))) throw fsError('ENOTDIR', 'open', path);
       // A directory opens for reading whatever rights were asked for: a WASI
       // guest requests a capability set, not an access mode, and a directory
       // simply never grants fd_write (the write itself answers EISDIR). What
