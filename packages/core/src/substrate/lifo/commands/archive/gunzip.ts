@@ -1,8 +1,6 @@
 import type { Command } from '../types.js';
-import { resolve } from '../../utils/path.js';
-import { decompressGzip } from '../../utils/archive.js';
 import { parseArgs } from '../../utils/args.js';
-import { isVfsError } from '../../../../vfs/vfs-error.js';
+import { gzipFiles } from './gzip.js';
 
 const spec = {
   keep: { type: 'boolean' as const, short: 'k' },
@@ -11,6 +9,7 @@ const spec = {
   help: { type: 'boolean' as const },
 };
 
+/** gunzip: gzip -d, which rejects compression levels. */
 const command: Command = async (ctx) => {
   const { flags, positional, unknown } = parseArgs(ctx.args, spec);
   if (flags.help) {
@@ -24,40 +23,13 @@ const command: Command = async (ctx) => {
     await ctx.stderr.write(`gunzip: invalid option -- '${unknown[0].replace(/^-+/, '')}'\n`);
     return 1;
   }
-  const keep = flags.keep === true;
-  const files = positional;
-
-  if (files.length === 0) {
+  if (positional.length === 0) {
     await ctx.stderr.write('gunzip: missing file operand\n');
     return 1;
   }
-
-  let exitCode = 0;
-
-  for (const file of files) {
-    const path = resolve(ctx.cwd, file);
-    try {
-      if (!path.endsWith('.gz')) {
-        await ctx.stderr.write(`gunzip: ${file}: unknown suffix -- ignored\n`);
-        exitCode = 1;
-        continue;
-      }
-      const data = (await ctx.vfs.readFile(path));
-      const decompressed = await decompressGzip(data);
-      const outPath = path.slice(0, -3);
-      (await ctx.vfs.writeFile(outPath, decompressed));
-      if (!keep) (await ctx.vfs.unlink(path));
-    } catch (e) {
-      if (isVfsError(e)) {
-        await ctx.stderr.write(`gunzip: ${file}: ${e.message}\n`);
-        exitCode = 1;
-      } else {
-        throw e;
-      }
-    }
-  }
-
-  return exitCode;
+  return await gzipFiles(ctx, positional, {
+    name: 'gunzip', decompress: true, keep: flags.keep === true, force: flags.force === true, quiet: flags.quiet === true,
+  });
 };
 
 export default command;

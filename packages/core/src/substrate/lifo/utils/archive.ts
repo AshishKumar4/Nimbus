@@ -4,15 +4,15 @@ import { resolve, dirname } from './path.js';
 import { encode, decode, concatBytes } from './encoding.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 
-// ─── Gzip (browser CompressionStream/DecompressionStream) ───
+// ─── Gzip (CompressionStream/DecompressionStream) ───
 
-export async function compressGzip(data: Uint8Array): Promise<Uint8Array> {
-  const cs = new CompressionStream('gzip');
-  const writer = cs.writable.getWriter();
+/** `data` through one gzip transform stream, read to its end. */
+async function pumpGzip(data: Uint8Array, stream: CompressionStream | DecompressionStream): Promise<Uint8Array> {
+  const writer = stream.writable.getWriter();
   writer.write(data as unknown as ArrayBuffer);
   writer.close();
 
-  const reader = cs.readable.getReader();
+  const reader = stream.readable.getReader();
   const chunks: Uint8Array[] = [];
   for (;;) {
     const { done, value } = await reader.read();
@@ -22,20 +22,12 @@ export async function compressGzip(data: Uint8Array): Promise<Uint8Array> {
   return concatBytes(...chunks);
 }
 
-export async function decompressGzip(data: Uint8Array): Promise<Uint8Array> {
-  const ds = new DecompressionStream('gzip');
-  const writer = ds.writable.getWriter();
-  writer.write(data as unknown as ArrayBuffer);
-  writer.close();
+export async function compressGzip(data: Uint8Array): Promise<Uint8Array> {
+  return await pumpGzip(data, new CompressionStream('gzip'));
+}
 
-  const reader = ds.readable.getReader();
-  const chunks: Uint8Array[] = [];
-  for (;;) {
-    const { done, value } = await reader.read();
-    if (done) break;
-    chunks.push(value);
-  }
-  return concatBytes(...chunks);
+export async function decompressGzip(data: Uint8Array): Promise<Uint8Array> {
+  return await pumpGzip(data, new DecompressionStream('gzip'));
 }
 
 // ─── Tar format (POSIX ustar, 512-byte blocks) ───
