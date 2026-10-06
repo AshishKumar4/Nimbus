@@ -2377,25 +2377,14 @@ async function commitIndex(ctx, git, wrepo, message, idents) {
     return oid;
 }
 /**
- * read_from_tree / reset_index: index entries for `specs` ('' everything)
- * become `tree`'s, an unchanged one keeping its stat. Then the whole index is
- * refreshed and what still differs from the worktree printed under
- * "Unstaged changes after reset:", unless `quiet`, and the index written once.
+ * reset_index: index entries for `specs` ('' everything) become `tree`'s,
+ * then the whole index is refreshed and what still differs from the worktree
+ * printed under "Unstaged changes after reset:", unless `quiet`, and the
+ * index written once.
  */
 async function resetIndex(ctx, wrepo, tree, specs, quiet) {
     await wrepo.withIndexLock(async () => {
-        const old = await wrepo.readIndex();
-        const removed = new Set();
-        const added = [];
-        await walkTreeAndIndex(wrepo.store, tree, old, specs, (path, leaf, lo, hi) => {
-            if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode)
-                return;
-            for (let i = lo; i < hi; i++)
-                removed.add(i);
-            if (leaf)
-                added.push({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
-        }, { cacheTree: old.cacheTree() });
-        const dc = removed.size || added.length ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
+        const dc = await indexFromTree(wrepo, tree, specs);
         const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null });
         for (const line of scan.errors.tracked)
             await ctx.stderr.write(`${line}\n`);
@@ -2407,6 +2396,25 @@ async function resetIndex(ctx, wrepo, tree, specs, quiet) {
         }
         await wrepo.writeIndex(dc);
     });
+}
+/**
+ * read_from_tree: the index with `tree`'s entries for `specs`, an unchanged
+ * one keeping its stat. The index read is dropped here, so a reset holds one
+ * index, not two.
+ */
+async function indexFromTree(wrepo, tree, specs) {
+    const old = await wrepo.readIndex();
+    const removed = new Set();
+    const added = [];
+    await walkTreeAndIndex(wrepo.store, tree, old, specs, (path, leaf, lo, hi) => {
+        if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode)
+            return;
+        for (let i = lo; i < hi; i++)
+            removed.add(i);
+        if (leaf)
+            added.push({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
+    }, { cacheTree: old.cacheTree() });
+    return removed.size || added.length ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
 }
 const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>]\n'
     + '   or: git reset [-q] [<tree-ish>] [--] <pathspec>...\n';
