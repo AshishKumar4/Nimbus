@@ -248,3 +248,30 @@ console.log('sqlite vfs directory times: ok');
   assert.deepEqual(onVfs, onHost, 'the VFS dated directories differently from the host filesystem');
   console.log('  ok  directory dating matches the host filesystem, operation by operation');
 }
+
+// ── A wave of many directories commits within the row bound ────────────
+// The stream commits its directory records in strict batches; each
+// directory now dates its parent too, and under a snapshot both keep a
+// before-image. Batches are sized by the plan's own accounting. Red before:
+// a fixed batch of MAX_TX_LOGICAL_ROWS directories failed live ("transaction
+// exceeds logicalRows limit: 303 > 256", next.js and vscode clones), and
+// under a snapshot it failed even before directories dated their parents.
+for (const pinned of [false, true]) {
+  const h = createSqliteVfsTestHarness();
+  const r = new SqliteVFS(h.sql, h.ctx);
+  const k = r.as(CRED_KERNEL);
+  k.mkdir('repo', { recursive: true });
+  if (pinned) r.snapshot('pin');
+  const inodes = [];
+  for (let top = 0; top < 30; top++) {
+    inodes.push({ path: `repo/t${top}`, parentPath: 'repo', kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
+    for (let leaf = 0; leaf < 30; leaf++) {
+      inodes.push({ path: `repo/t${top}/l${leaf}`, parentPath: `repo/t${top}`, kind: 'directory', isDir: true, size: 0, mtime: 1, mode: 0o755, chunkCount: 0 });
+    }
+  }
+  const result = await k.writeStream(encodeWriteBatchStream({ inodes, chunks: [] }));
+  assert.equal(result.ok, true, `${pinned ? 'pinned: ' : ''}${result.error?.message}`);
+  assert.equal(k.readdir('repo').length, 30);
+  assert.equal(k.readdir('repo/t29').length, 30);
+}
+console.log('  ok  930 directory records in one wave commit, with and without a snapshot');

@@ -915,7 +915,12 @@ class TransactionPlanBuilder {
 
   /** Would one more inode row — and the path it touches — exceed the bound? */
   wouldExceedInode(): TransactionLimit | null {
-    return exceededTransactionLimit(this.metricsWith({ inodeRows: 1, paths: 1 }));
+    return this.wouldExceedInodes(1);
+  }
+
+  /** Would `count` more inode rows (each dating a parent) exceed the bound? */
+  wouldExceedInodes(count: number): TransactionLimit | null {
+    return exceededTransactionLimit(this.metricsWith({ inodeRows: count, paths: count }));
   }
 
   /** Would one more removal exceed the bound? */
@@ -8552,10 +8557,12 @@ export class SqliteVFS {
             phase = 'validation';
             this.validateFileChunks(record.inode, []);
             phase = 'publish';
+            // Directory inodes carry no payload: rows are the only bound in
+            // reach, priced by the plan's own accounting (each row, the
+            // parent it dates, and a snapshot's before-images of both), so
+            // the strict batch the flush commits always fits.
+            if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null) flushDirectories();
             pendingDirectories.push(record.inode);
-            // Directory inodes carry no payload, so the row count is the
-            // only bound in reach; the flush re-asserts it regardless.
-            if (pendingDirectories.length >= MAX_TX_LOGICAL_ROWS) flushDirectories();
             break;
           }
           case 'file-begin': {
