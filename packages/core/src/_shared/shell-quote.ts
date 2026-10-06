@@ -22,7 +22,7 @@ const CONTROL_ESCAPES: Readonly<Record<number, string>> = { 7: 'a', 8: 'b', 9: '
  * characters as `$'\n'` pieces between single-quoted runs.
  */
 export function shellEscape(value: string): string {
-  const control = /[\x00-\x1f\x7f]/.test(value);
+  const control = [...value].some((ch) => ch.charCodeAt(0) < 0x20 || ch.charCodeAt(0) === 0x7f);
   if (!control && value !== '' && value !== '{' && value !== '}'
     && !/[ !"$&'()*;<=>?[\\^`|]/.test(value) && !/^[#~]/.test(value)) return value;
   if (!control) {

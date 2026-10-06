@@ -296,8 +296,10 @@ class RandomOrder {
 
   private digest(key: Uint8Array): Uint8Array {
     const id = decodeLossless(key);
-    let digest = this.digests.get(id);
-    if (!digest) this.digests.set(id, digest = new Uint8Array(createHash('md5').update(this.salt).update(key).digest()));
+    const cached = this.digests.get(id);
+    if (cached) return cached;
+    const digest = new Uint8Array(createHash('md5').update(this.salt).update(key).digest());
+    this.digests.set(id, digest);
     return digest;
   }
 }

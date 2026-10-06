@@ -38,7 +38,7 @@ const command: Command = async (ctx) => {
     last = parseFloat(positional[2]);
   }
 
-  if (isNaN(first) || isNaN(increment) || isNaN(last)) {
+  if (Number.isNaN(first) || Number.isNaN(increment) || Number.isNaN(last)) {
     await ctx.stderr.write('seq: invalid argument\n');
     return 1;
   }

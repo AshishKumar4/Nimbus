@@ -314,7 +314,10 @@ export function createCjsLoader(context: NodeContext, scope: (filename: string) 
 	function load(filename: string): unknown {
 		if (filename in cache) return cache[filename];
 		const source = filesystem().readFileString(filename);
-		if (filename.endsWith('.json')) return (cache[filename] = JSON.parse(source));
+		if (filename.endsWith('.json')) {
+			cache[filename] = JSON.parse(source);
+			return cache[filename];
+		}
 
 		const module = { exports: {} as unknown };
 		const initialExports = module.exports;
