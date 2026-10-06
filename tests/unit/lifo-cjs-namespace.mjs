@@ -46,6 +46,7 @@ const CORPUS = [
   ...Object.values(FILES).filter((text) => !text.includes('await import')),
   'exports.a = 1; exports . b = 2; exports.c == 3; exports.d += 4; foo.exports.e = 5; exports.default = 6;',
   "module.exports = { a, b: c, 'd': e, ...f, g: h() , i };",
+  'module.exports = { "aliceblue": [240, 248, 255], "red": [255, 0, 0] };',
   "module.exports = { a: b , c }; module.exports = require('./x'); module.exports = require('./y');",
   "Object.defineProperty(exports, 'a', { value: 1 }); Object.defineProperty(module.exports, 'b', { enumerable: true, get() { return q['p']; } });",
   "Object.defineProperty(exports, 'c', { enumerable: false, get () { return p; } }); Object.defineProperty(exports, 'd', { get: () => p }); exports.d = 1;",
