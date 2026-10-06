@@ -83,38 +83,6 @@ export function buildSessionSupervisorOps(
   if (!vfs) throw new Error('Supervisor filesystem is not initialized');
   store ??= createSupervisorBridgeStore({ vfs, processes: host.processes, filesystem: host.getFilesystemAuthority?.() ?? host.runtimeWorkspace?.filesystem });
   const extend: Partial<Record<SupervisorOpName, SupervisorOpHandler>> = {
-    // The write stream's decode-drain timestamp starts when the envelope
-    // arrives, not when the DO first reads it — the same contract
-    // _rpcWriteBatchStream has always had.
-    writeBatchStream: (envelope, tools) => {
-      if (!envelope.stream) throw new Error('supervisor op writeBatchStream: no stream');
-      // Same contract _rpcWriteBatchStream had: a supplied pid must be a
-      // real process pid; only an absent pid is a host call.
-      const pid = envelope.pid;
-      if (pid !== undefined && (!Number.isInteger(pid) || pid <= 0)) {
-        throw new Error('filesystem RPC requires a valid process pid');
-      }
-      // A fenced wave commits only while no newer attempt of its writer has
-      // been admitted (SupervisorDeliveries.admitWave), and only on the
-      // instance whose binding sent it.
-      const fence = envelope.waveFence;
-      let admit: (() => void) | undefined;
-      if (fence !== undefined) {
-        const deliveries = host.supervisorDeliveries;
-        if (deliveries === undefined || fence.hostIncarnation !== deliveries.incarnation || pid === undefined) {
-          throw Object.assign(
-            new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'),
-            { code: 'ESTALE' },
-          );
-        }
-        admit = deliveries.admitWave(pid, fence.writer, fence.wave, fence.attempt).check;
-      }
-      return tools.bridge(pid, envelope.cred).writeStream(envelope.stream, {
-        decodeDrainStartedAt: performance.now(),
-        mutationOwner: envelope.mutationOwner,
-        admit,
-      });
-    },
     // stdout/stderr are session methods, not bridge ops: mirroring,
     // log-append and prior-generation filtering all live in _rpcStdout.
     stdout: (envelope) => host._rpcStdout(envelope.pid ?? 0, outputBytesArg(envelope.args?.[0])),

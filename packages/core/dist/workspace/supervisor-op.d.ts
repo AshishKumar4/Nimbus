@@ -132,7 +132,7 @@ export interface SupervisorOpHost {
  * envelope may carry is SUPERVISOR_DELIVER_OP (supervisor-delivery.ts): a
  * wrapper around one of these, which the handler unwraps.
  */
-export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "writeFileStat", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "fsLinkLeadsTo", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpBlocked", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "innerDoCall", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay", "hmrNextEvent"];
+export declare const SUPERVISOR_OPS: readonly ["readFile", "readFileBytes", "writeFile", "writeFileStat", "stat", "lstat", "hasLegacySymlinkUnder", "utimes", "chmod", "access", "chown", "setUmask", "readdir", "exists", "mkdir", "rmdir", "rename", "unlink", "readlink", "fsLinkLeadsTo", "symlink", "fsAcquire", "fsAcquired", "fsRevision", "fsList", "fsStorageGrant", "wsOpen", "wsPoll", "wsSend", "wsClose", "fsOpen", "fsRead", "fsWrite", "fsClose", "fsReadRange", "fsReadRangeUncached", "fsReadBatch", "fsWriteRange", "fsAppend", "fsAppendAck", "fsTruncate", "writeBatch", "writeBatchStream", "openWaveWriter", "putRegistryEntries", "stdout", "stderr", "prefetch", "registerPort", "allocatePort", "unregisterPort", "reportExit", "routeLoopback", "transform", "cpSpawn", "reportRuntimeCode", "cpStdinWrite", "cpStdinEnd", "cpReadStdin", "cpReadOutput", "cpDrainOutput", "cpKill", "cpWait", "cpBlocked", "fsFstat", "fsDup", "fsSeek", "fsSetStatus", "fsReaddirHandle", "fsFtruncate", "fsFchmod", "fsFchown", "fsFutimes", "fsSync", "fsRealpath", "fsRemove", "fsCopyFile", "fsCopyTree", "fsAcquireExclusiveMutation", "fsReleaseExclusiveMutation", "innerDoFetch", "innerDoCall", "fanoutExecute", "processHostProbe", "hostProcess", "awaitHostedOpen", "awaitHostedBoot", "routeHostedHttp", "cancelHostProcess", "hmrRelay", "hmrNextEvent"];
 export type SupervisorOpName = (typeof SUPERVISOR_OPS)[number];
 /**
  * What the shared handler hands a host override: the pid-keyed bridge and
@@ -148,6 +148,8 @@ export interface SupervisorOpTools {
     readonly readLease: NonNullable<SupervisorOpDeps['readLease']>;
     /** N17: resolves once `path`'s bytes are hydrated out of a lazy import. */
     readonly hydrated: (path: string) => Promise<void>;
+    /** The host instance's delivery store, absent on a host that applies nothing once. */
+    readonly deliveries?: SupervisorDeliveries;
 }
 /**
  * An asynchronous read that meets bytes still being imported (N17) waits for
@@ -218,6 +220,10 @@ declare const NATIVE_OPS: {
     fsTruncate: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     fsWriteRange: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => import("../index.js").Awaitable<import("../runtime/os-contracts.js").VfsMutationReceipt>;
     writeBatchStream: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
+    openWaveWriter: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => {
+        writer: string;
+        hostIncarnation: string;
+    };
     stdout: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
     stderr: (e: SupervisorOpEnvelope, t: SupervisorOpTools) => void | Promise<void> | undefined;
 };

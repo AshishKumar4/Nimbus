@@ -37,6 +37,14 @@ export const LOST_STREAM_STALL_MS = 10_000;
 export const LOST_STREAM_ANSWER_MS = 20_000;
 
 /**
+ * How long a write-wave epoch the session issued admits attempts. Anything
+ * sent under an epoch the session does not know, or one past this, is
+ * refused: a call lost for longer than this can only be refused, never
+ * admitted. A writer opens a new epoch once half of this has passed.
+ */
+export const WAVE_EPOCH_TTL_MS = 10 * 60_000;
+
+/**
  * Waits before each re-send of a lost non-idempotent call (±25% jitter):
  * ~42 s in all, to outlast a coordinator queue deep enough to shed. Its
  * length is the bound on re-sends.

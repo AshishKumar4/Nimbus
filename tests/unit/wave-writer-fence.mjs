@@ -53,22 +53,48 @@ const byteStream = (bytes) => new ReadableStream({
   },
 });
 
-// ── The admission rule ──────────────────────────────────────────────────
+// ── The admission rule: deny by default ─────────────────────────────────
 {
   const deliveries = new SupervisorDeliveries();
-  const first = deliveries.admitWave(7, 'w', 1, 1);
+  const w = deliveries.openWaveWriter(7, 60_000);
+  const first = deliveries.admitWave(7, w, 1, 1);
   first.check();
-  const resend = deliveries.admitWave(7, 'w', 1, 2);
+  const resend = deliveries.admitWave(7, w, 1, 2);
   assert.throws(() => first.check(), /ESTALE: write wave 1 attempt 1 was overtaken by wave 1 attempt 2/);
   resend.check();
-  assert.throws(() => deliveries.admitWave(7, 'w', 1, 1), /ESTALE/, 'an overtaken attempt was admitted again');
-  const next = deliveries.admitWave(7, 'w', 2, 1);
+  assert.throws(() => deliveries.admitWave(7, w, 1, 1), /ESTALE/, 'an overtaken attempt was admitted again');
+  const next = deliveries.admitWave(7, w, 2, 1);
   assert.throws(() => resend.check(), /ESTALE/, 'an attempt of an earlier wave still commits');
   next.check();
-  deliveries.admitWave(7, 'other', 1, 1).check();
-  deliveries.admitWave(8, 'w', 1, 1).check();
-  next.check();
-  console.log('  ok  an attempt older than one admitted from its writer is refused');
+
+  // Any writer the session did not open is refused, whatever it claims.
+  assert.throws(() => deliveries.admitWave(7, 'made-up', 1, 1), /ESTALE: .*does not hold open/);
+  // An epoch is the opening process's alone.
+  assert.throws(() => deliveries.admitWave(8, w, 3, 1), /ESTALE: .*does not hold open/);
+  // An epoch closes with its process.
+  deliveries.forget(7);
+  assert.throws(() => next.check(), /ESTALE: .*does not hold open/);
+  assert.throws(() => deliveries.admitWave(7, w, 3, 1), /ESTALE: .*does not hold open/);
+  console.log('  ok  an attempt is admitted only under an open epoch, and only if no newer one was');
+}
+
+// ── An attempt that lands after its epoch expired is refused ────────────
+{
+  const deliveries = new SupervisorDeliveries();
+  const w = deliveries.openWaveWriter(7, 50);
+  deliveries.admitWave(7, w, 1, 1).check();
+  const running = deliveries.admitWave(7, w, 2, 1);
+  await new Promise((resolve) => setTimeout(resolve, 80));
+  // The original of wave 3, lost and arriving after the epoch closed: no
+  // newer attempt was ever admitted, so only expiry can refuse it.
+  assert.throws(() => deliveries.admitWave(7, w, 3, 1), /ESTALE: .*does not hold open/,
+    'an attempt that landed after its epoch expired was admitted');
+  assert.throws(() => running.check(), /ESTALE: .*does not hold open/, 'an attempt outlived by its epoch still commits');
+  // Expiry frees the epoch; a fresh one is a different identity.
+  const again = deliveries.openWaveWriter(7, 60_000);
+  assert.notEqual(again, w);
+  assert.throws(() => deliveries.admitWave(7, w, 3, 1), /ESTALE/);
+  console.log('  ok  an attempt landing after its epoch expired is refused, never admitted');
 }
 
 // ── The late original, end to end ───────────────────────────────────────
@@ -87,7 +113,7 @@ const byteStream = (bytes) => new ReadableStream({
   // its whole stream at once, and the call reaches the session only when
   // the test lets it.
   let held = null;
-  let calls = 0;
+  let waves = 0;
   const env = {
     NIMBUS_SESSION: {
       idFromName: (id) => ({ toString: () => id }),
@@ -95,8 +121,7 @@ const byteStream = (bytes) => new ReadableStream({
       get() {
         return {
           async supervisorOp(sent) {
-            calls++;
-            if (sent.op === 'writeBatchStream' && calls === 1) {
+            if (sent.op === 'writeBatchStream' && ++waves === 1) {
               const bytes = new Uint8Array(await new Response(sent.stream).arrayBuffer());
               let release;
               const landed = new Promise((resolve) => { release = resolve; })
@@ -113,7 +138,10 @@ const byteStream = (bytes) => new ReadableStream({
   const pid = processes.spawn('git', ['git'], '/home/user').pid;
   const rpc = new SupervisorRPC({ props: { doId: 'session', pid, ...supervisorDeliveryProps(ctx) } }, env);
   const writer = createWaveWriter({
-    supervisor: { writeBatchStream: (stream, fence) => rpc.writeBatchStream(stream, fence) },
+    supervisor: {
+      writeBatchStream: (stream, fence) => rpc.writeBatchStream(stream, fence),
+      openWaveWriter: () => rpc.openWaveWriter(),
+    },
     root: 'home/user/repo',
     base: 'home/user/repo',
     retry: quick,

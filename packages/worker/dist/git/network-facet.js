@@ -1260,6 +1260,9 @@ function createBufferedFs(
         stats.supervisorRpc.writeBatchStream++;
         return supervisor.writeBatchStream(stream, fence);
       },
+      openWaveWriter() {
+        return typeof supervisor.openWaveWriter === 'function' ? supervisor.openWaveWriter() : Promise.resolve(null);
+      },
     },
     root: authoritativeRoot,
     worktreeRoot,

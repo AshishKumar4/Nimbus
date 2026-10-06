@@ -1533,6 +1533,10 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
             stats.supervisorRpc.writeBatchStream++;
             return supervisor.writeBatchStream(stream, fence);
           },
+          // The session issues the epoch the writer's waves are admitted under.
+          openWaveWriter() {
+            return typeof supervisor.openWaveWriter === 'function' ? supervisor.openWaveWriter() : Promise.resolve(null);
+          },
         },
         root,
         worktreeRoot,
@@ -1599,6 +1603,9 @@ function createBufferedFs(
       writeBatchStream(stream, fence) {
         stats.supervisorRpc.writeBatchStream++;
         return supervisor.writeBatchStream(stream, fence);
+      },
+      openWaveWriter() {
+        return typeof supervisor.openWaveWriter === 'function' ? supervisor.openWaveWriter() : Promise.resolve(null);
       },
     },
     root: authoritativeRoot,

@@ -330,6 +330,13 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      * decoder that observes the actual byte count.
      */
     /**
+     * A write-wave epoch from the host instance this binding names, or null
+     * when that host fences nothing (it names no incarnation) and waves are
+     * sent unfenced. Minting is harmless to repeat, so a lost call is hedged
+     * like a read (lost-call.ts).
+     */
+    openWaveWriter(): Promise<string | null>;
+    /**
      * A write wave, sent once: its stream is consumed by the attempt that
      * carries it, so the writer that minted it re-sends a lost wave itself,
      * re-encoded under a newer fence (platform wave-writer.ts, lost-call.ts).

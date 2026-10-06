@@ -253,7 +253,7 @@ export class SupervisorRPC extends WorkerEntrypoint {
    */
   private _resent<T>(
     envelope: SupervisorOpEnvelope,
-    trace: { kind: 'deliver' | 'read' | 'append'; operationId?: string },
+    trace: { kind: 'deliver' | 'read' | 'append' | 'open'; operationId?: string },
     policy?: DoCallRetryPolicy,
   ): Promise<T> {
     const operation = envelope.delivery?.op ?? envelope.op;
@@ -703,6 +703,22 @@ export class SupervisorRPC extends WorkerEntrypoint {
    * is unknown up-front (-1 sentinel); it is the supervisor's
    * decoder that observes the actual byte count.
    */
+  /**
+   * A write-wave epoch from the host instance this binding names, or null
+   * when that host fences nothing (it names no incarnation) and waves are
+   * sent unfenced. Minting is harmless to repeat, so a lost call is hedged
+   * like a read (lost-call.ts).
+   */
+  async openWaveWriter(): Promise<string | null> {
+    if (this._hostIncarnation() === undefined) return null;
+    const answer = await this._call(this._resent<{ writer: string }>(
+      { op: 'openWaveWriter', args: [], pid: this._pid() },
+      { kind: 'open' },
+      { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS },
+    ));
+    return answer.writer;
+  }
+
   /**
    * A write wave, sent once: its stream is consumed by the attempt that
    * carries it, so the writer that minted it re-sends a lost wave itself,
