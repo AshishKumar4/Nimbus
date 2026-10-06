@@ -114,11 +114,17 @@ const cases = {
   'unknown algorithm beside a known one': `md5-abc sha1-${sha1}`,
   unknown: 'md5-abc',
   'legacy shasum': 'deadbeef',
+  'with options': `sha512-${sha512}?opt`,
   'malformed digest': 'sha512-not!base64!',
+  'empty digest': 'sha512-',
+  'empty strongest beside a matching weaker one': `sha512- sha1-${sha1}`,
+  'wrong length': `sha512-${sha1}`,
 };
+const refused = (read) => { try { return read(); } catch (e) { return `refused: ${e.message}`; } };
 for (const [label, sri] of Object.entries(cases)) {
-  const mine = integrity.strongestSriEntry(sri);
-  assert.deepEqual(embedded.strongestSriEntry(sri), mine, label);
+  const mine = refused(() => integrity.strongestSriEntry(sri));
+  assert.deepEqual(refused(() => embedded.strongestSriEntry(sri)), mine, label);
+  if (typeof mine === 'string') continue;
   if (mine) {
     const got = await embedded.sriDigestOf(bytes, mine.digestAlgo);
     assert.equal(got, await integrity.sriDigestOf(bytes, mine.digestAlgo));
@@ -126,7 +132,8 @@ for (const [label, sri] of Object.entries(cases)) {
   }
 }
 const installs = async (sri) => {
-  const entry = integrity.strongestSriEntry(sri);
+  const entry = refused(() => integrity.strongestSriEntry(sri));
+  if (typeof entry === 'string') return 'refused';
   return entry === null ? 'skipped' : integrity.sriDigestsEqual(await integrity.sriDigestOf(bytes, entry.digestAlgo), entry.digest);
 };
 assert.equal(await installs(cases.single), true);
@@ -135,11 +142,14 @@ assert.equal(await installs(cases['multi, strongest wrong']), false, 'and only b
 assert.equal(await installs(cases['unknown algorithm beside a known one']), true);
 assert.equal(await installs(cases.unknown), 'skipped');
 assert.equal(await installs(cases['legacy shasum']), 'skipped');
-assert.equal(await installs(cases['malformed digest']), false, 'a known algorithm with a digest that does not decode never matches');
+assert.equal(await installs(cases['with options']), true, 'options after ? are not the digest');
+for (const label of ['malformed digest', 'empty digest', 'empty strongest beside a matching weaker one', 'wrong length']) {
+  assert.equal(await installs(cases[label]), 'refused', `${label}: an algorithm npm checks with a digest that is not one of it`);
+}
 
 // The cache addresses one-entry strings only.
 assert.ok(parseTarballAddress(cases.single));
-for (const label of ['multi', 'unknown', 'legacy shasum', 'malformed digest']) {
+for (const label of ['multi', 'unknown', 'legacy shasum', 'malformed digest', 'empty digest', 'wrong length']) {
   assert.equal(parseTarballAddress(cases[label]), null, `the cache does not address ${label}`);
 }
 

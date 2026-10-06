@@ -4,8 +4,11 @@
  * as npm's ssri does: by the entry of the strongest algorithm it names. A
  * lockfile's integrity can carry several entries ("sha1-… sha512-…"); the
  * facet used to compare the whole remainder after the first dash with one
- * digest, so such a package never installed. And a 503 from the registry is
- * tried again, by the policy the supervisor's packument fetch uses.
+ * digest, so such a package never installed. An entry of an algorithm npm
+ * checks whose digest is not one of that algorithm (empty, not base64, the
+ * wrong length) refuses the package: it is never skipped, and never passed
+ * over for a weaker entry. And a 503 from the registry is tried again, by
+ * the policy the supervisor's packument fetch uses.
  */
 
 import assert from 'node:assert/strict';
@@ -78,6 +81,19 @@ try {
     const done = await install('md5-abc');
     assert.equal(done.errorText, undefined);
     assert.ok(done.warnings.some((w) => /names no algorithm npm checks; skipped verification/.test(w)));
+  }
+  // An algorithm npm checks, with a digest that is not one: refused, never
+  // skipped and never passed over for a weaker entry. Only an algorithm npm
+  // does not know is skipped.
+  for (const malformed of [
+    'sha512-',
+    `sha512- sha1-${await digest('SHA-1')}`,
+    `sha512-not!base64! sha1-${await digest('SHA-1')}`,
+    `sha512-${btoa('too short')}`,
+    `${SHA512} sha1-`,
+  ]) {
+    const done = await install(malformed);
+    assert.match(done.errorText ?? '', /malformed integrity/, `${malformed}: refused`);
   }
 } finally {
   globalThis.fetch = originalFetch;

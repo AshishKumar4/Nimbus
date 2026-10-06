@@ -64,7 +64,7 @@ import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrat
 import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { retryingRegistryFetch } from './registry-retry.js';
-import { sriDigestOf, sriDigestsEqual, sriEntries } from '@nimbus-sh/core/_shared/tarball-integrity.js';
+import { sriDigestOf, sriDigestsEqual, sriEntries, type SriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
 /**
  * Per-call cache-stat event (cache metrics support). R2CacheClient
@@ -297,7 +297,8 @@ export interface TarballAddress {
  *
  * Returns null for anything we cannot verify the same way twice: an empty
  * string, a bare legacy `dist.shasum` (hex, no algorithm prefix), a
- * multi-entry SRI, an unknown algorithm, or malformed base64. A null
+ * multi-entry SRI, an unknown algorithm, or a digest that is not one of its
+ * algorithm (which an install refuses). A null
  * address means the tarball does not participate in the shared cache at
  * all — we neither read nor write it. Refusing to cache what we cannot
  * verify is the whole point; there is no "trust the name instead" fallback.
@@ -305,14 +306,14 @@ export interface TarballAddress {
 export function parseTarballAddress(integrity: string): TarballAddress | null {
   // A single SRI entry only: whitespace means a multi-hash string.
   if (typeof integrity !== 'string' || /\s/.test(integrity)) return null;
-  const [entry] = sriEntries(integrity);
-  if (!entry) return null;
-  let raw: string;
+  let entry: SriEntry | undefined;
   try {
-    raw = atob(entry.digest);
+    [entry] = sriEntries(integrity);
   } catch {
     return null;
   }
+  if (!entry) return null;
+  const raw = atob(entry.digest);
   let hex = '';
   for (let i = 0; i < raw.length; i++) {
     hex += raw.charCodeAt(i).toString(16).padStart(2, '0');
