@@ -11,6 +11,7 @@ import { readFile } from 'node:fs/promises';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { missingAssets } from './lib/staged-assets.mjs';
 
 const worker = JSON.parse(await readFile(new URL('../../packages/worker/package.json', import.meta.url), 'utf8'));
 const entry = worker.exports['./facet-host'];
@@ -41,7 +42,7 @@ const facet = {
 const loaded = [];
 const env = {
   LOADER: { get(id) { loaded.push(id); return { getDurableObjectClass: (name) => ({ facetClass: name }) }; } },
-  ASSETS: { fetch: async () => new Response(null, { status: 404 }) },
+  ASSETS: missingAssets,
 };
 const ctx = { facets: { get: async (id, spec) => { loaded.push(`facet:${(await spec()).class.facetClass}`); return facet; } } };
 

@@ -135,14 +135,15 @@ function controlledProviderFetch() {
   };
 }
 
-function toolProviderFetch() {
+/** The model asks for list_processes `toolRounds` times, then answers. */
+function toolProviderFetch(toolRounds = 1) {
   const encoder = new TextEncoder();
   let requestCount = 0;
   return async (input, init) => {
     const url = String(input instanceof Request ? input.url : input);
     assert.ok(url.includes('/accounts/test-account/ai/v1/'), `unexpected fetch: ${url}`);
     requestCount += 1;
-    if (requestCount === 1) {
+    if (requestCount <= toolRounds) {
       const chunks = [
         {
           id: 'chatcmpl-tool', object: 'chat.completion.chunk', created: 1, model: 'test-model',
@@ -152,7 +153,7 @@ function toolProviderFetch() {
               role: 'assistant',
               tool_calls: [{
                 index: 0,
-                id: 'call-list',
+                id: `call-list-${requestCount}`,
                 type: 'function',
                 function: { name: 'list_processes', arguments: '{}' },
               }],
@@ -533,6 +534,26 @@ function assistantWrites(writes) {
     globalThis.fetch = realFetch;
   }
   console.log('ok - tool call and result boundaries persist immediately');
+}
+
+// The loop runs until the model stops asking for tools: no step-count cap
+// ends a turn while the model is still working.
+{
+  const { host } = makeHost();
+  const realFetch = globalThis.fetch;
+  const rounds = 40;
+  globalThis.fetch = toolProviderFetch(rounds);
+  try {
+    const response = await postChat(host, { message: 'list processes again and again', stream: true });
+    const [events] = await readEventsUntil(response, (list) => list.some((event) => event.type === 'done'));
+    assert.equal(events.filter((event) => event.type === 'tool-result').length, rounds,
+      `every one of ${rounds} tool rounds ran`);
+    const done = events.find((event) => event.type === 'done');
+    assert.match(JSON.stringify(done), /Processes checked\./, 'the turn ends with the model\'s answer, not a cap');
+  } finally {
+    globalThis.fetch = realFetch;
+  }
+  console.log(`ok - a turn runs ${40} tool rounds to the model's own answer`);
 }
 
 console.log('agent-chat-turns: all assertions passed');

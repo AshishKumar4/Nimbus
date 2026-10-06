@@ -70,7 +70,7 @@ import {
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
-import { readDeclaredSource, type VfsDirentType } from './vfs.js';
+import { readDeclaredSource, type Principal, type VfsContentRef, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import {
   CDC_MIN,
@@ -84,6 +84,7 @@ import {
 } from './content-chunking.js';
 import {
   CRED_KERNEL,
+  sameCred,
   type VfsAcquireOptions,
   type VfsAcquireResult,
   type VfsCred,
@@ -261,6 +262,8 @@ export interface VfsNameResolution {
 
 export interface CredentialedVfs {
   readonly cred: VfsCred;
+  /** Who the view acts as: its credential and actor, the principal its write events name. */
+  readonly principal: Principal;
   exists(path: string): boolean;
   isDirectory(path: string): boolean;
   isFile(path: string): boolean;
@@ -1169,6 +1172,32 @@ interface OpenedNode {
   closed: boolean;
 }
 
+/** A write observers have yet to hear of (SqliteVFS.writeEvent). */
+interface PendingWrite {
+  /** Hand it to `observers`; its content is let go once each is done. */
+  deliver(observers: readonly ((event: VfsWriteEvent) => void | Promise<void>)[]): void;
+  /** Let its content go unheard (the transaction that made it rolled back). */
+  release(): void;
+}
+
+/** A committed mutation, as the event bus (unless `type` is null) and the write observers hear of it. */
+interface Mutation {
+  type: VfsEventType | null;
+  path: string;
+  oldPath?: string;
+  write: PendingWrite | undefined;
+}
+
+/** The principal of a mutation no view made (the engine's own work). */
+const KERNEL_ORIGIN: Principal = Object.freeze({ cred: null });
+
+/** Whether two calls are the same principal's: one credential (sameCred) and one actor. */
+function samePrincipal(a: Principal | null, b: Principal | null): boolean {
+  if (a === b) return true;
+  if (a === null || b === null || a.actor !== b.actor) return false;
+  return a.cred === null || b.cred === null ? a.cred === b.cred : sameCred(a.cred, b.cred);
+}
+
 /**
  * Bytes appended to one file through its open descriptions and not yet
  * written: what `AppendRun` holds, at the file's end (`base` is the size
@@ -1184,6 +1213,8 @@ interface AppendRun {
   admitted: number;
   /** Whether it was written by uid 0's call (it may use the kernel reserve). */
   readonly privileged: boolean;
+  /** Whose call wrote it: the principal its write event names. */
+  readonly origin: Principal | null;
   /** The descriptions that wrote it: a failure to store it is theirs. */
   readonly writers: Set<OpenedNode>;
   /** When its last append was made: the mtime and ctime it is stored with, whenever that is. */
@@ -1384,6 +1415,15 @@ class InodeTable {
 export class SqliteVFS {
   private readonly openNodes = new Set<OpenedNode>();
   /**
+   * observeWrites: who is told of each landed mutation, and the content
+   * its events name (before and after), held as a detached description
+   * holds what it opened (pinningNodes) until each observer is done.
+   */
+  private readonly writeObservers = new Set<(event: VfsWriteEvent) => void | Promise<void>>();
+  private readonly observedRefs = new Set<OpenedNode>();
+  /** Whose call is running: the principal its write events name (a view's, re-entered by work it defers). */
+  private activeOrigin: Principal | null = null;
+  /**
    * Appends held in memory, one run per file by inode number (appendThrough).
    * Invisible: anything that looks at the store first writes them
    * (settleAppends), and none is begun inside a transaction.
@@ -1470,7 +1510,7 @@ export class SqliteVFS {
   private readonly committedRows = new Map<string, OwnGeneration>();
   private transactionPublication: {
     paths: Set<string>;
-    events: { type: VfsEventType; path: string; oldPath?: string }[];
+    events: Mutation[];
     structural: Map<string, StructuralChange>;
     removedDirectories: INode[];
   } | null = null;
@@ -2160,7 +2200,19 @@ export class SqliteVFS {
 
   // ── Helpers ───────────────────────────────────────────────────────────
 
-  openDescription(path: string, cred: VfsCred, rights: { read: boolean; write: boolean; sync?: boolean }): VfsOpenDescription {
+  /**
+   * A description of `path`, opened as `cred`. Its writes are its opener's,
+   * wherever they run: `principal` (else the calling view's, else `cred`'s)
+   * is the one its write events name and its held appends are written as.
+   */
+  openDescription(
+    path: string,
+    cred: VfsCred,
+    rights: { read: boolean; write: boolean; sync?: boolean },
+    principal?: Principal,
+  ): VfsOpenDescription {
+    const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    const asOpener = <A extends unknown[], R>(call: (...args: A) => R) => (...args: A): R => this.asOrigin(origin, () => call(...args));
     const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
     if (!resolved.inode) throw vfsKeyError('ENOENT', path);
     // Descriptions share the canonical inode object: a second descriptor
@@ -2197,7 +2249,7 @@ export class SqliteVFS {
       const end = Math.min(node.size, start + clampNonNegativeInt(length));
       return this.readContent(node, start, end, false);
     };
-    return {
+    const description: VfsOpenDescription = {
       get ino(): number { return live().ino; },
       // The opener's name for the file, which descriptor-relative lookups
       // resolve beneath: the key would put them in a different view.
@@ -2213,7 +2265,7 @@ export class SqliteVFS {
         const run = this.appendRuns.get(node.ino);
         return run === undefined ? node.size : run.base + run.bytes;
       },
-      write: (offset, bytes) => {
+      write: asOpener((offset: number, bytes: Uint8Array): number => {
         if (!rights.write) throw vfsKeyError('EBADF', path);
         if (live().isDir) throw vfsKeyError('EISDIR', path);
         const start = clampNonNegativeInt(offset);
@@ -2223,7 +2275,7 @@ export class SqliteVFS {
         if (opened.path !== null) this.writeRange(opened.path, start, bytes, CRED_KERNEL);
         else if (bytes.length) this.rewriteFile(node, null, Math.max(node.size, start + bytes.length), { start, bytes });
         return bytes.length;
-      },
+      }),
       // fsync: the file's held appends are stored, whoever made them, so a
       // read-only descriptor's fsync is as durable as a writer's. What storing
       // them failed with is told to the descriptions that wrote them.
@@ -2231,31 +2283,31 @@ export class SqliteVFS {
         current();
         if (rights.write) this.raiseAppendFailure(opened);
       },
-      truncate: size => {
+      truncate: asOpener((size: number): void => {
         if (!rights.write) throw vfsKeyError('EBADF', path);
         const node = writable();
         if (node.isDir) throw vfsKeyError('EISDIR', path);
         if (!Number.isSafeInteger(size) || size < 0) throw vfsKeyError('EINVAL', path);
         if (opened.path !== null) this.truncate(opened.path, size, CRED_KERNEL);
         else if (size !== node.size) this.rewriteFile(node, null, size, null);
-      },
+      }),
       readdir: () => {
         if (!current().isDir) throw vfsKeyError('ENOTDIR', path);
         if (!rights.read) throw vfsKeyError('EBADF', path);
         return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
       },
-      chmod: mode => this.chmodInode(current(), mode, cred, opened.path),
-      chown: (uid, gid) => {
+      chmod: asOpener((mode: number): void => this.chmodInode(current(), mode, cred, opened.path)),
+      chown: asOpener((uid: number, gid: number): void => {
         if (cred.uid !== 0) throw vfsKeyError('EPERM', path);
         if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL, true);
         else { current().uid = uid; current().gid = gid; current().ctime = this.now(); }
-      },
-      utimes: (atime, mtime) => {
+      }),
+      utimes: asOpener((atime: number, mtime: number): void => {
         if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write) throw vfsKeyError('EPERM', path);
         if (opened.path !== null) this.utimes(opened.path, atime, mtime, CRED_KERNEL);
         else { current().atime = atime; current().mtime = mtime; current().ctime = this.now(); }
-      },
-      close: () => {
+      }),
+      close: asOpener((): void => {
         try {
           // The last of what it appended is written as it closes, and a failure is close's.
           if (rights.write && !opened.closed) writable();
@@ -2267,8 +2319,9 @@ export class SqliteVFS {
           // and stepped over while pinned; it is collectable now.
           if (opened.path === null) this.maintenancePending = true;
         }
-      },
+      }),
     };
+    return description;
   }
 
   /**
@@ -2301,11 +2354,12 @@ export class SqliteVFS {
     if (path === null || node.kind !== 'file' || bytes.byteLength === 0 || this.appendFailures.has(opened)) return false;
     if (this.transactionDepth > 0 || this.transactionPublication !== null || this.activeMutationOwner !== null || this.activeWork.size > 0) return false;
     let run = this.appendRuns.get(node.ino);
-    if (run !== undefined && run.privileged !== this.privileged) return false;
+    // A run is one caller's: another's write stores it first (writable), as its own.
+    if (run !== undefined && (run.privileged !== this.privileged || !samePrincipal(run.origin, this.activeOrigin))) return false;
     if (offset !== (run === undefined ? node.size : run.base + run.bytes)) return false;
     if (run === undefined) {
       if (this.refusalAt(path) !== null) return false;
-      run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, writers: new Set(), madeAt: 0, timer: null };
+      run = { ino: node.ino, path, base: node.size, parts: [], bytes: 0, admitted: 0, privileged: this.privileged, origin: this.activeOrigin, writers: new Set(), madeAt: 0, timer: null };
     }
     if (run.bytes + bytes.byteLength > run.admitted) {
       try {
@@ -2347,10 +2401,11 @@ export class SqliteVFS {
       let at = 0;
       for (const part of run.parts) { block.set(part, at); at += part.byteLength; }
     }
-    const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation };
+    const caller = { privileged: this.privileged, owner: this.activeMutationOwner, reservation: this.activeReservation, origin: this.activeOrigin };
     this.privileged = run.privileged;
     this.activeMutationOwner = null;
     this.activeReservation = null;
+    this.activeOrigin = run.origin;
     try {
       // Published with the time it was made, in the same transaction as its
       // bytes: a stat that stores it later must not move the file's mtime and
@@ -2363,6 +2418,7 @@ export class SqliteVFS {
       this.privileged = caller.privileged;
       this.activeMutationOwner = caller.owner;
       this.activeReservation = caller.reservation;
+      this.activeOrigin = caller.origin;
     }
   }
 
@@ -2668,8 +2724,12 @@ export class SqliteVFS {
   }
 
 
-  /** Bind credentials and, optionally, the capability of a live mutation lease. */
-  as(cred: VfsCred, options?: { mutationOwner?: string }): CredentialedVfs {
+  /**
+   * Bind credentials and, optionally, the capability of a live mutation
+   * lease; `actor` names the principal finer than its uid, in the write
+   * events its mutations make (observeWrites).
+   */
+  as(cred: VfsCred, options?: { mutationOwner?: string; actor?: string }): CredentialedVfs {
     const engine = this;
     const mutationOwner = options?.mutationOwner;
     const bound = Object.freeze({
@@ -2678,8 +2738,10 @@ export class SqliteVFS {
       groups: Object.freeze([...cred.groups]),
       umask: cred.umask & 0o777,
     });
+    const origin: Principal = Object.freeze(options?.actor === undefined ? { cred: bound } : { cred: bound, actor: options.actor });
     const view: CredentialedVfs = {
       cred: bound,
+      principal: origin,
       exists: (path) => this.exists(path, bound),
       isDirectory: (path) => this.isDirectory(path, bound),
       isFile: (path) => this.isFile(path, bound),
@@ -2689,7 +2751,7 @@ export class SqliteVFS {
       mkdir: (path, options) => this.mkdir(path, options, bound),
       writeFile: (path, content, options) => this.writeFile(path, content, options, bound),
       writeFileFrom: (path, size, source, options) => this.spanning(
-        () => this.writeFileFrom(path, size, source, options, bound, mutationOwner),
+        () => this.writeFileFrom(path, size, source, options, bound, mutationOwner, origin),
         mutationOwner,
       ),
       symlink: (target, path) => this.symlink(target, path, bound),
@@ -2740,11 +2802,11 @@ export class SqliteVFS {
       copyTreeAsync: (src, dest, options) => {
         const owner = mutationOwner ?? options?.mutationOwner;
         const job = this.withMutationOwner(owner, () => this.planCopyTree(src, dest, bound, options));
-        return this.spanning(() => this.copyTreeInSlices(job, owner), owner);
+        return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
       },
       writeBatch: (payload) => this.writeBatch(payload, bound),
       writeStream: (stream, options) => this.writeStream(stream,
-        mutationOwner === undefined ? options : { ...options, mutationOwner }, bound),
+        mutationOwner === undefined ? options : { ...options, mutationOwner }, bound, origin),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
       revision: (path) => this.revision(path, bound),
       contentKey: (path) => this.contentKey(path, bound),
@@ -2789,8 +2851,15 @@ export class SqliteVFS {
       };
       Object.assign(view, mutations);
     }
-    const settling = this.settlingView(view);
+    const settling = this.settlingView(view, origin);
     return bound.uid === 0 ? this.privilegedView(settling) : settling;
+  }
+
+  /** `run` as `origin`'s call: the principal its write events name. */
+  private asOrigin<T>(origin: Principal | null, run: () => T): T {
+    const prior = this.activeOrigin;
+    this.activeOrigin = origin;
+    try { return run(); } finally { this.activeOrigin = prior; }
   }
 
   /**
@@ -2801,13 +2870,13 @@ export class SqliteVFS {
    * resolution writes the appends of, so a program reading one file while
    * appending to another is not made to store each append as it comes.
    */
-  private settlingView(view: CredentialedVfs): CredentialedVfs {
+  private settlingView(view: CredentialedVfs, origin: Principal): CredentialedVfs {
     for (const key of Object.keys(view)) {
       const method: unknown = Reflect.get(view, key);
       if (typeof method !== 'function' || LEAF_READS.has(key)) continue;
       Reflect.set(view, key, (...args: unknown[]) => {
         this.settleAppends();
-        return Reflect.apply(method, view, args);
+        return this.asOrigin(origin, () => Reflect.apply(method, view, args));
       });
     }
     return view;
@@ -4859,12 +4928,13 @@ export class SqliteVFS {
    * True when nothing but the live row at `path` can observe `node`'s chunk,
    * so the chunk may be rewritten in place: no other inode, manifest or
    * history row names it, no snapshot can see the row (the write would
-   * preserve it), and no detached description holds it.
+   * preserve it), no detached description holds it, and no write observer
+   * is to be handed what the write replaces.
    */
   private chunkUnshared(node: INode, path: string): boolean {
     const chunkId = node.chunkId!;
-    if (node.gen <= this._pinGen) return false;
-    for (const opened of this.openNodes) {
+    if (node.gen <= this._pinGen || this.writeObservers.size > 0) return false;
+    for (const opened of this.pinningNodes()) {
       if (opened.inode.chunkId === chunkId && opened.path !== path) return false;
     }
     return [...this.sql.exec(
@@ -4882,8 +4952,8 @@ export class SqliteVFS {
   /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
   private contentUnshared(node: INode, path: string): boolean {
     const contentId = node.contentId!;
-    if (node.gen <= this._pinGen) return false;
-    for (const opened of this.openNodes) {
+    if (node.gen <= this._pinGen || this.writeObservers.size > 0) return false;
+    for (const opened of this.pinningNodes()) {
       if (opened.inode.contentId === contentId && opened.path !== path) return false;
     }
     return [...this.sql.exec(
@@ -5657,7 +5727,7 @@ export class SqliteVFS {
     // Every source directory went from its old name, and a reader holding
     // anything under one must let it go.
     this.bumpRevision([...touchedPaths], removedDirectories(retiring));
-    this.emitMutation('rename', newPath, oldPath);
+    this.emitMutation('rename', newPath, oldPath, { before: destInode ?? null, after: this.inodes.get(newPath) ?? null });
     this.runContentMaintenanceSafely(1);
   }
 
@@ -5854,9 +5924,10 @@ export class SqliteVFS {
     return job;
   }
 
-  private async copyTreeInSlices(job: CopyTreeJob, owner?: string): Promise<number> {
+  private async copyTreeInSlices(job: CopyTreeJob, owner?: string, origin: Principal | null = null): Promise<number> {
     const reservation = this.reserveCopy(job);
-    const run = (id: number | null) => this.withMutationOwner(owner, () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES)));
+    const run = (id: number | null) => this.asOrigin(origin, () => this.withMutationOwner(owner,
+      () => this.withReservation(reservation, () => this.runCopyTree(job, id, JOB_SLICE_PAGES))));
     try {
       let slice = run(null);
       let copied = slice.copied;
@@ -5939,6 +6010,7 @@ export class SqliteVFS {
       const last = page.length > 0 ? String(page[page.length - 1]!.path) : null;
       const done = cursor !== null && page.length < COPY_PAGE_ROWS;
       let gen = 0;
+      const inserted = new Set<string>();
       // The slice that publishes the copy's root adds a name to the
       // destination's directory, which is dated with it (and its before-image
       // kept for a snapshot).
@@ -5969,7 +6041,9 @@ export class SqliteVFS {
             const copiedMode = shared
               ? '((mode & ~' + job.clearBits + ' & ~56) | ((mode & ~' + job.clearBits + ' & 448) >> 3) | CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN 1024 ELSE 0 END)'
               : '(mode & ~' + job.clearBits + ')';
-            this.sql.exec(
+            // A path another writer made first keeps its row (OR IGNORE): what
+            // this page inserted is what RETURNING names, and only that is its.
+            for (const row of this.sql.exec(
               `INSERT OR IGNORE INTO vfs_inodes
                  (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)
                SELECT ? || substr(path, ?),
@@ -5981,14 +6055,15 @@ export class SqliteVFS {
                       ${shared ? 'CASE WHEN kind = ' + INODE_KIND_SYMLINK + ' THEN CASE WHEN ? THEN gid ELSE ? END ELSE ' + shared.gid + ' END' : 'CASE WHEN ? THEN gid ELSE ? END'},
                       ? + row_number() OVER (ORDER BY path) - 1, ?, chunk_id, content_id,
                       ${shared ? 'CASE WHEN kind = ' + INODE_KIND_DIRECTORY + ' THEN ' + shared.acl + ' ELSE dacl END' : 'dacl'}
-               FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path`,
+               FROM ${source} WHERE path ${cursor === null ? '=' : '>'} ? AND path <= ? ORDER BY path
+               RETURNING path`,
               job.dst, tail,
               job.src, this.parentPath(job.dst), job.dst, tail,
               job.preserveTimes ? 1 : 0, now, job.preserveTimes ? 1 : 0, now, now,
               job.preserveOwner ? 1 : 0, job.uid, job.preserveOwner ? 1 : 0, job.gid,
               firstIno, gen,
               lower, last,
-            );
+            )) inserted.add(String(row.path));
             this.sql.exec('UPDATE vfs_state SET next_ino = ? WHERE slot = 1', firstIno + page.length);
           }
           if (jobId === null) {
@@ -6011,17 +6086,28 @@ export class SqliteVFS {
       const published: string[] = [];
       for (const row of page) {
         const path = job.dst + String(row.path).slice(job.src.length);
+        if (!inserted.has(path)) continue;
         published.push(path);
         this.committedRows.set(path, { gen, file: Number(row.kind) !== INODE_KIND_DIRECTORY });
         if (!this._countersLoaded) continue;
         if (Number(row.kind) === INODE_KIND_DIRECTORY) this._totalDirs++;
         else { this._totalFiles++; this._usedBytes += Number(row.size); }
       }
-      copied += page.length;
+      copied += published.length;
       if (published.length > 0) this.bumpRevision(published);
       // One event for the tree, as rename emits: events queue until the
       // turn ends, and one per copied row would hold the whole tree.
-      if (cursor === null) this.emitMutation(Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' : 'add', job.dst);
+      // Nothing stood at any path it copies to (planCopyTree refuses an
+      // existing target). The bus hears of the tree once, at its root; a
+      // write observer of every entry, a page as it commits.
+      const observed = this.writeObservers.size > 0;
+      const copiedEntry = (path: string) => ({ before: null, after: this.inodes.get(path) ?? null });
+      this.emitMutations([
+        ...(cursor === null && inserted.has(job.dst)
+          ? [{ type: Number(page[0]?.kind) === INODE_KIND_DIRECTORY ? 'addDir' as const : 'add' as const, path: job.dst, change: copiedEntry(job.dst) }]
+          : []),
+        ...(observed ? published.filter((path) => path !== job.dst).map((path) => ({ type: null, path, change: copiedEntry(path) })) : []),
+      ]);
       if (cursor === null) {
         cursor = job.src === '' ? '' : `${job.src}/`;
         if (Number(page[0]?.kind) !== INODE_KIND_DIRECTORY) {
@@ -6357,6 +6443,7 @@ export class SqliteVFS {
     };
     return {
       cred: bound,
+      principal: Object.freeze({ cred: bound }),
       exists: (path) => probe(path) !== undefined,
       isDirectory: (path) => probe(path)?.kind === 'directory',
       isFile: (path) => probe(path)?.kind === 'file',
@@ -7720,9 +7807,9 @@ export class SqliteVFS {
   async tierColdChunks(maxChunks = TIER_PAGE_CHUNKS): Promise<{ tiered: number; bytes: number; deleted: number; done: boolean }> {
     const store = this.requireColdStore();
     const pinned = new Set<number>();
-    for (const opened of this.openNodes) if (opened.inode.chunkId !== null) pinned.add(opened.inode.chunkId);
+    for (const opened of this.pinningNodes()) if (opened.inode.chunkId !== null) pinned.add(opened.inode.chunkId);
     const pinnedContents = [...this.stagingPins()];
-    for (const opened of this.openNodes) if (opened.inode.contentId !== null) pinnedContents.push(opened.inode.contentId);
+    for (const opened of this.pinningNodes()) if (opened.inode.contentId !== null) pinnedContents.push(opened.inode.contentId);
     const hot = [...this.hotSnapshotGens.values()];
     const hotHistory = hot.length === 0 ? '' : `
       AND NOT EXISTS (SELECT 1 FROM vfs_inode_history h WHERE (h.chunk_id = c.id
@@ -8195,15 +8282,16 @@ export class SqliteVFS {
     options: { mode?: number } | undefined,
     cred: VfsCred,
     mutationOwner?: string,
+    origin: Principal | null = null,
   ): Promise<number> {
     if (!Number.isSafeInteger(size) || size < 0) throw vfsError('EINVAL', path, `invalid size ${size}`);
     // uid 0 may use the ledger's kernel reserve (privilegedView), but that view
     // only covers a call's synchronous part, and this one awaits its source:
-    // each transaction below is run with the caller's own privilege.
+    // each transaction below is run with the caller's own privilege, as its call.
     const asCaller = <T>(fn: () => T): T => {
       const prior = this.privileged;
       this.privileged = cred.uid === 0;
-      try { return this.withMutationOwner(mutationOwner, fn); } finally { this.privileged = prior; }
+      try { return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, fn)); } finally { this.privileged = prior; }
     };
     // Refused before a byte is read, as writeFile would refuse it.
     const target = asCaller(() => this.fileWriteInode(path, size, options, cred)).path;
@@ -8277,15 +8365,19 @@ export class SqliteVFS {
     stream: ReadableStream<Uint8Array>,
     options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string; admit?: () => void } = {},
     cred: VfsCred,
+    origin: Principal | null = null,
   ): Promise<WriteBatchStreamResult> {
-    return this.spanning(() => this.consumeStream(stream, options, cred), options.mutationOwner);
+    return this.spanning(() => this.consumeStream(stream, options, cred, origin), options.mutationOwner);
   }
 
   private async consumeStream(
     stream: ReadableStream<Uint8Array>,
     options: { decodeDrainStartedAt?: number; signal?: AbortSignal; mutationOwner?: string; admit?: () => void },
     cred: VfsCred,
+    origin: Principal | null,
   ): Promise<WriteBatchStreamResult> {
+    // Each group commits in its own turn, as the stream's caller (its lease, its principal).
+    const asCaller = <T>(fn: () => T): T => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, fn));
     const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
     const decodeDrainToken = {};
     this._decodeDrainStarts.set(decodeDrainToken, decodeDrainStartedAt);
@@ -8356,7 +8448,7 @@ export class SqliteVFS {
         const pending = unauthorized;
         unauthorized = [];
         const priors = new Map<string, INode | undefined>();
-        this.withMutationOwner(options.mutationOwner, () => {
+        asCaller(() => {
           const normalized = this.authorizeBatch({ inodes: pending.map((file) => file.raw), chunks: [] }, cred, priors).inodes;
           normalized.forEach((inode, index) => {
             const { entry } = pending[index]!;
@@ -8404,7 +8496,7 @@ export class SqliteVFS {
         // Re-check the mutation guard here rather than only where each file
         // was accepted: a group commits after the records that follow it, so
         // this is the check that is contemporaneous with the write.
-        const result = this.withMutationOwner(options.mutationOwner, () => {
+        const result = asCaller(() => {
           this.assertMutationsAllowed(inodes);
           return this._writeBatchOnce(
             { plan, deletedInodes: [] },
@@ -8449,7 +8541,7 @@ export class SqliteVFS {
       options.admit?.();
       const inodes = pendingDirectories;
       pendingDirectories = [];
-      const result = this.withMutationOwner(options.mutationOwner, () => (
+      const result = asCaller(() => (
         this.writeBatch({ inodes, chunks: [] }, cred)
       ));
       progress.committedGroupSequence++;
@@ -8562,7 +8654,7 @@ export class SqliteVFS {
             flushDirectories();
             options.admit?.();
             const affected = Math.max(1, this.collectSubtreeInodes([record.path]).length);
-            this.withMutationOwner(options.mutationOwner, () => {
+            asCaller(() => {
               this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);
             });
             progress.committedGroupSequence++;
@@ -8603,13 +8695,13 @@ export class SqliteVFS {
             if (whole) {
               // Held whole until its group commits, and authorised there.
               const path = this.createdPath(this.storageKey(record.inode.path, cred), cred, placement.placed);
-              this.withMutationOwner(options.mutationOwner, () => this.assertMutationsAllowed([path]));
+              asCaller(() => this.assertMutationsAllowed([path]));
               placedInode = { ...record.inode, path, parentPath: this.parentPath(path) };
             } else {
               // Too large for one group: its chunks commit as they arrive, so it
               // is authorised before the first of them.
               const priors = new Map<string, INode | undefined>();
-              placedInode = this.withMutationOwner(options.mutationOwner, () => {
+              placedInode = asCaller(() => {
                 const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
                 this.assertMutationsAllowed([placed!.path]);
                 return placed!;
@@ -8692,7 +8784,7 @@ export class SqliteVFS {
             // Every file of the group, staged ones included, is authorised
             // (again) in the turn its group commits; until then its entry
             // holds the group's place and accounting, and claims no prior.
-            const entry = this.withMutationOwner(options.mutationOwner, () => (
+            const entry = asCaller(() => (
               this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })
             ));
             group.addInode(entry);
@@ -8845,7 +8937,7 @@ export class SqliteVFS {
     if (!storage) throw new Error('[sqlite-vfs] atomic storage operation requires transactionSync');
     const publication = {
       paths: new Set<string>(),
-      events: new Array<{ type: VfsEventType; path: string; oldPath?: string }>(),
+      events: new Array<Mutation>(),
       structural: new Map<string, StructuralChange>(),
       removedDirectories: new Array<INode>(),
     };
@@ -8863,6 +8955,8 @@ export class SqliteVFS {
         return value;
       });
     } catch (error) {
+      // Nothing it did landed: no observer hears of it.
+      for (const event of publication.events) event.write?.release();
       this.evictAll();
       this.maintenancePending = maintenancePending;
       try {
@@ -8897,9 +8991,7 @@ export class SqliteVFS {
     }
     if (publication.paths.size > 0) this.bumpRevision([...publication.paths], publication.structural);
     this.deliverEvents(publication.removedDirectories, () => {
-      for (const event of publication.events) {
-        this.emitMutation(event.type, event.path, event.oldPath);
-      }
+      for (const event of publication.events) this.deliverMutation(event);
     });
     this.runContentMaintenanceSafely(1);
     return result;
@@ -8926,16 +9018,126 @@ export class SqliteVFS {
     }
   }
 
-  private emitMutation(type: VfsEventType, path: string, oldPath?: string): void {
-    if (this.transactionPublication) {
-      this.transactionPublication.events.push({ type, path, oldPath });
-    } else {
-      // Synchronous path listeners are callers, not part of the lease holder's mutation.
-      const owner = this.activeMutationOwner;
-      this.activeMutationOwner = null;
-      try { this.events.emit(type, path, oldPath); }
-      finally { this.activeMutationOwner = owner; }
+  /**
+   * A mutation that committed, to the event bus and the write observers;
+   * inside an embedder transaction, once it publishes. `change` is what
+   * stood at `path` before it and what stands there now, read at commit:
+   * the observers' event holds both (observedRefs) from now until each
+   * observer is done, so a later write cannot change what they read.
+   */
+  private emitMutation(type: VfsEventType, path: string, oldPath?: string, change?: { before: INode | null; after: INode | null }): void {
+    this.emitMutations([{ type, path, oldPath, change }]);
+  }
+
+  /**
+   * One commit's mutations, in order. Every write event among them holds its
+   * content before any observer hears of the first: an observer's callback
+   * (or a write or collection it makes) runs between deliveries, and must not
+   * take what a later event of the same commit names. `type` null is heard by
+   * the write observers alone (a copy's entries; the bus has the tree's one).
+   */
+  private emitMutations(
+    mutations: readonly { type: VfsEventType | null; path: string; oldPath?: string; change?: { before: INode | null; after: INode | null } }[],
+  ): void {
+    const observed = this.writeObservers.size > 0;
+    const events: Mutation[] = mutations.map(({ type, path, oldPath, change }) => ({
+      type,
+      path,
+      oldPath,
+      write: observed && change !== undefined ? this.writeEvent(path, oldPath, change) : undefined,
+    }));
+    if (this.transactionPublication) this.transactionPublication.events.push(...events);
+    else for (const event of events) this.deliverMutation(event);
+  }
+
+  private deliverMutation({ type, path, oldPath, write }: Mutation): void {
+    // Synchronous path listeners are callers, not part of the lease holder's mutation.
+    const owner = this.activeMutationOwner;
+    this.activeMutationOwner = null;
+    try {
+      if (type !== null) this.events.emit(type, path, oldPath);
+      if (write !== undefined) write.deliver([...this.writeObservers]);
+    } finally {
+      this.activeMutationOwner = owner;
     }
+  }
+
+  /**
+   * Every mutation that lands, whoever made it (a view, a stream, a
+   * descriptor), reported once it committed with what stood at its path
+   * before and what stands there now. While anyone observes, no write
+   * rewrites a chunk or manifest in place (chunkUnshared): what it replaced
+   * survives the commit, held for the observers until each is done.
+   */
+  observeWrites(observer: (event: VfsWriteEvent) => void | Promise<void>): () => void {
+    const entry = (event: VfsWriteEvent) => observer(event);
+    this.writeObservers.add(entry);
+    return () => { this.writeObservers.delete(entry); };
+  }
+
+  /** The event observers are handed for a committed mutation at `key`, its content held until they are done. */
+  private writeEvent(key: string, oldKey: string | undefined, change: { before: INode | null; after: INode | null }): PendingWrite {
+    const origin = this.activeOrigin ?? KERNEL_ORIGIN;
+    const named = (path: string): string => this.logicalPath(path, origin.cred ?? CRED_KERNEL) ?? path;
+    const held: OpenedNode[] = [];
+    const ref = (inode: INode | null): VfsContentRef | null => {
+      if (inode === null) return null;
+      // A copy: the cached row is the live file, which later writes change.
+      const opened: OpenedNode = { inode: { ...inode }, path: null, closed: false };
+      this.observedRefs.add(opened);
+      held.push(opened);
+      const type = inode.isDir ? 'directory' : inode.kind === 'symlink' ? 'symlink' : 'file';
+      return {
+        type,
+        size: inode.isDir ? 0 : inode.size,
+        read: () => {
+          if (opened.closed) throw vfsError('EBADF', named(key), 'the write event was released');
+          if (type === 'directory') throw vfsKeyError('EISDIR', named(key));
+          return this.readContent({ ...opened.inode, path: named(key) }, 0, opened.inode.size, false);
+        },
+      };
+    };
+    const before = ref(change.before);
+    const after = ref(change.after);
+    const event: VfsWriteEvent = {
+      type: oldKey !== undefined ? 'rename' : before === null ? 'create' : after === null ? 'delete' : 'modify',
+      path: named(key),
+      ...(oldKey !== undefined ? { oldPath: named(oldKey) } : {}),
+      before,
+      after,
+      principal: origin,
+    };
+    const release = (): void => {
+      for (const opened of held) {
+        if (opened.closed) continue;
+        opened.closed = true;
+        this.observedRefs.delete(opened);
+        // What it held may be collectable now, as a closed detached description's is.
+        this.maintenancePending = true;
+      }
+    };
+    return {
+      release,
+      deliver: (observers) => {
+        const pending: Promise<unknown>[] = [];
+        for (const observer of observers) {
+          try {
+            const out = observer(event);
+            if (out !== undefined && typeof (out as Promise<void>).then === 'function') pending.push(out);
+          } catch (error) {
+            console.error('[sqlite-vfs] a write observer failed:', this.errorMessage(error));
+          }
+        }
+        if (pending.length === 0) { release(); return; }
+        void Promise.allSettled(pending).then(release);
+      },
+    };
+  }
+
+  /** Every description holding content: the open ones, and the write events observers have not let go of. */
+  private *pinningNodes(): Iterable<OpenedNode> {
+    yield* this.openNodes;
+    yield* this.observedRefs;
   }
 
   private transactionSync(callback: () => void): void {
@@ -9622,7 +9824,7 @@ export class SqliteVFS {
     }
     const pinnedChunks = new Set<number>();
     const pinnedContents = this.stagingPins();
-    for (const opened of this.openNodes) {
+    for (const opened of this.pinningNodes()) {
       if (opened.inode.chunkId !== null) pinnedChunks.add(opened.inode.chunkId);
       if (opened.inode.contentId !== null) pinnedContents.add(opened.inode.contentId);
     }
@@ -9910,7 +10112,7 @@ export class SqliteVFS {
     let chunks = 0;
     let contents = 0;
     const pinned = this.stagingPins();
-    for (const opened of this.openNodes) if (opened.inode.contentId !== null) pinned.add(opened.inode.contentId);
+    for (const opened of this.pinningNodes()) if (opened.inode.contentId !== null) pinned.add(opened.inode.contentId);
     for (let cursor = 0; ;) {
       const page = [...this.sql.exec('SELECT id FROM vfs_chunks WHERE id > ? ORDER BY id LIMIT ?', cursor, KEYS_PER_SQL_EXEC)]
         .map((row) => Number(row.id));
@@ -10181,6 +10383,8 @@ export class SqliteVFS {
     // earlier entry, for a path the batch publishes twice.
     const replacedPaths = new Set<string>();
     const published = new Map<string, INode>();
+    // Each entry's write, as its event names it: what it replaced, and what it published.
+    const changes = new Array<{ before: INode | null; after: INode | null }>(plan.inodes.length);
     for (let index = 0; index < plan.inodes.length; index++) {
       const entry = plan.inodes[index]!;
       const prior = published.get(entry.path) ?? (deleted.has(entry.path) ? undefined : priors[index]);
@@ -10209,6 +10413,7 @@ export class SqliteVFS {
       };
       this.inodes.set(entry.path, node);
       published.set(entry.path, node);
+      changes[index] = { before: prior ?? null, after: node };
 
       // Counter delta — gated on prior so we don't double-count.
       if (prior === undefined) {
@@ -10256,14 +10461,16 @@ export class SqliteVFS {
     }
 
     // 5. Events observe the already-published metadata and revision.
-    this.deliverEvents(removed, () => {
-      for (const inode of deletedInodes) {
-        this.emitMutation(inode.isDir ? 'unlinkDir' : 'unlink', inode.path);
-      }
-      for (const entry of plan.inodes) {
-        this.emitMutation(entry.isDir ? 'addDir' : replacedPaths.has(entry.path) ? 'change' : 'add', entry.path);
-      }
-    });
+    this.deliverEvents(removed, () => this.emitMutations([
+      ...deletedInodes.map((inode) => ({
+        type: inode.isDir ? 'unlinkDir' as const : 'unlink' as const, path: inode.path, change: { before: inode, after: null },
+      })),
+      ...plan.inodes.map((entry, index) => ({
+        type: entry.isDir ? 'addDir' as const : replacedPaths.has(entry.path) ? 'change' as const : 'add' as const,
+        path: entry.path,
+        change: changes[index],
+      })),
+    ]));
 
     this.recordDuration(this._postCommitDuration, performance.now() - postCommitStartedAt);
 

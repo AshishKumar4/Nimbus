@@ -120,9 +120,7 @@ try {
   for (const [name, source] of Object.entries(SCENARIOS)) {
     const terminal = await localTerminal(probe, { install: [] });
     try {
-      const b64 = Buffer.from(source).toString('base64');
-      const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/${name}.js', Buffer.from('${b64}', 'base64'))"`);
-      assert.equal(w.status, 0, w.stdout);
+      await terminal.writeFile(`/home/user/${name}.js`, source);
       const started = Date.now();
       // What a scenario holds when it exits it holds for good (stdin, an
       // unread stream) or for 10 min (children, until the parent's exit

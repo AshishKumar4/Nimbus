@@ -12,11 +12,11 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { sqliteFiles } from '../../packages/core/src/vfs/sqlite-files.ts';
-import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { CompositeVFS } from '../../packages/core/src/vfs/composite.ts';
 import { isVfsError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { modelessBackend } from './lib/composite-backends.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/composite-perm.json', import.meta.url), 'utf8'));
 const enc = new TextEncoder();
@@ -33,14 +33,7 @@ function build(spec) {
     const harness = createSqliteVfsTestHarness();
     vfs = sqliteFiles(new SqliteVFS(harness.sql, harness.ctx), CRED_KERNEL);
   } else {
-    // A backend that keeps no modes: its stats carry none.
-    const memory = new MemoryVFS();
-    const bare = (stat) => { if (stat === null) return null; const { mode, uid, gid, ...rest } = stat; return rest; };
-    vfs = Object.assign(Object.create(memory), {
-      stat: (path, options) => bare(memory.stat(path, options)),
-      readdir: (path) => memory.readdir(path).map((e) => ({ ...e, stat: e.stat && bare(e.stat) })),
-    });
-    vfs.sync = vfs;
+    vfs = modelessBackend();
   }
   for (const entry of spec.entries) {
     if (entry.kind === 'directory') vfs.mkdir(entry.path);

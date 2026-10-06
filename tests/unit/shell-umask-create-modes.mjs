@@ -4,10 +4,9 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessTable } from '../../packages/core/src/runtime/process-table.ts';
-import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { asProcess, runCommand, unixCommandRegistry } from './lib/unix-commands.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -18,29 +17,8 @@ root.chmod('work', 0o777);
 const processes = new ProcessTable();
 const privateShell = processes.spawn('sh', ['sh'], '/work');
 const ordinaryShell = processes.spawn('sh', ['sh'], '/work');
-const registry = createDefaultRegistry();
-registerUnixCommands(registry, rawVfs);
-
-async function run(name, args, pid) {
-  const command = await registry.resolve(name);
-  assert.ok(command, `${name} is registered`);
-  const cred = processes.credOf(pid);
-  let stdout = '';
-  let stderr = '';
-  const exitCode = await command({
-    args,
-    cwd: '/work',
-    env: {},
-    pid,
-    cred,
-    vfs: rawVfs.as(cred),
-    setUmask: (mask) => processes.setUmask(pid, mask),
-    stdout: { write: (value) => { stdout += String(value); } },
-    stderr: { write: (value) => { stderr += String(value); } },
-    signal: new AbortController().signal,
-  });
-  return { exitCode, stdout, stderr };
-}
+const registry = unixCommandRegistry(rawVfs);
+const run = (name, args, pid) => runCommand(registry, rawVfs, name, args, { cwd: '/work', ...asProcess(processes, pid) });
 
 assert.deepEqual(await run('umask', ['077'], privateShell.pid), {
   exitCode: 0,

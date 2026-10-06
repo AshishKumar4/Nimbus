@@ -15,7 +15,7 @@
 // only stall the install.
 
 import assert from 'node:assert/strict';
-import { gzipSync, gunzipSync } from 'node:zlib';
+import { gunzipSync } from 'node:zlib';
 import { installPackagesInFacet } from '../../packages/worker/src/npm/install-batch-facet.ts';
 import {
   readableStreamToAsyncIterable,
@@ -23,9 +23,9 @@ import {
   streamTarEntries,
 } from '../../packages/core/src/_shared/tarball-stream.ts';
 import {
-  decodeWriteBatchStream,
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
+import { decodeWave, packageTarball } from './lib/tarball-fixture.mjs';
 
 globalThis.streamPackageEntries = streamPackageEntries;
 globalThis.streamTarEntries = streamTarEntries;
@@ -59,63 +59,15 @@ globalThis.DecompressionStream = class DecompressionStream {
   }
 };
 
-function octal(value, width) {
-  return value.toString(8).padStart(width - 1, '0') + '\0';
-}
-
-function tarFile(name, text) {
-  const data = new TextEncoder().encode(text);
-  const header = new Uint8Array(512);
-  const write = (offset, value, width) => {
-    header.set(new TextEncoder().encode(value).subarray(0, width), offset);
-  };
-  write(0, name, 100);
-  write(100, octal(0o644, 8), 8);
-  write(108, octal(0, 8), 8);
-  write(116, octal(0, 8), 8);
-  write(124, octal(data.length, 12), 12);
-  write(136, octal(0, 12), 12);
-  header.fill(0x20, 148, 156);
-  header[156] = 0x30;
-  write(257, 'ustar\0', 6);
-  write(263, '00', 2);
-  write(148, octal(header.reduce((sum, byte) => sum + byte, 0), 8), 8);
-  const padded = new Uint8Array(Math.ceil(data.length / 512) * 512);
-  padded.set(data);
-  return [header, padded];
-}
-
 function makeTarball() {
-  const parts = [
-    ...tarFile('package/package.json', '{"name":"fixture","version":"1.0.0"}'),
-    ...tarFile('package/index.js', 'export default 1;'),
-    new Uint8Array(1024),
-  ];
-  const tar = new Uint8Array(parts.reduce((sum, part) => sum + part.length, 0));
-  let offset = 0;
-  for (const part of parts) {
-    tar.set(part, offset);
-    offset += part.length;
-  }
-  return new Uint8Array(gzipSync(tar));
+  return packageTarball({
+    'package/package.json': '{"name":"fixture","version":"1.0.0"}',
+    'package/index.js': 'export default 1;',
+  });
 }
 
 const tarball = makeTarball();
 
-async function decodeWave(stream) {
-  const decoded = await decodeWriteBatchStream(stream);
-  const paths = [];
-  let chunks = 0;
-  for await (const record of decoded.records) {
-    if (record.type === 'directory' || record.type === 'file-begin') {
-      paths.push(record.inode.path);
-    } else if (record.type === 'file-chunk') {
-      chunks++;
-      record.retention.release();
-    }
-  }
-  return { paths, chunks };
-}
 
 const packages = ['a', 'b', 'c'].map((name) => ({
   name,
@@ -265,12 +217,9 @@ function okResult(decoded) {
   // A package with more files than one wave carries (WAVE_PATHS), so its
   // first wave holds only its files, and its remaining files, plus b and c,
   // follow in later waves.
-  const wideParts = [...tarFile('package/package.json', '{"name":"a","version":"1.0.0"}')];
-  for (let i = 0; i < WAVE_PATHS + 100; i++) wideParts.push(...tarFile(`package/lib/f${i}.js`, `export const f${i} = ${i};`));
-  wideParts.push(new Uint8Array(1024));
-  const wideTar = new Uint8Array(wideParts.reduce((sum, part) => sum + part.length, 0));
-  { let offset = 0; for (const part of wideParts) { wideTar.set(part, offset); offset += part.length; } }
-  const wideTarball = new Uint8Array(gzipSync(wideTar));
+  const wideFiles = { 'package/package.json': '{"name":"a","version":"1.0.0"}' };
+  for (let i = 0; i < WAVE_PATHS + 100; i++) wideFiles[`package/lib/f${i}.js`] = `export const f${i} = ${i};`;
+  const wideTarball = packageTarball(wideFiles);
   const decodedWaves = [];
   let attempts = 0;
   const widePackages = packages.map((pkg) => (pkg.name === 'a' ? { ...pkg, integrity: 'sha512-wide' } : pkg));

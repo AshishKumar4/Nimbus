@@ -22,7 +22,7 @@
  * before it is compiled or evaluated, as for the opencode artifact.
  */
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_ARTIFACTS, } from '../napi-wasm-artifacts.generated.js';
-import { fetchStagedBytes } from './staged-source.js';
+import { fetchStagedBytes, stagedAsset } from './staged-source.js';
 export { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE };
 /** Module-map names of the members every launch with a staged binding carries. */
 export const STAGED_BINDING_LOADER_MODULE = 'nimbus-napi-wasm-loader.js';
@@ -69,18 +69,14 @@ export function stagedBindingCacheKey(asset) {
 }
 /** Fetch one staged file, verified against its pinned digest. */
 export function fetchStagedBindingAsset(env, asset) {
-    const { path, sha256 } = asset;
-    return fetchStagedBytes(env, {
-        path,
+    return fetchStagedBytes(env, stagedAsset({
+        label: 'staged napi binding',
+        path: asset.path,
         l2Key: stagedBindingCacheKey(asset),
-        sha256,
-        poisonedCache: 'reject',
-        missingBinding: `Nimbus: staged napi bindings require an env.ASSETS binding (serves ${path})`,
-        fetchFailed: (res) => `staged napi binding asset fetch failed: ${res.status} ${res.statusText} for ${path}: ` +
-            'the deploy is missing the staged artifact (scripts/bundle-napi-wasm.mjs)',
-        integrityFailed: (digest, from) => `staged napi binding asset integrity check failed for ${path}: expected ${sha256}, got ${digest} (${from}); ` +
-            'the staged artifact is corrupt or out of sync; rerun scripts/bundle-napi-wasm.mjs and redeploy',
-    });
+        sha256: asset.sha256,
+        requiredBy: 'staged napi bindings',
+        stagedBy: 'scripts/bundle-napi-wasm.mjs',
+    }));
 }
 /**
  * The main-module block that registers `names`. It imports the shared loader

@@ -24,7 +24,7 @@ import {
   TYPESCRIPT_INDEX_CANDIDATES,
   typescriptFallbackCandidates,
 } from '../_shared/typescript-specifiers.js';
-import { normalizeVfsPath } from '../vfs/path.js';
+import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 
 /**
  * The filesystem questions resolution needs; held-cell reuse can additionally
@@ -79,9 +79,6 @@ export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
     readBytes,
   };
 }
-export function strip(p: string): string { return p.replace(/^\/+/, ''); }
-
-const normalizePath = normalizeVfsPath;
 
 /**
  * Sink for package.json files consulted during LOAD_AS_DIRECTORY
@@ -130,13 +127,13 @@ async function packageText(vfs: RequireFs, path: string, progress?: WalkProgress
 export async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<string | null> {
   const fileExts = ['', '.js', '.mjs', '.cjs', '.json'];
   for (const ext of fileExts) {
-    const p = normalizePath(base + ext);
+    const p = normalizeVfsPath(base + ext);
     if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
   // LOAD_AS_DIRECTORY: prefer package.json#main over index.*
   const baseTrim = base.replace(/\/+$/, '');
-  const pkgJsonPath = normalizePath(baseTrim + '/package.json');
+  const pkgJsonPath = normalizeVfsPath(baseTrim + '/package.json');
   if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
   if ((await vfs.exists(pkgJsonPath)) && !(await vfs.isDirectory(pkgJsonPath))) {
     let pkg: ResolvablePackageJson | null = null;
@@ -156,7 +153,7 @@ export async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSi
   }
   const indexExts = ['/index.js', '/index.cjs', '/index.mjs', '/index.json'];
   for (const ext of indexExts) {
-    const p = normalizePath(base + ext);
+    const p = normalizeVfsPath(base + ext);
     if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
@@ -164,12 +161,12 @@ export async function resolveFile(vfs: RequireFs, base: string, sink?: PkgJsonSi
   // so the specifiers whose resolution changes are exactly those that resolve
   // to nothing today. See _shared/typescript-specifiers.ts for the scope.
   for (const candidate of typescriptFallbackCandidates(baseTrim)) {
-    const p = normalizePath(candidate);
+    const p = normalizeVfsPath(candidate);
     if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
   for (const ext of TYPESCRIPT_INDEX_CANDIDATES) {
-    const p = normalizePath(baseTrim + ext);
+    const p = normalizeVfsPath(baseTrim + ext);
     if (progress) await progress(METADATA_CANDIDATE_WORK + p.length);
     if ((await vfs.exists(p)) && !(await vfs.isDirectory(p))) return p;
   }
@@ -269,7 +266,7 @@ async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string
     }
   }
 
-  let dir = strip(fromDir);
+  let dir = stripLeadingSlashes(fromDir);
   const visited = new Set<string>();
   while (true) {
     if (visited.has(dir)) break;
@@ -291,8 +288,8 @@ async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string
 export async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
   if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
     const base = id.startsWith('/')
-      ? strip(id)
-      : normalizePath(strip(fromDir) + '/' + id);
+      ? stripLeadingSlashes(id)
+      : normalizeVfsPath(stripLeadingSlashes(fromDir) + '/' + id);
     const r = (await resolveFile(vfs, base, sink, progress));
     return r ? { resolved: r } : null;
   }
@@ -338,7 +335,7 @@ async function nearestPackageScope(
   sink?: PkgJsonSink,
   progress?: WalkProgress,
 ): Promise<{ dir: string; pkg: (ResolvablePackageJson & SelfReferencingPackageJson) | null } | null> {
-  let dir = strip(fromDir);
+  let dir = stripLeadingSlashes(fromDir);
   while (true) {
     if (dir === 'node_modules' || dir.endsWith('/node_modules')) return null;
     const pkgJsonPath = (dir ? dir + '/' : '') + 'package.json';
@@ -376,10 +373,10 @@ async function resolveImportsField(
   // imports targets are relative to the package root (`dir`).
   if (target.startsWith('./')) {
     const base = (dir ? dir + '/' : '') + target.slice(2);
-    return (await resolveFile(vfs, normalizePath(base), sink, progress));
+    return (await resolveFile(vfs, normalizeVfsPath(base), sink, progress));
   }
   if (target.startsWith('/')) {
-    return (await resolveFile(vfs, strip(target), sink, progress));
+    return (await resolveFile(vfs, stripLeadingSlashes(target), sink, progress));
   }
   // Bare specifier — re-resolve as a node_module from `dir`.
   const r = (await resolveNodeModuleEx(vfs, target, dir, sink, progress));
@@ -414,6 +411,6 @@ async function resolvePackageSelf(
   let entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_CJS_CONDITIONS);
   if (entry == null) entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
   if (entry == null) return { resolved: null };
-  const resolved = await resolveFile(vfs, normalizePath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink, progress);
+  const resolved = await resolveFile(vfs, normalizeVfsPath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink, progress);
   return { resolved };
 }

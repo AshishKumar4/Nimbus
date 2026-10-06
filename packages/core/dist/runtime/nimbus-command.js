@@ -15,6 +15,7 @@
  */
 import { parseRuntimeManifest } from './runtime-manifest.js';
 import { resolveContext } from '../substrate/lifo/commands/registry.js';
+import { splitRuntimeSpec } from './runtime-package.js';
 const NIMBUS_USAGE = [
     'usage: nimbus install <name>[@<version>] | nimbus install --list | nimbus install --available | nimbus uninstall <name>',
     '       nimbus expose <port|pid> [--public] [--name <name>]',
@@ -141,9 +142,7 @@ async function runNimbusUninstall(args, ctx, deps) {
         return 2;
     }
     const spec = args[0];
-    const atIdx = spec.indexOf('@');
-    const name = atIdx >= 0 ? spec.slice(0, atIdx) : spec;
-    const version = atIdx >= 0 ? spec.slice(atIdx + 1) : null;
+    const { name, versionOverride: version } = splitRuntimeSpec(spec);
     const matches = (await deps.runtimes.list()).filter((runtime) => runtime.name === name && (version === null || runtime.version === version));
     if (matches.length === 0) {
         ctx.stderr.write(`nimbus uninstall: '${name}' is not installed\n`);

@@ -26,85 +26,19 @@
 // evicted, and the peer and failure cases where the cell must still go.
 
 import assert from 'node:assert/strict';
-import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
-import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { processBridge } from './lib/process-bridge.mjs';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
-
-const harness = createSqliteVfsTestHarness();
-const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
-const vfs = rawVfs.as(CRED_KERNEL);
-// The supervisor acts as the process's own credential, as SupervisorRPC does,
-// and the tree the process works in is its own: what it writes back is owned
-// by it, and a stat of it says so.
-const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
-function ownTree(path = '') {
-  for (const entry of vfs.readdir(path)) {
-    const at = path ? `${path}/${entry.name}` : entry.name;
-    vfs.chown(at, 1000, 1000);
-    if (entry.type === 'directory') ownTree(at);
-  }
-}
-const enc = new TextEncoder();
-const dec = new TextDecoder();
-const dir = '/home/user/p';
-vfs.mkdir(dir, { recursive: true });
-
-const WRITER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
-rawVfs.activateAppendWriter(1, WRITER);
-ownTree();
-const supervisor = {
-  readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
-  writeFile: (p, c) => bridge.writeFile(p, c),
-  stat: (p) => bridge.stat(p),
-  lstat: (p) => bridge.stat(p, { followSymlinks: false }),
-  readdir: (p) => bridge.readdir(p),
-  exists: async (p) => (await bridge.stat(p)) !== null,
-  access: (p, m) => bridge.access(p, m),
-  mkdir: (p) => bridge.mkdir(p, { recursive: true }),
-  fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
-  fsTruncate: (p, s) => bridge.truncate(p, s),
-  async fsAppend(p, moduleId, operationId, bytes) {
-    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-    const digest = Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return bridge.appendOnce(p, 1, WRITER, moduleId, Number(operationId), digest, bytes);
-  },
-  fsAppendAck: (moduleId, operationId) => bridge.acknowledgeAppend(1, WRITER, moduleId, Number(operationId)),
-  utimes: (p, a, m) => bridge.utimes(p, a, m),
-  chmod: (p, m) => bridge.chmod(p, m),
-  chown: (p, u, g, o) => bridge.chown(p, u, g, o),
-  fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
-};
-
-globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
+import { PROCESS_DIR, shimStoreProcess } from './lib/shim-store-process.mjs';
 
 // The platform's timer, captured before the shims wrap setTimeout in the
 // resumption barrier: a plain wait that is not itself a resumption.
 const rawSetTimeout = globalThis.setTimeout;
 const rawSleep = (ms) => new Promise((resolve) => rawSetTimeout(resolve, ms));
 
-const factory = new Function(
-  '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
-  '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + SHIMS_STORE_PRELUDE + generateShimsCode()
-  + '\n;return { fs: __fsMod, setTimeout: globalThis.setTimeout };',
-);
-const out = (declareNamespace({ metadata: { 'home/user/p': { type: 'directory', size: 0, mode: 0o755, uid: 1000, gid: 1000 } }, manifest: { 'home/user': ['p'], 'home/user/p': [] } }), factory(
-  {},
-  {},
-  supervisor,
-  { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
-  dir,
-  [],
-  {},
-  `${dir}/s.mjs`,
-  dir,
-));
-const { fs } = out;
-const stats = globalThis.__nimbusVfsCoherence;
+const enc = new TextEncoder();
+const dir = PROCESS_DIR;
+const WRITER = 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa';
+const { vfs, supervisor, fs, setTimeout: shimSetTimeout, stats } = shimStoreProcess({ writer: WRITER });
+const out = { setTimeout: shimSetTimeout };
 
 // An async stat is the cheapest ACQUIRE: it evicts what the authority
 // reports as changed and refetches nothing, which is exactly the shape in

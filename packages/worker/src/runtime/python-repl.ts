@@ -1,4 +1,5 @@
 import { IsolatePool } from '@nimbus-sh/fabric/isolate-pool.js';
+import { toArrayBuffer } from '@nimbus-sh/core/_shared/bytes.js';
 import { withHostView, type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import type { FacetBindings } from '@nimbus-sh/core/runtime/facet-host.js';
 import type { Shell } from '@nimbus-sh/core/substrate/lifo/shell/Shell.js';
@@ -97,10 +98,6 @@ const CPYTHON_WASM_REL = 'share/cpython/python.wasm';
 const CPYTHON_SCI_WASM_REL = 'share/cpython/python-sci.wasm';
 const CPYTHON_SCI_PACKAGES_REL = 'lib/sci-packages.zip';
 const CPYTHON_STDLIB_REL = 'lib/python313.zip';
-
-function toArrayBuffer(bytes: Uint8Array): ArrayBuffer {
-  return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
-}
 
 /**
  * The per-submission driver, as Python source.

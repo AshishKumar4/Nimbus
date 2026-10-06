@@ -49,6 +49,7 @@
  *   7. Return {pkg, deps, peerDeps, optionalDeps, cacheWrites, messages,
  *      events, packumentBytesDecoded, packumentSource, error?}.
  */
+import { packageRangeSeparator } from './package-spec.js';
 /**
  * Parse an npm spec into install-name / registry-name / range. `npm:`
  * aliases redirect the registry lookup to a different package while the
@@ -63,17 +64,7 @@ export function parseRegistryRequest(name, range) {
         return { installName: name, registryName: name, range: text, alias: false };
     }
     const target = text.slice(4);
-    const findSeparator = (specText) => {
-        if (!specText)
-            return -1;
-        if (specText[0] !== '@')
-            return specText.indexOf('@');
-        const slash = specText.indexOf('/');
-        if (slash < 0)
-            return -1;
-        return specText.indexOf('@', slash + 1);
-    };
-    const splitAt = findSeparator(target);
+    const splitAt = packageRangeSeparator(target);
     const registryName = splitAt >= 0 ? target.slice(0, splitAt) : target;
     const targetRange = splitAt >= 0 ? target.slice(splitAt + 1) : 'latest';
     return {

@@ -48,14 +48,6 @@ export declare const WASM32_MAX_PAGES = 65536;
  * `memory.grow` can see it.
  */
 export declare const DEFAULT_WASM_PROCESS_LIMIT_BYTES: number;
-/** Limits declared by a wasm memory, in pages. */
-export interface WasmMemoryLimits {
-    readonly minPages: number;
-    /** `null` when the binary declares no maximum — growth is unbounded. */
-    readonly maxPages: number | null;
-    /** Raw limits flags. Bit 0 = has-maximum, bit 1 = shared, bit 2 = memory64. */
-    readonly flags: number;
-}
 /**
  * Return a copy of `bytes` whose defined memory carries an explicit maximum of
  * at most `limitBytes`.

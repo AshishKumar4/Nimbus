@@ -4,10 +4,9 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessTable } from '../../packages/core/src/runtime/process-table.ts';
-import { createDefaultRegistry } from '../../packages/core/src/substrate/lifo/commands/registry.ts';
-import { registerUnixCommands } from '../../packages/core/src/shell/unix-commands.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { asProcess, runCommand, unixCommandRegistry } from './lib/unix-commands.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -29,30 +28,9 @@ root.chmod('work', 0o777);
 const processes = new ProcessTable();
 const first = processes.spawn('sh', ['sh'], '/work');
 const second = processes.spawn('sh', ['sh'], '/work');
-const registry = createDefaultRegistry();
-registerUnixCommands(registry, rawVfs);
-
-async function run(name, args, pid, overrides = {}) {
-  const command = await registry.resolve(name);
-  assert.ok(command, `${name} is registered`);
-  const cred = processes.credOf(pid);
-  let stdout = '';
-  let stderr = '';
-  const exitCode = await command({
-    args,
-    cwd: '/work',
-    env: {},
-    pid,
-    cred,
-    vfs: rawVfs.as(cred),
-    setUmask: (mask) => processes.setUmask(pid, mask),
-    runAs: overrides.runAs ?? (async () => ({ status: 0, signal: null })),
-    stdout: { write: (value) => { stdout += String(value); } },
-    stderr: { write: (value) => { stderr += String(value); } },
-    signal: new AbortController().signal,
-  });
-  return { exitCode, stdout, stderr };
-}
+const registry = unixCommandRegistry(rawVfs);
+const run = (name, args, pid, { runAs = async () => ({ status: 0, signal: null }) } = {}) =>
+  runCommand(registry, rawVfs, name, args, { cwd: '/work', ...asProcess(processes, pid), runAs });
 
 assert.deepEqual(await run('umask', [], first.pid), {
   exitCode: 0,
@@ -95,29 +73,13 @@ const runAs = async (cred, argv) => {
   return { status: 23, signal: null };
 };
 
-assert.equal((await run('sudo', ['id'], first.pid, { runAs })).exitCode, 23);
-assert.deepEqual(invocations.shift(), {
-  cred: CRED_KERNEL,
-  argv: ['id'],
-}, 'sudo spawns the requested command with the root credential');
-
+// Which credential sudo and su map to is shell-su-sudo's; what this file
+// owns is that the elevated process keeps the caller's umask.
 assert.equal((await run('sudo', ['-u', 'user', 'whoami'], first.pid, { runAs })).exitCode, 23);
 assert.deepEqual(invocations.shift(), {
   cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o077 },
   argv: ['whoami'],
 }, 'sudo -u maps the name back to the user principal and preserves process umask');
-
-assert.equal((await run('su', ['root'], first.pid, { runAs })).exitCode, 23);
-assert.deepEqual(invocations.shift(), {
-  cred: CRED_KERNEL,
-  argv: ['sh'],
-}, 'passwordless su starts a root shell');
-
-assert.equal((await run('su', ['user', '-c', 'whoami'], first.pid, { runAs })).exitCode, 23);
-assert.deepEqual(invocations.shift(), {
-  cred: { uid: 1000, gid: 1000, groups: [1000], umask: 0o077 },
-  argv: ['sh', '-c', 'whoami'],
-}, 'su maps a named user and runs its command through the shell');
 
 const unknown = await run('sudo', ['-u', 'missing', 'id'], first.pid, { runAs });
 assert.equal(unknown.exitCode, 1);

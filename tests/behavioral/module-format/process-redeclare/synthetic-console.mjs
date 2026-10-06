@@ -32,10 +32,6 @@ await t.waitForPrompt(60_000);
 
 const A = makeAsserter('process-redeclare/synthetic-console');
 
-async function writeFile(path, contents) {
-  await t.run(`cat > ${path} << 'NIMBUS_HEREDOC_EOF'\n${contents}\nNIMBUS_HEREDOC_EOF`, 10_000);
-}
-
 await t.run('rm -rf /home/user/pc && mkdir -p /home/user/pc', 5_000);
 // Default-import the node:console Console class as `console` — collides
 // with the `console` extra-param. Use globalThis.console.log to print
@@ -49,7 +45,7 @@ const _tla = await Promise.resolve('CON_OK');
 
 globalThis.console.log('SENTINEL=console_ok con=' + (typeof console) + ' url=' + (typeof fileURLToPath) + ' tla=' + _tla);
 `;
-await writeFile('/home/user/pc/entry.mjs', src);
+await t.writeFile('/home/user/pc/entry.mjs', src);
 
 const r = await t.run('node /home/user/pc/entry.mjs', 30_000);
 const out = r.output;

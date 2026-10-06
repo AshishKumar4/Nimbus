@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // shell/installer-primitives — primitives used by curl-to-sh installers.
 
-import { deleteSession, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal } from '../_driver.mjs';
+import { deleteSession, heredocCommand, makeAsserter, mintSession, stripAnsi, Terminal, hasOutputLine } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const label = 'shell/installer-primitives';
@@ -24,7 +24,7 @@ try {
     const { output } = await t.run('sh /tmp/set-e.sh; echo STATUS=$?', 20_000);
     const body = normalized(output);
     a.check('set -e stops script after a failing command',
-      !hasLine(body, 'SET_E_SHOULD_NOT_PRINT') && hasLine(body, 'STATUS=1'),
+      !hasOutputLine(body, 'SET_E_SHOULD_NOT_PRINT') && hasOutputLine(body, 'STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -32,7 +32,7 @@ try {
     const { output } = await t.run("sh -e -c 'false; echo SH_E_SHOULD_NOT_PRINT'; echo STATUS=$?", 20_000);
     const body = normalized(output);
     a.check('sh -e invocation option enables errexit',
-      !hasLine(body, 'SH_E_SHOULD_NOT_PRINT') && hasLine(body, 'STATUS=1'),
+      !hasOutputLine(body, 'SH_E_SHOULD_NOT_PRINT') && hasOutputLine(body, 'STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -46,7 +46,7 @@ try {
     const body = normalized(output);
     a.check('set -u fails on unbound variables',
       /NIMBUS_MISSING_VAR: unbound variable/.test(body)
-        && !hasLine(body, 'SET_U_SHOULD_NOT_PRINT')
+        && !hasOutputLine(body, 'SET_U_SHOULD_NOT_PRINT')
         && /(^|\n)STATUS=[1-9]\d*(\n|$)/.test(body),
       JSON.stringify(tail(body)));
   }
@@ -56,7 +56,7 @@ try {
     const body = normalized(output);
     a.check('sh -u invocation option enables nounset',
       /NIMBUS_MISSING_INVOCATION_VAR: unbound variable/.test(body)
-        && !hasLine(body, 'SH_U_SHOULD_NOT_PRINT')
+        && !hasOutputLine(body, 'SH_U_SHOULD_NOT_PRINT')
         && /(^|\n)STATUS=[1-9]\d*(\n|$)/.test(body),
       JSON.stringify(tail(body)));
   }
@@ -69,7 +69,7 @@ try {
     const { output } = await t.run('sh /tmp/set-positionals.sh', 20_000);
     const body = normalized(output);
     a.check('set -- resets positional parameters',
-      hasLine(body, 'alpha|beta|2|alpha beta'),
+      hasOutputLine(body, 'alpha|beta|2|alpha beta'),
       JSON.stringify(tail(body)));
   }
 
@@ -84,15 +84,15 @@ try {
     const { output } = await t.run('sh /tmp/shift-positionals.sh', 20_000);
     const body = normalized(output);
     a.check('shift updates positional parameters',
-      hasLine(body, 'S1=beta|2|beta gamma')
-        && hasLine(body, 'S2=0'),
+      hasOutputLine(body, 'S1=beta|2|beta gamma')
+        && hasOutputLine(body, 'S2=0'),
       JSON.stringify(tail(body)));
   }
   {
     const { output } = await t.run("sh -c 'set --; shift 1'; echo SHIFT_STATUS=$?", 20_000);
     const body = normalized(output);
     a.check('shift rejects out-of-range counts',
-      hasLine(body, 'SHIFT_STATUS=1'),
+      hasOutputLine(body, 'SHIFT_STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -113,7 +113,7 @@ try {
     const { output } = await t.run('sh /tmp/function-positionals-frame.sh', 20_000);
     const body = normalized(output);
     a.check('background function positionals are isolated per invocation',
-      hasLine(body, 'ARG=expected'),
+      hasOutputLine(body, 'ARG=expected'),
       JSON.stringify(tail(body)));
   }
 
@@ -148,10 +148,10 @@ try {
     const { output } = await t.run('sh /tmp/positional-frame-forks.sh', 20_000);
     const body = normalized(output);
     a.check('fork-like execution boundaries do not mutate caller positionals',
-      hasLine(body, 'BG_PARENT=parent')
-        && hasLine(body, 'PIPE_PARENT=parent')
-        && hasLine(body, 'CAPTURE_PARENT=parent|captured')
-        && hasLine(body, 'SUBSHELL_PARENT=parent'),
+      hasOutputLine(body, 'BG_PARENT=parent')
+        && hasOutputLine(body, 'PIPE_PARENT=parent')
+        && hasOutputLine(body, 'CAPTURE_PARENT=parent|captured')
+        && hasOutputLine(body, 'SUBSHELL_PARENT=parent'),
       JSON.stringify(tail(body)));
   }
 
@@ -178,9 +178,9 @@ try {
     const { output } = await t.run('sh /tmp/source-positionals.sh', 20_000);
     const body = normalized(output);
     a.check('source preserves caller positionals and supports temporary source arguments',
-      hasLine(body, 'SOURCE_NOARGS_AFTER=sourced')
-        && hasLine(body, 'SOURCE_ARGS=alpha|beta')
-        && hasLine(body, 'SOURCE_ARGS_AFTER=parent'),
+      hasOutputLine(body, 'SOURCE_NOARGS_AFTER=sourced')
+        && hasOutputLine(body, 'SOURCE_ARGS=alpha|beta')
+        && hasOutputLine(body, 'SOURCE_ARGS_AFTER=parent'),
       JSON.stringify(tail(body)));
   }
 
@@ -188,7 +188,7 @@ try {
     const { output } = await t.run("sh -o pipefail -c 'false | true; echo PIPE_INVOCATION_STATUS=$?'", 20_000);
     const body = normalized(output);
     a.check('sh -o pipefail invocation option reports the failing pipeline command',
-      hasLine(body, 'PIPE_INVOCATION_STATUS=1'),
+      hasOutputLine(body, 'PIPE_INVOCATION_STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -201,7 +201,7 @@ try {
     const { output } = await t.run('sh /tmp/pipefail.sh', 20_000);
     const body = normalized(output);
     a.check('set -o pipefail reports the failing pipeline command',
-      hasLine(body, 'PIPE_STATUS=1'),
+      hasOutputLine(body, 'PIPE_STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -214,7 +214,7 @@ try {
     const { output } = await t.run('sh /tmp/set-euo-pipefail.sh; echo STATUS=$?', 20_000);
     const body = normalized(output);
     a.check('set -euo pipefail enables errexit, nounset, and pipefail together',
-      !hasLine(body, 'SET_EUO_PIPEFAIL_SHOULD_NOT_PRINT') && hasLine(body, 'STATUS=1'),
+      !hasOutputLine(body, 'SET_EUO_PIPEFAIL_SHOULD_NOT_PRINT') && hasOutputLine(body, 'STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -227,8 +227,8 @@ try {
     const body = normalized(output);
     a.check('set rejects unsupported option flags',
       /set: -z: invalid option/.test(body)
-        && !hasLine(body, 'SET_INVALID_SHOULD_NOT_PRINT')
-        && hasLine(body, 'STATUS=2'),
+        && !hasOutputLine(body, 'SET_INVALID_SHOULD_NOT_PRINT')
+        && hasOutputLine(body, 'STATUS=2'),
       JSON.stringify(tail(body)));
   }
 
@@ -242,8 +242,8 @@ try {
     const body = normalized(output);
     a.check('readonly variables cannot be reassigned',
       /NIMBUS_RO: readonly variable/.test(body)
-        && !hasLine(body, 'READONLY_SHOULD_NOT_PRINT')
-        && hasLine(body, 'STATUS=1'),
+        && !hasOutputLine(body, 'READONLY_SHOULD_NOT_PRINT')
+        && hasOutputLine(body, 'STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -255,7 +255,7 @@ try {
     const { output } = await t.run('sh /tmp/trap-exit.sh; echo STATUS=$?', 20_000);
     const body = normalized(output);
     a.check('trap EXIT runs at shell script exit with the script status',
-      hasLine(body, 'TRAP_STATUS=1') && hasLine(body, 'STATUS=1'),
+      hasOutputLine(body, 'TRAP_STATUS=1') && hasOutputLine(body, 'STATUS=1'),
       JSON.stringify(tail(body)));
   }
 
@@ -269,7 +269,7 @@ try {
     const { output } = await t.run('sh /tmp/background-pid.sh; echo STATUS=$?', 20_000);
     const body = normalized(output);
     a.check('$! is a waitable and killable process id',
-      /(^|\n)WAIT_KILLED=[1-9]\d*(\n|$)/.test(body) && hasLine(body, 'STATUS=0'),
+      /(^|\n)WAIT_KILLED=[1-9]\d*(\n|$)/.test(body) && hasOutputLine(body, 'STATUS=0'),
       JSON.stringify(tail(body)));
   }
 
@@ -277,7 +277,7 @@ try {
     const { output } = await t.run('[ -t 1 ] && echo INTERACTIVE_STDOUT_TTY || echo INTERACTIVE_STDOUT_NOT_TTY', 20_000);
     const body = normalized(output);
     a.check('interactive shell reports stdout as a terminal',
-      hasLine(body, 'INTERACTIVE_STDOUT_TTY'),
+      hasOutputLine(body, 'INTERACTIVE_STDOUT_TTY'),
       JSON.stringify(tail(body)));
   }
 
@@ -292,7 +292,7 @@ try {
     const { output } = await t.run('sh /tmp/nested-arithmetic.sh; echo STATUS=$?', 20_000);
     const body = normalized(output);
     a.check('nested arithmetic expansion parses in installer-style scripts',
-      hasLine(body, 'HEAD=7') && hasLine(body, 'STATUS=0'),
+      hasOutputLine(body, 'HEAD=7') && hasOutputLine(body, 'STATUS=0'),
       JSON.stringify(tail(body)));
   }
 
@@ -305,13 +305,13 @@ try {
     const { output } = await t.run('cat /tmp/tty-probe.sh | sh', 20_000);
     const body = normalized(output);
     a.check('piped sh stdin is not a terminal',
-      hasLine(body, 'STDIN_NOT_TTY') && !hasLine(body, 'STDIN_TTY'),
+      hasOutputLine(body, 'STDIN_NOT_TTY') && !hasOutputLine(body, 'STDIN_TTY'),
       JSON.stringify(tail(body)));
     a.check('piped sh keeps stdout terminal metadata',
-      hasLine(body, 'STDOUT_TTY') && !hasLine(body, 'STDOUT_NOT_TTY'),
+      hasOutputLine(body, 'STDOUT_TTY') && !hasOutputLine(body, 'STDOUT_NOT_TTY'),
       JSON.stringify(tail(body)));
     a.check('piped sh keeps a controlling /dev/tty separate from fd 0',
-      hasLine(body, 'HAS_DEV_TTY') && !hasLine(body, 'NO_DEV_TTY'),
+      hasOutputLine(body, 'HAS_DEV_TTY') && !hasOutputLine(body, 'NO_DEV_TTY'),
       JSON.stringify(tail(body)));
   }
 
@@ -320,7 +320,7 @@ try {
     const { output } = await t.run('cat /tmp/history-heredoc.txt', 20_000);
     const body = normalized(output);
     a.check('history expansion does not rewrite heredoc bodies',
-      hasLine(body, 'literal=!!key.ctrl'),
+      hasOutputLine(body, 'literal=!!key.ctrl'),
       JSON.stringify(tail(body)));
   }
 
@@ -340,7 +340,7 @@ try {
     await t.waitForNewPrompt(20_000);
     const body = normalized(t.buf);
     a.check('piped sh can read one key from /dev/tty through stty and dd',
-      hasLine(body, 'KEY=y') && hasLine(body, 'STATUS=0'),
+      hasOutputLine(body, 'KEY=y') && hasOutputLine(body, 'STATUS=0'),
       JSON.stringify(tail(body)));
   }
 
@@ -356,7 +356,7 @@ try {
     await t.waitForNewPrompt(20_000);
     const body = normalized(t.buf);
     a.check('piped sh read -p consumes one line from /dev/tty',
-      hasLine(body, 'ANSWER=nimbus') && hasLine(body, 'STATUS=0'),
+      hasOutputLine(body, 'ANSWER=nimbus') && hasOutputLine(body, 'STATUS=0'),
       JSON.stringify(tail(body)));
   }
 
@@ -373,7 +373,7 @@ try {
     await t.waitForNewPrompt(20_000);
     const body = normalized(t.buf);
     a.check('source inherits the caller controlling terminal',
-      hasLine(body, 'SOURCE_KEY=sourced') && hasLine(body, 'STATUS=0'),
+      hasOutputLine(body, 'SOURCE_KEY=sourced') && hasOutputLine(body, 'STATUS=0'),
       JSON.stringify(tail(body)));
   }
 
@@ -386,7 +386,7 @@ try {
     await t.waitForNewPrompt(20_000);
     const body = normalized(t.buf);
     a.check('persistent exec </dev/tty binds to the current terminal stream',
-      hasLine(body, 'EXEC_KEY=e'),
+      hasOutputLine(body, 'EXEC_KEY=e'),
       JSON.stringify(tail(body)));
   }
 } finally {
@@ -406,13 +406,6 @@ async function writeScript(path, content) {
 
 function normalized(output) {
   return stripAnsi(output).replace(/\r/g, '\n');
-}
-
-function hasLine(output, expected) {
-  return output
-    .split('\n')
-    .map((line) => line.trim())
-    .includes(expected);
 }
 
 function tail(output) {

@@ -22,7 +22,7 @@
 
 import assert from 'node:assert/strict';
 
-import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+import { localTerminal, startLocalProbe, splitScenarioOutput } from './lib/workerd-probe.mjs';
 
 const SCENARIOS = {
   pipekill: `
@@ -79,31 +79,12 @@ const ticker = setInterval(() => {
 `,
 };
 
-/**
- * The scenario's lines with its timing lines set aside, and the session's
- * own banners (a facet's start, an npm script's), which go to the terminal.
- */
-function split(text) {
-  const lines = text.split('\n').map((l) => l.trimEnd())
-    .filter((l) => l.length > 0 && !l.startsWith('[facet started') && !l.startsWith('[shell started'));
-  const timings = {};
-  for (const line of lines) {
-    const m = /^T (\d+) (.+)$/.exec(line);
-    if (m) timings[m[2]] = Number(m[1]);
-  }
-  return { lines: lines.filter((l) => !/^T \d+ /.test(l)), timings };
-}
-
 console.log('cp-dynamic-worker-refusal-3-workerd: starting local workerd');
 const probe = await startLocalProbe({ runtimes: [] });
 try {
   const terminal = await localTerminal(probe, { install: [] });
   try {
-    for (const [name, source] of Object.entries(SCENARIOS)) {
-      const b64 = Buffer.from(source).toString('base64');
-      const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/${name}.js', Buffer.from('${b64}', 'base64'))"`);
-      assert.equal(w.status, 0, w.stdout);
-    }
+    for (const [name, source] of Object.entries(SCENARIOS)) await terminal.writeFile(`/home/user/${name}.js`, source);
     // A family here can take minutes on a loaded machine, one launch after
     // another, and the session's own later turn (the ledger's refusal) came
     // 1 to 23 s late under contention: what tells a hang from that is the
@@ -114,7 +95,7 @@ try {
       // another: 100 s on a loaded machine.
       const r = await terminal.run(`node /home/user/${name}.js ${args}`, 280_000, { progress: ledger, stalledMs: 120_000 });
       assert.equal(r.status, 0, `${name}: ${r.stdout.slice(-800)}`);
-      return split(r.stdout);
+      return splitScenarioOutput(r.stdout);
     };
 
     // The family is stuck but for the pipeline's `kill`, its next step once

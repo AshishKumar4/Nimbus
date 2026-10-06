@@ -269,6 +269,12 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
   }
   return {
     run,
+    /** Write `content` to `path` in the session (base64 through node, no quoting hazards). */
+    writeFile: async (path, content) => {
+      const b64 = Buffer.from(content).toString('base64');
+      const r = await run(`node -e "require('fs').writeFileSync('${path}', Buffer.from('${b64}', 'base64'))"`);
+      if (r.status !== 0) throw new Error(`writing ${path} failed (${r.status}):\n${r.stdout.slice(-800)}`);
+    },
     /** The session's /api/_diag/memory: its counters, VFS cache and heap estimate. */
     memory: async () => {
       const response = await fetch(`${probe.base}/s/${sid}/api/_diag/memory`, { cache: 'no-store', headers: requestHeaders() });
@@ -277,4 +283,20 @@ export async function localTerminal(probe, { install = ['bash'] } = {}) {
     },
     close: async () => { await terminal.close(); await deleteSession(sid); },
   };
+}
+
+/**
+ * A scenario's stdout: its lines, with the session's own banners (a facet's
+ * start, an npm script's), which go to the terminal, dropped and its timing
+ * lines (`T <ms> <label>`) set aside by label.
+ */
+export function splitScenarioOutput(text) {
+  const lines = text.split('\n').map((l) => l.trimEnd())
+    .filter((l) => l.length > 0 && !l.startsWith('[facet started') && !l.startsWith('[shell started'));
+  const timings = {};
+  for (const line of lines) {
+    const m = /^T (\d+) (.+)$/.exec(line);
+    if (m) timings[m[2]] = Number(m[1]);
+  }
+  return { lines: lines.filter((l) => !/^T \d+ /.test(l)), timings };
 }

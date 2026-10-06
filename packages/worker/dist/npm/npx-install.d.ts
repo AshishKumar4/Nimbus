@@ -35,9 +35,19 @@ import { type FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.
  * cache layout so tooling that introspects npx state sees the expected path. */
 export declare const NPX_CACHE_DIR = "/tmp/.npx-cache";
 export type NpxSelfInvocation = 'help' | 'version' | 'missing' | null;
-export declare function describeNpxSelfInvocation(rawArgs: string[]): NpxSelfInvocation;
-export declare function getNpxCommandWord(rawArgs: string[]): string | null;
-export declare function getNpxCommandArgs(rawArgs: string[]): string[];
+/** What `npx <args>` asks for, read once. */
+export interface NpxInvocation {
+    /** npx's own `--help`/`--version`, no command at all, or null for a command. */
+    self: NpxSelfInvocation;
+    /** The command word: a package spec, or the bin name under `--package`. */
+    command: string | null;
+    /** The command's own arguments. */
+    args: string[];
+    /** `--package <pkg>`: the package to install, whose bin `command` names. */
+    packageOverride: string | null;
+    yes: boolean;
+}
+export declare function parseNpxInvocation(rawArgs: string[]): NpxInvocation;
 export declare function formatNpxHelp(): string;
 /**
  * Result of a Nimbus-native npx invocation.
@@ -71,7 +81,7 @@ export interface NpxResolveResult {
  * spawning) makes it testable.
  *
  * Note: deliberately does not format `--version`/`--help` for npx itself.
- * Callers can use describeNpxSelfInvocation()/formatNpxHelp() before calling
+ * Callers can use parseNpxInvocation()/formatNpxHelp() before calling
  * this resolver.
  */
 export declare function resolveNpxBinary(installer: NpmInstaller, 

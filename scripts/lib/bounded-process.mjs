@@ -26,11 +26,19 @@ function tail(limit, encoding) {
   };
 }
 
+/**
+ * A process's /proc/<pid>/stat fields after the command name (which may
+ * itself hold spaces and parentheses): [0] state, [1] ppid, [19] starttime.
+ * Throws when the process is gone.
+ */
+function statFields(pid) {
+  const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
+  return stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+}
+
+/** A process's start time: with its pid, the identity a reused pid cannot fake. */
 function identity(pid) {
-  try {
-    const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-    return stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19];
-  } catch { return null; }
+  try { return statFields(pid)[19]; } catch { return null; }
 }
 
 function descendants(root, rootStart, known) {
@@ -39,8 +47,7 @@ function descendants(root, rootStart, known) {
   for (const pid of readdirSync('/proc')) {
     if (!/^\d+$/.test(pid)) continue;
     try {
-      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-      const fields = stat.slice(stat.lastIndexOf(')') + 2).split(' ');
+      const fields = statFields(pid);
       parents.set(Number(pid), { parent: Number(fields[1]), start: fields[19] });
     } catch { /* A process exited during the snapshot. */ }
   }
@@ -68,8 +75,7 @@ function killTree(child, rootStart, known) {
   // additionally catches children that created their own process group.
   for (const [pid, start] of [...known].reverse()) {
     try {
-      const stat = readFileSync(`/proc/${pid}/stat`, 'utf8');
-      if (stat.slice(stat.lastIndexOf(')') + 2).split(' ')[19] === start) process.kill(pid, 'SIGKILL');
+      if (statFields(pid)[19] === start) process.kill(pid, 'SIGKILL');
     } catch { /* Already gone; never kill a reused pid. */ }
   }
   const current = identity(child.pid);

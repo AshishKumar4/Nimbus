@@ -141,6 +141,54 @@ export interface HostOps {
 }
 
 /**
+ * An async function's body, after `env` is bound: a body that never awaits
+ * runs as is; one that does is a generator yielding what it awaits, driven
+ * here: each yielded value is awaited and the outcome resumes it. Written
+ * once, spliced into `async` and `asyncArrow`, so each awaits in its own
+ * frame (a shared async helper would add ticks to every call).
+ */
+const ASYNC_BODY = String.raw`
+      if (fi.body) return finish(fi, fi.body(env));
+      const it = fi.gen(env);
+      let r = it.next();
+      while (!r.done) {
+        let value, ok = true;
+        try { value = await r.value; } catch (e) { ok = false; value = e; }
+        r = ok ? it.next(value) : it.throw(value);
+      }
+      return finish(fi, r.value);`;
+
+/**
+ * An async generator body's driving loop over `it` from the step `r`: the
+ * body yields AWAIT, YIELD or DELEGATE with its operand beside it (see
+ * asyncGenerator below). Spliced into `drain` and `asyncGenerator`, each
+ * completing through `complete` (as is, or through finish), at `indent`.
+ */
+function asyncGeneratorSteps(complete: (value: string) => string, indent: string): string {
+  return String.raw`
+for (;;) {
+  if (r.done) return ${complete('r.value')};
+  const mark = r.value, x = operand();
+  let value, ok = true;
+  if (mark === AWAIT) {
+    try { value = await x; } catch (e) { ok = false; value = e; }
+  } else {
+    let resumed = false;
+    try { value = mark === YIELD ? yield x : yield* x; resumed = true; }
+    catch (e) { ok = false; value = e; resumed = true; }
+    finally {
+      if (!resumed) {
+        const end = it.return(MARK);
+        const result = end.done ? end.value : yield* drain(it, end);
+        if (result !== MARK) return ${complete('result')};
+      }
+    }
+  }
+  r = ok ? it.next(value) : it.throw(value);
+}`.replace(/\n/g, '\n' + indent);
+}
+
+/**
  * The factories' text, instantiated twice: once sloppy, once strict. Each
  * wrapper is created inside a comma expression so it starts anonymous (its
  * name is defined by the interpreter). Generators and async generators bind
@@ -156,27 +204,7 @@ const { call, arrow: callArrow, enter, enterGenerator, takeFrame, finish, constr
 // Drives an async generator body from a state the consumer's return()
 // request left suspended (a finally block that awaits or yields). Returns
 // the body's final completion: MARK when it let the return proceed.
-async function* drain(it, r) {
-  for (;;) {
-    if (r.done) return r.value;
-    const mark = r.value, x = operand();
-    let value, ok = true;
-    if (mark === AWAIT) {
-      try { value = await x; } catch (e) { ok = false; value = e; }
-    } else {
-      let resumed = false;
-      try { value = mark === YIELD ? yield x : yield* x; resumed = true; }
-      catch (e) { ok = false; value = e; resumed = true; }
-      finally {
-        if (!resumed) {
-          const end = it.return(MARK);
-          const result = end.done ? end.value : yield* drain(it, end);
-          if (result !== MARK) return result;
-        }
-      }
-    }
-    r = ok ? it.next(value) : it.throw(value);
-  }
+async function* drain(it, r) {${asyncGeneratorSteps((value) => value, '  ')}
 }
 drain.prototype = rt.SafeAsyncGeneratorPrototype;
 return {
@@ -200,31 +228,13 @@ return {
   },
   async(fi, scope, home) {
     const f = (0, async function () {
-      const env = enter(fi, scope, f, this, arguments, undefined, home);
-      if (fi.body) return finish(fi, fi.body(env));
-      const it = fi.gen(env);
-      let r = it.next();
-      while (!r.done) {
-        let value, ok = true;
-        try { value = await r.value; } catch (e) { ok = false; value = e; }
-        r = ok ? it.next(value) : it.throw(value);
-      }
-      return finish(fi, r.value);
+      const env = enter(fi, scope, f, this, arguments, undefined, home);${ASYNC_BODY}
     });
     return f;
   },
   asyncArrow(fi, scope) {
     return async (...args) => {
-      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);
-      if (fi.body) return finish(fi, fi.body(env));
-      const it = fi.gen(env);
-      let r = it.next();
-      while (!r.done) {
-        let value, ok = true;
-        try { value = await r.value; } catch (e) { ok = false; value = e; }
-        r = ok ? it.next(value) : it.throw(value);
-      }
-      return finish(fi, r.value);
+      const env = enter(fi, scope, undefined, undefined, args, undefined, undefined);${ASYNC_BODY}
     };
   },
   // The body yields AWAIT, YIELD or DELEGATE with its operand beside it. A
@@ -236,27 +246,7 @@ return {
       const env = takeFrame(arguments);
       if (fi.body) return finish(fi, fi.body(env));
       const it = fi.gen(env);
-      let r = it.next();
-      for (;;) {
-        if (r.done) return finish(fi, r.value);
-        const mark = r.value, x = operand();
-        let value, ok = true;
-        if (mark === AWAIT) {
-          try { value = await x; } catch (e) { ok = false; value = e; }
-        } else {
-          let resumed = false;
-          try { value = mark === YIELD ? yield x : yield* x; resumed = true; }
-          catch (e) { ok = false; value = e; resumed = true; }
-          finally {
-            if (!resumed) {
-              const end = it.return(MARK);
-              const result = end.done ? end.value : yield* drain(it, end);
-              if (result !== MARK) return finish(fi, result);
-            }
-          }
-        }
-        r = ok ? it.next(value) : it.throw(value);
-      }
+      let r = it.next();${asyncGeneratorSteps((value) => `finish(fi, ${value})`, '      ')}
     });
     return f;
   },

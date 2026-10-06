@@ -20,16 +20,9 @@
 
 import assert from 'node:assert/strict';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { residentFacetName } from '../../packages/fabric/src/workerd-facet-host.ts';
-import { createFacetWorld, createFacetCtx } from './facet-host-harness.mjs';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { readFileSync } from 'node:fs';
-import { processFiles } from './lib/process-bridge.mjs';
+import { launchManager } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
 
@@ -38,7 +31,7 @@ adoptCtxExports({ SupervisorRPC: (opts) => ({ __supervisor: opts.props }) });
  * with a fresh module scope, which is what a real second isolate would give the
  * user.
  */
-const world = createFacetWorld(() => {
+const program = () => {
   const boot = { id: `boot-${world.boots.length + 1}`, served: 0 };
   return {
     boot,
@@ -48,29 +41,12 @@ const world = createFacetWorld(() => {
       return Response.json({ boot: boot.id, served: boot.served, url: new URL(request.url).pathname });
     },
   };
-});
-
-const env = {
-  LOADER: world.loader,
-  // spawnNode stages the node shims from ASSETS (integrity-checked) before it
-  // boots anything, so serve the real staged artifact.
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)), { status: 200 });
-    },
-  },
 };
-const ctx = createFacetCtx(world, 'do-test');
-const processes = new SessionProcessSupervisor();
-const portRegistry = new PortRegistry();
-const fm = new FacetManager(ctx, env, processes, portRegistry, processHostFor, {});
-// A resident process materializes its generated module map in the session's
-// image store and boots from the path, so the manager needs the disk every
-// real session has.
-const harness = createSqliteVfsTestHarness();
-const managerVfs = new SqliteVFS(harness.sql, harness.ctx);
-fm.setVfs(managerVfs, processFiles(managerVfs));
+
+// spawnNode stages the node shims from the staged ASSETS (integrity-checked)
+// before it boots anything; a resident process materializes its module map in
+// the session's image store, so the manager has the disk every session has.
+const { world, processes, ports: portRegistry, manager: fm } = launchManager('do-test', { evaluate: program });
 
 // ── 1. spawning evaluates the user's program exactly once ───────────────────
 const spawned = await fm.spawnNode('http.createServer(...).listen(3000)', {

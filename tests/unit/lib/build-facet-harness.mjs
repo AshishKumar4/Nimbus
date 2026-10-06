@@ -61,7 +61,7 @@ export async function freshFacetClass() {
   };
   const source = ownBinding(code.modules['worker.js'])
     .replace('import { DurableObject } from "cloudflare:workers";', 'const { DurableObject, rolldownWasm, trampolineWasm } = globalThis.__buildFacetImports;')
-    .replace('import { createNapiWasmBinding } from "napi-wasm-loader.js";', `import { createNapiWasmBinding } from ${JSON.stringify(loaderFile)};`)
+    .replace(/import \{ ([\w, ]+) \} from "napi-wasm-loader\.js";/, (_, names) => `import { ${names} } from ${JSON.stringify(loaderFile)};`)
     .replace('import rolldownWasm from "rolldown.wasm";', '')
     .replace('import trampolineWasm from "trampoline.wasm";', '')
     .replace('import("rolldown-runtime.js")', `import(${JSON.stringify(runtimeFile)})`)

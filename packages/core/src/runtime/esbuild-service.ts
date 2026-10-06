@@ -12,19 +12,23 @@
 
 import { FACET_PROVIDED_PACKAGE_ENTRYPOINTS } from '../constants.js';
 import type { Awaitable } from '../vfs/vfs.js';
-import { resolvePackageEntry, resolveExports, type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
 import { errorText } from '../_shared/error-text.js';
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
-import { lowerAsyncModule } from './async-module-lowering.js';
+import { packageNameFromSpecifier } from './barrel-detect.js';
+import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
+import { emitCommonJs, lowerAsyncModule, type EsmExportName, type EsmImportBinding, type EsmRecord } from './async-module-lowering.js';
 import {
+  applySourceEdits,
   literalStringValue,
   nodeList,
   nodeName,
   nodeProp,
   parseJavaScriptModule,
+  walkTopLevelModuleTokens,
+  type SourceEdit,
 } from './javascript-ast.js';
 import {
   VITE_ASSET_QUERY_SUFFIXES,
@@ -133,9 +137,7 @@ export function getSharedRuntimeExternals(specifier: string): string[] {
   ];
   // Determine the package name for the spec being bundled (handles
   // scoped packages and subpaths: 'react-dom/client' → 'react-dom').
-  const specPkg = specifier.startsWith('@')
-    ? specifier.split('/').slice(0, 2).join('/')
-    : specifier.split('/')[0];
+  const specPkg = packageNameFromSpecifier(specifier);
 
   return all.filter((pat) => {
     if (pat === specifier) return false;
@@ -160,67 +162,23 @@ interface ModuleDeclarationRange {
   kind: 'import' | 'export';
 }
 
+/** The top-level import and export declarations, each through its `;`; null when one is unterminated or the source does not tokenize. */
 function topLevelModuleDeclarationRanges(source: string): ModuleDeclarationRange[] | null {
-  try {
-    const tokens = tokenizer(source, {
-      ecmaVersion: 'latest',
-      sourceType: 'module',
-      allowHashBang: true,
-    });
-    const ranges: ModuleDeclarationRange[] = [];
-    let active: Omit<ModuleDeclarationRange, 'end'> | null = null;
-    let braces = 0;
-    let parens = 0;
-    let brackets = 0;
-    // `exports.import = …` is a member, not a declaration.
-    let previous = tokTypes.eof;
-
-    const updateDepth = (type: typeof tokTypes.eof): void => {
-      if (type === tokTypes.braceL || type === tokTypes.dollarBraceL) braces++;
-      else if (type === tokTypes.braceR) braces = Math.max(0, braces - 1);
-      else if (type === tokTypes.parenL) parens++;
-      else if (type === tokTypes.parenR) parens = Math.max(0, parens - 1);
-      else if (type === tokTypes.bracketL) brackets++;
-      else if (type === tokTypes.bracketR) brackets = Math.max(0, brackets - 1);
-    };
-
-    while (true) {
-      const token = tokens.getToken();
-      const type = token.type;
-      if (type === tokTypes.eof) return active ? null : ranges;
-      const member = previous === tokTypes.dot || previous === tokTypes.questionDot;
-      previous = type;
-
-      if (active) {
-        updateDepth(type);
-        if (type === tokTypes.semi && braces === 0 && parens === 0 && brackets === 0) {
-          ranges.push({ ...active, end: token.end });
-          active = null;
-        }
-        continue;
+  const ranges: ModuleDeclarationRange[] = [];
+  let active: Omit<ModuleDeclarationRange, 'end'> | null = null;
+  const walked = walkTopLevelModuleTokens(source, (token, declaration, topLevel) => {
+    if (active) {
+      if (token.type === tokTypes.semi && topLevel) {
+        ranges.push({ ...active, end: token.end });
+        active = null;
       }
-
-      const topLevel = braces === 0 && parens === 0 && brackets === 0;
-      if (topLevel && type === tokTypes._import && !member) {
-        const next = tokens.getToken();
-        previous = next.type;
-        if (next.type !== tokTypes.parenL && next.type !== tokTypes.dot) {
-          active = { start: token.start, kind: 'import' };
-        }
-        updateDepth(next.type);
-        continue;
-      }
-      if (topLevel && type === tokTypes._export && !member) {
-        active = { start: token.start, kind: 'export' };
-        continue;
-      }
-      updateDepth(type);
+    } else if (declaration) {
+      active = { start: token.start, kind: declaration };
     }
-  } catch {
-    return null;
-  }
+    return false;
+  });
+  return walked === null || active ? null : ranges;
 }
-
 
 function hasUnscopedAwait(source: string): boolean {
   try {
@@ -337,37 +295,29 @@ function hasUnscopedAwait(source: string): boolean {
   }
 }
 
-interface ConvertedModuleDeclarations {
-  imports: string;
-  exports: string;
-}
 
-function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boolean): ConvertedModuleDeclarations | null {
-  const imports: string[] = [];
-  const exports: string[] = [];
-  // Only generated references use wrapper arguments. Source declarations
-  // named module/require/exports retain their own meanings.
-  const moduleTarget = moduleFactory ? 'arguments[2]' : 'module';
-  const requireTarget = moduleFactory ? 'arguments[1]' : 'module.require';
-  let importIndex = 0;
-  let markedEsm = false;
-
-  for (const snippet of snippets) {
+/**
+ * The records (async-module-lowering.ts) of a bundle's top-level module
+ * declarations, each `declarations[i]`'s range in `source`; null for a
+ * declaration this bounded rewrite leaves to the full transform (an
+ * exported declaration, a re-export, `export *`, `export default` of a
+ * function or class).
+ */
+function bundledModuleRecords(source: string, declarations: readonly ModuleDeclarationRange[]): EsmRecord[] | null {
+  const records: EsmRecord[] = [];
+  for (const { start, end } of declarations) {
+    const snippet = source.slice(start, end);
+    // `export { a, b as c }` names bindings acorn would want declared in the
+    // snippet, so a plain list is read by its shape.
     const bindingList = snippet.match(/^[ \t]*export\s*\{([\s\S]*)\}\s*;?\s*$/);
     if (bindingList && !/\}\s*from\b/.test(snippet)) {
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
+      const names: EsmExportName[] = [];
       for (const binding of bindingList[1].split(',')) {
         const match = binding.trim().match(/^([\w$]+)(?:\s+as\s+([\w$]+))?$/);
         if (!match) return null;
-        const local = match[1];
-        const exported = match[2] || local;
-        exports.push(
-          `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
-        );
+        names.push({ kind: 'named', exported: match[2] || match[1], local: match[1] });
       }
+      records.push({ kind: 'export', start, end, source: null, names });
       continue;
     }
     let ast: ReturnType<typeof parseJavaScriptModule>;
@@ -381,47 +331,36 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
     const declaration = body[0];
 
     if (declaration.type === 'ImportDeclaration') {
-      const source = literalStringValue(nodeProp(declaration, 'source'));
-      if (!source) return null;
-      const specifiers = nodeList(declaration, 'specifiers');
-      if (specifiers.length === 0) {
-        imports.push(`${requireTarget}(${JSON.stringify(source)});`);
-        continue;
-      }
-      const moduleName = `__nimbus_import_${importIndex++}`;
-      imports.push(`const ${moduleName} = ${requireTarget}(${JSON.stringify(source)});`);
-      for (const specifier of specifiers) {
+      const from = literalStringValue(nodeProp(declaration, 'source'));
+      if (!from) return null;
+      const bindings: EsmImportBinding[] = [];
+      for (const specifier of nodeList(declaration, 'specifiers')) {
         const local = nodeName(nodeProp(specifier, 'local'));
         if (!local) return null;
-        if (specifier.type === 'ImportDefaultSpecifier') {
-          imports.push(`const ${local} = ${moduleName} && ${moduleName}.__esModule ? ${moduleName}.default : ${moduleName};`);
-        } else if (specifier.type === 'ImportNamespaceSpecifier') {
-          imports.push(`const ${local} = ${moduleName};`);
-        } else if (specifier.type === 'ImportSpecifier') {
+        if (specifier.type === 'ImportDefaultSpecifier') bindings.push({ kind: 'named', local, imported: 'default' });
+        else if (specifier.type === 'ImportNamespaceSpecifier') bindings.push({ kind: 'namespace', local });
+        else if (specifier.type === 'ImportSpecifier') {
           const imported = nodeName(nodeProp(specifier, 'imported'));
           if (!imported) return null;
-          imports.push(`const ${local} = ${moduleName}[${JSON.stringify(imported)}];`);
+          bindings.push({ kind: 'named', local, imported });
         } else {
           return null;
         }
       }
+      records.push({ kind: 'import', start, end, source: from, bindings });
       continue;
     }
 
     if (declaration.type === 'ExportNamedDeclaration') {
       if (nodeProp(declaration, 'source') || nodeProp(declaration, 'declaration')) return null;
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
+      const names: EsmExportName[] = [];
       for (const specifier of nodeList(declaration, 'specifiers')) {
         const local = nodeName(nodeProp(specifier, 'local'));
         const exported = nodeName(nodeProp(specifier, 'exported'));
         if (!local || !exported) return null;
-        exports.push(
-          `Object.defineProperty(${moduleTarget}.exports, ${JSON.stringify(exported)}, { enumerable: true, get: () => ${local} });`,
-        );
+        names.push({ kind: 'named', exported, local });
       }
+      records.push({ kind: 'export', start, end, source: null, names });
       continue;
     }
 
@@ -429,25 +368,13 @@ function convertBundledModuleDeclarations(snippets: string[], moduleFactory: boo
       const value = nodeProp(declaration, 'declaration');
       if (!value || typeof value.start !== 'number' || typeof value.end !== 'number') return null;
       if (value.type === 'FunctionDeclaration' || value.type === 'ClassDeclaration') return null;
-      if (!markedEsm) {
-        exports.push(`Object.defineProperty(${moduleTarget}.exports, "__esModule", { value: true });`);
-        markedEsm = true;
-      }
-      exports.push(
-        `Object.defineProperty(${moduleTarget}.exports, "default", { enumerable: true, value: (${snippet.slice(value.start, value.end)}) });`,
-      );
+      records.push({ kind: 'export-default', start, end, expression: { start: start + value.start, end: start + value.end } });
       continue;
     }
 
     return null;
   }
-
-  return { imports: imports.join('\n'), exports: exports.join('\n') };
-}
-interface SourceEdit {
-  start: number;
-  end: number;
-  text: string;
+  return records;
 }
 
 function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boolean): SourceEdit[] | null {
@@ -568,15 +495,7 @@ export function rewriteProvidedCommonJsModules(source: string): string {
     previous = a.type;
     a = b; b = c; c = d; d = e; e = tokens.getToken();
   }
-  if (edits.length === 0) return source;
-  const parts: string[] = [];
-  let cursor = 0;
-  for (const edit of edits) {
-    parts.push(source.slice(cursor, edit.start), edit.text);
-    cursor = edit.end;
-  }
-  parts.push(source.slice(cursor));
-  return parts.join('');
+  return edits.length === 0 ? source : applySourceEdits(source, edits);
 }
 
 export function rewriteBundledEsmToCjs(
@@ -587,38 +506,21 @@ export function rewriteBundledEsmToCjs(
   if (hasUnscopedAwait(source)) return null;
   const declarations = topLevelModuleDeclarationRanges(source);
   if (!declarations || declarations.length === 0) return null;
-  const declarationSnippets = declarations.map(({ start, end }) => source.slice(start, end));
-  for (let i = 0; i < declarations.length; i++) {
-    if (/^[ \t]*export\s+default\b/.test(declarationSnippets[i])
-      && source.slice(declarations[i].end).trim() !== '') return null;
-  }
-  const converted = convertBundledModuleDeclarations(declarationSnippets, moduleFactory);
-  if (!converted) return null;
+  const records = bundledModuleRecords(source, declarations);
+  if (!records) return null;
   const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
   if (!metaEdits) return null;
 
-  const edits: SourceEdit[] = [
-    ...declarations.map(({ start, end }) => ({ start, end, text: '' })),
-    ...metaEdits.filter((edit) =>
-      !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)
-    ),
-  ].sort((a, b) => a.start - b.start);
-
-  const bodyParts: string[] = [];
-  let cursor = 0;
-  for (const edit of edits) {
-    if (edit.start < cursor) return null;
-    bodyParts.push(source.slice(cursor, edit.start), edit.text);
-    cursor = edit.end;
-  }
-  bodyParts.push(source.slice(cursor));
-  const body = bodyParts.join('');
-
-  return {
-    code: (moduleFactory ? '"use strict";\n' : '') + converted.imports + '\n' + body + '\n' + converted.exports,
-    map: '',
-    warnings: [],
-  };
+  // Only generated references use wrapper arguments. Source declarations
+  // named module/require/exports retain their own meanings. An import.meta
+  // is one token run, so it is inside a declaration or outside every one.
+  const code = emitCommonJs(source, records, {
+    body: 'sync',
+    exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
+    requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
+    edits: metaEdits.filter((edit) => !declarations.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+  });
+  return { code: (moduleFactory ? '"use strict";\n' : '') + code, map: '', warnings: [] };
 }
 
 // ── The in-isolate engine ───────────────────────────────────────────────
@@ -1109,6 +1011,11 @@ async function remotePlugin(plugin: esbuild.Plugin, initialOptions: esbuild.Buil
   };
 }
 
+/** What a transform request hands the engine: its source after the provided-module pre-pass, unless it asks only for the rewrite. */
+function preparedTransformSource(code: string, options: EsbuildTransformOptions | undefined): string {
+  return options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
+}
+
 /** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
 function withProvidedModuleRewrite(code: string, options?: EsbuildTransformOptions): string {
   return options?.format === 'cjs' && (!options.loader || options.loader === 'js' || options.loader === 'jsx')
@@ -1215,9 +1122,14 @@ export class EsbuildService {
       if ('error' in outcome) throw new Error(outcome.error);
       return outcome;
     }
+    // In the isolate the engine's own error propagates, diagnostics and all.
+    return this.transformInIsolate(preparedTransformSource(code, options), options);
+  }
+
+  /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
+  private async transformInIsolate(code: string, options: EsbuildTransformOptions | undefined): Promise<TransformResult> {
     if (!options?.rewriteOnly) await this.ensureInit();
-    const prepared = options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
-    return runTransformRequest(this._esbuild, prepared, options, rewriteDynamicImports, lowerAsyncModule);
+    return runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
   }
 
   /**
@@ -1233,7 +1145,7 @@ export class EsbuildService {
     const positions: number[] = [];
     requests.forEach(({ code, options }, i) => {
       try {
-        prepared.push({ code: options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options), options });
+        prepared.push({ code: preparedTransformSource(code, options), options });
         positions.push(i);
       } catch (e) {
         outcomes[i] = { error: errorText(e) };
@@ -1248,11 +1160,10 @@ export class EsbuildService {
       hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
       return outcomes;
     }
-    if (prepared.some(({ options }) => !options?.rewriteOnly)) await this.ensureInit();
     for (let j = 0; j < prepared.length; j++) {
       const { code, options } = prepared[j];
       try {
-        outcomes[positions[j]] = await runTransformRequest(this._esbuild, code, options, rewriteDynamicImports, lowerAsyncModule);
+        outcomes[positions[j]] = await this.transformInIsolate(code, options);
       } catch (e) {
         outcomes[positions[j]] = { error: errorText(e) };
       }
@@ -1403,219 +1314,17 @@ export class EsbuildService {
     fs?: EsbuildReadFs;
   }): esbuild.Plugin {
     const vfs = opts?.fs ?? this.requireVfs();
-    const EXTS = ['', '.ts', '.tsx', '.js', '.jsx', '.mts', '.mjs', '.cjs', '.json', '.css'];
-    const INDEX_FILES = ['index.ts', 'index.tsx', 'index.js', 'index.jsx', 'index.mjs'];
-
-    // Path helpers shared with git/commands.ts via vfs/path.ts.
-    // Local aliases preserve the existing call-site readability inside this
-    // closure; behavior is identical (the canonical normalizeVfsPath has a
-    // bounds check on `..` that the previous local `normalize` lacked, but
-    // for the well-formed paths esbuild produces this is a no-op).
-    const strip = stripLeadingSlashes;
-    const normalize = normalizeVfsPath;
-
-    /**
-     * Try to resolve a VFS path with extension/index fallbacks.
-     *
-     * Resolution order (first match wins):
-     *   1. Exact path as given (covers `.ts`, `.js`, `.json`, `.css`, and
-     *      any extension on disk) — via `''` being first in EXTS.
-     *   2. Append-extension candidates from EXTS (`.ts`, `.tsx`, `.js`, …)
-     *      for extensionless imports like `./foo`.
-     *   3. TypeScript/ESM `moduleResolution: "bundler"` compatibility:
-     *      if the input ends in `.js` / `.mjs` / `.cjs` / `.jsx` and
-     *      NO file matched above, swap the extension to the TS
-     *      equivalent and try those. This is the idiomatic
-     *      `import {X} from './y.js'` pattern where on-disk it's `y.ts`.
-     *      Order (TS spec): `.ts` → `.tsx` for `.js`/`.jsx`;
-     *                        `.mts`       for `.mjs`;
-     *                        `.cts`       for `.cjs`.
-     *      Exact-match (step 1) happens first so a real `.js` on disk
-     *      takes precedence over a co-located `.ts` — we never pretend
-     *      a `.ts` is canonical when a `.js` actually exists.
-     *   4. Directory index files (e.g. `./foo/index.ts`) as a last step.
-     */
-    async function tryResolve(base: string): Promise<string | null> {
-      const norm = normalize(base);
-      for (const ext of EXTS) {
-        const candidate = norm + ext;
-        if (await vfs.exists(strip(candidate)) && !await vfs.isDirectory(strip(candidate))) {
-          return '/' + strip(candidate);
+    const resolver = createBundlerResolver({
+      isFile: async (path) => await vfs.exists(stripLeadingSlashes(path)) && !await vfs.isDirectory(stripLeadingSlashes(path)),
+      isDirectory: async (path) => await vfs.exists(stripLeadingSlashes(path)) && await vfs.isDirectory(stripLeadingSlashes(path)),
+      readText: async (path) => {
+        try {
+          return await vfs.readFileString(stripLeadingSlashes(path));
+        } catch {
+          return null;
         }
-      }
-      // Step 3: TypeScript-bundler extension swap. Only runs when no
-      // exact / extension-append match succeeded above — so real `.js`
-      // files on disk always win.
-      const jsExtMatch = norm.match(/\.(js|mjs|cjs|jsx)$/);
-      if (jsExtMatch) {
-        const withoutExt = norm.slice(0, norm.length - jsExtMatch[0].length);
-        const swapMap: Record<string, string[]> = {
-          js:  ['.ts', '.tsx'],
-          jsx: ['.tsx', '.ts'],
-          mjs: ['.mts', '.ts'],
-          cjs: ['.cts', '.ts'],
-        };
-        const swaps = swapMap[jsExtMatch[1]] || [];
-        for (const tsExt of swaps) {
-          const candidate = withoutExt + tsExt;
-          if (await vfs.exists(strip(candidate)) && !await vfs.isDirectory(strip(candidate))) {
-            return '/' + strip(candidate);
-          }
-        }
-      }
-      // Step 4: directory index fallback.
-      if (await vfs.exists(strip(norm)) && await vfs.isDirectory(strip(norm))) {
-        for (const idx of INDEX_FILES) {
-          const candidate = norm + '/' + idx;
-          if (await vfs.exists(strip(candidate))) return '/' + strip(candidate);
-        }
-      }
-      return null;
-    }
-
-    /**
-     * Resolve a Node.js subpath import (`#foo`).
-     *
-     * Per https://nodejs.org/api/packages.html#subpath-imports, a specifier
-     * starting with `#` is looked up in the closest ancestor package.json's
-     * `imports` field (not `exports`). This is used by packages like `vfile`
-     * to switch between node and browser implementations:
-     *
-     *   "imports": {
-     *     "#minpath": {
-     *       "node": "./lib/minpath.js",
-     *       "default": "./lib/minpath.browser.js"
-     *     }
-     *   }
-     *
-     * We walk up from the importer's directory looking for package.json.
-     * Once found, we resolve the subpath using the same condition algorithm
-     * as `exports` (with `import`, `module`, `browser`, `default` — skipping
-     * `node` since we're bundling for the browser).
-     *
-     * The resolved value is a path relative to the owning package root, which
-     * we turn back into a VFS path for esbuild to load.
-     */
-    async function resolvePackageImport(specifier: string, fromDir: string): Promise<string | null> {
-      let dir = strip(fromDir);
-      const visited = new Set<string>();
-      while (dir && !visited.has(dir)) {
-        visited.add(dir);
-
-        const pkgJsonPath = dir + '/package.json';
-        if (await vfs.exists(strip(pkgJsonPath))) {
-          try {
-            const pkgJson = JSON.parse(await vfs.readFileString(strip(pkgJsonPath)));
-            if (pkgJson.imports) {
-              // resolveExports happens to work for the imports field too —
-              // both are subpath→condition maps using the same format. We
-              // reuse it. The specifier (`#minpath`) IS the subpath key.
-              const resolved = resolveExports(pkgJson.imports, specifier);
-              if (resolved) {
-                // Resolved value is relative to the owning package root
-                const pkgRoot = dir;
-                const absPath = pkgRoot + '/' + resolved.replace(/^\.\//, '');
-                const finalPath = await tryResolve(absPath);
-                if (finalPath) return finalPath;
-              }
-            }
-          } catch { /* malformed package.json — try parent */ }
-        }
-
-        // Stop at node_modules boundary — subpath imports only resolve against
-        // the consuming package's own package.json, not its dependencies'.
-        // But DO go up through node_modules/<pkg>/ to find <pkg>/package.json.
-        if (dir.endsWith('/node_modules') || dir === 'node_modules') break;
-
-        const lastSlash = dir.lastIndexOf('/');
-        if (lastSlash <= 0) break;
-        dir = dir.substring(0, lastSlash);
-      }
-      return null;
-    }
-
-    // Conditions per-resolution. CJS `require('X')` callers need the
-    // `require` condition selected so packages that ship a dual-export
-    // CJS trick (e.g. @babel/runtime/helpers/X — `module.exports = fn;
-    // module.exports.default = module.exports;`) resolve to the CJS
-    // file. The ESM helper file declares only `export { fn as default }`,
-    // which esbuild's __toCommonJS wrap surfaces to CJS callers as
-    // `{ default: fn }` — and the downstream callsite calls the
-    // namespace as a function and crashes with
-    // `_objectWithoutPropertiesLoose2 is not a function`.
-    //
-    // This affects every CJS-shipping npm package that depends on
-    // `@babel/runtime/helpers/*` (thousands — anything compiled with
-    // `@babel/preset-env`'s `transform-runtime`).
-    // See pre-bundle-facet.ts for the matching fix in the install-time
-    // pre-bundle plugin. Both code paths must agree.
-    const ESM_CONDITIONS = ['import', 'module', 'browser', 'default'];
-    const CJS_CONDITIONS = ['require', 'node', 'browser', 'default'];
-
-    /**
-     * Resolve bare specifier (npm package) by walking up node_modules.
-     * Uses the full Node.js exports-field algorithm. `conditions` is
-     * passed through so caller can request CJS-flavoured resolution
-     * (for `require()` calls in bundled CJS code).
-     */
-    async function resolveBarePkg(specifier: string, fromDir: string, conditions: string[]): Promise<string | null> {
-      // Split scoped packages: @scope/pkg → ["@scope/pkg"]
-      // Split subpath imports: pkg/sub/path → pkg, sub/path
-      let pkgName: string;
-      let subpath: string;
-      if (specifier.startsWith('@')) {
-        const parts = specifier.split('/');
-        pkgName = parts.slice(0, 2).join('/');
-        subpath = parts.slice(2).join('/');
-      } else {
-        const parts = specifier.split('/');
-        pkgName = parts[0];
-        subpath = parts.slice(1).join('/');
-      }
-
-      // Walk up directories looking for node_modules/<pkg>
-      let dir = strip(fromDir);
-      const visited = new Set<string>();
-      while (dir && !visited.has(dir)) {
-        visited.add(dir);
-        const nmDir = dir + '/node_modules/' + pkgName;
-        if (await vfs.exists(strip(nmDir)) && await vfs.isDirectory(strip(nmDir))) {
-          // Read package.json so we can consult the exports field.
-          const pkgJsonPath = nmDir + '/package.json';
-          let pkgJson: ResolvablePackageJson | null = null;
-          if (await vfs.exists(strip(pkgJsonPath))) {
-            try { pkgJson = JSON.parse(await vfs.readFileString(strip(pkgJsonPath))); } catch {}
-          }
-
-          if (pkgJson) {
-            // Use the full exports-field resolution. Conditions are
-            // caller-supplied so `require()` and `import` get distinct
-            // resolutions per Node spec.
-            const subpathKey = subpath ? './' + subpath : '.';
-            const entry = resolvePackageEntry(pkgJson, subpathKey, conditions);
-            if (entry) {
-              const resolved = await tryResolve(nmDir + '/' + entry.replace(/^\.\//, ''));
-              if (resolved) return resolved;
-            }
-          }
-
-          // Fallback for subpath: try direct file resolution (e.g. pkg/lib/foo).
-          if (subpath) {
-            const resolved = await tryResolve(nmDir + '/' + subpath);
-            if (resolved) return resolved;
-          }
-
-          // Fallback for root: try index files directly
-          const resolved = await tryResolve(nmDir + '/index');
-          if (resolved) return resolved;
-        }
-        // Move up one directory
-        const lastSlash = dir.lastIndexOf('/');
-        if (lastSlash <= 0) break;
-        dir = dir.substring(0, lastSlash);
-      }
-      return null;
-    }
+      },
+    });
 
     function inferLoader(path: string): esbuild.Loader {
       const typescript = typescriptLoader(path);
@@ -1659,7 +1368,7 @@ export class EsbuildService {
 
         const viteAssets = opts?.viteAssets === true;
         const publicDir = opts?.vitePublicDir
-          ? '/' + strip(normalize(opts.vitePublicDir))
+          ? '/' + normalizeVfsPath(opts.vitePublicDir)
           : null;
 
         /**
@@ -1669,37 +1378,10 @@ export class EsbuildService {
          * marked external (that would ship a broken import).
          */
         const resolveModulePath = async (spec: string, resolveDir: string, kind: string): Promise<string | null> => {
-          // 1. Subpath imports (#foo) — Node.js package.json `imports` field.
-          // These MUST be resolved against the owning package's package.json,
-          // not node_modules. Used by vfile, unified, and others to switch
-          // between node/browser implementations.
-          if (spec.startsWith('#') && resolveDir) {
-            return resolvePackageImport(spec, strip(resolveDir));
-          }
-          // 2. Absolute paths
-          if (spec.startsWith('/')) return tryResolve(spec);
-          // 3. Relative paths
-          if (spec.startsWith('.') && resolveDir) {
-            return tryResolve(strip(resolveDir) + '/' + spec);
-          }
-          // 4. Bare specifier (npm package)
-          if (!spec.startsWith('/') && !spec.startsWith('.') && !spec.startsWith('#')) {
-            const fromDir = resolveDir || '/home/user';
-            // Per Node spec: `require()` triggers the 'require' condition,
-            // `import` triggers 'import'. esbuild surfaces this via
-            // args.kind. Without this, packages that ship a dual-export
-            // CJS file alongside a bare ESM file (e.g. @babel/runtime/
-            // helpers/*) get resolved to the ESM variant for CJS callers,
-            // and the `__toCommonJS` wrapper surfaces `{ default: fn }`
-            // to a callsite that expects the function directly — runtime
-            // crash with "<helper>2 is not a function" on the first
-            // route that uses the affected package.
-            const conditions = kind === 'require-call' || kind === 'require-resolve'
-              ? CJS_CONDITIONS
-              : ESM_CONDITIONS;
-            return resolveBarePkg(spec, fromDir, conditions);
-          }
-          return null;
+          if (spec.startsWith('#')) return resolveDir ? resolver.resolvePackageImport(spec, resolveDir) : null;
+          if (spec.startsWith('/')) return resolver.resolveFile(spec);
+          if (spec.startsWith('.')) return resolveDir ? resolver.resolveFile(resolveDir + '/' + spec) : null;
+          return resolver.resolveBarePackage(spec, resolveDir || '/home/user', bundlerConditions(kind));
         };
 
         build.onResolve({ filter: /.*/ }, async (args) => {
@@ -1741,7 +1423,7 @@ export class EsbuildService {
           // `?` modifier still applies to the public FILE's contents.
           if (viteAssets && !resolved && publicDir && spec.startsWith('/')) {
             const pubPath = publicDir + spec;
-            if (await vfs.exists(strip(pubPath)) && !await vfs.isDirectory(strip(pubPath))) {
+            if (await vfs.exists(stripLeadingSlashes(pubPath)) && !await vfs.isDirectory(stripLeadingSlashes(pubPath))) {
               resolved = pubPath;
               publicImport = true;
             }
@@ -1769,7 +1451,7 @@ export class EsbuildService {
         });
 
         const loadVfsFile = async (path: string, loader: esbuild.Loader) => {
-          const stripped = strip(path);
+          const stripped = stripLeadingSlashes(path);
           try {
             const lastSlash = stripped.lastIndexOf('/');
             const resolveDir = lastSlash > 0 ? '/' + stripped.substring(0, lastSlash) : '/';

@@ -15,7 +15,6 @@ import assert from 'node:assert/strict';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
@@ -27,6 +26,7 @@ import { resolveContext } from '../../packages/core/src/substrate/lifo/commands/
 import { installRubyGems } from '../../packages/core/src/runtime/ruby-gems.ts';
 import { syscallError } from '../../packages/core/src/vfs/vfs-error.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 /** A workspace as the session builds one: shell entrypoints, then the npm bin fallback. */
 async function workspace(env) {
@@ -251,123 +251,103 @@ assert.equal((await run(main, 'printf %s "$PATH"'))[0], mainPath);
 
 // ── child_process.spawn in a Worker program searches the child's PATH ─────
 {
-  const outputDir = await mkdtemp(join(tmpdir(), 'nimbus-resolve-path-'));
-  try {
-    const build = await Bun.build({
-      entrypoints: ['./packages/worker/src/session/nimbus-session.ts', './packages/worker/src/hosted/services.ts'],
-      outdir: outputDir,
-      target: 'bun',
-      format: 'esm',
-      plugins: [{
-        name: 'cloudflare-workers-test-stub',
-        setup(builder) {
-          builder.onResolve({ filter: /^cloudflare:workers$/ }, () => ({ path: 'cloudflare-workers', namespace: 'test' }));
-          builder.onLoad({ filter: /.*/, namespace: 'test' }, () => ({
-            contents: 'export class DurableObject {}; export class WorkerEntrypoint {};',
-            loader: 'js',
-          }));
-        },
-      }],
-    });
-    assert.equal(build.success, true, build.logs.map(String).join('\n'));
-    const { NimbusSession } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/nimbus-session.js')).path).href);
-    const { bindRuntimeServices } = await import(pathToFileURL(build.outputs.find((o) => o.path.endsWith('/services.js')).path).href);
+  const { NimbusSession, bindRuntimeServices } = await importWorkerBundle({
+    'packages/worker/src/session/nimbus-session.ts': ['NimbusSession'],
+    'packages/worker/src/hosted/services.ts': ['bindRuntimeServices'],
+  });
 
-    const session = Object.create(NimbusSession.prototype);
-    session.ctx = { facets: {} };
-    session.env = {};
-    Object.assign(session, bindRuntimeServices(session, {
-      ctx: session.ctx,
-      env: session.env,
-      notify() {},
-      async requestLaunchTurn() { return true; },
-    }));
-    session.sqliteFs = main.vfs;
-    session.processes = main.processes;
-    session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
-    session.facetProcessManager = null;
-    session.esbuildService = null;
-    session._setCpRegistry(main.registry);
-    const parent = main.processes.spawn('node', ['app.js'], '/tmp');
+  const session = Object.create(NimbusSession.prototype);
+  session.ctx = { facets: {} };
+  session.env = {};
+  Object.assign(session, bindRuntimeServices(session, {
+    ctx: session.ctx,
+    env: session.env,
+    notify() {},
+    async requestLaunchTurn() { return true; },
+  }));
+  session.sqliteFs = main.vfs;
+  session.processes = main.processes;
+  session.facetManagerComposed = { manager: { setVfs() {} }, apps: {}, pumpLaunches: async () => {} };
+  session.facetProcessManager = null;
+  session.esbuildService = null;
+  session._setCpRegistry(main.registry);
+  const parent = main.processes.spawn('node', ['app.js'], '/tmp');
 
-    const spawn = async (command, args, env) => {
-      const { childPid } = await session._rpcCpSpawn({ command, args, env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
-      await session._rpcCpStdinEnd(childPid);
-      const waited = await session._rpcCpWait(childPid, 5_000);
-      assert.equal(waited.done, true, `${command} completed`);
-      const output = await session._rpcCpDrainOutput(childPid);
-      return [new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode];
-    };
-    const env = { HOME: '/home/main', PATH: mainPath };
-    assert.deepEqual(await spawn('tool', ['x'], env), ['tool x in /tmp\n', '', 0], 'spawn finds a script on the child\'s PATH');
-    assert.deepEqual(await spawn('hello-cli', ['y'], env), ['hello-cli y in /tmp\n', '', 0], 'and an npm bin');
-    assert.deepEqual(await spawn('tool', [], { PATH: '/custom/bin' }), ['custom tool \n', '', 0], 'by the PATH it is given');
-    assert.deepEqual(await spawn('no-such-tool', [], env), ['', 'no-such-tool: command not found\n', 127]);
-    // A program found on PATH is a child process like one named by its path: its own pid, live
-    // stdin through NIMBUS_CP_CHILD_PID, and output it publishes as that pid (an interpreter that
-    // reads and reports what a Worker runtime reads, as the node runtime does).
-    {
-      main.registry.register('livenode', async (ctx) => {
-        const pid = Number(ctx.env.NIMBUS_CP_CHILD_PID);
-        let input = '';
-        if (pid > 0) {
-          for (;;) {
-            const packet = await session.facetProcessManager.cpReadStdin(pid, 2_000);
-            input += new TextDecoder().decode(packet.data);
-            if (packet.ended) break;
-          }
+  const spawn = async (command, args, env) => {
+    const { childPid } = await session._rpcCpSpawn({ command, args, env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    await session._rpcCpStdinEnd(childPid);
+    const waited = await session._rpcCpWait(childPid, 5_000);
+    assert.equal(waited.done, true, `${command} completed`);
+    const output = await session._rpcCpDrainOutput(childPid);
+    return [new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode];
+  };
+  const env = { HOME: '/home/main', PATH: mainPath };
+  assert.deepEqual(await spawn('tool', ['x'], env), ['tool x in /tmp\n', '', 0], 'spawn finds a script on the child\'s PATH');
+  assert.deepEqual(await spawn('hello-cli', ['y'], env), ['hello-cli y in /tmp\n', '', 0], 'and an npm bin');
+  assert.deepEqual(await spawn('tool', [], { PATH: '/custom/bin' }), ['custom tool \n', '', 0], 'by the PATH it is given');
+  assert.deepEqual(await spawn('no-such-tool', [], env), ['', 'no-such-tool: command not found\n', 127]);
+  // A program found on PATH is a child process like one named by its path: its own pid, live
+  // stdin through NIMBUS_CP_CHILD_PID, and output it publishes as that pid (an interpreter that
+  // reads and reports what a Worker runtime reads, as the node runtime does).
+  {
+    main.registry.register('livenode', async (ctx) => {
+      const pid = Number(ctx.env.NIMBUS_CP_CHILD_PID);
+      let input = '';
+      if (pid > 0) {
+        for (;;) {
+          const packet = await session.facetProcessManager.cpReadStdin(pid, 2_000);
+          input += new TextDecoder().decode(packet.data);
+          if (packet.ended) break;
         }
-        await ctx.stdout.write(`pid=${pid} caller=${ctx.__nimbusBinSpawn?.callerPid} in=${input}\n`);
-        return 0;
-      });
-      const kernel = main.vfs.as(CRED_KERNEL);
-      kernel.writeFile('custom/bin/livetool', '#!/usr/bin/env livenode\n');
-      kernel.chmod('custom/bin/livetool', 0o755);
-      // A runtime the workspace could install is not a registered command either: a file of
-      // that name on PATH is the program.
-      kernel.writeFile('custom/bin/hintedtool', '#!/usr/bin/env livenode\n');
-      kernel.chmod('custom/bin/hintedtool', 0o755);
-      for (const command of ['/custom/bin/livetool', 'livetool', 'hintedtool']) {
-        const { childPid } = await session._rpcCpSpawn({ command, args: [], env: { ...env, PATH: '/custom/bin' }, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
-        // Past the time a builtin waits for its stdin.
-        await new Promise((resolve) => setTimeout(resolve, 150));
-        await session._rpcCpStdinWrite(childPid, new TextEncoder().encode('hello'));
-        await session._rpcCpStdinEnd(childPid);
-        const waited = await session._rpcCpWait(childPid, 5_000);
-        const output = await session._rpcCpDrainOutput(childPid);
-        assert.deepEqual([new TextDecoder().decode(output.stdout), waited.exitCode], [`pid=${childPid} caller=${childPid} in=hello\n`, 0], `spawn ${command}`);
       }
-    }
-    // A registered command whose module fails to load ends the child as a failed dispatch
-    // does: the error on its stderr, exit 1, recorded so the process table can reap it.
-    {
-      main.registry.registerLazy('broken-loader', async () => { throw new Error('loader failed'); });
-      const { childPid } = await session._rpcCpSpawn({ command: 'broken-loader', args: [], env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
-      const waited = await session._rpcCpWait(childPid, 5_000);
-      const output = await session._rpcCpDrainOutput(childPid);
-      assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['', 'Error: loader failed\n', 1]);
-      assert.equal(main.processes.getExit(childPid)?.code, 1, 'its exit is recorded');
-      assert.equal(main.processes.get(childPid)?.state, 'exited', 'it is not left running');
-      // reap takes what exited more than maxAge ms ago.
-      await new Promise((resolve) => setTimeout(resolve, 5));
-      await main.processes.reap(0);
-      assert.equal(main.processes.get(childPid), undefined, 'and it is reaped');
-    }
-    assert.deepEqual(await spawn('hintedtool', [], env), ['', 'hintedtool: command not found\nhint: install it with: nimbus install hintedtool\n', 127], 'and with none, the install hint');
-    // A facet-direct name (yorkie) found in the cwd's node_modules/.bin, through the facet dispatch path.
-    {
-      const kernel = main.vfs.as(CRED_KERNEL);
-      kernel.mkdir('tmp/project/node_modules/.bin', { recursive: true });
-      kernel.writeFile('tmp/project/node_modules/.bin/yorkie', '#!/bin/sh\necho YORKIE\n');
-      kernel.chmod('tmp/project/node_modules/.bin/yorkie', 0o755);
-      const { childPid } = await session._rpcCpSpawn({ command: 'yorkie', args: [], env, cwd: '/tmp/project', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+      await ctx.stdout.write(`pid=${pid} caller=${ctx.__nimbusBinSpawn?.callerPid} in=${input}\n`);
+      return 0;
+    });
+    const kernel = main.vfs.as(CRED_KERNEL);
+    kernel.writeFile('custom/bin/livetool', '#!/usr/bin/env livenode\n');
+    kernel.chmod('custom/bin/livetool', 0o755);
+    // A runtime the workspace could install is not a registered command either: a file of
+    // that name on PATH is the program.
+    kernel.writeFile('custom/bin/hintedtool', '#!/usr/bin/env livenode\n');
+    kernel.chmod('custom/bin/hintedtool', 0o755);
+    for (const command of ['/custom/bin/livetool', 'livetool', 'hintedtool']) {
+      const { childPid } = await session._rpcCpSpawn({ command, args: [], env: { ...env, PATH: '/custom/bin' }, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+      // Past the time a builtin waits for its stdin.
+      await new Promise((resolve) => setTimeout(resolve, 150));
+      await session._rpcCpStdinWrite(childPid, new TextEncoder().encode('hello'));
       await session._rpcCpStdinEnd(childPid);
       const waited = await session._rpcCpWait(childPid, 5_000);
       const output = await session._rpcCpDrainOutput(childPid);
-      assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['YORKIE\n', '', 0]);
+      assert.deepEqual([new TextDecoder().decode(output.stdout), waited.exitCode], [`pid=${childPid} caller=${childPid} in=hello\n`, 0], `spawn ${command}`);
     }
-  } finally {
-    await rm(outputDir, { recursive: true, force: true });
+  }
+  // A registered command whose module fails to load ends the child as a failed dispatch
+  // does: the error on its stderr, exit 1, recorded so the process table can reap it.
+  {
+    main.registry.registerLazy('broken-loader', async () => { throw new Error('loader failed'); });
+    const { childPid } = await session._rpcCpSpawn({ command: 'broken-loader', args: [], env, cwd: '/tmp', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    const waited = await session._rpcCpWait(childPid, 5_000);
+    const output = await session._rpcCpDrainOutput(childPid);
+    assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['', 'Error: loader failed\n', 1]);
+    assert.equal(main.processes.getExit(childPid)?.code, 1, 'its exit is recorded');
+    assert.equal(main.processes.get(childPid)?.state, 'exited', 'it is not left running');
+    // reap takes what exited more than maxAge ms ago.
+    await new Promise((resolve) => setTimeout(resolve, 5));
+    await main.processes.reap(0);
+    assert.equal(main.processes.get(childPid), undefined, 'and it is reaped');
+  }
+  assert.deepEqual(await spawn('hintedtool', [], env), ['', 'hintedtool: command not found\nhint: install it with: nimbus install hintedtool\n', 127], 'and with none, the install hint');
+  // A facet-direct name (yorkie) found in the cwd's node_modules/.bin, through the facet dispatch path.
+  {
+    const kernel = main.vfs.as(CRED_KERNEL);
+    kernel.mkdir('tmp/project/node_modules/.bin', { recursive: true });
+    kernel.writeFile('tmp/project/node_modules/.bin/yorkie', '#!/bin/sh\necho YORKIE\n');
+    kernel.chmod('tmp/project/node_modules/.bin/yorkie', 0o755);
+    const { childPid } = await session._rpcCpSpawn({ command: 'yorkie', args: [], env, cwd: '/tmp/project', stdio: ['pipe', 'pipe', 'pipe'], parentPid: parent.pid });
+    await session._rpcCpStdinEnd(childPid);
+    const waited = await session._rpcCpWait(childPid, 5_000);
+    const output = await session._rpcCpDrainOutput(childPid);
+    assert.deepEqual([new TextDecoder().decode(output.stdout), new TextDecoder().decode(output.stderr), waited.exitCode], ['YORKIE\n', '', 0]);
   }
 }
 await main.close();

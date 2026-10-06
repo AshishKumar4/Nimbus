@@ -27,7 +27,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 
-import { localTerminal, startLocalProbe } from './lib/workerd-probe.mjs';
+import { localTerminal, startLocalProbe, splitScenarioOutput } from './lib/workerd-probe.mjs';
 
 const SCENARIOS = {
   solo: `
@@ -104,26 +104,11 @@ c.on('close', (code) => console.log('C close ' + code));
 `,
 };
 
-/**
- * The scenario's lines with its timing lines set aside, and the session's
- * own banners (a facet's start, an npm script's), which go to the terminal.
- */
-function split(text) {
-  const lines = text.split('\n').map((l) => l.trimEnd())
-    .filter((l) => l.length > 0 && !l.startsWith('[facet started') && !l.startsWith('[shell started'));
-  const timings = {};
-  for (const line of lines) {
-    const m = /^T (\d+) (.+)$/.exec(line);
-    if (m) timings[m[2]] = Number(m[1]);
-  }
-  return { lines: lines.filter((l) => !/^T \d+ /.test(l)), timings };
-}
-
 const host = {};
 for (const [name, source] of Object.entries(SCENARIOS)) {
   const r = spawnSync('node', ['-e', source], { encoding: 'utf8', timeout: 60_000 });
   assert.equal(r.status, 0, `host node ${name}: ${r.stderr}`);
-  host[name] = split(r.stdout);
+  host[name] = splitScenarioOutput(r.stdout);
 }
 
 console.log('cp-concurrent-children-workerd: starting local workerd');
@@ -131,11 +116,7 @@ const probe = await startLocalProbe({ runtimes: [] });
 try {
   const terminal = await localTerminal(probe, { install: [] });
   try {
-    for (const [name, source] of Object.entries(SCENARIOS)) {
-      const b64 = Buffer.from(source).toString('base64');
-      const w = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/${name}.js', Buffer.from('${b64}', 'base64'))"`);
-      assert.equal(w.status, 0, w.stdout);
-    }
+    for (const [name, source] of Object.entries(SCENARIOS)) await terminal.writeFile(`/home/user/${name}.js`, source);
     // A scenario's family can take minutes on a loaded machine, one launch
     // after another: what tells a hang from that is the session's Dynamic
     // Worker ledger, which stops changing.
@@ -153,7 +134,7 @@ try {
       polling = false;
       await poller;
       assert.equal(r.status, 0, `${name}: ${r.stdout.slice(-800)}`);
-      const got = split(r.stdout);
+      const got = splitScenarioOutput(r.stdout);
       assert.deepEqual(got.lines, host[name].lines, `${name}: the same lines, in the same order, as under host node`);
       return { ...got, samples };
     };

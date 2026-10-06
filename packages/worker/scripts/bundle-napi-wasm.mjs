@@ -30,9 +30,9 @@
 
 import { promises as fs, existsSync } from 'node:fs';
 import path from 'node:path';
-import { createHash } from 'node:crypto';
 import { fileURLToPath } from 'node:url';
 import { SPECS } from './napi-wasm/specs.mjs';
+import { sha256Hex as sha256 } from './stage-asset.mjs';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const ROOT = path.resolve(__dirname, '..');
@@ -40,7 +40,6 @@ const ASSETS = path.join(ROOT, 'public', '_assets', 'napi-wasm');
 const OUT_TS = path.join(ROOT, 'src', 'napi-wasm-artifacts.generated.ts');
 const LOADER_FILES = ['napi-wasm-loader.mjs', 'wasi-trampoline.wasm', 'provenance.json'];
 
-const sha256 = (bytes) => createHash('sha256').update(bytes).digest('hex');
 const fail = (message) => { throw new Error(`[bundle-napi-wasm] ${message}`); };
 
 async function onlyChild(dir) {

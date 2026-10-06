@@ -21,6 +21,7 @@ import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 /** One storage slot per constructed process: these cases are independent. */
 let facetSeq = 0;
@@ -44,15 +45,7 @@ const world = createFacetWorld(() => ({
 
 const env = {
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 const ctx = createFacetCtx(world, 'request-durability-test');
 const processes = new SessionProcessSupervisor();

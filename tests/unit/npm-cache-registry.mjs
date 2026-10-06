@@ -36,7 +36,7 @@ const entryFixture = {
 
 {
   const cache = new NpmCache(new FakeSql(new Database(':memory:')));
-  cache.putRegistryEntry(entryFixture);
+  assert.deepEqual(cache.putRegistryEntries([entryFixture]), { written: 1, failed: 0 });
 
   const got = cache.getRegistryEntry('opencode-linux-x64', '1.16.2');
   assert.ok(got);
@@ -46,10 +46,7 @@ const entryFixture = {
   const versions = cache.getRegistryVersions('opencode-linux-x64');
   assert.equal(versions.length, 1);
   assert.deepEqual(JSON.parse(versions[0].platformJson), { os: ['linux'], cpu: ['x64'] });
-
-  const dumped = cache.dumpRegistryEntries(10);
-  assert.equal(dumped.length, 1);
-  assert.deepEqual(JSON.parse(dumped[0].optionalDepsJson), { fsevents: '^2.0.0' });
+  assert.deepEqual(JSON.parse(versions[0].optionalDepsJson), { fsevents: '^2.0.0' });
 }
 
 // ── Pre-existing table: columns are added, old rows read as misses ─────
@@ -84,7 +81,7 @@ const entryFixture = {
   assert.equal(old.peerDepsJson, '{}');
 
   // New writes land in the upgraded table.
-  cache.putRegistryEntry(entryFixture);
+  assert.deepEqual(cache.putRegistryEntries([entryFixture]), { written: 1, failed: 0 });
   const got = cache.getRegistryEntry('opencode-linux-x64', '1.16.2');
   assert.deepEqual(JSON.parse(got.platformJson), { os: ['linux'], cpu: ['x64'] });
 

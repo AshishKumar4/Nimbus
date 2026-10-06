@@ -20,7 +20,7 @@
  * (see OPENCODE_TREE_SITTER_WASMS and FacetManager.treeSitterModuleEntries).
  */
 import { OPENCODE_ARTIFACT_BUILD_ID, OPENCODE_ARTIFACT_DIGESTS, OPENCODE_ARTIFACT_PRESENT, OPENCODE_ARTIFACT_VERSION, } from '../opencode-artifact.generated.js';
-import { fetchStagedBytes } from './staged-source.js';
+import { fetchStagedBytes, stagedAsset } from './staged-source.js';
 /** Base asset path of the staged opencode bundle directory. */
 const OPENCODE_ASSET_BASE = `/_assets/opencode/${OPENCODE_ARTIFACT_VERSION}`;
 /**
@@ -43,23 +43,17 @@ function pinnedDigest(file) {
     return OPENCODE_ARTIFACT_DIGESTS[file];
 }
 async function fetchAsset(env, file) {
-    const expected = pinnedDigest(file);
-    const path = `${OPENCODE_ASSET_BASE}/${file}`;
-    return fetchStagedBytes(env, {
-        path,
+    return fetchStagedBytes(env, stagedAsset({
+        label: 'opencode',
+        path: `${OPENCODE_ASSET_BASE}/${file}`,
         // The build id (content hash of the staged dist) is part of the key so a
         // same-version rebuild with different bytes never serves stale content
         // from a warm colo cache.
         l2Key: `https://nimbus-cache.invalid${OPENCODE_ASSET_BASE}/${OPENCODE_ARTIFACT_BUILD_ID}/${file}`,
-        sha256: expected,
-        poisonedCache: 'reject',
-        missingBinding: `Nimbus: opencode requires an env.ASSETS binding (serves ${path})`,
-        fetchFailed: (res) => `opencode asset fetch failed: ${res.status} ${res.statusText} for ` +
-            `${path} — deploy is missing the staged opencode artifact`,
-        integrityFailed: (digest, from) => `opencode asset integrity check failed for ${path}: expected ` +
-            `${expected}, got ${digest} (${from}) — the staged ` +
-            'artifact is corrupt or out of sync; rerun scripts/bundle-opencode.mjs and redeploy',
-    });
+        sha256: pinnedDigest(file),
+        requiredBy: 'opencode',
+        stagedBy: 'scripts/bundle-opencode.mjs',
+    }));
 }
 /** Fetch the opencode CLI bundle source as text. */
 /**

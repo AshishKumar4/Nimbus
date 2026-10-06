@@ -32,6 +32,15 @@ export async function testBox({ harness = createSqliteVfsTestHarness(), vfs, ter
 }
 
 /**
+ * A workspace over a fresh in-memory store: NimbusWorkspace.create's
+ * defaults, plus whatever `options` a test sets.
+ */
+export function openWorkspace(options = {}) {
+  const harness = createSqliteVfsTestHarness();
+  return NimbusWorkspace.create({ sql: harness.sql, transactions: harness.ctx, ...options });
+}
+
+/**
  * A session filesystem in memory with no workspace: `files` (what a Shell
  * binds its commands to), `root` (the store as the kernel, for setup) and
  * `view` (a command's view as the session user, uid 1000).

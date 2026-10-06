@@ -13,7 +13,6 @@
 // than argued about.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
@@ -28,6 +27,7 @@ import { processFiles } from './lib/process-bridge.mjs';
 import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/rpc.ts';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const PORT = 4471;
 
@@ -83,15 +83,7 @@ const world = createFacetWorld(async (config, info) => {
 
 const env = {
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 const ctx = createFacetCtx(world, 'routed-durability-session');

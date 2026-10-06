@@ -42,6 +42,7 @@ import { _rpcFsList, _rpcFsReadBatch } from '../../packages/worker/src/session/r
 import { processFiles } from './lib/process-bridge.mjs';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
+import { stagedAssets } from './lib/staged-assets.mjs';
 
 const PROJECT = '/home/user/proj';
 /** A project file past the bundle's byte cap and the single-value ceiling: chunked. */
@@ -192,15 +193,7 @@ function sessionCtx(name, principal) {
 const env = {
   NPM_TARBALL_CACHE: profileBucket,
   LOADER: world.loader,
-  ASSETS: {
-    async fetch(request) {
-      const path = new URL(request.url).pathname.replace(/^\//, '');
-      return new Response(
-        readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-        { status: 200 },
-      );
-    },
-  },
+  ASSETS: stagedAssets,
 };
 
 let sessionCtxNow;

@@ -5,14 +5,10 @@ import assert from 'node:assert/strict';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { makeRubyRunnerFactory } from '../../packages/core/src/runtime/ruby-runner.ts';
 import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
-import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { ProcessView } from '../../packages/core/src/runtime/process-files.ts';
 import { registerShellEntrypointCommands } from '../../packages/core/src/shell/shell-entrypoints.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { SESSION_USER, installedRuntime, runtimeContext } from './lib/runtime-session.mjs';
 
-const USER_CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
 // The probe is refused before any program is compiled, so a facet host that
 // throws on use proves the refusal came first.
@@ -25,49 +21,23 @@ function accessDenied(path) {
   return Object.assign(new Error(`EACCES: ${path}`), { code: 'EACCES' });
 }
 
-function outputContext(args, vfs) {
-  let stdout = '';
-  let stderr = '';
-  return {
-    ctx: {
-      pid: 17,
-      vfs,
-      cred: USER_CRED,
-      args,
-      cwd: '/home/user',
-      env: {},
-      stdin: '',
-      stdout: { write: (value) => { stdout += String(value); } },
-      stderr: { write: (value) => { stderr += String(value); } },
-      setUmask() {},
-      async runAs() { return { status: 1, signal: null }; },
-    },
-    output: () => ({ stdout, stderr }),
-  };
-}
+const outputContext = (args, vfs) => runtimeContext(null, {
+  args, vfs, pid: 17, setUmask() {}, async runAs() { return { status: 1, signal: null }; },
+});
 
 /**
  * The denied program lives in a root-owned directory the session user may not
  * traverse, so the refusal comes from the authority rather than from a stub.
  */
 function deniedProgramAuthority(runtimeFiles, deniedPath) {
-  const harness = createSqliteVfsTestHarness();
-  const raw = new SqliteVFS(harness.sql, harness.ctx);
-  const root = raw.as(CRED_KERNEL);
-  root.mkdir('home/user', { recursive: true, mode: 0o755 });
-  root.chown('home/user', USER_CRED.uid, USER_CRED.gid);
+  const { root, filesystem } = installedRuntime(runtimeFiles);
   root.mkdir('home/user/locked', { mode: 0o700 });
   root.writeFile(deniedPath, new Uint8Array([0]), { mode: 0o644 });
-  for (const [path, bytes] of Object.entries(runtimeFiles)) {
-    const clean = path.replace(/^\/+/, '');
-    root.mkdir(clean.replace(/\/[^/]+$/, ''), { recursive: true, mode: 0o755 });
-    root.writeFile(clean, bytes, { mode: 0o644 });
-  }
-  return new ProcessFiles(raw);
+  return filesystem;
 }
 
 function invocationVfs(filesystem) {
-  return new ProcessView(filesystem.bind({ pid: 17, cred: USER_CRED }));
+  return new ProcessView(filesystem.bind({ pid: 17, cred: SESSION_USER }));
 }
 
 {
@@ -122,7 +92,7 @@ function invocationVfs(filesystem) {
     filename: '/home/user/locked/program.wasm',
     dirname: '/home/user/locked',
     command: 'wasm-runner /home/user/locked/program.wasm',
-    cred: USER_CRED,
+    cred: SESSION_USER,
   });
   assert.equal(result.exitCode, 1);
   assert.match(result.stderr, /wasm-runner: cannot read .*program\.wasm.*EACCES:/);

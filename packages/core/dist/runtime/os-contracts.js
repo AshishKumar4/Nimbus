@@ -20,33 +20,27 @@ export const CRED_SESSION_USER = Object.freeze({
     groups: Object.freeze([1000]),
     umask: 0o022,
 });
+/** A POSIX id (or mask): an unsigned integer. */
+function isCredId(value) {
+    return typeof value === 'number' && Number.isInteger(value) && value >= 0;
+}
+/** Whether `value` is a credential: unsigned integer uid, gid, umask and supplementary groups. The one shape check. */
+export function isVfsCred(value) {
+    if (typeof value !== 'object' || value === null)
+        return false;
+    const { uid, gid, groups, umask } = value;
+    return isCredId(uid) && isCredId(gid) && isCredId(umask) && Array.isArray(groups) && groups.every(isCredId);
+}
+/** `value` as a credential of its own (its groups copied), or the refusal `source` makes without one. */
 export function requireVfsCred(value, source) {
-    if (typeof value !== 'object' || value === null) {
+    if (!isVfsCred(value))
         throw new Error(`${source} requires process credentials`);
-    }
-    const uid = 'uid' in value ? value.uid : undefined;
-    const gid = 'gid' in value ? value.gid : undefined;
-    const groups = 'groups' in value ? value.groups : undefined;
-    const umask = 'umask' in value ? value.umask : undefined;
-    if (typeof uid !== 'number' || !Number.isInteger(uid)
-        || typeof gid !== 'number' || !Number.isInteger(gid)
-        || !Array.isArray(groups)
-        || typeof umask !== 'number' || !Number.isInteger(umask)) {
-        throw new Error(`${source} requires process credentials`);
-    }
-    const normalizedGroups = [];
-    for (const group of groups) {
-        if (typeof group !== 'number' || !Number.isInteger(group)) {
-            throw new Error(`${source} requires process credentials`);
-        }
-        normalizedGroups.push(group);
-    }
-    return {
-        uid,
-        gid,
-        groups: normalizedGroups,
-        umask,
-    };
+    return { uid: value.uid, gid: value.gid, groups: [...value.groups], umask: value.umask };
+}
+/** Whether two credentials are the same identity: the same ids, mask and groups, in order. */
+export function sameCred(a, b) {
+    return a.uid === b.uid && a.gid === b.gid && a.umask === b.umask
+        && a.groups.length === b.groups.length && a.groups.every((group, index) => group === b.groups[index]);
 }
 /**
  * N17: a launch that reads synchronously waits for the paths it names (its

@@ -17,19 +17,12 @@
 // writes much" — a bound that must hold however large the image is.
 
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
 
-import { FacetManager } from '../../packages/worker/src/facets/manager.ts';
-import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
-import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
-import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
-import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_IMAGE_DIR } from '../../packages/fabric/src/process-fabric.ts';
-import { processFiles } from './lib/process-bridge.mjs';
+import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({
   SupervisorRPC: ({ props }) => ({ props }),
@@ -73,39 +66,17 @@ function meterStorage(harness) {
 
 const harness = createSqliteVfsTestHarness();
 const meter = meterStorage(harness);
-const vfs = new SqliteVFS(harness.sql, harness.ctx);
-const fs = vfs.as(CRED_KERNEL);
-
-const world = createFacetWorld(() => ({
-  async startProcess() { return { ok: true }; },
-  async handleHttpRequest() { return new Response('ok'); },
-}));
-const manager = new FacetManager(
-  createFacetCtx(world, 'bounded-turn-storage'),
-  {
-    LOADER: world.loader,
-    // A small work budget so the launch yields often; the image write's own
-    // bound is what has to hold the turn down, not this.
-    NIMBUS_LAUNCH_CHUNK_BYTES: '65536',
-    ASSETS: {
-      async fetch(request) {
-        const path = new URL(request.url).pathname.replace(/^\//, '');
-        return new Response(
-          readFileSync(new URL(`../../packages/worker/public/${path}`, import.meta.url)),
-          { status: 200 },
-        );
-      },
-    },
-  },
-  new SessionProcessSupervisor(),
-  new PortRegistry(),
-  processHostFor,
-  { requestLaunchTurn: () => {
+const { world, manager, vfs } = launchManager('bounded-turn-storage', {
+  session: launchSession({ disk: harness }),
+  // A small work budget so the launch yields often; the image write's own
+  // bound is what has to hold the turn down, not this.
+  env: { NIMBUS_LAUNCH_CHUNK_BYTES: '65536' },
+  hooks: { requestLaunchTurn: () => {
     meter.endTurn();
     setTimeout(() => { void manager.pumpResidentLaunches(); }, 0);
   } },
-);
-manager.setVfs(vfs, processFiles(vfs));
+});
+const fs = vfs.as(CRED_KERNEL);
 
 // A program whose module map is several times the transaction bound — the size
 // at which a whole-file write is the thing that takes the object down.
