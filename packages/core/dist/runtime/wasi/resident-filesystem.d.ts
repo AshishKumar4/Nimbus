@@ -12,8 +12,10 @@
  * bytes (which the codec holds for a read-only descriptor, its ResidentFd) are
  * answered from the store; anything that changes the filesystem, and anything
  * the store cannot vouch for, goes to the authority exactly as before. The
- * store is the process's one copy of file bytes: the codec keeps none of its
- * own beside it (`holdsContent`).
+ * store is the process's one copy of file bytes, under its one budget: a
+ * descriptor the codec answers itself pins the bytes it reads for its
+ * lifetime (`pinContent`), charged to that budget, and past it the codec
+ * opens the session's descriptor instead.
  *
  * What makes an answer from the store the authority's answer:
  *   - The walk is the authority's own (beneath-walk.ts walkBeneath), its
@@ -32,7 +34,7 @@
  *   - A name the store does not know (its directory not listed yet) is not
  *     absent: the adapter lists the directory and walks again.
  */
-import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -81,10 +83,25 @@ export interface ResidentNamespace {
     fill(key: string, entry: ResidentEntry): Promise<Uint8Array | null>;
     /** The ACQUIRE barrier. */
     barrier(): Promise<boolean>;
+    /** Charge `bytes` of heap held outside the store to its budget: false when they do not fit. */
+    reserve(bytes: number): boolean;
+    /** Return what `reserve` charged. */
+    release(bytes: number): void;
+}
+/** A file's bytes, kept for a descriptor's lifetime: `release` when it closes. */
+export interface PinnedContent {
+    bytes: Uint8Array;
+    release(): void;
 }
 export interface ResidentFilesystem extends RuntimeFsBridge {
-    /** File bytes are held here, by revision: a codec over this filesystem keeps no copies of its own. */
-    readonly holdsContent: true;
+    /**
+     * The bytes of the file `path` names, which `stat` describes, kept for a
+     * descriptor until it releases them: one buffer per revision however many
+     * descriptors read it, charged once to the store's budget. Null when they
+     * cannot be (the file changed, or the budget is spent): the caller opens
+     * the session's descriptor instead.
+     */
+    pinContent(path: RuntimeFsPath, stat: RuntimeVfsStat): PinnedContent | null | Promise<PinnedContent | null>;
     /** Input from outside the process arrived: the barrier is owed before the next answer. */
     inbound(): void;
     /** Whether writes are held that the session does not have yet. */
@@ -113,6 +130,9 @@ export interface ResidentFilesystem extends RuntimeFsBridge {
 /** A held file the session refused part of: what a run reports, naming the file. */
 export interface UnsettledWrite {
     path: string;
+    /** The file's identity: an fsync through any descriptor of it reports the refusal too. */
+    dev: number;
+    ino: number;
     error: unknown;
 }
 /** Counts since the process started. Every `delegated` call is a round trip to the session. */
@@ -132,6 +152,9 @@ export interface ResidentFilesystemStats {
     barriers: number;
     /** Wall time the process spent waiting on the session for any of the above, in ms. */
     waitMs: number;
+    /** File bytes pinned for descriptors now, and how many buffers hold them. */
+    pinnedBytes: number;
+    pins: number;
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map

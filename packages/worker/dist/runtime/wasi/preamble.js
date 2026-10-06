@@ -170,6 +170,8 @@ function __wasiStartResident(sup, cred) {
         content: (key) => (view === null ? undefined : view.content(key)),
         fill: (key, entry) => (view === null ? Promise.resolve(null) : view.fill(key, entry)),
         barrier: () => (view === null ? Promise.resolve(false) : view.barrier()),
+        reserve: (bytes) => view !== null && view.reserve(bytes),
+        release: (bytes) => { view?.release(bytes); },
     };
     return residentFilesystem(authority, booting);
 }

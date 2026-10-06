@@ -77,13 +77,28 @@ function __namespaceRowBytes(parent, name, target) {
 function __residentDbBytes() {
   // A one-shot's heap is one budget: the store's tables and the own writes
   // held beside them (__residentHold) count against the same cap.
-  return __residentT.bytes() + (__residentInHeap ? __residentHeldBytes + __residentNamespaceOverlayBytes + __residentNamespaceReserveBytes : 0);
+  return __residentT.bytes() + (__residentInHeap ? __residentHeldBytes + __residentNamespaceOverlayBytes + __residentNamespaceReserveBytes + __residentPinnedBytes : 0);
 }
 
 /** Whether the store is a one-shot's heap (__residentBindInMemory) rather than a facet's SQLite. */
 let __residentInHeap = false;
 let __residentNamespaceOverlayBytes = 0;
 let __residentNamespaceReserveBytes = 0;
+/**
+ * Heap a WASI process holds outside the tables, charged to the same budget:
+ * file bytes a descriptor keeps for its lifetime, and writes held for the
+ * session (core runtime/wasi/resident-filesystem.ts). __residentPin refuses
+ * what does not fit, and the caller then reads through the session instead.
+ */
+let __residentPinnedBytes = 0;
+function __residentPin(bytes) {
+  if (!__residentInHeap || !__residentFits(bytes, false)) return false;
+  __residentPinnedBytes += bytes;
+  return true;
+}
+function __residentUnpin(bytes) {
+  __residentPinnedBytes = Math.max(0, __residentPinnedBytes - bytes);
+}
 function __residentNamespaceOverlayDelta(bytes) {
   if (!__residentInHeap) return;
   if (bytes > 0 && __residentCap !== null && __residentDbBytes() + bytes > __residentCap) {
@@ -670,6 +685,7 @@ function __residentBindInMemory(budget) {
   __residentCap = Number(budget);
   __residentNamespaceOverlayBytes = 0;
   __residentNamespaceReserveBytes = 0;
+  __residentPinnedBytes = 0;
   return t;
 }
 
@@ -1949,6 +1965,8 @@ function __residentNamespaceView(supervisor, device, cred) {
       return bytes === undefined ? null : bytes;
     },
     barrier: () => __residentLazyBarrier(supervisor),
+    reserve: (bytes) => __residentPin(bytes),
+    release: (bytes) => __residentUnpin(bytes),
   };
   return view;
 }
