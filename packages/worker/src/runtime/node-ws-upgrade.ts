@@ -1,7 +1,8 @@
 /**
  * A WebSocket upgrade made with `http.request` / `https.request`, as the `ws`
  * package (and every client built on it) makes one: inserted into the
- * generated node shims after the native HTTP module (native-http.ts).
+ * generated node shims after the native HTTP module (native-http.ts), whose
+ * http and https it installs itself over.
  *
  * workerd's `http.request` cannot make one: it refuses `createConnection`
  * (ERR_OPTION_NOT_IMPLEMENTED; `ws` always passes it) and has no 'upgrade'
@@ -32,7 +33,7 @@ export const NODE_WS_UPGRADE_SOURCE = `
 // ═══════════════════════════════════════════════════════════════════════
 // ──  WebSocket upgrades over http(s).request (runtime/node-ws-upgrade.ts)
 // ═══════════════════════════════════════════════════════════════════════
-const __nimbusWebSocketUpgrades = (() => {
+(() => {
   const patched = Symbol.for("nimbus.websocket-upgrade");
   /** RFC 6455 section 1.3: what the server appends to the client's key. */
   const ACCEPT_GUID = "258EAFA5-E914-47DA-95CA-C5AB0DC85B11";
@@ -462,7 +463,7 @@ const __nimbusWebSocketUpgrades = (() => {
   }
 
   /** \`module\`'s request and get, answering a WebSocket upgrade here and anything else as before. */
-  return function install(module, secure) {
+  function install(module, secure) {
     if (!module || module[patched]) return module;
     const request = module.request;
     const get = module.get;
@@ -480,6 +481,21 @@ const __nimbusWebSocketUpgrades = (() => {
     };
     Object.defineProperty(module, patched, { value: true });
     return module;
-  };
+  }
+
+  // Over the native modules (native-http.ts): each, the first time it is
+  // required, with its upgrades answered here. ESM imports of node:http and
+  // node:https are the same module objects.
+  for (const [name, secure] of [["http", false], ["https", true]]) {
+    const native = Object.getOwnPropertyDescriptor(builtins, name);
+    Object.defineProperty(builtins, name, {
+      configurable: true, enumerable: true,
+      get() {
+        const module = install(native.get ? native.get.call(builtins) : native.value, secure);
+        Object.defineProperty(builtins, name, { value: module, writable: true, enumerable: true, configurable: true });
+        return module;
+      },
+    });
+  }
 })();
 `;

@@ -8923,8 +8923,8 @@ builtins["node:sqlite"] = __sqliteMod;
 builtins.child_process = __childProcessMod;
 builtins.process = __processMod;
 builtins.console = __consoleMod;
-${NODE_WS_UPGRADE_SOURCE}
 ${NATIVE_HTTP_SOURCE}
+${NODE_WS_UPGRADE_SOURCE}
 // W3 — net.Socket honest-error mode.
 //
 // Pre-W3 behaviour: \`new net.Socket().connect(443, 'example.com')\`
