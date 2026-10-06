@@ -1,39 +1,62 @@
 #!/usr/bin/env bun
-// monaco-polish/new/resize-persists-localStorage — pane dims
-// persisted via localStorage keyed per session.
+// monaco-polish/new/resize-persists-localStorage — a pane size the user
+// drags is kept: dragging the editor↔terminal handle stores the new split
+// under this session's key (nimbus.pane.dims./s/<sid>), and a reload of the
+// page lays the panes out at that split again. Driven in a real Chrome.
 
-import { mintSession, BASE, makeAsserter, requestHeaders } from '../../_driver.mjs';
+import { BASE, deleteSession, makeAsserter, mintSession } from '../../_driver.mjs';
+import { launchBrowser, openPage } from '../../_runtime-behavioral-template.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('monaco-polish/new/resize-persists-localStorage');
 console.log(`monaco-polish/new/resize-persists-localStorage — ${process.env.BASE}`);
 
 const sid = await mintSession();
-const r = await fetch(`${BASE}/s/${sid}/`, { redirect: 'follow', headers: requestHeaders() });
-const html = await r.text();
+const KEY = `nimbus.pane.dims./s/${sid}`;
 
-a.check('LS key uses nimbus.pane.dims namespace',
-  /nimbus\.pane\.dims/.test(html),
-  `LS key missing`);
-a.check('LS key includes SESSION_PREFIX (per-session persistence)',
-  /nimbus\.pane\.dims[\s\S]{0,100}SESSION_PREFIX/.test(html),
-  `per-session keying missing`);
-a.check('dims structure: treeWidth + middlePct + editorPct',
-  /treeWidth\s*:[\s\S]{0,100}middlePct\s*:[\s\S]{0,100}editorPct\s*:/.test(html),
-  `dims object shape missing`);
-a.check('localStorage.setItem on saveDims',
-  /function saveDims[\s\S]{0,200}localStorage\.setItem/.test(html),
-  `saveDims wiring missing`);
-a.check('localStorage.getItem on loadDims',
-  /function loadDims[\s\S]{0,200}localStorage\.getItem/.test(html),
-  `loadDims wiring missing`);
-a.check('saveDims called from endDrag',
-  /function endDrag[\s\S]{0,300}saveDims\(\)/.test(html),
-  `endDrag → saveDims wiring missing`);
-a.check('restoreDims applies persisted tree width to DOM',
-  /function restoreDims[\s\S]{0,300}treePanel[\s\S]{0,100}style\.width/.test(html) ||
-  /function restoreDims[\s\S]{0,300}tree\.style\.width/.test(html),
-  `restoreDims width application missing`);
+const browser = await launchBrowser();
+try {
+  const { page, pageErrors } = await openPage(browser, sid);
+  await page.goto(`${BASE}/s/${sid}/`, { waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForSelector('#editorTerminalResizeHandle', { visible: true, timeout: 30_000 });
+
+  const editorHeight = () => page.evaluate(() => document.getElementById('editorPanel').getBoundingClientRect().height);
+  const stored = () => page.evaluate((key) => localStorage.getItem(key), KEY);
+  a.check('nothing is stored before the user resizes', (await stored()) === null, String(await stored()));
+
+  // Drag the handle up by 150px: the editor shrinks.
+  const before = await editorHeight();
+  const handle = await page.evaluate(() => {
+    const r = document.getElementById('editorTerminalResizeHandle').getBoundingClientRect();
+    return { x: r.x + r.width / 2, y: r.y + r.height / 2 };
+  });
+  await page.mouse.move(handle.x, handle.y);
+  await page.mouse.down();
+  await page.mouse.move(handle.x, handle.y - 150, { steps: 12 });
+  await page.mouse.up();
+  const savedOk = await page.waitForFunction((key) => localStorage.getItem(key) !== null, { timeout: 10_000 }, KEY)
+    .then(() => true, () => false);
+  const dims = JSON.parse((await stored()) ?? 'null');
+  a.check('the drag stores the split under this session\'s key',
+    savedOk && typeof dims?.editorPct === 'number' && dims.editorPct < 60,
+    `stored=${JSON.stringify(dims)}`);
+  const dragged = await editorHeight();
+  a.check('the drag shrank the editor', before - dragged > 75, `editor ${before} -> ${dragged}`);
+
+  // A reload lays the panes out at the stored split.
+  await page.reload({ waitUntil: 'domcontentloaded', timeout: 60_000 });
+  await page.waitForSelector('#editorTerminalResizeHandle', { visible: true, timeout: 30_000 });
+  const restored = await page.waitForFunction(
+    (target) => Math.abs(document.getElementById('editorPanel').getBoundingClientRect().height - target) <= 4,
+    { timeout: 10_000 }, dragged).then(() => true, () => false);
+  const after = await editorHeight();
+  a.check('a reload restores the dragged split', restored, `editor after reload ${after}, dragged ${dragged}, default ${before}`);
+
+  a.check('no page errors', pageErrors.length === 0, JSON.stringify(pageErrors.slice(0, 2)));
+} finally {
+  await browser.close();
+  await deleteSession(sid);
+}
 
 const sum = a.summary();
 process.exit(sum.fail > 0 ? 1 : 0);
