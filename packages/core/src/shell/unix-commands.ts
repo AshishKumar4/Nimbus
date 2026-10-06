@@ -4564,6 +4564,49 @@ function wrap(fn: CmdFn): (ctx: Ctx) => Promise<number> {
   };
 }
 
+/**
+ * shopt for a shell with no shopt options (pipefail and the like are `set
+ * -o`'s): `-s`/`-u NAME` is bash's "invalid shell option name", exit 1; `-q
+ * NAME` is unset, 1; a bare listing lists nothing.
+ */
+function mkShopt(): CmdFn {
+  return async (ctx) => {
+    const names = ctx.args.filter((a) => !a.startsWith('-'));
+    const quiet = ctx.args.some((a) => /^-[a-z]*q/.test(a));
+    if (names.length === 0) return 0;
+    if (!quiet) for (const name of names) (await ctx.stderr.write(`shopt: ${name}: invalid shell option name\n`));
+    return 1;
+  };
+}
+
+const ULIMIT_RESOURCES: Record<string, string> = {
+  c: 'core file size', d: 'data seg size', f: 'file size', l: 'max locked memory', m: 'max memory size',
+  n: 'open files', s: 'stack size', t: 'cpu time', u: 'max user processes', v: 'virtual memory',
+};
+
+/**
+ * ulimit for a shell that enforces no resource limit: a query answers
+ * `unlimited` (-a lists each resource), and setting one fails as bash's does
+ * when a limit cannot be changed, exit 1.
+ */
+function mkUlimit(): CmdFn {
+  return async (ctx) => {
+    const flags = ctx.args.filter((a) => a.startsWith('-')).join('').replace(/-/g, '').replace(/[HS]/g, '');
+    const value = ctx.args.find((a) => !a.startsWith('-'));
+    if (flags.includes('a')) {
+      for (const [letter, name] of Object.entries(ULIMIT_RESOURCES)) (await ctx.stdout.write(`${`${name} (-${letter})`.padEnd(28)}unlimited\n`));
+      return 0;
+    }
+    const letter = flags.at(-1) ?? 'f';
+    if (value !== undefined) {
+      (await ctx.stderr.write(`ulimit: ${ULIMIT_RESOURCES[letter] ?? letter}: cannot modify limit: Operation not permitted\n`));
+      return 1;
+    }
+    (await ctx.stdout.write('unlimited\n'));
+    return 0;
+  };
+}
+
 export function registerUnixCommands(
   registry: UnixCommandRegistry,
   sqliteVfs: SqliteVFS,
@@ -4671,28 +4714,13 @@ export function registerUnixCommands(
   // `which read` doesn't error; the builtin always wins dispatch
   // (interp.executeSimpleCommand checks builtins.get BEFORE
   // registry.resolve — index-Djm2onjx.js:5182-5186).
-  registry.register('read', wrap((ctx) => {
-    const args = ctx.args.filter((a) => !a.startsWith('-'));
-    const varName = args[0] || 'REPLY';
-    ctx.env[varName] = '';
-    return 0;
-  }));
-
-  // exit — exit with code
-  registry.register('exit', wrap((ctx) => {
-    return parseInt(ctx.args[0] || '0') || 0;
-  }));
-
-  // source / . — source a file (stub)
-  registry.register('source', wrap(() => 0));
-  registry.register('.', wrap(() => 0));
-
-  // noop commands that scripts might call
-  registry.register('set', wrap(() => 0));
-  registry.register('shopt', wrap(() => 0));
-  registry.register('trap', wrap(() => 0));
+  // read, exit, source, ., set and trap are the shell's own builtins; run by
+  // name (xargs, find -exec) they are not found, as on a system that ships no
+  // /usr/bin copies of them. shopt and ulimit answer for this shell: it has
+  // no shopt options and enforces no resource limit.
+  registry.register('shopt', wrap(mkShopt()));
   registry.register('umask', createUmaskCommand());
   registry.register('su', createSuCommand());
   registry.register('sudo', createSudoCommand());
-  registry.register('ulimit', wrap(() => 0));
+  registry.register('ulimit', wrap(mkUlimit()));
 }
