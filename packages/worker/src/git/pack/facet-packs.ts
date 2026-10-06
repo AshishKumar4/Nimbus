@@ -66,7 +66,14 @@ export function facetPacks(supervisor: FacetPacksSupervisor): FacetPacksSeam {
     async ingest(gitdir, packfile, readExternal) {
       const dir = gitdir + '/objects/pack';
       await supervisor.ensureDirectory(dir);
-      const files: PackFiles = { ...supervisor, remove: (path) => supervisor.unlink(path) };
+      const files: PackFiles = {
+        ...supervisor,
+        remove: (path) => supervisor.unlink(path),
+        // One ranged write a file (a fetch installs one pack: a wave buys nothing here).
+        async writeFiles(list, _durable) {
+          for (const file of list) await new RangedPackFile(files, file.path).append(file.bytes);
+        },
+      };
       const tmpName = 'tmp_pack_' + crypto.randomUUID();
       const tmp = new RangedPackFile(files, dir + '/' + tmpName);
       const external = {
