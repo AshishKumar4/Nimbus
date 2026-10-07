@@ -23,10 +23,12 @@
  *              was checked out stay, as git leaves them ("Clone succeeded,
  *              but checkout failed.")
  * Each slice walks what is left, so a cleanup cut short (a reset) is
- * finished by the next generation of the session: it lists the records of
- * earlier generations before it serves anything, reserves each destination
- * (its lease) before the filesystem takes a write, and cleans them up in the
- * background. A destination whose marker names another job is not the
+ * finished by the next generation of the session (CloneRecovery): it lists
+ * the records of earlier generations before it serves anything, reserves
+ * each destination (its lease) before the filesystem takes a write, and
+ * cleans them up in the background. If it cannot list them, no write is
+ * served on a guess: the whole filesystem is held, named, until a retry
+ * can. A destination whose marker names another job is not the
  * record's to touch: only the record goes. The clone proves its
  * destination absent or empty before it writes the record, so a cleanup
  * removes only what the clone made.
@@ -136,6 +138,90 @@ function removeIfEmpty(fs, path) {
 /** The records of clones an earlier generation of the session ran (than `current`): none of them is running. */
 export async function listInterruptedClones(storage, current) {
     return (await listCloneJobs(storage)).filter((record) => !(record.generation >= current));
+}
+/** Why every write is refused while a generation cannot list its interrupted clones. */
+export const RECOVERY_FENCE_REASON = 'the session is recovering interrupted git clones and cannot read their records yet; try again shortly';
+const RECOVERY_TIMING = { attempts: 3, delayMs: 250, maxDelayMs: 5_000, backgroundMs: 120_000 };
+/**
+ * One generation's recovery of the clones earlier generations cut short. As
+ * the session starts, `discover` lists their records (a few attempts); as
+ * its filesystem comes up, before it serves a write, `start` reserves each
+ * destination and cleans them up in the background. A listing that failed
+ * is never taken for an empty one: `start` holds the whole filesystem
+ * instead (a write is EBUSY, with RECOVERY_FENCE_REASON) and retries in the
+ * background; once a listing succeeds the hold goes and the destinations
+ * are reserved in the same step, so no write lands between.
+ */
+export class CloneRecovery {
+    storage;
+    generation;
+    timing;
+    /** Earlier generations' records, or null while they could not be listed. */
+    records = null;
+    constructor(storage, generation, timing = RECOVERY_TIMING) {
+        this.storage = storage;
+        this.generation = generation;
+        this.timing = timing;
+    }
+    delay(attempt) {
+        const ms = Math.min(this.timing.maxDelayMs, this.timing.delayMs * 2 ** (attempt - 1));
+        return new Promise((resolve) => setTimeout(resolve, ms));
+    }
+    /** The records listed, with a few attempts; false when none succeeded. */
+    async discover() {
+        for (let attempt = 1;; attempt++) {
+            try {
+                this.records = await listInterruptedClones(this.storage, this.generation);
+                return true;
+            }
+            catch (error) {
+                if (attempt >= this.timing.attempts) {
+                    console.warn('[git] interrupted clones could not be listed:', error?.message);
+                    return false;
+                }
+                await this.delay(attempt);
+            }
+        }
+    }
+    /**
+     * Called as the filesystem comes up: the discovered destinations reserved
+     * and cleaned up in `waitUntil`; or, nothing discovered, every write held
+     * while the listing is retried there.
+     */
+    start(vfs, waitUntil) {
+        const warn = (error) => console.warn('[git] interrupted clone cleanup failed:', error?.message);
+        if (this.records !== null) {
+            const reserved = reserveInterruptedClones(vfs, this.records);
+            this.records = [];
+            if (reserved.length > 0)
+                waitUntil(finishReservedClones(vfs, this.storage, reserved).catch(warn));
+            return;
+        }
+        const fence = vfs.acquireGlobalExclusiveMutation(RECOVERY_FENCE_REASON).owner;
+        waitUntil((async () => {
+            const deadline = Date.now() + this.timing.backgroundMs;
+            for (let attempt = 1;; attempt++) {
+                await this.delay(attempt);
+                let records;
+                try {
+                    records = await listInterruptedClones(this.storage, this.generation);
+                }
+                catch (error) {
+                    // Still unreadable: the hold stays, for the next generation to try again.
+                    if (Date.now() >= deadline) {
+                        console.warn('[git] interrupted clones could not be listed; writes stay held:', error?.message);
+                        return;
+                    }
+                    continue;
+                }
+                // The hold released and the destinations reserved in one step: no write lands between.
+                vfs.releaseExclusiveMutation(fence);
+                const reserved = reserveInterruptedClones(vfs, records);
+                await finishReservedClones(vfs, this.storage, reserved).catch(warn);
+                return;
+            }
+        })());
+    }
 }
 /**
  * Each record's destination reserved (its lease taken, as the record's

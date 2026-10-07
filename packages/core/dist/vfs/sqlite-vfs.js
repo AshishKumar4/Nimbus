@@ -840,6 +840,8 @@ export class SqliteVFS {
         return incarnation;
     }
     exclusiveMutationLeases = new Map();
+    /** Why a lease holds what it holds, where its holder said: what a write it refuses is told. */
+    exclusiveMutationReasons = new Map();
     activeMutationOwner = null;
     /** Shared by every concurrent stream targeting this session's VFS. */
     writeStreamCredits = new WeightedCreditPool(MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
@@ -2755,17 +2757,24 @@ export class SqliteVFS {
         this.exclusiveMutationLeases.set(owner, root);
         return { root, owner };
     }
-    acquireGlobalExclusiveMutation() {
+    /**
+     * Hold the whole session for one owner. `reason`, when given, is what a
+     * write it refuses is told (EBUSY's detail), instead of the lease's root.
+     */
+    acquireGlobalExclusiveMutation(reason) {
         this.settleAppends();
         if (this.exclusiveMutationLeases.size > 0) {
             throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
         }
         const owner = crypto.randomUUID();
         this.exclusiveMutationLeases.set(owner, '');
+        if (reason !== undefined)
+            this.exclusiveMutationReasons.set(owner, reason);
         return { root: '', owner };
     }
     releaseExclusiveMutation(owner) {
         this.exclusiveMutationLeases.delete(owner);
+        this.exclusiveMutationReasons.delete(owner);
     }
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
@@ -2780,6 +2789,11 @@ export class SqliteVFS {
         this.exclusiveMutationLeases.delete(owner);
         const next = crypto.randomUUID();
         this.exclusiveMutationLeases.set(next, root);
+        const reason = this.exclusiveMutationReasons.get(owner);
+        if (reason !== undefined) {
+            this.exclusiveMutationReasons.delete(owner);
+            this.exclusiveMutationReasons.set(next, reason);
+        }
         return next;
     }
     hasExclusiveMutation() {
@@ -2823,12 +2837,15 @@ export class SqliteVFS {
         if (this.activeMutationOwner === null &&
             normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
             this.exclusiveMutationLeases.size > 0) {
-            return { code: 'EBUSY', detail: 'locked while an exclusive mutation is active' };
+            // A session-wide hold that says why says it here too.
+            const global = [...this.exclusiveMutationLeases].find(([, root]) => root === '');
+            const reason = global === undefined ? undefined : this.exclusiveMutationReasons.get(global[0]);
+            return { code: 'EBUSY', detail: reason ?? 'locked while an exclusive mutation is active' };
         }
         for (const [owner, root] of this.exclusiveMutationLeases) {
             if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
                 continue;
-            return { code: 'EBUSY', detail: `locked by an exclusive mutation at /${root}` };
+            return { code: 'EBUSY', detail: this.exclusiveMutationReasons.get(owner) ?? `locked by an exclusive mutation at /${root}` };
         }
         if (this.activeMutationOwner !== null) {
             const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
