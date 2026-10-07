@@ -29,7 +29,7 @@ import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -110,12 +110,17 @@ let installed = null;
 function unitContext(source, module, host, moduleScope) {
     return { source, module, host, imports: new SafeMap(), moduleScope };
 }
-/** A unit's host: `origin`'s import() and `Function`, or else the host's import() against `parentUrl` and the global `Function`. */
+/** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
 function unitHost(host, origin, parentUrl) {
     if (origin === undefined) {
         return { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options), functionBinding: null };
     }
-    return { dynamicImport: (specifier, options) => origin.import(specifier, options), functionBinding: { value: origin.Function } };
+    // Its own property only: an origin without a Function must not take one a program put on Object.prototype.
+    const own = reflectGetOwnPropertyDescriptor(origin, 'Function');
+    return {
+        dynamicImport: (specifier, options) => origin.import(specifier, options),
+        functionBinding: own === undefined || own.value === undefined ? null : { value: own.value },
+    };
 }
 export function createInterpreter(hostOps, host) {
     if (host.primordials !== LAUNCH_PRIMORDIALS)

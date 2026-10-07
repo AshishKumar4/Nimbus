@@ -1444,7 +1444,11 @@ export class Compiler {
         const ops = operators();
         let write;
         const b = ref.binding;
-        if (b === null) {
+        const bound = b === null && name === 'Function' ? this.unit.host.functionBinding : null;
+        if (bound !== null) {
+            write = (_env, value) => { bound.value = value; };
+        }
+        else if (b === null) {
             write = strict
                 ? (_env, value) => {
                     if (!reflectHas(G, name))

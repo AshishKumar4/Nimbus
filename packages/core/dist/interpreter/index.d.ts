@@ -17,12 +17,14 @@ export interface InterpreterHost {
 }
 /**
  * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
- * import() calls and what its free `Function` reads. Code compiled without
- * one imports through the host against its own module URL (none for a
- * constructor's) and reads the global `Function`.
+ * import() calls, and the `Function` its free `Function` binding starts as.
+ * An origin without a `Function` gives its code the global's, as code
+ * compiled without an origin has; that code imports through the host
+ * against its own module URL (none for a constructor's).
  */
 export interface CodeOrigin {
     import(specifier: unknown, options: unknown): Promise<unknown>;
+    /** Undefined, as an own property, for an origin without one. */
     readonly Function: unknown;
 }
 export interface Interpreter {

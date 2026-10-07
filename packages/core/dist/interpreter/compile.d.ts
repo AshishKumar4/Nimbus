@@ -31,11 +31,12 @@ export interface UnitHost {
     /** The unit's `import(specifier, options)`. */
     readonly dynamicImport: ((specifier: unknown, options: unknown) => Promise<unknown>) | null;
     /**
-     * What the unit's free `Function` reads, as a native cell reads its
-     * module's (commonjs-cell.ts, THE WRAPPER); null where it reads the global.
+     * The unit's free `Function`: a binding of its own, which it reads and
+     * assigns as a native cell does its module's (commonjs-cell.ts, THE
+     * WRAPPER); null where it is the global's.
      */
     readonly functionBinding: {
-        readonly value: unknown;
+        value: unknown;
     } | null;
 }
 /** An import binding's source: the slot holds the module (named, default) or the namespace object. */

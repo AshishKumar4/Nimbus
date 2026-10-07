@@ -121,13 +121,18 @@ export declare function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry 
  * `Function`, that builds the function V8 builds for `new
  * <Kind>Function(...params, body)`. The function is named `anonymous`, its
  * source is `<head> anonymous(<params>\n) {\n<body>\n}` (the body from line
- * 3), and its import() calls are the origin's. For arguments the constructor
- * refuses (runtimeFunctionSyntaxError), the factory throws the SyntaxError
- * the constructor would. A constructor's function closes over the global
- * scope, where a CommonJS module's body would see workerd's five CommonJS
- * names (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
- * exports, __filename, __dirname), so an enclosing function rebinds those five
- * to the global object's.
+ * 3), and its import() calls are the origin's, through a parameter whose name
+ * no identifier of the code uses; a function so rewritten carries its own
+ * source as the export's `source`, which the guest gives
+ * Function.prototype.toString. Code that names `Function` also exports
+ * `unbound`, the same factory without that parameter, for an origin whose
+ * code reads and writes the global's. For arguments the constructor refuses
+ * (parseRuntimeFunction) the factory throws the SyntaxError the constructor
+ * would. A constructor's function closes over the global scope, where a
+ * CommonJS module's body would see workerd's five CommonJS names
+ * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
+ * exports, __filename, __dirname), so an enclosing function rebinds those
+ * five to the global object's.
  */
 export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string;
 /**
