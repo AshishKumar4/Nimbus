@@ -36,6 +36,12 @@ export interface RepoGit {
         gitdir?: string;
         path: string;
     }): Promise<unknown>;
+    setConfig(args: {
+        fs: unknown;
+        gitdir: string;
+        path: string;
+        value: unknown;
+    }): Promise<unknown>;
     resolveRef(args: {
         fs: unknown;
         gitdir: string;
@@ -109,8 +115,22 @@ export declare class WorktreeRepo {
     objectWriter(): Promise<ObjectWriter>;
     private waveSink;
     config(path: string): Promise<unknown>;
-    /** `path` in the config file `file`, as cf-git reads it: it reads <gitdir>/config, so the file is offered under that name. */
+    /**
+     * cf-git's filesystem with the config file `file` offered as
+     * `<gitdir>/config` of the answered gitdir: cf-git reads and writes only
+     * that name.
+     */
+    private configFile;
+    /** `path` in the config file `file`, as cf-git reads it. */
     private configIn;
+    /**
+     * init_worktree_config: extensions.worktreeConfig set, core.bare (when
+     * true) and core.worktree moved from config to config.worktree, unless
+     * the extension is set already.
+     */
+    initWorktreeConfig(): Promise<void>;
+    /** repo_config_set_worktree_gently: `path` in config.worktree (the extension being set). */
+    setWorktreeSetting(path: string, value: string): Promise<void>;
     /**
      * A setting as git reads it for this worktree: config.worktree's when
      * extensions.worktreeConfig is set (where clone --sparse and

@@ -213,16 +213,19 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   clone's batches and history pieces are retried on transport failures
   (at most three attempts); its finish is not.
   Not supported: `show`, `log -p`, `blame`, `switch`, `stash`, `rebase`,
-  `cat-file`, history-walking revisions (`HEAD~1`), the `sparse-checkout`
-  command.
+  `cat-file`, history-walking revisions (`HEAD~1`).
 
   Sparse checkout is cone mode only (`clone --sparse [--filter=blob:none]`
-  makes one): outside the cone, entries are skip-worktree and never written
-  or fetched. `status`, `diff`, `add` (and `--sparse`), `commit -a`, `reset`
-  and `checkout` treat it as git does: a file there that the worktree holds
-  is tracked again, and a checkout applies the cone to every entry. A
-  non-cone sparse checkout, and `merge` or `pull` in any sparse checkout,
-  are refused before anything changes.
+  makes one, `sparse-checkout set` another): outside the cone, entries are
+  skip-worktree and never written or fetched. `sparse-checkout list`, `set`,
+  `add`, `reapply`, `disable` and `init` work as git's do (a partial clone
+  fetches what the cone brings in, in one request); `--stdin`, `--no-cone`,
+  `--sparse-index`, `clean` and `check-rules` are refused. `status`, `diff`,
+  `add` (and `--sparse`), `commit -a`, `reset` and `checkout` treat it as git
+  does: a file there that the worktree holds is tracked again, and a
+  checkout applies the cone to every entry. A non-cone sparse checkout, and
+  `merge` or `pull` in any sparse checkout, are refused before anything
+  changes.
 
   Its worktree commands (`status`, `diff`, `add`, `commit`, `ls-files`,
   `reset`, `checkout`, and the worktree side of `merge`) read the index as

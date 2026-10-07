@@ -10,6 +10,8 @@
  * clone --sparse` starts with no directories: the top's files only.
  */
 const encoder = new TextEncoder();
+/** Every path: the cone `sparse-checkout disable` applies, and a file holding "/*" alone. */
+export const FULL_CONE = { full: true, recursive: [], parents: [] };
 /** A cone's directories: repo-relative, without leading or trailing slashes. */
 function normalizeDirs(dirs) {
     const out = new Set();

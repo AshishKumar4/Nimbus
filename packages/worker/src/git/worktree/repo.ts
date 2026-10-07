@@ -30,6 +30,7 @@ import { matchStat, newCounters, worktreeBlobId, type WalkCounters, type Worktre
 export interface RepoGit {
   readObject(args: { fs: unknown; dir: string; oid: string; cache: object; format: 'content' }): Promise<{ type: string; object: unknown }>;
   getConfig(args: { fs: unknown; dir?: string; gitdir?: string; path: string }): Promise<unknown>;
+  setConfig(args: { fs: unknown; gitdir: string; path: string; value: unknown }): Promise<unknown>;
   resolveRef(args: { fs: unknown; gitdir: string; ref: string }): Promise<string>;
 }
 
@@ -250,12 +251,51 @@ export class WorktreeRepo {
     try { return await this.git.getConfig({ fs: this.gitFs, dir: this.root, path }); } catch { return undefined; }
   }
 
-  /** `path` in the config file `file`, as cf-git reads it: it reads <gitdir>/config, so the file is offered under that name. */
-  private async configIn(file: string, path: string): Promise<unknown> {
+  /**
+   * cf-git's filesystem with the config file `file` offered as
+   * `<gitdir>/config` of the answered gitdir: cf-git reads and writes only
+   * that name.
+   */
+  private configFile(file: string): { fs: unknown; gitdir: string } {
     const fake = `${file}.nimbus`;
-    const promises = { ...this.gitFs.promises, readFile: (name: string, options?: unknown) =>
-      this.gitFs.promises.readFile(name === `${fake}/config` ? file : name, options) };
-    return await this.git.getConfig({ fs: { promises }, gitdir: fake, path });
+    const own = (name: string) => (name === `${fake}/config` ? file : name);
+    const base = this.gitFs.promises as Record<string, (...args: unknown[]) => unknown>;
+    const promises = {
+      ...this.gitFs.promises,
+      readFile: (name: string, ...rest: unknown[]) => base.readFile(own(name), ...rest),
+      writeFile: (name: string, ...rest: unknown[]) => base.writeFile(own(name), ...rest),
+    };
+    return { fs: { promises }, gitdir: fake };
+  }
+
+  /** `path` in the config file `file`, as cf-git reads it. */
+  private async configIn(file: string, path: string): Promise<unknown> {
+    return await this.git.getConfig({ ...this.configFile(file), path });
+  }
+
+  /**
+   * init_worktree_config: extensions.worktreeConfig set, core.bare (when
+   * true) and core.worktree moved from config to config.worktree, unless
+   * the extension is set already.
+   */
+  async initWorktreeConfig(): Promise<void> {
+    if (configBool(await this.config('extensions.worktreeConfig')) === true) return;
+    await this.git.setConfig({ fs: this.gitFs, gitdir: this.gitdir, path: 'extensions.worktreeConfig', value: 'true' });
+    const worktreeFile = this.configFile(`${this.gitdir}/config.worktree`);
+    if (configBool(await this.config('core.bare')) === true) {
+      await this.git.setConfig({ ...worktreeFile, path: 'core.bare', value: 'true' });
+      await this.git.setConfig({ fs: this.gitFs, gitdir: this.gitdir, path: 'core.bare', value: undefined });
+    }
+    const worktree = await this.config('core.worktree');
+    if (typeof worktree === 'string') {
+      await this.git.setConfig({ ...worktreeFile, path: 'core.worktree', value: worktree });
+      await this.git.setConfig({ fs: this.gitFs, gitdir: this.gitdir, path: 'core.worktree', value: undefined });
+    }
+  }
+
+  /** repo_config_set_worktree_gently: `path` in config.worktree (the extension being set). */
+  async setWorktreeSetting(path: string, value: string): Promise<void> {
+    await this.git.setConfig({ ...this.configFile(`${this.gitdir}/config.worktree`), path, value });
   }
 
   /**

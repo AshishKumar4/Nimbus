@@ -32,6 +32,9 @@ export interface Cone {
   parents: readonly string[];
 }
 
+/** Every path: the cone `sparse-checkout disable` applies, and a file holding "/*" alone. */
+export const FULL_CONE: Cone = { full: true, recursive: [], parents: [] };
+
 /** A cone's directories: repo-relative, without leading or trailing slashes. */
 function normalizeDirs(dirs: readonly string[]): string[] {
   const out = new Set<string>();

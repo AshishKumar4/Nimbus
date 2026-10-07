@@ -18,6 +18,7 @@ import { execGitNetwork, GIT_CLONE_JOB_MARKER, runGraphFilters } from './network
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   DEFAULT_CONTEXT,
@@ -39,6 +40,7 @@ import {
   type QueuedPair,
 } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees, type CheckoutWriter } from './worktree/checkout.js';
+import { sparseCheckout } from './sparse-checkout.js';
 import { DirCache, NewEntries, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList, type PairSide } from './worktree/pairs.js';
@@ -2907,6 +2909,31 @@ export async function runGitCommand(
 
       case 'ls-files':
         return await lsFiles(ctx, git, repoVfs, fs, subArgs);
+
+      case 'sparse-checkout': {
+        const repo = await discoverRepo(repoVfs, dir);
+        if (!repo) { await ctx.stderr.write(NOT_A_REPOSITORY); return 128; }
+        if (!repo.worktree) { await ctx.stderr.write(NOT_A_WORK_TREE); return 128; }
+        const root = normalizeVfsPath(repo.worktree);
+        const here = normalizeVfsPath(dir);
+        return await sparseCheckout({
+          wrepo: worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree),
+          root: repo.worktree,
+          // git's prefix: the command's directory below the top.
+          prefix: here.startsWith(`${root}/`) ? `${here.slice(root.length + 1)}/` : '',
+          writer: checkoutWriter(repoVfs, repo.worktree),
+          realpath: async (path) => {
+            try {
+              return await ctx.vfs.realpath(path);
+            } catch (error) {
+              if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')) return null;
+              throw error;
+            }
+          },
+          stdout: async (text) => { await ctx.stdout.write(text); },
+          stderr: async (text) => { await ctx.stderr.write(text); },
+        }, subArgs);
+      }
 
       case 'log': {
         const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');

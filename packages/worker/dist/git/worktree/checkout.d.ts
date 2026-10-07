@@ -47,6 +47,17 @@ export interface CheckoutWriter {
     mkdir(path: string): Promise<void>;
     chmod(path: string, mode: number): Promise<void>;
 }
+/** What moving the worktree takes: the objects, the worktree, the index, and where the writes go. */
+export interface SparsityContext {
+    store: ObjectStore;
+    tree: Worktree;
+    dc: DirCache;
+    /** The worktree's top, absolute. */
+    root: string;
+    writer: CheckoutWriter;
+    /** Where git's warnings go (display_warning_msgs): a checkout's and sparse-checkout's, not a reset's. */
+    warn?: (text: string) => Promise<void>;
+}
 /** What a refused checkout names, by git's kinds. */
 export interface Refusal {
     local: string[];
@@ -69,19 +80,11 @@ export declare class UnmergedIndex extends Error {
     readonly paths: string[];
     constructor(paths: string[]);
 }
-export interface SwitchContext {
-    store: ObjectStore;
-    tree: Worktree;
-    dc: DirCache;
+export interface SwitchContext extends SparsityContext {
     excludes: Excludes;
-    /** The worktree's top, absolute. */
-    root: string;
-    writer: CheckoutWriter;
     operation: CheckoutOperation;
     /** The worktree's sparse checkout (WorktreeRepo.sparseMatcher), or null. */
     sparse?: SparseMatcher | null;
-    /** Where git's warnings go (display_warning_msgs): a checkout's, not a reset's. */
-    warn?: (text: string) => Promise<void>;
 }
 /**
  * Move the worktree from `head` (a tree; null when forced or unborn) to
@@ -89,4 +92,10 @@ export interface SwitchContext {
  * CheckoutRefused, having written nothing, when git would refuse.
  */
 export declare function switchTrees(ctx: SwitchContext, head: string | null, target: string, force: boolean): Promise<IndexEdit>;
+/**
+ * update_sparsity (sparse-checkout set, add, reapply, disable): `sparse`
+ * applied to every entry of the index, nothing else moved; what it leaves
+ * is named as git names it. Answers the index edit that goes with it.
+ */
+export declare function updateSparsity(ctx: SparsityContext, sparse: SparseMatcher): Promise<IndexEdit>;
 //# sourceMappingURL=checkout.d.ts.map

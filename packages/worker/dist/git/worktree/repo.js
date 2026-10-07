@@ -237,11 +237,49 @@ export class WorktreeRepo {
             return undefined;
         }
     }
-    /** `path` in the config file `file`, as cf-git reads it: it reads <gitdir>/config, so the file is offered under that name. */
-    async configIn(file, path) {
+    /**
+     * cf-git's filesystem with the config file `file` offered as
+     * `<gitdir>/config` of the answered gitdir: cf-git reads and writes only
+     * that name.
+     */
+    configFile(file) {
         const fake = `${file}.nimbus`;
-        const promises = { ...this.gitFs.promises, readFile: (name, options) => this.gitFs.promises.readFile(name === `${fake}/config` ? file : name, options) };
-        return await this.git.getConfig({ fs: { promises }, gitdir: fake, path });
+        const own = (name) => (name === `${fake}/config` ? file : name);
+        const base = this.gitFs.promises;
+        const promises = {
+            ...this.gitFs.promises,
+            readFile: (name, ...rest) => base.readFile(own(name), ...rest),
+            writeFile: (name, ...rest) => base.writeFile(own(name), ...rest),
+        };
+        return { fs: { promises }, gitdir: fake };
+    }
+    /** `path` in the config file `file`, as cf-git reads it. */
+    async configIn(file, path) {
+        return await this.git.getConfig({ ...this.configFile(file), path });
+    }
+    /**
+     * init_worktree_config: extensions.worktreeConfig set, core.bare (when
+     * true) and core.worktree moved from config to config.worktree, unless
+     * the extension is set already.
+     */
+    async initWorktreeConfig() {
+        if (configBool(await this.config('extensions.worktreeConfig')) === true)
+            return;
+        await this.git.setConfig({ fs: this.gitFs, gitdir: this.gitdir, path: 'extensions.worktreeConfig', value: 'true' });
+        const worktreeFile = this.configFile(`${this.gitdir}/config.worktree`);
+        if (configBool(await this.config('core.bare')) === true) {
+            await this.git.setConfig({ ...worktreeFile, path: 'core.bare', value: 'true' });
+            await this.git.setConfig({ fs: this.gitFs, gitdir: this.gitdir, path: 'core.bare', value: undefined });
+        }
+        const worktree = await this.config('core.worktree');
+        if (typeof worktree === 'string') {
+            await this.git.setConfig({ ...worktreeFile, path: 'core.worktree', value: worktree });
+            await this.git.setConfig({ fs: this.gitFs, gitdir: this.gitdir, path: 'core.worktree', value: undefined });
+        }
+    }
+    /** repo_config_set_worktree_gently: `path` in config.worktree (the extension being set). */
+    async setWorktreeSetting(path, value) {
+        await this.git.setConfig({ ...this.configFile(`${this.gitdir}/config.worktree`), path, value });
     }
     /**
      * A setting as git reads it for this worktree: config.worktree's when
