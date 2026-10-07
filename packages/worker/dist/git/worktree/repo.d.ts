@@ -105,17 +105,44 @@ export declare class WorktreeRepo {
     objectWriter(): Promise<ObjectWriter>;
     private waveSink;
     config(path: string): Promise<unknown>;
+    /** `path` in the config file `file`, as cf-git reads it: it reads <gitdir>/config, so the file is offered under that name. */
+    private configIn;
     /**
-     * The sparse checkout this worktree holds, or null for none: core.sparseCheckout
-     * (in config.worktree when extensions.worktreeConfig is set, as git clone
-     * --sparse and sparse-checkout write it; else in config), in cone mode, its
-     * directories read from info/sparse-checkout. A sparse checkout that is not
-     * cone mode is refused: its patterns are not read here.
+     * A setting as git reads it for this worktree: config.worktree's when
+     * extensions.worktreeConfig is set (where clone --sparse and
+     * sparse-checkout write theirs), over the repository's config.
+     */
+    worktreeSetting(path: string): Promise<unknown>;
+    /** core.sparseCheckout: whether the worktree is a sparse checkout. */
+    isSparse(): Promise<boolean>;
+    /**
+     * The sparse checkout this worktree holds, or null for none: core.sparseCheckout,
+     * in cone mode (core.sparseCheckoutCone), its cone read from
+     * info/sparse-checkout and its paths compared as core.ignoreCase says. A
+     * sparse checkout that is not cone mode is refused: its patterns are not
+     * read here.
      */
     sparseMatcher(): Promise<SparseMatcher | null>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
+    /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
     readIndex(): Promise<DirCache>;
+    /**
+     * clear_skip_worktree_from_present_files, as git does on every index read:
+     * in a sparse checkout (but with sparse.expectFilesOutsideOfPatterns), a
+     * skip-worktree entry whose path the worktree holds (anything there) is
+     * skip-worktree no longer, so what is there is compared, staged and
+     * protected as a tracked file is. A directory found missing is remembered,
+     * and nothing below it looked at (path_found).
+     */
+    private clearPresentSkips;
+    /**
+     * path_found's remembered directory for a `path` the worktree lacks: the
+     * top-most of its directories the worktree lacks, with its slash, or
+     * `path/` when it has them all. The directories `path` shares with the one
+     * missing before (`known`) are there and not looked at again.
+     */
+    private missingDirectory;
     /** HEAD's tree, the empty tree while HEAD names no commit. */
     headTree(): Promise<string>;
     /** A pattern file's list, or none when it cannot be read. */

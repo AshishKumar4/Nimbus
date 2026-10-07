@@ -9,6 +9,7 @@
  * is in the index with skip-worktree set and not in the worktree. `git
  * clone --sparse` starts with no directories: the top's files only.
  */
+const encoder = new TextEncoder();
 /** A cone's directories: repo-relative, without leading or trailing slashes. */
 function normalizeDirs(dirs) {
     const out = new Set();
@@ -28,10 +29,54 @@ function parentsOf(dirs) {
     }
     return parents;
 }
-/** The cone of `dirs`, as git's cone patterns match it. */
-export function coneMatcher(dirs) {
-    const recursive = new Set(normalizeDirs(dirs));
-    const parents = parentsOf([...recursive]);
+/** Strings in byte order (UTF-8), as git sorts the cone it writes. */
+function byBytes(a, b) {
+    const x = encoder.encode(a);
+    const y = encoder.encode(b);
+    for (let i = 0; i < Math.min(x.length, y.length); i++)
+        if (x[i] !== y[i])
+            return x[i] - y[i];
+    return x.length - y.length;
+}
+/**
+ * The cone `git sparse-checkout set --cone <dirs>` makes (sparse-checkout.c
+ * insert_recursive_pattern): each directory recursive and its ancestors
+ * parents, but what a recursive directory already holds; each in byte order.
+ */
+export function coneOf(dirs) {
+    const recursive = normalizeDirs(dirs);
+    const recursiveSet = new Set(recursive);
+    // A directory below a recursive one is in it already.
+    const covered = (dir) => {
+        for (let at = dir.lastIndexOf('/'); at > 0; at = dir.lastIndexOf('/', at - 1))
+            if (recursiveSet.has(dir.slice(0, at)))
+                return true;
+        return false;
+    };
+    return {
+        full: false,
+        recursive: recursive.filter((dir) => !covered(dir)).sort(byBytes),
+        parents: [...parentsOf(recursive)].filter((dir) => !recursiveSet.has(dir) && !covered(dir)).sort(byBytes),
+    };
+}
+/** fspathcmp's folding under core.ignoreCase: ASCII letters in lower case, other bytes as they are. */
+function foldCase(path) {
+    return path.replace(/[A-Z]+/g, (letters) => letters.toLowerCase());
+}
+/**
+ * Which paths `cone` holds, as path_matches_pattern_list matches cone
+ * patterns: a file at the top, one whose path is a recursive directory's,
+ * one directly in a parent, one below a recursive directory. Under
+ * core.ignoreCase (`ignoreCase`) paths compare as fspathcmp compares them.
+ */
+export function coneMatcher(cone, ignoreCase = false) {
+    if (cone.full)
+        return { includes: () => true, directory: () => true };
+    const fold = ignoreCase ? foldCase : (path) => path;
+    const recursive = new Set(cone.recursive.map(fold));
+    const parents = new Set(cone.parents.map(fold));
+    // The directories something in the cone is below: a parent, and the ancestors of a parent or a recursive directory.
+    const holding = new Set([...parents, ...parentsOf([...recursive, ...parents])]);
     const inRecursive = (dir) => {
         for (let at = dir.length; at > 0; at = dir.lastIndexOf('/', at - 1)) {
             if (recursive.has(dir.slice(0, at)))
@@ -41,75 +86,110 @@ export function coneMatcher(dirs) {
     };
     return {
         includes(path) {
-            const slash = path.lastIndexOf('/');
+            const key = fold(path);
+            if (recursive.has(key))
+                return true;
+            const slash = key.lastIndexOf('/');
             if (slash < 0)
                 return true;
-            const dir = path.slice(0, slash);
+            const dir = key.slice(0, slash);
             return parents.has(dir) || inRecursive(dir);
         },
         directory(dir) {
-            return dir === '' || parents.has(dir) || inRecursive(dir);
+            const key = fold(dir);
+            return key === '' || holding.has(key) || inRecursive(key);
         },
     };
 }
-/**
- * The directories of a cone-mode info/sparse-checkout (as
- * coneSparseCheckout writes it, or git does): each "/<dir>/" not followed by
- * its "!/<dir>/*\/" is taken whole; null when the file is not cone-shaped.
- */
-export function parseConeSparseCheckout(text) {
-    const lines = text.split('\n').map((line) => line.trim()).filter((line) => line !== '' && !line.startsWith('#'));
-    if (lines[0] !== '/*' || lines[1] !== '!/*/')
-        return null;
-    const unescape = (dir) => dir.replace(/\\(.)/g, '$1');
-    const recursive = [];
-    for (let i = 2; i < lines.length; i++) {
-        const match = /^\/(.+)\/$/.exec(lines[i]);
-        if (match === null)
-            return null;
-        if (lines[i + 1] === '!/' + match[1] + '/*/') {
-            i++;
-            continue;
+/** is_glob_special: the characters a cone pattern escapes. */
+const GLOB_SPECIAL = new Set(['*', '?', '[', '\\']);
+/** trim_trailing_spaces: trailing spaces go, but one escaped by a backslash. */
+function trimTrailingSpaces(line) {
+    let lastSpace = -1;
+    for (let i = 0; i < line.length; i++) {
+        if (line[i] === ' ') {
+            if (lastSpace < 0)
+                lastSpace = i;
         }
-        recursive.push(unescape(match[1]));
+        else if (line[i] === '\\') {
+            if (++i === line.length)
+                return line;
+            lastSpace = -1;
+        }
+        else {
+            lastSpace = -1;
+        }
     }
-    return recursive;
+    return lastSpace < 0 ? line : line.slice(0, lastSpace);
+}
+/** dup_and_filter_pattern: each backslash dropped once, the character after it kept. */
+function unescapePattern(pattern) {
+    return pattern.replace(/\\(.?)/g, '$1');
 }
 /**
- * A boolean in git config text (config.c git_config_bool): the last
- * `<key>` in `[<section>]`, names compared without case; a key alone is
- * true; undefined when it is not set.
+ * The cone of a cone-mode info/sparse-checkout, read line by line as dir.c
+ * add_pattern_to_hashsets reads it: "/*" alone makes the full cone and
+ * "!/*\/" takes it back; "/<dir>/" adds a recursive directory, and
+ * "!/<dir>/*\/" after it makes that a parent. null when a line is not a cone
+ * pattern (where git warns and gives up cone mode).
  */
-export function configBoolean(text, section, key) {
-    let current = '';
-    let value;
-    for (const raw of text.split('\n')) {
-        const line = raw.replace(/(^|\s)[#;].*$/, '').trim();
-        if (line === '')
+export function parseConeSparseCheckout(text) {
+    let full = false;
+    const recursive = new Set();
+    const parents = new Set();
+    // add_patterns_from_buffer: a UTF-8 BOM skipped, lines to each newline (CR LF as LF), empty ones and comments skipped.
+    const lines = text.replace(/^\uFEFF/, '').split('\n');
+    if (!text.endsWith('\n'))
+        lines.push('');
+    for (const raw of lines.slice(0, -1)) {
+        if (raw === '' || raw.startsWith('#'))
             continue;
-        const header = /^\[([^\]\s"]+)(?:\s+"[^"]*")?\]\s*(.*)$/.exec(line);
-        if (header !== null) {
-            current = header[1].toLowerCase();
-            if (header[2] === '')
+        // parse_path_pattern: a leading "!" negates, a trailing "/" says directory.
+        let pattern = trimTrailingSpaces(raw.endsWith('\r') ? raw.slice(0, -1) : raw);
+        const negative = pattern.startsWith('!');
+        if (negative)
+            pattern = pattern.slice(1);
+        const mustBeDir = pattern.endsWith('/');
+        if (mustBeDir)
+            pattern = pattern.slice(0, -1);
+        if (pattern === '/*' && negative && mustBeDir) {
+            full = false;
+            continue;
+        }
+        if (pattern === '/*' && !negative && !mustBeDir) {
+            full = true;
+            continue;
+        }
+        if (pattern.length < 2 || pattern[0] !== '/' || pattern.includes('**') || !mustBeDir)
+            return null;
+        // A glob character only escaped, but a trailing "/*".
+        for (let i = 1; i < pattern.length; i++) {
+            const c = pattern[i];
+            if (!GLOB_SPECIAL.has(c) || pattern[i - 1] === '\\')
                 continue;
+            if (c === '\\' && GLOB_SPECIAL.has(pattern[i + 1] ?? ''))
+                continue;
+            if (pattern[i - 1] === '/' && c === '*' && i === pattern.length - 1)
+                continue;
+            return null;
         }
-        const body = header !== null ? header[2] : line;
-        if (current !== section.toLowerCase())
-            continue;
-        const entry = /^([A-Za-z][A-Za-z0-9-]*)\s*(?:=\s*(.*))?$/.exec(body);
-        if (entry === null || entry[1].toLowerCase() !== key.toLowerCase())
-            continue;
-        if (entry[2] === undefined) {
-            value = true;
+        if (pattern.length > 2 && pattern.endsWith('/*')) {
+            // "!/<dir>/*/": <dir>, recursive until now, is a parent.
+            const dir = unescapePattern(pattern.slice(1, -2));
+            if (!negative || !recursive.has(dir))
+                return null;
+            recursive.delete(dir);
+            parents.add(dir);
             continue;
         }
-        const word = entry[2].replace(/^"(.*)"$/, '$1').toLowerCase();
-        if (['true', 'yes', 'on', '1'].includes(word))
-            value = true;
-        else if (['false', 'no', 'off', '0', ''].includes(word))
-            value = false;
+        if (negative)
+            return null;
+        const dir = unescapePattern(pattern.slice(1));
+        if (parents.has(dir))
+            return null;
+        recursive.add(dir);
     }
-    return value;
+    return { full, recursive: [...recursive], parents: [...parents] };
 }
 /** A directory as a cone pattern names it: glob characters and backslashes escaped (dir.c escape_pattern's set). */
 function escapeDir(dir) {
@@ -118,35 +198,14 @@ function escapeDir(dir) {
 /**
  * The info/sparse-checkout file of a cone (dir.c write_cone_to_file): the
  * top's files, then each parent directory's own files without its
- * subdirectories, then each recursive directory; parents and recursive
- * directories each in byte order, a recursive directory that is also a
- * parent listed as recursive only.
+ * subdirectories, then each recursive directory, in coneOf's order.
  */
 export function coneSparseCheckout(dirs) {
-    const recursive = normalizeDirs(dirs);
-    const recursiveSet = new Set(recursive);
-    // A parent below a recursive directory is in it already.
-    const covered = (dir) => {
-        for (let at = dir.lastIndexOf('/'); at > 0; at = dir.lastIndexOf('/', at - 1))
-            if (recursiveSet.has(dir.slice(0, at)))
-                return true;
-        return false;
-    };
-    const parents = [...parentsOf(recursive)].filter((dir) => !recursiveSet.has(dir) && !covered(dir));
-    const kept = recursive.filter((dir) => !covered(dir));
-    const encoder = new TextEncoder();
-    const byBytes = (a, b) => {
-        const x = encoder.encode(a);
-        const y = encoder.encode(b);
-        for (let i = 0; i < Math.min(x.length, y.length); i++)
-            if (x[i] !== y[i])
-                return x[i] - y[i];
-        return x.length - y.length;
-    };
+    const { recursive, parents } = coneOf(dirs);
     let text = '/*\n!/*/\n';
-    for (const dir of parents.sort(byBytes))
+    for (const dir of parents)
         text += '/' + escapeDir(dir) + '/\n!/' + escapeDir(dir) + '/*/\n';
-    for (const dir of kept.sort(byBytes))
+    for (const dir of recursive)
         text += '/' + escapeDir(dir) + '/\n';
     return text;
 }

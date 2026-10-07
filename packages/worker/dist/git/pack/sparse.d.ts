@@ -16,26 +16,42 @@ export interface SparseMatcher {
     /** Whether the worktree holds the directory `dir` (something in the cone can be in it). */
     directory(dir: string): boolean;
 }
-/** The cone of `dirs`, as git's cone patterns match it. */
-export declare function coneMatcher(dirs: readonly string[]): SparseMatcher;
 /**
- * The directories of a cone-mode info/sparse-checkout (as
- * coneSparseCheckout writes it, or git does): each "/<dir>/" not followed by
- * its "!/<dir>/*\/" is taken whole; null when the file is not cone-shaped.
+ * A cone as git holds one (dir.c's pattern list in cone mode): every path
+ * (`full`), or the top's files, the files directly in each of `parents`, and
+ * everything below each of `recursive`. Directories are repo-relative,
+ * without leading or trailing slashes.
  */
-export declare function parseConeSparseCheckout(text: string): string[] | null;
+export interface Cone {
+    full: boolean;
+    recursive: readonly string[];
+    parents: readonly string[];
+}
 /**
- * A boolean in git config text (config.c git_config_bool): the last
- * `<key>` in `[<section>]`, names compared without case; a key alone is
- * true; undefined when it is not set.
+ * The cone `git sparse-checkout set --cone <dirs>` makes (sparse-checkout.c
+ * insert_recursive_pattern): each directory recursive and its ancestors
+ * parents, but what a recursive directory already holds; each in byte order.
  */
-export declare function configBoolean(text: string, section: string, key: string): boolean | undefined;
+export declare function coneOf(dirs: readonly string[]): Cone;
+/**
+ * Which paths `cone` holds, as path_matches_pattern_list matches cone
+ * patterns: a file at the top, one whose path is a recursive directory's,
+ * one directly in a parent, one below a recursive directory. Under
+ * core.ignoreCase (`ignoreCase`) paths compare as fspathcmp compares them.
+ */
+export declare function coneMatcher(cone: Cone, ignoreCase?: boolean): SparseMatcher;
+/**
+ * The cone of a cone-mode info/sparse-checkout, read line by line as dir.c
+ * add_pattern_to_hashsets reads it: "/*" alone makes the full cone and
+ * "!/*\/" takes it back; "/<dir>/" adds a recursive directory, and
+ * "!/<dir>/*\/" after it makes that a parent. null when a line is not a cone
+ * pattern (where git warns and gives up cone mode).
+ */
+export declare function parseConeSparseCheckout(text: string): Cone | null;
 /**
  * The info/sparse-checkout file of a cone (dir.c write_cone_to_file): the
  * top's files, then each parent directory's own files without its
- * subdirectories, then each recursive directory; parents and recursive
- * directories each in byte order, a recursive directory that is also a
- * parent listed as recursive only.
+ * subdirectories, then each recursive directory, in coneOf's order.
  */
 export declare function coneSparseCheckout(dirs: readonly string[]): string;
 //# sourceMappingURL=sparse.d.ts.map

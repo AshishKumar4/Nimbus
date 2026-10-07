@@ -14,7 +14,7 @@ import { deflateSync } from 'node:zlib';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
-import { coneMatcher, configBoolean, parseConeSparseCheckout } from '../pack/sparse.js';
+import { coneMatcher, parseConeSparseCheckout } from '../pack/sparse.js';
 import { DirCache, compareBytes, objectId } from './dircache.js';
 import { Excludes, parsePatternList } from './excludes.js';
 import { EMPTY_TREE, treeOf } from './tree.js';
@@ -233,35 +233,54 @@ export class WorktreeRepo {
             return undefined;
         }
     }
+    /** `path` in the config file `file`, as cf-git reads it: it reads <gitdir>/config, so the file is offered under that name. */
+    async configIn(file, path) {
+        const fake = `${file}.nimbus`;
+        const promises = { ...this.gitFs.promises, readFile: (name, options) => this.gitFs.promises.readFile(name === `${fake}/config` ? file : name, options) };
+        return await this.git.getConfig({ fs: { promises }, gitdir: fake, path });
+    }
     /**
-     * The sparse checkout this worktree holds, or null for none: core.sparseCheckout
-     * (in config.worktree when extensions.worktreeConfig is set, as git clone
-     * --sparse and sparse-checkout write it; else in config), in cone mode, its
-     * directories read from info/sparse-checkout. A sparse checkout that is not
-     * cone mode is refused: its patterns are not read here.
+     * A setting as git reads it for this worktree: config.worktree's when
+     * extensions.worktreeConfig is set (where clone --sparse and
+     * sparse-checkout write theirs), over the repository's config.
+     */
+    async worktreeSetting(path) {
+        if (configBool(await this.config('extensions.worktreeConfig')) === true) {
+            try {
+                const value = await this.configIn(`${this.gitdir}/config.worktree`, path);
+                if (value !== undefined)
+                    return value;
+            }
+            catch { /* no such file */ }
+        }
+        return await this.config(path);
+    }
+    /** core.sparseCheckout: whether the worktree is a sparse checkout. */
+    async isSparse() {
+        return configBool(await this.worktreeSetting('core.sparseCheckout')) === true;
+    }
+    /**
+     * The sparse checkout this worktree holds, or null for none: core.sparseCheckout,
+     * in cone mode (core.sparseCheckoutCone), its cone read from
+     * info/sparse-checkout and its paths compared as core.ignoreCase says. A
+     * sparse checkout that is not cone mode is refused: its patterns are not
+     * read here.
      */
     async sparseMatcher() {
-        const text = async (path) => {
-            try {
-                return new TextDecoder().decode(await this.vfs.readFile(path));
-            }
-            catch (error) {
-                if (isAbsent(error))
-                    return null;
-                throw error;
-            }
-        };
-        const worktreeConfig = configBool(await this.config('extensions.worktreeConfig')) === true
-            ? await text(`${this.gitdir}/config.worktree`)
-            : null;
-        const setting = async (key) => (worktreeConfig === null ? undefined : configBoolean(worktreeConfig, 'core', key)) ?? configBool(await this.config(`core.${key}`));
-        if (await setting('sparseCheckout') !== true)
+        if (!await this.isSparse())
             return null;
-        const patterns = await text(`${this.gitdir}/info/sparse-checkout`) ?? '';
-        const dirs = await setting('sparseCheckoutCone') === true ? parseConeSparseCheckout(patterns) : null;
-        if (dirs === null)
+        let patterns = '';
+        try {
+            patterns = new TextDecoder().decode(await this.vfs.readFile(`${this.gitdir}/info/sparse-checkout`));
+        }
+        catch (error) {
+            if (!isAbsent(error))
+                throw error;
+        }
+        const cone = configBool(await this.worktreeSetting('core.sparseCheckoutCone')) === true ? parseConeSparseCheckout(patterns) : null;
+        if (cone === null)
             throw new Error('fatal: a sparse checkout without cone mode is not supported');
-        return coneMatcher(dirs);
+        return coneMatcher(cone, configBool(await this.worktreeSetting('core.ignorecase')) === true);
     }
     /** The worktree with the settings its comparisons take. */
     async worktree() {
@@ -273,8 +292,58 @@ export class WorktreeRepo {
         };
         return this.worktreeConfig;
     }
+    /** The index, as git's repo_read_index leaves it: see clearPresentSkips. */
     async readIndex() {
-        return await DirCache.read(this.vfs, `${this.gitdir}/index`);
+        const dc = await DirCache.read(this.vfs, `${this.gitdir}/index`);
+        if (dc.hasSkipWorktree())
+            await this.clearPresentSkips(dc);
+        return dc;
+    }
+    /**
+     * clear_skip_worktree_from_present_files, as git does on every index read:
+     * in a sparse checkout (but with sparse.expectFilesOutsideOfPatterns), a
+     * skip-worktree entry whose path the worktree holds (anything there) is
+     * skip-worktree no longer, so what is there is compared, staged and
+     * protected as a tracked file is. A directory found missing is remembered,
+     * and nothing below it looked at (path_found).
+     */
+    async clearPresentSkips(dc) {
+        if (!await this.isSparse())
+            return;
+        if (configBool(await this.worktreeSetting('sparse.expectFilesOutsideOfPatterns')) === true)
+            return;
+        let missing = '';
+        for (let i = 0; i < dc.count; i++) {
+            if (!dc.skipWorktree(i))
+                continue;
+            const path = dc.path(i);
+            if (missing && path.startsWith(missing))
+                continue;
+            if (await this.fs.lstat(path) !== null)
+                dc.setSkipWorktree(i, false);
+            else
+                missing = await this.missingDirectory(path, missing);
+        }
+    }
+    /**
+     * path_found's remembered directory for a `path` the worktree lacks: the
+     * top-most of its directories the worktree lacks, with its slash, or
+     * `path/` when it has them all. The directories `path` shares with the one
+     * missing before (`known`) are there and not looked at again.
+     */
+    async missingDirectory(path, known) {
+        let at = 0;
+        for (let i = 0; i < Math.min(path.length, known.length) && path[i] === known[i]; i++)
+            if (path[i] === '/')
+                at = i + 1;
+        for (;;) {
+            const slash = path.indexOf('/', at);
+            if (slash < 0)
+                return `${path}/`;
+            at = slash + 1;
+            if ((await this.fs.lstat(path.slice(0, slash)))?.type !== 'directory')
+                return path.slice(0, at);
+        }
     }
     /** HEAD's tree, the empty tree while HEAD names no commit. */
     async headTree() {
@@ -301,11 +370,8 @@ export class WorktreeRepo {
         const home = this.env.HOME;
         const xdg = this.env.XDG_CONFIG_HOME || (home ? `${home}/.config` : '');
         if (home) {
-            // cf-git reads <gitdir>/config: the home file is offered under that name.
-            const fake = `${home}/.gitconfig.nimbus`;
-            const promises = { ...this.gitFs.promises, readFile: (file, options) => this.gitFs.promises.readFile(file === `${fake}/config` ? `${home}/.gitconfig` : file, options) };
             try {
-                const value = await this.git.getConfig({ fs: { promises }, gitdir: fake, path });
+                const value = await this.configIn(`${home}/.gitconfig`, path);
                 if (value !== undefined)
                     return value;
             }
