@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0e7543fd8b123fa35d9455b08cd4331bb8cd1801eb05441ea7615c81d2c77672",
+  "fingerprint": "242b708e2aa652d4fd59176f1a848d1cdbe19749d6ea652dfee6e31b1723e0e2",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2468,7 +2468,7 @@
     "packages/worker/src/facets/wasm-swap-registry.ts": "28babe15f4a0aeb0682c0947d8e7fdce9834384967e7ef98fab984b808879906",
     "packages/worker/src/facets/ws-terminal.ts": "3a04326928698a0a6d5978ac64aecf059d785a3b390ae73e2cb1e83156c0c6b3",
     "packages/worker/src/git-bundle.generated.ts": "e3d64e53e093c870822cd3f72c5f59155f62b378f0acd08503164e6a23cf4000",
-    "packages/worker/src/git/commands.ts": "65de7929229e4248b89c8949115572cfecb7efd8717da2a4f78442537dcfb397",
+    "packages/worker/src/git/commands.ts": "71c514a3c6f3022b0df617cc8c9a8e02c36d34dad24ef0f4ffda42d3689c425a",
     "packages/worker/src/git/network-facet.ts": "91592524cb3387a58f84696c7b4597cbbaa1d618db7933b9df3612de46c1fa8a",
     "packages/worker/src/git/pack/byte-lru.ts": "8c11a8c87f9d9d060d32e6df3d068727a093fa32acbb9735a7c2af6abbee83f3",
     "packages/worker/src/git/pack/clone.ts": "5be219906dfc01b1d47932b946be7a7746a6c76b9b668d2a4a5075ed01c6c714",
