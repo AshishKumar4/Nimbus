@@ -293,8 +293,9 @@ export function launchNamedPaths(cwd: string, program: string | null, argv: read
 
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-  // copyTree yields between slices, so it has no synchronous form.
-  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]:
+  // copyTree yields between slices, so it has no synchronous form; nor has
+  // writeBatch, whose records may land on a mount only an awaited call reaches.
+  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]:
     RuntimeFsBridge[K] extends (...args: infer A) => infer R
       ? (...args: A) => Awaited<R> : never;
 };

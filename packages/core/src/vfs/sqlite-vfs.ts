@@ -2952,6 +2952,7 @@ export class SqliteVFS {
         copyTree: (from, to, options) => this.withMutationOwner(mutationOwner,
           () => this.copyTreeNow(this.planCopyTree(from, to, bound, options))),
         writeBatch: (payload) => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, bound)),
+        writeBatchPlaced: (payload) => this.writeBatchPlaced(payload, bound, origin, mutationOwner),
         mkdirBatch: (paths) => this.withMutationOwner(mutationOwner, () => this.mkdirBatch(paths, bound)),
       };
       Object.assign(view, mutations);
@@ -6681,6 +6682,7 @@ export class SqliteVFS {
       copyTree: readOnly,
       copyTreeAsync: readOnly,
       writeBatch: readOnly,
+      writeBatchPlaced: async () => readOnly(),
       writeStream: readOnly,
       writeFileFrom: readOnly,
       mkdirBatch: readOnly,
@@ -8522,7 +8524,12 @@ export class SqliteVFS {
     this.waveRouter = router;
   }
 
-  private async writeBatchPlaced(payload: BatchWritePayload, cred: VfsCred, origin: Principal | null): Promise<{ inodes: number; chunks: number }> {
+  private async writeBatchPlaced(
+    payload: BatchWritePayload,
+    cred: VfsCred,
+    origin: Principal | null,
+    mutationOwner?: string,
+  ): Promise<{ inodes: number; chunks: number }> {
     const router = this.waveRouter;
     if (router !== null) {
       const names = [...payload.inodes.map((inode) => inode.path), ...(payload.deletePaths ?? [])];
@@ -8536,13 +8543,13 @@ export class SqliteVFS {
           routes.set(parent, resolved);
         }
         if (router.placement(`${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`) !== null) {
-          const result = await this.writeStream(encodeWriteBatchStream(payload), {}, cred, origin);
+          const result = await this.writeStream(encodeWriteBatchStream(payload), { mutationOwner }, cred, origin);
           if (!result.ok) throw Object.assign(new Error(result.error.message), result.error.errno === undefined ? {} : { code: result.error.errno });
           return { inodes: result.committedPathCount, chunks: result.chunks };
         }
       }
     }
-    return this.asOrigin(origin, () => this.writeBatch(payload, cred));
+    return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, cred)));
   }
 
   /**
