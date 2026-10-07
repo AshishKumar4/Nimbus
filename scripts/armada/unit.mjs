@@ -19,7 +19,9 @@
 //     next plan reads. A run-all that did not end as itself (a signal, no
 //     report, an exit code its report contradicts) or a file that never
 //     started writes no verdict, so the run is not graded: never a test
-//     verdict.
+//     verdict. The part's log ends with the VM's busy and steal CPU seconds
+//     while it ran, from /proc/stat: what the VM's CPU bill counts, and how
+//     much of it a busy host took.
 import { spawnSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -84,6 +86,12 @@ function plan() {
   }));
 }
 
+/** Busy and steal seconds of the whole VM so far, from /proc/stat's `cpu` line (USER_HZ is 100 on Linux). */
+function vmCpu() {
+  const [user, nice, system, , , irq, softirq, steal] = readFileSync('/proc/stat', 'utf8').split('\n', 1)[0].trim().split(/\s+/).slice(1).map(Number);
+  return { busy: (user + nice + system + irq + softirq) / 100, steal: steal / 100 };
+}
+
 /** A failing file's whole output, the reason last: armada prints a red row's last lines. */
 function failure({ stdout, stderr, reason }) {
   return `── stdout\n${stdout ?? ''}\n── stderr\n${stderr ?? ''}\n── ${reason}`;
@@ -97,9 +105,15 @@ function task() {
     const timings = join(scratch, 'timings.json');
     const reportPath = join(scratch, 'report.json');
     writeFileSync(timings, JSON.stringify({ files: measured(option('--timings')) }));
-    const ran = spawnSync(process.execPath, [RUN_ALL, '--jobs', String(JOBS), '--timeout', String(FILE_TIMEOUT_MS), '--timings', timings, '--json', reportPath], {
+    const cpu0 = vmCpu();
+    // The open-file limit as high as the user may raise it: a container's soft
+    // limit is 1024, the workstation's 1048576.
+    const ran = spawnSync('/bin/sh', ['-c', 'ulimit -n "$(ulimit -Hn)" && exec "$@"', 'run-all',
+      process.execPath, RUN_ALL, '--jobs', String(JOBS), '--timeout', String(FILE_TIMEOUT_MS), '--timings', timings, '--json', reportPath], {
       stdio: 'inherit', env: { ...process.env, NIMBUS_UNIT_ONLY: part.rows.map((row) => row.name).join(',') },
     });
+    const cpu1 = vmCpu();
+    console.log(`unit.mjs: VM busy ${(cpu1.busy - cpu0.busy).toFixed(1)} s, steal ${(cpu1.steal - cpu0.steal).toFixed(1)} s`);
     const report = existsSync(reportPath) ? JSON.parse(readFileSync(reportPath, 'utf8')) : null;
     const ended = report !== null && ran.signal === null && (ran.status === 0 ? report.fail === 0 : ran.status === 1 && report.fail > 0);
     if (!ended) {
