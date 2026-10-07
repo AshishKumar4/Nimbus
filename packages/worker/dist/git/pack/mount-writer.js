@@ -34,6 +34,13 @@ const STRERROR = {
     ENOTDIR: 'Not a directory', EBUSY: 'Device or resource busy', ENOTSUP: 'Operation not supported', EIO: 'Input/output error',
     EXDEV: 'Invalid cross-device link', ENAMETOOLONG: 'File name too long', ELOOP: 'Too many levels of symbolic links',
 };
+/** A call refused past the phase's deadline: the phase ends (and is retried or fails), not the file. */
+export class PhaseDeadlineError extends Error {
+    constructor() {
+        super('git passed its phase deadline');
+        this.name = 'PhaseDeadlineError';
+    }
+}
 /** A failure's errno code: its `code`, or the "CODE:" its message starts with (what crosses an RPC). */
 function errnoCode(error) {
     const code = error && typeof error === 'object' ? error.code : undefined;
@@ -51,16 +58,18 @@ function strerror(error) {
 }
 /**
  * `api` within a phase's `deadline` (ms since the epoch; null for none): a
- * call past it is refused, but a close or an unlink, which clean up what a
- * call before it started.
+ * call past it is refused (PhaseDeadlineError), but a close or a discard,
+ * which clean up what a call before it started. An unlink, which may take an
+ * old file away, is a call like any other.
  */
 export function withinDeadline(api, deadline) {
     if (deadline === null)
         return api;
-    const admit = (call) => Date.now() >= deadline ? Promise.reject(new Error('git passed its phase deadline')) : call();
+    const admit = (call) => Date.now() >= deadline ? Promise.reject(new PhaseDeadlineError()) : call();
     return {
         mkdir: (path, options) => admit(() => api.mkdir(path, options)),
-        unlink: (path) => api.unlink(path),
+        unlink: (path) => admit(() => api.unlink(path)),
+        discard: (path) => api.discard(path),
         fsOpen: (path, flags) => admit(() => api.fsOpen(path, flags)),
         fsWrite: (id, offset, bytes) => admit(() => api.fsWrite(id, offset, bytes)),
         fsFstat: (id) => admit(() => api.fsFstat(id)),
@@ -91,6 +100,8 @@ export async function writeEntry(api, at, name, mode, bytes) {
         await api.unlink(at);
     }
     catch (error) {
+        if (error instanceof PhaseDeadlineError)
+            throw error;
         if (errnoCode(error) !== 'ENOENT')
             throw new GitEntryWriteFailure(`error: unable to unlink old '${name}': ${strerror(error)}\n`);
     }
@@ -99,12 +110,16 @@ export async function writeEntry(api, at, name, mode, bytes) {
         handle = await api.fsOpen(at, { write: true, create: true, exclusive: true, mode });
     }
     catch (error) {
+        if (error instanceof PhaseDeadlineError)
+            throw error;
         throw new GitEntryWriteFailure(`error: unable to create file ${name}: ${strerror(error)}\n`);
     }
     try {
         return await writeWhole(api, handle.id, bytes);
     }
-    catch {
+    catch (error) {
+        if (error instanceof PhaseDeadlineError)
+            throw error;
         throw new GitEntryWriteFailure(`error: unable to write file ${name}\n`);
     }
 }
@@ -167,6 +182,8 @@ export async function writeLockedIndex(api, at, bytes) {
         handle = await api.fsOpen(lock, { write: true, create: true, exclusive: true, mode: 0o644 });
     }
     catch (error) {
+        if (error instanceof PhaseDeadlineError)
+            throw error;
         const code = errnoCode(error);
         throw new GitWriteFailure(code === 'EEXIST'
             ? `fatal: Unable to create '${lock}': ${strerror(error)}.\n\n`
@@ -182,12 +199,14 @@ export async function writeLockedIndex(api, at, bytes) {
         await api.rename(lock, at);
         return stat;
     }
-    catch {
+    catch (error) {
         // Ours alone: it was created exclusively.
         try {
-            await api.unlink(lock);
+            await api.discard(lock);
         }
         catch { /* gone already */ }
+        if (error instanceof PhaseDeadlineError)
+            throw error;
         throw new GitWriteFailure('fatal: unable to write new index file\n');
     }
 }

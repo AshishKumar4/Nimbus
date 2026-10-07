@@ -1405,6 +1405,7 @@ function facetFileApi(supervisor, stats, deadline = null) {
   return __nimbusGitPack.withinDeadline({
     mkdir: (path, options) => call('fileApi', () => supervisor.mkdir(path, options)),
     unlink: (path) => call('fileApi', () => supervisor.unlink(path)),
+    discard: (path) => call('fileApi', () => supervisor.unlink(path)),
     fsOpen: (path, flags) => call('fileApi', () => supervisor.fsOpen(path, flags)),
     fsWrite: (id, offset, bytes) => call('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
     fsFstat: (id) => call('fileApi', () => supervisor.fsFstat(id)),

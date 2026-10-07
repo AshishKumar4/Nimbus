@@ -14,8 +14,10 @@
  * any size, is written as git's lockfile.c writes it: index.lock created
  * exclusively, written, closed, renamed over the index; our own lock removed
  * if that fails, which is git's fatal error (GitWriteFailure). Each stat is the receipt a wave
- * would have answered. No call starts past the phase's deadline, but a
- * close, or the removal of our own lock, which clean up what was started.
+ * would have answered. No call starts past the phase's deadline
+ * (PhaseDeadlineError, which ends the phase rather than the file), but a
+ * close, or the removal of what this attempt itself created (its own lock),
+ * which clean up what was started.
  */
 import type { CloneReceipt, CloneWriter } from './clone.js';
 /** sqlite-vfs.ts ROUTED_FILE_MAX: the largest file a wave writes to a mount. */
@@ -37,6 +39,8 @@ export interface FileApi {
         recursive: true;
     }): Promise<void>;
     unlink(path: string): Promise<void>;
+    /** The removal of a file this attempt created itself (its own lock): cleanup, past the deadline too. */
+    discard(path: string): Promise<void>;
     fsOpen(path: string, flags: {
         write: true;
         create: true;
@@ -68,10 +72,15 @@ export declare class GitEntryWriteFailure extends GitWriteFailure {
 }
 /** What git says once a checkout that could not write a file is done. */
 export declare const CHECKOUT_FAILED = "fatal: unable to checkout working tree\n";
+/** A call refused past the phase's deadline: the phase ends (and is retried or fails), not the file. */
+export declare class PhaseDeadlineError extends Error {
+    constructor();
+}
 /**
  * `api` within a phase's `deadline` (ms since the epoch; null for none): a
- * call past it is refused, but a close or an unlink, which clean up what a
- * call before it started.
+ * call past it is refused (PhaseDeadlineError), but a close or a discard,
+ * which clean up what a call before it started. An unlink, which may take an
+ * old file away, is a call like any other.
  */
 export declare function withinDeadline(api: FileApi, deadline: number | null): FileApi;
 /**
