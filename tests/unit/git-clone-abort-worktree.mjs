@@ -53,10 +53,12 @@ try {
   assert.deepEqual(readdirSync(join(host, 'empty')), [], 'host git keeps a destination that existed, emptied');
 
   const realFetch = globalThis.fetch;
+  // One session, as a user's: each clone in it fails and is cleaned up in turn.
+  const session = await createFacetSession(work);
+  session.kernel.mkdir('home/user/empty', { mode: 0o755 });
   try {
     for (const dest of ['repo', 'nested/a/repo', 'empty']) {
-      const session = await createFacetSession(work);
-      if (dest === 'empty') session.kernel.mkdir('home/user/empty', { mode: 0o755 });
+      const abortsBefore = session.requests.phases.filter((phase) => phase === 'clone-abort').length;
       // The pack and the first blob pieces are served; then every request is refused.
       let posts = 0;
       globalThis.fetch = async (input, init) => {
@@ -71,7 +73,7 @@ try {
       globalThis.fetch = realFetch;
       assert.notEqual(cloned.code, 0, `${dest}: the clone fails`);
       assert.match(cloned.stderr, /HTTP 403/);
-      const aborts = session.requests.phases.filter((phase) => phase === 'clone-abort').length;
+      const aborts = session.requests.phases.filter((phase) => phase === 'clone-abort').length - abortsBefore;
       assert.ok(aborts > 1, `${dest}: the abort ran in pieces (${aborts}): ${cloned.stderr.slice(-400)}`);
       assert.doesNotMatch(cloned.stderr, /did not finish|clone-abort failed/, cloned.stderr.slice(-400));
       if (dest === 'empty') {
