@@ -35,10 +35,16 @@ export interface Interpreter {
     /** Run a script at global scope: its vars and functions become global object properties. */
     runScript(text: string): void;
 }
-/** One module a module's text asks for: by `import` (static, export-from or import()) or by `require`. */
+/**
+ * One module a module's text asks for, and how: `static` (an import or
+ * export-from declaration), `dynamic` (import()) or `require`. The kind
+ * decides the resolution, as the loader makes it: a static import is
+ * evaluated through the module's scoped require (modules.ts), so it resolves
+ * under require's conditions; import() resolves under import's.
+ */
 export interface ModuleRequest {
     readonly specifier: string;
-    readonly kind: 'import' | 'require';
+    readonly kind: 'static' | 'dynamic' | 'require';
 }
 /**
  * The modules a file's text asks for, as this parser reads it: import and

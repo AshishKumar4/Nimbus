@@ -154,8 +154,11 @@ export function moduleRequests(path, text) {
         const type = reflectGet(node, 'type');
         if (typeof type !== 'string')
             continue;
-        if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration' || type === 'ImportExpression') {
-            add(spelledString(reflectGet(node, 'source')), 'import');
+        if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration') {
+            add(spelledString(reflectGet(node, 'source')), 'static');
+        }
+        else if (type === 'ImportExpression') {
+            add(spelledString(reflectGet(node, 'source')), 'dynamic');
         }
         else if (type === 'CallExpression') {
             const callee = reflectGet(node, 'callee');
