@@ -16,7 +16,7 @@
 
 import assert from 'node:assert/strict';
 
-import { GitEntryWriteFailure, GitWriteFailure, mountWriter, withinDeadline, writeEntry, writeLockedIndex } from '../../packages/worker/src/git/pack/mount-writer.ts';
+import { GitEntryWriteFailure, GitWriteFailure, PhaseDeadlineError, mountWriter, withinDeadline, writeEntry, writeLockedIndex } from '../../packages/worker/src/git/pack/mount-writer.ts';
 
 const enc = new TextEncoder();
 const fsError = (code, path) => Object.assign(new Error(`${code}: ${path}`), { code });
@@ -34,6 +34,10 @@ function fakeApi(fail = () => undefined, files = new Map()) {
       const error = fail('unlink', [path]);
       if (error) throw error;
       if (!files.has(path)) throw fsError('ENOENT', path);
+      files.delete(path);
+    },
+    async discard(path) {
+      calls.push(['discard', path]);
       files.delete(path);
     },
     async fsOpen(path, flags) {
@@ -135,7 +139,7 @@ const big = new Uint8Array(3 * 1024 * 1024 + 7).fill(7);
   console.log('  ok  mountWriter: the index of any size by its lock, a small file in the wave');
 }
 
-// ── withinDeadline: a write crossing the deadline still closes ──
+// ── withinDeadline: a write crossing the deadline still closes; an unlink past it is refused ──
 {
   let deadline = Date.now() + 60_000;
   const api = fakeApi((call, [, offset]) => {
@@ -144,9 +148,26 @@ const big = new Uint8Array(3 * 1024 * 1024 + 7).fill(7);
     return undefined;
   });
   const bounded = withinDeadline(api, { valueOf: () => deadline });
-  await assert.rejects(writeEntry(bounded, '/r/d.bin', 'd.bin', 0o644, big), (error) => error instanceof GitWriteFailure);
+  await assert.rejects(writeEntry(bounded, '/r/d.bin', 'd.bin', 0o644, big), (error) => error instanceof PhaseDeadlineError, 'the phase ends, not the file');
   assert.equal(api.calls.at(-1)[0], 'fsClose', 'its close reached the file API past the deadline');
   assert.equal(api.calls.filter((call) => call[0] === 'fsWrite').length, 2, 'and no write started after it');
-  console.log('  ok  withinDeadline: a write crossing the deadline still reaches its close');
+  console.log('  ok  withinDeadline: a write crossing the deadline still reaches its close, and ends the phase');
+}
+{
+  // The deadline passes while the directory is made: the old file stays, nothing opened.
+  let deadline = Date.now() + 60_000;
+  const api = fakeApi(() => undefined, new Map([['/r/e.bin', { bytes: enc.encode('old'), mode: 0o644 }]]));
+  const mkdir = api.mkdir;
+  api.mkdir = async (path) => { await mkdir(path); deadline = Date.now() - 1; };
+  const bounded = withinDeadline(api, { valueOf: () => deadline });
+  await assert.rejects(writeEntry(bounded, '/r/e.bin', 'e.bin', 0o644, big), (error) => error instanceof PhaseDeadlineError);
+  assert.deepEqual(api.files.get('/r/e.bin').bytes, enc.encode('old'), 'the old file is kept');
+  assert.deepEqual(api.calls.map((call) => call[0]), ['mkdir'], 'nothing unlinked or opened past the deadline');
+  // Our own lock is removed past it.
+  let late = Date.now() + 60_000;
+  const locker = fakeApi((call) => { if (call === 'fsWrite') late = Date.now() - 1; return undefined; });
+  await assert.rejects(writeLockedIndex(withinDeadline(locker, { valueOf: () => late }), '/r/.git/index', big), (error) => error instanceof PhaseDeadlineError);
+  assert.deepEqual([...locker.files.keys()], [], 'our own lock discarded past the deadline');
+  console.log('  ok  withinDeadline: an unlink past the deadline is refused, the old file kept; our own lock discarded');
 }
 console.log('git-mount-writer: ok');
