@@ -234,6 +234,15 @@ export interface ProcessFsStats {
 export declare const PROCESS_FS_SYNC_CAP_BYTES: number;
 /** What a writer that waits for room (ProcessFsClient.room) lets the client hold unanswered: two waves' worth. */
 export declare const PROCESS_FS_ROOM_BYTES: number;
+/**
+ * The most a process holds acknowledged (told it succeeded) and not yet
+ * answered by the session before a change in a held subtree stops being
+ * decided here and waits for its own answer: two waves' worth of ops and
+ * bytes. What a process killed mid-run can lose of what it decided is at
+ * most this (its synchronous calls' own bytes are bounded by the sync cap).
+ */
+export declare const DECIDED_BACKLOG_OPS: number;
+export declare const DECIDED_BACKLOG_BYTES: number;
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export declare const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
