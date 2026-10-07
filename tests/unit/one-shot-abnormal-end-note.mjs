@@ -72,8 +72,9 @@ for (const captureOutput of [false, true]) {
   assert.ok(result.stderr.includes(UNSETTLED_END_NOTE), `the loss was not said: ${JSON.stringify(result.stderr)}`);
   assert.equal(result.stdout.includes('AFTER'), false, 'an output after the lost writes was released');
 }
-assert.match(UNSETTLED_END_NOTE, /unknown number of its writes since it last yielded/);
-assert.match(UNSETTLED_END_NOTE, /64 MiB/);
+assert.match(UNSETTLED_END_NOTE, /an unknown number of the changes it made since it last produced output or flushed may be lost/);
+// No bound is named that the client does not enforce (review recheck).
+assert.doesNotMatch(UNSETTLED_END_NOTE, /MiB|\d{3,}/);
 
 console.log('one-shot-abnormal-end-note: ok');
 process.exit(0);

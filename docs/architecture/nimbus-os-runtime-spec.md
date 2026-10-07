@@ -837,8 +837,8 @@ what a death can cost.
   yields to the event loop. If the isolate dies of CPU or memory partway
   through one unbroken synchronous stretch, the rows that stretch logged
   are rolled back. A live CPU-death run lost 958 of 5,000. That stretch
-  holds whatever the program acknowledged since it last yielded, up to the
-  synchronous cap (`PROCESS_FS_SYNC_CAP_BYTES`, 256 MiB). The platform's
+  holds whatever the program acknowledged since it last yielded, and no
+  count of it is promised. The platform's
   output gate holds every message the facet sends until its rows commit,
   so no effect is ever seen ahead of a lost change. A resident's effects
   also wait at the gate below: what sees one (the shell's next command, a
@@ -854,22 +854,16 @@ what a death can cost.
 
   The gate is `ProcessFsClient.effect()`. Bytes written to a raw TCP
   socket (`node:net`/`node:tls`) are not gated yet. If the process dies or
-  is killed, two things can be lost:
-  - Every write it acknowledged since it last yielded to its event loop.
-    The client sends only when the program yields, so a loop of
-    `writeFileSync` that dies before it yields sent none of them. This is
-    bounded only by the synchronous cap
-    (`PROCESS_FS_HEAP_SYNC_CAP_BYTES`, 64 MiB). Node's synchronous semantics
-    rule out a cap on the number of operations.
-  - The sent changes not yet answered, up to `DECIDED_BACKLOG_OPS` (2,032).
-
-  Nothing it released ever claims a change that was lost. The session
-  cannot count the first kind, because those writes never left the isolate.
-  So every abnormal end of a one-shot is reported every time, whatever the
-  session saw. Its exit status is non-zero, and its output carries
-  `UNSETTLED_END_NOTE`: an unknown number of its writes since it last
-  yielded, up to the cap, may be lost. Every subtree it held is named as
-  well (`delegationOrphaned`).
+  is killed, any change it made since it last produced output or finished
+  a flush may be lost, and no count of them is promised. The client sends
+  only when the program yields, so a loop of `writeFileSync` that dies
+  before it yields sent none of them, and the session never saw them.
+  Nothing it released ever claims a change that was lost. So every
+  abnormal end of a one-shot is reported every time, whatever the session
+  saw: its exit status is non-zero, its output carries `UNSETTLED_END_NOTE`
+  (an unknown number of the changes it made since it last produced output
+  or flushed may be lost), and every subtree it held is named
+  (`delegationOrphaned`).
 
 ### Performance Rules
 

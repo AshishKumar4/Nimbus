@@ -16,11 +16,11 @@ published independently in the `@nimbus-sh` npm scope.
   A one-shot (node, python, ruby or a WASI program run once) releases no
   output, exit status or outbound message until every change it made
   before it is in the session. A one-shot that ends abnormally (out of
-  memory or CPU, or killed) can lose an unknown number of writes it
-  acknowledged since it last yielded, up to 64 MiB of synchronous writes,
-  plus up to 2,032 changes not yet answered. It always exits non-zero and
-  says so in its output, naming any subtree it held. The session cannot
-  count those writes, because they never left the process.
+  memory or CPU, or killed) can lose an unknown number of the changes it
+  made since it last produced output or flushed. It always exits non-zero
+  and says so in its output, naming any subtree it held. No count is
+  promised: the session never saw the changes the process acknowledged and
+  never sent.
 - Fixed: a WASI program run with `./prog.wasm`, and ruby, ran without its
   credential, so every file call was a round trip to the session. A C
   program writing 10,000 files now takes 14.7 s, where before it stopped at

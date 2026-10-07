@@ -258,6 +258,22 @@ async function create(fs, path, text) {
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/gone/f')), 'new');
 }
 
+// ── Review A6 (recheck): an existing file opened to read and write needs read permission too ──
+// Red before: only write permission was checked, so a 0200 file the holder
+// made opened O_RDWR (truncating or not) and read, instead of EACCES.
+{
+  const s = session();
+  await s.fs.mkdir('/home/user/proj/wonly', { mode: 0o755 });
+  const made = await s.fs.open('/home/user/proj/wonly/f', { write: true, create: true, truncate: true, mode: 0o200 });
+  await s.fs.write(made.id, null, enc.encode('secret'));
+  await s.fs.close(made.id);
+  await assert.rejects(async () => s.fs.open('/home/user/proj/wonly/f', { read: true, write: true, create: true }), { code: 'EACCES' }, 'O_RDWR without O_TRUNC of a write-only file');
+  await assert.rejects(async () => s.fs.open('/home/user/proj/wonly/f', { read: true, write: true, create: true, truncate: true }), { code: 'EACCES' }, 'O_RDWR|O_TRUNC of a write-only file');
+  const writeOnly = await s.fs.open('/home/user/proj/wonly/f', { write: true, create: true });
+  await s.fs.close(writeOnly.id);
+  await s.fs.settle();
+}
+
 // ── Review A7 (recheck): fstat of a description answers from its own file, its name gone or reused ──
 // Red before: fstat looked the description's pathname up: EBADF once the
 // name was unlinked, and the replacement's stat once a rename reused it.

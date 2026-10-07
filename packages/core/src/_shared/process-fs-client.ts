@@ -269,14 +269,13 @@ export const DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
 /**
  * What a one-shot process (no store of its own) that ended abnormally (it
  * died, or was killed) says in its output, whatever it did: every change
- * ahead of an output it released is in the session (ProcessFsClient.effect),
- * but what it acknowledged since it last yielded to its event loop never left
- * its isolate (up to the synchronous cap), and what it sent after its last
- * output may not have been answered (up to the decided backlog). The session
- * cannot count the first: it never saw them.
+ * ahead of an output it released, or a flush it finished, is in the session
+ * (ProcessFsClient.effect, flush); any change it made after that may not be.
+ * No count is promised: what it acknowledged and never sent the session
+ * never saw. The subtrees it held are named apart (delegationOrphaned).
  */
-export const UNSETTLED_END_NOTE = `[nimbus] the process ended abnormally: an unknown number of its writes since it last yielded `
-  + `(up to the ${PROCESS_FS_HEAP_SYNC_CAP_BYTES / (1024 * 1024)} MiB synchronous cap), and up to ${DECIDED_BACKLOG_OPS} not yet answered after its last output, may be lost`;
+export const UNSETTLED_END_NOTE = `[nimbus] the process ended abnormally: an unknown number of the changes it made `
+  + `since it last produced output or flushed may be lost`;
 
 /** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */
 export function unsettledEnd(error: unknown): Error & { unsettled: true } {
@@ -612,13 +611,12 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const errno = typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : 'EIO';
       for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error instanceof Error ? error.message : String(error)}`);
       journal.dropThrough(entries[entries.length - 1]!.jid);
-      // Numbers given to what was never sent would be a gap the session
-      // refuses: what follows is numbered under a new epoch (nothing of
-      // this wave left, so the old one has nothing to retire).
-      if (entries.some((entry) => entry.seq !== 0)) {
-        epoch = null;
-        for (const entry of queue) entry.seq = 0;
-      }
+      // An epoch numbers ops by their place in the log: dropped, these leave
+      // a gap the session would refuse what follows for. What follows is
+      // numbered under a new epoch (nothing of this wave left, and what the
+      // old one sent was answered, so it has nothing to retire).
+      epoch = null;
+      for (const entry of queue) entry.seq = 0;
       return;
     }
     const firstSeq = entries[0]!.seq;

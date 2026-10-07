@@ -509,4 +509,51 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(perm('home/user/open'), 0o775);
 }
 
+// ── Review 11 (recheck): an op that cannot be sent after a wave that landed leaves no gap ──
+// Red before: the failed op's numbers were dropped with it, the epoch kept
+// numbering by log position, and the next valid op was refused for the gap (EIO).
+{
+  const s = session();
+  const c = client(s);
+  await c.submit(writeFile('home/user/g1', '1'));
+  const long = 'home/user/' + 'x'.repeat(33 * 1024);
+  const refused = await c.submit({ type: 'rename', from: long, to: long + 'y' }).then(() => 'ok', (error) => error.code);
+  assert.notEqual(refused, 'ok', 'a rename no wave can carry was answered as done');
+  await c.submit(writeFile('home/user/g2', '2'));
+  assert.equal(s.text('home/user/g2'), '2', 'the op after an unsendable one was refused');
+}
+
+// ── Review 3 (recheck): retiring an epoch waits for a mount's call of it already made ──
+// Red before: the retirement answered at once; a slow mounted write of the
+// given-up wave landed after (and over) what the next epoch wrote.
+{
+  const s = session();
+  const { MemoryVFS } = await import('../../packages/core/src/vfs/memory.ts');
+  const slow = new MemoryVFS();
+  let release;
+  const held = new Promise((resolve) => { release = resolve; });
+  let calls = 0;
+  const backend = new Proxy(slow, {
+    get(target, name) {
+      if (name === 'writeFile') {
+        return async (path, data, options) => {
+          // The first write waits in the backend, past the writer's patience.
+          if (calls++ === 0) await held;
+          return target.writeFile(path, data, options);
+        };
+      }
+      const value = Reflect.get(target, name);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+  s.files.vfs.mount('/slow', backend);
+  const c = processFsClient({ session: s.port, retry: { backoffMs: [], stallMs: 30, answerDeadlineMs: 30 } });
+  await assert.rejects(c.submit({ type: 'call', call: { call: 'writeFile', path: 'slow/race', mode: 0o644, data: enc.encode('old') } }), (error) => error.code === 'EIO');
+  // The next write waits for the retirement, which waits for the old call.
+  const next = c.submit({ type: 'call', call: { call: 'writeFile', path: 'slow/race', mode: 0o644, data: enc.encode('new') } });
+  setTimeout(release, 100);
+  await next;
+  assert.equal(dec.decode(slow.readFile('/race')), 'new', 'the given-up wave\'s mounted write landed over the next epoch\'s');
+}
+
 console.log('process-fs-client: ok');

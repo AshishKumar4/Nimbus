@@ -88,6 +88,8 @@ async function replay(supervisor, stream) {
           }
           else if (call.call === 'lchown') noted(await supervisor.chown(abs(call.path), call.uid, call.gid, { followSymlinks: false }));
           else if (call.call === 'lutimes') noted(await supervisor.utimes(abs(call.path), call.atime, call.mtime));
+          // A write description's open (a WASI process's): no test that drives this supervisor makes one.
+          else if (call.call === 'open') throw new Error('wave-supervisor: an open call is not modeled');
           else await supervisor.symlink(call.target, abs(call.path));
           break;
         }
