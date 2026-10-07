@@ -216,6 +216,8 @@ const handler = buildRuntimeHandler({
   version: 'v22.22.3',
   helpText: 'help',
   supportsBinSpawn: true,
+  // As the shell's node spec (hosted/commands.ts): node's own command line.
+  nodeCommandLine: true,
   run: (code, opts) => manager.exec(code, { ...opts, captureOutput: true }),
 }, { getEsbuild: () => esbuild, registry: { resolve: () => undefined } });
 
