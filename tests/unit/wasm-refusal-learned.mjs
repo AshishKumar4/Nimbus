@@ -114,4 +114,38 @@ export const flush = __nimbusFlushRuntimeCode;`,
   console.log('  the seam names a refused image once, and records what validates');
 }
 
+// ── an instantiate that fails after its compile is not a refusal ──
+// A module that compiles and then fails to link (its imports) or traps keeps
+// its own error: the seam neither names nor learns it, nor relabels it as a
+// refused compile, which lost its class (nuxt dev: 286 bytes, every launch).
+{
+  const shims = generateShimsCode();
+  const seam = shims.slice(shims.indexOf('const __nimbusPrecompiledWasm ='), shims.indexOf('// ═══', shims.indexOf('WA.__nimbusPrecompiledSeam = true')));
+  const real = globalThis.WebAssembly;
+  const WA = {
+    Module: real.Module, compile: real.compile.bind(real), instantiate: real.instantiate.bind(real),
+    validate: real.validate.bind(real), Instance: real.Instance, LinkError: real.LinkError, CompileError: real.CompileError,
+  };
+  const lines = [];
+  const recorded = [];
+  const scope = {
+    WebAssembly: WA,
+    __nimbusPrecompiledWasm: new Map(),
+    __nimbusPrecompiledWasmByDigest: new Map(),
+    process: { stderr: { write: (text) => { lines.push(String(text)); return true; } } },
+    __nimbusRuntimeCode: { recordWasm: (bytes) => { recorded.push(bytes); return true; } },
+  };
+  new Function('globalThis', '__BufferMod', seam)(scope, { from: (x) => x });
+  // A module importing m.f, a function.
+  const importing = new Uint8Array([0, 97, 115, 109, 1, 0, 0, 0, 1, 4, 1, 96, 0, 0, 2, 7, 1, 1, 109, 1, 102, 0, 0]);
+  assert.ok(real.validate(importing), 'fixture validates');
+  await assert.rejects(scope.WebAssembly.instantiate(importing, { m: { f: 1 } }), (error) => error instanceof real.LinkError,
+    'a link failure is the LinkError it is');
+  const { instance } = await scope.WebAssembly.instantiate(importing, { m: { f() {} } });
+  assert.ok(instance instanceof real.Instance, 'and with its imports, it instantiates');
+  assert.deepEqual(lines, [], 'nothing is named');
+  assert.deepEqual(recorded, [], 'nothing is learned');
+  console.log('  an instantiate that fails after its compile keeps its own error');
+}
+
 console.log('wasm-refusal-learned: ok');
