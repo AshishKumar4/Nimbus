@@ -96,8 +96,8 @@ try {
   rmSync(modPath, { force: true });
 }
 
-const run = globalThis.__cpythonRun;
-assert.equal(typeof run, 'function', 'the preamble must install __cpythonRun');
+const guestRun = globalThis.__cpythonRun;
+assert.equal(typeof guestRun, 'function', 'the preamble must install __cpythonRun');
 console.log('  ok  the composed preamble installs __cpythonRun');
 
 // The session the interpreter runs in, adopted the way cpythonRunFacetFn
@@ -110,7 +110,18 @@ const session = makeSession({
     'opt/py/lib/python3.13/os.py': '# stdlib marker\n',
   },
 });
-globalThis.__nimbusPySupervisor = session.supervisor;
+const written = { stdout: [], stderr: [] };
+globalThis.__nimbusPySupervisor = { ...session.supervisor,
+  stdout: bytes => written.stdout.push(bytes.slice()),
+  stderr: bytes => written.stderr.push(bytes.slice()),
+};
+const run = async args => {
+  written.stdout.length = 0; written.stderr.length = 0;
+  const result = await guestRun(args);
+  assert.equal(result.stdout, '', 'the runtime returns no second copy of its streamed stdout');
+  assert.equal(result.stderr, '', 'the runtime returns no second copy of its streamed stderr');
+  return { ...result, stdout: Buffer.concat(written.stdout).toString(), stderr: Buffer.concat(written.stderr).toString() };
+};
 const base = {
   pythonHome: '/opt/py',
   userEnv: { HOME: '/home/user', PYTHONUNBUFFERED: '1' },

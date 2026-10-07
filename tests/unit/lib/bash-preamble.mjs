@@ -111,7 +111,7 @@ export function loadPreamble(opts = {}) {
     finally { release(); }
   };
   return {
-    scope, bindings, root, evaluate, cred, applets,
+    scope, bindings, root, evaluate, cred, applets, processes, pid,
     boot: args => call({ op: 'boot', cwd: '/', cred, parking, coreutilsRoot: '/bin', ...args }),
     feed: args => call({ op: 'feed', ...args }),
     async dispose() { await store.dispose(); await authority.releaseProcess(pid); harness.db.close(); },
