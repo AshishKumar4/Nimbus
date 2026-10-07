@@ -392,8 +392,8 @@ export interface ProcessHostParams {
   /**
    * Set only by the coordinator's durable-application path: an explicit facet
    * name (`app-slot-<n>`) allocated from DO storage, plus the release split
-   * that keeps its SQLite across aborts. Absent, the host allocates an
-   * ephemeral `proc-slot-<n>` name from its in-memory free list and deletes
+   * that keeps its SQLite across aborts. Absent, the host takes the next
+   * ephemeral `proc-slot-<n>` name from its in-memory slot book and deletes
    * the store on release.
    */
   facet?: { name: string; durable: boolean };
