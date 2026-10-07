@@ -32,6 +32,8 @@ export interface Scope {
     readonly names: ReadonlySet<string>;
     readonly parent: Scope | null;
 }
+/** The names a program's top-level statement binds in its scope: its `var`s and its lexical declarations. */
+export declare function programNames(statement: EsNode): string[];
 /**
  * Every node under `value`, each before its children, with the scope it is
  * in, the node it is under and the key it is under that node by (null and

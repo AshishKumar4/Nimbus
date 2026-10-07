@@ -65,6 +65,10 @@ export function* patternNames(node) {
     }
 }
 const FUNCTIONS = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+/** The names a program's top-level statement binds in its scope: its `var`s and its lexical declarations. */
+export function programNames(statement) {
+    return [...varNames([statement], false), ...lexicalNames([statement])];
+}
 /** The names a list of statements binds lexically: let, const, class, function and import. */
 function* lexicalNames(statements) {
     for (const statement of statements) {

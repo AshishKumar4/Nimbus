@@ -171,10 +171,10 @@ export class TransformStore {
         this.maxEntryBytes = options.maxEntryBytes ?? TRANSFORM_STORE_MAX_ENTRY_BYTES;
         this.generation = JSON.stringify([KEY_SCHEMA, this.pipeline, this.host]);
     }
-    async key(kind, at, source) {
+    async key(kind, at, source, packageType = null) {
         const digest = sha256Incremental();
         // JSON, so no field can run into the next; the source follows the NUL.
-        await digest.update(encoder.encode(JSON.stringify([KEY_SCHEMA, this.pipeline, this.host, kind, at]) + '\0'));
+        await digest.update(encoder.encode(JSON.stringify([KEY_SCHEMA, this.pipeline, this.host, kind, at, packageType]) + '\0'));
         await digest.update(encoder.encode(source));
         return digest.hex();
     }

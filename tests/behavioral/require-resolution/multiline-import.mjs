@@ -37,6 +37,9 @@
 //   4. synthetic-line-clean (regression): `import {\n a, b\n} from './c';` still works
 //   5. wild-chalk: chalk@5 source/index.js loads — utilities.js + vendor/ansi-styles/index.js
 //      both reachable
+//
+// The synthetic packages are `type: module`, so they export: an ES module's
+// `module.exports` is a ReferenceError in Node (module-format-matches-node).
 
 import { Terminal, mintSession, sleep, makeAsserter, BASE } from '../_driver.mjs';
 
@@ -63,11 +66,11 @@ await t.writeFile('/home/user/ml-line/node_modules/mypkg/package.json', JSON.str
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
 await t.writeFile('/home/user/ml-line/node_modules/mypkg/lib/x.js',
-  "module.exports = { hello: 'LINE_COMMENT_OK' };");
+  "export const hello = 'LINE_COMMENT_OK';");
 await t.writeFile('/home/user/ml-line/node_modules/mypkg/lib/index.js', `import { // ESLint disable comment after brace
   hello,
 } from './x.js';
-module.exports = { hello };`);
+export { hello };`);
 await t.writeFile('/home/user/ml-line/consume.js',
   "const m = require('mypkg'); console.log('RESULT_LINE=' + m.hello);");
 
@@ -85,11 +88,11 @@ await t.writeFile('/home/user/ml-block/node_modules/mypkg/package.json', JSON.st
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
 await t.writeFile('/home/user/ml-block/node_modules/mypkg/lib/y.js',
-  "module.exports = { hello: 'BLOCK_COMMENT_OK' };");
+  "export const hello = 'BLOCK_COMMENT_OK';");
 await t.writeFile('/home/user/ml-block/node_modules/mypkg/lib/index.js', `import { /* block c */
   hello,
 } from './y.js';
-module.exports = { hello };`);
+export { hello };`);
 await t.writeFile('/home/user/ml-block/consume.js',
   "const m = require('mypkg'); console.log('RESULT_BLOCK=' + m.hello);");
 
@@ -111,7 +114,7 @@ await t.writeFile('/home/user/ml-exp/node_modules/mypkg/package.json', JSON.stri
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
 await t.writeFile('/home/user/ml-exp/node_modules/mypkg/lib/z.js',
-  "module.exports = { greet: () => 'EXPORT_FROM_OK' };");
+  "export const greet = () => 'EXPORT_FROM_OK';");
 await t.writeFile('/home/user/ml-exp/node_modules/mypkg/lib/index.js', `export {
   greet,
   // TODO: remove this re-export in the next major
@@ -136,11 +139,11 @@ await t.writeFile('/home/user/ml-clean/node_modules/mypkg/package.json', JSON.st
   name: 'mypkg', type: 'module', main: './lib/index.js',
 }));
 await t.writeFile('/home/user/ml-clean/node_modules/mypkg/lib/c.js',
-  "module.exports = { hello: 'CLEAN_MULTI_OK' };");
+  "export const hello = 'CLEAN_MULTI_OK';");
 await t.writeFile('/home/user/ml-clean/node_modules/mypkg/lib/index.js', `import {
   hello,
 } from './c.js';
-module.exports = { hello };`);
+export { hello };`);
 await t.writeFile('/home/user/ml-clean/consume.js',
   "const m = require('mypkg'); console.log('RESULT_CLEAN=' + m.hello);");
 

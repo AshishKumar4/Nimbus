@@ -32,6 +32,13 @@ import { adoptSessionSupervisor, oneShotManager, runnerLoader } from './lib/one-
 
 const ROOT = '/home/user/fmt';
 const line = (...parts) => `console.log(JSON.stringify([${parts.join(', ')}]));\n`;
+// What an ES module's scope is: strict, no `this`, no CommonJS wrapper name.
+const SCOPE_PARTS = [
+  'this === undefined', '(function () { return this; })() === undefined',
+  'typeof require', 'typeof module', 'typeof exports', 'typeof __filename', 'typeof __dirname',
+];
+const SCOPE = (label) => line(`'${label}'`, ...SCOPE_PARTS);
+const SCOPE_DEP = (name) => `globalThis.${name} = [${SCOPE_PARTS.join(', ')}];\n`;
 const files = {
   'package.json': JSON.stringify({ name: 'fmt', private: true }),
   // Typeless files whose only module syntax is one of Node's other kinds.
@@ -49,6 +56,22 @@ const files = {
   'node_modules/metapkg/package.json': JSON.stringify({ name: 'metapkg', version: '1.0.0', main: 'index.js' }),
   'node_modules/metapkg/index.js': 'globalThis.metaPkg = typeof import.meta.url;\n',
   'pkg.cjs': `require('metapkg');\n${line("'package'", 'globalThis.metaPkg')}`,
+  // An ES module by its extension or its package's "type", whatever its
+  // syntax: strict, `this` undefined, none of CommonJS's wrapper names.
+  'plain.mjs': SCOPE('mjs'),
+  'typed/package.json': JSON.stringify({ name: 'typed', type: 'module' }),
+  'typed/plain.js': SCOPE('type-module'),
+  'typed/dep.js': SCOPE_DEP('typedDep'),
+  'plain-dep.mjs': SCOPE_DEP('mjsDep'),
+  'deps.cjs': `import('./plain-dep.mjs').then(() => import('./typed/dep.js')).then(() => { ${line("'deps'", 'globalThis.mjsDep', 'globalThis.typedDep').trim()} });\n`,
+  // One with module syntax, and one that makes its own require.
+  'esm-scope.mjs': `import { sep } from 'node:path';\n${line("'esm-scope'", 'typeof require', 'typeof exports', 'typeof __filename', 'sep')}`,
+  'own-require.mjs': `import { createRequire } from 'node:module';\nconst require = createRequire(import.meta.url);\n${line("'own-require'", 'typeof require', "require('node:path').sep")}`,
+  // What Node refuses: a require in an ES module, an import in a .cjs or a type:commonjs .js.
+  'require-in-esm.mjs': "require('node:path');\n",
+  'import-in.cjs': "import { sep } from 'node:path';\nconsole.log(sep);\n",
+  'commonjs/package.json': JSON.stringify({ name: 'commonjs', type: 'commonjs' }),
+  'commonjs/import.js': "import { sep } from 'node:path';\nconsole.log(sep);\n",
 };
 const EVAL_ESM = `import { sep } from 'node:path';\n${line("'eval'", 'sep')}`;
 const RUNS = [
@@ -63,11 +86,20 @@ const RUNS = [
   ['-e', EVAL_ESM],
   ['-e', line("'eval-commonjs'", 'typeof require')],
   ['--input-type=module', '-e', line("'input-type'", 'typeof import.meta.url')],
-  ['--input-type', 'module', '-e', line("'input-type spaced'", 'typeof import.meta')],
+  ['--input-type', 'module', '-e', line("'input-type spaced'", 'typeof import.meta', 'typeof require')],
   ['-', { stdin: `import { sep } from 'node:path';\n${line("'stdin'", 'sep')}` }],
+  ['plain.mjs'],
+  ['typed/plain.js'],
+  ['deps.cjs'],
+  ['esm-scope.mjs'],
+  ['own-require.mjs'],
+  ['require-in-esm.mjs', { fails: 'ReferenceError' }],
+  ['import-in.cjs', { fails: 'SyntaxError' }],
+  ['commonjs/import.js', { fails: 'SyntaxError' }],
 ];
 const argsOf = (run) => run.filter((arg) => typeof arg === 'string');
 const stdinOf = (run) => run.find((arg) => typeof arg === 'object')?.stdin;
+const failsWith = (run) => run.find((arg) => typeof arg === 'object')?.fails;
 
 // ── real node ────────────────────────────────────────────────────────────
 const disk = realpathSync(mkdtempSync(join(tmpdir(), 'module-format-')));
@@ -79,6 +111,13 @@ try {
   }
   for (const run of RUNS) {
     const node = spawnSync('node', argsOf(run), { cwd: disk, input: stdinOf(run) ?? '', encoding: 'utf8' });
+    const fails = failsWith(run);
+    if (fails !== undefined) {
+      assert.notEqual(node.status, 0, `premise: node ${argsOf(run).join(' ')} fails`);
+      assert.match(node.stderr, new RegExp(`^${fails}: `, 'm'), `premise: node ${argsOf(run).join(' ')} throws a ${fails}`);
+      expected.push(null);
+      continue;
+    }
     assert.equal(node.status, 0, `node ${argsOf(run).join(' ')}: ${node.stderr}`);
     expected.push(JSON.parse(node.stdout.trim().split('\n').at(-1)));
   }
@@ -128,6 +167,12 @@ for (let i = 0; i < RUNS.length; i++) {
     });
   } finally { Object.assign(globalThis, real); }
   const label = `node ${argsOf(run).join(' ').slice(0, 60)}`;
+  const fails = failsWith(run);
+  if (fails !== undefined) {
+    assert.notEqual(exitCode, 0, `${label} fails, as in node: ${stdout}${out}`);
+    assert.match(stderr + out + stdout, new RegExp(`\\b${fails}\\b`), `${label} throws a ${fails}, as node does: ${stderr}${out}`);
+    continue;
+  }
   const printed = (out + stdout).trim().split('\n').at(-1) ?? '';
   assert.ok(printed.startsWith('['), `${label} printed no report (exit ${exitCode}): ${stderr}${out}`);
   assert.equal(exitCode, 0, `${label}: ${stderr}${out}`);

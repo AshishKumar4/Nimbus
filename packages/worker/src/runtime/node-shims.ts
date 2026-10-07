@@ -10758,6 +10758,10 @@ function __esmLoad(resolution) {
   __esmNamespaces.set(resolution.url, ns);
   return ns;
 }
+// A bundled copy of a package the runtime provides, bound to the runtime's
+// (esbuild-service.ts rewriteProvidedCommonJsModules, PROVIDED_PACKAGE_HOOK):
+// what require() serves for it, from any module, an ES module included.
+globalThis.__nimbusProvidedPackage = (name) => __require(name);
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
   return Promise.resolve().then(() => {
     const text = String(specifier);

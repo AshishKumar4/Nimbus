@@ -132,8 +132,11 @@ export function calleeName(callee: AnyNode): string | null {
 /** The module syntax a token opens: a top-level declaration, or `import.meta` anywhere. */
 export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
 
-/** The names Node's CommonJS wrapper binds, which a module's top level may not redeclare lexically. */
-const COMMONJS_WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
+/**
+ * The names Node's CommonJS wrapper binds: what a CommonJS module's top level
+ * may not redeclare lexically, and what no ES module's scope has.
+ */
+export const COMMONJS_WRAPPER_NAMES: ReadonlySet<string> = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 
 /**
  * Whether `source` holds syntax only an ES module can, as Node's syntax

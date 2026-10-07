@@ -104,8 +104,11 @@ export function calleeName(callee) {
         return at.property.name;
     return at.property.type === 'Literal' && typeof at.property.value === 'string' ? at.property.value : null;
 }
-/** The names Node's CommonJS wrapper binds, which a module's top level may not redeclare lexically. */
-const COMMONJS_WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
+/**
+ * The names Node's CommonJS wrapper binds: what a CommonJS module's top level
+ * may not redeclare lexically, and what no ES module's scope has.
+ */
+export const COMMONJS_WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filename', '__dirname']);
 /**
  * Whether `source` holds syntax only an ES module can, as Node's syntax
  * detection defines it (doc/api/packages.md "Syntax detection", on by

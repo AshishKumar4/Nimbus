@@ -19,7 +19,8 @@ import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { emitCommonJs, lowerAsyncModule, readEsmRecords, type EsmRecord } from './async-module-lowering.js';
+import { emitCommonJs, lowerAsyncModule, readEsmModule } from './async-module-lowering.js';
+import { ES_MODULE_UNBOUND_NAMES } from './module-format.js';
 import {
   applySourceEdits,
   hasUnscopedAwait,
@@ -224,6 +225,13 @@ function importMetaEdits(source: string, absoluteUrl: string, moduleFactory: boo
   }
 }
 
+/**
+ * The runtime's function a bound record calls for its package: the one the
+ * module system serves (node-shims.ts), named apart from the module's own
+ * `require`, which an ES module does not have (module-format.ts).
+ */
+export const PROVIDED_PACKAGE_HOOK = '__nimbusProvidedPackage';
+
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export function rewriteProvidedCommonJsModules(source: string): string {
   const helpers = new Set(['__commonJS']);
@@ -284,7 +292,7 @@ export function rewriteProvidedCommonJsModules(source: string): string {
         last = token;
       }
       if (singleModule && bodySeen && braces === 0) {
-        edits.push({ start: a.start, end: last.end, text: '(() => require(' + JSON.stringify(entry[0]) + '))' });
+        edits.push({ start: a.start, end: last.end, text: `(() => ${PROVIDED_PACKAGE_HOOK}(${JSON.stringify(entry[0])}))` });
       }
       previous = last.type;
       a = tokens.getToken(); b = tokens.getToken(); c = tokens.getToken(); d = tokens.getToken(); e = tokens.getToken();
@@ -313,15 +321,23 @@ export function rewriteBundledEsmToCjs(
   // Read a statement at a time (readEsmRecords), so a multi-MiB bundle reads
   // in bounded memory, imports live. What acorn cannot parse is left to the
   // transform host, which has the last word on syntax.
-  let records: EsmRecord[];
+  let read: ReturnType<typeof readEsmModule>;
   try {
-    records = readEsmRecords(source);
+    read = readEsmModule(source);
   } catch {
     return null;
   }
+  const { records, wrapperUses } = read;
   if (records.length === 0) return null;
   const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
   if (!metaEdits) return null;
+  // A free use of a CommonJS wrapper name binds nothing in an ES module, as
+  // the transform's define has it (ES_MODULE_UNBOUND_NAMES).
+  const unbound: SourceEdit[] = [];
+  for (const [name, references] of wrapperUses) {
+    const to = ES_MODULE_UNBOUND_NAMES[name]!;
+    for (const { start, end, use } of references) unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
+  }
 
   // Only generated references use wrapper arguments. Source declarations
   // named module/require/exports retain their own meanings. An import.meta
@@ -330,7 +346,7 @@ export function rewriteBundledEsmToCjs(
     body: 'sync',
     exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
     requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
-    edits: metaEdits.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+    edits: [...metaEdits, ...unbound].filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
   });
   return { code: (moduleFactory ? '"use strict";\n' : '') + code, map: '', warnings: [] };
 }
