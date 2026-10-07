@@ -368,7 +368,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime', 'umask']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -503,6 +503,7 @@ async function* encodeFile(file, state) {
         chunkCount: file.inode.chunkCount,
         ...(file.inode.call === undefined ? {} : { call: file.inode.call }),
         ...(file.inode.offset === undefined ? {} : { offset: file.inode.offset }),
+        ...(file.inode.umask === undefined ? {} : { umask: file.inode.umask }),
     }, state);
     let fileCheck = 0;
     let chunkId = 0;
@@ -697,6 +698,8 @@ function prepareOps(payload, batchId) {
                     inode.call = call.call;
                     if (call.call === 'write')
                         inode.offset = safeInteger(call.offset, 'write offset');
+                    if ('umask' in call && call.umask !== undefined)
+                        inode.umask = umaskOf(call.umask, `${call.call} umask`);
                     const chunks = w7Chunks(path, call.data);
                     return { kind: 'file', file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
                 }
@@ -739,7 +742,7 @@ function parseDirectory(bytes, v3) {
     return { ...parseInodeMetadata(value, 'directory'), kind: 'directory' };
 }
 function parseFileBegin(bytes, v3) {
-    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset']);
+    const value = parseObject(bytes, 'file-begin', ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'], v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset', 'umask']);
     const base = parseInodeMetadata(value, 'file-begin');
     if (value.kind !== 'file' && value.kind !== 'symlink') {
         throw new Error(`w7-frame: unsupported file-begin kind ${String(value.kind)}`);
@@ -763,10 +766,14 @@ function parseFileBegin(bytes, v3) {
     // An offset is a write's, and only a description's writes name an inode.
     if ((call === 'write') !== (value.offset !== undefined))
         throw new Error(`w7-frame: ${base.path}: a write, and only a write, has an offset`);
+    // A umask is a call's that makes a name with a mode.
+    if (value.umask !== undefined && call !== 'writeFile' && call !== 'appendFile')
+        throw new Error(`w7-frame: ${base.path}: only a writeFile or appendFile has a umask`);
     return {
         ...base, kind: value.kind, contentId, size, chunkCount,
         ...(call === undefined ? {} : { call }),
         ...(value.offset === undefined ? {} : { offset: safeInteger(value.offset, 'write offset') }),
+        ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'file-begin umask') }),
     };
 }
 /** A path call's fields, exactly: its paths made canonical (and claimed) by `path`. */
@@ -774,7 +781,7 @@ function parsePathCall(value, path) {
     const keys = Object.keys(value).sort().join(',');
     switch (value.call) {
         case 'mkdir': {
-            const optional = keys.replace(',existing', '').replace(',ino', '');
+            const optional = keys.replace(',existing', '').replace(',ino', '').replace(',umask', '');
             if (optional !== 'call,mode,path')
                 break;
             if (value.existing !== undefined && value.existing !== 'ok')
@@ -782,6 +789,7 @@ function parsePathCall(value, path) {
             return {
                 call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode'),
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'mkdir ino') }),
+                ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'mkdir umask') }),
                 ...(value.existing === undefined ? {} : { existing: 'ok' }),
             };
         }
@@ -868,6 +876,13 @@ function parseInodeMetadata(value, label) {
         mode: u32(value.mode, `${label} mode`),
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, `${label} ino`) }),
     };
+}
+/** A umask: permission bits, 0 to 0o777. */
+function umaskOf(value, label) {
+    const mask = u32(value, label);
+    if (mask > 0o777)
+        throw new Error(`w7-frame: ${label} must be at most 0o777`);
+    return mask;
 }
 /** An inode number: an integer from 2 (1 is the root's). */
 function inodeNumber(value, label) {
@@ -979,6 +994,7 @@ function fileInode(metadata) {
         ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
         ...(metadata.call === undefined ? {} : { call: metadata.call }),
         ...(metadata.offset === undefined ? {} : { offset: metadata.offset }),
+        ...(metadata.umask === undefined ? {} : { umask: metadata.umask }),
     };
 }
 function inodeMetadata(inode) {

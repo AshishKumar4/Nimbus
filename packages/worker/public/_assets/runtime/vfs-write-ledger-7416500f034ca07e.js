@@ -242,7 +242,8 @@ var __nimbusProcessFsModule = (() => {
       size: file.inode.size,
       chunkCount: file.inode.chunkCount,
       ...file.inode.call === void 0 ? {} : { call: file.inode.call },
-      ...file.inode.offset === void 0 ? {} : { offset: file.inode.offset }
+      ...file.inode.offset === void 0 ? {} : { offset: file.inode.offset },
+      ...file.inode.umask === void 0 ? {} : { umask: file.inode.umask }
     }, state);
     let fileCheck = 0;
     let chunkId = 0;
@@ -429,6 +430,8 @@ var __nimbusProcessFsModule = (() => {
             inode.call = call.call;
             if (call.call === "write")
               inode.offset = safeInteger(call.offset, "write offset");
+            if ("umask" in call && call.umask !== void 0)
+              inode.umask = umaskOf(call.umask, `${call.call} umask`);
             const chunks = w7Chunks(path, call.data);
             return { kind: "file", file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
           }
@@ -451,7 +454,7 @@ var __nimbusProcessFsModule = (() => {
     const keys = Object.keys(value).sort().join(",");
     switch (value.call) {
       case "mkdir": {
-        const optional = keys.replace(",existing", "").replace(",ino", "");
+        const optional = keys.replace(",existing", "").replace(",ino", "").replace(",umask", "");
         if (optional !== "call,mode,path")
           break;
         if (value.existing !== void 0 && value.existing !== "ok")
@@ -461,6 +464,7 @@ var __nimbusProcessFsModule = (() => {
           path: path(value.path, "mkdir path"),
           mode: u32(value.mode, "mkdir mode"),
           ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "mkdir ino") },
+          ...value.umask === void 0 ? {} : { umask: umaskOf(value.umask, "mkdir umask") },
           ...value.existing === void 0 ? {} : { existing: "ok" }
         };
       }
@@ -518,6 +522,12 @@ var __nimbusProcessFsModule = (() => {
         throw new Error(`w7-frame: unknown call ${String(value.call)}`);
     }
     throw new Error(`w7-frame: ${String(value.call)} takes other fields: got ${keys}`);
+  }
+  function umaskOf(value, label) {
+    const mask = u32(value, label);
+    if (mask > 511)
+      throw new Error(`w7-frame: ${label} must be at most 0o777`);
+    return mask;
   }
   function inodeNumber(value, label) {
     const ino = safeInteger(value, label);
@@ -1155,6 +1165,13 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
+  function withUmaskOf(op, umask) {
+    if (umask === void 0 || op.type !== "call") return op;
+    const call = op.call;
+    if (call.call !== "writeFile" && call.call !== "appendFile" && call.call !== "mkdir" || call.umask !== void 0) return op;
+    const mask = umask();
+    return mask === void 0 ? op : { type: "call", call: { ...call, umask: mask & 511 } };
+  }
   var SYMLINK_TARGET_MAX = 4096;
   var utf8 = new TextEncoder();
   var utf8Bytes = (text) => utf8.encode(text).byteLength;
@@ -1655,8 +1672,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       pending() {
         return queue.length > 0 || inFlight !== null;
       },
-      submit(op, submitOptions) {
+      submit(given, submitOptions) {
         const acknowledged = submitOptions?.acknowledged === true;
+        const op = withUmaskOf(given, options.umask);
         const named = pathsOf(op);
         for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
         if (op.type === "call" && op.call.call === "symlink" && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
@@ -1734,7 +1752,6 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         return flushed;
       },
       effect() {
-        if (journal.durable) return null;
         options.drain?.();
         return answered >= logged ? null : client.flush();
       },
@@ -1974,6 +1991,9 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
+    // The process's umask as each create is logged (process.umask moves it;
+    // its setUmask to the session is not ordered with the waves).
+    umask: () => (typeof globalThis.__nimbusProcessUmask === "function" ? globalThis.__nimbusProcessUmask() : undefined),
     // The process's own SQLite, where it has one (a resident's facet:
     // __nimbusFsJournalSql): every change is there before the program is told
     // it succeeded, and what it holds when it dies the session drains from it.

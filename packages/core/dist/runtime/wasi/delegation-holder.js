@@ -73,7 +73,7 @@ export function delegationHolder(options) {
             // file made here makes its name with this write, with its number.
             const ino = file.made;
             delete file.made;
-            client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
+            client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
         }
     };
     /** Forget what was decided under `root`: sent, so the store (after its barrier) answers. */
@@ -255,7 +255,8 @@ export function delegationHolder(options) {
                 };
                 decided.set(key, entry);
                 note(parentKey(key), nameOf(key), 'file');
-                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino };
+                // Its mode was decided under this umask: the session applies the same one.
+                file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask: grant.umask };
                 files.set(ino, file);
                 // Made here: the name exists from now on, in the log's order. Logged
                 // with its bytes, before the next decision (drain), as one call.
@@ -378,7 +379,7 @@ export function delegationHolder(options) {
             });
             note(parentKey(key), nameOf(key), 'directory');
             added.set(key, added.get(key) ?? new Map());
-            log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino } });
+            log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino, umask: grant.umask } });
             return true;
         },
         unlink: (key, path) => {

@@ -86,17 +86,24 @@ export type W7Call =
  * symlink): the number a delegation's holder gave the name it made, from
  * its grant's range, kept when the call makes it (W7 v4 `ino`).
  */
+/**
+ * `umask`, on a call that makes a name with a mode (writeFile, appendFile,
+ * mkdir): the process's umask when it made the call, applied in place of
+ * the session's record of it (which a later change may have moved).
+ */
 {
     call: 'writeFile';
     path: string;
     mode: number;
     ino?: number;
+    umask?: number;
     data: Uint8Array;
 } | {
     call: 'appendFile';
     path: string;
     mode: number;
     ino?: number;
+    umask?: number;
     data: Uint8Array;
 }
 /**
@@ -132,6 +139,7 @@ export type W7Call =
     path: string;
     mode: number;
     ino?: number;
+    umask?: number;
     existing?: 'ok';
 } | {
     call: 'unlink';
@@ -256,6 +264,7 @@ type W7ContentInode = BatchInodeEntry & {
     isDir: false;
     call?: W7DataCall;
     offset?: number;
+    umask?: number;
 };
 export type W7DecodedRecord = {
     type: 'delete';

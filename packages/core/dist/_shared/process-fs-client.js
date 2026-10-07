@@ -92,6 +92,16 @@ const DATA_PIECE_BYTES = WAVE_BYTES;
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
 export const GRANT_AFTER = 8;
+/** `op` with the process's umask now, when it makes a name with a mode and names none (ProcessFsClientOptions.umask). */
+function withUmaskOf(op, umask) {
+    if (umask === undefined || op.type !== 'call')
+        return op;
+    const call = op.call;
+    if ((call.call !== 'writeFile' && call.call !== 'appendFile' && call.call !== 'mkdir') || call.umask !== undefined)
+        return op;
+    const mask = umask();
+    return mask === undefined ? op : { type: 'call', call: { ...call, umask: mask & 0o777 } };
+}
 /** A link's target, at most (PATH_MAX, as symlink(2) bounds it). */
 const SYMLINK_TARGET_MAX = 4096;
 const utf8 = new TextEncoder();
@@ -731,8 +741,9 @@ export function processFsClient(options) {
         pending() {
             return queue.length > 0 || inFlight !== null;
         },
-        submit(op, submitOptions) {
+        submit(given, submitOptions) {
             const acknowledged = submitOptions?.acknowledged === true;
+            const op = withUmaskOf(given, options.umask);
             const named = pathsOf(op);
             for (const path of named)
                 if (!canonical(path))
@@ -818,8 +829,6 @@ export function processFsClient(options) {
             return flushed;
         },
         effect() {
-            if (journal.durable)
-                return null;
             options.drain?.();
             return answered >= logged ? null : client.flush();
         },

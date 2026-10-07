@@ -109,6 +109,10 @@ export const ROUTED_FILE_MAX = 4 * 1024 * 1024;
  * refused (EINVAL) before any of its bytes are read.
  */
 export const DATA_CALL_MAX = 4 * 1024 * 1024;
+/** `cred` with the umask a process's call was made under, when the call carries one (W7Call umask). */
+function withUmask(cred, umask) {
+    return umask === undefined || umask === cred.umask ? cred : { ...cred, umask };
+}
 const INODE_ROW_COLUMNS = 15;
 const CHUNK_ROW_COLUMNS = 4;
 const MANIFEST_ROW_COLUMNS = 4;
@@ -7498,7 +7502,9 @@ export class SqliteVFS {
      * description (describedFile). The published name's stat, or null for a
      * description whose file no name has any more (the bytes go with it).
      */
-    applyDataCall(file, bytes, cred) {
+    applyDataCall(file, bytes, caller) {
+        // The umask the process made the call under, when it says (W7Call umask).
+        const cred = withUmask(caller, file.umask);
         switch (file.call) {
             case 'writeFile':
                 this.writeFile(file.path, bytes, { mode: file.mode, ino: file.ino }, cred);
@@ -8265,6 +8271,7 @@ export class SqliteVFS {
                         streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
                         ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
                         ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
+                        ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
                         parts: [], received: 0, nextChunk: 0,
                         credit: { left: record.inode.size, lease },
                     };
@@ -8521,7 +8528,7 @@ export class SqliteVFS {
                                             throw vfsError('EEXIST', call.path);
                                     }
                                     else {
-                                        this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
+                                        this.mkdir(call.path, { mode: call.mode, ino: call.ino }, withUmask(cred, call.umask));
                                     }
                                 }
                                 else if (call.call === 'unlink')
