@@ -89,6 +89,7 @@ import {
   FencedWork,
   FENCED_WORK_KEY_PREFIX,
   type FencedWorkRecord,
+  type RedriveCause,
 } from '@nimbus-sh/fabric/fenced-work.js';
 import { type EsbuildService, rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import {
@@ -5053,7 +5054,7 @@ export class FacetManager {
     this.launchJournal = new FencedWork<ResidentLaunchRecord>(ctx.storage, {
       generationBase: () => this.processes.pidBase,
       waitUntil: (promise) => this.ctx.waitUntil(promise),
-      redrive: (record, attempt) => this._redrive(record, attempt),
+      redrive: (record, attempt, cause) => this._redrive(record, attempt, cause),
       onRedrive: (record) => {
         // A line in the Worker's logs as well: the platform logs nothing for the restart itself.
         console.warn(`[facet-manager] the session restarted while pid ${record.pid} ("${record.command}") was ${residentLaunchDoing(record)}; restarting it`);
@@ -5141,7 +5142,7 @@ export class FacetManager {
     // The process may have been removed or the session destroyed during the
     // backoff; a row that is gone is owed nothing.
     if (!(await this.launchJournal.rows()).has(key)) return;
-    await this.launchJournal.drive(key, row, { lostToReset: false });
+    await this.launchJournal.drive(key, row, { kind: 'exited', code: entry.exitCode ?? 1 });
   }
 
   /** Claim identity AND write its recovery row in one serializable storage transaction. */
@@ -7624,7 +7625,7 @@ export class FacetManager {
    * launch's are re-resolved by the embedder through
    * `hooks.resolveWorkerLaunch`.
    */
-  private async _redrive(record: ResidentLaunchRecord, attempt: number): Promise<unknown> {
+  private async _redrive(record: ResidentLaunchRecord, attempt: number, cause: RedriveCause): Promise<unknown> {
     const { recipe } = record;
     if (record.cred === undefined) {
       // Reported through onRedriveFailed, and the row is superseded.
@@ -7633,7 +7634,12 @@ export class FacetManager {
     const identity: RedrivenIdentity = {
       cred: record.cred,
       ...(record.execId === undefined ? {} : { execId: record.execId }),
-      restart: { from: { pid: record.pid, cause: 'session-restart' }, doing: residentLaunchDoing(record) },
+      restart: {
+        from: cause.kind === 'exited'
+          ? { pid: record.pid, cause: 'exited', exitCode: cause.code }
+          : { pid: record.pid, cause: 'session-restart' },
+        doing: residentLaunchDoing(record),
+      },
     };
     switch (recipe.kind) {
       case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, identity);
@@ -7674,8 +7680,8 @@ export class FacetManager {
    * The process-table entry of a resident launch: a child of its invoker,
    * under its credential, as exec's. A re-drive has no invoker (the journal
    * never holds one): it runs as the row says, records the process it
-   * restarts, and says so as its first line of output. The terminal the
-   * session's restart disconnected is not where the user looks for it.
+   * restarts and why, and says so as its first line of output. The terminal
+   * a session's restart disconnected is not where the user looks for it.
    */
   private _spawnLaunchEntry(
     command: string,
@@ -7687,12 +7693,10 @@ export class FacetManager {
     if (redriven === undefined) return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
     const { restart, ...identity } = redriven;
     const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
-    this.processes.appendOutput(
-      entry.pid,
-      'stderr',
-      `[nimbus: the session restarted while "${command}" was ${restart.doing}, so this process restarted; `
-        + `it was pid ${restart.from.pid}]\n`,
-    );
+    const why = restart.from.cause === 'exited'
+      ? `"${command}" exited with code ${restart.from.exitCode}, so it was restarted (restart on-failure)`
+      : `the session restarted while "${command}" was ${restart.doing}, so this process restarted`;
+    this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: ${why}; it was pid ${restart.from.pid}]\n`);
     return entry;
   }
 
@@ -8905,7 +8909,7 @@ export class FacetManager {
     setTimeout(() => markBound(true), DURABLE_ENSURE_BOOT_BUDGET_MS);
     const failed = await Promise.race([
       // A previous instance's row: the session restarted under it.
-      this.launchJournal.drive(rowKey, record, { lostToReset: true }),
+      this.launchJournal.drive(rowKey, record, { kind: 'session-restart' }),
       boundHit,
     ]);
     if (failed) return 'failed';

@@ -39,6 +39,9 @@
  */
 export const FENCED_WORK_KEY_PREFIX = 'resident-launch:';
 
+/** Why a row is re-driven: its session restarted, or its process exited with `code`. */
+export type RedriveCause = { kind: 'session-restart' } | { kind: 'exited'; code: number };
+
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
 export const FENCED_WORK_MAX_ATTEMPT = 1;
 
@@ -128,7 +131,7 @@ export interface FencedWorkHost<R extends FencedWorkRecord> {
    * carries it into the launch it starts. The result is discarded: a re-drive
    * owns its own process, and nobody is waiting on the pid it allocates.
    */
-  redrive(record: R, attempt: number): Promise<unknown>;
+  redrive(record: R, attempt: number, cause: RedriveCause): Promise<unknown>;
   /** A re-drive is being started for this record. */
   onRedrive?(record: R): void;
   /** The record's re-drive budget is spent; the resident stays stopped. */
@@ -236,13 +239,14 @@ export class FencedWork<R extends FencedWorkRecord> {
    * Re-drive one journal row — the awaited sibling of recovery's un-awaited
    * re-drives, for a caller that must know whether the launch actually came
    * back. Single-flight per row: a request-driven drive and recovery's own
-   * never boot the same launch twice. `lostToReset` marks a row a previous
-   * instance left (not a crash this instance restarts), whose drive is
-   * announced through onRedrive, once, by the call that starts it. Resolves
+   * never boot the same launch twice. `cause` says why the row is driven: a
+   * session restart (a row a previous instance left), whose drive is
+   * announced through onRedrive, once, by the call that starts it, or the
+   * process's own non-zero exit, which its restart policy re-drives. Resolves
    * true only when the re-drive itself FAILED and the failure was reported;
    * a settled drive supersedes the row the same way recovery's does.
    */
-  drive(key: string, record: R, { lostToReset }: { lostToReset: boolean }): Promise<boolean> {
+  drive(key: string, record: R, cause: RedriveCause): Promise<boolean> {
     let inflight = this.drives.get(key);
     if (inflight === undefined) {
       inflight = (async (): Promise<boolean> => {
@@ -252,10 +256,10 @@ export class FencedWork<R extends FencedWorkRecord> {
           await this.supersede(key);
           return true;
         }
-        if (lostToReset) this.host.onRedrive?.(record);
+        if (cause.kind === 'session-restart') this.host.onRedrive?.(record);
         let failed = false;
         try {
-          await this.host.redrive(record, spent + 1);
+          await this.host.redrive(record, spent + 1, cause);
         } catch (e: unknown) {
           this.host.onRedriveFailed?.(record, e);
           failed = true;
@@ -331,7 +335,7 @@ export class FencedWork<R extends FencedWorkRecord> {
       // be scheduled until this one returns. `drive` single-flights it: a
       // request that arrives mid-launch waits on this same drive rather than
       // booting a second process.
-      this.host.waitUntil(this.drive(key, record, { lostToReset: true }));
+      this.host.waitUntil(this.drive(key, record, { kind: 'session-restart' }));
     }
   }
 
