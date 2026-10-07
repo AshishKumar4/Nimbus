@@ -26,8 +26,11 @@
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with the supervisor module.
  *
- * The semver helpers are embedded from src/npm/semver.ts the same way, so
- * the facet picks versions with the supervisor's own implementation.
+ * Versions and specs are npm's own semver and npm-package-arg behind
+ * @nimbus-sh/core's npm-semver.ts and npm-spec.ts, which the build bundles
+ * into an IIFE (npm/resolve-libs.generated.ts, scripts/bundle-facet-workers.mjs)
+ * whose free names are only the builtin imports spliced ahead of it and a
+ * facet's globals: the facet picks versions with the supervisor's own code.
  *
  * Preamble bytes are part of the loader-cache key for IsolatePool —
  * any edit invalidates the warm slot and forces a re-load on next
