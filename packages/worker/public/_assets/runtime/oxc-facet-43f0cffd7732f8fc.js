@@ -9450,7 +9450,7 @@ const ${binding} = arguments[2];
     const installed = getters.sort(([a], [b]) => a < b ? -1 : a > b ? 1 : 0).map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
     const prologue = [...installed, ...requires, ...imported, ...stars].join(" ");
     const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
-    return options.body === "async" ? `${header.join("\n")}
+    return options.body === "async" ? `"use strict";${header.join("\n")}
 return (async () => { ${prologue}
 ${body}
 })();

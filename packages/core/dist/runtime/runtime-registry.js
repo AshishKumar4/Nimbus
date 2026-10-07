@@ -41,7 +41,7 @@ import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
-import { ES_MODULE_UNBOUND_NAMES, esModuleSource, isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { isEsModuleFile, isEsModuleInput } from './module-format.js';
 import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
@@ -200,6 +200,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
                 ...(program.launchesServer ? { launchesServer: true } : {}),
+                ...(program.esModule ? { esModule: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -244,8 +245,8 @@ export function buildRuntimeHandler(spec, ctx0) {
             try {
                 const eb = await getEsbuild();
                 // An ES module keeps its scope (module-format.ts): strict, no CommonJS wrapper name.
-                return (await eb.transform(esm ? esModuleSource(code) : code, {
-                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { define: ES_MODULE_UNBOUND_NAMES } : {}),
+                return (await eb.transform(code, {
+                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { esModuleScope: true } : {}),
                 })).code;
             }
             catch (e) {
@@ -277,13 +278,15 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stderr.write(`${name}: -e requires an argument\n`);
                 return 1;
             }
-            if (isEsModuleInput(code, inputType)) {
+            const esModule = isEsModuleInput(code, inputType);
+            if (esModule) {
                 const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[eval]', true);
                 if (lowered === null)
                     return 1;
                 code = lowered;
             }
             return runProgram(code, {
+                esModule,
                 argv: args.slice(evalIdx + 2),
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
@@ -328,13 +331,15 @@ export function buildRuntimeHandler(spec, ctx0) {
         // program's own stdin is what is left after the read: nothing.
         if (scriptPath === '-') {
             let code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
-            if (isEsModuleInput(code, inputType)) {
+            const esModule = isEsModuleInput(code, inputType);
+            if (esModule) {
                 const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[stdin]', true);
                 if (lowered === null)
                     return 1;
                 code = lowered;
             }
             return runProgram(code, {
+                esModule,
                 argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
@@ -443,6 +448,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             ? filename.substring(0, filename.lastIndexOf('/'))
             : '/';
         return runProgram(code, {
+            esModule: esm,
             argv: [...args.slice(0, scriptIdx), filename, ...args.slice(scriptIdx + 1)],
             filename,
             dirname,

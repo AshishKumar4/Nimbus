@@ -466,6 +466,11 @@ function __nimbusModuleCell(key) {
   const __row = __nimbusCodeCells.get(key);
   return __row ? __nimbusRegistryRequire("./" + __row[1]) : null;
 }
+// Whether the cell at a VFS key is an ES module the launch lowered (CommonJsCellRow).
+function __nimbusModuleCellIsEsModule(key) {
+  const __row = __nimbusCodeCells.get(key);
+  return __row !== undefined && __row[6] === 1;
+}
 // The entry's wrapper function. A SyntaxError from compiling it carries no
 // location (the registry compiles on require, and V8 reports the requiring
 // frame), so its stack leads with the file, as Node's report does.

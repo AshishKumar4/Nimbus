@@ -18,7 +18,7 @@ import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
 import { emitCommonJs, lowerAsyncModule, readEsmModule } from './async-module-lowering.js';
-import { ES_MODULE_UNBOUND_NAMES } from './module-format.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleScopeTypeofs, esModuleSource } from './module-format.js';
 import { applySourceEdits, hasUnscopedAwait, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
@@ -355,7 +355,7 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = fals
         requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
         edits: [...metaEdits, ...unbound].filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
     });
-    return { code: (moduleFactory ? '"use strict";\n' : '') + code, map: '', warnings: [] };
+    return { code: esModuleScopeTypeofs((moduleFactory ? '"use strict";\n' : '') + code), map: '', warnings: [] };
 }
 const __outputDecoder = new TextDecoder();
 /**
@@ -634,7 +634,20 @@ async function remotePlugin(plugin, initialOptions) {
 }
 /** What a transform request hands the engine: its source after the provided-module pre-pass, unless it asks only for the rewrite. */
 function preparedTransformSource(code, options) {
-    return options?.rewriteOnly ? code : withProvidedModuleRewrite(code, options);
+    if (options?.rewriteOnly)
+        return code;
+    return withProvidedModuleRewrite(options?.esModuleScope ? esModuleSource(code) : code, options);
+}
+/** What the engine is asked: an ES module's scope as the define that makes it. */
+function engineTransformOptions(options) {
+    if (!options?.esModuleScope || options.rewriteOnly)
+        return options;
+    const { esModuleScope: _scope, ...rest } = options;
+    return { ...rest, define: { ...rest.define, ...ES_MODULE_UNBOUND_NAMES } };
+}
+/** An engine's result for `options`, with an ES module's typeof of an unbound name 'undefined'. */
+function finishedTransform(result, options) {
+    return options?.esModuleScope && !options.rewriteOnly ? { ...result, code: esModuleScopeTypeofs(result.code) } : result;
 }
 /** A CJS emit of JavaScript binds bundled CommonJS records to the runtime's provided packages first. */
 function withProvidedModuleRewrite(code, options) {
@@ -736,7 +749,8 @@ export class EsbuildService {
             return outcome;
         }
         // In the isolate the engine's own error propagates, diagnostics and all.
-        return this.transformInIsolate(preparedTransformSource(code, options), options);
+        const result = await this.transformInIsolate(preparedTransformSource(code, options), engineTransformOptions(options));
+        return finishedTransform(result, options);
     }
     /** One transform on the in-isolate engine, of source the provided-module pre-pass has seen. */
     async transformInIsolate(code, options) {
@@ -757,7 +771,7 @@ export class EsbuildService {
         const positions = [];
         requests.forEach(({ code, options }, i) => {
             try {
-                prepared.push({ code: preparedTransformSource(code, options), options });
+                prepared.push({ code: preparedTransformSource(code, options), options: engineTransformOptions(options) });
                 positions.push(i);
             }
             catch (e) {
@@ -771,13 +785,15 @@ export class EsbuildService {
             if (hosted.length !== prepared.length) {
                 throw new Error(`esbuild transform host answered ${hosted.length} of ${prepared.length} requests`);
             }
-            hosted.forEach((outcome, j) => { outcomes[positions[j]] = outcome; });
+            hosted.forEach((outcome, j) => {
+                outcomes[positions[j]] = 'error' in outcome ? outcome : finishedTransform(outcome, requests[positions[j]].options);
+            });
             return outcomes;
         }
         for (let j = 0; j < prepared.length; j++) {
             const { code, options } = prepared[j];
             try {
-                outcomes[positions[j]] = await this.transformInIsolate(code, options);
+                outcomes[positions[j]] = finishedTransform(await this.transformInIsolate(code, options), requests[positions[j]].options);
             }
             catch (e) {
                 outcomes[positions[j]] = { error: errorText(e) };

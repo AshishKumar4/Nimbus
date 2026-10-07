@@ -171,7 +171,7 @@ interface GeneratedNodeFacetCode {
  * Generate one-shot runtime code with a plain fetch handler. `filename`
  * names the entry's module, and so its stack frames.
  */
-export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string): Promise<GeneratedNodeFacetCode>;
+export declare function generateEntrypointCode(userCode: string, vfsState: FacetVfsState, usesSqlite: boolean, sources: NodeFacetSources, wasmImports?: readonly FacetWasmImport[], filename?: string, esModule?: boolean): Promise<GeneratedNodeFacetCode>;
 /** One wasm image the generated main module imports from the module map. */
 export interface FacetWasmImport {
     /** The module-map name the boot spec carries the image under. */
@@ -203,6 +203,7 @@ export declare function generateLongRunningNodeCode(userCode: string, vfsState: 
     cwd?: string;
     filename?: string;
     dirname?: string;
+    esModule?: boolean;
     stdin?: string;
     attachedTty?: boolean;
     cred: ProcessEntry['cred'];
@@ -898,6 +899,8 @@ export interface ResidentSpawnOptions {
     cwd?: string;
     filename?: string;
     dirname?: string;
+    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    esModule?: boolean;
     command?: string;
     port?: number;
     attachedTty?: boolean;
@@ -1442,6 +1445,8 @@ export declare class FacetManager {
         callerPid?: number;
         /** The process whose command runs the program: its parent, whose credential and exec id it takes. */
         invokerPid?: number;
+        /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+        esModule?: boolean;
         bundleProfile?: FacetBundleProfile;
         /** Return stdout/stderr in the result while keeping supervisor RPC
          *  available for VFS and child_process operations. */

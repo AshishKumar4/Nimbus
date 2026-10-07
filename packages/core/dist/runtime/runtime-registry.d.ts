@@ -62,6 +62,12 @@ export interface RuntimeRunOpts {
     filename: string;
     dirname: string;
     command: string;
+    /**
+     * The program is an ES module the handler lowered (module-format.ts): its
+     * own require is its static imports, and what escapes its evaluation is
+     * explained as Node's loader explains it.
+     */
+    esModule?: boolean;
     /** Primitive #1/G4 hooks. node-runner consumes these; other
      *  runtimes ignore them safely. */
     skipSpawn?: boolean;

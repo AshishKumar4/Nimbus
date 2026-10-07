@@ -12787,6 +12787,55 @@ const __moduleEvaluations = new Map();
 // package → why the package ABI policy says it cannot run here (wasm-swap-registry.ts).
 const __nimbusAbiAdvisories = new Map([["sharp","Native libvips bindings; not portable to Workers. … try: no Workers-compatible target — render server-side or use Cloudflare Images. For the wasm32 build see @img/sharp-wasm32 entry below."],["sqlite3","Native sqlite3 .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or sql.js once wasm asset loading is available."],["better-sqlite3","Native sqlite .node binding. … try: better-sqlite3-wasm (untested by Nimbus) or @libsql/client if its subpath exports resolve in your project."],["canvas","Native Cairo bindings. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["sodium-native","Native libsodium. … try: tweetnacl (pure JS, untested by Nimbus) or libsodium-wrappers (WASM, untested by Nimbus)."],["node-pty","PTY syscalls unavailable in workerd. … try: no Workers-compatible target — use the Nimbus built-in shell."],["robotjs","Desktop automation; sandboxed Workers cannot access OS UI. … try: no Workers-compatible target."],["electron","Embedded Chromium runtime; not applicable to Workers. … try: no Workers-compatible target."],["bcrypt","Native bcrypt; pure-JS bcryptjs has an equivalent sync API but the require() name differs and Nimbus does not yet support npm aliases. … try: change `require(\"bcrypt\")` to `require(\"bcryptjs\")`, then `npm install bcryptjs`. APIs are sync-compatible."],["argon2","Native Argon2 C bindings. … try: hash-wasm for argon2d, argon2i, and argon2id."],["node-sass","Native libsass; deprecated upstream. … try: sass (dart-sass, pure JS)."],["grpc","Deprecated native gRPC. … try: @grpc/grpc-js (pure JS, untested end-to-end in Nimbus)."],["@swc/core","Native Rust SWC. … try: @swc/wasm-web for transform/parse only; it does not provide the native Plugin API."],["prisma","Native query engine; not portable to Workers in this configuration. … try: @prisma/adapter-d1 (Prisma official Workers adapter, untested by Nimbus), or migrate to drizzle-orm + @libsql/client (untested by Nimbus)."],["@prisma/client","Same as `prisma` (native query engine). … try: @prisma/adapter-d1 (untested by Nimbus), or drizzle-orm + @libsql/client (untested)."],["puppeteer","Bundled Chromium binary (~150 MB). … try: no Workers-compatible target for the bundled binary — use puppeteer-core + Cloudflare Browser Rendering (untested by Nimbus)."],["playwright","Bundled browsers (~300 MB). … try: no Workers-compatible target for bundled browsers — use @playwright/test against a remote browser endpoint (untested by Nimbus)."],["sql.js","Installs but fails at runtime because dist/sql-wasm.wasm is not available to the runtime loader. … try: For SQL in Workers, consider Cloudflare D1 or @libsql/client."],["@swc/wasm-web","Installs but fails at runtime because its generated code path depends on workerd-blocked dynamic code generation. … try: For ESM transforms consider esbuild-wasm."],["@img/sharp-wasm32","WASM build of sharp; package is wasm32-cpu-only and libvips initThreads() requires pthread support unavailable in Workers. … try: wasm-vips may work for simple pipelines; for complex pipelines, render server-side and ship pixels."],["@napi-rs/canvas","Native bindings only (linux-x64-gnu/musl, darwin-arm64/x64, android-arm64, linux-arm64-gnu/musl, win32-x64-msvc, linux-arm-gnueabihf). No WASM build published. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible, ~7MB; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@napi-rs/canvas-wasm32-wasi","@napi-rs/canvas does not publish a wasm32-wasi variant on npm (404). The @napi-rs/canvas project ships only native bindings. No WASM/WASI build exists. … try: canvaskit-wasm (Skia -> WASM, canvas-API-compatible; untested by Nimbus) or @resvg/resvg-wasm for SVG."],["@tailwindcss/oxide","Native Rust Tailwind v4 oxide engine; ships only platform-specific .node bindings plus a wasm32-wasi shard. workerd has no node:wasi, and bare native bindings cannot dlopen. … try: no Workers-compatible target — Tailwind v3 (`tailwindcss@^3`) is pure JS and works in Workers (untested by Nimbus). Tailwind v4 inherently requires the Rust oxide engine."]]);
 
+// An ES module's scope binds none of CommonJS's names (module-format.ts
+// ES_MODULE_UNBOUND_NAMES): a lowered ES module reads, calls and assigns each
+// of them through this object's accessors, which throw the ReferenceError V8
+// throws for a name bound nowhere, from the module's own frame. `typeof` of
+// one is lowered to 'undefined', as V8's is.
+const __nimbusCommonJSGlobalLike = ["exports","require","module","__filename","__dirname"];
+Object.defineProperty(globalThis, "__nimbusEsmScope", { value: Object.freeze(Object.create(null, Object.fromEntries(
+  __nimbusCommonJSGlobalLike.map((name) => {
+    const unbound = function () {
+      const error = new ReferenceError(name + " is not defined");
+      Error.captureStackTrace(error, unbound);
+      throw error;
+    };
+    return [name, { get: unbound, set: unbound }];
+  }),
+))) });
+
+// The errors __nimbusExplainCommonJSGlobalLike has explained.
+const __nimbusExplained = new WeakSet();
+function __nimbusIsCommonJSGlobalLikeError(e) {
+  return e !== null && typeof e === "object" && (__nimbusExplained.has(e)
+    || (e.name === "ReferenceError" && __nimbusCommonJSGlobalLike.some((name) => e.message === name + " is not defined")));
+}
+
+// Node's explainCommonJSGlobalLikeNotDefinedError (lib/internal/modules/esm/
+// module_job.js, v22.22.3): what a ReferenceError for a CommonJS name says
+// once it escapes the evaluation of an ES module job the loader ran: a
+// program's ES entry, an import(), a require() of an ES module. `url` and
+// `hasTopLevelAwait` are the job's module's. Thrown anywhere else (in a
+// callback, or caught inside the module) it says what V8 says.
+function __nimbusExplainCommonJSGlobalLike(e, url, hasTopLevelAwait) {
+  if (e?.name === "ReferenceError" && __nimbusCommonJSGlobalLike.some((name) => e.message === name + " is not defined")) {
+    __nimbusExplained.add(e);
+    if (hasTopLevelAwait) {
+      e.message = "Cannot determine intended module format because both require() and top-level await are present. If the code is intended to be CommonJS, wrap await in an async function. If the code is intended to be an ES module, replace require() with import.";
+      e.code = "ERR_AMBIGUOUS_MODULE_SYNTAX";
+      return;
+    }
+    e.message += " in ES module scope";
+    if (e.message.startsWith("require ")) e.message += ", you can use import instead";
+    const packageConfig = url.startsWith("file://") && /\.js(\?[^#]*)?(#.*)?$/.exec(url) !== null
+      && __esmResolver.packageScopeSync(url);
+    if (packageConfig.type === "module") {
+      e.message += "\nThis file is being treated as an ES module because it has a '.js' file extension and '"
+        + packageConfig.pjsonPath + "' contains \"type\": \"module\". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.";
+    }
+  }
+}
+
 /**
  * Direct VFS bundle access for module resolution.
  * These bypass the fs shim's _resolve() (which prepends cwd)
@@ -13285,7 +13334,9 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
   });
 }
 
-function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
+// `required`: loaded by a require() call, not by an ES module's static
+// import, which the lowering makes a call of the module's own require.
+function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true) {
   if (globalThis.__nimbusProfileStaged) globalThis.__nimbusProfileStaged.delete(String(resolvedPath).replace(/^\/+/, ""));
   if (__moduleCache.has(evaluationKey)) return __moduleCache.get(evaluationKey);
 
@@ -13303,7 +13354,10 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
 
   // JS — the cell's wrapper, called with a scoped require
   const modDir = resolvedPath.includes("/") ? resolvedPath.substring(0, resolvedPath.lastIndexOf("/")) : ".";
-  const scopedRequire = (id) => __requireFrom(id, modDir);
+  // A lowered ES module calls its require for its static imports only: it
+  // has no require of its own (module-format.ts ES_MODULE_UNBOUND_NAMES).
+  const esModule = __nimbusModuleCellIsEsModule(resolvedPath.replace(/^\/+/, ""));
+  const scopedRequire = (id) => __requireFrom(id, modDir, !esModule);
   scopedRequire.resolve = (id) => {
     const r = __resolveFrom(id, modDir);
     if (!r) throw new Error("Cannot resolve '" + id + "'");
@@ -13347,6 +13401,13 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath) {
     if (evaluation && typeof evaluation.then === "function") __moduleEvaluations.set(evaluationKey, evaluation);
   } catch (e) {
     __moduleCache.delete(evaluationKey);
+    // A ReferenceError for a CommonJS name is the module loader's to explain
+    // where it leaves an ES module's job, and nothing else's: a require() of
+    // an ES module is that module's job (Node's ModuleJobSync).
+    if (__nimbusIsCommonJSGlobalLikeError(e)) {
+      if (required && esModule) __nimbusExplainCommonJSGlobalLike(e, moduleUrl, false);
+      throw e;
+    }
     if (e && typeof e === "object" && !e.__nimbusModulePath) {
       try {
         Object.defineProperty(e, "__nimbusModulePath", { value: resolvedPath, configurable: true, writable: true });
@@ -13921,6 +13982,10 @@ Did you mean to import ${JSON.stringify(found)}?`;
     },
     resolveSync: (specifier, parentUrl) => runSync(importTarget(specifier, parentUrl)),
     metaResolveSync: (specifier, parentUrl) => runSync(metaResolve(specifier, parentUrl)),
+    packageScopeSync(url) {
+      const { pjsonPath, type } = runSync(packageScopeConfig(new URL(url)));
+      return { pjsonPath, type };
+    },
     validateAttributes(url, format, attributes) {
       for (const key of Object.keys(attributes)) {
         if (key !== "type") {
@@ -14015,10 +14080,20 @@ function __esmLoad(resolution) {
         if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url);
         throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
       };
-      const result = cell(mod.exports, requireData, mod, undefined, undefined);
+      let result;
+      try {
+        result = cell(mod.exports, requireData, mod, undefined, undefined);
+      } catch (e) {
+        __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+        throw e;
+      }
       const namespace = () => __esmNamespaceOf(Object.keys(mod.exports).filter((n) => n !== "__esModule"), (n) => mod.exports[n]);
       if (result && typeof result.then === "function") {
-        const pending = result.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+        const pending = result.then(namespace, (error) => {
+          __esmNamespaces.delete(resolution.url);
+          __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
+          throw error;
+        });
         __esmNamespaces.set(resolution.url, pending);
         return pending;
       }
@@ -14028,13 +14103,22 @@ function __esmLoad(resolution) {
     }
   } else {
     const key = resolution.path.replace(/^\/+/, "");
+    // A typeless .js is the ES module the launch lowered, by its syntax.
     const esm = resolution.format === "module"
-      || (resolution.format === "detect" && globalThis.__nimbusEsmModules && globalThis.__nimbusEsmModules.has(key));
+      || (resolution.format === "detect" && __nimbusModuleCellIsEsModule(key));
     // Canonical queryless ESM shares evaluation with require() and static
     // imports lowered to require(). Queries/fragments are distinct jobs.
     const variant = esm && (resolution.url.includes("?") || resolution.url.includes("#"));
     const evaluationKey = variant ? resolution.url : key;
-    const exports = __loadModule(key, evaluationKey);
+    // The import is the module's job: what escapes its evaluation is
+    // explained as Node's loader explains it.
+    let exports;
+    try {
+      exports = __loadModule(key, evaluationKey, false);
+    } catch (e) {
+      __nimbusExplainCommonJSGlobalLike(e, resolution.url, false);
+      throw e;
+    }
     const namespace = () => {
       if (resolution.format === "json") return __esmNamespaceOf(["default"], () => exports);
       if (esm) {
@@ -14053,7 +14137,11 @@ function __esmLoad(resolution) {
     // completes, and rejects with what it throws.
     const evaluation = __moduleEvaluations.get(evaluationKey);
     if (evaluation !== undefined) {
-      const pending = evaluation.then(namespace, (error) => { __esmNamespaces.delete(resolution.url); throw error; });
+      const pending = evaluation.then(namespace, (error) => {
+        __esmNamespaces.delete(resolution.url);
+        __nimbusExplainCommonJSGlobalLike(error, resolution.url, true);
+        throw error;
+      });
       __esmNamespaces.set(resolution.url, pending);
       return pending;
     }
@@ -14143,7 +14231,7 @@ function __loadStagedBinding(entry, fromDir) {
  * require() from a specific directory context.
  * This is what each loaded module gets as its require function.
  */
-function __requireFrom(id, fromDir) {
+function __requireFrom(id, fromDir, required = true) {
   // Check builtins first (always takes priority)
   if (builtins[id]) return builtins[id];
   if (id.startsWith("node:")) {
@@ -14156,7 +14244,7 @@ function __requireFrom(id, fromDir) {
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
 
-  return __loadModule(resolved);
+  return __loadModule(resolved, resolved, required);
 }
 
 function __requireBaseDir(specifier) {
@@ -14189,6 +14277,29 @@ function __makeRequire(fromDir) {
  */
 function __require(id) {
   return __requireFrom(id, dirname || cwd || "/home/user");
+}
+// An ES entry's own require: its static imports, part of its job.
+function __nimbusEntryImport(id) {
+  return __requireFrom(id, dirname || cwd || "/home/user", false);
+}
+// The program's entry evaluated as Node's loader runs it (manager.ts
+// entryModule): a CommonJS entry with require(); an ES entry as a job of its
+// own, its require its static imports, and what escapes its evaluation
+// explained (__nimbusExplainCommonJSGlobalLike).
+function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
+  if (!esModule) return wrapper(mod.exports, __require, mod, filename, dirname);
+  const url = builtins.url.pathToFileURL(filename).href;
+  let result;
+  try {
+    result = wrapper(mod.exports, __nimbusEntryImport, mod, filename, dirname);
+  } catch (e) {
+    __nimbusExplainCommonJSGlobalLike(e, url, false);
+    throw e;
+  }
+  if (result && typeof result.then === "function") {
+    return result.then(undefined, (e) => { __nimbusExplainCommonJSGlobalLike(e, url, true); throw e; });
+  }
+  return result;
 }
 __require.resolve = (id) => {
   if (__stagedBinding(id)) return id;

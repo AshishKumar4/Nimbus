@@ -395,8 +395,11 @@ export function emitCommonJs(source, records, options) {
         .map(([exported, value]) => `${exportGetter}(${JSON.stringify(exported)}, () => ${value});`);
     const prologue = [...installed, ...requires, ...imported, ...stars].join(' ');
     const body = applySourceEdits(source, [...edits, ...uses.filter((use) => !defaultExpressionUses.has(use))]);
+    // An ES module is strict. A sync body keeps the source's own directive at
+    // the top; an async one moves the source into the function, so the
+    // directive opens the header, where the wrapper finds it (commonjs-cell.ts).
     return options.body === 'async'
-        ? `${header.join('\n')}\nreturn (async () => { ${prologue}\n${body}\n})();\n`
+        ? `"use strict";${header.join('\n')}\nreturn (async () => { ${prologue}\n${body}\n})();\n`
         : `${header.join('\n')}\n${prologue}\n${body}\n`;
 }
 /** The bindings an exported declaration introduces. */

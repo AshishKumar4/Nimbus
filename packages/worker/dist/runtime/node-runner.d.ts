@@ -99,6 +99,8 @@ export interface RunFreshOpts {
     signal?: AbortSignal;
     /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
     launchesServer?: boolean;
+    /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
+    esModule?: boolean;
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
 export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;
