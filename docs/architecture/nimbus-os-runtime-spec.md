@@ -840,20 +840,34 @@ what a death can cost.
   holds whatever the program acknowledged since it last yielded, and no
   count of it is promised. The platform's
   output gate holds every message the facet sends until its rows commit,
-  so no effect is ever seen ahead of a lost change. A resident's effects
-  also wait at the gate below: what sees one (the shell's next command, a
-  parent reading its output, a client of its server) sees every change made
-  before it in the session, not only in the facet's log.
-- **One-shots lose at most a bounded tail, and say so.** This covers node,
-  python, ruby and WASI programs run once in a Dynamic Worker, which has no
-  store of its own. Nothing the process emits is released before every change
-  it logged ahead of that emission has been answered:
-  - stdout and stderr;
-  - its exit status;
-  - an outbound request, WebSocket frame or child spawn.
+  so no effect is ever seen ahead of a lost change. A resident's output on
+  the gated channels below also waits for the changes made before it to be
+  in the session, not only in the facet's log.
+- **One-shots lose an unreported tail at most, and say so.** This covers
+  node, python, ruby and WASI programs run once in a Dynamic Worker, which
+  has no store of its own.
 
-  The gate is `ProcessFsClient.effect()`. Bytes written to a raw TCP
-  socket (`node:net`/`node:tls`) are not gated yet. If the process dies or
+  Causal visibility holds over gated channels only. On these, nothing the
+  process (one-shot or resident) emits is released before every change it
+  logged ahead of that emission has been answered:
+  - stdout and stderr, and every diagnostic Nimbus prints for the process
+    (`ProcessFsClient.effect()`);
+  - its exit status;
+  - a resident server's HTTP response, an outbound `fetch` and a child
+    spawn (each waits for the process's changes to be answered first).
+
+  Raw TCP and TLS sockets (`node:net`, `node:tls`, WASI sockets) are not
+  gated: a peer reading what such a socket said can miss changes made
+  before it. There is no causal claim beyond the gated channels.
+
+  An awaited call (`fs.promises.*`, a WASI process's calls that make or
+  remove names) settles on the session's verdict for it, with its own
+  errno. A write the program was told succeeded before the session answered
+  (a synchronous one, or a WASI descriptor's write) that the session then
+  refuses is reported at the process's next sync, its next close of a
+  descriptor and its exit, never dropped.
+
+  If the process dies or
   is killed, any change it made since it last produced output or finished
   a flush may be lost, and no count of them is promised. The client sends
   only when the program yields, so a loop of `writeFileSync` that dies

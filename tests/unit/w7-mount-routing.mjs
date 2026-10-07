@@ -673,22 +673,43 @@ const ops = (...list) => ({ inodes: [], chunks: [], ops: list });
   assert.equal(s.inSqlite('home/user/huge'), null);
 }
 
-// 9 (recheck): a call's umask is the one it is made with on a mount too.
-// Red before: the routed data call dropped it, mkdir went with the wave's
-// credential, and a mount stores the mode it is given: 0o644 and 0o755
-// after umask(0o077).
+// 9 (recheck): a call's umask goes with its credential to a mount, and the mount's single op decides.
+// On a mount that takes credentials (a SqliteFiles), a create gets exactly
+// what the same op through the namespace gives under the call's umask: the
+// umask where no default ACL is set, the ACL where one is. Red before: the
+// routed data call dropped the umask and mkdir went with the wave's
+// credential (0o644, 0o755); then (recheck) the router pre-masked the mode,
+// which a default ACL does not take (0o600 where the op gives 0o640).
 {
   const s = session();
+  const { sqliteFiles } = await import('../../packages/core/src/vfs/sqlite-files.ts');
+  const mountHarness = createSqliteVfsTestHarness();
+  const mounted = new SqliteVFS(mountHarness.sql, mountHarness.ctx);
+  const mk = mounted.as(CRED_KERNEL);
+  for (const dir of ['w', 'acl']) { mk.mkdir(dir, { mode: 0o755 }); mk.chown(dir, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid); }
+  mounted.as(CRED_SESSION_USER).setDefaultAcl('acl', 0o750);
+  s.files.vfs.mount('/sq', sqliteFiles(mounted, CRED_KERNEL));
+  const umasked = { ...CRED_SESSION_USER, umask: 0o077 };
+  // The single ops, through the namespace, under the call's umask.
+  const ns = s.files.vfs.as(umasked);
+  await ns.writeFile('/sq/w/ref', enc.encode('r'), { mode: 0o666 });
+  await ns.writeFile('/sq/acl/ref', enc.encode('r'), { mode: 0o666 });
+  await ns.mkdir('/sq/acl/refdir', { mode: 0o777 });
   const result = await s.send(ops(
-    { type: 'call', call: { call: 'writeFile', path: 'shared/private', mode: 0o666, umask: 0o077, data: enc.encode('p') } },
-    { type: 'call', call: { call: 'mkdir', path: 'shared/secret', mode: 0o777, umask: 0o077 } },
-    { type: 'call', call: { call: 'open', path: 'shared/opened', mode: 0o666, umask: 0o077, create: true } },
+    { type: 'call', call: { call: 'writeFile', path: 'sq/w/private', mode: 0o666, umask: 0o077, data: enc.encode('p') } },
+    { type: 'call', call: { call: 'mkdir', path: 'sq/w/secret', mode: 0o777, umask: 0o077 } },
+    { type: 'call', call: { call: 'open', path: 'sq/w/opened', mode: 0o666, umask: 0o077, create: true } },
+    { type: 'call', call: { call: 'writeFile', path: 'sq/acl/file', mode: 0o666, umask: 0o077, data: enc.encode('a') } },
+    { type: 'call', call: { call: 'mkdir', path: 'sq/acl/dir', mode: 0o777, umask: 0o077 } },
   ));
   assert.equal(result.ok, true, JSON.stringify(result.error));
-  assert.equal(s.shared.stat('/private').mode & 0o777, 0o600, 'a mounted file ignored its call\'s umask');
-  assert.equal(s.shared.stat('/secret').mode & 0o777, 0o700, 'a mounted directory ignored its call\'s umask');
-  assert.equal(s.shared.stat('/opened').mode & 0o777, 0o600, 'a mounted open ignored its call\'s umask');
-  assert.deepEqual(s.sqliteNames('shared'), []);
+  const mode = (path) => mounted.as(CRED_KERNEL).stat(path).mode & 0o7777;
+  assert.equal(mode('w/private'), 0o600, 'a mounted file ignored its call\'s umask');
+  assert.equal(mode('w/secret') & 0o777, 0o700, 'a mounted directory ignored its call\'s umask');
+  assert.equal(mode('w/opened'), 0o600, 'a mounted open ignored its call\'s umask');
+  assert.equal(mode('w/private'), mode('w/ref'));
+  assert.equal(mode('acl/file'), mode('acl/ref'), 'a create under a default ACL is not what the single op gives');
+  assert.equal(mode('acl/dir'), mode('acl/refdir'), 'a mkdir under a default ACL is not what the single op gives');
 }
 
 // 10 (recheck): concurrent waves of gathered calls never wait on credit while holding their own.

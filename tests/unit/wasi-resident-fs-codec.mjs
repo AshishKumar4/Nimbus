@@ -23,7 +23,6 @@ if (!canPark) {
 }
 
 const MiB = 1024 * 1024;
-const EACCES = 2;
 let passed = 0;
 let index = 0;
 /** ONLY=<n> runs the n-th check alone (1-based). */
@@ -65,20 +64,16 @@ await check('descriptors pin one buffer per revision, within the store\'s budget
   await guest.dispose();
 });
 
-await check('a write through the client the session refuses is the answer of the next fsync, through any descriptor', async () => {
+await check('a description opened to write keeps writing after a chmod and chown of its file (POSIX)', async () => {
   const guest = await residentGuest();
-  const writer = await guest.open('home/user/refused.bin', { create: true, truncate: true, write: true });
-  // Taken from the process after its open: the session refuses its write.
-  guest.kernel.chown('home/user/refused.bin', 0, 0);
-  guest.kernel.chmod('home/user/refused.bin', 0o444);
-  assert.equal(await guest.write(writer, 'lost bytes'), 0, 'a write is acknowledged as it is logged');
-  // A reader's fsync (the codec's own copy of the file) reports it, once, for the process.
-  const reader = await guest.open('home/user/refused.bin');
-  assert.equal(await guest.sync(reader), EACCES, 'fsync through a reader');
-  assert.equal(await guest.sync(reader), 0, 'reported once');
-  assert.equal(await guest.close(reader), 0);
+  const writer = await guest.open('home/user/kept.bin', { create: true, truncate: true, write: true });
+  guest.kernel.chown('home/user/kept.bin', 0, 0);
+  guest.kernel.chmod('home/user/kept.bin', 0o444);
+  assert.equal(await guest.write(writer, 'kept bytes'), 0);
+  assert.equal(await guest.sync(writer), 0, 'the description lost its access');
   assert.equal(await guest.close(writer), 0);
-  assert.equal(await guest.P.__wasiSettleWrites(), null, 'every refusal was reported to the program');
+  assert.equal(await guest.P.__wasiSettleWrites(), null);
+  assert.equal(new TextDecoder().decode(guest.kernel.readFile('home/user/kept.bin')), 'kept bytes');
   await guest.dispose();
 });
 

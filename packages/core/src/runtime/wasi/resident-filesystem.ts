@@ -537,8 +537,9 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     }
     return failures;
   };
-  // A sync of a file through any descriptor: everything this process logged is answered first.
-  fs.syncInode = () => (holder !== null && holder.pending() ? holder.flush() : undefined);
+  // A sync of a file through any descriptor: everything this process logged
+  // is answered first, and a refusal it recorded is this sync's answer.
+  fs.syncInode = () => holder?.flush();
   fs.stats = () => ({
     ...counts,
     delegated: { ...counts.delegated },
@@ -785,11 +786,14 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     if (holder?.owns(handleId)) {
       counts.local++;
       holder.close(handleId);
+      // A refusal already recorded is the close's to report, as a write-back
+      // error is; nothing is waited for, and the descriptor is closed anyway.
+      const report = (): void => holder!.reportRecorded();
       const reader = throughReaders.get(handleId);
-      if (reader === undefined) return;
+      if (reader === undefined) return report();
       throughReaders.delete(handleId);
       delegated('close');
-      return authority.close(reader);
+      return after(authority.close(reader), report);
     }
     if (readers.delete(handleId)) {
       pendingDirectories.delete(handleId);

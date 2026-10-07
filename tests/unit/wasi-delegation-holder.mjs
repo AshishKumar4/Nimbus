@@ -26,7 +26,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
-function session({ grantInos, journal, gate } = {}) {
+function session({ grantInos, journal, gate, refuse } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -75,6 +75,11 @@ function session({ grantInos, journal, gate } = {}) {
     openWriter: async () => null,
     writeBatchStream: async (stream, _fence, owner) => {
       if (gate) await gate;
+      // A refusal the test asks for: the whole wave refused, as a full store refuses it.
+      if (refuse?.()) {
+        await new Response(stream).arrayBuffer();
+        return { ok: false, committedOps: 0, committedPathCount: 0, committedGroupSequence: 0, receipts: [], error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: 'ENOSPC: no space left on device', errno: 'ENOSPC' } };
+      }
       const result = await bridge.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner });
       waves.push(result);
       return result;
@@ -455,6 +460,32 @@ async function until(ready, what) {
   await s.fs.fsync(fd.id);
   assert.equal(await withRecall(() => s.kernel.readFileString('home/user/proj/race/f')), 'XbZd', 'a write during the recall replayed the whole file over the peer');
   await s.fs.close(fd.id);
+  await s.fs.settle();
+}
+
+// ── Review D8 (recheck): a refusal recorded is the next sync's answer, however that sync is reached, and a close's ──
+// Red before: syncInode reported nothing once nothing was pending, and a
+// close never reported a refusal of what its description wrote.
+{
+  let failNext = false;
+  const s = session({ refuse: () => { const now = failNext; failNext = false; return now; } });
+  s.kernel.writeFile('home/user/full.txt', enc.encode(''));
+  s.kernel.chown('home/user/full.txt', 1000, 1000);
+  const fd = await s.fs.open('/home/user/full.txt', { write: true });
+  failNext = true;
+  await s.fs.write(fd.id, 0, enc.encode('lost'));
+  // Sent and refused by an unrelated call's send (the session is asked something).
+  await s.fs.stat('/home/user');
+  assert.equal(s.fs.holding(), false, 'the refused write was still pending');
+  const st = await s.fs.fstat(fd.id);
+  await assert.rejects(async () => s.fs.syncInode(st.dev, st.ino), (error) => typeof error?.code === 'string', 'a sync of the file did not report the recorded refusal');
+  await s.fs.close(fd.id);
+  // Another write refused, then a close: the close reports it.
+  const again = await s.fs.open('/home/user/full.txt', { write: true });
+  failNext = true;
+  await s.fs.write(again.id, 0, enc.encode('lost too'));
+  await s.fs.stat('/home/user');
+  await assert.rejects(async () => s.fs.close(again.id), (error) => typeof error?.code === 'string', 'a close did not report the recorded refusal');
   await s.fs.settle();
 }
 
