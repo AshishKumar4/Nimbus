@@ -708,7 +708,11 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   await ctx.storage.put(`resident-launch:${redriven.pid}`, { ...healthy, phase: 'starting', attempt: FENCED_WORK_MAX_ATTEMPT });
   fm.finishProcess(redriven.pid, 1, 'crashed before healthy boot');
   await waitFor(async () => (await rowFor(ctx, redriven.pid)) === undefined, 5_000);
-  assert.ok(notices.some((line) => /leaving it stopped/.test(line)), JSON.stringify(notices.slice(-3)));
+  // A crash loop says the command exited again, not that the session restarted.
+  assert.ok(
+    notices.some((line) => /"node crashy\.js" exited with code 1 again before it had run 120 s since its restart, so it is left stopped; start it again with: node crashy\.js/.test(line)),
+    JSON.stringify(notices.slice(-3)),
+  );
   assert.equal((await journalRows(ctx)).some((r) => r.command === 'node crashy.js'), false, 'nothing left to re-drive');
 
   // 'never' (the default) and a clean exit release the row.
