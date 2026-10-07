@@ -55,8 +55,9 @@ export type GraphFiltersStep = {
 };
 export interface GitNetworkOpts {
     op: GitNetworkOp;
-    /** For graph-filters: its step. */
-    graphFilters?: GraphFiltersStep;
+    /** For graph-filters: commits a piece is asked for, and its wall-time budget (tuning). */
+    graphFilterPieceCommits?: number;
+    graphFilterPieceBudgetMs?: number;
     /** Invoking process identity used to bind every supervisor filesystem RPC. */
     pid: number;
     /** Absolute working tree directory (e.g. "/home/user/project") */
@@ -207,9 +208,11 @@ export interface GraphFiltersOutcome {
     elapsed: number;
 }
 /**
- * A full clone's changed-path filters (git/pack/graph-filters.ts), after the
- * clone has answered: plan, the pieces one at a time (each holds a tree
- * cache and the pack store's), then the layer with the filters.
+ * A full clone's commit-graph (git/pack/graph-filters.ts), after the clone
+ * has answered: one facet loaded for the whole pass and invoked once a step,
+ * as a clone invokes its phases (a facet loaded a step deepened each step's
+ * subrequests until "Subrequest depth limit exceeded", measured on vscode's
+ * fourteenth). Each piece holds a tree cache and the pack store's.
  */
 export declare function runGraphFilters(ctx: DurableObjectState, env: any, opts: {
     pid: number;

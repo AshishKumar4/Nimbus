@@ -608,21 +608,32 @@ async function writeCloneProgressLine(supervisor, line) {
 }
 /** A piece's wall-time budget: within a facet invocation's limits, with room to write its file. */
 const GRAPH_FILTERS_PIECE_BUDGET_MS = 20_000;
+/** One step's limit: a piece stops at its budget, an assemble writes a layer. */
+const GRAPH_FILTERS_STEP_TIMEOUT_MS = 120_000;
+/** The whole pass's limit. */
+const GRAPH_FILTERS_TIMEOUT_MS = 60 * 60_000;
 /** Commits a piece is asked for; it stops earlier at its budget. */
 const GRAPH_FILTERS_PIECE_COMMITS = 20_000;
 /**
- * A full clone's changed-path filters (git/pack/graph-filters.ts), after the
- * clone has answered: plan, the pieces one at a time (each holds a tree
- * cache and the pack store's), then the layer with the filters.
+ * A full clone's commit-graph (git/pack/graph-filters.ts), after the clone
+ * has answered: one facet loaded for the whole pass and invoked once a step,
+ * as a clone invokes its phases (a facet loaded a step deepened each step's
+ * subrequests until "Subrequest depth limit exceeded", measured on vscode's
+ * fourteenth). Each piece holds a tree cache and the pack store's.
  */
 export async function runGraphFilters(ctx, env, opts, network) {
+    const result = await execGitNetwork(ctx, env, {
+        op: 'graph-filters', pid: opts.pid, dir: opts.dir, quiet: true, timeout: GRAPH_FILTERS_TIMEOUT_MS,
+        graphFilterPieceCommits: opts.pieceCommits, graphFilterPieceBudgetMs: opts.pieceBudgetMs,
+    }, network);
+    if (!result.success)
+        throw new Error('graph-filters: ' + (result.error ?? 'failed'));
+    return result.graphFilters;
+}
+/** The pass's steps, each one invocation of the facet `call` reaches. */
+async function driveGraphFilters(call, opts) {
     const started = Date.now();
-    const step = async (graphFilters) => {
-        const result = await execGitNetwork(ctx, env, { op: 'graph-filters', pid: opts.pid, dir: opts.dir, graphFilters, quiet: true }, network);
-        if (!result.success)
-            throw new Error('graph-filters ' + graphFilters.step + ': ' + (result.error ?? 'failed'));
-        return result.graphFilters;
-    };
+    const step = async (graphFilters) => await call(graphFilters);
     const outcome = { layer: null, commits: 0, pieces: 0, trees: 0, treeBytes: 0, elapsed: 0 };
     const plan = await step({ step: 'plan' });
     if (plan === null)
@@ -885,6 +896,50 @@ export async function execGitNetwork(ctx, env, opts, /**
                         phases,
                     };
                 }
+            }
+            if (opts.op === 'graph-filters') {
+                // The whole pass in this one facet, a step an invocation.
+                const facet = entrypoint;
+                const graphFilters = await driveGraphFilters(async (step) => {
+                    const remaining = Math.min(GRAPH_FILTERS_STEP_TIMEOUT_MS, outerDeadline - Date.now());
+                    if (remaining <= 0)
+                        throw new Error(`git graph-filters timed out after ${timeoutMs / 1000}s`);
+                    let timeoutHandle;
+                    const timeout = new Promise((_, reject) => {
+                        timeoutHandle = setTimeout(() => reject(new Error(`git graph-filters ${step.step} timed out after ${remaining / 1000}s`)), remaining);
+                    });
+                    const call = facet.fetch(new Request('http://git/op', {
+                        method: 'POST',
+                        body: JSON.stringify({ ...facetOpts, graphFilters: step, invocationId: crypto.randomUUID() }),
+                    })).then(async (response) => {
+                        try {
+                            return await response.json();
+                        }
+                        finally {
+                            disposeRpcResource(response);
+                        }
+                    });
+                    let result;
+                    try {
+                        result = await Promise.race([call, timeout]);
+                    }
+                    finally {
+                        if (timeoutHandle !== undefined)
+                            clearTimeout(timeoutHandle);
+                    }
+                    if (result.success !== true)
+                        throw new Error(`graph-filters ${step.step}: ${typeof result.error === 'string' ? result.error : 'failed'}`);
+                    return result.graphFilters;
+                }, { pieceCommits: opts.graphFilterPieceCommits, pieceBudgetMs: opts.graphFilterPieceBudgetMs });
+                return {
+                    success: true,
+                    elapsed: Date.now() - start,
+                    filesWritten: 0,
+                    bytesWritten: 0,
+                    supervisorRpc: { ...EMPTY_SUPERVISOR_RPC_COUNTERS },
+                    metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
+                    graphFilters,
+                };
             }
             const invocationId = crypto.randomUUID();
             const startedAt = Date.now();

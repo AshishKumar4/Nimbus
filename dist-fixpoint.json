@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "994eb526a05ba74b6055ff47c71d868487dcd11ba9ebeb4849bce8d31c6654e8",
+  "fingerprint": "6ca7e05e7bdb09cebc24393349ef044e00d1d04a1e25d372bedb420d31a71036",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1838,9 +1838,9 @@
     "packages/worker/dist/git/commands.d.ts": "103e959d2f965ab4ef980d3f7ad1892ff6f7e335ca48b32485eab0d40e408cf7",
     "packages/worker/dist/git/commands.d.ts.map": "b986ceaa69ef8d5a4fe9c218ca55fa1d8bbbde8ec3ec3f6611aa5c8caf0467e9",
     "packages/worker/dist/git/commands.js": "27a8968e584e09671c1ce88b3b2699ffbf4a3292186b1c83656fc11dd735c5c5",
-    "packages/worker/dist/git/network-facet.d.ts": "07d2d2786e25d88769653dd754d578e1b9b305992b34993eac12a8e9e72b4899",
-    "packages/worker/dist/git/network-facet.d.ts.map": "c5c10a119e8f80fdaae3bb155c4137a4b65783cd6cc123cf63596d16ab5a8d54",
-    "packages/worker/dist/git/network-facet.js": "5cd3cceff199b07ce51d3c5e09c3eeaa031326bad85ee528d3aafb261c46e11a",
+    "packages/worker/dist/git/network-facet.d.ts": "5e74fefbac383d74a25afd2bbb057d8a9d8a1bff87ba3378253c22f8a95b70bc",
+    "packages/worker/dist/git/network-facet.d.ts.map": "de0eac133241599a70abe0810b5907ade029ed6bfa24db225a19ac834ebb1cf2",
+    "packages/worker/dist/git/network-facet.js": "79bc202f763b55018eb6d0fbb5f0d47065b1e6afea7ec34dc10d25e8a520aece",
     "packages/worker/dist/git/pack/byte-lru.d.ts": "0d2ff7bbc74a583a5783cfbdaf6fa2587a6a314497deb02fcaa4bb0e7ebcb5f4",
     "packages/worker/dist/git/pack/byte-lru.d.ts.map": "1084a9f7e7e1c94651ac1d765cc2333dc8932bd3b2672ac7d7d0334b6d900004",
     "packages/worker/dist/git/pack/byte-lru.js": "0b43366e81f380a6e245b946d35c69fc44ffddf15b3471463fe444368e87622f",
@@ -2472,7 +2472,7 @@
     "packages/worker/src/facets/ws-terminal.ts": "3a04326928698a0a6d5978ac64aecf059d785a3b390ae73e2cb1e83156c0c6b3",
     "packages/worker/src/git-bundle.generated.ts": "e3d64e53e093c870822cd3f72c5f59155f62b378f0acd08503164e6a23cf4000",
     "packages/worker/src/git/commands.ts": "a75f1269747e4f24d317219ff6fa01a85e36bc1647f69bed05ba4858abd529f9",
-    "packages/worker/src/git/network-facet.ts": "bd44fe1c3f45dd91922c866663e819120460b358c1669d23472806dfd5c7e41a",
+    "packages/worker/src/git/network-facet.ts": "cad105d062edf564a36579cc6e811b4f0564544a461ab2cd31109ccf39645817",
     "packages/worker/src/git/pack/byte-lru.ts": "8c11a8c87f9d9d060d32e6df3d068727a093fa32acbb9735a7c2af6abbee83f3",
     "packages/worker/src/git/pack/clone.ts": "907a8699cd8ab0248441420fbbb7dfd7673b5aecc652dfa2b958cfa2066b9321",
     "packages/worker/src/git/pack/commit-graph.ts": "f26e078942ee791ab130c1672b67cb74e121c09a23c60e8423a52add7eb7cd57",
