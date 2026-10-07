@@ -5,6 +5,10 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `vinext dev` answered every App Router page 404, because `fs.glob`
+  matched no braces: `fs.glob`, `fs.globSync` and `fs.promises.glob` are now
+  Node's own, its Glob over the minimatch it vendors, with every option
+  (`cwd`, `exclude`, `withFileTypes`). `fs.glob` and `fs.globSync` were missing.
 - Fixed: `nuxt dev` died at start with "BroadcastChannel is not a constructor":
   `node:worker_threads` and the global now provide `BroadcastChannel`, which
   delivers to the process's other open channels of the same name as Node does

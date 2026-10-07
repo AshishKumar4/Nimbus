@@ -64,6 +64,7 @@ import {
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
+import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -224,6 +225,16 @@ function __nimbusHoldSocket() {
   };
   hold(true);
   return hold;
+}
+
+// Node's minimatch (node-minimatch-source.ts), the matcher fs.glob uses, as
+// Node loads it: a CommonJS module, evaluated the first time a program globs.
+function __nimbusMinimatch() {
+  const module = { exports: {} };
+  (function (exports, module, process) {
+${NODE_MINIMATCH_SOURCE}
+  })(module.exports, module, builtins.process);
+  return module.exports;
 }
 
 async function __nimbusUseRpcResult(promise, use) {
@@ -5172,6 +5183,565 @@ const __fsMod = (() => {
   realpath.native = realpath;
   function lchmod(p, mode, cb) { chmod(p, mode, cb); }
 
+  // ── fs.glob ── Node 22's fs.glob, fs.globSync and fs.promises.glob: its
+  // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
+  // matching with the minimatch Node vendors (node-minimatch-source.ts),
+  // which is evaluated the first time a program globs.
+  // Node's ERR_INVALID_ARG_TYPE, as its validators word it.
+  function _argTypeError(name, expected, value) {
+    const got = value === undefined || value === null ? String(value)
+      : typeof value === "function" ? "function " + (value.name || "<anonymous>")
+      : typeof value === "object" ? "an instance of " + ((value.constructor && value.constructor.name) || "Object")
+      : "type " + typeof value + " (" + (typeof value === "string" ? "'" + value + "'" : String(value)) + ")";
+    const e = new TypeError('The "' + name + '" ' + (name.includes(".") ? "property" : "argument") + " must be " + expected + ". Received " + got);
+    e.code = "ERR_INVALID_ARG_TYPE";
+    return e;
+  }
+  const _Glob = (() => {
+    let minimatch = null;
+    const mm = () => minimatch ??= __nimbusMinimatch();
+    const { join, resolve, basename, isAbsolute, dirname } = __pathMod;
+    const argType = _argTypeError;
+    const validateStringArray = (value, name) => {
+      if (!Array.isArray(value)) throw argType(name, "an instance of Array", value);
+      for (let i = 0; i < value.length; i++) if (typeof value[i] !== "string") throw argType(name + "[" + i + "]", "of type string", value[i]);
+    };
+    const createMatcher = (pattern) => new (mm().Minimatch)(pattern, {
+      __proto__: null, nocase: false, windowsPathsNoEscape: true, nonegate: true, nocomment: true,
+      optimizationLevel: 2, platform: "linux", nocaseMagicOnly: true,
+    });
+    const direntOf = (path, st) => new __Dirent(basename(path), _direntTypeOfStats(st), dirname(path));
+    const getDirentSync = (path) => {
+      let st;
+      try { st = lstatSync(path); } catch { return null; }
+      return direntOf(path, st);
+    };
+    const getDirent = async (path) => {
+      let st;
+      try { st = await promises.lstat(path); } catch { return null; }
+      return direntOf(path, st);
+    };
+
+    class Cache {
+      #cache = new Map();
+      #statsCache = new Map();
+      #readdirCache = new Map();
+      stat(path) {
+        const cached = this.#statsCache.get(path);
+        if (cached) return cached;
+        const promise = getDirent(path);
+        this.#statsCache.set(path, promise);
+        return promise;
+      }
+      statSync(path) {
+        const cached = this.#statsCache.get(path);
+        if (cached && !(cached instanceof Promise)) return cached;
+        const val = getDirentSync(path);
+        this.#statsCache.set(path, val);
+        return val;
+      }
+      addToStatCache(path, val) { this.#statsCache.set(path, val); }
+      readdir(path) {
+        const cached = this.#readdirCache.get(path);
+        if (cached) return cached;
+        const promise = promises.readdir(path, { withFileTypes: true }).then(null, () => []);
+        this.#readdirCache.set(path, promise);
+        return promise;
+      }
+      readdirSync(path) {
+        const cached = this.#readdirCache.get(path);
+        if (cached) return cached;
+        let val;
+        try { val = readdirSync(path, { withFileTypes: true }); } catch { val = []; }
+        this.#readdirCache.set(path, val);
+        return val;
+      }
+      add(path, pattern) {
+        let cache = this.#cache.get(path);
+        if (!cache) {
+          cache = new Set();
+          this.#cache.set(path, cache);
+        }
+        const originalSize = cache.size;
+        pattern.indexes.forEach((index) => cache.add(pattern.cacheKey(index)));
+        return cache.size !== originalSize + pattern.indexes.size;
+      }
+      seen(path, pattern, index) { return this.#cache.get(path)?.has(pattern.cacheKey(index)); }
+    }
+
+    class Pattern {
+      #pattern;
+      #globStrings;
+      constructor(pattern, globStrings, indexes, symlinks) {
+        this.#pattern = pattern;
+        this.#globStrings = globStrings;
+        this.indexes = indexes;
+        this.symlinks = symlinks;
+        this.last = pattern.length - 1;
+      }
+      isLast(isDirectory) {
+        return this.indexes.has(this.last) ||
+          (this.at(-1) === "" && isDirectory && this.indexes.has(this.last - 1) && this.at(-2) === mm().GLOBSTAR);
+      }
+      isFirst() { return this.indexes.has(0); }
+      get hasSeenSymlinks() { return Array.from(this.indexes).some((i) => !this.symlinks.has(i)); }
+      at(index) { return this.#pattern.at(index); }
+      child(indexes, symlinks = new Set()) { return new Pattern(this.#pattern, this.#globStrings, indexes, symlinks); }
+      test(index, path) {
+        if (index > this.#pattern.length) return false;
+        const pattern = this.#pattern[index];
+        if (pattern === mm().GLOBSTAR) return true;
+        if (typeof pattern === "string") return pattern === path;
+        if (typeof pattern?.test === "function") return pattern.test(path);
+        return false;
+      }
+      cacheKey(index) {
+        let key = "";
+        for (let i = index; i < this.#globStrings.length; i++) {
+          key += this.#globStrings[i];
+          if (i !== this.#globStrings.length - 1) key += "/";
+        }
+        return key;
+      }
+    }
+
+    class ResultSet extends Set {
+      #root = ".";
+      #isExcluded = () => false;
+      setup(root, isExcludedFn) {
+        this.#root = root;
+        this.#isExcluded = isExcludedFn;
+      }
+      add(value) {
+        if (this.#isExcluded(resolve(this.#root, value))) return false;
+        super.add(value);
+        return true;
+      }
+    }
+
+    class Glob {
+      #root;
+      #exclude;
+      #cache = new Cache();
+      #results = new ResultSet();
+      #queue = [];
+      #subpatterns = new Map();
+      #patterns;
+      #withFileTypes;
+      #isExcluded = () => false;
+      constructor(pattern, options) {
+        if (options === undefined) options = {};
+        if (options === null || typeof options !== "object" || Array.isArray(options)) throw argType("options", "of type object", options);
+        const { exclude, cwd, withFileTypes } = options;
+        this.#root = (cwd && typeof cwd === "object" && typeof cwd.href === "string" && typeof cwd.protocol === "string")
+          ? builtins.url.fileURLToPath(cwd) : (cwd ?? ".");
+        this.#withFileTypes = !!withFileTypes;
+        if (exclude != null) {
+          if (Array.isArray(exclude)) {
+            for (let i = 0; i < exclude.length; i++) if (typeof exclude[i] !== "string") throw argType("options.exclude[" + i + "]", "of type string", exclude[i]);
+            const matchers = exclude.map((p) => resolve(this.#root, p)).map((p) => createMatcher(p));
+            this.#isExcluded = (value) => matchers.some((matcher) => matcher.match(value));
+            this.#results.setup(this.#root, this.#isExcluded);
+          } else if (typeof exclude !== "function") {
+            throw argType("options.exclude", "of type function or string[]", exclude);
+          } else {
+            this.#exclude = exclude;
+          }
+        }
+        let patterns;
+        if (typeof pattern === "object") {
+          validateStringArray(pattern, "patterns");
+          patterns = pattern;
+        } else {
+          if (typeof pattern !== "string") throw argType("patterns", "of type string", pattern);
+          patterns = [pattern];
+        }
+        this.matchers = patterns.map((p) => createMatcher(p));
+        this.#patterns = this.matchers.flatMap((matcher) => matcher.set.map((p, i) =>
+          new Pattern(p, matcher.globParts[i], new Set().add(0), new Set())));
+      }
+
+      globSync() {
+        this.#queue.push({ __proto__: null, path: ".", patterns: this.#patterns });
+        while (this.#queue.length > 0) {
+          const item = this.#queue.pop();
+          for (let i = 0; i < item.patterns.length; i++) this.#addSubpatterns(item.path, item.patterns[i]);
+          this.#subpatterns.forEach((patterns, path) => this.#queue.push({ __proto__: null, path, patterns }));
+          this.#subpatterns.clear();
+        }
+        return Array.from(this.#results,
+          this.#withFileTypes ? (path) => this.#cache.statSync(isAbsolute(path) ? path : join(this.#root, path)) : undefined);
+      }
+      #addSubpattern(path, pattern) {
+        if (this.#isExcluded(path)) return;
+        const fullpath = resolve(this.#root, path);
+        // If path is a directory, add trailing slash and test patterns again.
+        if (this.#isExcluded(fullpath + "/") && this.#cache.statSync(fullpath).isDirectory()) return;
+        if (this.#exclude) {
+          if (this.#withFileTypes) {
+            const stat = this.#cache.statSync(path);
+            if (stat !== null && this.#exclude(stat)) return;
+          } else if (this.#exclude(path)) {
+            return;
+          }
+        }
+        if (!this.#subpatterns.has(path)) this.#subpatterns.set(path, [pattern]);
+        else this.#subpatterns.get(path).push(pattern);
+      }
+      #addSubpatterns(path, pattern) {
+        const seen = this.#cache.add(path, pattern);
+        if (seen) return;
+        const fullpath = resolve(this.#root, path);
+        const stat = this.#cache.statSync(fullpath);
+        const last = pattern.last;
+        const isDirectory = stat?.isDirectory() || (stat?.isSymbolicLink() && pattern.hasSeenSymlinks);
+        const isLast = pattern.isLast(isDirectory);
+        const isFirst = pattern.isFirst();
+
+        if (this.#isExcluded(fullpath)) return;
+        if (isFirst && pattern.at(0) === "") {
+          // Absolute path, go to root
+          this.#addSubpattern("/", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === "..") {
+          // Start with .., go to parent
+          this.#addSubpattern("../", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === ".") {
+          // Start with ., proceed
+          this.#addSubpattern(".", pattern.child(new Set().add(1)));
+          return;
+        }
+
+        if (isLast && typeof pattern.at(-1) === "string") {
+          // Add result if it exists
+          const p = pattern.at(-1);
+          const stat = this.#cache.statSync(join(fullpath, p));
+          if (stat && (p || isDirectory)) this.#results.add(join(path, p));
+          if (pattern.indexes.size === 1 && pattern.indexes.has(last)) return;
+        } else if (isLast && pattern.at(-1) === mm().GLOBSTAR &&
+          (path !== "." || pattern.at(0) === "." || (last === 0 && stat))) {
+          // If pattern ends with **, add to results
+          // if path is ".", add it only if pattern starts with "." or pattern is exactly "**"
+          this.#results.add(path);
+        }
+
+        if (!isDirectory) return;
+
+        let children;
+        const firstPattern = pattern.indexes.size === 1 && pattern.at(pattern.indexes.values().next().value);
+        if (typeof firstPattern === "string") {
+          const stat = this.#cache.statSync(join(fullpath, firstPattern));
+          if (stat) {
+            stat.name = firstPattern;
+            children = [stat];
+          } else {
+            return;
+          }
+        } else {
+          children = this.#cache.readdirSync(fullpath);
+        }
+
+        for (let i = 0; i < children.length; i++) {
+          const entry = children[i];
+          const entryPath = join(path, entry.name);
+          this.#cache.addToStatCache(join(fullpath, entry.name), entry);
+
+          const subPatterns = new Set();
+          const nSymlinks = new Set();
+          for (const index of pattern.indexes) {
+            // For each child, check potential patterns
+            if (this.#cache.seen(entryPath, pattern, index) || this.#cache.seen(entryPath, pattern, index + 1)) return;
+            const current = pattern.at(index);
+            const nextIndex = index + 1;
+            const next = pattern.at(nextIndex);
+            const fromSymlink = pattern.symlinks.has(index);
+
+            if (current === mm().GLOBSTAR) {
+              const isDot = entry.name[0] === ".";
+              const nextMatches = pattern.test(nextIndex, entry.name);
+              let nextNonGlobIndex = nextIndex;
+              while (pattern.at(nextNonGlobIndex) === mm().GLOBSTAR) nextNonGlobIndex++;
+              const matchesDot = isDot && pattern.test(nextNonGlobIndex, entry.name);
+              if ((isDot && !matchesDot) || (this.#exclude && this.#exclude(this.#withFileTypes ? entry : entry.name))) continue;
+              if (!fromSymlink && entry.isDirectory()) {
+                // If directory, add ** to its potential patterns
+                subPatterns.add(index);
+              } else if (!fromSymlink && index === last) {
+                // If ** is last, add to results
+                this.#results.add(entryPath);
+              }
+
+              // Any pattern after ** is also a potential pattern
+              // so we can already test it here
+              if (nextMatches && nextIndex === last && !isLast) {
+                // If next pattern is the last one, add to results
+                this.#results.add(entryPath);
+              } else if (nextMatches && entry.isDirectory()) {
+                // Pattern matched, meaning two patterns forward
+                // are also potential patterns
+                // e.g **/b/c when entry is a/b - add c to potential patterns
+                subPatterns.add(index + 2);
+              }
+              if ((nextMatches || pattern.at(0) === ".") &&
+                (entry.isDirectory() || entry.isSymbolicLink()) && !fromSymlink) {
+                // If pattern after ** matches, or pattern starts with "."
+                // and entry is a directory or symlink, add to potential patterns
+                subPatterns.add(nextIndex);
+              }
+
+              if (entry.isSymbolicLink()) nSymlinks.add(index);
+
+              if (next === ".." && entry.isDirectory()) {
+                // In case pattern is "**/..",
+                // both parent and current directory should be added to the queue
+                // if this is the last pattern, add to results instead
+                const parent = join(path, "..");
+                if (nextIndex < last) {
+                  if (!this.#subpatterns.has(path) && !this.#cache.seen(path, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(path, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                  if (!this.#subpatterns.has(parent) && !this.#cache.seen(parent, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(parent, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                } else {
+                  if (!this.#cache.seen(path, pattern, nextIndex)) {
+                    this.#cache.add(path, pattern.child(new Set().add(nextIndex)));
+                    this.#results.add(path);
+                  }
+                  if (!this.#cache.seen(path, pattern, nextIndex) || !this.#cache.seen(parent, pattern, nextIndex)) {
+                    this.#cache.add(parent, pattern.child(new Set().add(nextIndex)));
+                    this.#results.add(parent);
+                  }
+                }
+              }
+            }
+            if (typeof current === "string") {
+              if (pattern.test(index, entry.name) && index !== last) {
+                // If current pattern matches entry name
+                // the next pattern is a potential pattern
+                subPatterns.add(nextIndex);
+              } else if (current === "." && pattern.test(nextIndex, entry.name)) {
+                // If current pattern is ".", proceed to test next pattern
+                if (nextIndex === last) this.#results.add(entryPath);
+                else subPatterns.add(nextIndex + 1);
+              }
+            }
+            if (typeof current === "object" && pattern.test(index, entry.name)) {
+              // If current pattern is a regex that matches entry name (e.g *.js)
+              // add next pattern to potential patterns, or to results if it's the last pattern
+              if (index === last) this.#results.add(entryPath);
+              else if (entry.isDirectory()) subPatterns.add(nextIndex);
+            }
+          }
+          if (subPatterns.size > 0) {
+            // If there are potential patterns, add to queue
+            this.#addSubpattern(entryPath, pattern.child(subPatterns, nSymlinks));
+          }
+        }
+      }
+
+      async* glob() {
+        this.#queue.push({ __proto__: null, path: ".", patterns: this.#patterns });
+        while (this.#queue.length > 0) {
+          const item = this.#queue.pop();
+          for (let i = 0; i < item.patterns.length; i++) yield* this.#iterateSubpatterns(item.path, item.patterns[i]);
+          this.#subpatterns.forEach((patterns, path) => this.#queue.push({ __proto__: null, path, patterns }));
+          this.#subpatterns.clear();
+        }
+      }
+      async* #iterateSubpatterns(path, pattern) {
+        const seen = this.#cache.add(path, pattern);
+        if (seen) return;
+        const fullpath = resolve(this.#root, path);
+        const stat = await this.#cache.stat(fullpath);
+        const last = pattern.last;
+        const isDirectory = stat?.isDirectory() || (stat?.isSymbolicLink() && pattern.hasSeenSymlinks);
+        const isLast = pattern.isLast(isDirectory);
+        const isFirst = pattern.isFirst();
+
+        if (this.#isExcluded(fullpath)) return;
+        if (isFirst && pattern.at(0) === "") {
+          // Absolute path, go to root
+          this.#addSubpattern("/", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === "..") {
+          // Start with .., go to parent
+          this.#addSubpattern("../", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === ".") {
+          // Start with ., proceed
+          this.#addSubpattern(".", pattern.child(new Set().add(1)));
+          return;
+        }
+
+        if (isLast && typeof pattern.at(-1) === "string") {
+          // Add result if it exists
+          const p = pattern.at(-1);
+          const stat = await this.#cache.stat(join(fullpath, p));
+          if (stat && (p || isDirectory)) {
+            const result = join(path, p);
+            if (!this.#results.has(result) && this.#results.add(result)) yield this.#withFileTypes ? stat : result;
+          }
+          if (pattern.indexes.size === 1 && pattern.indexes.has(last)) return;
+        } else if (isLast && pattern.at(-1) === mm().GLOBSTAR &&
+          (path !== "." || pattern.at(0) === "." || (last === 0 && stat))) {
+          // If pattern ends with **, add to results
+          // if path is ".", add it only if pattern starts with "." or pattern is exactly "**"
+          if (!this.#results.has(path) && this.#results.add(path)) yield this.#withFileTypes ? stat : path;
+        }
+
+        if (!isDirectory) return;
+
+        let children;
+        const firstPattern = pattern.indexes.size === 1 && pattern.at(pattern.indexes.values().next().value);
+        if (typeof firstPattern === "string") {
+          const stat = await this.#cache.stat(join(fullpath, firstPattern));
+          if (stat) {
+            stat.name = firstPattern;
+            children = [stat];
+          } else {
+            return;
+          }
+        } else {
+          children = await this.#cache.readdir(fullpath);
+        }
+
+        for (let i = 0; i < children.length; i++) {
+          const entry = children[i];
+          const entryPath = join(path, entry.name);
+          this.#cache.addToStatCache(join(fullpath, entry.name), entry);
+
+          const subPatterns = new Set();
+          const nSymlinks = new Set();
+          for (const index of pattern.indexes) {
+            // For each child, check potential patterns
+            if (this.#cache.seen(entryPath, pattern, index) || this.#cache.seen(entryPath, pattern, index + 1)) return;
+            const current = pattern.at(index);
+            const nextIndex = index + 1;
+            const next = pattern.at(nextIndex);
+            const fromSymlink = pattern.symlinks.has(index);
+
+            if (current === mm().GLOBSTAR) {
+              const isDot = entry.name[0] === ".";
+              const nextMatches = pattern.test(nextIndex, entry.name);
+              let nextNonGlobIndex = nextIndex;
+              while (pattern.at(nextNonGlobIndex) === mm().GLOBSTAR) nextNonGlobIndex++;
+              const matchesDot = isDot && pattern.test(nextNonGlobIndex, entry.name);
+              if ((isDot && !matchesDot) || (this.#exclude && this.#exclude(this.#withFileTypes ? entry : entry.name))) continue;
+              if (!fromSymlink && entry.isDirectory()) {
+                // If directory, add ** to its potential patterns
+                subPatterns.add(index);
+              } else if (!fromSymlink && index === last) {
+                // If ** is last, add to results
+                if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+              }
+
+              // Any pattern after ** is also a potential pattern
+              // so we can already test it here
+              if (nextMatches && nextIndex === last && !isLast) {
+                // If next pattern is the last one, add to results
+                if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+              } else if (nextMatches && entry.isDirectory()) {
+                // Pattern matched, meaning two patterns forward
+                // are also potential patterns
+                // e.g **/b/c when entry is a/b - add c to potential patterns
+                subPatterns.add(index + 2);
+              }
+              if ((nextMatches || pattern.at(0) === ".") &&
+                (entry.isDirectory() || entry.isSymbolicLink()) && !fromSymlink) {
+                // If pattern after ** matches, or pattern starts with "."
+                // and entry is a directory or symlink, add to potential patterns
+                subPatterns.add(nextIndex);
+              }
+
+              if (entry.isSymbolicLink()) nSymlinks.add(index);
+
+              if (next === ".." && entry.isDirectory()) {
+                // In case pattern is "**/..",
+                // both parent and current directory should be added to the queue
+                // if this is the last pattern, add to results instead
+                const parent = join(path, "..");
+                if (nextIndex < last) {
+                  if (!this.#subpatterns.has(path) && !this.#cache.seen(path, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(path, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                  if (!this.#subpatterns.has(parent) && !this.#cache.seen(parent, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(parent, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                } else {
+                  if (!this.#cache.seen(path, pattern, nextIndex)) {
+                    this.#cache.add(path, pattern.child(new Set().add(nextIndex)));
+                    if (!this.#results.has(path) && this.#results.add(path)) {
+                      yield this.#withFileTypes ? this.#cache.statSync(fullpath) : path;
+                    }
+                  }
+                  if (!this.#cache.seen(path, pattern, nextIndex) || !this.#cache.seen(parent, pattern, nextIndex)) {
+                    this.#cache.add(parent, pattern.child(new Set().add(nextIndex)));
+                    if (!this.#results.has(parent) && this.#results.add(parent)) {
+                      yield this.#withFileTypes ? this.#cache.statSync(join(this.#root, parent)) : parent;
+                    }
+                  }
+                }
+              }
+            }
+            if (typeof current === "string") {
+              if (pattern.test(index, entry.name) && index !== last) {
+                // If current pattern matches entry name
+                // the next pattern is a potential pattern
+                subPatterns.add(nextIndex);
+              } else if (current === "." && pattern.test(nextIndex, entry.name)) {
+                // If current pattern is ".", proceed to test next pattern
+                if (nextIndex === last) {
+                  if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+                } else {
+                  subPatterns.add(nextIndex + 1);
+                }
+              }
+            }
+            if (typeof current === "object" && pattern.test(index, entry.name)) {
+              // If current pattern is a regex that matches entry name (e.g *.js)
+              // add next pattern to potential patterns, or to results if it's the last pattern
+              if (index === last) {
+                if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+              } else if (entry.isDirectory()) {
+                subPatterns.add(nextIndex);
+              }
+            }
+          }
+          if (subPatterns.size > 0) {
+            // If there are potential patterns, add to queue
+            this.#addSubpattern(entryPath, pattern.child(subPatterns, nSymlinks));
+          }
+        }
+      }
+    }
+    return Glob;
+  })();
+  function glob(pattern, options, callback) {
+    if (typeof options === "function") {
+      callback = options;
+      options = undefined;
+    }
+    if (typeof callback !== "function") throw _argTypeError("cb", "of type function", callback);
+    (async () => {
+      try {
+        const res = [];
+        for await (const entry of new _Glob(pattern, options).glob()) res.push(entry);
+        callback(null, res);
+      } catch (err) {
+        callback(err);
+      }
+    })();
+  }
+  function globSync(pattern, options) {
+    return new _Glob(pattern, options).globSync();
+  }
+
   // ── promises namespace (W3: full surface, VFS-backed) ──
   // We can't forward to workerd's node:fs/promises because that operates
   // on a real-host filesystem, not our VFS. So every method is shim'd
@@ -5266,32 +5836,8 @@ const __fsMod = (() => {
         }
       }
     },
-    glob: async function* (pattern, opts) {
-      // Minimal — yield matching files via prefix scan. Not full glob.
-      // Sufficient for "**/*.js" style patterns; documented limitation.
-      const root = (opts && opts.cwd) ? _strip(_resolve(opts.cwd)) : _strip(_resolve('.'));
-      const re = (() => {
-        // Convert simple glob to regex: ** -> .*, * -> [^/]*, ? -> .
-        let r = '^' + (root ? root + '/' : '');
-        let g = pattern.replace(/\\\\/g, '/');
-        for (let i = 0; i < g.length; i++) {
-          const c = g[i];
-          if (c === '*') {
-            if (g[i+1] === '*') { r += '.*'; i++; if (g[i+1] === '/') i++; }
-            else r += '[^/]*';
-          } else if (c === '?') r += '.';
-          else if (/[.+^$(){}|[\\]\\\\]/.test(c)) r += '\\\\' + c;
-          else r += c;
-        }
-        r += '$';
-        return new RegExp(r);
-      })();
-      const seen = new Set();
-      // The pattern is anchored at the root, so nothing outside that subtree
-      // can match and nothing outside it needs visiting.
-      if (__vfsBundle) for (const bk of __residentUnder(root ? root + "/" : "")) if (re.test(bk)) seen.add(bk);
-      if (__vfsWrites) for (const wk in __vfsWrites) if (re.test(wk)) seen.add(wk);
-      for (const m of [...seen].sort()) yield '/' + m;
+    glob: async function* (pattern, options) {
+      yield* new _Glob(pattern, options).glob();
     },
   };
 
@@ -5409,6 +5955,7 @@ const __fsMod = (() => {
     open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod, futimes, readv, writev,
     readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rmdir, rename, utimes, lutimes, chmod, lchmod, chown, lchown, fchown, access,
     rm, cp, truncate, copyFile, mkdtemp, link, symlink, readlink, realpath, opendir, statfs,
+    glob, globSync,
     Dirent: __Dirent,
     Dir: __Dir,
     promises, constants,
