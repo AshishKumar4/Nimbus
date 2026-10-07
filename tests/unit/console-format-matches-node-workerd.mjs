@@ -178,7 +178,12 @@ try {
     const differing = expected.stdout.split('\n').flatMap((line, i) => (stdoutLines[i] === line ? [] : [
       `line ${i + 1}\n  node:    ${JSON.stringify(line)}\n  session: ${JSON.stringify(stdoutLines[i])}`,
     ]));
-    assert.deepEqual(differing, [], `stdout differs from node's:\n${differing.join('\n')}\n--- session:\n${actual.stdout}`);
+    // The first differences and the session's stderr: a run that stopped says why there.
+    if (differing.length > 0) {
+      console.error(`stdout differs from node's at ${differing.length} lines; the first:\n${differing.slice(0, 12).join('\n')}`);
+      console.error(`--- session stderr:\n${actual.stderr.slice(-3000)}`);
+    }
+    assert.equal(differing.length, 0, 'stdout is node\'s, line for line');
     assert.equal(actual.stdout, expected.stdout, 'stdout is node\'s, byte for byte');
     assert.equal(actual.stderr, expected.stderr, 'stderr is node\'s, byte for byte');
     await t.run('cd /home/user/console && FORCE_COLOR=1 node coloured.js > cout.txt 2> cerr.txt; echo "STATUS=$?"', 120_000);
