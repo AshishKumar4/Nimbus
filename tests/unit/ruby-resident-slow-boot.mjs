@@ -10,6 +10,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plugin } from 'bun';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 
 plugin({
   name: 'cloudflare-shims',
@@ -28,10 +30,9 @@ const preamble = [
   'globalThis.__rubyRun = () => new Promise((resolve) => {',
   '  globalThis.__testBind = (port) => globalThis.__nimbusVirtualSockets.listen(port);',
   '  globalThis.__testExit = () => resolve({ exitCode: 0, stdout: "done\\n", stderr: "" });',
-  // What the runner's stdoutWrite/stderrWrite do with each write the program makes.
+  // Stand in for the same bounded byte/control path as the real preamble.
   '  globalThis.__testWrite = (stream, text) => {',
-  '    (stream === "stdout" ? (globalThis.__nimbusRubyStdout ||= []) : (globalThis.__nimbusRubyStderr ||= [])).push(text);',
-  '    globalThis.__nimbusRubyEmit?.(stream, text);',
+  '    globalThis.__testOutput[stream+"Bytes"](new TextEncoder().encode(text));',
   '  };',
   '});',
 ].join('\n');
@@ -49,6 +50,8 @@ const boot = async (stage, env = {}) => {
   for (const key of Object.keys(globalThis)) if (key.startsWith('__nimbus')) delete globalThis[key];
   const { NimbusProcess } = await import(join(dir, `worker.mjs?${stage}`));
   const proc = new NimbusProcess({}, env);
+  const control = outputControlReader([{key:'resume',prefix:'__NIMBUS_RESUMED_',suffix:'\n'}]);
+  globalThis.__testOutput = wasiOutputRelay({stdout:b=>env.SUPERVISOR?.stdout(b),stderr:b=>{const data=control.feed(b);if(data.length)return env.SUPERVISOR?.stderr(data);}});
   const state = { boot: null };
   const booting = proc.startProcess({ userCode: 'run app', rbArgv: [], userEnv: {}, progName: 'rackup', cwd: '/home/user' })
     .then((value) => { state.boot = value; });
@@ -66,6 +69,7 @@ const boot = async (stage, env = {}) => {
   if (stage === 'bind' || stage === 'stream') globalThis.__testBind(8126);
   else globalThis.__testExit();
   await booting;
+  await globalThis.__testOutput.drain();
   return state.boot;
 };
 

@@ -69,7 +69,7 @@ assert.ok(preamble.includes('__nimbusVirtualSockets'), 'the socket kernel must b
   //    filesystem nobody reads.
   //    The credential rides along: it is what the interpreter's own copy of
   //    the namespace is read as (wasi/resident-filesystem.ts), not a mount.
-  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\],\s*cred:\s*args\.cred\s*\}\)/.test(preamble),
+  assert.ok(/__wasiInitFS\(\{\s*root:\s*'',\s*preopens:\s*\[\{\s*wasiPath:\s*'\/',\s*vfsPath:\s*''\s*\}\],\s*cred:\s*args\.cred,\s*pid:\s*args\.supervisorPid\s*\|\|\s*0\s*\}\)/.test(preamble),
     'the boot must init the session root as the only preopen, and nothing else');
   assert.ok(!/fsSnapshot|__wasiDrainPersist|__wasiRevalidateFS/.test(preamble),
     'the boot must not carry a seed or a persist queue');

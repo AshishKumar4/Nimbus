@@ -21,6 +21,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plugin } from 'bun';
 import { CPYTHON_PREAMBLE_TAIL } from '../../packages/core/src/runtime/cpython-preamble.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 
 plugin({
   name: 'cloudflare-shims',
@@ -48,14 +50,20 @@ globalThis.__standInRun = (code) => {
   const script = [...globalThis.__session, `import sys; sys.stdout.write("${MARK}"); sys.stderr.write("${MARK}")`, code].join('\n');
   const out = spawnSync('python3', ['-c', script], { encoding: 'utf8', cwd: '/' });
   globalThis.__session.push(code);
-  globalThis.__nimbusPyStdout.push(out.stdout.split(MARK).pop());
-  globalThis.__nimbusPyStderr.push(out.stderr.split(MARK).pop());
+  globalThis.__testWrite('stdout', new TextEncoder().encode(out.stdout.split(MARK).pop()));
+  globalThis.__testWrite('stderr', new TextEncoder().encode(out.stderr.split(MARK).pop()));
   return out.status;
 };
 const stand = `async function __nimbusPyBoot(args) {
   globalThis.__session = [];
+  __nimbusPyOutput = globalThis.__wasiSupervisorOutput({
+    stdout: bytes => { const data = __nimbusPyOutputControl ? __nimbusPyOutputControl.feed(bytes) : bytes; globalThis.__visible.stdout += new TextDecoder().decode(data); },
+    stderr: bytes => { globalThis.__visible.stderr += new TextDecoder().decode(bytes); },
+  });
+  globalThis.__testWrite = (stream, bytes) => __nimbusPyOutput[stream+'Bytes'](bytes);
   return { run: async (code) => globalThis.__standInRun(code), flush: async () => {} };
 }`;
+Object.assign(globalThis,{ __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader });
 new Function('globalThis', `${CPYTHON_PREAMBLE_TAIL}\n${stand}`)(globalThis);
 globalThis.__wasiAdoptSupervisor = () => {};
 
@@ -65,12 +73,13 @@ try {
   mkdirSync(join(dir, 'sub'));
   const line = async (cwd, userCode) => {
     ran.length = 0;
+    globalThis.__visible = {stdout:'',stderr:''};
     const body = pythonReplStep({ home: dir, start: { cwd, binName: 'python3' } }, '/py', userCode);
     const response = await pythonReplStepRequestFn(
       new Request('https://facet.internal/python-repl-step', { method: 'POST', body: JSON.stringify(body) }),
       { SUPERVISOR: {} },
     );
-    return response.json();
+    return { ...await response.json(), ...globalThis.__visible };
   };
 
   // The first line: the prompt enters the shell's cwd, then runs the line there.

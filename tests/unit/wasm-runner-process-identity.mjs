@@ -63,7 +63,7 @@ function pidKeyedFacets(workspace) {
       if (!spec.syscalls) return local.open(spec);
       const { pid } = spec.syscalls;
       const ws = workspace();
-      return local.open({ ...spec, syscalls: { pid, vfs: ws.filesystem.bind({ pid, cred: ws.processes.cred(pid) }) } });
+      return local.open({ ...spec, syscalls: { pid, vfs: ws.filesystem.bind({ pid, cred: ws.processes.cred(pid) }), processes: ws.processes } });
     },
   };
 }

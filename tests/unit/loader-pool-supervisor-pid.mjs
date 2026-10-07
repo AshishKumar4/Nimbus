@@ -51,13 +51,13 @@ assert.deepEqual(boundProps, [{ doId: 'coordinator-do', pid: 7, route, bindingKi
   'supervisorPid composes with supervisorDoIdOverride');
 
 boundProps.length = 0;
-const program = supervisorBindingProps(ctx,42,{writerId:'program-run-a'});
-const programPool = new IsolatePool(env,ctx,{processSupervisor:program});
+const program = supervisorBindingProps(ctx,42,{writerId:'program-run-a',network:ISOLATE_NETWORK});
+const programPool = new IsolatePool(env,ctx,{network:ISOLATE_NETWORK,processSupervisor:program});
 assert.deepEqual(boundProps,[program],'a runtime program gets a checked process capability, never the infrastructure exception');
 assert.ok(programPool.supervisorKey.includes('program-run-a'),'the loader identity contains the run');
-const successor = new IsolatePool(env,ctx,{processSupervisor:supervisorBindingProps(ctx,42,{writerId:'program-run-b'})});
+const successor = new IsolatePool(env,ctx,{network:ISOLATE_NETWORK,processSupervisor:supervisorBindingProps(ctx,42,{writerId:'program-run-b',network:ISOLATE_NETWORK})});
 assert.notEqual(programPool.supervisorKey,successor.supervisorKey,'same pid, fresh run: no reused capability');
-assert.throws(()=>new IsolatePool(env,ctx,{processSupervisor:{...program,bindingKind:'infrastructure',writerId:undefined}}),/cannot hand a process/);
+assert.throws(()=>new IsolatePool(env,ctx,{network:ISOLATE_NETWORK,processSupervisor:{...program,bindingKind:'infrastructure',writerId:undefined}}),/cannot hand a process/);
 successor.dispose();
 programPool.dispose();
 

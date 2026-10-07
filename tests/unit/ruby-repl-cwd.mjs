@@ -22,6 +22,8 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { plugin } from 'bun';
 import { RUBY_RUNNER_PREAMBLE_TAIL } from '../../packages/core/src/runtime/ruby-runner.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 
 plugin({
   name: 'cloudflare-shims',
@@ -41,7 +43,7 @@ if (spawnSync('ruby', ['--version'], { encoding: 'utf8' }).status !== 0) {
 
 // The facet's scope: the runner tail, with the VM and the WASI mount stood in for.
 const evaluated = [];
-Object.assign(globalThis, { __nimbusRubyStdout: [], __nimbusRubyStderr: [], __nimbusRubyStep: async () => ({ resumed: false, alive: false }) });
+Object.assign(globalThis, { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __nimbusRubyStep: async () => ({ resumed: false, alive: false }) });
 const stand = [
   'function __nimbusInstallRubyFs() {}',
   // What __rubyRun re-adopts after the mount: the supervisor the entry published.

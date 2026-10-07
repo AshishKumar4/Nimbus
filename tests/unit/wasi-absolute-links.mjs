@@ -26,6 +26,8 @@ import { plugin } from 'bun';
 import { runScript } from './lib/bash-preamble.mjs';
 import { makeCPythonRunnerFactory } from '../../packages/core/src/runtime/cpython-runner.ts';
 import { RUBY_RUNNER_PREAMBLE_TAIL } from '../../packages/core/src/runtime/ruby-runner.ts';
+import { wasiOutputRelay } from '../../packages/core/src/runtime/wasi/stdio.ts';
+import { outputControlReader } from '../../packages/core/src/runtime/wasi/output-control.ts';
 import { loaderFacetHost } from '../../packages/worker/src/runtime/facet-loader-host.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
@@ -122,7 +124,7 @@ if (hasHost('ruby')) {
   // The facet's own __rubyRun, with the VM stood in for by a recorder of
   // what it evaluates; then that Ruby, under a real Ruby.
   const evaluated = [];
-  const scope = { __nimbusRubyStdout: [], __nimbusRubyStderr: [], __nimbusRubyStep: async () => ({ resumed: false, alive: false }), __evaluated: evaluated };
+  const scope = { __wasiSupervisorOutput: wasiOutputRelay, __wasiOutputControl: outputControlReader, __nimbusRubyStep: async () => ({ resumed: false, alive: false }), __evaluated: evaluated };
   const stand = 'function __nimbusInstallRubyFs() {}\nfunction __wasiAdoptSupervisor() {}\nasync function __nimbusRubyEval(boot, code) { globalThis.__evaluated.push(code); return { status: 0 }; }';
   new Function('globalThis', `${RUBY_RUNNER_PREAMBLE_TAIL}\n${stand}`).call(scope, scope);
   scope.__rubyBootstrap = Promise.resolve({ ok: true, rubyInitialized: true });

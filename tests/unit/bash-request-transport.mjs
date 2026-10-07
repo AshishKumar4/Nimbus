@@ -46,6 +46,8 @@ try {
   // ── Request transport runs real bash and answers a real slice ─────────────
   {
     const { scope, bindings, evaluate } = request;
+    const written = [];
+    const release = request.processes.subscribeOutputBytes(request.pid, chunk => { if(chunk.stream==='stdout')written.push(chunk.data); });
     const scopedStep = evaluate(`(${bashRequestStep.toString()})`);
 
     const response = await scopedStep(stepRequest(bootArgs(request, 'printf "transport-ok\\n"')), bindings);
@@ -53,7 +55,9 @@ try {
     const slice = await response.json();
     assert.equal(slice.state, 'exited', JSON.stringify(slice));
     assert.equal(slice.exitCode, 0);
-    assert.equal(slice.stdout, 'transport-ok\n');
+    release();
+    assert.equal(slice.stdout, '', 'the reply does not repeat live output');
+    assert.equal(Buffer.concat(written).toString(), 'transport-ok\n', 'the serialized request streams its bytes before answering');
 
     // The warm session the boot left on this isolate's S answers feeds.
     const fed = await scopedStep(stepRequest({ op: 'feed', data: '', eof: true }), bindings);
