@@ -34,6 +34,17 @@ export interface ProcessEntry {
     attachedTty?: boolean;
     /** Output is owned by the command that launched it, until its launch returns. */
     foreground?: boolean;
+    /**
+     * The process this one restarts, when it is one: a resident the session
+     * started again under a new pid because the session object itself
+     * restarted while it ran (`cause: 'session-restart'`). Absent otherwise.
+     */
+    restartedFrom?: ProcessRestart;
+}
+/** Which process a restart replaced, and why it was restarted. */
+export interface ProcessRestart {
+    pid: number;
+    cause: 'session-restart';
 }
 export interface ProcessTableSpawnOptions {
     cred?: VfsCred;
@@ -44,6 +55,8 @@ export interface ProcessTableSpawnOptions {
      * inherited.
      */
     execId?: string;
+    /** The process this one restarts (ProcessEntry.restartedFrom). */
+    restartedFrom?: ProcessRestart;
 }
 /** An exec id from a caller, or an error that names the rule it broke. */
 export declare function parseExecId(value: unknown): string;

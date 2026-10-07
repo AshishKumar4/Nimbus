@@ -19,7 +19,7 @@
  * raw/cooked terminal mode, and foreground-process-group signal policy.
  * `ProcessTerminalDescriptor` is the seam those land on.
  */
-import { ProcessTable, type ProcessEntry } from './process-table.js';
+import { ProcessTable, type ProcessEntry, type ProcessRestart } from './process-table.js';
 import { type ProcessInputPacket } from './process-input.js';
 import { ProcessLogStore, type LogChunk, type LogStream, type PersistAdapter, type ProcessExitInfo, type ProcessLogReadOptions, type SequencedLogChunk } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
@@ -35,6 +35,8 @@ export interface ProcessSpawnOptions {
     cred?: VfsCred;
     /** The exec id of a process that does not take its parent's (`ProcessEntry.execId`). */
     execId?: string;
+    /** The process this one restarts (`ProcessEntry.restartedFrom`). */
+    restartedFrom?: ProcessRestart;
 }
 /**
  * Controlling-terminal descriptor for a process with an open input

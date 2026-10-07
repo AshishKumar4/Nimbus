@@ -3948,6 +3948,13 @@ const RESTART_BACKOFF_BASE_MS = 1_000;
 function residentRestartPolicy(env) {
     return env?.[RESTART_POLICY_ENV] === 'on-failure' ? 'on-failure' : 'never';
 }
+/** What an app reports of its live process: its exec id and the process it restarts, each when it has one. */
+function processReportFields(entry) {
+    return {
+        ...execIdField(entry),
+        ...(entry?.restartedFrom === undefined ? {} : { restartedFrom: entry.restartedFrom }),
+    };
+}
 /**
  * The durable owner a journal row serves: the row's stamped field for
  * reservation-claimed residents, falling back to the worker recipe's own
@@ -6657,7 +6664,11 @@ export class FacetManager {
             // Reported through onRedriveFailed, and the row is superseded.
             throw new Error('its journal entry predates the credential a re-drive runs under, so it is not started as anyone else');
         }
-        const identity = { cred: record.cred, ...(record.execId === undefined ? {} : { execId: record.execId }) };
+        const identity = {
+            cred: record.cred,
+            ...(record.execId === undefined ? {} : { execId: record.execId }),
+            restart: { from: { pid: record.pid, cause: 'session-restart' }, doing: residentLaunchDoing(record) },
+        };
         switch (recipe.kind) {
             case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, identity);
             case 'worker': {
@@ -6696,6 +6707,22 @@ export class FacetManager {
         }
     }
     /**
+     * The process-table entry of a resident launch: a child of its invoker,
+     * under its credential, as exec's. A re-drive has no invoker (the journal
+     * never holds one): it runs as the row says, records the process it
+     * restarts, and says so as its first line of output. The terminal the
+     * session's restart disconnected is not where the user looks for it.
+     */
+    _spawnLaunchEntry(command, argv, cwd, invokerPid, redriven) {
+        if (redriven === undefined)
+            return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
+        const { restart, ...identity } = redriven;
+        const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
+        this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: the session restarted while "${command}" was ${restart.doing}, so this process restarted; `
+            + `it was pid ${restart.from.pid}]\n`);
+        return entry;
+    }
+    /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
      *
@@ -6729,9 +6756,7 @@ export class FacetManager {
             entry = found;
         }
         else {
-            // A child of its invoker, under its credential, as exec's. A re-drive has
-            // no invoker (the journal never holds one): it runs as the row says.
-            entry = this.processes.spawn(command, opts.argv || [], cwd, { parentPid: opts.invokerPid, ...redriven });
+            entry = this._spawnLaunchEntry(command, opts.argv || [], cwd, opts.invokerPid, redriven);
         }
         this.processes.setLongRunning(entry.pid);
         if (opts.attachedTty)
@@ -7262,7 +7287,7 @@ export class FacetManager {
         await this.processes.reap();
         // The table entry carries the same argv the identity is derived from, so
         // a runtime resident reads the same way through either path.
-        const entry = this.processes.spawn(command, opts.resident?.argv ?? [], cwd, { parentPid: opts.invokerPid, ...redriven });
+        const entry = this._spawnLaunchEntry(command, opts.resident?.argv ?? [], cwd, opts.invokerPid, redriven);
         // Stamp the process-table entry so /api/processes exposes this as a
         // long-running process.
         this.processes.setLongRunning(entry.pid);
@@ -7694,8 +7719,8 @@ export class FacetManager {
                 app.status = 'running';
             apps.set(identity.owner, app);
         }
-        // The live pid's exec id, read from its process: the one place it lives.
-        return [...apps.values()].map((app) => (app.pid === null ? app : { ...app, ...execIdField(this.processes.get(app.pid)) }));
+        // The live pid's exec id and restart, read from its process: the one place they live.
+        return [...apps.values()].map((app) => (app.pid === null ? app : { ...app, ...processReportFields(this.processes.get(app.pid)) }));
     }
     async registerPort(pid, port) {
         if (port > 0 && port < 65536) {

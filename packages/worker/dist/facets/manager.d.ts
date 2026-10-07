@@ -17,7 +17,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
-import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
+import { type ProcessEntry, type ProcessRestart } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
 import { type NodeFacetSources } from '../runtime/node-shims-artifact.js';
 import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
@@ -958,6 +958,8 @@ export interface ResidentAppSummary {
     diagnostic: string | null;
     /** The exec id of `pid` (`ProcessEntry.execId`); absent when it has none. */
     execId?: string;
+    /** The process `pid` restarts (`ProcessEntry.restartedFrom`); absent when it is no restart. */
+    restartedFrom?: ProcessRestart;
 }
 /** What a pid's journal row says about who it is. */
 export interface ResidentIdentity {
@@ -1701,6 +1703,14 @@ export declare class FacetManager {
      * `hooks.resolveWorkerLaunch`.
      */
     private _redrive;
+    /**
+     * The process-table entry of a resident launch: a child of its invoker,
+     * under its credential, as exec's. A re-drive has no invoker (the journal
+     * never holds one): it runs as the row says, records the process it
+     * restarts, and says so as its first line of output. The terminal the
+     * session's restart disconnected is not where the user looks for it.
+     */
+    private _spawnLaunchEntry;
     /**
      * Spawn a long-running Node process with the same shimmed require/fs/http
      * environment used by foreground `node <script>` execution.
