@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `react-router dev` (React Router 8.4) exited at once with "Oops, Node
+  v22.19.0 detected": processes now report Node v22.22.3, the release the
+  tests use as Node's reference, which meets its `>=22.22.0` engines floor.
 - Fixed: an `import()` that reaches installed files a launch did not stage
   loads them on the first run. A launch's store holds its static closure and
   its data plan; any other file on disk was known by name but not held, and the
