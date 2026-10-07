@@ -351,6 +351,7 @@ export class WaveWriter<Meta = undefined> {
     return this.exclusive(async () => {
       const key = this.key(path);
       this.assertOwnerHealthy(meta);
+      await this.afterRemoval(key);
       await this.admit(key, bytes.byteLength, true);
       this.buffer(key, { kind: 'file', mode: mode & 0o7777, bytes: ownedBytes(bytes), meta });
       await this.cutIfFull();
@@ -363,6 +364,7 @@ export class WaveWriter<Meta = undefined> {
       const key = this.key(path);
       const bytes = encoder.encode(target);
       this.assertOwnerHealthy(meta);
+      await this.afterRemoval(key);
       await this.admit(key, bytes.byteLength, true);
       this.buffer(key, { kind: 'symlink', mode: 0o777, bytes, meta });
       await this.cutIfFull();
@@ -396,6 +398,7 @@ export class WaveWriter<Meta = undefined> {
   directory(path: string): Promise<void> {
     return this.exclusive(async () => {
       const key = this.key(path);
+      await this.afterRemoval(key);
       await this.admit(key, 0, true);
       this.directories.add(key);
       this.deletes.delete(key);
@@ -566,6 +569,16 @@ export class WaveWriter<Meta = undefined> {
       if (current === root) break;
       current = parentOf(current);
     }
+  }
+
+  /**
+   * Send what is buffered when a removal of `path` is pending in it: a wave
+   * names a path once, and what is made there must land after the removal,
+   * as rm then create does (the directory's permission decides, not the old
+   * file's mode).
+   */
+  private async afterRemoval(path: string): Promise<void> {
+    if (this.deletes.has(path)) await this.cut();
   }
 
   /** Cut waves until `path` (with its chain) and `bytes` fit beside what is buffered. */
