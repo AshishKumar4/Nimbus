@@ -5,6 +5,9 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `react-router dev` (React Router 8.4) exited at once with "Oops, Node
+  v22.19.0 detected": processes now report Node v22.22.3, the release the
+  tests use as Node's reference, which meets its `>=22.22.0` engines floor.
 - axios works in a node child, with its http adapter (its Node default)
   and its fetch adapter: the child's `process` is tagged as Node's
   (`[object process]`, the same `Symbol.toStringTag` descriptor), which is
