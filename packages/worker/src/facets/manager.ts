@@ -141,6 +141,7 @@ import {
 import {
   encodeCommonJsPack,
   ProcessFabric,
+  ProcessHostLost,
   ResidentProcessHandle,
   type ProcessHost,
   type ProcessHostFactory,
@@ -4742,6 +4743,8 @@ interface RedrivenIdentity {
 export type ResidentRestartPolicy = 'never' | 'on-failure';
 /** The env var a launch reads its restart policy from — set by startProcess({ restart }) and `nimbus start --restart`. */
 export const RESTART_POLICY_ENV = 'NIMBUS_RESTART';
+/** A process whose host the platform reset ends as a killed one does (SIGKILL's 137). */
+const HOST_LOST_EXIT_CODE = 137;
 /** Backoff per spent FencedWork attempt; a healthy boot resets that existing budget. */
 const RESTART_BACKOFF_BASE_MS = 1_000;
 
@@ -4821,13 +4824,19 @@ function residentLaunchDoing(record: FencedWorkRecord): string {
  * the session lost while running had been restarted already: a new process
  * whose isolate has used about a second of CPU makes Cloudflare restart the
  * session (spike/isolate-move), and restarting it again would only repeat
- * that. One that exited again is in a crash loop.
+ * that. One whose host the platform reset again (a peer, process-host.ts)
+ * repeats it the same way. One that exited again is in a crash loop.
  */
 function residentAbandonedNotice(record: FencedWorkRecord, cause: RedriveCause): string {
   const proven = `${RESIDENT_PROVEN_MS / 1000} s`;
   if (cause.kind === 'exited') {
     return `\x1b[2m[nimbus: "${record.command}" exited with code ${cause.code} again before it had run ${proven} `
       + `since its restart, so it is left stopped; start it again with: ${record.command}]\x1b[0m\r\n`;
+  }
+  if (cause.kind === 'host-reset') {
+    return `\x1b[2m[nimbus: the platform reset the host of "${record.command}" again before it had run ${proven} `
+      + 'since its restart, so it is left stopped: Cloudflare resets a process\'s host when a newly started process '
+      + `has used about a second of CPU, and restarting it would do that again; start it again with: ${record.command}]\x1b[0m\r\n`;
   }
   if (record.phase === 'running') {
     return `\x1b[2m[nimbus: the session restarted again before "${record.command}" had run ${proven} since its restart, `
@@ -5014,6 +5023,8 @@ export class FacetManager {
   private ensureInflight = new Map<number, Promise<'started' | 'absent' | 'failed'>>();
   /** Per-pid chain of journal-row amendments; see `_amendRow`. */
   private rowAmendments = new Map<number, Promise<void>>();
+  /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
+  private hostLosses = new Map<number, ProcessHostLost>();
   /** Each running resident's uptime proof timer (_proveByUptime). */
   private uptimeProofs = new Map<number, ReturnType<typeof setTimeout>>();
   /**
@@ -5123,6 +5134,26 @@ export class FacetManager {
   }
 
   /**
+   * The platform reset the host of a running process (ProcessHostLost): the
+   * process is over, as if killed (137), and says why. Its ports answer with
+   * the cause at once, and its restart policy decides what follows, as for
+   * any process that ends on its own (_onResidentTerminal).
+   */
+  private _endByHostLoss(pid: number, lost: ProcessHostLost): void {
+    const entry = this.processes.get(pid);
+    if (entry?.state !== 'running') return;
+    console.warn(`[facet-manager] pid ${pid} ("${entry.command}") ended: ${lost.message}`);
+    this.hostLosses.set(pid, lost);
+    this.portRegistry.unregisterByPid(pid, `"${entry.command}" (pid ${pid}) ended: ${lost.message}`);
+    this.releaseProcessRpcResources(pid);
+    this.revokeProcessVfsWriters(pid);
+    this.processes.exit(pid, HOST_LOST_EXIT_CODE);
+    this._w5RecordTermination(pid, HOST_LOST_EXIT_CODE, 'facet', lost.message);
+    try { this.hooks.onExternalExit?.(pid, HOST_LOST_EXIT_CODE, lost.message); } catch {}
+    this._teardownPairedServeFacet(pid);
+  }
+
+  /**
    * The process is over. Every end-of-life passes through here: a clean
    * exit, a kill, a timeout, a crash. Only one of them owes anything more
    * than the journal row's release — a crash under 'on-failure' is re-driven
@@ -5156,6 +5187,8 @@ export class FacetManager {
 
   private async _onResidentTerminal(pid: number): Promise<void> {
     this._dropUptimeProof(pid);
+    const hostLost = this.hostLosses.get(pid);
+    this.hostLosses.delete(pid);
     await this.rowAmendments.get(pid);
     this.ephemeralPids.delete(pid);
     await this._releaseResidentClaim(pid);
@@ -5169,15 +5202,19 @@ export class FacetManager {
       return;
     }
     const delayMs = RESTART_BACKOFF_BASE_MS * 2 ** row.attempt;
+    const ended = hostLost === undefined
+      ? `"${row.command}" exited with code ${entry.exitCode}`
+      : `the platform reset the host of "${row.command}"`;
     this.hooks.notify?.(
-      `\x1b[2m[nimbus: "${row.command}" exited with code ${entry.exitCode} — `
-      + `restarting in ${delayMs / 1000}s (FencedWork attempt ${row.attempt + 1})]\x1b[0m\r\n`,
+      `\x1b[2m[nimbus: ${ended} — restarting in ${delayMs / 1000}s (FencedWork attempt ${row.attempt + 1})]\x1b[0m\r\n`,
     );
     await this.launchPump.nextTurn(Promise.resolve(), Date.now() + delayMs);
     // The process may have been removed or the session destroyed during the
     // backoff; a row that is gone is owed nothing.
     if (!(await this.launchJournal.rows()).has(key)) return;
-    await this.launchJournal.drive(key, row, { kind: 'exited', code: entry.exitCode ?? 1 });
+    await this.launchJournal.drive(key, row, hostLost === undefined
+      ? { kind: 'exited', code: entry.exitCode ?? 1 }
+      : { kind: 'host-reset' });
   }
 
   /** Claim identity AND write its recovery row in one serializable storage transaction. */
@@ -7223,7 +7260,7 @@ export class FacetManager {
           this.revokeProcessVfsWriters(pid, writerId);
         },
       });
-      this._noteProcessPlacement(pid, handle);
+      this._hosted(pid, handle);
       this.trackProcessRpcResources(
         pid,
         [handle],
@@ -7365,7 +7402,7 @@ export class FacetManager {
           this.revokeProcessVfsWriters(pid, writerId);
         },
       });
-      this._noteProcessPlacement(pid, handle);
+      this._hosted(pid, handle);
       // The handle's route target resolves the RUNNING facet wherever it is
       // hosted; binding it for the pid before the port is announced is what
       // lets the shim's listen()→SUPERVISOR.registerPort back-fill.
@@ -7407,7 +7444,16 @@ export class FacetManager {
    * was scheduled. The manager logs an opaque description; only the fabric
    * knows what a placement is.
    */
-  private _noteProcessPlacement(pid: number, handle: ResidentProcessHandle): void {
+  /**
+   * A resident process's handle, as it comes back from the fabric: a host
+   * the platform resets under it ends the process (_endByHostLoss). Watched
+   * before any caller's own `done` handler, so the process has ended by name
+   * when they look. The placement goes to the process log under NIMBUS_DEBUG.
+   */
+  private _hosted(pid: number, handle: ResidentProcessHandle): void {
+    handle.done.catch((error: unknown) => {
+      if (error instanceof ProcessHostLost) this._endByHostLoss(pid, error);
+    });
     if (!this.debugEnabled) return;
     try {
       this.processes.appendOutput(pid, 'stderr', `[nimbus-debug] process hosted on ${handle.describePlacement()}\n`);
@@ -7475,7 +7521,7 @@ export class FacetManager {
       },
       ...process,
     });
-    this._noteProcessPlacement(pid, handle);
+    this._hosted(pid, handle);
     return handle;
   }
 
@@ -7672,7 +7718,7 @@ export class FacetManager {
       restart: {
         from: cause.kind === 'exited'
           ? { pid: record.pid, cause: 'exited', exitCode: cause.code }
-          : { pid: record.pid, cause: 'session-restart' },
+          : { pid: record.pid, cause: cause.kind },
         doing: residentLaunchDoing(record),
       },
     };
@@ -7730,7 +7776,9 @@ export class FacetManager {
     const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
     const why = restart.from.cause === 'exited'
       ? `"${command}" exited with code ${restart.from.exitCode}, so it was restarted (restart on-failure)`
-      : `the session restarted while "${command}" was ${restart.doing}, so this process restarted`;
+      : restart.from.cause === 'host-reset'
+        ? `the platform reset the host of "${command}", so it was restarted (restart on-failure)`
+        : `the session restarted while "${command}" was ${restart.doing}, so this process restarted`;
     this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: ${why}; it was pid ${restart.from.pid}]\n`);
     return entry;
   }

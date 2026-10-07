@@ -39,8 +39,12 @@
  */
 export const FENCED_WORK_KEY_PREFIX = 'resident-launch:';
 
-/** Why a row is re-driven: its session restarted, or its process exited with `code`. */
-export type RedriveCause = { kind: 'session-restart' } | { kind: 'exited'; code: number };
+/**
+ * Why a row is re-driven: its session restarted, its process exited with
+ * `code`, or the platform reset the host its process ran on (a sibling
+ * Durable Object, process-host.ts `peer`), which ends the process with it.
+ */
+export type RedriveCause = { kind: 'session-restart' } | { kind: 'exited'; code: number } | { kind: 'host-reset' };
 
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
 export const FENCED_WORK_MAX_ATTEMPT = 1;

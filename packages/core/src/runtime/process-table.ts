@@ -40,8 +40,8 @@ export interface ProcessEntry {
   /**
    * The process this one restarts, when it is one: a resident started again
    * under a new pid because the session object itself restarted while it
-   * ran, or because it exited with a non-zero code under restart
-   * 'on-failure'. Absent otherwise.
+   * ran, or, under restart 'on-failure', because it exited with a non-zero
+   * code or the platform reset the host it ran on. Absent otherwise.
    */
   restartedFrom?: ProcessRestart;
 }
@@ -49,7 +49,8 @@ export interface ProcessEntry {
 /** Which process a restart replaced, and why it was restarted. */
 export type ProcessRestart =
   | { pid: number; cause: 'session-restart' }
-  | { pid: number; cause: 'exited'; exitCode: number };
+  | { pid: number; cause: 'exited'; exitCode: number }
+  | { pid: number; cause: 'host-reset' };
 
 export interface ProcessTableSpawnOptions {
   cred?: VfsCred;
