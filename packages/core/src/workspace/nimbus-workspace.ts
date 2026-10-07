@@ -1047,10 +1047,10 @@ export function seedBaseFilesystem(target: SqliteVFS | ProcessFiles, home: strin
 }
 
 /**
- * The base seed on a namespace: a step on a mount is the call a program
- * would make there; any other is the engine's, as the session's own seed
- * makes it (a directory above a mount point included, which the namespace
- * shows once the root holds it).
+ * The base seed on a namespace: each step placed by the namespace's
+ * dispatcher (SqliteVFS.placesHere, as a wave's records are). One placed on
+ * the session's filesystem is the engine's, as the session's own seed makes
+ * it; any other is the call a program would make on the namespace.
  */
 async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesystem: ProcessFiles): Promise<void> {
   const mounted = { kernel: filesystem.vfs.as(CRED_KERNEL), user: filesystem.vfs.as(CRED_SESSION_USER) };
@@ -1059,7 +1059,9 @@ async function seedOnNamespace(steps: Generator<SeedStep, void, unknown>, filesy
   for (let step = steps.next(); !step.done; ) {
     const call = step.value;
     let answer: unknown;
-    if (filesystem.vfs.mountOf('/' + call.path) === '/') {
+    const cred = call.as === 'kernel' ? CRED_KERNEL : CRED_SESSION_USER;
+    // A directory above a mount point is the root's, as a wave's directory record there is.
+    if (filesystem.engine.placesHere([call.path], cred, { aboveMounts: true })) {
       answer = engineStep(engine[call.as], call);
     } else {
       const view = mounted[call.as];
