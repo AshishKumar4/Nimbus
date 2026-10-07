@@ -185,7 +185,9 @@ try {
     }
     assert.equal(differing.length, 0, 'stdout is node\'s, line for line');
     assert.equal(actual.stdout, expected.stdout, 'stdout is node\'s, byte for byte');
-    assert.equal(actual.stderr, expected.stderr, 'stderr is node\'s, byte for byte');
+    // A warning names its process's pid, which differs.
+    const pid = (text) => text.replace(/^\(node:\d+\) /gm, '(node:<pid>) ');
+    assert.equal(pid(actual.stderr), pid(expected.stderr), 'stderr is node\'s, byte for byte but the pid');
     await t.run('cd /home/user/console && FORCE_COLOR=1 node coloured.js > cout.txt 2> cerr.txt; echo "STATUS=$?"', 120_000);
     assert.deepEqual({ stdout: await read('cout.txt'), stderr: await read('cerr.txt') }, colouredExpected, 'coloured as node colours');
     // At the terminal: colours unless the environment turns them off, as node's policy says.
