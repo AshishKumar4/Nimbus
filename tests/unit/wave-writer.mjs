@@ -698,6 +698,36 @@ for (const epochs of [false, true]) {
   console.log(`  ok  a producer of 4 MiB files held at most ${(peak / MiB).toFixed(2)} MiB`);
 }
 
+{
+  // A wave being encoded is in flight: settled() asked while its cut awaits
+  // the encode waits for its publication, so a read after it finds its
+  // files. Red before: the cut cleared its records, then awaited the encode
+  // before it registered the publication, and settled() returned at once
+  // (the git facet read stale bytes or ENOENT for a buffered write).
+  const target = session();
+  const transport = transported(target);
+  let writer = null;
+  let checked = null;
+  const onCut = ({ wave }) => {
+    if (wave !== 1) return;
+    // Runs once the cut yields to its encode.
+    queueMicrotask(() => {
+      checked = writer.settled().then(() => ({
+        a: target.files.has('r/a'),
+        b: target.files.has('r/b'),
+      }));
+    });
+  };
+  writer = createWaveWriter({ supervisor: transport.supervisor, root: 'r', base: 'r', onCut });
+  await writer.file('a', 0o644, payloadOf(1));
+  await writer.file('b', 0o644, payloadOf(2));
+  const flushed = writer.flush();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(checked !== null, 'the check never ran');
+  assert.deepEqual(await checked, { a: true, b: true }, 'settled() returned before the wave being encoded was published');
+  await flushed;
+}
+
 // ── An RPC stub supervisor ─────────────────────────────────────────────
 // A facet's env.SUPERVISOR is an RPC stub: every property is a remote
 // method, `.call` and `.apply` included. The writer calls its methods as
