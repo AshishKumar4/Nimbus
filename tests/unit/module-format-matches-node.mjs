@@ -19,7 +19,8 @@
 // (an entry, an import(), a require() of it): "in ES module scope", the
 // package.json that made a .js a module, or top-level await's ambiguity.
 // The runtime said "require_is_not_defined_in_ES_module_scope is not
-// defined", a name it made up.
+// defined", a name it made up. The frames are the guest registry's, which
+// es-module-scope-errors-workerd runs: here a module is loaded by Bun.
 //
 // One fixture tree, on disk for real node and in the session's filesystem for
 // `node` through the runtime handler (the shell's command) and a one-shot
@@ -87,11 +88,9 @@ const files = {
   'tla-require.mjs': "await 1;\nrequire('node:path');\n",
   'tla-scope.mjs': `await 0;\n${SCOPE('tla-scope')}`,
   'caught.mjs': 'try { exports.x = 1; } catch (e) { globalThis.caught = [e.name, e.message]; }\nexport {};\n',
-  'later.mjs': "process.on('uncaughtException', (e) => { console.log(JSON.stringify(['later', e.name, e.message])); });\nsetTimeout(() => { __dirname; }, 0);\nexport {};\n",
   'scope-errors.cjs': `const report = [];
-const frameFile = (e) => /([^/\\s:()]+):\\d+:\\d+\\)?$/.exec(e.stack.split('\\n').find((l) => l.startsWith('    at ')) ?? '')?.[1] ?? null;
-try { require('./require-in-esm.mjs'); } catch (e) { report.push(['require', e.name, e.message, e.code ?? null, frameFile(e)]); }
-import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name, e.message, e.code ?? null, frameFile(e)]); })
+try { require('./require-in-esm.mjs'); } catch (e) { report.push(['require', e.name, e.message, e.code ?? null]); }
+import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name, e.message, e.code ?? null]); })
   .then(() => import('./tla-require.mjs')).catch((e) => { report.push(['tla', e.name, e.message, e.code ?? null]); })
   .then(() => import('./caught.mjs')).then(() => { report.push(['caught', ...globalThis.caught]); console.log(JSON.stringify(report)); });
 `,
@@ -128,7 +127,6 @@ const RUNS = [
   ['seed.mjs'],
   ['tla-scope.mjs'],
   ['scope-errors.cjs'],
-  ['later.mjs'],
   ['require-in-esm.mjs', { fails: true }],
   ['typed/module-exports.js', { fails: true }],
   ['chain.mjs', { fails: true }],
@@ -139,13 +137,8 @@ const RUNS = [
 const argsOf = (run) => run.filter((arg) => typeof arg === 'string');
 const stdinOf = (run) => run.find((arg) => typeof arg === 'object')?.stdin;
 const failsWith = (run) => run.find((arg) => typeof arg === 'object')?.fails === true;
-// What an uncaught error prints, as \`<Name>: <message>\` and any lines of the
-// message, up to its first frame; and the file of that frame.
-function uncaught(text) {
-  const block = /^[A-Z]\w*Error(?::[^\n]*)?(?:\n(?!    at )[^\n]+)*/m.exec(text)?.[0] ?? null;
-  const frame = block === null ? '' : text.slice(text.indexOf(block) + block.length).split('\n').find((l) => l.startsWith('    at ')) ?? '';
-  return { block, frame: /([^/\s:()]+):\d+:\d+\)?$/.exec(frame)?.[1] ?? null };
-}
+// What an uncaught error prints: `<Name>: <message>` and any further lines of the message.
+const uncaught = (text) => /^[A-Z]\w*Error(?::[^\n]*)?(?:\n(?!    at )[^\n]+)*/m.exec(text)?.[0] ?? null;
 
 // ── real node ────────────────────────────────────────────────────────────
 const disk = realpathSync(mkdtempSync(join(tmpdir(), 'module-format-')));
@@ -162,7 +155,7 @@ try {
     if (failsWith(run)) {
       assert.notEqual(node.status, 0, `premise: node ${argsOf(run).join(' ')} fails`);
       const error = uncaught(here(node.stderr));
-      assert.ok(error.block, `premise: node ${argsOf(run).join(' ')} prints an error: ${node.stderr}`);
+      assert.ok(error, `premise: node ${argsOf(run).join(' ')} prints an error: ${node.stderr}`);
       expected.push(error);
       continue;
     }
@@ -217,13 +210,11 @@ for (let i = 0; i < RUNS.length; i++) {
   const label = `node ${argsOf(run).join(' ').slice(0, 60)}`;
   if (failsWith(run)) {
     assert.notEqual(exitCode, 0, `${label} fails, as in node: ${stdout}${out}`);
-    const error = uncaught(stderr + out + stdout);
-    assert.equal(error.block, expected[i].block, `${label} throws what node throws: ${stderr}${out}`);
-    // The frame the error names first is the module's that threw, as node's
-    // is (\`-e\` code is no file: node names it [eval1]).
-    if (!argsOf(run)[0].startsWith('-') && expected[i].block.startsWith('ReferenceError')) {
-      assert.equal(error.frame, expected[i].frame, `${label}: the first frame is the module's: ${stderr}${out}`);
-    }
+    // A SyntaxError's text is the engine's: JSC's here, where Bun compiles
+    // the cells; es-module-scope-errors-workerd compares V8's.
+    const thrown = uncaught(stderr + out + stdout);
+    if (expected[i].startsWith('SyntaxError')) assert.match(thrown ?? '', /^SyntaxError\b/, `${label} throws what node throws: ${stderr}${out}`);
+    else assert.equal(thrown, expected[i], `${label} throws what node throws: ${stderr}${out}`);
     continue;
   }
   const printed = (out + stdout).trim().split('\n').at(-1) ?? '';
