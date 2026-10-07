@@ -48,15 +48,21 @@ function stagedGitBundle() {
   return readFileSync(new URL(name, dir), 'utf8');
 }
 
-/** `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub. */
-export async function createFacetSession(work, { realGit = false } = {}) {
+/**
+ * `realGit`: the facet runs the staged cf-git bundle (fetch, pull, push), not a stub.
+ * `mounts`: backends mounted in the session's namespace, by mount point; the
+ * facets' supervisor then reaches the namespace as the session's does (a
+ * host bridge of the session's ProcessFiles), mounts and their guard included.
+ */
+export async function createFacetSession(work, { realGit = false, mounts = {} } = {}) {
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = vfs.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(vfs);
-  const bridge = new SqliteRuntimeFsBridge(kernel, vfs);
+  for (const [point, backend] of Object.entries(mounts)) files.vfs.mount(point, backend);
+  const bridge = Object.keys(mounts).length > 0 ? files.openHost(CRED_KERNEL).fs : new SqliteRuntimeFsBridge(kernel, vfs);
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
   // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
@@ -178,6 +184,24 @@ export async function createFacetSession(work, { realGit = false } = {}) {
     return { code, stdout: stdout.replace(/\x1b\[[0-9;]*m/g, ''), stderr };
   }
 
+  /** Copy a session directory, through the namespace as the session user (a mount's included), to `out` on disk. */
+  async function materializeAt(root, out) {
+    const view = files.view({ pid: 7, cred: CRED_SESSION_USER });
+    const copy = async (path) => {
+      for (const entry of await view.readdir(path)) {
+        const child = path + '/' + entry.name;
+        const target = join(out, child.slice(root.length));
+        const stat = await view.stat(child, { follow: false });
+        if (stat.type === 'directory') { mkdirSync(target, { recursive: true }); await copy(child); }
+        else if (stat.type === 'file') writeFileSync(target, await view.readFile(child), { mode: stat.mode & 0o777 });
+        else if (stat.type === 'symlink') symlinkSync(await view.readlink(child), target);
+      }
+    };
+    mkdirSync(out, { recursive: true });
+    await copy(root);
+    return out;
+  }
+
   /** Copy a session directory (engine path) to `out` on disk. */
   function materialize(root, out, only = null) {
     const copy = (key) => {
@@ -201,5 +225,5 @@ export async function createFacetSession(work, { realGit = false } = {}) {
     return { dir: out, objects: hostObjects(work, out) };
   }
 
-  return { vfs, kernel, git, requests, doCtx, doEnv, materialize, sessionObjects };
+  return { vfs, kernel, files, git, requests, doCtx, doEnv, materialize, materializeAt, sessionObjects };
 }
