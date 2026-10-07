@@ -64,6 +64,7 @@ import {
   buildSyntheticEntry,
   buildScopedSliceForSynthetic,
   syntheticEntryPath,
+  PROJECT_SCAN,
   type ScanBudget,
 } from '../runtime/barrel-synthesizer.js';
 import type { SliceEntry } from '../npm/pre-bundle-facet.js';
@@ -453,17 +454,16 @@ function isWellFormedUnicode(text: string): boolean {
 }
 
 /**
- * What the scans of a module that could not be bundled read, at most: the
- * package's exports (files followed through `export *` and CommonJS
- * reexports) and the project's named imports. They run in the session's
- * isolate on a path that has already failed (a package past its slice cap
- * among them); es-module-lexer's buffer is twice a source's length rounded
- * up to a power of two, and the project scan keeps each file it cannot lex
- * until its walk ends. A file past a bound adds no names rather than its
- * size.
+ * What the scan of a package's exports, for a module that could not be
+ * bundled, reads at most: files followed through `export *` and CommonJS
+ * reexports. The project's named imports are scanned within PROJECT_SCAN,
+ * as for a barrel. Both run in the session's isolate on a path that has
+ * already failed (a package past its slice cap among them);
+ * es-module-lexer's buffer is twice a source's length rounded up to a
+ * power of two, and the project scan keeps each file it cannot lex until
+ * its walk ends. A file past a bound adds no names rather than its size.
  */
 const EXPORT_SCAN: ScanBudget = { files: 64, fileBytes: 1024 * 1024, totalBytes: 4 * 1024 * 1024 };
-const PROJECT_SCAN: ScanBudget = { files: 2048, fileBytes: 1024 * 1024, totalBytes: 16 * 1024 * 1024 };
 
 /**
  * The names the module at `entry` exports, as far as its source and the
@@ -2083,7 +2083,16 @@ export class ViteDevServer {
     const fileCount = countPackageFiles(this.vfs, pkgDir);
     if (fileCount <= BARREL_PKG_FILE_THRESHOLD) return null;
 
-    const names = (await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild))).namedImports.get(pkgName) ?? null;
+    // Bounded, as every scan of the project in the session's isolate. A
+    // scan that left files unread may miss a name one of them imports, and
+    // an entry synthesized from it would bundle without that export: such
+    // a barrel is bundled whole, as any package is, said once per request.
+    const scan = await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN);
+    if (scan.unread !== null) {
+      this.log('warn', `[vite-dev] ${pkgName} is a barrel package (${fileCount} files), but the scan of the project for the names it imports left ${scan.unread} unread; bundling ${pkgName} whole rather than from an entry that could miss one`);
+      return null;
+    }
+    const names = scan.namedImports.get(pkgName) ?? null;
     return {
       pkgName,
       fileCount,
@@ -2092,11 +2101,17 @@ export class ViteDevServer {
     };
   }
 
+  /**
+   * Whether a cached bundle answers this request. A bundle synthesized from
+   * some names (its inputHash set) answers only a barrel request for those
+   * names; any other request, a barrel's whose project scan left files
+   * unread among them, takes only a whole bundle.
+   */
   private cachedModuleMatchesBarrelInput(
     inputHash: string | undefined,
     barrelInfo: BarrelModuleCacheInfo | null,
   ): boolean {
-    if (!barrelInfo) return true;
+    if (!barrelInfo) return !inputHash;
     return !!barrelInfo.inputHash && inputHash === barrelInfo.inputHash;
   }
 
@@ -2576,8 +2591,9 @@ export class ViteDevServer {
     const names = new Set<string>(resolved ? moduleExportNames(this.vfs, resolved) : []);
     if (specifier === pkgName) {
       try {
-        const projectNames = (await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN)).namedImports.get(pkgName);
-        for (const name of projectNames ?? []) names.add(name);
+        const scan = await scanProjectImports(this.vfs, this.root, transformParser(this.esbuild), PROJECT_SCAN);
+        if (scan.unread !== null) this.log('warn', `[vite-dev] the module served for ${specifier} declares the names the project imports from it as far as its scan read: it left ${scan.unread} unread`);
+        for (const name of scan.namedImports.get(pkgName) ?? []) names.add(name);
       } catch { /* the package's own exports above */ }
     }
     return new Response(failingModule(diag, names), {
