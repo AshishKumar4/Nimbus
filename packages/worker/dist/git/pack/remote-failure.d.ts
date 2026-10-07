@@ -28,12 +28,29 @@ export type RemoteFailure =
  * authority may carry.
  */
 export declare function anonymizeUrl(url: string): string;
+/** The credentials a request offered: the user name (git's prompt names it), and whether a password (or token) came with it. */
+export interface OfferedCredentials {
+    username: string;
+    password: boolean;
+}
+/** The user name and password a URL's authority carries ('' for none). */
+export declare function urlCredentials(url: string): {
+    username: string;
+    password: string;
+};
+/**
+ * `text` (what a server sent, to be printed) with the credentials it may
+ * echo taken out: each URL's user name and password, and every secret
+ * offered (a password, a token) wherever it appears.
+ */
+export declare function redactCredentials(text: string, secrets: readonly string[]): string;
 /**
  * git's lines for `failure` of the repository at `url` (as configured or
- * given), `credentials` whether any were offered: the server's plain-text
- * message as `remote:` lines, then git's own.
+ * given), `credentials` what the request offered: the server's plain-text
+ * message as `remote:` lines (credentials and `secrets` taken out), then
+ * git's own.
  */
-export declare function remoteFailureText(url: string, failure: RemoteFailure, credentials: boolean): string;
+export declare function remoteFailureText(url: string, failure: RemoteFailure, credentials: OfferedCredentials, secrets?: readonly string[]): string;
 /** The message of an answer's body, when its type is text/plain (show_http_message); the body is read. */
 export declare function plainTextMessage(contentType: string | null, body: ReadableStream<Uint8Array> | null): Promise<string | undefined>;
 /**

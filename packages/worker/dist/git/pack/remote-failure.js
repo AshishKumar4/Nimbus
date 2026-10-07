@@ -25,30 +25,72 @@ export function anonymizeUrl(url) {
     const at = url.lastIndexOf('@', end - 1);
     return at < start ? url : url.slice(0, start) + url.slice(at + 1);
 }
-/** credential_describe: the protocol and host of `url`, as a credential prompt names them. */
-function credentialDescription(url) {
+/** The user name and password a URL's authority carries ('' for none). */
+export function urlCredentials(url) {
+    const scheme = url.indexOf('://');
+    if (scheme < 0)
+        return { username: '', password: '' };
+    const start = scheme + 3;
+    const slash = url.indexOf('/', start);
+    const end = slash < 0 ? url.length : slash;
+    const at = url.lastIndexOf('@', end - 1);
+    if (at < start)
+        return { username: '', password: '' };
+    const info = url.slice(start, at);
+    const colon = info.indexOf(':');
+    return colon < 0 ? { username: info, password: '' } : { username: info.slice(0, colon), password: info.slice(colon + 1) };
+}
+/** strbuf_add_percentencode with STRBUF_ENCODE_SLASH: every byte but [A-Za-z0-9-_.~] as %XX. */
+function percentEncode(text) {
+    let out = '';
+    for (const byte of new TextEncoder().encode(text)) {
+        const c = String.fromCharCode(byte);
+        out += /[A-Za-z0-9\-_.~]/.test(c) ? c : '%' + byte.toString(16).toUpperCase().padStart(2, '0');
+    }
+    return out;
+}
+/**
+ * credential_format: what a credential prompt names, the protocol, the user
+ * name (if known) and the host of `url`.
+ */
+function credentialDescription(url, username) {
     const scheme = url.indexOf('://');
     if (scheme < 0)
         return url;
     const start = scheme + 3;
     const slash = url.indexOf('/', start);
-    return anonymizeUrl(url.slice(0, slash < 0 ? url.length : slash));
+    const host = anonymizeUrl(url.slice(0, slash < 0 ? url.length : slash)).slice(start);
+    return url.slice(0, start) + (username ? percentEncode(username) + '@' : '') + host;
+}
+/**
+ * `text` (what a server sent, to be printed) with the credentials it may
+ * echo taken out: each URL's user name and password, and every secret
+ * offered (a password, a token) wherever it appears.
+ */
+export function redactCredentials(text, secrets) {
+    let out = text.replace(/([A-Za-z][A-Za-z0-9+.-]*:\/\/)[^\s/@]+@/g, '$1');
+    for (const secret of secrets)
+        if (secret.length > 0)
+            out = out.split(secret).join('<redacted>');
+    return out;
 }
 /**
  * git's lines for `failure` of the repository at `url` (as configured or
- * given), `credentials` whether any were offered: the server's plain-text
- * message as `remote:` lines, then git's own.
+ * given), `credentials` what the request offered: the server's plain-text
+ * message as `remote:` lines (credentials and `secrets` taken out), then
+ * git's own.
  */
-export function remoteFailureText(url, failure, credentials) {
+export function remoteFailureText(url, failure, credentials, secrets = []) {
     // remote-curl.c: the repository's URL ends with a slash, its credentials taken out.
     const shown = anonymizeUrl(url.endsWith('/') ? url : url + '/');
     if (failure.kind === 'transport')
-        return `fatal: unable to access '${shown}': ${failure.detail}\n`;
-    // A 401 with nothing offered is a prompt for a user name, and there is no terminal to ask at.
-    if (failure.status === 401 && !credentials) {
-        return `fatal: could not read Username for '${credentialDescription(url)}': terminal prompts disabled\n`;
+        return `fatal: unable to access '${shown}': ${redactCredentials(failure.detail, secrets)}\n`;
+    // A 401 asks for what was not offered (credential_fill), and there is no terminal to ask at.
+    if (failure.status === 401 && !credentials.password) {
+        const what = credentials.username ? 'Password' : 'Username';
+        return `fatal: could not read ${what} for '${credentialDescription(url, credentials.username)}': terminal prompts disabled\n`;
     }
-    const remote = (failure.message ?? '').trim();
+    const remote = redactCredentials(failure.message ?? '', secrets).trim();
     const lines = remote === '' ? '' : remote.split('\n').map((line) => `remote: ${line}\n`).join('');
     if (failure.status === 404)
         return `${lines}fatal: repository '${shown}' not found\n`;

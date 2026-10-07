@@ -12,7 +12,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
-import { anonymizeUrl, remoteFailureText } from './pack/remote-failure.js';
+import { remoteFailureText, urlCredentials } from './pack/remote-failure.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2803,9 +2803,14 @@ function noSuchRemote(remote) {
  */
 async function networkFailure(ctx, what, result, url) {
     if (result.remoteFailure !== undefined && url !== undefined) {
-        // Credentials offered: the session's, or the URL's own.
-        const credentials = Boolean(ctx.env.GIT_USERNAME || ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN) || anonymizeUrl(url) !== url;
-        await ctx.stderr.write(remoteFailureText(url, result.remoteFailure, credentials));
+        // The credentials offered, the session's or the URL's own; the secrets among them never printed.
+        const inUrl = urlCredentials(url);
+        const password = ctx.env.GIT_PASSWORD || ctx.env.GIT_TOKEN || inUrl.password;
+        const username = ctx.env.GIT_USERNAME || inUrl.username;
+        // And the Basic authorization they were sent as, which a server may echo.
+        const secrets = [ctx.env.GIT_PASSWORD, ctx.env.GIT_TOKEN, inUrl.password, password ? btoa(`${username}:${password}`) : '']
+            .filter((secret) => Boolean(secret));
+        await ctx.stderr.write(remoteFailureText(url, result.remoteFailure, { username, password: Boolean(password) }, secrets));
         return 128;
     }
     await ctx.stderr.write(`\n[git] ${what} failed: ${result.error}\n`);
