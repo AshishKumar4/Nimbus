@@ -4,7 +4,10 @@
 // files at every level is the oracle for which paths the worktree holds
 // (`ls-files -t`: H in, S out) and for the info/sparse-checkout file, which
 // coneSparseCheckout writes byte for byte and parseConeSparseCheckout reads
-// back; and the config booleans git reads (configBoolean).
+// back as the cone coneOf makes. Files written by hand (the full cone "/*",
+// a parent left out, CR LF, an escaped name) are read as `git sparse-checkout
+// reapply` reads them, and under core.ignoreCase paths compare as git's do;
+// what is not a cone pattern is not read as one.
 
 import assert from 'node:assert/strict';
 import { execFileSync } from 'node:child_process';
@@ -12,7 +15,7 @@ import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'nod
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-import { coneMatcher, coneSparseCheckout, configBoolean, parseConeSparseCheckout } from '../../packages/worker/src/git/pack/sparse.ts';
+import { coneMatcher, coneOf, coneSparseCheckout, parseConeSparseCheckout } from '../../packages/worker/src/git/pack/sparse.ts';
 
 const work = mkdtempSync(join(tmpdir(), 'nimbus-sparse-cone-'));
 const git = (cwd, args) => execFileSync('git', args, { cwd, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b' } });
@@ -35,6 +38,7 @@ try {
     assert.equal(coneSparseCheckout(dirs), file, `set ${JSON.stringify(dirs)}: the sparse-checkout file`);
     const parsed = parseConeSparseCheckout(file);
     assert.ok(parsed !== null, `set ${JSON.stringify(dirs)}: cone-shaped`);
+    assert.deepEqual(parsed, coneOf(dirs), `set ${JSON.stringify(dirs)}: the cone read back is the one set makes`);
     const matcher = coneMatcher(parsed);
     const expected = git(repo, ['ls-files', '-t']).trim().split('\n').map((line) => [line.slice(2), line[0] === 'H']);
     for (const [path, inside] of expected) assert.equal(matcher.includes(path), inside, `set ${JSON.stringify(dirs)}: ${path}`);
@@ -46,12 +50,33 @@ try {
   }
   console.log(`  ok  ${sets.length} cones: host git's sparse-checkout file and in/out paths`);
 
-  assert.equal(parseConeSparseCheckout('/*\n!/*/\n*.txt\n'), null, 'a non-cone pattern is not read as a cone');
-  assert.equal(configBoolean('[core]\n\tsparseCheckout = true\n\tsparseCheckoutCone = true\n', 'core', 'sparsecheckout'), true);
-  assert.equal(configBoolean('[Core]\n\tSparseCheckout\n', 'core', 'sparseCheckout'), true, 'a key alone is true');
-  assert.equal(configBoolean('[core]\n\tsparseCheckout = yes\n\tsparseCheckout = off # later wins\n', 'core', 'sparseCheckout'), false);
-  assert.equal(configBoolean('[remote "origin"]\n\tsparseCheckout = true\n[core]\n', 'core', 'sparseCheckout'), undefined);
-  console.log('  ok  config booleans as git reads them');
+  // Written by hand, applied by `git sparse-checkout reapply`: the worktree it holds is the matcher's.
+  const handWritten = [
+    { file: '/*\n', label: 'the full cone' },
+    { file: '/*\n!/*/\n/*\n', label: 'the full cone again after its negation' },
+    { file: '/*\n!/*/\n/a/b/\n', label: 'a recursive directory without its parents' },
+    { file: '/*\r\n!/*/\r\n/a/\r\n!/a/*/\r\n/a/b/\r\n', label: 'CR LF lines' },
+    { file: '/*\n!/*/\n/x\\*y/\n', label: 'an escaped glob character' },
+    { file: '/*\n!/*/\n/A/\n!/A/*/\n/A/B/\n/D/\n', label: 'other case, core.ignoreCase', ignoreCase: true },
+    { file: '/*\n!/*/\n/A/\n', label: 'other case, case-sensitive' },
+    { file: '# a comment\n/*\n!/*/\n\n/c/  \n', label: 'comments, blank lines and trailing spaces' },
+  ];
+  for (const { file, label, ignoreCase = false } of handWritten) {
+    writeFileSync(join(repo, '.git/info/sparse-checkout'), file);
+    git(repo, ['-c', `core.ignorecase=${ignoreCase}`, 'sparse-checkout', 'reapply']);
+    const cone = parseConeSparseCheckout(file);
+    assert.ok(cone !== null, `${label}: cone-shaped`);
+    const matcher = coneMatcher(cone, ignoreCase);
+    for (const line of git(repo, ['ls-files', '-t']).trim().split('\n')) {
+      assert.equal(matcher.includes(line.slice(2)), line[0] === 'H', `${label}: ${line.slice(2)}`);
+    }
+  }
+  console.log(`  ok  ${handWritten.length} sparse-checkout files written by hand: host git's in/out paths`);
+
+  for (const file of ['/*\n!/*/\n*.txt\n', '/*\n!/*/\n!/a/*/\n', '/*\n!/*/\n/a/**/\n', '/*\n!/*/\n/a\n', '/*\n!/*/\n/a*/\n', '/*\n!/*/\n/a/\n!/a/*/\n/a/\n']) {
+    assert.equal(parseConeSparseCheckout(file), null, `not cone patterns: ${JSON.stringify(file)}`);
+  }
+  console.log('  ok  what is not a cone pattern is not read as one');
 } finally {
   rmSync(work, { recursive: true, force: true });
 }

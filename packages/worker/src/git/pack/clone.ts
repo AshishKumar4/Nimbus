@@ -17,7 +17,7 @@
  */
 
 import { decodeBatch, encodeBatch, parseTree, CheckoutPlan, MODE_GITLINK, MODE_SYMLINK, MODE_TREE } from './plan.js';
-import { coneMatcher, coneSparseCheckout } from './sparse.js';
+import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall, type PackFiles, type PackSummary } from './install.js';
 import { ByteLru } from './byte-lru.js';
@@ -553,7 +553,7 @@ export async function cloneFast(context: CloneContext, request: CloneRequest, ad
       const found = trees.get(oidToHex(data, at));
       if (found === undefined) throw new PackFormatError('the pack lacks tree ' + oidToHex(data, at));
       return found;
-    }, request.sparse === true ? coneMatcher([]) : undefined);
+    }, request.sparse === true ? coneMatcher(coneOf([])) : undefined);
   };
   const head = tagObject ?? commit;
   const promisorRefs = head + ' HEAD\n' + head + ' ' + fullRef + '\n';
@@ -875,7 +875,7 @@ export async function clonePlanFromStore(
   if (commitObject === null || commitObject.type !== 'commit') throw new PackFormatError('the clone lacks commit ' + request.commit);
   const tree = commitTree(commitObject.data, request.commit);
   const trees = await readTrees(store, tree);
-  const plan = CheckoutPlan.fromTrees(trees.get(tree)!, (data, at) => trees.get(oidToHex(data, at))!, request.sparse === true ? coneMatcher([]) : undefined);
+  const plan = CheckoutPlan.fromTrees(trees.get(tree)!, (data, at) => trees.get(oidToHex(data, at))!, request.sparse === true ? coneMatcher(coneOf([])) : undefined);
   const cacheTree = cacheTreeOf('', tree, trees).built.bytes;
   trees.clear();
   const writer = context.writer();

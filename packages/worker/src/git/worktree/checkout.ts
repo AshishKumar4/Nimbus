@@ -23,8 +23,15 @@
  * In a sparse checkout (unpack-trees.c with its sparse patterns), a path
  * outside the cone takes the target's entry in the index with skip-worktree
  * set and nothing in the worktree: its blob is not read (nor fetched, in a
- * partial clone), and no directory is made for it. A skip-worktree entry is
- * up to date whatever the worktree holds (verify_uptodate skips it).
+ * partial clone), no directory is made for it, and what the worktree holds
+ * there is not looked at (verify_absent passes a new skip-worktree entry). A
+ * skip-worktree entry is up to date whatever the worktree holds
+ * (verify_uptodate skips it); one whose file is there is not skip-worktree
+ * by the time it is read (WorktreeRepo.readIndex). Then the cone is applied
+ * to every entry the trees left as it was (apply_sparse_checkout): one
+ * outside it leaves the worktree, if up to date (else it stays, and is
+ * named), and one inside comes back. A directory outside the cone goes once
+ * a removal empties it.
  */
 
 import { NewEntries, S_IFGITLINK, S_IFMT, comparePaths, type DirCache, type IndexEdit } from './dircache.js';
@@ -100,6 +107,8 @@ export interface SwitchContext {
   operation: CheckoutOperation;
   /** The worktree's sparse checkout (WorktreeRepo.sparseMatcher), or null. */
   sparse?: SparseMatcher | null;
+  /** Where git's warnings go (display_warning_msgs): a checkout's, not a reset's. */
+  warn?: (text: string) => Promise<void>;
 }
 
 type Kind = 'blob' | 'tree' | 'commit' | null;
@@ -108,7 +117,9 @@ type Op =
   | { method: 'update-blob-to-tree'; path: string; present: boolean }
   | { method: 'create' | 'update' | 'update-dir-to-blob' | 'mkdir-index'; path: string; oid: string; mode: number }
   /** Indexed skip-worktree; a file the worktree holds there (`present`, up to date) goes. */
-  | { method: 'skip-worktree'; path: string; oid: string; mode: number; present: boolean };
+  | { method: 'skip-worktree'; path: string; oid: string; mode: number; present: boolean }
+  /** Entry `index`, kept, made skip-worktree; its file (a gitlink's empty directory) goes when `present`. */
+  | { method: 'sparsify'; path: string; index: number; gitlink: boolean; present: boolean };
 
 /** A small binary heap of paths in git's order: parents come out before what is below them. */
 class PathQueue {
@@ -151,6 +162,8 @@ class PathQueue {
 
 const kindOfMode = (mode: number): Kind => ((mode & S_IFMT) === S_IFGITLINK ? 'commit' : 'blob');
 const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf('/')));
+const hasCode = (error: unknown, ...codes: string[]) =>
+  error instanceof Error && 'code' in error && codes.includes(error.code as string);
 
 /**
  * Move the worktree from `head` (a tree; null when forced or unborn) to
@@ -225,11 +238,15 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     for (let dir = parentOf(path); dir; dir = parentOf(dir)) if (replaced.has(dir)) return dir;
     return null;
   };
-  // A directory a file replaces: what the index and the worktree hold below it is looked at too.
-  const replace = async (path: string) => {
+  // A directory a file replaces: what the index holds below it is looked at too.
+  const replaceInIndex = (path: string) => {
     replaced.add(path);
     const [lo, hi] = dc.rangeUnder(path);
     for (let i = lo; i < hi; i++) queue.push(dc.path(i));
+  };
+  // And what the worktree holds below it.
+  const replace = async (path: string) => {
+    replaceInIndex(path);
     const below = async (dir: string): Promise<void> => {
       for (const { name, type } of await tree.fs.list(dir)) {
         const child = `${dir}/${name}`;
@@ -264,7 +281,7 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     // Outside a sparse checkout's cone the target's entry is indexed skip-worktree, not written,
     // and a file the worktree still held there goes (unpack-trees' CE_WT_REMOVE).
     const write = (method: 'create' | 'update' | 'update-dir-to-blob') => {
-      if (outside(path) && method !== 'update-dir-to-blob') {
+      if (outside(path)) {
         // Only a file the index had checked out: what is at a skip-worktree entry's path is not git's.
         const materialized = entry >= 0 && !dc.skipWorktree(entry) && st !== null && st.type !== 'directory';
         ops.push({ method: 'skip-worktree', path, oid: leaf!.oid, mode: leaf!.mode, present: materialized });
@@ -294,6 +311,12 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
       }
       if (!force && oldBlob) {
         if (!(oldBlob.oid === leaf!.oid && oldBlob.mode === leaf!.mode)) refusal.local.push(path);
+        continue;
+      }
+      // Outside the cone the entries below go from the index, and the worktree is not looked at.
+      if (outside(path)) {
+        replaceInIndex(path);
+        write('update-dir-to-blob');
         continue;
       }
       if (workType === 'blob') {
@@ -366,7 +389,8 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
       if (!(oldBlob.oid === leaf!.oid && oldBlob.mode === leaf!.mode)) refusal.local.push(path);
       continue;
     }
-    if (workType === null) write('create');
+    // Outside the cone, whatever the worktree holds here stays: the entry is indexed skip-worktree.
+    if (workType === null || outside(path)) write('create');
     else if (workType === 'tree') {
       await replace(path);
       write('update-dir-to-blob');
@@ -382,6 +406,35 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     }, ctx.operation);
   }
 
+  // apply_sparse_checkout for each entry the trees left as it was: outside the cone it is made
+  // skip-worktree, its file going if up to date (a reset's always), else staying and named; inside,
+  // one that was skip-worktree is written.
+  const left: string[] = [];
+  if (sparse !== null) {
+    const moved = new Set(ops.map((op) => op.path));
+    for (let i = 0; i < dc.count; i++) {
+      if (dc.stage(i) !== 0) continue;
+      const path = dc.path(i);
+      const inside = sparse.includes(path);
+      if (inside !== dc.skipWorktree(i) || moved.has(path)) continue;
+      const gitlink = kindOfMode(dc.mode(i)) === 'commit';
+      const st = await lstat(path);
+      if (inside) {
+        // Its file is not there (it would not be skip-worktree if it were): it is written.
+        if (st === null) ops.push({ method: gitlink ? 'mkdir-index' : 'create', path, oid: dc.oid(i), mode: dc.mode(i) });
+      } else if (gitlink || force || st === null || (st.type !== 'directory' && await compareEntry(tree, dc, i, path, st) === null)) {
+        ops.push({ method: 'sparsify', path, index: i, gitlink, present: st !== null && (st.type === 'directory') === gitlink });
+      } else {
+        left.push(path);
+      }
+    }
+  }
+  if (left.length > 0 && ctx.warn) {
+    await ctx.warn('warning: The following paths are not up to date and were left despite sparse patterns:\n'
+      + left.map((path) => `\t${path}\n`).join('')
+      + '\nAfter fixing the above paths, you may want to run `git sparse-checkout reapply`.\n');
+  }
+
   const removed = new Set<number>();
   const unindex = (path: string) => {
     const at = dc.find(path);
@@ -393,13 +446,28 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     for (let i = lo; i < hi; i++) removed.add(i);
   };
   const file = (path: string) => `${root}/${path}`;
+  const unlinked: string[] = [];
+  const unlink = async (path: string) => {
+    await writer.unlink(file(path));
+    unlinked.push(path);
+  };
   for (const op of ops) {
     if (op.method === 'skip-worktree') {
-      if (op.present) await writer.unlink(file(op.path));
+      if (op.present) await unlink(op.path);
+      continue;
+    }
+    if (op.method === 'sparsify') {
+      if (op.present && op.gitlink) {
+        // An uninitialized submodule's empty directory; a populated one stays.
+        try { await writer.rmdir(file(op.path)); } catch (error) { if (!hasCode(error, 'ENOTEMPTY')) throw error; }
+      } else if (op.present) {
+        await unlink(op.path);
+      }
+      dc.setSkipWorktree(op.index, true);
       continue;
     }
     if (op.method !== 'delete' && op.method !== 'delete-index' && op.method !== 'update-blob-to-tree') continue;
-    if (op.method === 'delete' || (op.method === 'update-blob-to-tree' && op.present)) await writer.unlink(file(op.path));
+    if (op.method === 'delete' || (op.method === 'update-blob-to-tree' && op.present)) await unlink(op.path);
     unindex(op.path);
   }
   // A directory goes after what is in it: deepest first.
@@ -414,6 +482,19 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     } catch (error) {
       // A directory that still holds untracked files stays, as rmdir(2) leaves it.
       if (!(error instanceof Error && 'code' in error && error.code === 'ENOTEMPTY' && op.method !== 'update-dir-to-blob')) throw error;
+    }
+  }
+  // A directory outside the cone goes once a removal empties it, and so on up (schedule_dir_for_removal).
+  if (sparse !== null) {
+    for (const path of unlinked) {
+      for (let dir = parentOf(path); dir && !sparse.directory(dir); dir = parentOf(dir)) {
+        try {
+          await writer.rmdir(file(dir));
+        } catch (error) {
+          if (hasCode(error, 'ENOTEMPTY', 'ENOENT', 'ENOTDIR')) break;
+          throw error;
+        }
+      }
     }
   }
   for (const op of ops) {
