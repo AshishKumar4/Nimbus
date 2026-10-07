@@ -152,6 +152,24 @@ export function* commitRecords(bytes) {
     }
 }
 /**
+ * The graph a clone writes from its staged record lists, or null when it
+ * writes none: a parent not recorded, or anything else that fails to
+ * build. A graph is the clone's to offer, never its to fail on.
+ */
+export function cloneGraph(lists) {
+    try {
+        const records = [];
+        // One at a time: a history's records are too many to spread as arguments.
+        for (const list of lists)
+            for (const record of commitRecords(list))
+                records.push(record);
+        return { file: writeCommitGraph(graphCommits(records)), commits: records.length };
+    }
+    catch {
+        return null;
+    }
+}
+/**
  * The graph's commits from their records (any order, each once): sorted by
  * id, each parent resolved to its position. A parent missing from the
  * records throws: `--reachable` takes every one.
@@ -261,8 +279,12 @@ function generations(graph) {
     }
     return { levels, corrected };
 }
-/** The graph file for `graph`'s commits (one layer, no base). */
-export function writeCommitGraph(graph) {
+/**
+ * The graph file for `graph`'s commits (one layer, no base); with
+ * `filters` (bloomFilter's, one per commit in graph order), its changed-path
+ * chunks too, as `--changed-paths` with commitGraph.changedPathsVersion=2.
+ */
+export function writeCommitGraph(graph, filters) {
     const { count, oids, trees, dates, parentStart, parents } = graph;
     const { levels, corrected } = generations(graph);
     const fanout = new Uint8Array(256 * 4);
@@ -323,7 +345,199 @@ export function writeCommitGraph(graph) {
         edges.forEach((value, i) => view.setUint32(i * 4, value));
         chunks.push(['EDGE', edge]);
     }
+    if (filters !== undefined) {
+        if (filters.length !== count)
+            throw new PackFormatError(`${filters.length} changed-path filters for ${count} commits`);
+        const index = new Uint8Array(count * 4);
+        const indexView = new DataView(index.buffer);
+        let size = 0;
+        filters.forEach((filter, i) => indexView.setUint32(i * 4, (size += filter.byteLength)));
+        const bloom = new Uint8Array(BLOOM_HEADER_BYTES + size);
+        const bloomView = new DataView(bloom.buffer);
+        bloomView.setUint32(0, BLOOM_HASH_VERSION);
+        bloomView.setUint32(4, BLOOM_HASHES);
+        bloomView.setUint32(8, BLOOM_BITS_PER_ENTRY);
+        let at = BLOOM_HEADER_BYTES;
+        for (const filter of filters) {
+            bloom.set(filter, at);
+            at += filter.byteLength;
+        }
+        chunks.push(['BIDX', index], ['BDAT', bloom]);
+    }
     return chunkFile(chunks);
+}
+// ── Changed-path filters (git's bloom.c, hash version 2) ────────────────────
+const BLOOM_HASH_VERSION = 2;
+const BLOOM_HASHES = 7;
+const BLOOM_BITS_PER_ENTRY = 10;
+const BLOOM_HEADER_BYTES = 12;
+/** More changed paths than this (directories included) and a commit's filter says "too large". */
+export const BLOOM_MAX_CHANGED_PATHS = 512;
+const BLOOM_TOO_LARGE = Uint8Array.of(0xff);
+/** murmur3_seeded_v2: Murmur3 32-bit over the bytes as unsigned. */
+export function murmur3(seed, data) {
+    const c1 = 0xcc9e2d51;
+    const c2 = 0x1b873593;
+    let h = seed >>> 0;
+    const blocks = data.byteLength >>> 2;
+    for (let i = 0; i < blocks; i++) {
+        let k = (data[4 * i] | (data[4 * i + 1] << 8) | (data[4 * i + 2] << 16) | (data[4 * i + 3] << 24)) >>> 0;
+        k = Math.imul(k, c1);
+        k = (k << 15) | (k >>> 17);
+        k = Math.imul(k, c2);
+        h ^= k;
+        h = (h << 13) | (h >>> 19);
+        h = (Math.imul(h, 5) + 0xe6546b64) | 0;
+    }
+    const tail = blocks * 4;
+    let k1 = 0;
+    switch (data.byteLength & 3) {
+        case 3: k1 ^= data[tail + 2] << 16; // falls through
+        case 2: k1 ^= data[tail + 1] << 8; // falls through
+        case 1:
+            k1 ^= data[tail];
+            k1 = Math.imul(k1, c1);
+            k1 = (k1 << 15) | (k1 >>> 17);
+            k1 = Math.imul(k1, c2);
+            h ^= k1;
+    }
+    h ^= data.byteLength;
+    h ^= h >>> 16;
+    h = Math.imul(h, 0x85ebca6b);
+    h ^= h >>> 13;
+    h = Math.imul(h, 0xc2b2ae35);
+    h ^= h >>> 16;
+    return h >>> 0;
+}
+/**
+ * A commit's changed-path filter from the paths its first-parent diff
+ * changed (null: more than BLOOM_MAX_CHANGED_PATHS changes): each path and
+ * its leading directories, 10 bits each, 7 hashes; one zero byte for no
+ * paths, one 0xff byte when there are too many.
+ */
+export function bloomFilter(changed) {
+    if (changed === null || changed.length > BLOOM_MAX_CHANGED_PATHS)
+        return BLOOM_TOO_LARGE;
+    const paths = new Map();
+    for (const path of changed) {
+        // The path, then each leading directory, without its '/'.
+        for (let end = path.byteLength; end > 0; end = path.lastIndexOf(0x2f /* / */, end - 1)) {
+            const prefix = path.subarray(0, end);
+            paths.set(latin1.decode(prefix), prefix);
+        }
+    }
+    if (paths.size > BLOOM_MAX_CHANGED_PATHS)
+        return BLOOM_TOO_LARGE;
+    const filter = new Uint8Array(Math.max(1, Math.ceil((paths.size * BLOOM_BITS_PER_ENTRY) / 8)));
+    const bits = filter.byteLength * 8;
+    for (const path of paths.values()) {
+        const h0 = murmur3(0x293ae76f, path);
+        const h1 = murmur3(0x7e646e2c, path);
+        for (let i = 0; i < BLOOM_HASHES; i++) {
+            const bit = ((h0 + Math.imul(i, h1)) >>> 0) % bits;
+            filter[bit >>> 3] |= 1 << (bit & 7);
+        }
+    }
+    return filter;
+}
+const MODE_TREE = 0o040000;
+const EMPTY = new Uint8Array(0);
+function treeEntries(tree) {
+    const entries = [];
+    for (let p = 0; p < tree.byteLength;) {
+        let mode = 0;
+        while (p < tree.byteLength && tree[p] !== 0x20)
+            mode = mode * 8 + (tree[p++] - 0x30);
+        const nameStart = ++p;
+        while (p < tree.byteLength && tree[p] !== 0)
+            p++;
+        if (p + 1 + OID_BYTES > tree.byteLength)
+            throw new PackFormatError('tree entry is truncated');
+        entries.push({ name: tree.subarray(nameStart, p), mode, oid: tree.subarray(p + 1, p + 1 + OID_BYTES) });
+        p += 1 + OID_BYTES;
+    }
+    return entries;
+}
+const isTree = (mode) => (mode & 0o170000) === MODE_TREE;
+/** base_name_compare: names by bytes, a tree's as if it ended in '/'. */
+function compareEntries(a, b) {
+    const n = Math.min(a.name.byteLength, b.name.byteLength);
+    for (let i = 0; i < n; i++)
+        if (a.name[i] !== b.name[i])
+            return a.name[i] - b.name[i];
+    const ca = a.name.byteLength > n ? a.name[n] : isTree(a.mode) ? 0x2f : 0;
+    const cb = b.name.byteLength > n ? b.name[n] : isTree(b.mode) ? 0x2f : 0;
+    return ca - cb;
+}
+function joinPath(base, name) {
+    if (base.byteLength === 0)
+        return name;
+    const out = new Uint8Array(base.byteLength + 1 + name.byteLength);
+    out.set(base);
+    out[base.byteLength] = 0x2f;
+    out.set(name, base.byteLength + 1);
+    return out;
+}
+/**
+ * The paths a recursive tree diff (git's diff_tree_oid, no renames) of
+ * `from` (null: the empty tree) to `to` changes: every file, symlink or
+ * submodule added, removed or modified (its id or mode), a directory's by
+ * each entry below it. Null once there are more than `limit`.
+ */
+export async function changedPaths(read, from, to, limit = BLOOM_MAX_CHANGED_PATHS) {
+    const changed = [];
+    const add = (path) => changed.push(path) <= limit;
+    // Every leaf below a tree only one side has.
+    const all = async (tree, base) => {
+        for (const entry of treeEntries(await read(tree))) {
+            const path = joinPath(base, entry.name);
+            if (isTree(entry.mode) ? !(await all(entry.oid, path)) : !add(path))
+                return false;
+        }
+        return true;
+    };
+    const walk = async (a, b, base) => {
+        const left = a === null ? [] : treeEntries(await read(a));
+        const right = b === null ? [] : treeEntries(await read(b));
+        let i = 0;
+        let j = 0;
+        while (i < left.length || j < right.length) {
+            const cmp = i >= left.length ? 1 : j >= right.length ? -1 : compareEntries(left[i], right[j]);
+            if (cmp < 0) {
+                const entry = left[i++];
+                const path = joinPath(base, entry.name);
+                if (isTree(entry.mode) ? !(await all(entry.oid, path)) : !add(path))
+                    return false;
+            }
+            else if (cmp > 0) {
+                const entry = right[j++];
+                const path = joinPath(base, entry.name);
+                if (isTree(entry.mode) ? !(await all(entry.oid, path)) : !add(path))
+                    return false;
+            }
+            else {
+                const l = left[i++];
+                const r = right[j++];
+                if (l.mode === r.mode && equalOid(l.oid, r.oid))
+                    continue;
+                const path = joinPath(base, l.name);
+                if (isTree(l.mode)) {
+                    if (!(await walk(l.oid, r.oid, path)))
+                        return false;
+                }
+                else if (!add(path))
+                    return false;
+            }
+        }
+        return true;
+    };
+    return (await walk(from, to, EMPTY)) ? changed : null;
+}
+function equalOid(a, b) {
+    for (let i = 0; i < OID_BYTES; i++)
+        if (a[i] !== b[i])
+            return false;
+    return true;
 }
 /** git's chunk-format.c: header, table of contents, chunks, SHA-1 trailer. */
 function chunkFile(chunks) {

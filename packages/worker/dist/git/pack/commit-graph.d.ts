@@ -36,6 +36,15 @@ export declare const COMMIT_GRAPH_CHAIN: string;
 export declare function commitRecord(oid: Uint8Array, data: Uint8Array): Uint8Array;
 /** The records of a staged list (commitRecord's, back to back), as views of its bytes. */
 export declare function commitRecords(bytes: Uint8Array): Generator<Uint8Array>;
+/**
+ * The graph a clone writes from its staged record lists, or null when it
+ * writes none: a parent not recorded, or anything else that fails to
+ * build. A graph is the clone's to offer, never its to fail on.
+ */
+export declare function cloneGraph(lists: readonly Uint8Array[]): {
+    file: Uint8Array;
+    commits: number;
+} | null;
 /** The commits of a graph, held as columns, in graph (id) order. */
 export interface GraphCommits {
     count: number;
@@ -53,8 +62,32 @@ export interface GraphCommits {
  * records throws: `--reachable` takes every one.
  */
 export declare function graphCommits(records: Iterable<Uint8Array>): GraphCommits;
-/** The graph file for `graph`'s commits (one layer, no base). */
-export declare function writeCommitGraph(graph: GraphCommits): Uint8Array;
+/**
+ * The graph file for `graph`'s commits (one layer, no base); with
+ * `filters` (bloomFilter's, one per commit in graph order), its changed-path
+ * chunks too, as `--changed-paths` with commitGraph.changedPathsVersion=2.
+ */
+export declare function writeCommitGraph(graph: GraphCommits, filters?: readonly Uint8Array[]): Uint8Array;
+/** More changed paths than this (directories included) and a commit's filter says "too large". */
+export declare const BLOOM_MAX_CHANGED_PATHS = 512;
+/** murmur3_seeded_v2: Murmur3 32-bit over the bytes as unsigned. */
+export declare function murmur3(seed: number, data: Uint8Array): number;
+/**
+ * A commit's changed-path filter from the paths its first-parent diff
+ * changed (null: more than BLOOM_MAX_CHANGED_PATHS changes): each path and
+ * its leading directories, 10 bits each, 7 hashes; one zero byte for no
+ * paths, one 0xff byte when there are too many.
+ */
+export declare function bloomFilter(changed: readonly Uint8Array[] | null): Uint8Array;
+/** A tree's entries, by its id. */
+export type TreeReader = (oid: Uint8Array) => Promise<Uint8Array>;
+/**
+ * The paths a recursive tree diff (git's diff_tree_oid, no renames) of
+ * `from` (null: the empty tree) to `to` changes: every file, symlink or
+ * submodule added, removed or modified (its id or mode), a directory's by
+ * each entry below it. Null once there are more than `limit`.
+ */
+export declare function changedPaths(read: TreeReader, from: Uint8Array | null, to: Uint8Array, limit?: number): Promise<Uint8Array[] | null>;
 /** A layer's name: its trailing hash, in hex. */
 export declare function graphName(file: Uint8Array): string;
 //# sourceMappingURL=commit-graph.d.ts.map
