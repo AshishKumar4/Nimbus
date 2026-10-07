@@ -343,6 +343,8 @@ class PeerProcessHost implements ProcessHost {
   private readonly coordDoId: string;
   /** pid → the isolate token of the peer currently hosting that process. */
   private readonly tokensInUse = new Map<number, string>();
+  /** workerKey → how to end an open process whose host reports its reset (hostLost). */
+  private readonly opens = new Map<string, { capability: string; lose: (cause: unknown) => void }>();
 
   constructor(private readonly ctx: DurableObjectState, env: unknown, private readonly network: () => WorkspaceNetwork) {
     if (env === null || (typeof env !== 'object' && typeof env !== 'function')) {
@@ -405,10 +407,11 @@ class PeerProcessHost implements ProcessHost {
     });
     hostLeg.catch(() => {});
     // The platform resetting the peer under the process ends the process, and
-    // every leg says so by one name. It shows two ways: the held leg fails
-    // (a coordinator's own release settles it cleanly), or, as measured on
+    // every leg says so by one name. It shows three ways: the held leg fails
+    // (a coordinator's own release settles it cleanly); or, as measured on
     // Cloudflare (2026-10-07), the held leg stays open and the next call to
-    // the peer fails, after about 10 s, with the reset's own words.
+    // the peer fails, after about 10 s, with the reset's own words; or the
+    // peer's next incarnation reports it (hostLost) from its own alarm.
     let gone: ProcessHostLost | null = null;
     let markLost: (lost: ProcessHostLost) => void = () => {};
     const hostLost = new Promise<never>((_, reject) => { markLost = reject; });
@@ -421,6 +424,7 @@ class PeerProcessHost implements ProcessHost {
       return gone;
     };
     hostLeg.then(() => undefined, loseHost);
+    this.opens.set(params.workerKey, { capability: webSocketCapability, lose: loseHost });
     /** A call to the peer that failed because the peer was reset is the loss; any other failure is its own. */
     const lostOr = (error: unknown): unknown => gone ?? (peerWasReset(error) ? loseHost(error) : error);
     // The peer starts the runner as part of hosting it; this reads back that
@@ -442,6 +446,7 @@ class PeerProcessHost implements ProcessHost {
       ]);
     } catch (error) {
       this.tokensInUse.delete(params.pid);
+      this.opens.delete(params.workerKey);
       // Awaited, not fired off: a spawn that rejects must mean nothing was
       // left running, which is what a throw from `processes().spawn` means on
       // the other substrate.
@@ -471,6 +476,7 @@ class PeerProcessHost implements ProcessHost {
         if (released) return;
         released = true;
         this.tokensInUse.delete(params.pid);
+        this.opens.delete(params.workerKey);
         try {
           await this._cancel(params.workerKey, placement.peerName);
         } finally {
@@ -481,6 +487,13 @@ class PeerProcessHost implements ProcessHost {
         `peer '${placement.peerName}' (isolate ${placement.isolateToken.slice(0, 8)})`
         + `; ${describeImageDelivery(this.imageDelivery)}`,
     };
+  }
+
+  hostLost(workerKey: string, capability: string): boolean {
+    const open = this.opens.get(workerKey);
+    if (open === undefined || open.capability !== capability) return false;
+    open.lose(new Error('the host restarted without it'));
+    return true;
   }
 
   /**

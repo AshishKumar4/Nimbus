@@ -619,6 +619,14 @@ export interface ProcessHost {
    */
   runOnce<T>(params: OneShotParams, consume: (response: Response) => Promise<T>): Promise<T>;
   open(params: ProcessHostParams): Promise<HostedProcess>;
+  /**
+   * The actor hosting `workerKey` found, in a new incarnation, that it no
+   * longer holds the process (a peer's own alarm, `hostLost` op), and proved
+   * it hosted it with the capability minted for that open. The process is
+   * lost ({@link ProcessHostLost}). False when this host has no such open.
+   * A facet's host is the coordinator itself, so it never hears this.
+   */
+  hostLost?(workerKey: string, capability: string): boolean;
 }
 
 /**

@@ -84,7 +84,10 @@ import {
 import type { CredentialedVfs, SqliteVFS, WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { BatchInodeEntry } from '@nimbus-sh/platform/w7-frame.js';
 import { getSymlinkRegistry } from '@nimbus-sh/core/vfs/symlink-registry.js';
-import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
+import { MAX_RPC_SAFE_PAYLOAD_BYTES, RESIDENT_KEEPALIVE_MS } from '@nimbus-sh/platform/limits.js';
+import { hostNamespaceBinding, hostOpDispatch } from '@nimbus-sh/fabric/host-dispatch.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
+import { timers } from '@nimbus-sh/fabric/timers.js';
 import {
   FS_LIST_PAGE_LIMIT,
   FS_READ_BATCH_PATH_LIMIT,
@@ -2041,6 +2044,17 @@ export async function _rpcHostProcess(
     cancelled,
     cancel,
   });
+  // What this host's next incarnation needs to tell the session it lost the
+  // process: kept while it hosts, with the alarm that will look (hostingWatchFired).
+  const hostingKey = `${HOSTING_KEY_PREFIX}${workerKey}`;
+  const hosting: HostingRecord = {
+    coordinatorDoId: hostOpts.coordinatorDoId,
+    ...(hostOpts.route === undefined ? {} : { route: hostOpts.route }),
+    workerKey,
+    capability: hostOpts.webSocketCapability,
+  };
+  void self.ctx.storage.put(hostingKey, hosting);
+  void timers(self, self.ctx).schedule(HOSTING_WATCH_REASON, Date.now() + HOSTING_WATCH_MS);
 
   let facet: ResidentFacet | undefined;
   try {
@@ -2071,7 +2085,71 @@ export async function _rpcHostProcess(
     // it routes that request into the released facet, which is exactly what a
     // coordinator-hosted one does — it says the process is no longer running.
     await facet?.release();
+    await self.ctx.storage.delete(hostingKey);
   }
+}
+
+/**
+ * Live production DO storage keys: one row per process this host holds for a
+ * coordinator, while it holds it. Never rename (a migration).
+ */
+const HOSTING_KEY_PREFIX = 'hosting:';
+/** The timer reason a hosting peer's alarm carries (session/hibernation.ts AlarmReason). */
+export const HOSTING_WATCH_REASON = 'hosting-watch';
+/**
+ * How often a host holding a process looks for its own reset: the resident
+ * keep-alive's cadence, so the session learns of it within one cadence.
+ */
+export const HOSTING_WATCH_MS = RESIDENT_KEEPALIVE_MS;
+
+/** What a host keeps of a process it holds: whom to tell, and the proof it hosted it. */
+interface HostingRecord {
+  coordinatorDoId: string;
+  route?: HostRoute;
+  workerKey: string;
+  /** The per-open capability (HostProcessOpts.webSocketCapability): known only to the session and this host. */
+  capability: string;
+}
+
+/**
+ * The hosting alarm. A row whose process this incarnation does not hold is
+ * one the platform reset this object under (a new incarnation remembers
+ * nothing of the processes it held, and the held leg that would have said so
+ * may stay open, measured 2026-10-07): the session is told at once, and the
+ * row dropped. Answers when to look again, or null when nothing is hosted.
+ */
+export async function hostingWatchFired(self: RpcHost): Promise<number | null> {
+  const rows = await self.ctx.storage.list({ prefix: HOSTING_KEY_PREFIX }) as Map<string, HostingRecord>;
+  const records: Map<string, HostedProcessRecord> = self._hostedProcesses;
+  let hosting = false;
+  for (const [key, row] of rows) {
+    if (records.has(row.workerKey)) {
+      hosting = true;
+      continue;
+    }
+    try {
+      const ns = hostNamespaceBinding(self.env, 'ProcessFabric host', row.route);
+      await hostOpDispatch(ns.get(ns.idFromString(row.coordinatorDoId)), 'ProcessFabric host', row.route)({
+        op: 'hostLost',
+        args: [row.workerKey, row.capability],
+      });
+    } catch (error) {
+      // Whatever the session cannot hear now it learns at its next call to this host.
+      console.warn(`[process-host] could not tell session ${row.coordinatorDoId.slice(-12)} that its process ${row.workerKey} was lost:`, errorText(error));
+    }
+    await self.ctx.storage.delete(key);
+  }
+  return hosting ? Date.now() + HOSTING_WATCH_MS : null;
+}
+
+/**
+ * RPC: the actor that hosted `workerKey` for this session reports, from a new
+ * incarnation, that the platform reset it under the process. The capability
+ * proves it hosted it. True when the process was this session's and is now
+ * ended.
+ */
+export function _rpcHostLost(self: RpcHost, workerKey: string, capability: string): boolean {
+  return self.facetManager?.hostLost(workerKey, capability) ?? false;
 }
 
 /**

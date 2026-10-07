@@ -632,6 +632,7 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
       this.ctx,
       () => this._pumpResidentLaunches(),
       alarmInfo,
+      () => _rpc.hostingWatchFired(this),
     );
   }
 
@@ -966,6 +967,11 @@ export class NimbusSession extends CloudflareDurableObject<SessionEnv> {
   }
   async _rpcRouteHostedHttp(workerKey: string, request: HostedHttpRequest): Promise<HostedHttpResponse> {
     return _rpc._rpcRouteHostedHttp(this as any, workerKey, request);
+  }
+  async _rpcHostLost(workerKey: string, capability: string): Promise<boolean> {
+    this.ensureSqliteFs();
+    this.ensureFacetManager();
+    return _rpc._rpcHostLost(this as any, workerKey, capability);
   }
   async _rpcCancelHostProcess(workerKey: string): Promise<{ cancelled: boolean }> {
     return _rpc._rpcCancelHostProcess(this as any, workerKey);
