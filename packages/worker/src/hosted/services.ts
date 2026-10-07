@@ -1,6 +1,6 @@
 import { staticStdinReader } from "@nimbus-sh/core/shell/stdin-adapter.js";
 import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { composeFacetManager, type ComposedFacetManager, type FacetManagerHostHooks } from "../facets/compose.js";
 import { FacetProcessManager, textBytes, type ChildOrigin, type OutputHooks } from "../facets/process.js";
 import { isRuntimeInstallHint } from "../shell/npm-bin-entrypoints.js";
@@ -530,7 +530,7 @@ export function ensureFetchProxy(self: RuntimeServiceHost, runtimeContext: Runti
         // The registry is reached through the workspace's egress, when it has one.
         ...loaderOutbound(runtimeContext.network()),
       }));
-      self.fetchProxyEntrypoint = worker.getEntrypoint();
+      self.fetchProxyEntrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
       log?.('Fetch proxy worker created (singleton)');
       return self.fetchProxyEntrypoint;
     } catch (e: any) {

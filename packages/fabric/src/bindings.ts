@@ -31,7 +31,7 @@ import type { HostRoute } from './composition.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
-import { applyFacetLimits } from './facet-limits.js';
+import { applyFacetLimits, facetLimits, type FacetResourceLimits } from './facet-limits.js';
 import type { EntrypointLoopbackFactory } from './composition.js';
 import type { WorkerCode } from './vendor/types.js';
 
@@ -59,8 +59,8 @@ interface LoadedEntrypoint {
 
 /** A stub for one dynamically-loaded worker, as the shims hop across it. */
 interface LoadedWorker {
-  getEntrypoint(name?: string): LoadedEntrypoint;
-  getDurableObjectClass(name: string): DurableObjectClass;
+  getEntrypoint(name?: string, options?: { limits: FacetResourceLimits }): LoadedEntrypoint;
+  getDurableObjectClass(name: string, options?: { limits: FacetResourceLimits }): DurableObjectClass;
 }
 
 /**
@@ -533,7 +533,7 @@ export class NimbusLoadedWorker extends WorkerEntrypoint<NimbusLoaderShimEnv, Ni
     if (!outerLoader) throw new Error('Nimbus: outer env.LOADER missing');
     const outer = _resolveStubInCurrentContext(outerLoader, props.key);
     if (!outer) throw new Error('Nimbus: loaded worker code missing (key=' + props.key + ')');
-    return outer.getDurableObjectClass(name);
+    return outer.getDurableObjectClass(name, { limits: facetLimits('worker') });
   }
 }
 
@@ -589,7 +589,7 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint<NimbusLoaderShimEnv
     }
     const outer = await outerStub;
     if (!outer) throw new Error('Nimbus: loaded worker code missing');
-    return await (props.name ? outer.getEntrypoint(props.name) : outer.getEntrypoint());
+    return await outer.getEntrypoint(props.name, { limits: facetLimits(props.stage ? 'process' : 'worker') });
   }
 
   /**

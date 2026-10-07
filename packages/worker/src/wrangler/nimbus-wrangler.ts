@@ -15,7 +15,7 @@
  */
 
 import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -442,7 +442,7 @@ export class NimbusWrangler {
         ...loaderOutbound(this.network),
       }));
       if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings))) return false;
-      this.workerStub = worker.getEntrypoint();
+      this.workerStub = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
 
       for (const w of result.warnings || []) {
         this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);
@@ -481,13 +481,13 @@ export class NimbusWrangler {
    */
   private async registerDoClasses(
     worker: {
-      getEntrypoint(name: string): { missing(classNames: string[]): Promise<string[]> };
-      getDurableObjectClass(name: string): DurableObjectClass;
+      getEntrypoint(name: string, options?: { limits: FacetResourceLimits }): { missing(classNames: string[]): Promise<string[]> };
+      getDurableObjectClass(name: string, options?: { limits: FacetResourceLimits }): DurableObjectClass;
     },
     classesEntrypoint: string,
     bindings: readonly { name: string; class_name: string }[],
   ): Promise<boolean> {
-    const missing = new Set(await worker.getEntrypoint(classesEntrypoint).missing(bindings.map((b) => b.class_name)));
+    const missing = new Set(await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)));
     for (const b of bindings) {
       if (missing.has(b.class_name)) {
         this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' => class '${b.class_name}' is not exported by the Worker\x1b[0m\n`);
@@ -497,7 +497,7 @@ export class NimbusWrangler {
     const doId = this.supervisorCtx?.id?.toString?.() || '';
     if (doId) clearInnerDoClasses(doId);
     for (const b of bindings) {
-      const cls = worker.getDurableObjectClass(b.class_name);
+      const cls = worker.getDurableObjectClass(b.class_name, { limits: facetLimits('worker') });
       this.doClassMap.set(b.name, cls);
       if (doId) registerInnerDoClass(doId, b.name, cls);
     }

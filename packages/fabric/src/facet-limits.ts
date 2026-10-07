@@ -1,16 +1,22 @@
 /** Resource policy for every fabric-created Worker and Durable Object facet. */
 const FACET_CPU_MS = 300_000;
+// Wall time includes awaited I/O; it is not the platform's CPU accounting.
+const FACET_TASK_TIMEOUT_MS = 300_000;
 
 export const FACET_LIMITS = Object.freeze({
-  process: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000 }),
-  build: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
-  esbuild: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
-  transform: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
-  git: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000 }),
-  isolate: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
-  fanout: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
-  worker: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000 }),
-  vfs: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000 }),
+  // Resident filesystem transport is charged to its initiating invocation:
+  // incoming HTTP requests do not reset it. A billion leaves hours-long
+  // servers practical while CPU, per-operation and this finite ceiling bound
+  // runaway work. Native default 10000 failed across 9x1000 persisted writes;
+  // the explicit ceiling passed 12x1000 on the same resident pid in CI.
+  process: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  build: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  esbuild: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  transform: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  git: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  isolate: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  fanout: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  worker: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
 });
 
 export type FacetKind = keyof typeof FACET_LIMITS;
@@ -24,7 +30,8 @@ export const MAX_FACET_CPU_MS = Math.max(...Object.values(FACET_LIMITS).map(limi
 const DIAGNOSTIC_RESERVE = 64;
 
 export function facetLimits(kind: FacetKind): Readonly<FacetResourceLimits> {
-  return FACET_LIMITS[kind];
+  const { cpuMs, subRequests } = FACET_LIMITS[kind];
+  return { cpuMs, subRequests };
 }
 
 /** Native enforcement and the guest's earlier, reportable refusal share one policy. */

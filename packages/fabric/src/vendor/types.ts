@@ -58,11 +58,11 @@ export interface ServiceStub {
 
 export interface EntrypointOptions {
   props?: Record<string, unknown>;
+  limits?: { cpuMs?: number; subRequests?: number };
 }
 
 export interface WorkerStub {
-  getEntrypoint(): EntrypointStub;
-  getEntrypoint(name: string, opts?: EntrypointOptions): EntrypointStub;
+  getEntrypoint(name?: string, opts?: EntrypointOptions): EntrypointStub;
 }
 
 export interface EntrypointStub {

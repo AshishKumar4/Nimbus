@@ -28,7 +28,7 @@
 import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
-import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -223,7 +223,7 @@ interface GitFacetEntrypoint {
 }
 
 interface GitFacetWorker {
-  getEntrypoint(): GitFacetEntrypoint;
+  getEntrypoint(name?: string, options?: { limits: FacetResourceLimits }): GitFacetEntrypoint;
 }
 
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
@@ -987,7 +987,7 @@ export async function execGitNetwork(
       });
       const loadedWorker: GitFacetWorker = env.LOADER.load(applyFacetLimits('git', facetCode(supervisorBinding)));
       worker = loadedWorker;
-      entrypoint = loadedWorker.getEntrypoint();
+      entrypoint = loadedWorker.getEntrypoint(undefined, { limits: facetLimits('git') });
       if (opts.op === 'clone') {
         const jobId = crypto.randomUUID();
         const optionsHash = await hashCloneOptions(opts);
@@ -1009,7 +1009,7 @@ export async function execGitNetwork(
             const binding = bindingFor(rotateMutationOwner());
             const endLoad = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
             const loaded: GitFacetWorker = env.LOADER.load(applyFacetLimits('git', facetCode(binding)));
-            const fresh = loaded.getEntrypoint();
+            const fresh = loaded.getEntrypoint(undefined, { limits: facetLimits('git') });
             fencedLoads.push({ binding, worker: loaded, entrypoint: fresh, endFetch: endLoad });
             facets.entrypoint = fresh;
             facets.epoch++;

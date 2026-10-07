@@ -45,7 +45,7 @@ import {
   type ResidentSupervisorProps,
 } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
-import { applyFacetLimits } from './facet-limits.js';
+import { applyFacetLimits, facetLimits, type FacetResourceLimits } from './facet-limits.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -133,7 +133,7 @@ interface FacetContainer {
 
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
-  getEntrypoint(): LoadedWorkerEntrypointStub;
+  getEntrypoint(name?: string, opts?: { limits: FacetResourceLimits }): LoadedWorkerEntrypointStub;
 }
 
 /**
@@ -151,7 +151,7 @@ interface LoadedWorkerStub {
  * passes a string id and a promise callback.
  */
 interface WorkerLoaderBinding {
-  get(id: string | null, code: () => unknown): { getDurableObjectClass(name: string): unknown };
+  get(id: string | null, code: () => unknown): { getDurableObjectClass(name: string, opts?: { limits: FacetResourceLimits }): unknown };
   load(code: unknown): LoadedWorkerStub;
 }
 
@@ -592,7 +592,7 @@ function residentProcessClass(
   }
   return loader
     .get(loaderKey, async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
-    .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
+    .getDurableObjectClass(RESIDENT_PROCESS_CLASS, { limits: facetLimits('process') });
 }
 
 async function runOneShot<T>(
@@ -657,7 +657,7 @@ async function runOneShot<T>(
     // The loader has taken the map; holding it here would keep a second full
     // copy of the program alive for as long as the program runs.
     spec = undefined;
-    entrypoint = worker.getEntrypoint();
+    entrypoint = worker.getEntrypoint(undefined, { limits: facetLimits('process') });
     // Narrowed by the runtime check; kept as a property call on the stub —
     // extracting the method builds a pipelined `fetch.call` path workerd
     // refuses for dynamically-loaded workers.

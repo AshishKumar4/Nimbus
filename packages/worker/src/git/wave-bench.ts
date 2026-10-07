@@ -14,7 +14,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import * as workers from 'cloudflare:workers';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
-import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, type FacetResourceLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -104,7 +104,7 @@ interface BenchEntrypoint {
 }
 
 interface BenchWorker {
-  getEntrypoint(name: string): BenchEntrypoint;
+  getEntrypoint(name: string, options?: { limits: FacetResourceLimits }): BenchEntrypoint;
 }
 
 interface BenchEnv {
@@ -283,7 +283,7 @@ export async function runWaveBench(
           modules: { 'w7-bench-producer.js': PRODUCER_SOURCE },
           env: { SUPERVISOR: supervisor },
         }));
-        entrypoint = worker.getEntrypoint('Producer');
+        entrypoint = worker.getEntrypoint('Producer', { limits: facetLimits('git') });
         const result = await entrypoint.run({
           root: options.root,
           base: `${options.root}/p${index}`,
