@@ -752,80 +752,105 @@ function* baseSeed(home) {
     yield* accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
     // `$HOME` is expanded when the profile is sourced, so one profile serves
     // whatever home the session has.
+    const defaultProfile = `export PATH=${defaultPath('$HOME')}\nexport EDITOR=nano\n`;
+    // Profiles Nimbus seeded before: the lifo default, from before Nimbus had a
+    // PATH of its own, and Nimbus's own with the home spelled out. Nobody ever
+    // chose them, so replacing them is not overwriting a user's file.
+    const seededProfiles = [
+        'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n',
+        `export PATH=${defaultPath(DEFAULT_HOME)}\nexport EDITOR=nano\n`,
+    ];
+    if (!(yield* exists('kernel', 'etc/profile'))) {
+        yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
+        yield { op: 'chown', as: 'kernel', path: 'etc/profile', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
+    }
+    else if (seededProfiles.includes((yield { op: 'readText', as: 'kernel', path: 'etc/profile' }))) {
+        yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
+    }
+    if (homeDir !== '' && !(yield* exists('user', `${homeDir}/.nimbusrc`))) {
+        yield {
+            op: 'writeFile', as: 'user', path: `${homeDir}/.nimbusrc`,
+            content: '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n',
+        };
+    }
 }
 export function seedBaseFilesystem(target, home = DEFAULT_HOME) {
     const steps = baseSeed(home);
     if (target instanceof ProcessFiles)
         return seedOnNamespace(steps, target);
     const views = { kernel: target.as(CRED_KERNEL), user: target.as(CRED_SESSION_USER) };
+    for (let step = steps.next(); !step.done;)
+        step = steps.next(engineStep(views[step.value.as], step.value));
+}
+/**
+ * The base seed on a namespace: a step on a mount is the call a program
+ * would make there; any other is the engine's, as the session's own seed
+ * makes it (a directory above a mount point included, which the namespace
+ * shows once the root holds it).
+ */
+async function seedOnNamespace(steps, filesystem) {
+    const mounted = { kernel: filesystem.vfs.as(CRED_KERNEL), user: filesystem.vfs.as(CRED_SESSION_USER) };
+    const engine = { kernel: filesystem.engine.as(CRED_KERNEL), user: filesystem.engine.as(CRED_SESSION_USER) };
+    const text = new TextEncoder();
     for (let step = steps.next(); !step.done;) {
         const call = step.value;
-        const view = views[call.as];
         let answer;
-        switch (call.op) {
-            case 'exists':
-                answer = view.exists(call.path);
-                break;
-            case 'stat':
-                answer = view.stat(call.path);
-                break;
-            case 'readText':
-                answer = view.readFileString(call.path);
-                break;
-            case 'mkdir':
-                view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
-                break;
-            case 'chown':
-                view.chown(call.path, call.uid, call.gid);
-                break;
-            case 'chmod':
-                view.chmod(call.path, call.mode);
-                break;
-            case 'writeFile':
-                view.writeFile(call.path, call.content, call.mode === undefined ? undefined : { mode: call.mode });
-                break;
+        if (filesystem.vfs.mountOf('/' + call.path) === '/') {
+            answer = engineStep(engine[call.as], call);
+        }
+        else {
+            const view = mounted[call.as];
+            const path = '/' + call.path;
+            switch (call.op) {
+                case 'exists':
+                    answer = (await view.stat(path)) !== null;
+                    break;
+                case 'stat': {
+                    const found = await view.stat(path);
+                    if (found === null)
+                        throw new Error(`seed: ${path} vanished`);
+                    answer = { uid: found.uid ?? 0, gid: found.gid ?? 0, mode: found.mode ?? 0 };
+                    break;
+                }
+                case 'readText':
+                    answer = new TextDecoder().decode(await view.readFile(path));
+                    break;
+                case 'mkdir':
+                    await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+                    break;
+                // A mount that keeps no owners or modes (ENOTSUP) has none to hand over.
+                case 'chown':
+                    await unlessUnsupported(view.chown(path, call.uid, call.gid));
+                    break;
+                case 'chmod':
+                    await unlessUnsupported(view.chmod(path, call.mode));
+                    break;
+                case 'writeFile':
+                    await view.writeFile(path, text.encode(call.content), call.mode === undefined ? undefined : { mode: call.mode });
+                    break;
+            }
         }
         step = steps.next(answer);
     }
 }
-/** The base seed on a namespace: each step the call a program would make, landing where it would. */
-async function seedOnNamespace(steps, filesystem) {
-    const views = { kernel: filesystem.vfs.as(CRED_KERNEL), user: filesystem.vfs.as(CRED_SESSION_USER) };
-    const text = new TextEncoder();
-    for (let step = steps.next(); !step.done;) {
-        const call = step.value;
-        const view = views[call.as];
-        const path = '/' + call.path;
-        let answer;
-        switch (call.op) {
-            case 'exists':
-                answer = (await view.stat(path)) !== null;
-                break;
-            case 'stat': {
-                const found = await view.stat(path);
-                if (found === null)
-                    throw new Error(`seed: ${path} vanished`);
-                answer = { uid: found.uid ?? 0, gid: found.gid ?? 0, mode: found.mode ?? 0 };
-                break;
-            }
-            case 'readText':
-                answer = new TextDecoder().decode(await view.readFile(path));
-                break;
-            case 'mkdir':
-                await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
-                break;
-            // A mount that keeps no owners or modes (ENOTSUP) has none to hand over.
-            case 'chown':
-                await unlessUnsupported(view.chown(path, call.uid, call.gid));
-                break;
-            case 'chmod':
-                await unlessUnsupported(view.chmod(path, call.mode));
-                break;
-            case 'writeFile':
-                await view.writeFile(path, text.encode(call.content), call.mode === undefined ? undefined : { mode: call.mode });
-                break;
-        }
-        step = steps.next(answer);
+/** A seed step on an engine view: its answer. */
+function engineStep(view, call) {
+    switch (call.op) {
+        case 'exists': return view.exists(call.path);
+        case 'stat': return view.stat(call.path);
+        case 'readText': return view.readFileString(call.path);
+        case 'mkdir':
+            view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+            return undefined;
+        case 'chown':
+            view.chown(call.path, call.uid, call.gid);
+            return undefined;
+        case 'chmod':
+            view.chmod(call.path, call.mode);
+            return undefined;
+        case 'writeFile':
+            view.writeFile(call.path, call.content, call.mode === undefined ? undefined : { mode: call.mode });
+            return undefined;
     }
 }
 async function unlessUnsupported(call) {
