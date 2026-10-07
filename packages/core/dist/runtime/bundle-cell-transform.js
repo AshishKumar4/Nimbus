@@ -25,10 +25,12 @@ import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
 import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast.js';
 /**
- * Bundled ESM this large is lowered by the bounded declaration rewrite in the
- * session rather than by esbuild: esbuild's Go heap grows with the module and
- * is never released. Its named imports are bound once, not live: at this size
- * there is no AST to find their uses in.
+ * Bundled ESM this large is lowered in the session (esbuild-service.ts
+ * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
+ * grows with the module and is never given back (Oxc's wasm reaches 105 MB
+ * for workerd's 4.7 MB worker.mjs). The session reads it a statement at a
+ * time (async-module-lowering.ts readEsmRecords), in bounded memory, its
+ * imports live as everywhere else.
  */
 export const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
 /**
@@ -115,8 +117,8 @@ export function esbuildDiagnosticShim(path, reason) {
  * Run the session's steps of the pipeline on `source`, staged at `path`.
  *
  * This is computation in the caller's isolate proportional to the source —
- * the provided-module pre-pass and, for large bundled ESM, the bounded
- * declaration rewrite — so a paced caller accounts the source before it.
+ * the provided-module pre-pass and, for large bundled ESM, its lowering to
+ * CommonJS — so a paced caller accounts the source before it.
  */
 export function prepareBundleCell(path, source) {
     const loader = bundleTypescriptLoader(path);

@@ -85,25 +85,26 @@ function* lexicalNames(statements) {
  * block) it is in, not entering nested ones; in sloppy code, a function
  * declared in a block is one of them too (Annex B).
  */
-function* varNames(value, sloppy, top = true) {
+function varNames(value, sloppy, top = true, names = []) {
     if (Array.isArray(value)) {
         for (const item of value)
-            yield* varNames(item, sloppy, top);
-        return;
+            varNames(item, sloppy, top, names);
+        return names;
     }
     if (!isNode(value))
-        return;
+        return names;
     if (value.type === 'FunctionDeclaration' && sloppy && !top)
-        yield* patternNames(child(value, 'id'));
+        names.push(...patternNames(child(value, 'id')));
     if (FUNCTIONS.has(value.type) || value.type === 'StaticBlock')
-        return;
+        return names;
     if (value.type === 'VariableDeclaration' && value.kind === 'var') {
         for (const declarator of list(value, 'declarations'))
-            yield* patternNames(child(declarator, 'id'));
+            names.push(...patternNames(child(declarator, 'id')));
     }
-    for (const [key, item] of Object.entries(value))
+    for (const key in value)
         if (key !== 'parent')
-            yield* varNames(item, sloppy, false);
+            varNames(value[key], sloppy, false, names);
+    return names;
 }
 /**
  * The scope `node`'s children are in, given the one it is in. A function's
@@ -149,22 +150,33 @@ function scopeOf(node, scope, sloppy, functionBody) {
  * Every node under `value`, each before its children, with the scope it is
  * in, the node it is under and the key it is under that node by (null and
  * '' for `value` itself). A program's own scope is the one whose parent is
- * `scope`.
+ * `scope`. A node `opaque` says is yielded, but not what is under it.
+ *
+ * Walked with a stack of its own, not a generator per node: a yield passes
+ * through no frames, whatever the depth.
  */
-export function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = '') {
-    if (Array.isArray(value)) {
-        for (const item of value)
-            yield* scoped(item, scope, sloppy, false, parent, key);
-        return;
-    }
-    if (!isNode(value))
-        return;
-    yield [value, scope, parent, key];
-    const inner = scopeOf(value, scope, sloppy, functionBody);
-    const isFunction = FUNCTIONS.has(value.type);
-    for (const [field, item] of Object.entries(value)) {
-        if (field !== 'parent')
-            yield* scoped(item, inner, sloppy, isFunction && field === 'body', value, field);
+export function* scoped(value, scope, sloppy, functionBody = false, parent = null, key = '', opaque) {
+    const stack = [[value, scope, functionBody, parent, key]];
+    while (stack.length > 0) {
+        const [item, at, inBody, under, field] = stack.pop();
+        if (Array.isArray(item)) {
+            for (let i = item.length - 1; i >= 0; i--)
+                stack.push([item[i], at, false, under, field]);
+            continue;
+        }
+        if (!isNode(item))
+            continue;
+        yield [item, at, under, field];
+        if (opaque?.(item))
+            continue;
+        const inner = scopeOf(item, at, sloppy, inBody);
+        const isFunction = FUNCTIONS.has(item.type);
+        const fields = Object.keys(item);
+        for (let i = fields.length - 1; i >= 0; i--) {
+            const name = fields[i];
+            if (name !== 'parent')
+                stack.push([item[name], inner, isFunction && name === 'body', item, name]);
+        }
     }
 }
 /** The innermost scope from `scope` out that binds `name`, or null where none does. */
