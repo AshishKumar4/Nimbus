@@ -72,10 +72,12 @@ export declare function parseFetchDepth(args: readonly string[]): {
  */
 export declare function parseCloneFilter(spec: string): string;
 /**
- * `git init`'s arguments: -q, --bare, the initial branch (`-b <name>`,
- * `-b<name>`, `--initial-branch[=]<name>`) and the directory. The branch's
- * name is never the directory (`git init -b main` initialized `./main`).
- * git's other options are refused here as unsupported.
+ * `git init`'s arguments, as git's parse-options takes them: -q, --bare,
+ * the initial branch (`-b <name>`, `--initial-branch[=]<name>`,
+ * `--no-initial-branch`) and one directory; short options cluster (`-qq`,
+ * `-qbmain`, `-qb main`: b takes the rest of the cluster, else the next
+ * argument). The branch's name is never the directory (`git init -b main`
+ * initialized ./main). git's other options are refused as unsupported.
  */
 export declare function parseInitArgs(args: readonly string[]): {
     quiet: boolean;

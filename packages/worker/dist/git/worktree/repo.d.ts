@@ -3,10 +3,13 @@
  * its object store, its worktree, its exclude rules and its index file.
  *
  * Objects go through cf-git (loose objects) and the ranged pack store the
- * repository's filesystem carries; the worktree through the command's view
- * of the namespace. Configuration is cf-git's reading of .git/config, and
- * for core.excludesFile the global files git reads as well.
+ * repository's filesystem carries, and a command that writes many (add's
+ * blobs) writes them in the shared wave writer's waves, straight into the
+ * engine (objectWriter); the worktree through the command's view of the
+ * namespace. Configuration is cf-git's reading of .git/config, and for
+ * core.excludesFile the global files git reads as well.
  */
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
 import { DirCache, type IndexEdit } from './dircache.js';
@@ -51,6 +54,20 @@ export interface GitFs {
         readFile(path: string, options?: unknown): Promise<Uint8Array | string>;
     };
 }
+/**
+ * The engine, as the command's principal: where a repository on it takes
+ * objects in waves. `key` is a path's engine key (no leading slash), null on
+ * a mount, which the engine's waves cannot reach.
+ */
+export interface ObjectEngine {
+    key(path: string): Promise<string | null>;
+    writeStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
+}
+/** Objects written by one command, in waves: each `write`'s object is there once `flush` has settled. */
+export interface ObjectWriter {
+    write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
+    flush(): Promise<void>;
+}
 /** git_config_bool's spellings. */
 export declare function configBool(value: unknown): boolean | undefined;
 export declare class WorktreeRepo {
@@ -61,6 +78,7 @@ export declare class WorktreeRepo {
     readonly gitdir: string;
     private readonly env;
     readonly counters: WalkCounters;
+    private readonly engine;
     /** This command holds its repository's index lock. */
     private locked;
     readonly store: ObjectStore;
@@ -68,7 +86,19 @@ export declare class WorktreeRepo {
     private readonly cache;
     private worktreeConfig;
     /** `root` the worktree's top and `gitdir` its git directory, both absolute; `env` the command's. */
-    constructor(vfs: ProjectFs, git: RepoGit, gitFs: GitFs, root: string, gitdir: string, env: Record<string, string>, counters?: WalkCounters);
+    constructor(vfs: ProjectFs, git: RepoGit, gitFs: GitFs, root: string, gitdir: string, env: Record<string, string>, counters?: WalkCounters, engine?: ObjectEngine | null);
+    /**
+     * A writer for the many objects one command writes (add's blobs): each is
+     * hashed and, when the repository lacks it, deflated (git's loose
+     * compression) and written as its loose object in the shared wave
+     * writer's waves, straight into the engine: no write, existence check or
+     * directory walk an object (as cf-git's took: 17 lookups and a write a
+     * file, half of add -A's time at Linux's size). `flush` publishes what is
+     * buffered: call it before writing what names the objects (the index). A
+     * repository on a mount, which the waves cannot reach, has each object
+     * written alone (store.write).
+     */
+    objectWriter(): Promise<ObjectWriter>;
     config(path: string): Promise<unknown>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
