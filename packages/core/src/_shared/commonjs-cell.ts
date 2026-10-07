@@ -126,11 +126,12 @@
 import { createHash } from 'node:crypto';
 import { parse, tokenizer, tokTypes, type Pattern, type Program, type Token } from 'acorn';
 import {
-  RUNTIME_FUNCTION_HEADS, expressionFunctionBody, runtimeFunctionSource, runtimeFunctionSyntaxError as syntaxErrorIn,
-  type RuntimeFunctionKind, type ScriptExpression, scriptExpression, type SourceRealm,
+  RUNTIME_FUNCTION_HEADS, expressionFunctionBody, parseRuntimeFunction, runtimeFunctionSource,
+  runtimeFunctionSyntaxError as syntaxErrorIn, type RuntimeFunctionKind, type ScriptExpression, scriptExpression,
+  type SourceRealm,
 } from './runtime-function-source.js';
 import { INTERPRETER_UNSUPPORTED } from '../interpreter/unsupported-code.js';
-import { routeDynamicImportsTo } from '../runtime/dynamic-import-rewrite.js';
+import { applySourceEdits, forEachNode, type SourceEdit } from '../runtime/javascript-ast.js';
 import { moduleImporterUrl } from './module-importer.js';
 
 export type { RuntimeFunctionKind } from './runtime-function-source.js';
@@ -440,29 +441,46 @@ export function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null {
   return { kind: v.kind, params: [...v.params], body: v.body };
 }
 
-/** The name a staged constructor module's code calls in place of import(): its origin's import(). */
-const ORIGIN_IMPORT = '__nimbusOriginImport';
-
 /**
  * The `{ cjs }` module text for a Function-constructor call: it exports a
  * factory of the code's origin (RUNTIME CODE), its import() and its
  * `Function`, that builds the function V8 builds for `new
  * <Kind>Function(...params, body)`. The function is named `anonymous`, its
  * source is `<head> anonymous(<params>\n) {\n<body>\n}` (the body from line
- * 3), and its import() calls are the origin's. For arguments the constructor
- * refuses (runtimeFunctionSyntaxError), the factory throws the SyntaxError
- * the constructor would. A constructor's function closes over the global
- * scope, where a CommonJS module's body would see workerd's five CommonJS
- * names (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
- * exports, __filename, __dirname), so an enclosing function rebinds those five
- * to the global object's.
+ * 3), and its import() calls are the origin's, through a parameter whose name
+ * no identifier of the code uses; a function so rewritten carries its own
+ * source as the export's `source`, which the guest gives
+ * Function.prototype.toString. Code that names `Function` also exports
+ * `unbound`, the same factory without that parameter, for an origin whose
+ * code reads and writes the global's. For arguments the constructor refuses
+ * (parseRuntimeFunction) the factory throws the SyntaxError the constructor
+ * would. A constructor's function closes over the global scope, where a
+ * CommonJS module's body would see workerd's five CommonJS names
+ * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
+ * exports, __filename, __dirname), so an enclosing function rebinds those
+ * five to the global object's.
  */
 export function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string {
-  const refused = runtimeFunctionSyntaxError(kind, params, body);
-  if (refused !== null) return `module.exports = function () { throw new SyntaxError(${JSON.stringify(refused)}); };`;
-  return `module.exports = function (${ORIGIN_IMPORT}, Function) { return (function (require, module, exports, __filename, __dirname) { return (`
-    + `${routeDynamicImportsTo(runtimeFunctionSource(kind, params, body), ORIGIN_IMPORT)}); })`
-    + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname); };';
+  let parsed: ReturnType<typeof parseRuntimeFunction>;
+  try {
+    parsed = parseRuntimeFunction(kind, params, body, REALM);
+  } catch (e) {
+    return `module.exports = function () { throw new SyntaxError(${JSON.stringify(REALM.messageOf(e))}); };`;
+  }
+  const imports: SourceEdit[] = [];
+  const names = new Set<string>();
+  forEachNode(parsed.node, (node) => {
+    if (node.type === 'ImportExpression') imports.push({ start: node.start, end: node.start + 'import'.length, text: '' });
+    else if (node.type === 'Identifier') names.add(node.name);
+  });
+  let capture = 'nimbusImport';
+  while (names.has(capture)) capture = `_${capture}`;
+  const fn = applySourceEdits(parsed.text, imports.map((edit) => ({ ...edit, text: capture })));
+  const factory = (params: string) => `function (${params}) { return (function (require, module, exports, __filename, __dirname) { return ${fn}; })`
+    + '(globalThis.require, globalThis.module, globalThis.exports, globalThis.__filename, globalThis.__dirname); }';
+  return `module.exports = ${factory(`${capture}, Function`)};`
+    + (names.has('Function') ? `\nmodule.exports.unbound = ${factory(capture)};` : '')
+    + (imports.length > 0 ? `\nmodule.exports.source = ${JSON.stringify(runtimeFunctionSource(kind, params, body))};` : '');
 }
 
 /**
@@ -512,7 +530,10 @@ const __nimbusRegistryRequire = __nimbusCreateRequire(import.meta.url);
 // The built-ins the interpreter calls, captured now, before any program code
 // runs (core interpreter/primordials.ts): the interpreter itself loads only
 // when the program first produces code, by when it may have replaced them.
-const { LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials } = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
+const {
+  LAUNCH_PRIMORDIALS: __nimbusLaunchPrimordials,
+  registerSource: __nimbusRegisterSource,
+} = __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_PRIMORDIALS_MODULE}");
 const __nimbusCodeCells = new Map(__NIMBUS_CODE_CELLS.map((__row) => [__row[0], __row]));
 // Where node:fs shows the map's modules: beside this main module, /bundle/.
 const __NIMBUS_BUNDLE_FILES = decodeURIComponent(new URL("./", import.meta.url).pathname);
@@ -642,6 +663,19 @@ function __nimbusRuntimeInterpreter() {
   }
   return __nimbusInterpreter;
 }
+// A staged module's code from an origin (runtimeFunctionModule): a module
+// takes the origin's Function; a constructor's code takes its import() too,
+// or the shape that reads the global Function for an origin without one,
+// and a function whose import() calls were routed answers toString with the
+// source it was built from.
+function __nimbusRuntimeCodeStagedBuild(staged, kind, origin) {
+  if (kind === "module") return staged(origin.Function);
+  const fn = origin.Function === undefined && staged.unbound !== undefined
+    ? staged.unbound(origin.import)
+    : staged(origin.import, origin.Function);
+  if (staged.source !== undefined && typeof fn === "function") __nimbusRegisterSource(fn, staged.source);
+  return fn;
+}
 // The compiled code from its origin (RUNTIME CODE): this launch's module for
 // it when an earlier launch staged it; otherwise recorded for the next
 // launch and interpreted. A SyntaxError is what compiling it natively throws
@@ -649,7 +683,7 @@ function __nimbusRuntimeInterpreter() {
 function __nimbusRuntimeCodeCompile(entry, describe, origin) {
   const __id = __nimbusRuntimeCodeKey(entry);
   const __staged = __nimbusRuntimeCodeStaged(__id.key);
-  if (__staged !== undefined) return entry.kind === "module" ? __staged(origin.Function) : __staged(origin.import, origin.Function);
+  if (__staged !== undefined) return __nimbusRuntimeCodeStagedBuild(__staged, entry.kind, origin);
   __nimbusRuntimeCodeRecord(__id, entry);
   const __interpreter = __nimbusRuntimeInterpreter();
   try {

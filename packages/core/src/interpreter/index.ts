@@ -34,8 +34,8 @@ import { type FunctionScope, analyzeCommonJs, analyzeFunction, analyzeProgram, r
 import { type Owned, ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
 import {
-  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf,
-  stringOf, stringSlice, withElement,
+  Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor,
+  someItem, stringLastIndexOf, stringOf, stringSlice, withElement,
 } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 
@@ -57,12 +57,14 @@ export interface InterpreterHost {
 
 /**
  * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
- * import() calls and what its free `Function` reads. Code compiled without
- * one imports through the host against its own module URL (none for a
- * constructor's) and reads the global `Function`.
+ * import() calls, and the `Function` its free `Function` binding starts as.
+ * An origin without a `Function` gives its code the global's, as code
+ * compiled without an origin has; that code imports through the host
+ * against its own module URL (none for a constructor's).
  */
 export interface CodeOrigin {
   import(specifier: unknown, options: unknown): Promise<unknown>;
+  /** Undefined, as an own property, for an origin without one. */
   readonly Function: unknown;
 }
 
@@ -170,12 +172,17 @@ function unitContext(source: string, module: boolean, host: UnitHost, moduleScop
   return { source, module, host, imports: new SafeMap(), moduleScope };
 }
 
-/** A unit's host: `origin`'s import() and `Function`, or else the host's import() against `parentUrl` and the global `Function`. */
+/** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
 function unitHost(host: InterpreterHost, origin: CodeOrigin | undefined, parentUrl: string | undefined): UnitHost {
   if (origin === undefined) {
     return { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options), functionBinding: null };
   }
-  return { dynamicImport: (specifier, options) => origin.import(specifier, options), functionBinding: { value: origin.Function } };
+  // Its own property only: an origin without a Function must not take one a program put on Object.prototype.
+  const own = reflectGetOwnPropertyDescriptor(origin, 'Function');
+  return {
+    dynamicImport: (specifier, options) => origin.import(specifier, options),
+    functionBinding: own === undefined || own.value === undefined ? null : { value: own.value },
+  };
 }
 
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {

@@ -6637,11 +6637,11 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
     if (kind === "function") globalThis.Function = routed;
   }
   // A refusing origin: code whose import() Node refuses (vm's), or whose
-  // importer only its module's own Function carries. Its code sees the
-  // global Function.
+  // importer only its module's own Function carries. Its Function is
+  // undefined, its own property, so its code reads and assigns the global's.
   const refusingOrigin = (code, message) => Object.freeze({
     import: () => Promise.reject(Object.assign(new TypeError(message), { code })),
-    Function: globalThis.Function,
+    Function: undefined,
   });
   const unbound = refusingOrigin("ERR_NIMBUS_IMPORT_NO_IMPORTER",
     "import() in code built by a function constructor that is not its module's own Function (one reached through a "
