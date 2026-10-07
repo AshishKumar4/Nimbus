@@ -649,17 +649,11 @@ export function makeWasmRunner(deps) {
         // and the Process tab WS log stream see the output. The
         // append-then-markExit ordering matches what shellExecuteTracked
         // does in init.ts:1559+ (Fix 5 contract).
-        if (stdout && !opts.output) {
-            try {
-                deps.processes.appendOutput(pid, 'stdout', stdout);
-            }
-            catch { }
+        if (stdout) {
+            await deps.processes.appendOutputBytes(pid, 'stdout', new TextEncoder().encode(stdout));
         }
-        if (stderr && !opts.output) {
-            try {
-                deps.processes.appendOutput(pid, 'stderr', stderr);
-            }
-            catch { }
+        if (stderr) {
+            await deps.processes.appendOutputBytes(pid, 'stderr', new TextEncoder().encode(stderr));
         }
         try {
             deps.processes.exit(pid, exitCode);

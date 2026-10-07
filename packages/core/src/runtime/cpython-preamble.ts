@@ -132,6 +132,13 @@ async function __nimbusPyBoot(args) {
       + ' transport[' + transport + ']');
   }
 
+  // Runtime setup is a separate compilation unit. Appending it to -c or a
+  // script changes every user traceback line by the setup's length.
+  if (args.bootstrapCode) {
+    const setupRc = await withCString(args.bootstrapCode, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr));
+    if (setupRc !== 0) throw new Error('Python runtime bootstrap failed (exit ' + setupRc + ')');
+  }
+
   return {
     instance,
     run: (src) => withCString(src, (ptr) => __nimbusEnterVm(exports.nimbus_py_run)(ptr)),

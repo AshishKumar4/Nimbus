@@ -394,7 +394,8 @@ export function makeCPythonRunnerFactory(deps: {
       if (!userEnv.SSL_CERT_FILE && cacertVfs) userEnv.SSL_CERT_FILE = `/${cacertVfs.replace(/^\/+/, '')}`;
 
       const facetArgs = {
-        userCode: `${prelude}\n${userCode}`,
+        bootstrapCode: prelude,
+        userCode,
         pyArgv,
         userEnv,
         progName,
