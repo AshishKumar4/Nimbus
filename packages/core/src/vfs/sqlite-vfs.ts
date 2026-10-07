@@ -8531,9 +8531,9 @@ export class SqliteVFS {
   /**
    * Whether the namespace places every one of `names` (as `cred` names
    * them) on this filesystem, by lookups made in this turn: false when one
-   * lands on a mount or under a directory the namespace composes, when a
-   * lookup leaves the synchronous backends, or when it fails. A caller that
-   * writes in this same turn writes where the namespace would.
+   * lands on a mount, when a lookup leaves the synchronous backends, or
+   * when it fails. A caller that writes in this same turn writes where the
+   * namespace would.
    */
   placesHere(names: readonly string[], cred: VfsCred = CRED_KERNEL): boolean {
     return this.placedHere(names, cred);

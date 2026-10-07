@@ -81,10 +81,10 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
       return attempt(path, '');
     },
     placement(path) {
+      // On the root, a name is this filesystem's: one under a directory above
+      // a mount point too, which the namespace shows once the root holds it.
       const point = namespace.mountOf(path);
-      if (point !== '/') return point;
-      // A directory above a mount point is the namespace's, though on the root.
-      return namespace.composes(path) ? point : null;
+      return point === '/' ? null : point;
     },
     async apply(record, cred, guard) {
       const ns = view(cred, guard);
