@@ -246,16 +246,33 @@ case 'kill': {
 
   const before = await settled();
   const controller = new AbortController();
-  let ticks = 0;
-  const ticker = setInterval(() => { ticks++; }, 50);
-  const started = Date.now();
+  // The abort comes from this event loop, 300 ms after the program is seen
+  // running (a thread it started has spent CPU): that it comes at all is the
+  // proof the loop runs while the program spins. A count of ticks over a
+  // fixed window measured the machine instead: a container whose CPU the
+  // hypervisor took for a quarter second (CI shards with steal up to all of
+  // their busy time) lost ticks while nothing held the loop.
+  let running = null;
+  let abortedAt = null;
+  const watcher = setInterval(() => {
+    if (running === null) {
+      for (const [thread, spent] of threadTicks()) if (!before.threadIds.includes(thread) && spent > 5) running = Date.now();
+    } else if (Date.now() - running >= 300) {
+      clearInterval(watcher);
+      abortedAt = Date.now();
+      controller.abort();
+    }
+  }, 10);
   const pending = ws.exec('python3 -c "while True: pass"', { signal: controller.signal });
-  setTimeout(() => controller.abort(), 500);
-  const r = await within(pending, 15_000, 'the aborted python3');
-  clearInterval(ticker);
+  let r;
+  try {
+    r = await within(pending, 15_000, 'the aborted python3');
+  } finally {
+    clearInterval(watcher);
+  }
+  assert.ok(abortedAt !== null, `(3) the host's event loop ran while the program spun, and aborted it: ${running === null ? 'the program was never seen running' : 'the abort never fired'} (exit ${r.exitCode}: ${r.stderr})`);
   assert.equal(r.exitCode, 130, `(3) the aborted program answers 130: ${r.stderr}`);
-  assert.ok(Date.now() - started < 10_000, '(3) promptly');
-  assert.ok(ticks >= 5, `(3) the host's event loop ran while the program spun (${ticks} ticks)`);
+  assert.ok(Date.now() - abortedAt < 10_000, '(3) promptly');
   await assertEnded('(3) the aborted python3', before);
   assert.equal((await ws.exec('python3 -c "print(1)"')).stdout, '1\n', '(3) the workspace runs the next program');
 
