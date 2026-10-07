@@ -50,7 +50,7 @@
 // COMMANDS
 //   up      --release <dir> [--rotate-secrets]   a release CI built for HEAD
 //           (scripts/ci/release.mjs staging makes one and runs this)
-//   status
+//   status  [--json]   → what each Worker serves, and what this machine last deployed
 //   token   [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //
@@ -202,14 +202,24 @@ async function up() {
   ].join('\n'));
 }
 
+/**
+ * What each Worker serves now. --json: { "<worker>": { live, deployed, base } },
+ * `deployed` being the version this machine's last `up` verified, so a
+ * caller can tell whether staging still serves its upload.
+ */
 function status() {
   const account = requireAccountPin();
   const state = readState(STATE_PATH);
-  for (const target of Object.values(TARGETS)) {
-    const version = activeVersionId(target.name, { cwd: target.dir, account });
-    const base = state?.[keyOf(target)]?.base ?? '(not deployed from this machine)';
-    process.stdout.write(`${target.name}\t${version ?? '(absent)'}\t${base}\n`);
+  const rows = Object.fromEntries(Object.values(TARGETS).map((target) => [target.name, {
+    live: activeVersionId(target.name, { cwd: target.dir, account }),
+    deployed: state?.[keyOf(target)]?.versionId ?? null,
+    base: state?.[keyOf(target)]?.base ?? null,
+  }]));
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(rows)}\n`);
+    return;
   }
+  for (const [name, row] of Object.entries(rows)) process.stdout.write(`${name}\t${row.live ?? '(absent)'}\t${row.base ?? '(not deployed from this machine)'}\n`);
 }
 
 async function token() {
@@ -252,7 +262,7 @@ async function deployTarget(target, { account, state, config }) {
     log(`setting JWT_SECRET on ${target.name}`);
     putSecret({ cwd: target.dir, account, name: target.name, key: 'JWT_SECRET', value: secret });
   }
-  state[key] = { name: target.name, base, secret };
+  state[key] = { name: target.name, base, secret, versionId };
   writeState(STATE_PATH, state);
   return { base, versionId };
 }

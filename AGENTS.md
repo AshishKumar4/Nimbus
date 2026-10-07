@@ -671,11 +671,20 @@ gate, the demo's assets, and the modules of `apps/probe` and of
 `apps/hosted-demo` for `env.staging` and `env.production`. The env blocks
 must produce the same module bytes, and the release is refused if they do
 not. The docs are built once and serve every origin: the docs terminal's
-endpoint is the path `/api/demo/anon-session`. `release.mjs` records the
-versions staging serves and the matrix's verdict in the release's
-`staged.json`. `promote.mjs` uploads only a release whose matrix was green,
-checks its module against the one staging served and every asset against
-CI's manifest, and runs deploy-isolation's preflight first. On a failed
+endpoint is the path `/api/demo/anon-session`.
+
+Staging and production are each leased, one lane at a time: an exclusive
+`flock(2)` on `~/.local/state/nimbus/leases/<environment>.lock`, held from
+the upload through the checks that grade it (`scripts/ci/lib/lease.mjs`).
+Every lane runs on this machine, so every lane sees the lock. A lane that
+finds it held waits, naming the holder, and the kernel frees it when the
+holder's process ends. The version ids are read before and after the
+matrix (and the live checks), and a run whose environment changed under it
+is not graded. `release.mjs` seals `staged.json` with the digest of the
+whole release manifest: the commit, every module, the docs, every asset.
+`promote.mjs` uploads only a release whose matrix was green and whose
+manifest still has that digest. It checks every file against the manifest
+and runs deploy-isolation's preflight first. On a failed
 check it prints the rollback:
 `bun run --cwd apps/hosted-demo wrangler versions deploy --name nimbus <previous-version-id>@100% -e production`.
 `--dry-run` stops before the upload.

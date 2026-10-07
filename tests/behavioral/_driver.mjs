@@ -71,6 +71,18 @@ async function sessionRecord(sid, openedAt, base, headers) {
   }
 }
 
+/**
+ * `text` with every credential it may carry replaced by `…`: an attach token
+ * in a URL's query (`nimbus_token=`, and any `token=`/`access_token=`), and
+ * a bearer. The one helper for every URL or response a probe prints; every
+ * assertion detail goes through it (makeAsserter).
+ */
+export function redactCredentials(text) {
+  return String(text)
+    .replace(/([?&#](?:nimbus_token|access_token|token)=)[^&#\s"'<>]+/gi, '$1…')
+    .replace(/(Bearer\s+)[A-Za-z0-9._~+/=-]+/g, '$1…');
+}
+
 /** A close frame in one clause: `code 1006 (abnormal): <reason>`. */
 function describeSocketClose(code, reason) {
   const text = reason ? String(reason).slice(0, 200) : '';
@@ -591,8 +603,12 @@ export function makeAsserter(label) {
   const failures = [];
   return {
     check(name, ok, detail = '') {
-      if (ok) { console.log(`  ✓ ${name}`); pass++; }
-      else { console.log(`  ✗ ${name}${detail ? ' — ' + detail : ''}`); failures.push(`${name}: ${detail}`); fail++; }
+      if (ok) { console.log(`  ✓ ${name}`); pass++; return; }
+      // A detail is often a URL or a response: never a live credential.
+      const shown = redactCredentials(String(detail));
+      console.log(`  ✗ ${name}${shown ? ' — ' + shown : ''}`);
+      failures.push(`${name}: ${shown}`);
+      fail++;
     },
     summary() {
       console.log(`\n  ──── [${label}] ${pass} pass / ${fail} fail`);

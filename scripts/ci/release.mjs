@@ -18,9 +18,12 @@
 //      write-heavy probes whose failure is intermittent repeated beside it,
 //      then the hosted-demo checks against nimbus-staging as a visitor
 //      reaches it (HOSTED_DEMO_CHECKS: /try, the docs terminal).
-// The release, the versions staging serves and the matrix's verdict are
-// recorded in the release's staged.json; promote.mjs promotes only a
-// release whose matrix was green.
+// Staging is leased from the upload through the matrix (lib/lease.mjs), and
+// the matrix counts only if staging served this upload from its first probe
+// to its last (version ids read before and after; otherwise not graded).
+// staged.json records the versions, the matrix's verdict and the digest of
+// the whole release manifest; promote.mjs promotes only a release whose
+// matrix was green, and only if its manifest still has that digest.
 // Exit: 0, staged and the matrix green; 1, a red row or a failed upload;
 // 2, not graded.
 import { spawnSync } from 'node:child_process';
@@ -62,7 +65,8 @@ if (git(repo, ['rev-parse', 'HEAD']).stdout.trim() !== sha) notGraded(`${sha.sli
 if (!process.env.CLOUDFLARE_ACCOUNT_ID) notGraded('CLOUDFLARE_ACCOUNT_ID is not set: the deploy pins the account');
 assertInstalled(repo, 'release');
 // Imported once the install is known to be here: the upload path parses wrangler configs through it.
-const { fetchRelease } = await import('./lib/release.mjs');
+const { fetchRelease, releaseDigest } = await import('./lib/release.mjs');
+const { holdLease } = await import('./lib/lease.mjs');
 
 let dir;
 let release;
@@ -72,21 +76,38 @@ try {
   notGraded(error.message);
 }
 
+// The staging lease, from the upload through the matrix: no other lane's
+// upload lands while this matrix grades this release (scripts/ci/lib/lease.mjs).
+let leaseFd;
+try {
+  leaseFd = holdLease('staging', { what: { commit: sha, worktree: repo } });
+} catch (error) {
+  notGraded(error.message);
+}
+
+/** What staging serves now, and what this machine's last upload verified (_staging-target status --json). */
+function serving() {
+  const status = spawnSync('bun', ['tests/behavioral/_staging-target.mjs', 'status', '--json'], { cwd: repo, encoding: 'utf8' });
+  if (status.status !== 0) notGraded(`could not read what staging serves:\n${status.stderr}`);
+  return JSON.parse(status.stdout);
+}
+
+// The upload holds the lease too (its fd 3), should this process die first.
 // Its exports (a token among them) are not wanted here.
 const up = spawnSync('bun', ['tests/behavioral/_staging-target.mjs', 'up', '--release', dir, ...(flags['rotate-secrets'] ? ['--rotate-secrets'] : [])], {
-  cwd: repo, stdio: ['ignore', 'ignore', 'inherit'],
+  cwd: repo, stdio: ['ignore', 'ignore', 'inherit', leaseFd],
 });
-const staged = { commit: sha, at: new Date().toISOString(), modules: Object.fromEntries(Object.entries(release.bundles).map(([target, bundle]) => [target, bundle.sha256])), versions: {}, matrix: null };
 if (up.status !== 0) {
   console.log(`release: the upload to staging failed (exit ${up.status}); the release is in ${dir}`);
   process.exit(1);
 }
-const status = spawnSync('bun', ['tests/behavioral/_staging-target.mjs', 'status'], { cwd: repo, encoding: 'utf8' });
-for (const line of status.stdout.trim().split('\n')) {
-  const [name, version, base] = line.split('\t');
-  staged.versions[name] = { version, base };
+// Sealed with the whole manifest: promote.mjs promotes exactly what this matrix graded.
+const staged = { commit: sha, at: new Date().toISOString(), release: releaseDigest(release), versions: {}, matrix: null };
+for (const [name, row] of Object.entries(serving())) {
+  if (!row.deployed || row.live !== row.deployed) notGraded(`${name} serves ${row.live}, not this upload's ${row.deployed}`);
+  staged.versions[name] = { version: row.live, base: row.base };
 }
-console.log(`release: staging serves ${Object.entries(staged.versions).map(([name, { version }]) => `${name} ${version}`).join(', ')}`);
+console.log(`release: staging serves ${Object.entries(staged.versions).map(([name, { version }]) => `${name} ${version}`).join(', ')}, this upload`);
 
 /** remote-probes with `args`, its report passed through; resolves to its exit code and verdict. */
 function probes(args) {
@@ -105,8 +126,15 @@ if (!flags['no-matrix']) {
   const hosted = demo ? probes(['--target', `hosted:${new URL(demo).origin}`, '--only', HOSTED_DEMO_CHECKS.join(','), '--parts', '1', '--jobs', String(HOSTED_DEMO_CHECKS.length)])
     : { exitCode: 2, verdict: null };
   staged.matrix = { exitCode: Math.max(suite.exitCode, hosted.exitCode), suite, hosted };
+  // The matrix graded this upload only if staging served it throughout.
+  const moved = Object.entries(serving()).filter(([name, row]) => row.live !== staged.versions[name]?.version);
+  if (moved.length > 0) {
+    staged.matrix.exitCode = 2;
+    staged.matrix.moved = Object.fromEntries(moved.map(([name, row]) => [name, row.live]));
+    console.log(`release: NOT GRADED — staging changed under the matrix: ${moved.map(([name, row]) => `${name} now serves ${row.live}, not ${staged.versions[name]?.version}`).join('; ')}`);
+  }
   exit = staged.matrix.exitCode;
 }
 writeFileSync(join(dir, 'staged.json'), `${JSON.stringify(staged, null, 2)}\n`);
-console.log(`release: ${sha.slice(0, 12)} staged${staged.matrix ? `, matrix ${staged.matrix.exitCode === 0 ? 'green' : 'RED'}` : ', matrix not run'}; ${join(dir, 'staged.json')}`);
+console.log(`release: ${sha.slice(0, 12)} staged${staged.matrix ? `, matrix ${staged.matrix.exitCode === 0 ? 'green' : staged.matrix.exitCode === 2 ? 'NOT GRADED' : 'RED'}` : ', matrix not run'}; ${join(dir, 'staged.json')}`);
 process.exit(exit);

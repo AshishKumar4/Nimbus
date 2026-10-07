@@ -77,6 +77,24 @@ export function readRelease(dir) {
   return JSON.parse(readFileSync(join(dir, 'release.json'), 'utf8'));
 }
 
+/** `value` serialized with every object's keys in order: the same data, the same text. */
+function canonical(value) {
+  if (Array.isArray(value)) return `[${value.map(canonical).join(',')}]`;
+  if (value && typeof value === 'object') return `{${Object.keys(value).sort().map((key) => `${JSON.stringify(key)}:${canonical(value[key])}`).join(',')}}`;
+  return JSON.stringify(value);
+}
+
+/**
+ * The digest of a whole release manifest: its commit, its job, every
+ * module's sha256, the docs build's sha256 and every asset's. staged.json is
+ * sealed with it, so what staging verified and what is promoted are one
+ * manifest, and every byte in it is checked against it at upload
+ * (uploadConfig).
+ */
+export function releaseDigest(release) {
+  return sha256(canonical(release));
+}
+
 /**
  * A wrangler config that uploads `target`'s module from the release in
  * `dir` as built, with the app's own settings (its env blocks included)

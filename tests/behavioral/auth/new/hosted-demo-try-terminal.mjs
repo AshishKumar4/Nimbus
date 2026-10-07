@@ -10,6 +10,8 @@
 // it on the probe target, and release.mjs and promote.mjs run it against the
 // demo. The session is anonymous and TTL-bound; it is deleted when the
 // demo lets an anonymous visitor delete it, and otherwise left to its TTL.
+// URLs it prints may carry the attach token: the asserter redacts every
+// detail (redactCredentials).
 
 import { makeAsserter } from '../../_driver.mjs';
 import { launchBrowser, sessionTerminalText, waitForSessionTerminalText } from '../../_runtime-behavioral-template.mjs';
@@ -40,7 +42,7 @@ try {
     await page.keyboard.press('Enter');
     const answered = await waitForSessionTerminalText(page, /(?:^|\n)42\s*(?:\n|$)/, 60_000).then(() => true, () => false);
     a.check('node -e prints its answer', answered, (await sessionTerminalText(page)).slice(-300));
-    a.check('the attach credential left the address bar', !new URL(page.url()).searchParams.has('nimbus_token'), page.url().replace(/nimbus_token=[^&]+/, 'nimbus_token=…'));
+    a.check('the attach credential left the address bar', !new URL(page.url()).searchParams.has('nimbus_token'), page.url());
     const cleanup = await page.evaluate(async (session) => {
       const response = await fetch(`/s/${encodeURIComponent(session)}/`, { method: 'DELETE', headers: { 'X-Nimbus-Cleanup-Reason': 'probe-exit' } });
       return { status: response.status, json: (response.headers.get('content-type') ?? '').includes('application/json') };

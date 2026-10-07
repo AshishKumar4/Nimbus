@@ -8,16 +8,18 @@
 // wrangler config and the worker's public assets from it.
 //   1. The release: the newest under ~/.local/state/nimbus/releases/ for
 //      <commit> whose staging matrix was green (release.mjs staging wrote its
-//      staged.json), or --release <dir>. Production's module must be the
-//      bytes staging served: its sha256 is checked against the one staged.json
-//      recorded, then against the file (scripts/ci/lib/release.mjs), and the
-//      assets against CI's manifest, file by file.
+//      staged.json), or --release <dir>. Its manifest must still have the
+//      digest staged.json was sealed with (commit, every module, the docs,
+//      every asset), and every file is checked against the manifest at
+//      upload (scripts/ci/lib/release.mjs).
 //   2. deploy-isolation's preflight (scripts/deploy-isolation.mjs).
 //   3. The upload, `wrangler deploy --no-bundle -e production`, verified by
-//      version id: printed, served, and not the one served before.
+//      version id: printed, served, and not the one served before. The
+//      production lease (lib/lease.mjs) is held from here through 4.
 //   4. The live checks, from containers, against https://nimbus-os.dev as a
 //      visitor reaches it (HOSTED_DEMO_CHECKS and PRODUCTION_ONLY_CHECKS:
 //      /try, the docs terminal, host-form previews).
+// The checks count only if production still serves the upload after them.
 // On a failed check it prints the rollback to the version served before.
 // --dry-run does 1 and 2, reads the version production serves, writes the
 // upload config, and stops.
@@ -62,7 +64,8 @@ if (git(repo, ['rev-parse', 'HEAD']).stdout.trim() !== sha) notGraded(`${sha.sli
 const dirty = git(repo, ['status', '--porcelain', '--untracked-files=all']).stdout;
 if (dirty) notGraded(`the worktree is not clean:\n${dirty}`);
 assertInstalled(repo, 'promote');
-const { RELEASES, readRelease, uploadConfig } = await import('./lib/release.mjs');
+const { RELEASES, readRelease, releaseDigest, uploadConfig } = await import('./lib/release.mjs');
+const { holdLease } = await import('./lib/lease.mjs');
 const { activeVersionId, deployAndVerify, requireAccountPin } = await import('../../tests/behavioral/_deploy-target.mjs');
 const account = requireAccountPin();
 
@@ -81,11 +84,12 @@ if (!dir) {
 }
 const release = readRelease(dir);
 const target = `${PRODUCTION.app}:${PRODUCTION.env}`;
-const servedOnStaging = staged(dir).modules[`${PRODUCTION.app}:staging`];
-if (!release.bundles[target] || release.bundles[target].sha256 !== servedOnStaging) {
-  notGraded(`production's module (${release.bundles[target]?.sha256 ?? 'none'}) is not the one staging served (${servedOnStaging})`);
-}
-log(`release ${dir}: ${target} sha256 ${servedOnStaging}, the bytes staging served (matrix green ${staged(dir).at})`);
+// The manifest staging graded, whole: every module, the docs, every asset.
+const sealed = staged(dir).release;
+if (releaseDigest(release) !== sealed) notGraded(`the release manifest in ${dir} is not the one staging graded (digest ${releaseDigest(release)}, sealed ${sealed})`);
+const module = release.bundles[target]?.sha256;
+if (!module || module !== release.bundles[`${PRODUCTION.app}:staging`]?.sha256) notGraded(`the release's ${target} module is not the one its staging upload used`);
+log(`release ${dir}: manifest ${sealed.slice(0, 16)}…, graded green on staging ${staged(dir).at}; ${target} sha256 ${module}`);
 
 // 2. The preflight.
 const isolation = spawnSync('bun', ['scripts/deploy-isolation.mjs'], { cwd: repo, encoding: 'utf8' });
@@ -97,6 +101,15 @@ try {
   config = uploadConfig(dir, target, { root: repo, log });
 } catch (error) {
   notGraded(error.message);
+}
+// The production lease, from before the version it replaces is read
+// through the live checks; a dry run uploads nothing and takes none.
+if (!flags['dry-run']) {
+  try {
+    holdLease('production', { what: { commit: sha, worktree: repo } });
+  } catch (error) {
+    notGraded(error.message);
+  }
 }
 const cwd = join(repo, PRODUCTION.app);
 const before = activeVersionId(PRODUCTION.name, { cwd, account });
@@ -124,7 +137,16 @@ const live = spawnSync('bun', ['scripts/ci/remote-probes.mjs', '--target', `host
   cwd: repo, stdio: ['ignore', 'pipe', 'inherit'], encoding: 'utf8', maxBuffer: 1 << 30,
 });
 process.stdout.write(live.stdout);
-const promoted = { commit: sha, at: new Date().toISOString(), before, versionId, module: servedOnStaging, live: { exitCode: live.status, verdict: /verdict (\S+\.json)/.exec(live.stdout)?.[1] ?? null } };
+const promoted = { commit: sha, at: new Date().toISOString(), release: sealed, before, versionId, live: { exitCode: live.status, verdict: /verdict (\S+\.json)/.exec(live.stdout)?.[1] ?? null } };
+// The checks graded this upload only if production served it throughout.
+const after = activeVersionId(PRODUCTION.name, { cwd, account });
+if (after !== versionId) {
+  promoted.live.exitCode = 2;
+  promoted.live.moved = after;
+  writeFileSync(join(dir, 'promoted.json'), `${JSON.stringify(promoted, null, 2)}\n`);
+  console.log(`promote: NOT GRADED — ${PRODUCTION.name} now serves ${after}, not the promoted ${versionId}: something else deployed during the live checks. Find out what before anything else; the version before this promotion was ${before}.`);
+  process.exit(2);
+}
 writeFileSync(join(dir, 'promoted.json'), `${JSON.stringify(promoted, null, 2)}\n`);
 if (live.status !== 0) {
   console.log(`promote: ${PRODUCTION.name} serves ${versionId}, and the live checks are not green (exit ${live.status}). Roll back: ${rollback}`);
