@@ -1009,7 +1009,7 @@ export async function _rpcWriteBatch(
       data: normalizeWriteBatchChunkData(c.data),
     }));
 
-    return self.sqliteFs!.as(callerCred(self, pid)).writeBatch({
+    return self.sqliteFs!.as(callerCred(self, pid)).writeBatchPlaced({
       inodes,
       chunks,
       deletePaths,
