@@ -13,8 +13,8 @@
 // rebuild moved dist (recording nothing), 2 when the build failed.
 //
 // Then overlayCommit (scripts/ci/remote-build.mjs): the commit a container
-// gets is the lane's tree with the overlay files' bytes and modes, and the
-// same inputs give the same commit.
+// gets is the lane's tree with the overlay files' bytes and modes, a new
+// commit each time.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -167,7 +167,7 @@ try {
     writeFileSync(join(from, 'package.json'), '{"replaced":true}\n');
     const files = ['config.json', 'scripts/setup.sh', 'package.json'];
     const commit = overlayCommit(dir, sha, files, from);
-    assert.equal(overlayCommit(dir, sha, files, from), commit, 'the same inputs give the same commit');
+    assert.notEqual(overlayCommit(dir, sha, files, from), commit, 'each call is a new commit, so no run reuses a pack armada stored for another');
     assert.equal(git(dir, 'rev-parse', `${commit}^`), sha);
     assert.equal(git(dir, 'show', `${commit}:package.json`), '{"replaced":true}');
     assert.match(git(dir, 'ls-tree', commit, 'scripts/setup.sh'), /^100755 /);
@@ -175,7 +175,7 @@ try {
     assert.equal(git(dir, 'diff', '--name-only', sha, commit), 'config.json\npackage.json\nscripts/setup.sh');
     assert.equal(git(dir, 'rev-parse', 'HEAD'), sha, 'no branch moved');
     assert.equal(git(dir, 'status', '--porcelain'), '', 'the worktree and its index are untouched');
-    console.log('  ok  overlayCommit: the lane\'s tree with the overlay\'s bytes and modes, on no branch, the same each time');
+    console.log('  ok  overlayCommit: the lane\'s tree with the overlay\'s bytes and modes, on no branch, new each time');
   }
 } finally {
   rmSync(root, { recursive: true, force: true });

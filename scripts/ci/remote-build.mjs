@@ -19,7 +19,7 @@
 //
 // Exit: 0, dist is the fixpoint and the typecheck is clean; 1, a patch was
 // applied or saved, or the typecheck or the gate failed; 2, not graded.
-// armada is the CLI and SDK in ARMADA_DIR (default /mnt/local/armada), on the
+// armada is the CLI and SDK in ARMADA_DIR (default below), on the
 // connection in ~/.config/armada/connection.json (or ARMADA_URL and
 // ARMADA_TOKEN).
 import { spawn, spawnSync } from 'node:child_process';
@@ -29,6 +29,10 @@ import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
 const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..');
+// PreparedSkunk's armada clone: upstream (/mnt/local/armada) packs a commit
+// without the trees the environment's ancestors share with it, which no
+// environment holds ("fatal: unable to read tree"); 17db0d5 there fixes it.
+const ARMADA_DIR = '/mnt/local/nimbus/wt/armada-contrib';
 
 /** What the container needs that the commit may lack, from this checkout. */
 export const OVERLAY = ['.armada.json', 'scripts/armada/setup.sh', 'scripts/armada/install.sh', 'scripts/ci/build.mjs'];
@@ -42,8 +46,9 @@ const git = (cwd, args, options = {}) => {
 /**
  * A commit object, on no branch, whose tree is `sha`'s with each `files`
  * path replaced by the bytes and executable bit it has under `from`. Its
- * parent is `sha`, and its identity and dates are fixed by `sha`, so the
- * same inputs give the same commit.
+ * parent is `sha`. Each call makes a new one (its date is now): armada keeps
+ * the pack it was sent for a commit, so a commit reused across runs would
+ * reuse a pack that was wrong once.
  */
 export function overlayCommit(repo, sha, files = OVERLAY, from = SELF_ROOT) {
   const scratch = mkdtempSync(join(tmpdir(), 'remote-build-index-'));
@@ -56,12 +61,12 @@ export function overlayCommit(repo, sha, files = OVERLAY, from = SELF_ROOT) {
       git(repo, ['update-index', '--add', '--cacheinfo', `${mode},${blob},${path}`], { env });
     }
     const tree = git(repo, ['write-tree'], { env });
-    const date = git(repo, ['show', '-s', '--format=%cI', sha]);
-    return git(repo, ['commit-tree', tree, '-p', sha, '-m', `remote build of ${sha}`], {
+    const date = new Date().toISOString();
+    return git(repo, ['commit-tree', tree, '-p', sha, '-m', `remote build of ${sha} at ${date}`], {
       env: {
         ...process.env,
-        GIT_AUTHOR_NAME: 'Nimbus remote build', GIT_AUTHOR_EMAIL: 'remote-build@nimbus.invalid', GIT_AUTHOR_DATE: date,
-        GIT_COMMITTER_NAME: 'Nimbus remote build', GIT_COMMITTER_EMAIL: 'remote-build@nimbus.invalid', GIT_COMMITTER_DATE: date,
+        GIT_AUTHOR_NAME: 'Nimbus remote build', GIT_AUTHOR_EMAIL: 'remote-build@nimbus.invalid',
+        GIT_COMMITTER_NAME: 'Nimbus remote build', GIT_COMMITTER_EMAIL: 'remote-build@nimbus.invalid',
       },
     });
   } finally {
@@ -71,7 +76,7 @@ export function overlayCommit(repo, sha, files = OVERLAY, from = SELF_ROOT) {
 
 /** Run build.mjs on armada for `commit`; resolves to its verdict, or throws saying why it was not graded. */
 async function buildOnArmada(repo, commit, args) {
-  const armadaDir = process.env.ARMADA_DIR || '/mnt/local/armada';
+  const armadaDir = process.env.ARMADA_DIR || ARMADA_DIR;
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const armada = connect();
   const cli = spawn('bun', [join(armadaDir, 'src', 'cli.ts'), 'map', `--commit=${commit}`, '--times=1', '--output', '--json',
