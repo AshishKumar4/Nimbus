@@ -89,7 +89,6 @@ const files = {
   'tla-require.mjs': "await 1;\nrequire('node:path');\n",
   'tla-scope.mjs': `await 0;\n${SCOPE('tla-scope')}`,
   'caught.mjs': 'try { exports.x = 1; } catch (e) { globalThis.caught = [e.name, e.message]; }\nexport {};\n',
-  'later.mjs': "process.on('uncaughtException', (e) => { console.log(JSON.stringify(['later', e.name, e.message])); });\nsetTimeout(() => { __dirname; }, 0);\nexport {};\n",
   'scope-errors.cjs': `const report = [];
 try { require('./require-in-esm.mjs'); } catch (e) { report.push(['require', e.name, e.message, e.code ?? null]); }
 import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name, e.message, e.code ?? null]); })
@@ -129,7 +128,6 @@ const RUNS = [
   ['seed.mjs'],
   ['tla-scope.mjs'],
   ['scope-errors.cjs'],
-  ['later.mjs'],
   ['require-in-esm.mjs', { fails: true }],
   ['typed/module-exports.js', { fails: true }],
   ['chain.mjs', { fails: true }],

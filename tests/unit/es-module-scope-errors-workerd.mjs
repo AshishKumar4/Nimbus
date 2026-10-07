@@ -28,9 +28,11 @@ const files = {
   'via-require.cjs': `${REPORT}try { require('./require-in-esm.mjs'); } catch (e) { report('require', e); }\n`,
   'via-import.cjs': `${REPORT}import('./typed/module-exports.js').catch((e) => report('import', e))
   .then(() => import('./tla-require.mjs')).catch((e) => report('tla', e));\n`,
+  // Thrown in a callback, after the module's job: V8's own text.
+  'later.mjs': `${REPORT}process.on('uncaughtException', (e) => report('later', e));\nsetTimeout(() => { __dirname; }, 0);\n`,
 };
 // Entries print their uncaught error; the rest report what they caught.
-const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs'];
+const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs', 'later.mjs'];
 
 /** An uncaught error's `<Name>: <message>` and further message lines, and its first frame's file. */
 function uncaught(text) {
@@ -40,7 +42,7 @@ function uncaught(text) {
 }
 /** What a run says: its reports, or its uncaught error. */
 function said(text, failed) {
-  const reports = text.split('\n').filter((l) => l.startsWith('[')).map((l) => JSON.parse(l));
+  const reports = text.split('\n').filter((l) => l.startsWith('["')).map((l) => JSON.parse(l));
   return failed ? uncaught(text) : reports;
 }
 
