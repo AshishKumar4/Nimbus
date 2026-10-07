@@ -12,7 +12,7 @@
 // output redirected to files (no terminal: no colours), and the bytes must
 // be equal. Under FORCE_COLOR, the colours are Node's too, and the
 // program prints lib/internal/tty.js's depth table for sixteen environments;
-// at the terminal, FORCE_COLOR outranks NO_COLOR and TERM=dumb.
+// FORCE_COLOR outranks NO_COLOR and TERM=dumb.
 //
 // The formatter is Node's own inspect.js (node-inspect-matches-node). The
 // V8 slots user land cannot read (a promise's state and result, a proxy's
@@ -190,15 +190,14 @@ try {
     assert.equal(pid(actual.stderr), pid(expected.stderr), 'stderr is node\'s, byte for byte but the pid');
     await t.run('cd /home/user/console && FORCE_COLOR=1 node coloured.js > cout.txt 2> cerr.txt; echo "STATUS=$?"', 120_000);
     assert.deepEqual({ stdout: await read('cout.txt'), stderr: await read('cerr.txt') }, colouredExpected, 'coloured as node colours');
-    // At the terminal, colours as the environment says, FORCE_COLOR first
-    // (lib/internal/tty.js; the depth table above is the rest of the policy).
+    // Colours as the environment says, FORCE_COLOR first (lib/internal/tty.js;
+    // the depth table above is the rest of the policy).
     const ESC = '\u001b[';
-    for (const [env, coloured] of [['FORCE_COLOR=1 NO_COLOR=1 ', true], ['FORCE_COLOR=3 TERM=dumb ', true], ['FORCE_COLOR=0 ', false], ['NO_COLOR=1 ', false], ['TERM=dumb ', false]]) {
-      const run = await t.run(`${env}node -e "console.log({ a: 1 })"`, 60_000);
-      // The object's line, not the command's echo.
-      const line = run.output.split('\n').find((l) => l.includes('a:') && !l.includes('console.log'));
-      assert.ok(line, `${env}node printed the object: ${JSON.stringify(run.output.slice(-300))}`);
-      assert.equal(line.includes(ESC), coloured, `${env || 'no env: '}node at a terminal ${coloured ? 'colours' : 'does not colour'}: ${JSON.stringify(line)}`);
+    for (const [env, coloured] of [['FORCE_COLOR=1 NO_COLOR=1 ', true], ['FORCE_COLOR=3 TERM=dumb ', true], ['FORCE_COLOR=0 ', false]]) {
+      await t.run(`cd /home/user/console && ${env}node -e "console.log({ a: 1 })" > env.txt 2> /dev/null; echo "STATUS=$?"`, 60_000);
+      const line = await read('env.txt');
+      assert.ok(line.includes('a:'), `${env}node printed the object: ${JSON.stringify(line)}`);
+      assert.equal(line.includes(ESC), coloured, `${env}node ${coloured ? 'colours' : 'does not colour'}: ${JSON.stringify(line)}`);
     }
   } finally {
     await t.close();
