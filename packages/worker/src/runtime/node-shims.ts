@@ -9912,7 +9912,7 @@ const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
 // throws for a name bound nowhere, from the module's own frame. \`typeof\` of
 // one is lowered to 'undefined', as V8's is.
 const __nimbusCommonJSGlobalLike = ${JSON.stringify([...COMMONJS_WRAPPER_NAMES])};
-Object.defineProperty(globalThis, ${JSON.stringify(ES_MODULE_SCOPE_GLOBAL)}, { value: Object.freeze(Object.create(null, Object.fromEntries(
+Object.defineProperty(globalThis, ${JSON.stringify(ES_MODULE_SCOPE_GLOBAL)}, { configurable: true, value: Object.freeze(Object.create(null, Object.fromEntries(
   __nimbusCommonJSGlobalLike.map((name) => {
     const unbound = function () {
       const error = new ReferenceError(name + " is not defined");
