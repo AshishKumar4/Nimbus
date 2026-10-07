@@ -16,6 +16,7 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { type RuntimeCodeEntry } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 import { ReadAheadBudget } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -198,6 +199,22 @@ export declare function facetWasmImports(named: readonly {
     vfsPath: string;
     digest: string | undefined;
 }[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
+/**
+ * The wasm images earlier runs of a command learned (runtime code of kind
+ * `wasm`: bytes the program compiled that the launch did not carry, which
+ * the WebAssembly seam named and recorded), for this launch to carry.
+ */
+export declare function learnedWasmImages(code: ReadonlyMap<string, RuntimeCodeEntry>): Uint8Array[];
+/**
+ * A launch's wasm images, parked by VFS path and by digest for the
+ * node-shims WebAssembly seam, each as the compile of its map member: the
+ * seam runs it when the program first compiles those bytes. A static import
+ * compiled every image at load, used or not (lightningcss's 15.8 MB on every
+ * Vite 8 dev launch). Under new_module_registry a member compiles on first
+ * evaluation, and the registry's require() may evaluate it at request time,
+ * where a compile from bytes is refused.
+ */
+export declare function facetWasmImportsSource(wasmImports: readonly FacetWasmImport[]): string;
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
     /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
@@ -279,6 +296,24 @@ interface FacetVfsState {
     truncated: boolean;
     /** Diagnostics: how the build's transforms were answered. */
     transforms?: BundleCellTransformStats;
+    /**
+     * Modules the program reaches only through an \`import()\` (phase 2 of the
+     * closure walk), which no static walk from the entry or a staged package
+     * entry reaches: they evaluate only if that call runs. Their synchronous
+     * reads are not planned at boot; the \`import()\` that evaluates them
+     * fetches them first (lazyReadsByTarget).
+     */
+    lazyModules?: readonly string[];
+    /** Each lazy module's lazy importers (PrefetchResult.edges, reversed, within lazyModules). */
+    lazyImporters?: Readonly<Record<string, readonly string[]>>;
+    /**
+     * The modules the snapshot's bound evicted that name a synchronous call
+     * (evictedReaders): modules the program may still load late, as runtime
+     * code through an \`import()\`. The data plan puts what each reads in the
+     * lazy-read table under its own path, for that import()'s closure walk to
+     * fetch.
+     */
+    evictedReaders?: readonly string[];
     /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
     cacheHit?: boolean;
     /**
@@ -638,6 +673,19 @@ export declare function addBinTargetSiblings(vfs: LaunchFs, scriptPath: string |
     wasmPaths: string[];
 }>;
 /**
+ * The table an \`import()\` reads its target's lazy synchronous reads from
+ * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
+ * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
+ * module evaluating it evaluates, itself included, by its lazy importers.
+ * \`syncReadsOf\` holds each lazy module that reads; the table is keyed by
+ * each of its lazy ancestors. Vite 8's \`import("lightningcss")\` resolves to
+ * lightningcss-wasm's wasm-node.mjs, which reads lightningcss_node.wasm
+ * (15.8 MB) at module top level: an entry under that target, fetched when the
+ * import() runs (a dev server with css.transformer 'lightningcss', a build's
+ * CSS minify), never at a launch that does not import it.
+ */
+export declare function lazyReadsByTarget(syncReadsOf: ReadonlyMap<string, readonly string[]>, lazyImporters: Readonly<Record<string, readonly string[]>>): Record<string, string[]>;
+/**
  * The wasm images a program's closure holds, by path and content digest.
  *
  * Three sources, one record: a `.wasm` cell the walk already staged (digested
@@ -739,6 +787,13 @@ export declare function toolConfigRoots(vfs: LaunchFs, cwd: string, scriptPath: 
  *
  */
 export declare function buildPrefetchBundle(vfs: LaunchFs, options: PrefetchBundleOptions): Promise<FacetVfsState>;
+/**
+ * The evicted JavaScript modules whose text names a synchronous call: the
+ * ones the data plan reads (static-fs-refs.ts, from the VFS as written).
+ * Most of what a bound evicts is data or declarations (Astro's 575 shiki
+ * grammars and .d.ts files), which this costs a substring search.
+ */
+export declare function evictedReaders(cells: Readonly<Record<string, string | Uint8Array>>): string[];
 /**
  * Optional hooks wired in by NimbusSession. Kept as callbacks so
  * FacetManager stays unaware of the session / log-store types.
@@ -1282,14 +1337,16 @@ export declare class FacetManager {
      */
     private _stagedBindingModulesByValue;
     /**
-     * Stage every wasm image the closure inlines as base64 (findInlineWasmImages)
-     * as a kernel-owned file named by its content key, and return the records
-     * the launch registers it under: by that path, which both launch forms read
-     * it from, and by digest, which is how the program's own compile of the
-     * decoded bytes is recognised. Small (es-module-lexer's parser is 11.8 KB)
-     * and written once per session per image.
+     * Stage wasm images that come from no file — those the closure inlines as
+     * base64 (findInlineWasmImages), and those earlier runs compiled from bytes
+     * in memory (learnedWasmImages) — each as a kernel-owned file named by its
+     * content key, and return the records the launch registers it under: by
+     * that path, which both launch forms read it from, and by digest, which is
+     * how the program's own compile of the decoded bytes is recognised. Small
+     * (es-module-lexer's parser is 11.8 KB; a learned one is at most
+     * RUNTIME_WASM_MAX_BYTES) and written once per session per image.
      */
-    private _stageInlineWasmImages;
+    private _stageWasmImageBytes;
     /** In-flight writes of the session's copies of staged bindings, by name; one writer each. */
     private stagedBindingWrites;
     /**

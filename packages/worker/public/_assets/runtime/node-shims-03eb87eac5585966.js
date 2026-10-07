@@ -2100,11 +2100,12 @@ function __nimbusVfsAcquireArgs() {
 // A wasm image can only become a WebAssembly.Module through the Worker
 // Loader's module map; new WebAssembly.Module(bytes) at request time is
 // refused by the runtime. A launch whose closure carries an image (its VFS
-// path, or its content digest for an image inlined as base64) gets it
-// compiled at load and parked here. fs.readFileSync tags the bytes it hands
-// out for such a path, and the WebAssembly seam below answers a compile of
-// tagged or digest-matched bytes with the module the loader already built —
-// so a package's own new WebAssembly.Module(readFileSync(__dirname + '/x.wasm'))
+// path, or its content digest for an image inlined as base64) parks here the
+// compile of its map member, which runs on first use (the runner's
+// facetWasmImportsSource). fs.readFileSync tags the bytes it hands out for
+// such a path, and the WebAssembly seam below answers a compile of tagged or
+// digest-matched bytes with the module the loader builds for them — so a
+// package's own new WebAssembly.Module(readFileSync(__dirname + '/x.wasm'))
 // works unchanged.
 const __nimbusPrecompiledWasm = globalThis.__nimbusPrecompiledWasm instanceof Map
   ? globalThis.__nimbusPrecompiledWasm : new Map();
@@ -2145,13 +2146,16 @@ function __nimbusWasmDigest(bytes) {
   const WA = globalThis.WebAssembly;
   if (!WA || WA.__nimbusPrecompiledSeam) return;
   const RealModule = WA.Module;
+  // A parked image is its compile, run on first use; it keeps what it built.
+  const built = (image) => (typeof image === "function" ? image() : image);
   const tagged = (bytes) => {
     if (!bytes || typeof bytes !== "object") return undefined;
     const byTag = bytes[__nimbusWasmModuleTag];
-    if (byTag !== undefined) return byTag;
+    if (byTag !== undefined) return built(byTag);
     if (__nimbusPrecompiledWasmByDigest.size === 0) return undefined;
     const digest = __nimbusWasmDigest(bytes);
-    return digest === null ? undefined : __nimbusPrecompiledWasmByDigest.get(digest);
+    const image = digest === null ? undefined : __nimbusPrecompiledWasmByDigest.get(digest);
+    return image === undefined ? undefined : built(image);
   };
   // The runtime compiles wasm only while the loader stages a module map; a
   // compile from bytes at any later point is refused with a message that names
@@ -2159,7 +2163,30 @@ function __nimbusWasmDigest(bytes) {
   // an installed package whose image has to travel as a map member (the
   // closure walk registers it), or be inlined in module text the loader
   // itself evaluates.
+  // A refused image Node would have compiled (it validates) is named, once,
+  // and learned (commonjs-cell.ts recordWasm) for the next launch of the
+  // command to carry by digest: an image built in memory comes from no file
+  // the closure walk could record, and its caller often catches the refusal
+  // and carries on without it, silently.
+  const named = new Set();
+  const name = (bytes) => {
+    let valid = false;
+    try { valid = WA.validate(bytes); } catch {}
+    const digest = valid ? __nimbusWasmDigest(bytes) : null;
+    if (digest === null || named.has(digest)) return;
+    named.add(digest);
+    const size = bytes.byteLength;
+    const runtime = globalThis.__nimbusRuntimeCode;
+    const learned = size <= 1048576 && !!(runtime && typeof runtime.recordWasm === "function" && runtime.recordWasm(bytes));
+    const where = globalThis.__currentModulePath ? " while loading " + globalThis.__currentModulePath : "";
+    const line = "Nimbus: a WebAssembly module of " + size + " bytes" + where + " was compiled from bytes this launch does not carry,"
+      + " and a Worker compiles wasm only from its launch's module map, so the compile was refused; "
+      + (learned ? "it is staged, and the next launch of this command carries it."
+        : "it is not staged" + (size > 1048576 ? " (over the 1048576-byte limit a launch learns)" : "") + ".");
+    try { globalThis.process.stderr.write(line + "\n"); } catch { try { console.error(line); } catch {} }
+  };
   const refusal = (e, bytes) => {
+    name(bytes);
     const size = (bytes && typeof bytes === "object" && typeof bytes.byteLength === "number") ? bytes.byteLength : 0;
     const where = globalThis.__currentModulePath ? " while loading " + globalThis.__currentModulePath : "";
     return new Error(
@@ -2190,10 +2217,14 @@ function __nimbusWasmDigest(bytes) {
     if (compiled !== undefined) {
       return realInstantiate(compiled, imports).then((instance) => ({ module: compiled, instance }));
     }
-    // A Module source instantiates; only BYTES are a compile, and only those
-    // can be refused for it.
+    // A Module source instantiates; only BYTES are a compile, and only the
+    // compile can be refused: an instantiate that fails after it (a link
+    // failure, a trap in its start) keeps its own error.
     if (source instanceof RealModule) return realInstantiate(source, imports);
-    return realInstantiate(source, imports).catch((e) => { throw refusal(e, source); });
+    return realCompile(source).then(
+      (module) => realInstantiate(module, imports).then((instance) => ({ module, instance })),
+      (e) => { throw refusal(e, source); },
+    );
   };
   WA.__nimbusPrecompiledSeam = true;
 })();
@@ -16858,6 +16889,7 @@ function __nimbusImportStager(quota) {
         for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
         frontier = [...next];
       }
+      return visited;
     },
   };
 }
@@ -16867,7 +16899,30 @@ async function __nimbusStageImport(specifier, parentUrl) {
   if (stager === null) return __esmResolver.resolveSync(specifier, parentUrl);
   const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl), quota);
   // A module this process has loaded already brought what it requests.
-  if (resolution.path && !__esmNamespaces.has(resolution.url)) await stager.closure(resolution.path);
+  if (resolution.path && !__esmNamespaces.has(resolution.url)) {
+    const walked = await stager.closure(resolution.path);
+    // What the modules it evaluates read synchronously, which the launch
+    // did not stage because only this import() reaches them: the target's
+    // entry (the planner's lazyReadsByTarget), and the entry of each module
+    // the walk read because the map lacks it (an evicted one's,
+    // evictedModuleReads). Read here, under the quota, so a miss is fetched.
+    const table = globalThis.__nimbusLazyReads instanceof Map ? globalThis.__nimbusLazyReads : null;
+    const lazyReads = [];
+    if (table !== null) {
+      for (const k of [String(resolution.path).replace(/^\/+/, ""), ...(walked || [])]) {
+        const reads = table.get(k);
+        if (reads) for (const read of reads) lazyReads.push(read);
+      }
+    }
+    if (lazyReads.length > 0) {
+      await __nimbusHydrated(() => {
+        for (const k of lazyReads) {
+          if (k in __vfsBundle || (__vfsWrites && k in __vfsWrites)) continue;
+          try { __fsMod.readFileSync("/" + k); } catch {}
+        }
+      }, quota);
+    }
+  }
   return resolution;
 }
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
@@ -16940,6 +16995,42 @@ function __stagedBinding(id) {
   return registry instanceof Map ? registry.get(id) : undefined;
 }
 
+/**
+ * Every binding Nimbus stages, carried or not: a launch registers only those
+ * its closure names (staged-bindings.ts stagedBindingsRequiredBy).
+ */
+const __NIMBUS_STAGED_BINDINGS = [{"name":"rolldown","owner":"rolldown","version":"1.2.11","requiredAs":["@rolldown/binding-wasm32-wasi"]},{"name":"satteri","owner":"satteri","version":"0.10.5","requiredAs":["@bruits/satteri-wasm32-wasi"]},{"name":"astro-compiler","owner":"@astrojs/compiler-binding","version":"0.5.1","requiredAs":["@astrojs/compiler-binding-wasm32-wasi"]}];
+const __stagedBindingsNamed = new Set();
+
+/**
+ * A require of a staged binding's package (its wasm32-wasi build, or a
+ * platform shard named like it) or of its owner's native `.node`, when the
+ * launch carries no binding for it: none of those loads in a Worker, and a
+ * napi-rs loader tries them all, swallows the wasi failures, and reports the
+ * missing native file. Refused by name instead, and said once on stderr:
+ * which binding, the version Nimbus stages, and why this launch lacks it.
+ * Null when the id is none of those, or the binding is carried (the loader's
+ * own fallbacks then reach it).
+ */
+function __stagedBindingNotCarried(id, fromDir) {
+  for (const binding of __NIMBUS_STAGED_BINDINGS) {
+    const shard = binding.requiredAs.some((wasi) => id === wasi || id.startsWith(wasi.replace(/wasm32-wasi$/, "")));
+    const native = id.endsWith(".node") && ("/" + fromDir + "/").includes("/node_modules/" + binding.owner + "/");
+    if (!shard && !native) continue;
+    if (binding.requiredAs.some((wasi) => __stagedBinding(wasi))) return null;
+    const message = "Nimbus runs " + binding.owner + "'s N-API binding from a staged " + binding.version + " build, and this launch"
+      + " does not carry it: no module the launch staged names " + binding.requiredAs[0] + " (the package was loaded by a name"
+      + " its code computes), so " + id + " was asked for instead, and no native build loads in a Worker. The next launch of"
+      + " this command, which learns the modules this one loaded, carries it.";
+    if (!__stagedBindingsNamed.has(binding.name)) {
+      __stagedBindingsNamed.add(binding.name);
+      try { builtins.process.stderr.write("Nimbus: " + message + "\n"); } catch {}
+    }
+    return Object.assign(new Error(message), { code: "ERR_NIMBUS_BINDING_NOT_CARRIED" });
+  }
+  return null;
+}
+
 function __loadStagedBinding(entry, fromDir) {
   if (entry.exports !== undefined) return entry.exports;
   // The binding is built from one upstream version. The package requiring it
@@ -16981,6 +17072,8 @@ function __requireFrom(id, fromDir) {
   }
   const staged = __stagedBinding(id);
   if (staged) return __loadStagedBinding(staged, fromDir);
+  const notCarried = __stagedBindingNotCarried(id, fromDir);
+  if (notCarried) throw notCarried;
 
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");

@@ -63,7 +63,7 @@ import { REPLAY_FETCH_MAX_BYTES, REPLAY_PREFIX_MAX_BYTES, REPLAY_JOURNAL_MAX_ENT
 import { openSupervisorDeliveries } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { sqliteWasmModuleEntry } from './opencode-staging.js';
 import { FACET_IMAGE_WRITE_SLICE_BYTES, ImageStore, } from '@nimbus-sh/fabric/image-store.js';
-import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, } from '../runtime/staged-bindings.js';
+import { fetchStagedBindingAsset, NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, STAGED_BINDING_LOADER_MODULE, STAGED_BINDING_TRAMPOLINE_MODULE, stagedBinding, stagedBindingsFacetImport, stagedBindingsRequiredBy, stagedBindingsDeclaredBy, STAGED_BINDINGS, } from '../runtime/staged-bindings.js';
 import { encodeCommonJsPack, ProcessFabric, } from '@nimbus-sh/fabric/process-fabric.js';
 import { createLoadedWorkerEntrypoint, getNimbusCtxExports, deleteFacetStorage, } from '@nimbus-sh/fabric/workerd-facet-host.js';
 import { acquireDurableFacetSlot, freeDurableFacetSlot, } from './durable-slots.js';
@@ -84,6 +84,21 @@ const launchAdapters = new WeakMap();
 /** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
 function launchEntryType(vfs, dir, entry) {
     return direntTypeOf(entry, () => vfs.stat(`${dir}/${entry.name}`, { followSymlinks: false }));
+}
+/** The declared-dependency walk's questions (stagedBindingsDeclaredBy), on a launch's fs. */
+function declaredBindingFs(fs) {
+    const files = filesOf(fs);
+    const decoder = new TextDecoder();
+    return {
+        readText: async (path) => { const bytes = await files.readBytes(path); return bytes === null ? null : decoder.decode(bytes); },
+        exists: async (path) => await files.exists(path),
+        realpath: async (path) => { try {
+            return await fs.realpath(path);
+        }
+        catch {
+            return null;
+        } },
+    };
 }
 function filesOf(fs) {
     let files = launchAdapters.get(fs);
@@ -977,20 +992,42 @@ export function facetWasmImports(named, closure) {
     return [...byPath.values()].map((image, index) => ({ ...image, moduleName: facetWasmModuleName(index) }));
 }
 /**
- * The static imports that compile a launch's wasm images at module eval and
- * park them by VFS path for the node-shims WebAssembly seam.
+ * The wasm images earlier runs of a command learned (runtime code of kind
+ * `wasm`: bytes the program compiled that the launch did not carry, which
+ * the WebAssembly seam named and recorded), for this launch to carry.
  */
-function facetWasmImportsSource(wasmImports) {
+export function learnedWasmImages(code) {
+    const images = [];
+    for (const entry of code.values()) {
+        if (entry.kind === 'wasm')
+            images.push(Uint8Array.from(atob(entry.bytes), (c) => c.charCodeAt(0)));
+    }
+    return images;
+}
+/**
+ * A launch's wasm images, parked by VFS path and by digest for the
+ * node-shims WebAssembly seam, each as the compile of its map member: the
+ * seam runs it when the program first compiles those bytes. A static import
+ * compiled every image at load, used or not (lightningcss's 15.8 MB on every
+ * Vite 8 dev launch). Under new_module_registry a member compiles on first
+ * evaluation, and the registry's require() may evaluate it at request time,
+ * where a compile from bytes is refused.
+ */
+export function facetWasmImportsSource(wasmImports) {
     if (wasmImports.length === 0)
         return '';
-    const lines = wasmImports.map((entry, index) => `import __nimbusWasm${index} from ${JSON.stringify(entry.moduleName)};`);
+    const compiles = wasmImports.map((entry, index) => `const __nimbusWasm${index} = __nimbusWasmCompile(${JSON.stringify('./' + entry.moduleName)});`);
     const entries = wasmImports.map((entry, index) => `[${JSON.stringify(stripLeadingSlashes(entry.vfsPath))}, __nimbusWasm${index}]`);
     const byDigest = wasmImports
         .map((entry, index) => (entry.digest === undefined
         ? null
         : `[${JSON.stringify(entry.digest)}, __nimbusWasm${index}]`))
         .filter((line) => line !== null);
-    return `${lines.join('\n')}\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
+    // __nimbusCreateRequire: the registry's, imported with COMMONJS_CELL_IMPORTS.
+    return 'const __nimbusWasmRequire = __nimbusCreateRequire(import.meta.url);'
+        + '\nconst __nimbusWasmCompile = (member) => { let compiled; return () => compiled ??= __nimbusWasmRequire(member); };'
+        + `\n${compiles.join('\n')}`
+        + `\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
@@ -1161,6 +1198,10 @@ ${VFS_CURSOR_SEED_SOURCE}
     __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(__startArgs && __startArgs.dataPlan);
+    // What an import() of a module only an import() reaches reads
+    // synchronously, fetched when that import() runs (node-shims.ts
+    // __nimbusStageImport; the planner's lazyReadsByTarget).
+    globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
     // The shared read profile's files this launch staged; each is struck off
     // when read, and what is left at exit is reported unread (read-profile.ts).
     globalThis.__nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
@@ -3015,6 +3056,38 @@ export async function addBinTargetSiblings(vfs, scriptPath, bundle, budgetState,
  */
 const RELATIVE_WASM_LITERAL_RE = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
 /**
+ * The table an \`import()\` reads its target's lazy synchronous reads from
+ * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
+ * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
+ * module evaluating it evaluates, itself included, by its lazy importers.
+ * \`syncReadsOf\` holds each lazy module that reads; the table is keyed by
+ * each of its lazy ancestors. Vite 8's \`import("lightningcss")\` resolves to
+ * lightningcss-wasm's wasm-node.mjs, which reads lightningcss_node.wasm
+ * (15.8 MB) at module top level: an entry under that target, fetched when the
+ * import() runs (a dev server with css.transformer 'lightningcss', a build's
+ * CSS minify), never at a launch that does not import it.
+ */
+export function lazyReadsByTarget(syncReadsOf, lazyImporters) {
+    const table = {};
+    for (const [module, reads] of syncReadsOf) {
+        const seen = new Set([module]);
+        const queue = [module];
+        while (queue.length > 0) {
+            const at = queue.shift();
+            const entry = table[at] ??= new Set();
+            for (const read of reads)
+                entry.add(read);
+            for (const importer of lazyImporters[at] ?? []) {
+                if (seen.has(importer))
+                    continue;
+                seen.add(importer);
+                queue.push(importer);
+            }
+        }
+    }
+    return Object.fromEntries(Object.entries(table).map(([target, reads]) => [target, [...reads]]));
+}
+/**
  * The wasm images a program's closure holds, by path and content digest.
  *
  * Three sources, one record: a `.wasm` cell the walk already staged (digested
@@ -3591,7 +3664,24 @@ export async function buildPrefetchBundle(vfs, options) {
     const lease = await acquireSupervisorAllocation(VFS_BUNDLE_MAX_BYTES);
     prefetchBundleStart(VFS_BUNDLE_MAX_BYTES);
     try {
-        return await _buildPrefetchBundle(vfs, options);
+        try {
+            return await _buildPrefetchBundle(vfs, options);
+        }
+        catch (error) {
+            // The modules earlier runs executed are what an earlier run got through
+            // without; they must not stop this one starting. A launch they (or
+            // their emits, which the walk does not count) take past the bound is
+            // built again with them as optional roots (RequiredModuleRoot.optional):
+            // each staged whole as far as the bound allows, and what does not fit
+            // loads late, as the run that learned it loaded it. Only a launch that
+            // overflows pays the second build.
+            const learned = options.executedModules ?? [];
+            if (!(error instanceof ClosureBoundExceededError) || learned.length === 0 || learned.every((root) => root.optional))
+                throw error;
+            console.warn(`[facet-manager] the modules earlier runs executed take ${options.scriptPath ?? 'the entry code'}'s map past `
+                + `its ${options.maxBundleBytes ?? VFS_BUNDLE_MAX_BYTES}-byte bound (${error.outcome.lastPath}); they are staged as optional roots, as far as the bound allows`);
+            return await _buildPrefetchBundle(vfs, { ...options, executedModules: learned.map((root) => ({ ...root, optional: true })) });
+        }
     }
     finally {
         prefetchBundleEnd(VFS_BUNDLE_MAX_BYTES);
@@ -3611,8 +3701,10 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     // only READ are observed reads below: data, never roots, whatever their
     // extension (Tailwind scans .js/.ts content files as text). The tool's
     // configs ride along, as optional roots (RequiredModuleRoot.config).
-    const requiredRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
-    const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined, conditions));
+    const configRoots = [...preloads, ...await toolConfigRoots(vfs, cwd, scriptPath)];
+    const walkRoots = (roots) => prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined, conditions);
+    // A launch they take past the bound is built again with them optional (buildPrefetchBundle).
+    const prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
     if ('kind' in prefetch) {
         // A required closure larger than the bound can never launch as a
         // snapshot. Surface it as the process's own failure rather than a
@@ -3666,6 +3758,15 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     //    static require closure, which is correctness-critical.
     const independentBeforeGroups = new Set(Object.keys(bundle));
     const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
+    // Each landed learned root's closure (PrefetchResult.units) is one group
+    // beside the greedy pass's, kept or evicted whole: a dependency evicted on
+    // its own leaves a root in the map that cannot load.
+    const learnedGroups = (prefetch.units ?? []).map((unit) => ({ root: unit.root, members: new Set(unit.members) }));
+    const learnedMembers = new Set();
+    for (const group of learnedGroups)
+        for (const member of group.members)
+            learnedMembers.add(member);
+    const groups = [...greedy.groups, ...learnedGroups];
     await paceAfterPass();
     // What the passes so far staged to run. Every pass below stages files to
     // be read, and so do the observed reads above.
@@ -3813,6 +3914,8 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     const size = encodedBundleSize(bundle);
     const rawBytes = new Map();
     let rawTotal = 0;
+    /** What the bound evicts, held until its images and reads are named below. */
+    const evictedCells = {};
     for (const [path, cell] of Object.entries(bundle)) {
         const bytes = codeOnly.has(path) ? 0 : _bundleCellRawBytes(cell);
         rawBytes.set(path, bytes);
@@ -3862,14 +3965,15 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         // session's own misses, each tier last-admitted first.
         const tierOf = (path) => closurePaths.has(path) ? 3 : observedPaths.has(path) ? 2 : learnedPaths.has(path) ? 1 : 0;
         const members = new Set();
-        for (const group of greedy.groups)
+        for (const group of groups)
             for (const path of group.members)
                 members.add(path);
-        const independent = new Set(Object.keys(bundle).filter(path => !members.has(path) || independentBeforeGroups.has(path)));
-        const keptGroups = new Set(greedy.groups);
+        // A learned closure was staged before the greedy pass and is a group all the same.
+        const independent = new Set(Object.keys(bundle).filter(path => !members.has(path) || (independentBeforeGroups.has(path) && !learnedMembers.has(path))));
+        const keptGroups = new Set(groups);
         const weight = (path) => rawBytes.get(path) ?? 0;
         const unitBytes = new Map();
-        for (const group of greedy.groups) {
+        for (const group of groups) {
             let total = 0;
             for (const member of group.members)
                 if (!independent.has(member))
@@ -3879,7 +3983,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
                 await pacer.spend(group.members.size * 256);
         }
         const lastAdmittedFirst = (tier) => [...tier].reverse().filter(path => independent.has(path));
-        const enrichment = [...independent, ...greedy.groups.map(group => group.root)]
+        const enrichment = [...independent, ...groups.map(group => group.root)]
             .filter(path => tierOf(path) === 0)
             .sort((a, b) => {
             const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
@@ -3929,6 +4033,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             if (retained.has(k))
                 continue;
             evicted.push([k, rawBytes.get(k) ?? 0]);
+            evictedCells[k] = bundle[k];
             delete bundle[k];
             emits.delete(k);
             lowered.delete(k);
@@ -3945,9 +4050,28 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     }
     const fileCount = Object.keys(bundle).length;
     const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
-    // Suppress lint: `greedy.added` is observed only via diagnostics.
-    void greedy;
-    const wasmImages = (await collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths));
+    // What only an import() reaches: phase 2's modules, less any a staged
+    // package entry's static walk reaches (a synchronous require of that entry
+    // evaluates them too). Each with the lazy modules that import it.
+    const reachedStatically = new Set();
+    for (const group of groups)
+        for (const member of group.members)
+            reachedStatically.add(member);
+    const lazyModules = [...prefetch.speculative].filter((path) => bundle[path] !== undefined && !reachedStatically.has(path));
+    const lazySet = new Set(lazyModules);
+    const lazyImporters = {};
+    for (const [from, children] of prefetch.edges ?? []) {
+        if (!lazySet.has(from))
+            continue;
+        for (const child of children)
+            if (lazySet.has(child))
+                (lazyImporters[child] ??= []).push(from);
+    }
+    // An evicted module is still one the program may load late (as runtime
+    // code, through an import()): its images ride in the map, bytes only since
+    // they compile on first use, and its reads are named for that import().
+    const wasmImages = (await collectClosureWasmImages(vfs, { ...bundle, ...evictedCells }, binSiblingAdd.wasmPaths));
+    const readers = evictedReaders(evictedCells);
     return {
         bundle,
         ...(emits.size > 0 ? { emits } : {}),
@@ -3957,9 +4081,31 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
         reachableCount: fileCount,
         truncated,
         ...(transforms ? { transforms } : {}),
+        ...(lazyModules.length > 0 ? { lazyModules, lazyImporters } : {}),
+        ...(readers.length > 0 ? { evictedReaders: readers } : {}),
         bundleSideModulesRequired,
         ...(wasmImages.length > 0 ? { wasmImages } : {}),
     };
+}
+/** At most this many evicted readers are planned: the launch's start args carry their reads. */
+const EVICTED_READERS_MAX = 256;
+const SYNC_CALL_NAME = /[a-z]Sync\b/;
+/**
+ * The evicted JavaScript modules whose text names a synchronous call: the
+ * ones the data plan reads (static-fs-refs.ts, from the VFS as written).
+ * Most of what a bound evicts is data or declarations (Astro's 575 shiki
+ * grammars and .d.ts files), which this costs a substring search.
+ */
+export function evictedReaders(cells) {
+    const readers = [];
+    for (const [path, cell] of Object.entries(cells)) {
+        if (readers.length >= EVICTED_READERS_MAX)
+            break;
+        // \`Sync\` and not \`Sync(\`: a lowered module calls \`(0, import_fs.readFileSync)(…)\`.
+        if (typeof cell === 'string' && /\.[cm]?js$/.test(path) && SYNC_CALL_NAME.test(cell))
+            readers.push(stripLeadingSlashes(path));
+    }
+    return readers;
 }
 /** The main module name a worker launch boots from unless told otherwise. */
 export const DEFAULT_WORKER_MAIN_MODULE = 'worker.js';
@@ -4481,15 +4627,16 @@ export class FacetManager {
         return modules;
     }
     /**
-     * Stage every wasm image the closure inlines as base64 (findInlineWasmImages)
-     * as a kernel-owned file named by its content key, and return the records
-     * the launch registers it under: by that path, which both launch forms read
-     * it from, and by digest, which is how the program's own compile of the
-     * decoded bytes is recognised. Small (es-module-lexer's parser is 11.8 KB)
-     * and written once per session per image.
+     * Stage wasm images that come from no file — those the closure inlines as
+     * base64 (findInlineWasmImages), and those earlier runs compiled from bytes
+     * in memory (learnedWasmImages) — each as a kernel-owned file named by its
+     * content key, and return the records the launch registers it under: by
+     * that path, which both launch forms read it from, and by digest, which is
+     * how the program's own compile of the decoded bytes is recognised. Small
+     * (es-module-lexer's parser is 11.8 KB; a learned one is at most
+     * RUNTIME_WASM_MAX_BYTES) and written once per session per image.
      */
-    _stageInlineWasmImages(bundle) {
-        const images = findInlineWasmImages(bundle);
+    _stageWasmImageBytes(images) {
         if (images.length === 0 || !this.vfs)
             return [];
         const fs = this.vfs.as(CRED_KERNEL);
@@ -4579,7 +4726,7 @@ export class FacetManager {
     /** The program's path, which its listing walks mounts for (nameLaunch). */
     program) {
         if (!this.vfs || !this.filesystem)
-            return { paths: [], storageBytes: 0 };
+            return { paths: [], storageBytes: 0, lazyReads: {} };
         const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
         const started = Date.now();
         const trace = (what) => {
@@ -4588,8 +4735,30 @@ export class FacetManager {
             this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${what} at ${Date.now() - started} ms\n`);
         };
         trace('static references');
-        const refs = await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer);
-        trace(`${refs.length} modules name paths; learned reads`);
+        // A lazy module's synchronous reads (FacetVfsState.lazyModules) are no
+        // boot data: they move to the table the import() that evaluates it
+        // fetches from (lazyReadsByTarget).
+        const lazy = new Set(vfsState.lazyModules ?? []);
+        const syncReadsOf = new Map();
+        const refs = [];
+        await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
+            const reads = lazy.has(path) ? moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path)) : [];
+            if (reads.length === 0) {
+                refs.push(moduleRefs);
+                return;
+            }
+            syncReadsOf.set(path, reads);
+            refs.push({ ...moduleRefs, exact: moduleRefs.exact.filter((ref) => !ref.sync) });
+        });
+        const lazyReads = lazyReadsByTarget(syncReadsOf, vfsState.lazyImporters ?? {});
+        // An evicted module's reads, under its own path: the import() whose
+        // closure walk reaches it fetches them (node-shims.ts __nimbusStageImport).
+        await this._closureStaticRefs(vfs, vfsState.evictedReaders ?? [], pacer, (path, moduleRefs) => {
+            const reads = moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path));
+            if (reads.length > 0)
+                lazyReads[path] = [...new Set([...(lazyReads[path] ?? []), ...reads])];
+        });
+        trace(`${refs.length} modules name paths (${syncReadsOf.size} lazy ones' synchronous reads deferred to their import()); learned reads`);
         // Where this process's listing walks mounts, the plan's below and its own
         // at boot: what its launch names.
         this.filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
@@ -4636,7 +4805,7 @@ export class FacetManager {
         // costed when the map was built (its cells are released once serialized).
         const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
         const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
-        return { paths: plan.paths, storageBytes };
+        return { paths: plan.paths, storageBytes, lazyReads };
     }
     /**
      * A one-shot's data plan: what its closure reads synchronously by a path its
@@ -4760,7 +4929,9 @@ export class FacetManager {
      * cells were rewritten and lost their import.meta. Each module is parsed once
      * per revision of it, in this session.
      */
-    async _closureStaticRefs(vfs, paths, pacer) {
+    async _closureStaticRefs(vfs, paths, pacer, 
+    /** Called with each module that names paths, and what it names. */
+    each) {
         const out = [];
         for (const path of paths) {
             if (!/\.(?:c|m)?js$/.test(path))
@@ -4797,6 +4968,7 @@ export class FacetManager {
             }
             if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
                 out.push(refs);
+                each?.(path, refs);
             }
         }
         return out;
@@ -4899,11 +5071,24 @@ export class FacetManager {
         // The only consumers of the raw cells past serialization are these two
         // answers, so they come first; the serialization then consumes the cells.
         vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
-        vfsState.stagedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
+        // What the closure names, and what the launched bin's own dependency tree
+        // installs: a binding is compiled with the launch or not at all, and a
+        // program can reach its owner by a specifier no walk follows.
+        const declaredWalk = { probes: 0 };
+        const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
+        const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
+        const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
+        vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.name)).map((b) => b.name);
+        if (this.debugEnabled) {
+            this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
+                + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
+                + ` ${declaredWalk.probes} filesystem questions)\n`);
+        }
         // Wasm a package inlines as base64 in its own source (Vite's copy of
         // es-module-lexer) never passes through the filesystem, so the closure
         // walk's by-path records cannot name it; it is staged here instead.
-        const inlineWasm = this._stageInlineWasmImages(vfsState.bundle);
+        // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
+        const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)]);
         if (inlineWasm.length > 0)
             vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
         // And what the module map costs the facet's store, which adopts it at boot
@@ -4995,6 +5180,9 @@ export class FacetManager {
     async _stagedRuntimeCode(learning, pacer) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
+            // An image is carried as a wasm member (learnedWasmImages), not as code.
+            if (entry.kind === 'wasm')
+                continue;
             if (entry.kind === 'expression') {
                 modules.set(codeKey, runtimeExpressionModule(entry.code));
                 continue;
@@ -6960,7 +7148,7 @@ export class FacetManager {
                 + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);
         }
         const planStart = Date.now();
-        const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
+        const { paths: dataPlan, storageBytes, lazyReads } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
         if (this.debugEnabled) {
             this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
         }
@@ -7084,6 +7272,7 @@ export class FacetManager {
                             startContract: opts.attachedTty ? 'lifetime' : 'boot',
                             startArgs: {
                                 pid: entry.pid, vfsCursor, dataPlan,
+                                ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
                                 ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
                                 ...(this.debugEnabled ? { diag: true } : {}),
                                 ...(stdinWriter ? { stdinWriter: true, stopNonce } : {}),

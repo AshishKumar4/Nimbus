@@ -310,6 +310,13 @@ export const RUNTIME_CODE_MAX_BYTES = 8 * 1024 * 1024;
 /** Pieces of runtime code one launch records, and the supervisor keeps. */
 export const RUNTIME_CODE_MAX_ENTRIES = 1024;
 /**
+ * The largest wasm image a launch learns (a `wasm` entry): one the program
+ * compiled from bytes the launch did not carry, which comes from no file the
+ * closure walk could record (node-shims' WebAssembly seam). Bigger images
+ * are named when refused, not learned: an image a package ships is a file.
+ */
+export const RUNTIME_WASM_MAX_BYTES = 1024 * 1024;
+/**
  * What each piece is charged beyond its text, against RUNTIME_CODE_MAX_BYTES:
  * its key, its bookkeeping, and the module it becomes. Without it a flood of
  * tiny pieces is nearly free by text and not at all by heap.
@@ -345,6 +352,8 @@ function runtimeCodeKeySource(entry) {
         return JSON.stringify(['module', ...runtimeModuleScope(entry.path), entry.text]);
     if (entry.kind === 'expression')
         return JSON.stringify(['expression', entry.code]);
+    if (entry.kind === 'wasm')
+        return JSON.stringify(['wasm', entry.bytes]);
     return JSON.stringify([entry.kind, entry.params, entry.body]);
 }
 /** The key of a piece of runtime code: SHA-256 of runtimeCodeKeySource, hex. */
@@ -373,6 +382,33 @@ export const RUNTIME_INTERPRETER_PRIMORDIALS_MODULE = 'nimbus/interpreter-primor
 export function runtimeCodeModuleName(key) {
     return `gen/${key}.js`;
 }
+/** Base64 of whole bytes: a `wasm` entry's. */
+const BASE64 = /^(?:[A-Za-z0-9+/]{4})*(?:[A-Za-z0-9+/]{2}==|[A-Za-z0-9+/]{3}=)?$/;
+/**
+ * Whether a `wasm` entry's base64 is a module a launch may learn: the guest's
+ * limits held again where the entry is received, before it is learned, kept
+ * or staged (a report is the guest's word, not proof): whole base64 of at most
+ * RUNTIME_WASM_MAX_BYTES that WebAssembly.validate accepts.
+ */
+function isLearnableWasm(base64) {
+    if (base64.length > Math.ceil(RUNTIME_WASM_MAX_BYTES / 3) * 4 || !BASE64.test(base64))
+        return false;
+    let bytes;
+    try {
+        bytes = Uint8Array.from(atob(base64), (c) => c.charCodeAt(0));
+    }
+    catch {
+        return false;
+    }
+    if (bytes.byteLength > RUNTIME_WASM_MAX_BYTES)
+        return false;
+    try {
+        return WebAssembly.validate(bytes);
+    }
+    catch {
+        return false;
+    }
+}
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export function parseRuntimeCodeEntry(value) {
     if (typeof value !== 'object' || value === null)
@@ -384,6 +420,8 @@ export function parseRuntimeCodeEntry(value) {
     }
     if (v.kind === 'expression')
         return typeof v.code === 'string' ? { kind: 'expression', code: v.code } : null;
+    if (v.kind === 'wasm')
+        return typeof v.bytes === 'string' && isLearnableWasm(v.bytes) ? { kind: 'wasm', bytes: v.bytes } : null;
     if (typeof v.kind !== 'string' || !isRuntimeFunctionKind(v.kind))
         return null;
     if (!Array.isArray(v.params) || !v.params.every((p) => typeof p === 'string') || typeof v.body !== 'string')
@@ -546,7 +584,9 @@ function __nimbusRuntimeCodeKey(entry) {
     ? JSON.stringify(["module", ...__nimbusRuntimeModuleScope(entry.path), entry.text])
     : entry.kind === "expression"
       ? JSON.stringify(["expression", entry.code])
-      : JSON.stringify([entry.kind, entry.params, entry.body]);
+      : entry.kind === "wasm"
+        ? JSON.stringify(["wasm", entry.bytes])
+        : JSON.stringify([entry.kind, entry.params, entry.body]);
   return { source: __source, key: __nimbusCreateHash("sha256").update(__source).digest("hex") };
 }
 // This launch's module for the code, or undefined when it was not staged (or
@@ -619,6 +659,19 @@ globalThis.__nimbusRuntimeCode = Object.freeze({
   },
   compileModule(path, text) {
     return __nimbusRuntimeModule(String(path).replace(/^\\/+/, ""), text);
+  },
+  // A wasm image the WebAssembly seam (node-shims) refused, for the next
+  // launch to carry: whether it is recorded (not over the limit, and the
+  // ledger had room).
+  recordWasm(bytes) {
+    const __view = bytes instanceof ArrayBuffer ? new Uint8Array(bytes) : new Uint8Array(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+    if (__view.byteLength > ${RUNTIME_WASM_MAX_BYTES}) return false;
+    let __binary = "";
+    for (let i = 0; i < __view.length; i += 0x8000) __binary += String.fromCharCode.apply(null, __view.subarray(i, i + 0x8000));
+    const __entry = { kind: "wasm", bytes: btoa(__binary) };
+    const __id = __nimbusRuntimeCodeKey(__entry);
+    __nimbusRuntimeCodeRecord(__id, __entry);
+    return __nimbusRuntimeLedger.has(__id.key);
   },
   // A line typed at the JavaScript REPL (core runtime/js-repl.ts): the async
   // function the interpreter's replLineBody makes of it, compiled as an
