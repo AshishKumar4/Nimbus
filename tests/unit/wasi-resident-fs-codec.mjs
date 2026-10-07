@@ -112,7 +112,7 @@ await check('a reader of a file written again after its writer closed reads the 
   await guest.dispose();
 });
 
-await check('closing the last reader of a held file frees its copy while the writer goes on', async () => {
+await check('a reader of a file being written through is the session\'s descriptor: no copy of it is held', async () => {
   const { heapStats } = await import('bun:jsc');
   const external = () => { Bun.gc(true); return heapStats().extraMemorySize; };
   const guest = await residentGuest();
@@ -120,13 +120,11 @@ await check('closing the last reader of a held file frees its copy while the wri
   assert.equal(await guest.writeBytes(writer, new Uint8Array(6 * MiB).fill(9)), 0);
   const before = external();
   const reader = await guest.open('home/user/big-held.bin');
-  assert.equal(guest.stats().pinnedBytes, 6 * MiB);
-  const during = external();
-  assert.ok(during - before > 5 * MiB, `the reader's copy is ${during - before} bytes`);
+  assert.equal(guest.stats().pinnedBytes, 0, 'a file being written was copied for a reader');
+  assert.equal(await guest.pread(reader, 1), '\t', 'the reader reads what the writer sent');
   assert.equal(await guest.close(reader), 0);
-  assert.equal(guest.stats().pinnedBytes, 0);
   const after = external();
-  assert.ok(after - before < 1 * MiB, `after the last reader closed, ${after - before} bytes stay beyond the held file`);
+  assert.ok(after - before < 1 * MiB, `${after - before} bytes stay after the reader closed`);
   assert.equal(await guest.close(writer), 0);
   await guest.dispose();
 });
