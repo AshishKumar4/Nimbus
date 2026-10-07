@@ -822,7 +822,7 @@ answered it. The client may run ahead of the session by at most
 Beyond that, a write waits. Processes come in two kinds, and they differ in
 what a death can cost.
 
-- **Residents lose nothing.** This covers node, python, ruby and opencode
+- **Residents lose nothing they have committed.** This covers node, python, ruby and opencode
   processes in a SQLite-backed facet. The client logs every change in the
   facet's own store before the program is told it succeeded
   (`process-fs-journal.ts`). The session books the facet when it opens
@@ -833,6 +833,13 @@ what a death can cost.
   drain is the store deleted and the exit status reported. A log that a reset
   left behind is drained at the next start, before anything runs. A log that
   cannot be read is reported by name and kept. It is never dropped silently.
+  One limit is measured. The facet's SQLite commits only when its isolate
+  yields to the event loop. If the isolate dies of CPU or memory partway
+  through one unbroken synchronous stretch, the rows that stretch logged
+  are rolled back. That is at most the backlog bound: 958 of 5,000 were
+  lost in a live CPU-death run. The platform's output gate holds every
+  message the facet sends until its rows commit, so no effect is ever seen
+  ahead of a lost change.
 - **One-shots lose at most a bounded tail, and say so.** This covers node,
   python, ruby and WASI programs run once in a Dynamic Worker, which has no
   store of its own. Nothing the process emits is released before every change
