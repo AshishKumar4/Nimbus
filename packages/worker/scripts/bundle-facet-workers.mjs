@@ -48,6 +48,8 @@
  *       BASH_RUNNER_BODY_SRC: string
  *   @nimbus-sh/core src/_shared/process-fs-client-source.generated.ts — exports
  *       PROCESS_FS_CLIENT_SOURCE: string
+ *   @nimbus-sh/core src/_shared/process-fs-journal-reader-source.generated.ts — exports
+ *       PROCESS_FS_JOURNAL_READER_SOURCE: string
  *   public/_assets/runtime/esbuild-cli-<buildId>.js — the `esbuild` command's
  *       runner, which only the session's esbuild facet evaluates. Staged as an
  *       asset rather than a string in the Worker bundle, like the esbuild
@@ -233,6 +235,34 @@ async function bundleProcessFsClient() {
   const src = withoutComments(result.outputFiles[0].text);
   if (!/^var __nimbusProcessFsModule = /m.test(src)) {
     throw new Error('[bundle-facet-workers/process-fs-client] the bundle no longer binds __nimbusProcessFsModule');
+  }
+  return src;
+}
+
+/**
+ * The class a dead process's facet is opened with to hand over its journal
+ * (@nimbus-sh/core src/_shared/process-fs-journal-reader.ts), as the ES
+ * module the session loads for it (LOADER.load), cloudflare:workers external.
+ */
+async function bundleProcessFsJournalReader() {
+  const result = await build({
+    entryPoints: [join(coreRoot, 'src', '_shared', 'process-fs-journal-reader.ts')],
+    bundle: true,
+    format: 'esm',
+    target: 'esnext',
+    platform: 'neutral',
+    external: ['cloudflare:workers'],
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/process-fs-journal-reader] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/export\s*\{[^}]*NimbusFsJournalReader/.test(src)) {
+    throw new Error('[bundle-facet-workers/process-fs-journal-reader] the bundle no longer exports NimbusFsJournalReader');
   }
   return src;
 }
@@ -908,6 +938,24 @@ async function main() {
     `export const PROCESS_FS_CLIENT_SOURCE: string = ${JSON.stringify(processFsSrc)};`,
     '',
   ].join('\n'));
+
+  const readerSrc = await bundleProcessFsJournalReader();
+  const readerOutPath = join(coreRoot, 'src', '_shared', 'process-fs-journal-reader-source.generated.ts');
+  writeFileSync(readerOutPath, [
+    '/**',
+    ' * process-fs-journal-reader-source.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs (@nimbus-sh/worker) from:',
+    ' *   - src/_shared/process-fs-journal-reader.ts',
+    ' *',
+    ' * The module (export class NimbusFsJournalReader) a dead process\'s facet',
+    ' * is opened with to hand its journal to the session\'s drain.',
+    ' */',
+    '',
+    `export const PROCESS_FS_JOURNAL_READER_SOURCE: string = ${JSON.stringify(readerSrc)};`,
+    '',
+  ].join('\n'));
+  console.log(`[bundle-facet-workers] wrote ${readerOutPath} (process-fs-journal-reader=${(readerSrc.length / 1024).toFixed(2)} KiB)`);
 
   const bashSrc = await bundleBashRunner();
   const bashOutPath = join(coreRoot, 'src', 'runtime', 'bash-runner.generated.ts');

@@ -17,8 +17,8 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
-import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
-import { drainProcessFsJournal, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { createSupervisorOpHandler, journalDrainSession } from '../../packages/core/src/workspace/supervisor-op.ts';
+import { drainProcessFsJournal, journalSource, processFsClient, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -38,6 +38,9 @@ function session() {
   const deliveries = new SupervisorDeliveries();
   const op = createSupervisorOpHandler({ vfs: engine, filesystem: files, deliveries });
   const s = {
+    engine,
+    files,
+    sql: harness.sql,
     kernel,
     fault: null,
     applied: 0,
@@ -104,7 +107,7 @@ function mortalPort(s, live = Infinity) {
   await new Promise((resolve) => setTimeout(resolve, 10));
   const reopened = sqlJournal(sql);
   assert.equal(reopened.entries().length, 300);
-  const drained = await drainProcessFsJournal({ journal: reopened, session: s.port, retry: RETRY });
+  const drained = await drainProcessFsJournal({ journal: journalSource(reopened), session: s.port, retry: RETRY });
   assert.equal(drained.landed, 300);
   assert.deepEqual(drained.failures, []);
   for (const k of [0, 1, 2]) {
@@ -125,9 +128,48 @@ function mortalPort(s, live = Infinity) {
   await new Promise((resolve) => setTimeout(resolve, 50));
   const landedBefore = s.applied;
   assert.ok(landedBefore > 0 && landedBefore < 2_500, `${landedBefore} landed before the process died`);
-  const drained = await drainProcessFsJournal({ journal: sqlJournal(sql), session: s.port, retry: RETRY });
+  const drained = await drainProcessFsJournal({ journal: journalSource(sqlJournal(sql)), session: s.port, retry: RETRY });
   for (let i = 0; i < 2_500; i++) assert.equal(s.text(`home/user/out/a${i}`), `${i}\n`, `a${i} after the drain: lost or doubled`);
   assert.ok(drained.landed >= 2_500 - landedBefore);
+}
+
+// ── Drained in the session itself (the manager's drain), long after it died ──
+// Its landed wave is answered from the cursor its own fenced waves moved
+// (`${pid}:${writer}`), however long the drain comes after: the cursor lives
+// until the drain forgets it, not for an epoch's TTL. Red before: the drain
+// numbered under another key, or the cursor had expired, and the landed
+// appends were applied twice.
+{
+  const s = session();
+  const sql = facetSql();
+  const c = processFsClient({ session: mortalPort(s, 2), journal: sqlJournal(sql), retry: RETRY });
+  for (let i = 0; i < 2_500; i++) c.submit(append(`home/user/out/b${i % 1_200}`, `${i}\n`), { acknowledged: true });
+  await new Promise((resolve) => setTimeout(resolve, 50));
+  assert.ok(s.applied > 0 && s.applied < 2_500, `${s.applied} landed before the process died`);
+  // A day on, another writer's wave opens its own sequence.
+  const realNow = Date.now;
+  Date.now = () => realNow() + 24 * 3_600_000;
+  try {
+    const other = processFsClient({ session: s.port, retry: RETRY });
+    other.submit(writeFile('home/user/out/other', 'x'), { acknowledged: true });
+    await other.settle();
+    const lease = s.files.openHost(CRED_SESSION_USER);
+    const drained = await drainProcessFsJournal({ journal: journalSource(sqlJournal(sql)), session: journalDrainSession(lease.fs, PID), retry: RETRY });
+    await lease.dispose();
+    assert.deepEqual(drained.failures, []);
+  } finally {
+    Date.now = realNow;
+  }
+  for (let k = 0; k < 1_200; k++) {
+    const want = [k, k + 1_200, k + 2_400].filter((i) => i < 2_500).map((i) => `${i}\n`).join('');
+    assert.equal(s.text(`home/user/out/b${k}`), want, `b${k} after the drain: an append was lost or doubled`);
+  }
+  const cursors = (pid) => [...s.sql.exec("SELECT writer FROM vfs_wave_cursors WHERE writer >= ? AND writer < ?", `${pid}:`, `${pid};`)].length;
+  assert.ok(cursors(PID) > 0);
+  s.engine.forgetSequences(PID + 550);
+  assert.ok(cursors(PID) > 0, "another pid's forget took this one's cursors");
+  s.engine.forgetSequences(PID);
+  assert.equal(cursors(PID), 0, 'its cursors outlived its drain');
 }
 
 // ── A refusal is the change's answer: reported, and the drain goes on ──
@@ -139,7 +181,7 @@ function mortalPort(s, live = Infinity) {
   c.submit(writeFile('home/user/missing/x', 'x'), { acknowledged: true });
   c.submit(writeFile('home/user/out/ok2', 'b'), { acknowledged: true });
   await new Promise((resolve) => setTimeout(resolve, 10));
-  const drained = await drainProcessFsJournal({ journal: sqlJournal(sql), session: s.port, retry: RETRY });
+  const drained = await drainProcessFsJournal({ journal: journalSource(sqlJournal(sql)), session: s.port, retry: RETRY });
   assert.equal(drained.landed, 2);
   assert.equal(drained.failures.length, 1);
   assert.equal(drained.failures[0].errno, 'ENOENT');

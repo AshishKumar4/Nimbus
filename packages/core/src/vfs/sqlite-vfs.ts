@@ -73,7 +73,6 @@ import {
   WeightedCreditPool,
   type CreditLease,
 } from '@nimbus-sh/platform/weighted-credit-pool.js';
-import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
@@ -8498,9 +8497,9 @@ export class SqliteVFS {
 
   /**
    * A sequenced writer's state as its wave starts: its cursor, and the
-   * refusal it has not had answered (dropped once `ack` reaches it). A
-   * writer untouched for a wave epoch's lifetime is forgotten: its epoch
-   * admits nothing more. A wave that starts past the op after the cursor
+   * refusal it has not had answered (dropped once `ack` reaches it). Kept
+   * until its process is over and its log drained (forgetSequences). A
+   * wave that starts past the op after the cursor
    * names ops the session never had: refused, ESTALE (they are lost).
    */
   private openSequence(sequence: WaveSequence): { cursor: number; refused: NonNullable<WaveSequenceAnswer['refused']> | null } {
@@ -8510,7 +8509,6 @@ export class SqliteVFS {
     const now = Date.now();
     let state: { cursor: number; refused: NonNullable<WaveSequenceAnswer['refused']> | null } = { cursor: 0, refused: null };
     this.transactionSync(() => {
-      this.sql.exec('DELETE FROM vfs_wave_cursors WHERE touched_at < ?', now - WAVE_EPOCH_TTL_MS);
       const row = [...this.sql.exec(
         'SELECT seq, refused_seq, refused_errno, refused_message FROM vfs_wave_cursors WHERE writer = ?', sequence.writer,
       )][0];
@@ -8579,6 +8577,15 @@ export class SqliteVFS {
     if (this.checkAccess(path, 0, cred, { allowMissingLeaf: true }).inode?.ino === ino) return path;
     const row = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', ino)][0];
     return row === undefined ? null : String(row.path);
+  }
+
+  /**
+   * Process `pid` is over and its write log drained: its writers' cursors
+   * (`${pid}:${writer}`, processWaveSequence) go. They live exactly that long, so
+   * a drain after a restart still finds them, and nothing else keeps them.
+   */
+  forgetSequences(pid: number): void {
+    this.sql.exec("DELETE FROM vfs_wave_cursors WHERE writer >= ? AND writer < ?", `${pid}:`, `${pid};`);
   }
 
   /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */

@@ -40,6 +40,8 @@ export interface ProcessFsJournal {
   replace(jid: number, op: ProcessFsOp): void;
   /** Every entry held, in order. */
   entries(): { jid: number; op: ProcessFsOp }[];
+  /** The entries after `after`, in order: at least one when any is held, and no more than about `maxBytes` of data. */
+  readAfter(after: number, maxBytes: number): { jid: number; op: ProcessFsOp }[];
   /** Forget every entry up to `jid` (answered: committed, refused, or failed). */
   dropThrough(jid: number): void;
   /** From the entry `jid` on, entries are numbered under `writer` from `seq`. */
@@ -111,6 +113,17 @@ export function sqlJournal(sql: JournalSql): ProcessFsJournal {
       return [...sql.exec('SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid')]
         .map((row) => ({ jid: Number(row.jid), op: opOf(String(row.op), row.data) }));
     },
+    readAfter(after, maxBytes) {
+      const out: { jid: number; op: ProcessFsOp }[] = [];
+      let taken = 0;
+      for (const row of sql.exec('SELECT jid, op, data FROM nimbus_fs_journal WHERE jid > ? ORDER BY jid', after)) {
+        const size = row.data === null || row.data === undefined ? 0 : (row.data as ArrayBuffer).byteLength;
+        if (out.length > 0 && taken + size > maxBytes) break;
+        out.push({ jid: Number(row.jid), op: opOf(String(row.op), row.data) });
+        taken += size;
+      }
+      return out;
+    },
     dropThrough(jid) {
       const freed = [...sql.exec('SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal WHERE jid <= ?', jid)][0];
       bytes -= Number(freed?.bytes ?? 0);
@@ -162,6 +175,18 @@ export function memoryJournal(): ProcessFsJournal {
     entries() {
       return [...held].map(([jid, op]) => ({ jid, op }));
     },
+    readAfter(after, maxBytes) {
+      const out: { jid: number; op: ProcessFsOp }[] = [];
+      let taken = 0;
+      for (const [jid, op] of held) {
+        if (jid <= after) continue;
+        const size = dataOf(op)?.byteLength ?? 0;
+        if (out.length > 0 && taken + size > maxBytes) break;
+        out.push({ jid, op });
+        taken += size;
+      }
+      return out;
+    },
     dropThrough(jid) {
       for (const [at, op] of held) {
         if (at > jid) break;
@@ -178,5 +203,26 @@ export function memoryJournal(): ProcessFsJournal {
       return numbered.map((numbering) => ({ ...numbering }));
     },
     get bytes() { return bytes; },
+  };
+}
+
+/**
+ * A journal read from elsewhere (a dead process's facet, through its reader:
+ * process-fs-journal-reader.ts), as a drain reads it.
+ */
+export interface ProcessFsJournalSource {
+  numberings(): Promise<ProcessFsNumbering[]>;
+  number(numbering: ProcessFsNumbering): Promise<void>;
+  readAfter(after: number, maxBytes: number): Promise<{ jid: number; op: ProcessFsOp }[]>;
+  dropThrough(jid: number): Promise<void>;
+}
+
+/** `journal` as a drain's source. */
+export function journalSource(journal: ProcessFsJournal): ProcessFsJournalSource {
+  return {
+    numberings: async () => journal.numberings(),
+    number: async (numbering) => { journal.number(numbering); },
+    readAfter: async (after, maxBytes) => journal.readAfter(after, maxBytes),
+    dropThrough: async (jid) => { journal.dropThrough(jid); },
   };
 }

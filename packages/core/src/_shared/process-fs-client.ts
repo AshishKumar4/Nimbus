@@ -47,9 +47,9 @@ import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, sendWaveAttempts, waveAttempts
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { SYSCALL_VERDICTS, type VfsErrorCode } from '../vfs/vfs-error.js';
 import type { WaveMutation, WriteBatchStreamResult, WriteStreamReceipt } from '../vfs/sqlite-vfs.js';
-import { memoryJournal, type ProcessFsJournal, type ProcessFsNumbering } from './process-fs-journal.js';
+import { memoryJournal, type ProcessFsJournal, type ProcessFsJournalSource, type ProcessFsNumbering } from './process-fs-journal.js';
 
-export { memoryJournal, sqlJournal, type ProcessFsJournal, type JournalSql } from './process-fs-journal.js';
+export { journalSource, memoryJournal, sqlJournal, type JournalSql, type ProcessFsJournal, type ProcessFsJournalSource } from './process-fs-journal.js';
 
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
 export type ProcessFsOp =
@@ -970,31 +970,35 @@ export interface ProcessFsDrain {
   failures: ProcessFsFailure[];
 }
 
+/** Data bytes a drain reads from a journal at once: a wave's worth. */
+const DRAIN_WINDOW_BYTES = WAVE_BYTES;
+
 /**
  * Send what a process's journal still holds, as the process would have:
- * each entry under the writer and number it was given (journal.numberings),
- * so the session's cursor answers what already landed and applies the rest
- * once; entries never numbered under a fresh writer. The journal is empty
- * when it resolves. A refusal is the change's answer, reported in what it
- * resolves with; a session that cannot be reached rejects, and the journal
- * keeps what it holds for the next drain.
+ * each entry under the writer and number it was given (its numberings), so
+ * the session's cursor answers what already landed and applies the rest
+ * once; entries never numbered under a fresh writer. Read a window at a
+ * time, each forgotten once answered: the journal is empty when it
+ * resolves. A refusal is the change's answer, reported in what it resolves
+ * with; a session that cannot be reached rejects, and the journal keeps what
+ * it holds for the next drain.
  */
 export async function drainProcessFsJournal(options: {
-  journal: ProcessFsJournal;
+  journal: ProcessFsJournalSource;
   session: ProcessFsSession;
   retry?: { backoffMs: readonly number[]; stallMs: number; answerDeadlineMs: number };
   timers?: WaveTimers;
 }): Promise<ProcessFsDrain> {
   const { journal, session } = options;
   const drained: ProcessFsDrain = { landed: 0, failures: [] };
-  let held = journal.entries();
+  let held = await journal.readAfter(0, DRAIN_WINDOW_BYTES);
   if (held.length === 0) return drained;
   // Entries no numbering covers (the process died before its first wave): a fresh writer numbers them.
-  const numberings = journal.numberings();
+  const numberings = await journal.numberings();
   if (numberings.length === 0 || numberings[0]!.jid > held[0]!.jid) {
     const writer = await session.openWriter(false);
     const numbering = { writer, seq: 1, jid: held[0]!.jid };
-    journal.number(numbering);
+    await journal.number(numbering);
     numberings.unshift(numbering);
   }
   const numberingOf = (jid: number): ProcessFsNumbering => {
@@ -1060,8 +1064,9 @@ export async function drainProcessFsJournal(options: {
     if (through === 0) {
       throw new Error(`the session applied none of a drained write: ${result.ok ? 'no error' : result.error.message}`);
     }
-    journal.dropThrough(through);
+    await journal.dropThrough(through);
     held = held.filter((entry) => entry.jid > through);
+    if (held.length === 0) held = await journal.readAfter(through, DRAIN_WINDOW_BYTES);
   }
   return drained;
 }

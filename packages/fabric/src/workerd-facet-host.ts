@@ -45,6 +45,10 @@ import {
   type ResidentSupervisorProps,
 } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
+import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
+import type { ProcessFsJournalSource, ProcessFsNumbering } from '@nimbus-sh/core/_shared/process-fs-journal.js';
+import type { ProcessFsOp } from '@nimbus-sh/core/_shared/process-fs-client.js';
+import { PROCESS_FS_JOURNAL_READER_SOURCE } from '@nimbus-sh/core/_shared/process-fs-journal-reader-source.generated.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -133,6 +137,7 @@ interface FacetContainer {
 /** What an unkeyed `LOADER.load` hands back. */
 interface LoadedWorkerStub {
   getEntrypoint(): LoadedWorkerEntrypointStub;
+  getDurableObjectClass(name: string): unknown;
 }
 
 /**
@@ -311,12 +316,25 @@ function acquireSlot(ctx: DurableObjectState, pid: number): { slot: number; mint
   const existing = book.held.get(pid);
   if (existing !== undefined) return { slot: existing, minted: false };
   const reused = book.free.length > 0;
+  // A name whose store still holds an undrained write log is never minted
+  // (minting deletes what a name stored): the session drains it first.
+  const reserved = reservedFacetNames(ctx);
+  while (!reused && reserved.has(residentFacetName(book.next))) book.next++;
   const slot = reused ? book.free.shift()! : book.next++;
   book.held.set(pid, slot);
   // A fresh name is a permanently consumed facet ID; the durable count lives
   // in the budgets ledger (see budgets.ts).
   if (!reused) recordFacetNameMinted(ctx, book.next);
   return { slot, minted: !reused };
+}
+
+const reservedNames = new WeakMap<object, Set<string>>();
+
+/** The facet names this actor's session keeps for an undrained write log (process-fs-journal.ts). */
+export function reservedFacetNames(ctx: DurableObjectState): Set<string> {
+  let names = reservedNames.get(ctx);
+  if (!names) { names = new Set(); reservedNames.set(ctx, names); }
+  return names;
 }
 
 /** Return `pid`'s slot to the free list. */
@@ -495,6 +513,8 @@ function spawnResident(
     throw withFacetBudgetNamed(facetNameCount(ctx), error);
   }
   if (explicit) book.live.add(name);
+  // A journaling process: the session holds its facet's name until its log is drained.
+  params.journal?.opened(name);
   // The facet's worker is one Dynamic Worker in flight for as long as the
   // process is resident, not only while a call is open: its WebSockets and
   // streamed responses outlive the calls the ledger could bracket, and a
@@ -512,6 +532,18 @@ function spawnResident(
     endResidency();
     try { facets.abort(name, new Error('Nimbus: resident process released')); } catch { /* already gone */ }
     if (explicit) book.live.delete(name);
+    // What the process logged and the session never answered is in its
+    // facet's store: drained before the store goes, and before the release
+    // settles (its exit is reported after). A drain that fails keeps the
+    // store and the slot, for the session's next drain of that name.
+    if (params.journal) {
+      try {
+        await params.journal.drain(facetJournal(ctx, env, name));
+      } catch (error) {
+        console.error(`[nimbus] the write log of pid ${params.pid} (facet '${name}') was not drained: ${error instanceof Error ? error.message : String(error)}`);
+        return;
+      }
+    }
     // The two release classes: an ephemeral facet's SQLite is slot-reuse
     // hygiene — the name is handed out again, so the store must not be — and
     // a durable one's is the application itself: abort ends the process, the
@@ -685,6 +717,43 @@ async function runOneShot<T>(
     disposeRpcResource(worker);
     disposeRpcResource(supervisorBinding);
   }
+}
+
+/**
+ * The write log a process left in its facet's store (process-fs-journal.ts),
+ * read through the journal reader class the facet is opened with now, over
+ * the same SQLite. The name is aborted first: a get with a new class of a
+ * facet still running (a previous incarnation's) would reset this object.
+ */
+export function facetJournal(ctx: DurableObjectState, env: ResidentFacetEnv, name: string): ProcessFsJournalSource {
+  const loader = env.LOADER;
+  if (!loader) throw new Error('Nimbus: env.LOADER is missing: a process\'s write log cannot be read');
+  const facets = facetContainer(ctx);
+  let reader: JournalReaderStub | undefined;
+  const open = (): JournalReaderStub => {
+    if (reader) return reader;
+    try { facets.abort(name, new Error('Nimbus: its write log is drained')); } catch { /* not running */ }
+    const worker = loader.load({
+      compatibilityDate: CF_COMPAT_DATE,
+      mainModule: 'reader.js',
+      modules: { 'reader.js': PROCESS_FS_JOURNAL_READER_SOURCE },
+    });
+    reader = facets.get(name, async () => ({ class: worker.getDurableObjectClass('NimbusFsJournalReader') })) as unknown as JournalReaderStub;
+    return reader;
+  };
+  return {
+    numberings: () => open().numberings(),
+    number: (numbering) => open().number(numbering),
+    readAfter: (after, maxBytes) => open().readAfter(after, maxBytes),
+    dropThrough: (jid) => open().dropThrough(jid),
+  };
+}
+
+interface JournalReaderStub {
+  numberings(): Promise<ProcessFsNumbering[]>;
+  number(numbering: ProcessFsNumbering): Promise<void>;
+  readAfter(after: number, maxBytes: number): Promise<{ jid: number; op: ProcessFsOp }[]>;
+  dropThrough(jid: number): Promise<void>;
 }
 
 /**

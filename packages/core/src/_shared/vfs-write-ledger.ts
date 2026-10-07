@@ -64,10 +64,10 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
-    // The process's own SQLite, where it has one (a process facet): every
-    // change is there before the program is told it succeeded, and what the
-    // process holds when it dies the session drains from it.
-    ...(globalThis.__nimbusFsJournal ? { journal: globalThis.__nimbusFsJournal } : {}),
+    // The process's own SQLite, where it has one (a resident's facet:
+    // __nimbusFsJournalSql): every change is there before the program is told
+    // it succeeded, and what it holds when it dies the session drains from it.
+    ...(globalThis.__nimbusFsJournalSql ? { journal: __nimbusProcessFsModule.sqlJournal(globalThis.__nimbusFsJournalSql) } : {}),
   });
   globalThis.__nimbusProcessFs = __nimbusProcessFsInstance;
   return __nimbusProcessFsInstance;

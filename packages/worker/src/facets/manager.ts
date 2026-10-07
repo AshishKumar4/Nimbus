@@ -151,8 +151,13 @@ import {
   createLoadedWorkerEntrypoint,
   getNimbusCtxExports,
   deleteFacetStorage,
+  facetJournal,
+  reservedFacetNames,
   type LoadedWorkerEntrypointStub,
 } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { drainProcessFsJournal, type ProcessFsJournalSource } from '@nimbus-sh/core/_shared/process-fs-client.js';
+import { journalDrainSession } from '@nimbus-sh/core/workspace/supervisor-op.js';
+import { ProcessJournals } from '../session/process-journals.js';
 import {
   acquireDurableFacetSlot,
   freeDurableFacetSlot,
@@ -1783,6 +1788,11 @@ async function __nimbusDispatchHttp(req, workerEnv, workerCtx) {
 let __nimbusStartArgs = null;
 
 export class NimbusProcess extends DurableObject {
+  constructor(ctx, env) {
+    super(ctx, env);
+    // Its write log is kept in its own store (process-fs-journal.ts).
+    globalThis.__nimbusFsJournalSql = ctx.storage.sql;
+  }
   async startProcess(startArgs) {
     // Held so an HTTP-first entry (a restart re-entered by a routed request)
     // starts from the same payload startProcess would have used.
@@ -4722,6 +4732,12 @@ export class FacetManager {
    * workerd process a facet landed in.
    */
   private processFabric: ProcessFabric;
+  /** The residents whose write log may still hold changes (process-journals.ts). */
+  readonly processJournals: ProcessJournals;
+  /** Residents whose log is being drained as their facet is released. */
+  private readonly journalDraining = new Set<number>();
+  /** An exit a signal decided, told once its process's log is drained (`_endBySignal`). */
+  private readonly endsAfterDrain = new Map<number, () => void>();
   /**
    * The same substrate the fabric runs residents on, held directly because a
    * one-shot has no lifecycle for the fabric to own — it is started, read and
@@ -4915,7 +4931,29 @@ export class FacetManager {
     // The workspace's network (FacetManagerHooks.network); a manager no workspace composed uses the isolate's.
     this.network = hooks.network ?? (() => ISOLATE_NETWORK);
     this.processHost = host(ctx, env, () => this._residentDisk(), this.network);
-    this.processFabric = new ProcessFabric(this.processHost);
+    this.processJournals = new ProcessJournals(() => (this.ctx.storage as { sql?: SqlStorage }).sql);
+    // Every resident logs its changes in its facet's store: the session
+    // books the store when it opens, and drains it when the process is
+    // released, before its exit is told (process-fs-journal.ts).
+    this.processFabric = new ProcessFabric(this.processHost, {
+      journalFor: (pid) => ({
+        opened: (facet) => {
+          const cred = this.processes.get(pid)?.cred;
+          if (cred !== undefined) this.processJournals.opened(facet, pid, cred);
+        },
+        drain: async (journal) => {
+          this.journalDraining.add(pid);
+          try {
+            await this._drainProcessJournal(pid, journal);
+          } finally {
+            this.journalDraining.delete(pid);
+            const end = this.endsAfterDrain.get(pid);
+            this.endsAfterDrain.delete(pid);
+            end?.();
+          }
+        },
+      }),
+    });
     const debugVar = ((typeof env === 'object' || typeof env === 'function') && env !== null)
       ? Reflect.get(env, 'NIMBUS_DEBUG')
       : undefined;
@@ -4951,7 +4989,22 @@ export class FacetManager {
     });
     // A reset that killed a resident launch left journal rows behind; the
     // first pump after the reset drains this reconciliation before any
-    // waiter resumes, OFF the constructor's init gate.
+    // waiter resumes, OFF the constructor's init gate. Before it: the write
+    // logs a previous incarnation's residents left undrained (their names
+    // reserved from minting until then). One that cannot be read is said in
+    // the worker's log and on the terminal, and kept.
+    onColdStart(ctx, () => this.processJournals.drainPending({
+      reserved: reservedFacetNames(this.ctx),
+      drain: async (row) => {
+        await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env as Parameters<typeof facetJournal>[1], row.facet));
+        this.vfs?.forgetSequences(row.pid);
+        deleteFacetStorage(this.ctx, row.facet);
+      },
+      log: (message) => {
+        console.error(message);
+        this.hooks.notify?.(`\x1b[31m${message}\x1b[0m\r\n`);
+      },
+    }));
     onColdStart(ctx, () => this.launchJournal.recoverInterrupted());
     // The journal row of a resident lives for the PROCESS's lifetime, so its
 
@@ -4962,6 +5015,9 @@ export class FacetManager {
     this.processes.setOnTerminal((pid) => {
       this.residentBundleKeys.delete(pid);
       this.residentProfileOffers.delete(pid);
+      // Its writers' cursors go with it, unless its log is still to be
+      // drained (which numbers against them, and forgets them after).
+      if (this.processJournals.of(pid) === undefined) this.vfs?.forgetSequences(pid);
       this.ctx.waitUntil(this.trackLaunchTask(this._onResidentTerminal(pid)));
     });
     this.processes.setDefaultSignalAction((pid, code, signal) => this._endBySignal(pid, code, signal));
@@ -4973,15 +5029,22 @@ export class FacetManager {
    * or already booted (its resources are released like a kill).
    */
   private _endBySignal(pid: number, code: number, signal: string): void {
-    if (this.processes.get(pid)?.state !== 'running') return;
+    if (this.processes.get(pid)?.state !== 'running' || this.endsAfterDrain.has(pid)) return;
     this.portRegistry.unregisterByPid(pid);
     this.releaseProcessRpcResources(pid);
     this.revokeProcessVfsWriters(pid);
-    this.processes.exit(pid, code);
-    this.processes.markExit(pid, code, signal);
-    this.processes.closeInput(pid);
-    try { this.hooks.onExternalExit?.(pid, code, signal); } catch {}
-    this._teardownPairedServeFacet(pid);
+    const end = () => {
+      if (this.processes.get(pid)?.state !== 'running') return;
+      this.processes.exit(pid, code);
+      this.processes.markExit(pid, code, signal);
+      this.processes.closeInput(pid);
+      try { this.hooks.onExternalExit?.(pid, code, signal); } catch {}
+      this._teardownPairedServeFacet(pid);
+    };
+    // A resident's release drains its write log: its exit is told after,
+    // so what reads its files next (the next prompt, its parent) sees them.
+    if (this.journalDraining.has(pid)) this.endsAfterDrain.set(pid, end);
+    else end();
   }
 
   /**
@@ -5080,6 +5143,35 @@ export class FacetManager {
    *  authority over the same disk. */
   setVfs(vfs: SqliteVFS, filesystem: NimbusFilesystemAuthority) { this.vfs = vfs; this.filesystem = filesystem; }
 
+  /**
+   * Send what a released resident's write log still holds (it was killed,
+   * ran out of memory or CPU, or ended before its log was answered), as the
+   * process would have: under the numbers it gave each change, so the
+   * session's cursor answers what already landed and applies the rest once.
+   * A change the session refuses is said in the process's own output, named.
+   */
+  private async _drainProcessJournal(pid: number, journal: ProcessFsJournalSource): Promise<void> {
+    const pending = this.processJournals.of(pid);
+    if (pending === undefined) return;
+    await this._drainJournalAs(pending.pid, pending.cred, journal);
+    this.vfs?.forgetSequences(pid);
+    this.processJournals.settled(pid);
+  }
+
+  /** Drain `journal` into the session as process `pid` (with its credential) would have sent it. */
+  private async _drainJournalAs(pid: number, cred: VfsCred, journal: ProcessFsJournalSource): Promise<void> {
+    if (!this.filesystem) throw new Error('Process filesystem authority is not initialized');
+    // Under the process's credential, numbered as its own waves were.
+    const lease = this.filesystem.openHost(cred);
+    const drained = await drainProcessFsJournal({ journal, session: journalDrainSession(lease.fs, pid) }).finally(() => lease.dispose());
+    if (drained.landed > 0 || drained.failures.length > 0) {
+      const refused = drained.failures.map((failure) => `  ${failure.op} /${failure.path}: ${failure.errno}: ${failure.message}\n`).join('');
+      this.processes.appendOutput(pid, 'stderr',
+        `[nimbus] process ${pid} ended with ${drained.landed + drained.failures.length} change${drained.landed + drained.failures.length === 1 ? '' : 's'} not yet in the session: `
+          + `${drained.landed} landed after it ended`
+          + (drained.failures.length === 0 ? '\n' : `, ${drained.failures.length} refused:\n${refused}`));
+    }
+  }
 
   /**
    * What every loader-backed runtime builds its facet pools from: the env and
