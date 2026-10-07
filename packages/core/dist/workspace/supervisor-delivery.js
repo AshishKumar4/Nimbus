@@ -170,6 +170,8 @@ export class SupervisorDeliveries {
     reads = new Map();
     /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
     waveEpochs = new Map();
+    /** Each epoch's waves being applied now: a retirement waits for them (retireWaveWriter). */
+    activeWaves = new Map();
     tombstones = new Set();
     olderTombstones = new Set();
     tombstonesSince = Number.NEGATIVE_INFINITY;
@@ -414,11 +416,33 @@ export class SupervisorDeliveries {
     /**
      * Retire process `pid`'s write-wave epoch `writer`: from now on it admits
      * nothing, and an attempt of it already admitted is refused at its next
-     * commit (admitWave's check). How a writer that gave a wave up (its fate
-     * unknown) keeps a late attempt of it from landing after what it sends next.
+     * commit (admitWave's check). Answered once every wave of the epoch being
+     * applied has settled: a mount's call it already made lands (or fails)
+     * before the writer sends anything under its next epoch. How a writer
+     * that gave a wave up (its fate unknown) keeps a late attempt of it from
+     * landing after what it sends next.
      */
-    retireWaveWriter(pid, writer) {
-        this.waveEpochs.delete(`${pid}:${writer}`);
+    async retireWaveWriter(pid, writer) {
+        const key = `${pid}:${writer}`;
+        this.waveEpochs.delete(key);
+        const active = this.activeWaves.get(key);
+        if (active !== undefined)
+            await Promise.allSettled([...active]);
+    }
+    /** `applying` is a wave of process `pid`'s epoch `writer` being applied: a retirement of the epoch waits for it. */
+    applyingWave(pid, writer, applying) {
+        const key = `${pid}:${writer}`;
+        let active = this.activeWaves.get(key);
+        if (active === undefined)
+            this.activeWaves.set(key, active = new Set());
+        active.add(applying);
+        const done = () => {
+            active.delete(applying);
+            if (active.size === 0 && this.activeWaves.get(key) === active)
+                this.activeWaves.delete(key);
+        };
+        applying.then(done, done);
+        return applying;
     }
     /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
     forget(pid) {

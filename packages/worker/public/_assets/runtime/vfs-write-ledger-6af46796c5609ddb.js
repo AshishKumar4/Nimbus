@@ -1173,7 +1173,7 @@ var __nimbusProcessFsModule = (() => {
   var PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
   var DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
   var DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
-  var UNSETTLED_END_NOTE = `[nimbus] the process ended abnormally: an unknown number of its writes since it last yielded (up to the ${PROCESS_FS_HEAP_SYNC_CAP_BYTES / (1024 * 1024)} MiB synchronous cap), and up to ${DECIDED_BACKLOG_OPS} not yet answered after its last output, may be lost`;
+  var UNSETTLED_END_NOTE = `[nimbus] the process ended abnormally: an unknown number of the changes it made since it last produced output or flushed may be lost`;
   function unsettledEnd(error) {
     const message = error instanceof Error ? error.message : String(error);
     const code = typeof error === "object" && error !== null ? Reflect.get(error, "code") : void 0;
@@ -1420,10 +1420,8 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const errno = typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : "EIO";
         for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`);
         journal.dropThrough(entries[entries.length - 1].jid);
-        if (entries.some((entry) => entry.seq !== 0)) {
-          epoch = null;
-          for (const entry of queue) entry.seq = 0;
-        }
+        epoch = null;
+        for (const entry of queue) entry.seq = 0;
         return;
       }
       const firstSeq = entries[0].seq;

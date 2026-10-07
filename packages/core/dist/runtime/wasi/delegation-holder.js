@@ -289,8 +289,9 @@ export function delegationHolder(options) {
             else if (!flags.truncate) {
                 // An existing file opened to write, not emptied (O_CREAT without
                 // O_TRUNC): its bytes are kept, so only one whose bytes are here is
-                // opened here; any other is the session's.
-                if (!modeAllows(current, 2, store.cred))
+                // opened here; any other is the session's. Read permission too, when
+                // it is opened to read.
+                if (!modeAllows(current, flags.read ? 6 : 2, store.cred))
                     throw fsError('EACCES', 'open', path);
                 const local = files.get(current.ino);
                 if (local === undefined || local.key !== key || local.through !== undefined)
@@ -299,7 +300,7 @@ export function delegationHolder(options) {
             }
             else {
                 // An existing file emptied: decided here, its number the session's.
-                if (!modeAllows(current, 2, store.cred))
+                if (!modeAllows(current, flags.read ? 6 : 2, store.cred))
                     throw fsError('EACCES', 'open', path);
                 // A description writing it through is the session's: decided here anew.
                 const known = files.get(current.ino);

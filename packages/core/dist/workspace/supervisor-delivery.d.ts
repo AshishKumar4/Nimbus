@@ -121,6 +121,8 @@ export declare class SupervisorDeliveries {
     private readonly reads;
     /** Open write-wave epochs, by `${pid}:${writer}`: the newest attempt admitted under each. */
     private readonly waveEpochs;
+    /** Each epoch's waves being applied now: a retirement waits for them (retireWaveWriter). */
+    private readonly activeWaves;
     private tombstones;
     private olderTombstones;
     private tombstonesSince;
@@ -209,10 +211,15 @@ export declare class SupervisorDeliveries {
     /**
      * Retire process `pid`'s write-wave epoch `writer`: from now on it admits
      * nothing, and an attempt of it already admitted is refused at its next
-     * commit (admitWave's check). How a writer that gave a wave up (its fate
-     * unknown) keeps a late attempt of it from landing after what it sends next.
+     * commit (admitWave's check). Answered once every wave of the epoch being
+     * applied has settled: a mount's call it already made lands (or fails)
+     * before the writer sends anything under its next epoch. How a writer
+     * that gave a wave up (its fate unknown) keeps a late attempt of it from
+     * landing after what it sends next.
      */
-    retireWaveWriter(pid: number, writer: string): void;
+    retireWaveWriter(pid: number, writer: string): Promise<void>;
+    /** `applying` is a wave of process `pid`'s epoch `writer` being applied: a retirement of the epoch waits for it. */
+    applyingWave<T>(pid: number, writer: string, applying: Promise<T>): Promise<T>;
     /** A process ended: its receipts answer nothing more, their ids stay refused, and its wave epochs close. */
     forget(pid: number): void;
     private record;

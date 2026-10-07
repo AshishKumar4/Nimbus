@@ -318,7 +318,9 @@ const NATIVE_OPS = {
             mountReach = admission.reach;
         }
         const sequence = fence === undefined || e.pid === undefined ? undefined : processWaveSequence(e.pid, fence);
-        return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence });
+        const applying = Promise.resolve(fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence }));
+        // A fenced wave is its epoch's until it settles: retiring the epoch waits for it.
+        return fence === undefined || t.deliveries === undefined || e.pid === undefined ? applying : t.deliveries.applyingWave(e.pid, fence.writer, applying);
     },
     // A write-wave epoch for the live process that asks, on this instance:
     // the only writer identity a fenced writeBatchStream is admitted under.
@@ -330,7 +332,7 @@ const NATIVE_OPS = {
         if (e.pid === undefined)
             throw new Error('supervisor op: retireWaveWriter names no process');
         t.bridge(e.pid, e.cred);
-        t.deliveries.retireWaveWriter(e.pid, stringArg(e, 0));
+        return t.deliveries.retireWaveWriter(e.pid, stringArg(e, 0));
     },
     openWaveWriter: (e, t) => {
         // A host that delivers in process fences nothing: no epoch (null), and waves go unfenced.

@@ -280,11 +280,10 @@ export declare const DECIDED_BACKLOG_BYTES: number;
 /**
  * What a one-shot process (no store of its own) that ended abnormally (it
  * died, or was killed) says in its output, whatever it did: every change
- * ahead of an output it released is in the session (ProcessFsClient.effect),
- * but what it acknowledged since it last yielded to its event loop never left
- * its isolate (up to the synchronous cap), and what it sent after its last
- * output may not have been answered (up to the decided backlog). The session
- * cannot count the first: it never saw them.
+ * ahead of an output it released, or a flush it finished, is in the session
+ * (ProcessFsClient.effect, flush); any change it made after that may not be.
+ * No count is promised: what it acknowledged and never sent the session
+ * never saw. The subtrees it held are named apart (delegationOrphaned).
  */
 export declare const UNSETTLED_END_NOTE: string;
 /** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */
