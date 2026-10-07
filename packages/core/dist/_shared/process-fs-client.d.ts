@@ -94,6 +94,8 @@ export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
 /** An op committed: the stat of the file its data call published, when it published one. */
 export interface ProcessFsAnswer {
     receipt?: ProcessFsReceipt;
+    /** What a session call of its own (ProcessFsClient.call) answered. */
+    value?: unknown;
 }
 /** An op the program was told succeeded that the session refused, or whose fate it could not answer. */
 export interface ProcessFsFailure {
@@ -158,6 +160,15 @@ export interface ProcessFsClient {
     submit(op: ProcessFsOp, options?: {
         acknowledged?: boolean;
     }): Promise<ProcessFsAnswer>;
+    /**
+     * A mutation no call record carries (a tree's removal, a copy), made by
+     * `run` as one session call in its place in the log: once every op logged
+     * before it is answered, and before any logged after it is sent.
+     * Answers what `run` answers; a failure of an acknowledged one is reported.
+     */
+    call<T>(name: string, path: string, run: () => Promise<T>, options?: {
+        acknowledged?: boolean;
+    }): Promise<T>;
     /** Resolves once every op logged so far is answered. */
     flush(): Promise<void>;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */

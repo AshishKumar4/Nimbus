@@ -84,6 +84,7 @@ function utf8Length(text) {
 }
 function pathsOf(op) {
     switch (op.type) {
+        case 'run': return [op.path];
         case 'call': return [op.call.path];
         case 'rename': return [op.from, op.to];
         case 'truncate':
@@ -95,7 +96,7 @@ function canonical(path) {
     return path !== '' && path.split('/').every((part) => part !== '' && part !== '.' && part !== '..') && !path.includes('\0');
 }
 function nameOf(op) {
-    return op.type === 'call' ? op.call.call : op.type;
+    return op.type === 'call' ? op.call.call : op.type === 'run' ? op.name : op.type;
 }
 function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
@@ -199,6 +200,12 @@ export function processFsClient(options) {
         let bytes = 0;
         while (queue.length > 0) {
             const next = queue[0];
+            // A session call of its own is never in a wave: it is made alone, in its place.
+            if (next.op.type === 'run') {
+                if (taken.length === 0)
+                    taken.push(queue.shift());
+                break;
+            }
             const fresh = next.paths.filter((path) => !owned.has(path));
             const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
             if (taken.length > 0 && (owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES))
@@ -212,6 +219,21 @@ export function processFsClient(options) {
         return taken;
     };
     const send = async (entries) => {
+        const first = entries[0];
+        if (first.op.type === 'run') {
+            const { name, run } = first.op;
+            charge(name);
+            try {
+                const value = await run();
+                settled(first);
+                first.resolve({ value });
+            }
+            catch (error) {
+                const code = error?.code;
+                fail(first, typeof code === 'string' ? code : 'EIO', error instanceof Error ? error.message : String(error));
+            }
+            return;
+        }
         let writer;
         try {
             writer = await writerFor();
@@ -226,7 +248,7 @@ export function processFsClient(options) {
         for (const entry of entries)
             if (entry.seq === 0)
                 entry.seq = nextSeq++;
-        const first = entries[0].seq;
+        const firstSeq = entries[0].seq;
         counters.waves++;
         counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
         wave++;
@@ -239,7 +261,7 @@ export function processFsClient(options) {
                 open: waveAttemptsOf(bytes),
                 streamed: false,
                 wave,
-                ...(writer === null ? {} : { sequence: { seq: first, ack } }),
+                ...(writer === null ? {} : { sequence: { seq: firstSeq, ack } }),
                 ...(options.retry === undefined ? {} : { retry: options.retry }),
                 resent: () => { counters.resends++; charge('writeBatchStream'); },
                 timers,
@@ -254,7 +276,7 @@ export function processFsClient(options) {
         const answer = result;
         const error = answer.ok ? null : answer.error;
         // Unfenced, the session numbers nothing: committedOps says how far it went.
-        const cursor = writer === null ? first - 1 + (answer.ok ? entries.length : answer.committedOps) : answer.sequence?.cursor;
+        const cursor = writer === null ? firstSeq - 1 + (answer.ok ? entries.length : answer.committedOps) : answer.sequence?.cursor;
         if (cursor === undefined) {
             lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? 'no error'}`);
             return;
@@ -564,6 +586,17 @@ export function processFsClient(options) {
             if (acknowledged)
                 answer.catch(() => { });
             return answer;
+        },
+        call(name, path, run, callOptions) {
+            const acknowledged = callOptions?.acknowledged === true;
+            const answer = new Promise((resolve, reject) => {
+                queue.push({ op: { type: 'run', name, path, run }, seq: 0, bytes: 0, paths: [path], acknowledged, resolve, reject });
+                counters.ops++;
+            });
+            schedule();
+            if (acknowledged)
+                answer.catch(() => { });
+            return answer.then((answered) => answered.value);
         },
         flush() {
             options.drain?.();

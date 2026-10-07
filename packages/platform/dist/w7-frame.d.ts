@@ -125,11 +125,14 @@ export type W7Call =
     path: string;
     ino?: number;
     size: number;
-} | {
+}
+/** `existing: 'ok'`: a directory already there answers success, as `mkdir -p` takes it (anything else there is still EEXIST). */
+ | {
     call: 'mkdir';
     path: string;
     mode: number;
     ino?: number;
+    existing?: 'ok';
 } | {
     call: 'unlink';
     path: string;

@@ -59,7 +59,8 @@ import { CRED_KERNEL, sameCred, } from '../runtime/os-contracts.js';
  */
 const VFS_SCHEMA = 3;
 /** Every table of the content store, dropped when an older schema is reset. */
-const STORE_TABLES = [
+/** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
+export const STORE_TABLES = [
     'vfs_append_receipts_v2', 'vfs_append_writer_state_v2', 'vfs_append_module_state_v2',
     'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2', 'vfs_state', 'vfs_inodes', 'vfs_chunks',
     'vfs_contents', 'vfs_content_chunks', 'vfs_inode_history', 'vfs_tombstones', 'vfs_cold_trash',
@@ -8599,11 +8600,17 @@ export class SqliteVFS {
                             committing(() => asCaller(() => {
                                 if (call.call === 'mkdir') {
                                     // mkdir(2): a name that is there, whatever it is, is EEXIST
-                                    // (the engine's mkdir keeps an existing directory as made).
-                                    if (this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode !== undefined) {
-                                        throw vfsError('EEXIST', call.path);
+                                    // (the engine's mkdir keeps an existing directory as made);
+                                    // `existing: 'ok'` takes a directory there (followed, as mkdir -p does).
+                                    const there = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+                                    if (there !== undefined) {
+                                        const directory = call.existing === 'ok' && (there.kind === 'directory' || (there.kind === 'symlink' && this.isDirectory(call.path, cred)));
+                                        if (!directory)
+                                            throw vfsError('EEXIST', call.path);
                                     }
-                                    this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
+                                    else {
+                                        this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
+                                    }
                                 }
                                 else if (call.call === 'unlink')
                                     this.unlink(call.path, cred);

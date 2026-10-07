@@ -368,7 +368,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -773,13 +773,18 @@ function parseFileBegin(bytes, v3) {
 function parsePathCall(value, path) {
     const keys = Object.keys(value).sort().join(',');
     switch (value.call) {
-        case 'mkdir':
-            if (keys !== 'call,mode,path' && keys !== 'call,ino,mode,path')
+        case 'mkdir': {
+            const optional = keys.replace(',existing', '').replace(',ino', '');
+            if (optional !== 'call,mode,path')
                 break;
+            if (value.existing !== undefined && value.existing !== 'ok')
+                throw new Error(`w7-frame: mkdir existing is 'ok' or absent, not ${String(value.existing)}`);
             return {
                 call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode'),
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'mkdir ino') }),
+                ...(value.existing === undefined ? {} : { existing: 'ok' }),
             };
+        }
         case 'unlink':
         case 'rmdir':
             if (keys !== 'call,path')

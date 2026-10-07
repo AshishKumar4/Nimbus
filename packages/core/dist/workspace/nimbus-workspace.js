@@ -31,7 +31,7 @@ import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
 import { workspaceNetwork } from '../_shared/workspace-network.js';
 import { runCommand } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
-import { SqliteVFS } from '../vfs/sqlite-vfs.js';
+import { SqliteVFS, STORE_TABLES } from '../vfs/sqlite-vfs.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';
 import { BASH_RUNNER, CRED_KERNEL, CRED_SESSION_USER } from '../runtime/os-contracts.js';
 import { ProcessFiles } from '../runtime/process-files.js';
@@ -643,22 +643,8 @@ function once(make) {
  * drops them itself, and only once their columns prove they are its own.
  */
 const WORKSPACE_TABLES = [
-    'vfs_append_receipts_v2',
-    'vfs_append_writer_state_v2',
-    'vfs_append_module_state_v2',
-    'vfs_append_pid_revocations_v2',
-    'vfs_append_acked_gaps_v2',
-    'vfs_state',
-    'vfs_inodes',
-    'vfs_chunks',
-    'vfs_contents',
-    'vfs_content_chunks',
-    'vfs_inode_history',
-    'vfs_gc_queue',
-    'vfs_jobs',
-    'vfs_snapshots',
-    'vfs_tombstones',
-    'vfs_cold_trash',
+    // The store's own, as it keeps them.
+    ...STORE_TABLES,
     'vfs_append_receipts',
     'vfs_append_writer_state',
     'vfs_append_module_state',

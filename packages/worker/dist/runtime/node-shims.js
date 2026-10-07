@@ -1648,6 +1648,23 @@ const __fsMod = (() => {
     catch { return null; }
   }
 
+  // A mutation this process makes reaches the session as the call of that
+  // name, logged in its filesystem client (the ledger's __nimbusSubmitVfs):
+  // numbered in its waves, in the order it was logged, applied once.
+  function _vfsCall(call) {
+    return __nimbusSubmitVfs({ type: "call", call });
+  }
+  function _vfsOp(op) {
+    return __nimbusSubmitVfs(op);
+  }
+  // The stat a data call's receipt answers, as a live stat describes the path.
+  function _receiptStat(receipt) {
+    return {
+      type: "file", size: receipt.size, mode: receipt.mode, uid: receipt.uid, gid: receipt.gid,
+      atime: receipt.mtimeMs, mtime: receipt.mtimeMs, ctime: receipt.ctimeMs, ino: receipt.ino, dev: receipt.dev, nlink: 1,
+    };
+  }
+
   function _writtenCell(absPath) {
     const k = _strip(absPath);
     if (__vfsWrites && k in __vfsWrites) return __vfsWrites[k];
@@ -2487,6 +2504,8 @@ const __fsMod = (() => {
    */
   async function _resumptionRelease() {
     await __nimbusFlushVfsWriteBack(_supervisor());
+    // And everything logged before them: the structural changes, the descriptor writes.
+    await globalThis.__nimbusProcessFs?.flush();
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch
@@ -2563,7 +2582,7 @@ const __fsMod = (() => {
   // queue would be answered for a tree the program has already changed.
   async function _announceLocalDirs(absPath, supervisor) {
     await _awaitStructuralOrder(absPath);
-    if (!__vfsDirs || typeof supervisor.mkdir !== "function") return;
+    if (!__vfsDirs) return;
     const pending = [];
     let key = "";
     for (const segment of _strip(absPath).split("/")) {
@@ -2573,7 +2592,9 @@ const __fsMod = (() => {
     }
     if (pending.length === 0) return;
     const deepest = "/" + pending[pending.length - 1];
-    await _fsRpc(supervisor.mkdir(deepest), "mkdir", deepest, () => undefined);
+    // Each one, shallowest first, as mkdir -p makes them.
+    const made = pending.map((dir) => _vfsCall({ call: "mkdir", path: dir, mode: _localModes[dir] ?? 0o777, existing: "ok" }));
+    await _fsRpc(Promise.all(made), "mkdir", deepest, () => undefined);
     for (const dir of pending) _announcedDirs.add(dir);
     _markVfsStale();
   }
@@ -2616,7 +2637,7 @@ const __fsMod = (() => {
   function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method, dest) {
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
-    if (!supervisor || typeof supervisor[method || syscall] !== "function") { settle(); return null; }
+    if (!supervisor) { settle(); return null; }
     const queued = _hasVfsMutationQueue();
     const before = queued && after ? after() : null;
     const run = async () => {
@@ -2700,7 +2721,7 @@ const __fsMod = (() => {
   // on the same tail right after this call is ordered behind the flush.
   function _flushParkedWrite(absPath, supervisor) {
     const k = _strip(absPath);
-    if (!__vfsWrites || !(k in __vfsWrites) || typeof supervisor.writeFile !== "function") {
+    if (!__vfsWrites || !(k in __vfsWrites)) {
       return Promise.resolve(undefined);
     }
     return __nimbusFlushVfsWrite(
@@ -2732,17 +2753,17 @@ const __fsMod = (() => {
   async function _flushHeld(absPath, supervisor) {
     const k = _strip(absPath);
     await _announceLocalDirs(absPath, supervisor);
-    if (__vfsWrites && k in __vfsWrites && typeof supervisor.writeFile === "function") {
+    if (__vfsWrites && k in __vfsWrites) {
       await _flushParkedWrite(absPath, supervisor);
       _markVfsStale();
     }
     // A pending sync chmod rides along with the next flush of the same path.
-    if (_pendingModes.has(k) && typeof supervisor.chmod === "function") {
+    if (_pendingModes.has(k)) {
       _pendingModes.delete(k);
       try {
         await _ownMutation(
           absPath,
-          () => _fsRpc(supervisor.chmod(absPath, _localModes[k]), "chmod", absPath, (result) => result),
+          () => _fsRpc(_vfsOp({ type: "setattr", path: k, attrs: { mode: _localModes[k] } }), "chmod", absPath, () => undefined),
         );
       } catch (error) {
         _pendingModes.add(k);
@@ -3175,7 +3196,7 @@ const __fsMod = (() => {
    * ops replaced, from then on. An RPC stub answers \`typeof "function"\` for
    * any method, so only the refusal can tell.
    */
-  const _served = { fsAcquired: true, writeFileStat: true };
+  const _served = { fsAcquired: true };
   /** The refusal of \`op\` by an entrypoint without the method, a host without the op, or one that refuses its envelope. */
   function _unserved(error, op) {
     const message = error && typeof error.message === "string" ? error.message : "";
@@ -3322,11 +3343,11 @@ const __fsMod = (() => {
 
   async function _symlinkAsync(target, path) {
     const supervisor = _supervisor();
-    if (supervisor && typeof supervisor.symlink === "function") {
+    if (supervisor) {
       const absPath = _resolve(path);
       await _awaitStructuralOrder(absPath);
       // Node names the target, then the link: "symlink 'target' -> 'link'".
-      await _fsRpc(supervisor.symlink(String(target), absPath), "symlink", String(target), () => undefined, path);
+      await _fsRpc(_vfsCall({ call: "symlink", path: _strip(absPath), target: String(target) }), "symlink", String(target), () => undefined, path);
       _markVfsStale();
       return;
     }
@@ -3340,8 +3361,8 @@ const __fsMod = (() => {
     // list it) is the authority's to answer for, as the async rename's
     // destination is: parked and written back like any other write, and
     // refused (and the parked bytes dropped) if the authority refuses it.
-    _parkWholeWrite(p, data, supervisor && typeof supervisor.writeFile === "function");
-    if (supervisor && typeof supervisor.writeFile === "function") {
+    _parkWholeWrite(p, data, !!supervisor);
+    if (supervisor) {
       await _announceLocalDirs(absPath, supervisor);
       // The revision comes back so the ledger can stamp the cell: an async
       // whole write is the facet's own as much as a parked sync one is.
@@ -3354,18 +3375,15 @@ const __fsMod = (() => {
       const ticket = _beginFill(_strip(absPath));
       try {
         await __nimbusFlushVfsWrite(absPath, async (content) => {
-          if (_served.writeFileStat && typeof supervisor.writeFileStat === "function") {
-            try {
-              const answer = await __nimbusUseRpcResult(supervisor.writeFileStat(absPath, content), (result) => result);
-              learned = answer.stat;
-              written = answer.revision;
-              return answer.revision;
-            } catch (error) {
-              if (!_unserved(error, "writeFileStat")) throw _mapSupervisorError(error, "write", p);
-              _served.writeFileStat = false;
-            }
+          const answer = await _fsRpc(
+            _vfsCall({ call: "writeFile", path: _strip(absPath), mode: 0o666, data: __nimbusVfsCellBytes(content) }),
+            "write", p,
+            (result) => result,
+          );
+          if (answer.receipt !== undefined) {
+            learned = _receiptStat(answer.receipt);
+            written = answer.receipt.revision;
           }
-          written = await _fsRpc(supervisor.writeFile(absPath, content), "write", p, (result) => result);
           return written;
         });
         _markVfsStale();
@@ -3382,7 +3400,7 @@ const __fsMod = (() => {
     const absPath = _resolveFollow(p, "open");
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
-    if (!supervisor || typeof supervisor.writeFile !== "function") return;
+    if (!supervisor) return;
     await _announceLocalDirs(absPath, supervisor);
     await __nimbusFlushVfsWrite(
       absPath,
@@ -3409,7 +3427,7 @@ const __fsMod = (() => {
     const size = Math.max(0, Math.trunc(Number(len) || 0));
     const supervisor = _supervisor();
     const localCell = _bundleLookup(absPath);
-    if (supervisor && typeof supervisor.fsTruncate === "function") {
+    if (supervisor) {
       await _announceLocalDirs(absPath, supervisor);
       const k = _strip(absPath);
       if (__vfsWrites && k in __vfsWrites) {
@@ -3426,7 +3444,7 @@ const __fsMod = (() => {
           await __nimbusQueueVfsMutation(absPath, async () => {
             await flush;
             await _fsRpc(
-              supervisor.fsTruncate(absPath, size),
+              _vfsOp({ type: "truncate", path: k, size }),
               "truncate", p,
               () => undefined,
             );
@@ -3446,7 +3464,7 @@ const __fsMod = (() => {
       const generation = __vfsWriteGenerations[k];
       await __nimbusQueueVfsMutation(absPath, () => _ownMutation(
         absPath,
-        () => _fsRpc(supervisor.fsTruncate(absPath, size), "truncate", p, (result) => result),
+        () => _fsRpc(_vfsOp({ type: "truncate", path: k, size }), "truncate", p, () => undefined),
         () => {
           if (__vfsWriteGenerations[k] === generation && localCell !== undefined) {
             _truncateLocalCell(absPath, size);
@@ -3479,19 +3497,22 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
-    if (!localExists && (!supervisor || typeof supervisor.utimes !== "function")) {
+    if (!localExists && !supervisor) {
       throw _fsErr("ENOENT", syscall, p);
     }
     const time = _recordLocalTimes(absPath, atime, mtime, syscall, p);
-    if (supervisor && typeof supervisor.utimes === "function") {
+    if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
       // Ordered behind the path's pending mutations: an fd write queued a
       // moment ago (modern-tar writes, then futimes, then closes) would
       // otherwise land AFTER the timestamp and reset it to "now".
+      // A link's own times (lutimes) are no attribute record's: that call is made in its place in the log.
       const leased = () => _ownMutation(absPath, () => _fsRpc(
-        supervisor.utimes(absPath, time.atimeMs, time.mtimeMs),
+        followSymlinks
+          ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
+          : __nimbusVfsCall("lutimes", absPath, () => supervisor.utimes(absPath, time.atimeMs, time.mtimeMs)),
         syscall, p,
-        (result) => result,
+        () => undefined,
       ));
       if (_hasVfsMutationQueue()) await __nimbusQueueVfsMutation(absPath, leased);
       else await leased();
@@ -3530,14 +3551,14 @@ const __fsMod = (() => {
     const supervisor = _supervisor();
     let localExists = false;
     try { localExists = existsSync(p); } catch {}
-    if (!localExists && (!supervisor || typeof supervisor.chmod !== "function")) {
+    if (!localExists && !supervisor) {
       throw _fsErr("ENOENT", "chmod", p);
     }
     const m = _coerceMode(mode, "chmod", p);
     if (localExists) _ensureModeOwner(absPath, "chmod", p);
     _localModes[_strip(absPath)] = m;
     _pendingModes.add(_strip(absPath));
-    if (supervisor && typeof supervisor.chmod === "function") {
+    if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       _markVfsStale();
       return;
@@ -3565,7 +3586,7 @@ const __fsMod = (() => {
     await _flushLocalPathToSupervisor(absPath, supervisor, followSymlinks);
     await _ownMutation(
       absPath,
-      () => _fsRpc(supervisor.chown(absPath, nextUid, nextGid, opts), syscall, p, (result) => result),
+      () => _fsRpc(_chownCall(supervisor, absPath, nextUid, nextGid, followSymlinks), syscall, p, () => undefined),
       () => {
         const meta = _metadata(absPath);
         if (meta) { meta.uid = nextUid; meta.gid = nextGid; }
@@ -3607,10 +3628,18 @@ const __fsMod = (() => {
     // and wait on itself), so it is the synchronous-registering flush.
     return _queueStructuralMutation(
       absPath, syscall, p,
-      (s) => s.chown(absPath, nextUid, nextGid, followSymlinks ? undefined : { followSymlinks: false }),
+      (s) => _chownCall(s, absPath, nextUid, nextGid, followSymlinks),
       () => _flushParkedWrite(absPath, supervisor),
       "chown",
     );
+  }
+
+  // chown follows the name's link, as an attribute record does; lchown's is
+  // no record's, so that call is made in its place in the log.
+  function _chownCall(supervisor, absPath, uid, gid, followSymlinks) {
+    return followSymlinks
+      ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { uid, gid } })
+      : __nimbusVfsCall("lchown", absPath, () => supervisor.chown(absPath, uid, gid, { followSymlinks: false }));
   }
   function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown")); }
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown")); }
@@ -3942,11 +3971,21 @@ const __fsMod = (() => {
       __vfsDirs[k] = true;
       created.push(k);
     }
+    // A directory the view already shows (the namespace's, or one this
+    // process made, whose mkdir is ahead in the log) is not made again.
+    const known = new Set();
     for (const dir of created) {
       const was = _nsMeta(dir, true);
       if (was === "absent") _nsOwnSet(dir, "dir", { hide: true });
+      else if (was && typeof was === "object" && was.type === "directory") known.add(dir);
     }
-    const queued = _queueStructuralMutation(absPath, "mkdir", p, (supervisor) => supervisor.mkdir(absPath));
+    // Each directory this call makes, shallowest first, as mkdir -p takes
+    // them: one already there (or made by another) answers success.
+    const mode = opts?.mode === undefined ? 0o777 : _coerceMode(opts.mode, "mkdir", p);
+    const made = created.filter((dir) => !known.has(dir)).map((dir) => ({ dir, mode }));
+    const queued = _queueStructuralMutation(absPath, "mkdir", p, () => Promise.all(
+      made.map(({ dir, mode }) => _vfsCall({ call: "mkdir", path: dir, mode, existing: "ok" })),
+    ));
     // Told, not merely known locally: _announceLocalDirs must not issue a
     // second mkdir for a directory whose own RPC is already in the queue.
     if (queued) for (const dir of created) _announcedDirs.add(dir);
@@ -3982,7 +4021,7 @@ const __fsMod = (() => {
     if (__vfsBundle) delete __vfsBundle[k];
     if (__vfsWrites) delete __vfsWrites[k];
     _forgetSyncPath(k);
-    return _queueStructuralMutation(absPath, "unlink", p, (supervisor) => supervisor.unlink(absPath));
+    return _queueStructuralMutation(absPath, "unlink", p, () => _vfsCall({ call: "unlink", path: k }));
   }
   function unlinkSync(p) { _detachStructuralMutation(_unlinkQueued(p)); }
 
@@ -3995,7 +4034,7 @@ const __fsMod = (() => {
     _forgetSyncPath(k);
     return _queueStructuralMutation(
       absPath, "rmdir", p,
-      (supervisor) => supervisor.rmdir(absPath),
+      () => _vfsCall({ call: "rmdir", path: k }),
       () => __nimbusAwaitSubtreeMutations(absPath),
     );
   }
@@ -4022,7 +4061,7 @@ const __fsMod = (() => {
     if (oldK === newK) {
       if (source !== undefined) return null;
       if (_nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
-      return _queueStructuralMutation(oldAbs, "rename", oldP, (supervisor) => supervisor.rename(oldAbs, newAbs), undefined, undefined, newP);
+      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, undefined, newP);
     }
     // What rename(2) refuses before it moves anything, refused here before
     // the local tables move: the sync view applies a rename at once and the
@@ -4119,7 +4158,7 @@ const __fsMod = (() => {
     _nsOwnSet(oldK, "absentTree");
     const queued = _queueStructuralMutation(
       oldAbs, "rename", oldP,
-      (supervisor) => supervisor.rename(oldAbs, newAbs),
+      () => _vfsOp({ type: "rename", from: oldK, to: newK }),
       // The queue orders the move behind the source's ancestors; the move
       // also needs the destination's ancestors to exist and every pending
       // mutation beneath the source to have landed under the old name.
@@ -4235,13 +4274,14 @@ const __fsMod = (() => {
     if (!canRemove) {
       // No fsRemove: a plain file still has the unlink RPC.
       if (st !== undefined && !st.isDirectory()) {
-        return _queueStructuralMutation(absPath, "rm", p, (s) => s.unlink(absPath), undefined, "unlink");
+        return _queueStructuralMutation(absPath, "rm", p, () => _vfsCall({ call: "unlink", path: k }), undefined, "unlink");
       }
       return null;
     }
     return _queueStructuralMutation(
       absPath, "rm", p,
-      (s) => s.fsRemove(absPath, { recursive: !!o.recursive, force: !!o.force || parked }),
+      // A tree's removal is no call record: it is made in its place in the log.
+      (s) => __nimbusVfsCall("rm", absPath, () => s.fsRemove(absPath, { recursive: !!o.recursive, force: !!o.force || parked })),
       () => __nimbusAwaitSubtreeMutations(absPath),
       "fsRemove",
     );
@@ -4490,7 +4530,7 @@ const __fsMod = (() => {
       }
       let writeAt = at;
       const supervisor = _supervisor();
-      if (supervisor && typeof supervisor.fsWriteRange === "function") {
+      if (supervisor) {
         const pendingSnapshot = __nimbusCaptureVfsWrite(this._abs);
         const overlayGeneration = pendingSnapshot
           ? pendingSnapshot.generation + 1
@@ -4500,22 +4540,23 @@ const __fsMod = (() => {
           (content, snapshot) =>
             __nimbusPersistVfsWrite(supervisor, this._abs, content, snapshot),
         );
+        const key = _strip(this._abs);
         await __nimbusQueueVfsMutation(this._abs, async () => {
           await flush;
-          if (this._flags.append && typeof supervisor.stat === "function") {
-            const meta = await _fsRpc(
-              supervisor.stat(this._abs),
-              "stat", this._path,
-              (result) => result,
-            );
-            if (meta && meta.type === "file") writeAt = Number(meta.size) || 0;
-          }
+          // The description's write, as write(2) makes it: at its offset, or
+          // (O_APPEND) at the file's end as it is when the write lands,
+          // which the receipt's size says.
           await _ownMutation(
             this._abs,
             () => _fsRpc(
-              supervisor.fsWriteRange(this._abs, writeAt, bytes),
+              _vfsCall(this._flags.append
+                ? { call: "append", path: key, data: bytes.slice() }
+                : { call: "write", path: key, offset: writeAt, data: bytes.slice() }),
               "write", this._path,
-              (result) => result,
+              (answer) => {
+                if (this._flags.append && answer.receipt !== undefined) writeAt = answer.receipt.size - bytes.byteLength;
+                return undefined;
+              },
             ),
             () => {
               const key = _strip(this._abs);
