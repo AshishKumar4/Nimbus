@@ -313,11 +313,12 @@ export interface WriteStreamReceipt {
 export declare const ROUTED_LINK_TARGET_MAX = 4096;
 /**
  * The largest file a wave writes to a mount. A routed file is one
- * whole-file writeFile, its bytes held under the wave's credit until that
- * call (half the shared write credit, so a held file never starves the
- * wave); a larger one is refused (ENOTSUP, naming this) before anything is
- * touched. A backend that declares an atomic streaming write could take
- * more; none does yet.
+ * whole-file writeFile, its bytes held until that call under credit its
+ * record reserves whole when it is admitted (so an admitted record always
+ * finishes; at most the shared write credit, MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES,
+ * and half of it, so a held file never starves the wave); a larger one is
+ * refused (ENOTSUP, naming this) before anything is touched. A backend that
+ * declares an atomic streaming write could take more; none does yet.
  */
 export declare const ROUTED_FILE_MAX: number;
 /**
@@ -1872,11 +1873,15 @@ export declare class SqliteVFS {
      */
     placesHere(names: readonly string[], cred?: VfsCred, options?: {
         aboveMounts?: boolean;
+        follow?: boolean;
     }): boolean;
     /**
      * `aboveMounts`: a directory above a mount point counts as this
      * filesystem's, as a directory record there is (making, reading or
      * owning the root's directory); else it is the namespace's to answer.
+     * `follow`: each name is looked up whole, a link at it followed, as an
+     * operation that follows its name's link (stat, chown, writeFile) is
+     * placed; else by its directory, the name itself not followed.
      */
     private placedHere;
     /**
