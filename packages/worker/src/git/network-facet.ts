@@ -33,6 +33,7 @@ import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js
 import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
+import type { RemoteFailure } from './pack/remote-failure.js';
 import { W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
@@ -188,6 +189,8 @@ export interface GitNetworkResult {
   phases?: GitNetworkPhaseDiagnostic[];
   errorPhase?: GitCloneInvocationPhase | 'operation';
   errorCode?: GitNetworkErrorCode;
+  /** The git server could not be reached, or refused: what it did (pack/remote-failure.ts), for git's message. */
+  remoteFailure?: RemoteFailure;
   budget?: GitCloneBudgetDiagnostic;
   cleanupError?: string;
   /** fetch-objects: objects the promisor pack holds. */
@@ -216,6 +219,7 @@ interface FacetInvocationResult {
   refused?: unknown;
   errorCode?: unknown;
   fetched?: unknown;
+  remoteFailure?: unknown;
 }
 
 interface GitFacetEntrypoint {
@@ -379,12 +383,14 @@ class GitClonePhaseError extends Error {
   readonly diagnostic: GitNetworkPhaseDiagnostic;
   readonly mutated: boolean | undefined;
   readonly errorCode: GitNetworkErrorCode | undefined;
+  readonly remoteFailure: RemoteFailure | undefined;
 
   constructor(
     phase: GitCloneInvocationPhase,
     message: string,
     diagnostic: GitNetworkPhaseDiagnostic,
     errorCode?: GitNetworkErrorCode,
+    remoteFailure?: RemoteFailure,
   ) {
     super(message);
     this.name = 'GitClonePhaseError';
@@ -392,7 +398,19 @@ class GitClonePhaseError extends Error {
     this.diagnostic = diagnostic;
     this.mutated = diagnostic.mutated;
     this.errorCode = errorCode;
+    this.remoteFailure = remoteFailure;
   }
+}
+
+/** A facet's remoteFailure, checked: what it says it is, or undefined. */
+function parseRemoteFailure(value: unknown): RemoteFailure | undefined {
+  if (!value || typeof value !== 'object') return undefined;
+  const failure = value as Record<string, unknown>;
+  if (failure.kind === 'transport' && typeof failure.detail === 'string') return { kind: 'transport', detail: failure.detail };
+  if (failure.kind === 'status' && typeof failure.status === 'number' && Number.isInteger(failure.status)) {
+    return { kind: 'status', status: failure.status, ...(typeof failure.message === 'string' ? { message: failure.message } : {}) };
+  }
+  return undefined;
 }
 
 class GitCloneBudgetExceededError extends GitClonePhaseError {
@@ -735,6 +753,8 @@ async function invokeClonePhase(
       phase,
       typeof invocation.result.error === 'string' ? invocation.result.error : phase + ' failed',
       invocation.diagnostic,
+      undefined,
+      parseRemoteFailure(invocation.result.remoteFailure),
     );
   }
   return invocation;
@@ -1044,6 +1064,8 @@ export async function execGitNetwork(
                 ? prepare.result.error
                 : 'clone-prepare returned an invalid result',
               prepare.diagnostic,
+              undefined,
+              parseRemoteFailure(prepare.result.remoteFailure),
             );
           }
           if (!opts.quiet) await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
@@ -1142,6 +1164,7 @@ export async function execGitNetwork(
             errorCode: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.code
               : phaseError.errorCode,
+            remoteFailure: phaseError.remoteFailure,
             budget: phaseError instanceof GitCloneBudgetExceededError
               ? phaseError.budget
               : undefined,
@@ -1199,6 +1222,7 @@ export async function execGitNetwork(
         success: result.success === true,
         error: typeof result.error === 'string' ? result.error : undefined,
         errorPhase: result.success === true ? undefined : 'operation',
+        ...(result.success === true ? {} : { remoteFailure: parseRemoteFailure(result.remoteFailure) }),
         elapsed: Date.now() - start,
         filesWritten: nonNegativeCounter(result.filesWritten),
         bytesWritten: nonNegativeCounter(result.bytesWritten),
@@ -2252,7 +2276,8 @@ export default {
       // http/web has both { request } named and { default: { request } };
       // the namespace bundle.gitHttp exposes request directly, which is
       // what isomorphic-git looks for.
-      http = __nimbusGitPack.retryingGitHttp(bundle.gitHttp);
+      // Each request's failure kept: a failed fetch, pull or push says what the server did (pack/remote-failure.ts).
+      http = __nimbusGitPack.observedGitHttp(__nimbusGitPack.retryingGitHttp(bundle.gitHttp));
     } catch (e) {
       return respond(false, {
         error: 'Failed to load bundled isomorphic-git: ' + (e && e.message),
@@ -2556,6 +2581,7 @@ export default {
       return respond(false, {
         error: (e && e.message) || String(e),
         errorCode: e && typeof e.code === 'string' ? e.code : undefined,
+        remoteFailure: __nimbusGitPack.remoteFailureOf(e, http),
         metadataOverlay: overlayStats(),
       });
     }

@@ -17,3 +17,4 @@ export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, 
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
 export { facetPacks } from './facet-packs.js';
 export { retryingGitHttp } from './transport.js';
+export { observedGitHttp, remoteFailureOf } from './remote-failure.js';
