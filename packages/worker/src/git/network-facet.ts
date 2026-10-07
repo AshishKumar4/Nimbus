@@ -89,6 +89,8 @@ export interface GitNetworkOpts {
   relative?: boolean;
   /** `git clone --filter=<spec>`, normalized: a partial clone of a promisor remote. */
   filter?: string;
+  /** `git clone --sparse`: a cone-mode sparse checkout of the top's files only. */
+  sparse?: boolean;
   /** Fast clone, full history: blobs per history request (tuning; history.ts by default). */
   historyBlobsPerBatch?: number;
   /** Fast clone, full history: root trees per history request (tuning; history.ts by default). */
@@ -2330,6 +2332,7 @@ export default {
             step = await __nimbusGitPack.clonePlanFromStore(context, {
               commit: requireOid(history.commit, 'streamed commit'),
               blobsPerBatch: opts.blobsPerBatch,
+              sparse: opts.sparse === true,
             });
           } else if (history.step === 'plan') {
             step = await __nimbusGitPack.historyPlan(context, {
@@ -2488,6 +2491,7 @@ export default {
           filter: opts.filter,
           blobsPerBatch: opts.blobsPerBatch,
           budgetUnits: opts.historyBudgetUnits,
+          sparse: opts.sparse === true,
         }, advertisement);
         prepared = started.stream ? { stream: started.stream } : { fast: started };
         return respond(true, { prepared, metadataOverlay: overlayStats() });

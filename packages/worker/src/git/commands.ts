@@ -325,10 +325,12 @@ export interface ParsedCloneArgs {
   quiet: boolean;
   /** `--filter=<spec>`, as git stores it in remote.<name>.partialclonefilter. */
   filter: string | undefined;
+  /** `--sparse`: a cone-mode sparse checkout of the top's files only. */
+  sparse: boolean;
 }
 
 export const CLONE_USAGE =
-  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+  'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--sparse] [--branch <name> | -b <name>] [--bg] <url> [dir]';
 
 const SIZE_SUFFIX: Record<string, number> = { '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
 
@@ -479,6 +481,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
   let isBg = false;
   let quiet = false;
   let filter: string | undefined;
+  let sparse = false;
   const positionals: string[] = [];
 
   for (let i = 0; i < args.length; i++) {
@@ -501,6 +504,8 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     // Progress is already the default; there is no more of it to ask for.
     else if (arg === '-v' || arg === '--verbose') { /* accepted */ }
     else if (name === '--filter') filter = parseCloneFilter(takeValue());
+    else if (arg === '--sparse') sparse = true;
+    else if (arg === '--no-sparse') sparse = false;
     else if (arg.startsWith('-')) {
       throw new Error(`unknown option '${arg}'\n${CLONE_USAGE}`);
     } else {
@@ -517,6 +522,7 @@ export function parseCloneArgs(args: string[]): ParsedCloneArgs {
     branch,
     quiet,
     filter,
+    sparse,
   };
 }
 
@@ -1709,6 +1715,7 @@ async function moveWorktree(
       root: repo.worktree!,
       writer: checkoutWriter(vfs, repo.worktree!),
       operation,
+      sparse: await wrepo.sparseMatcher(),
     }, head === EMPTY_TREE ? null : head, await treeOf(wrepo.store, oid), force);
     await wrepo.writeIndex(dc, edit);
   });
@@ -2636,7 +2643,7 @@ export async function runGitCommand(
       }
 
       case 'clone': {
-        const { url, dest: destArg, depth, isBg, branch, quiet, filter } = parseCloneArgs(subArgs);
+        const { url, dest: destArg, depth, isBg, branch, quiet, filter, sparse } = parseCloneArgs(subArgs);
         const progress = quiet ? { write() {} } : ctx.stdout;
         if (!url) { ctx.stderr.write(CLONE_USAGE + '\n'); return 1; }
         // hardening-r5: respect absolute paths. Pre-fix `git clone <url> /tmp/x`
@@ -2688,6 +2695,7 @@ export async function runGitCommand(
               ref: branch,
               depth,
               filter,
+              sparse,
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,

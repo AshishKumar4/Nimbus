@@ -19,12 +19,19 @@
  * Refusals are reported together, as git reports them, before anything is
  * written. Then files go, directories go (deepest first), directories come,
  * files come, and the index is written once.
+ *
+ * In a sparse checkout (unpack-trees.c with its sparse patterns), a path
+ * outside the cone takes the target's entry in the index with skip-worktree
+ * set and nothing in the worktree: its blob is not read (nor fetched, in a
+ * partial clone), and no directory is made for it. A skip-worktree entry is
+ * up to date whatever the worktree holds (verify_uptodate skips it).
  */
 
 import { NewEntries, S_IFGITLINK, S_IFMT, comparePaths, type DirCache, type IndexEdit } from './dircache.js';
 import type { Excludes } from './excludes.js';
 import { diffTrees, type Leaf, type ObjectStore } from './tree.js';
 import { walkTreeAndIndex } from './status.js';
+import type { SparseMatcher } from '../pack/sparse.js';
 import { compareEntry, scanWorktree, type Worktree, type WorktreeStat } from './walk.js';
 
 /** The worktree writes a checkout makes, at absolute paths (createGitFs's checkout rules). */
@@ -91,13 +98,17 @@ export interface SwitchContext {
   root: string;
   writer: CheckoutWriter;
   operation: CheckoutOperation;
+  /** The worktree's sparse checkout (WorktreeRepo.sparseMatcher), or null. */
+  sparse?: SparseMatcher | null;
 }
 
 type Kind = 'blob' | 'tree' | 'commit' | null;
 type Op =
   | { method: 'delete' | 'delete-index' | 'rmdir' | 'rmdir-index' | 'mkdir'; path: string }
   | { method: 'update-blob-to-tree'; path: string; present: boolean }
-  | { method: 'create' | 'update' | 'update-dir-to-blob' | 'mkdir-index'; path: string; oid: string; mode: number };
+  | { method: 'create' | 'update' | 'update-dir-to-blob' | 'mkdir-index'; path: string; oid: string; mode: number }
+  /** Indexed skip-worktree; a file the worktree holds there (`present`, up to date) goes. */
+  | { method: 'skip-worktree'; path: string; oid: string; mode: number; present: boolean };
 
 /** A small binary heap of paths in git's order: parents come out before what is below them. */
 class PathQueue {
@@ -148,6 +159,8 @@ const parentOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf('/
  */
 export async function switchTrees(ctx: SwitchContext, head: string | null, target: string, force: boolean): Promise<IndexEdit> {
   const { store, tree, dc, excludes, root, writer } = ctx;
+  const sparse = ctx.sparse ?? null;
+  const outside = (path: string) => sparse !== null && !sparse.includes(path);
   if (!force) {
     const unmerged = dc.unmergedPaths();
     if (unmerged.length > 0) throw new UnmergedIndex(unmerged);
@@ -245,14 +258,26 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     const oldBlob = force ? undefined : headAt.get(path);
     const leaf = target !== null && target !== 'tree' ? target : null;
     const sameAsIndex = (other: Leaf) => entry >= 0 && dc.oid(entry) === other.oid && dc.mode(entry) === other.mode;
-    // verify_uptodate: the worktree holds what the index says, or nothing.
-    const upToDate = async () => st === null || (st.type !== 'directory' && await compareEntry(tree, dc, entry, path, st) === null);
-    const write = (method: 'create' | 'update' | 'update-dir-to-blob') => ops.push({ method, path, oid: leaf!.oid, mode: leaf!.mode });
+    // verify_uptodate: the worktree holds what the index says, or nothing; a skip-worktree entry is.
+    const upToDate = async () => (entry >= 0 && dc.skipWorktree(entry)) || st === null ||
+      (st.type !== 'directory' && await compareEntry(tree, dc, entry, path, st) === null);
+    // Outside a sparse checkout's cone the target's entry is indexed skip-worktree, not written,
+    // and a file the worktree still held there goes (unpack-trees' CE_WT_REMOVE).
+    const write = (method: 'create' | 'update' | 'update-dir-to-blob') => {
+      if (outside(path) && method !== 'update-dir-to-blob') {
+        // Only a file the index had checked out: what is at a skip-worktree entry's path is not git's.
+        const materialized = entry >= 0 && !dc.skipWorktree(entry) && st !== null && st.type !== 'directory';
+        ops.push({ method: 'skip-worktree', path, oid: leaf!.oid, mode: leaf!.mode, present: materialized });
+      } else {
+        ops.push({ method, path, oid: leaf!.oid, mode: leaf!.mode });
+      }
+    };
     const ignored = async () => await excludes.isExcluded(path, workType === 'tree');
 
     if (commitType === 'commit') {
       // A submodule: its gitlink is indexed, its contents never touched.
-      if (workType === 'blob') refusal.untracked.push(path);
+      if (outside(path)) ops.push({ method: 'skip-worktree', path, oid: leaf!.oid, mode: leaf!.mode, present: false });
+      else if (workType === 'blob') refusal.untracked.push(path);
       else ops.push({ method: 'mkdir-index', path, oid: leaf!.oid, mode: leaf!.mode });
       continue;
     }
@@ -325,8 +350,10 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
       continue;
     }
     if (commitType === 'tree') {
-      if (workType === null) ops.push({ method: 'mkdir', path });
-      else if (workType === 'blob') {
+      // No directory is made outside a sparse checkout's cone: nothing is written in it.
+      if (workType === null) {
+        if (sparse === null || sparse.directory(path)) ops.push({ method: 'mkdir', path });
+      } else if (workType === 'blob') {
         if (force || await ignored()) ops.push({ method: 'update-blob-to-tree', path, present: true });
         else refusal.untracked.push(path);
       }
@@ -366,6 +393,10 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
   };
   const file = (path: string) => `${root}/${path}`;
   for (const op of ops) {
+    if (op.method === 'skip-worktree') {
+      if (op.present) await writer.unlink(file(op.path));
+      continue;
+    }
     if (op.method !== 'delete' && op.method !== 'delete-index' && op.method !== 'update-blob-to-tree') continue;
     if (op.method === 'delete' || (op.method === 'update-blob-to-tree' && op.present)) await writer.unlink(file(op.path));
     unindex(op.path);
@@ -383,12 +414,17 @@ export async function switchTrees(ctx: SwitchContext, head: string | null, targe
     }
   }
   for (const op of ops) {
-    if (op.method === 'mkdir' || op.method === 'mkdir-index' || op.method === 'update-blob-to-tree') await writer.mkdir(file(op.path));
+    if (op.method === 'mkdir' || op.method === 'mkdir-index') await writer.mkdir(file(op.path));
+    else if (op.method === 'update-blob-to-tree' && (sparse === null || sparse.directory(op.path))) await writer.mkdir(file(op.path));
   }
   // The blobs to write, fetched in one request where a partial clone lacks them.
   await store.prefetch(ops.flatMap((op) => (op.method === 'create' || op.method === 'update' || op.method === 'update-dir-to-blob' ? [op.oid] : [])));
   const added = new NewEntries();
   for (const op of ops) {
+    if (op.method === 'skip-worktree') {
+      added.add({ path: op.path, mode: op.mode, oid: op.oid, stat: null, skipWorktree: true });
+      continue;
+    }
     if (op.method !== 'create' && op.method !== 'update' && op.method !== 'update-dir-to-blob' && op.method !== 'mkdir-index') continue;
     if (op.method !== 'mkdir-index') {
       const { data } = await store.read(op.oid);
