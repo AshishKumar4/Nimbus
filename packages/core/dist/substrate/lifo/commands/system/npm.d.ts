@@ -74,7 +74,9 @@ export declare function packagesIn(vfs: VFS, modulesDir: string): AsyncGenerator
 export declare function getBinEntries(pkg: PackageJson): Record<string, string>;
 export declare function registerBinCommand(registry: CommandRegistry, binName: string, scriptPath: string, kernel?: Kernel): void;
 export declare function createNpmCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, kernel?: Kernel, deps?: NpmCommandDeps): Command;
-export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn): Command;
+export declare function createNpxCommand(registry: CommandRegistry, shellExecute?: ShellExecuteFn, 
+/** Its network is the one the npx cache install fetches through. */
+kernel?: Kernel): Command;
 export declare function npmInstallGlobal(packageName: string, ctx: CommandContext, registry: CommandRegistry, kernel?: Kernel): Promise<number>;
 export {};
 //# sourceMappingURL=npm.d.ts.map

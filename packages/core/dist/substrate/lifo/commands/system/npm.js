@@ -6,6 +6,7 @@ import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
 import { packageRangeSeparator, parseRegistryRequest } from '../../../../_shared/npm-spec.js';
+import { MAX_NEST_DEPTH, decidePlacement, visiblePlacements } from '../../../../_shared/npm-placement.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
@@ -163,48 +164,121 @@ export function registerBinCommand(registry, binName, scriptPath, kernel) {
         }),
     })));
 }
-// ─── Install logic ───
-async function installSinglePackage(name, version, targetBase, vfs, npmRegistry, signal, stdout, stderr, isGlobal, registry, seen, globalBinDir, kernel) {
-    if (seen.has(name))
-        return 0;
-    seen.add(name);
-    const targetDir = join(targetBase, name);
-    // Skip if already installed
-    if ((await vfs.exists(join(targetDir, 'package.json')))) {
-        return 0;
-    }
-    (await stdout.write(`  ${name}${version ? '@' + version : ''}...\n`));
-    const network = kernel?.network ?? ISOLATE_NETWORK;
-    const info = await fetchPackageInfo(network, npmRegistry, name, version, signal);
-    // writeTarballStream throws when the archive carried no manifest and writes
-    // package.json last, so a return here is a complete package on disk.
-    await fetchAndStreamPackage(network, info.dist.tarball, info.dist.integrity, targetDir, vfs, signal, stderr);
-    let installed = 1;
-    // Global install: link binaries into the resolved prefix's bin dir
-    if (isGlobal && globalBinDir) {
-        const binEntries = getBinEntries(info);
-        for (const [binName, binPath] of Object.entries(binEntries)) {
-            const scriptPath = resolve(targetDir, binPath);
-            registerBinCommand(registry, binName, scriptPath, kernel);
-            try {
-                (await vfs.mkdir(globalBinDir, { recursive: true }));
-            }
-            catch { /* exists */ }
-            (await vfs.writeFile(join(globalBinDir, binName), `#!/usr/bin/env node\nrequire('${scriptPath}');\n`));
+/**
+ * Install `roots` (name and range) and what they depend on under
+ * `install.targetBase`, breadth-first, each package where the rule both
+ * engines share puts it (core _shared/npm-placement.ts), fetched one at a
+ * time. A package already on disk at a placement is a copy the walk sees, as
+ * npm reads the actual tree. Dependencies, optional dependencies and
+ * required peers are followed. A root that fails is in `failed`, its error
+ * written; a dependency that fails is warned about, and what it would have
+ * brought is not installed.
+ */
+async function installTree(roots, install) {
+    const { targetBase, vfs, network, npmRegistry, signal, stdout, stderr } = install;
+    const placed = new Map();
+    const pending = new Set();
+    // Placements looked for on disk, and placements answered (installed or failed).
+    const probed = new Set();
+    const settled = new Set();
+    const failed = [];
+    let installed = 0;
+    const probe = async (placement) => {
+        if (probed.has(placement) || placed.has(placement) || pending.has(placement))
+            return;
+        probed.add(placement);
+        try {
+            const pkg = JSON.parse(await vfs.readFileString(join(targetBase, placement, 'package.json')));
+            if (typeof pkg?.version === 'string')
+                placed.set(placement, { version: pkg.version });
         }
-    }
-    // Recursively install dependencies (flat into the same targetBase)
-    if (info.dependencies) {
-        for (const [depName, depRange] of Object.entries(info.dependencies)) {
+        catch { /* not on disk */ }
+    };
+    let queue = roots.map(([name, range]) => ({ name, range: range ?? '', from: '', kind: 'dep' }));
+    while (queue.length > 0) {
+        const layer = [];
+        const deferred = [];
+        for (const edge of queue) {
+            for (const candidate of visiblePlacements(edge.from, edge.name))
+                await probe(candidate);
+            const decision = decidePlacement(edge, placed, pending);
+            if (decision.kind === 'wait') {
+                deferred.push(edge);
+                continue;
+            }
+            if (decision.kind === 'met') {
+                if (decision.mismatch)
+                    await stderr.write(`npm WARN peer ${edge.name}@${edge.range} from ${edge.from} is met by ${decision.at}@${placed.get(decision.at).version}\n`);
+                continue;
+            }
+            if (settled.has(decision.at))
+                continue;
+            if (decision.kind === 'too-deep') {
+                settled.add(decision.at);
+                await stderr.write(`  warn: could not install ${edge.name}: ${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels\n`);
+                continue;
+            }
+            pending.add(decision.at);
+            layer.push({ edge, at: decision.at });
+        }
+        queue = deferred;
+        for (const { edge, at } of layer) {
+            pending.delete(at);
+            settled.add(at);
             try {
-                installed += await installSinglePackage(depName, depRange, targetBase, vfs, npmRegistry, signal, stdout, stderr, isGlobal, registry, seen, globalBinDir, kernel);
+                await stdout.write(`  ${edge.name}${edge.range ? '@' + edge.range : ''}...\n`);
+                const info = await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal);
+                const targetDir = join(targetBase, at);
+                // A copy already there that the edge cannot use is replaced, not overlaid.
+                if (await vfs.exists(targetDir))
+                    await vfs.remove(targetDir, { recursive: true });
+                // writeTarballStream throws when the archive carried no manifest and
+                // writes package.json last, so a return here is a complete package.
+                await fetchAndStreamPackage(network, info.dist.tarball, info.dist.integrity, targetDir, vfs, signal, stderr);
+                placed.set(at, { version: info.version });
+                installed++;
+                if (edge.from === '' && install.globalBinDir)
+                    await linkGlobalBins(info, targetDir, install.globalBinDir, install);
+                const optionalPeers = info.peerDependenciesMeta ?? {};
+                for (const [name, range] of Object.entries({ ...info.dependencies, ...info.optionalDependencies })) {
+                    queue.push({ name, range, from: at, kind: 'dep' });
+                }
+                for (const [name, range] of Object.entries(info.peerDependencies ?? {})) {
+                    if (optionalPeers[name]?.optional !== true)
+                        queue.push({ name, range, from: at, kind: 'peer' });
+                }
             }
             catch (e) {
-                (await stderr.write(`  warn: could not install ${depName}: ${e instanceof Error ? e.message : String(e)}\n`));
+                const message = e instanceof Error ? e.message : String(e);
+                if (edge.from === '') {
+                    failed.push(edge.name);
+                    if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('CORS')) {
+                        await stderr.write(`npm ERR! network error fetching ${edge.name}\n`);
+                        await stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
+                    }
+                    else {
+                        await stderr.write(`npm ERR! ${edge.name}: ${message}\n`);
+                    }
+                }
+                else {
+                    await stderr.write(`  warn: could not install ${edge.name}: ${message}\n`);
+                }
             }
         }
     }
-    return installed;
+    return { installed, failed };
+}
+/** Link a globally installed root's bins into the prefix's bin directory, and register them as commands. */
+async function linkGlobalBins(info, targetDir, globalBinDir, install) {
+    for (const [binName, binPath] of Object.entries(getBinEntries(info))) {
+        const scriptPath = resolve(targetDir, binPath);
+        registerBinCommand(install.registry, binName, scriptPath, install.kernel);
+        try {
+            (await install.vfs.mkdir(globalBinDir, { recursive: true }));
+        }
+        catch { /* exists */ }
+        (await install.vfs.writeFile(join(globalBinDir, binName), `#!/usr/bin/env node\nrequire('${scriptPath}');\n`));
+    }
 }
 // ─── Subcommands ───
 async function printHelp(ctx) {
@@ -318,6 +392,11 @@ async function npmInstall(ctx, registry, kernel, deps) {
         }
     }
     const failed = [];
+    const tree = {
+        targetBase, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry, signal: ctx.signal,
+        stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
+        ...(invocation.global ? { globalBinDir } : {}),
+    };
     if (packages.length === 0) {
         // Install from package.json
         const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
@@ -332,25 +411,22 @@ async function npmInstall(ctx, registry, kernel, deps) {
             return 0;
         }
         await ctx.stdout.write('Installing dependencies...\n');
-        const seen = new Set();
-        for (const [name, range] of Object.entries(allDeps)) {
-            try {
-                installed += await installSinglePackage(name, range, targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, false, registry, seen, undefined, kernel);
-            }
-            catch (e) {
-                failed.push(name);
-                await ctx.stderr.write(`npm ERR! ${name}: ${e instanceof Error ? e.message : String(e)}\n`);
-            }
-        }
+        const result = await installTree(Object.entries(allDeps), tree);
+        installed += result.installed;
+        failed.push(...result.failed);
     }
     else {
         // Install specified packages
         await ctx.stdout.write('Installing packages...\n');
-        const seen = new Set();
         for (const spec of packages) {
             const { name, version } = parsePackageSpec(spec);
             try {
-                installed += await installSinglePackage(name, version, targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, invocation.global, registry, seen, invocation.global ? globalBinDir : undefined);
+                const result = await installTree([[name, version]], tree);
+                installed += result.installed;
+                if (result.failed.length > 0) {
+                    failed.push(...result.failed);
+                    continue;
+                }
                 // Update package.json for local installs
                 if (!invocation.global) {
                     const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd));
@@ -377,15 +453,9 @@ async function npmInstall(ctx, registry, kernel, deps) {
                 }
             }
             catch (e) {
+                // Saving it to package.json failed: installTree reports its own.
                 failed.push(name);
-                const msg = e instanceof Error ? e.message : String(e);
-                if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-                    await ctx.stderr.write(`npm ERR! network error fetching ${name}\n`);
-                    await ctx.stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
-                }
-                else {
-                    await ctx.stderr.write(`npm ERR! ${msg}\n`);
-                }
+                await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
             }
         }
     }
@@ -799,7 +869,9 @@ async function findBinScript(vfs, pkgDir, binName) {
         return null;
     }
 }
-export function createNpxCommand(registry, shellExecute) {
+export function createNpxCommand(registry, shellExecute, 
+/** Its network is the one the npx cache install fetches through. */
+kernel) {
     return async (ctx) => {
         const rawArgs = ctx.args.slice();
         let explicitPkg = null;
@@ -861,13 +933,12 @@ export function createNpxCommand(registry, shellExecute) {
         if (!scriptPath) {
             const cacheDir = join(NPX_CACHE, parsedName);
             if (!(await ctx.vfs.exists(join(cacheDir, 'package.json')))) {
-                const npmRegistry = getRegistry(ctx.env);
-                const seen = new Set();
-                try {
-                    await installSinglePackage(parsedName, version, NPX_CACHE, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, false, registry, seen);
-                }
-                catch (e) {
-                    await ctx.stderr.write(`npx: could not install ${parsedName}: ${e instanceof Error ? e.message : String(e)}\n`);
+                const result = await installTree([[parsedName, version]], {
+                    targetBase: NPX_CACHE, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: getRegistry(ctx.env),
+                    signal: ctx.signal, stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
+                });
+                if (result.failed.length > 0) {
+                    await ctx.stderr.write(`npx: could not install ${parsedName}\n`);
                     return 1;
                 }
             }
@@ -894,9 +965,7 @@ export function createNpxCommand(registry, shellExecute) {
     };
 }
 export async function npmInstallGlobal(packageName, ctx, registry, kernel) {
-    const npmRegistry = getRegistry(ctx.env);
     const startTime = Date.now();
-    const seen = new Set();
     const prefix = resolveNpmPrefixVfs(ctx.cwd, ctx.env, null);
     const modulesDir = `${prefix}/lib/node_modules`;
     const binDir = `${prefix}/bin`;
@@ -908,21 +977,13 @@ export async function npmInstallGlobal(packageName, ctx, registry, kernel) {
         (await ctx.vfs.mkdir(binDir, { recursive: true }));
     }
     catch { /* exists */ }
-    try {
-        const installed = await installSinglePackage(packageName, null, modulesDir, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, true, registry, seen, binDir, kernel);
-        const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
-        await ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
-        return 0;
-    }
-    catch (e) {
-        const msg = e instanceof Error ? e.message : String(e);
-        if (msg.includes('Failed to fetch') || msg.includes('NetworkError') || msg.includes('CORS')) {
-            await ctx.stderr.write(`npm ERR! network error fetching ${packageName}\n`);
-            await ctx.stderr.write('This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n');
-        }
-        else {
-            await ctx.stderr.write(`npm ERR! ${msg}\n`);
-        }
+    const { installed, failed } = await installTree([[packageName, null]], {
+        targetBase: modulesDir, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: getRegistry(ctx.env),
+        signal: ctx.signal, stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel, globalBinDir: binDir,
+    });
+    if (failed.length > 0)
         return 1;
-    }
+    const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
+    await ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
+    return 0;
 }

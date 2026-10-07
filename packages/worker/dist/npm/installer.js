@@ -33,7 +33,7 @@ import { handKernelArtifact, projectFs } from '../runtime/project-fs.js';
 import { manifestsOf, prebundleCacheKey, prebundleRequest, sliceManifests, stillCurrent } from './cache-keys.js';
 import { NpmCache } from './cache.js';
 import { hoistPlacements, } from './resolver.js';
-import { nestedPlacement, visiblePlacements } from './placement.js';
+import { decidePlacement, nestedPlacement, visiblePlacements, MAX_NEST_DEPTH } from '@nimbus-sh/core/_shared/npm-placement.js';
 import { isJsonObject, packageLockMismatches, parsePackageLock, stringList, stringRecord } from './package-lock.js';
 import { npmRegistryOrigin, packumentUrl } from './r2-cache.js';
 import { satisfiesRange, isSemverRange } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -523,9 +523,6 @@ export class NpmInstaller {
         // classified at end of walk, when every required edge has been seen.
         const refusals = new Map();
         const optionalNames = new Set(); // X.5-G G1
-        // A cycle with mutually incompatible ranges has no finite layout; the
-        // edge is refused at this depth rather than nested without end.
-        const MAX_NEST_DEPTH = 16;
         let queue = Object.entries(specs).map(([name, range]) => ({ name, range, from: '', kind: 'dep' }));
         const cacheWritesPending = [];
         let totalPackumentBytes = 0;
@@ -581,49 +578,33 @@ export class NpmInstaller {
         // Frontier loop. Each iteration = ONE BFS layer dispatched as ONE
         // submitMany batch.
         while (queue.length > 0) {
-            // Decide each edge against what Node's walk from its dependent sees.
-            // One whose nearest visible placement is in flight waits a layer.
-            // A copy nested under a package is decided here in the layer after
-            // that package resolves, before anything beneath it can resolve, so
-            // no descendant is ever decided against a copy it will later shadow.
+            // Decide each edge (decidePlacement); one whose nearest visible
+            // placement is in flight waits a layer.
             const layer = [];
             const deferred = [];
             for (const edge of queue) {
-                const req = parseRegistryRequest(edge.name, edge.range);
-                let target = edge.name;
-                let decided = false;
-                for (const candidate of visiblePlacements(edge.from, edge.name)) {
-                    if (pending.has(candidate)) {
-                        deferred.push(edge);
-                        decided = true;
-                        break;
-                    }
-                    const pkg = placed.get(candidate);
-                    if (!pkg)
-                        continue; // never asked or failed: the walk goes on upward
-                    if (!isSemverRange(req.range) || satisfiesRange(pkg.version, req.range)) {
-                        decided = true; // reuse
-                    }
-                    else if (edge.kind === 'peer') {
-                        decided = true; // reuse anyway, and say so the way npm does
-                        log(`  [warn] peer ${edge.name}@${edge.range} from ${edge.from} is met by ${pkg.name}@${pkg.version} (${candidate})`);
-                    }
-                    else {
-                        target = nestedPlacement(edge.from, edge.name);
-                    }
-                    break;
-                }
-                if (decided)
+                const decision = decidePlacement(edge, placed, pending);
+                if (decision.kind === 'wait') {
+                    deferred.push(edge);
                     continue;
-                if (settled.has(target))
+                }
+                if (decision.kind === 'met') {
+                    // A peer met by a version outside its range: said the way npm does.
+                    if (decision.mismatch) {
+                        const pkg = placed.get(decision.at);
+                        log(`  [warn] peer ${edge.name}@${edge.range} from ${edge.from} is met by ${pkg.name}@${pkg.version} (${decision.at})`);
+                    }
+                    continue;
+                }
+                if (settled.has(decision.at))
                     continue; // failed once, on record under the name
-                if (target.split('/node_modules/').length - 1 > MAX_NEST_DEPTH) {
+                if (decision.kind === 'too-deep') {
                     unresolved.set(edge.name, `${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels (cycle with incompatible ranges)`);
-                    settled.add(target);
+                    settled.add(decision.at);
                     continue;
                 }
-                pending.add(target);
-                layer.push({ edge, placement: target });
+                pending.add(decision.at);
+                layer.push({ edge, placement: decision.at });
             }
             queue = deferred;
             if (__f2Diag) {
