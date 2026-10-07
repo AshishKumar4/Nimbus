@@ -148,23 +148,33 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
   // internals or workerd read, a stand-in whose inspect hook the platform
   // formats it for; a call through the exports below says whether hooks run.
   let customInspectOn = true;
-  const resourceTypes = new WeakMap();
-  function isResourceType(value) {
-    for (let proto = Object.getPrototypeOf(value); proto !== null && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
-      let resource = resourceTypes.get(proto);
-      if (resource === undefined) {
-        resource = Object.getOwnPropertySymbols(proto).some((symbol) => symbol.description === "kResourceTypeInspect");
-        resourceTypes.set(proto, resource);
-      }
-      if (resource) return true;
+  // Which objects' formatting needs the platform, by their prototype, so a
+  // plain object costs one native check (is it a proxy?), as Node's
+  // getProxyDetails does: an object whose chain holds the prototype of a
+  // promise, a Map or Set iterator, a WeakMap or WeakSet, or a workerd API
+  // type (its kResourceTypeInspect, workerd jsg/resource.h). A value of those
+  // kinds whose prototype was replaced is formatted by inspect.js alone.
+  const mapIteratorPrototype = Object.getPrototypeOf(new Map().entries());
+  const setIteratorPrototype = Object.getPrototypeOf(new Set().values());
+  const platformPrototypes = new Set([Promise.prototype, mapIteratorPrototype, setIteratorPrototype, WeakMap.prototype, WeakSet.prototype]);
+  const chainNeedsPlatform = new WeakMap();
+  function protoNeedsPlatform(proto) {
+    if (proto === null || proto === Object.prototype || proto === Array.prototype) return false;
+    let needs = chainNeedsPlatform.get(proto);
+    if (needs === undefined) {
+      needs = platformPrototypes.has(proto)
+        || Object.getOwnPropertySymbols(proto).some((symbol) => symbol.description === "kResourceTypeInspect")
+        || protoNeedsPlatform(Object.getPrototypeOf(proto));
+      chainNeedsPlatform.set(proto, needs);
     }
-    return false;
+    return needs;
   }
   function needsPlatform(value) {
-    if (types.isPromise(value) || types.isProxy(value) || types.isMapIterator(value) || types.isSetIterator(value)
-      || types.isWeakMap(value) || types.isWeakSet(value)) return true;
+    if (types.isProxy(value)) return true;
+    if (!protoNeedsPlatform(Object.getPrototypeOf(value))) return false;
+    if (types.isPromise(value) || types.isMapIterator(value) || types.isSetIterator(value) || types.isWeakMap(value) || types.isWeakSet(value)) return true;
     // A workerd object that brings its own inspect method is formatted by it, as Node does.
-    return value !== null && typeof value === "object" && typeof value[customInspectSymbol] !== "function" && isResourceType(value);
+    return typeof value[customInspectSymbol] !== "function";
   }
   function formattedByPlatform(value) {
     return Object.create(null, {
@@ -194,9 +204,20 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
   const utilBinding = {
     constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, kPending: 0, kRejected: 2 },
     getOwnNonIndexProperties(object, filter) {
+      // An object's own keys list its array indices first, ascending
+      // (OrdinaryOwnPropertyKeys, and an array's, a typed array's and a
+      // String object's alike): the rest start where they end.
+      const all = Reflect.ownKeys(object);
+      let low = 0;
+      let high = all.length;
+      while (low < high) {
+        const mid = (low + high) >> 1;
+        if (typeof all[mid] === "string" && isArrayIndex(all[mid])) low = mid + 1;
+        else high = mid;
+      }
       const keys = [];
-      for (const key of Reflect.ownKeys(object)) {
-        if (typeof key === "string" && isArrayIndex(key)) continue;
+      for (let i = low; i < all.length; i++) {
+        const key = all[i];
         if (filter === 2 && !Object.prototype.propertyIsEnumerable.call(object, key)) continue;
         keys.push(key);
       }
