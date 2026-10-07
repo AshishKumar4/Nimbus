@@ -4,6 +4,8 @@ import assert from 'node:assert/strict';
 import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { memoryStorage } from './lib/do-storage.mjs';
+
 
 function registerCloneHarness() {
   let gitCommand;
@@ -37,6 +39,7 @@ function registerCloneHarness() {
   };
   const waitUntilPromises = [];
   const doCtx = {
+    storage: memoryStorage(),
     waitUntil(promise) {
       waitUntilPromises.push(promise);
     },
@@ -144,7 +147,7 @@ function commandContext(args) {
     }),
     releaseExclusiveMutation() {},
   };
-  const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {} };
+  const branchCtx = { id: { toString: () => 'do-branch-test' }, waitUntil() {}, storage: memoryStorage() };
   registry.register('git', (ctx) => runGitCommand(ctx, branchVfs, branchCtx, env));
   const exitCode = await registry.gitCommand(commandContext([
     'clone',

@@ -26,6 +26,8 @@ import { getSymlinkRegistry, LEGACY_SYMLINK_REGISTRY_PATH } from '../../packages
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { memoryStorage } from './lib/do-storage.mjs';
+
 
 const A = Object.freeze({ uid: 5001, gid: 5001, groups: Object.freeze([5001]), umask: 0o022 });
 const PRIVATE_ROOT = 'var/agents/a/tmp';
@@ -102,7 +104,7 @@ const ctx = {
   stderr: { write() {} },
   vfs: new ProcessView(new ProcessFiles(raw).bind({ pid: 7, cred: A })),
 };
-const doCtx = { id: { toString: () => 'do-confined-clone' }, waitUntil() {} };
+const doCtx = { id: { toString: () => 'do-confined-clone' }, waitUntil() {}, storage: memoryStorage() };
 
 try {
   await runGitCommand(ctx, engine, doCtx, env);

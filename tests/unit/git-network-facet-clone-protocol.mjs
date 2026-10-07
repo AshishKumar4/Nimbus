@@ -246,8 +246,8 @@ assert.deepEqual(timedOutBudget, {
 assert.ok(timedOutElapsed >= timedOut.budget.limitMs);
 assert.match(timedOut.error, /clone budget exhausted after 0 batches \/ 0 files/);
 await new Promise(resolve => setTimeout(resolve, 30));
-assert.equal(lateResponseDisposed, 2,
-  'timed-out prepare or independently budgeted abort leaked its RPC stub');
+assert.equal(lateResponseDisposed, 1,
+  'timed-out prepare leaked its RPC stub (no facet cleans up: the DO does)');
 
 const originalNow = Date.now;
 let artificialNow = 0;

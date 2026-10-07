@@ -22,6 +22,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { cleanUpClone, finishInterruptedClones, listCloneJobs, writeCloneJob } from '../../packages/worker/src/git/clone-job.ts';
+import { memoryStorage } from './lib/do-storage.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 function session() {
@@ -30,14 +31,7 @@ function session() {
   const kernel = vfs.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
-  const stored = new Map();
-  const storage = {
-    async get(key) { return structuredClone(stored.get(key)); },
-    async put(key, value) { stored.set(key, structuredClone(value)); },
-    async delete(key) { return stored.delete(key); },
-    async list({ prefix }) { return new Map([...stored].filter(([key]) => key.startsWith(prefix)).map(([key, value]) => [key, structuredClone(value)])); },
-  };
-  return { vfs, user: vfs.as(CRED_SESSION_USER), storage };
+  return { vfs, user: vfs.as(CRED_SESSION_USER), storage: memoryStorage() };
 }
 
 /** A clone part way through: a worktree, its .git with packs, staging and the job's marker. */
