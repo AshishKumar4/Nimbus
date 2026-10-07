@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetLimits, facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
+import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetLimits, facetLoaderKey, facetPolicyKey, codeFacetPolicy } from '../../packages/fabric/src/facet-limits.ts';
 import { facetCpuViolations } from '../../scripts/deploy-isolation.mjs';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
@@ -12,12 +12,14 @@ for (const [kind, configured] of Object.entries(FACET_LIMITS)) {
   assert.deepEqual(applied.limits, facetLimits(kind), `${kind}: native limits come from the table`);
   assert.deepEqual(applied.limits, { cpuMs: configured.cpuMs, subRequests: configured.subRequests }, `${kind}: native limits exclude the wall timeout`);
   assert.ok(configured.taskTimeoutMs > 30_000, `${kind}: I/O wall time is not the old CPU default`);
-  assert.deepEqual(JSON.parse(applied.env.NIMBUS_FACET_LIMITS), { ...applied.limits, diagnosticReserve: 64 }, `${kind}: diagnostic counter and native policy agree`);
+  assert.deepEqual(codeFacetPolicy(applied), { kind, limits: applied.limits }, `${kind}: inner Loader preserves the code policy`);
+  assert.equal(applied.env.NIMBUS_FACET_LIMITS, undefined, 'no unconsumed budget envelope');
   assert.equal(applied.env.PRESERVED, 'value');
   assert.deepEqual(code.limits, { cpuMs: 1, subRequests: 1 }, `${kind}: caller config is not mutated`);
   assert.ok(configured.subRequests > 12000 + 64);
   assert.ok(configured.subRequests <= 10_000_000, `${kind}: never claims more than the provider maximum`);
-  assert.ok(facetLoaderKey(kind, 'fixture').includes(`:${configured.cpuMs}:${configured.subRequests}:`));
+  assert.ok(facetLoaderKey(kind, 'fixture').endsWith(`:${configured.cpuMs}:${configured.subRequests}`));
+  assert.equal(facetPolicyKey(kind), `${kind}:${configured.cpuMs}:${configured.subRequests}`);
   seen.add(kind);
 }
 for (const kind of ['process', 'build', 'esbuild', 'transform', 'git']) assert.ok(seen.has(kind));
@@ -43,7 +45,7 @@ for (const kind of seen) {
     assert.equal((await response.json()).kind, kind);
     assert.deepEqual(loaded.limits, facetLimits(kind), `${kind}: actual Loader factory receives the policy`);
     assert.deepEqual(startLimits, facetLimits(kind), `${kind}: actual entrypoint start receives the same policy`);
-    assert.deepEqual(JSON.parse(loaded.env.NIMBUS_FACET_LIMITS), { ...startLimits, diagnosticReserve: 64 });
+    assert.deepEqual(codeFacetPolicy(loaded), { kind, limits: startLimits });
     assert.equal(pool.defaultTimeoutMs, FACET_LIMITS[kind].taskTimeoutMs);
   } finally {
     await pool.dispose();

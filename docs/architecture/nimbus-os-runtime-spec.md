@@ -83,10 +83,15 @@ resident process. The deliberately generous but finite process ceiling permits
 long-lived servers, and never exceeds the documented Workers maximum of 10M.
 Acceptance of a larger Loader input does not prove a larger enforced ceiling.
 The lifetime ceiling eventually stops 10M transport operations, not necessarily
-quickly. CPU bounds hot loops per native invocation and task wall time bounds
-one-shot I/O; a low-CPU resident loop spanning calls can run until the ceiling.
-The injected guest budget reserves 64 requests for reporting and must not reset
-on HTTP entry or charge the same actual transport twice.
+quickly. CPU accounting can accumulate across overlapping native invocations;
+separate tail events do not prove that their CPU budgets reset. Task wall time
+bounds one-shot I/O, not an unlimited resident lifetime. Long-lived open work
+can keep one CPU accounting window alive, so a busy server can reach its CPU
+ceiling cumulatively.
+The Loader shim consumes the code's `NIMBUS_FACET_POLICY` kind/limits carrier,
+preserving native ceilings and lower caller start limits across loopback hops.
+There is no shipping invocation-counter reserve or reportable early refusal;
+that consumer must land and be tested before a guest budget envelope is added.
 
 Resource ceilings and filesystem delivery are separate contracts. Raising a
 ceiling does not establish that a deferred or batched write has reached its
