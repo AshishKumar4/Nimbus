@@ -91,8 +91,13 @@ export type W7Attrs =
  * syscall, where `file` and `directory` are a checkout's upserts.
  */
 export type W7Call =
-  | { call: 'writeFile'; path: string; mode: number; data: Uint8Array }
-  | { call: 'appendFile'; path: string; mode: number; data: Uint8Array }
+  /**
+   * `ino`, on a call that makes a name (writeFile, appendFile, mkdir,
+   * symlink): the number a delegation's holder gave the name it made, from
+   * its grant's range, kept when the call makes it (W7 v4 `ino`).
+   */
+  | { call: 'writeFile'; path: string; mode: number; ino?: number; data: Uint8Array }
+  | { call: 'appendFile'; path: string; mode: number; ino?: number; data: Uint8Array }
   /**
    * A write through an open description (pwrite(2)) at `offset`: of the
    * file whose inode is `ino` when the process knows it (wherever that file
@@ -104,10 +109,10 @@ export type W7Call =
   | { call: 'append'; path: string; ino?: number; data: Uint8Array }
   /** ftruncate(2) through an open description: the file `ino` names when given, else the one at `path`. */
   | { call: 'ftruncate'; path: string; ino?: number; size: number }
-  | { call: 'mkdir'; path: string; mode: number }
+  | { call: 'mkdir'; path: string; mode: number; ino?: number }
   | { call: 'unlink'; path: string }
   | { call: 'rmdir'; path: string }
-  | { call: 'symlink'; path: string; target: string };
+  | { call: 'symlink'; path: string; target: string; ino?: number };
 
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, { data: Uint8Array }>['call'];
@@ -1021,9 +1026,6 @@ function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
   if (call !== undefined && value.kind !== 'file') throw new Error(`w7-frame: ${base.path}: a ${String(call)} writes a file`);
   // An offset is a write's, and only a description's writes name an inode.
   if ((call === 'write') !== (value.offset !== undefined)) throw new Error(`w7-frame: ${base.path}: a write, and only a write, has an offset`);
-  if (call !== undefined && call !== 'write' && call !== 'append' && base.ino !== undefined) {
-    throw new Error(`w7-frame: ${base.path}: a ${call} names no inode`);
-  }
   return {
     ...base, kind: value.kind, contentId, size, chunkCount,
     ...(call === undefined ? {} : { call }),
@@ -1036,15 +1038,21 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
   const keys = Object.keys(value).sort().join(',');
   switch (value.call) {
     case 'mkdir':
-      if (keys !== 'call,mode,path') break;
-      return { call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode') };
+      if (keys !== 'call,mode,path' && keys !== 'call,ino,mode,path') break;
+      return {
+        call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode'),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'mkdir ino') }),
+      };
     case 'unlink':
     case 'rmdir':
       if (keys !== 'call,path') break;
       return { call: value.call, path: path(value.path, `${value.call} path`) };
     case 'symlink':
-      if (keys !== 'call,path,target') break;
-      return { call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES) };
+      if (keys !== 'call,path,target' && keys !== 'call,ino,path,target') break;
+      return {
+        call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
+      };
     case 'ftruncate':
       if (keys !== 'call,ino,path,size' && keys !== 'call,path,size') break;
       return {

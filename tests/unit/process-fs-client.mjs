@@ -10,7 +10,12 @@
  * applied once; a refusal answers its op and the log goes on; an op the
  * program was told succeeded and the session refused is a failure settle()
  * names; a lost epoch fails its ops and the next go under a new one; the
- * synchronous cap refuses ENOMEM; a large file goes in pieces.
+ * synchronous cap refuses ENOMEM; a large file goes in pieces. Grants: a
+ * subtree is taken after GRANT_AFTER mutations, with no wave of the
+ * process's in flight; what is decided there (numbered from the grant) is
+ * the session's; a foreign read recalls it and finds the log sent; an idle
+ * grant is given back, and every one at settle; a refused subtree is not
+ * asked for again.
  */
 
 import assert from 'node:assert/strict';
@@ -21,6 +26,7 @@ import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervis
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { processFsClient } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 
 const enc = new TextEncoder();
 const dec = new TextDecoder();
@@ -39,11 +45,14 @@ function session({ fenced = true } = {}) {
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(engine);
+  files.bind({ pid: PID, cred: CRED_SESSION_USER });
   const deliveries = new SupervisorDeliveries();
   const op = createSupervisorOpHandler({ vfs: engine, filesystem: files, deliveries });
   const calls = { waves: 0, epochs: 0, ops: [] };
   const s = {
     kernel,
+    files,
+    op,
     calls,
     fault: null,
     text: (key) => { try { return dec.decode(kernel.readFile(key)); } catch { return null; } },
@@ -61,9 +70,25 @@ function session({ fenced = true } = {}) {
         });
         return s.fault ? s.fault(deliver, fence) : deliver();
       },
+      grants: {
+        acquire: (path, delegate) => op({ op: 'fsAcquireExclusiveMutation', args: [path, { delegate }], pid: PID }),
+        release: (owner) => op({ op: 'fsReleaseExclusiveMutation', args: [owner], pid: PID }),
+        awaitRecall: (owner, waitMs) => op({ op: 'fsAwaitRecall', args: [owner, waitMs], pid: PID }),
+        recalled: (owner, kind) => op({ op: 'fsRecalled', args: [owner, kind], pid: PID }),
+      },
     },
   };
   return s;
+}
+
+/** Resolves once `ready()` answers, polling. */
+async function until(ready, what) {
+  for (let i = 0; i < 400; i++) {
+    const value = ready();
+    if (value) return value;
+    await new Promise((resolve) => setTimeout(resolve, 5));
+  }
+  throw new Error(`never: ${what}`);
 }
 
 const client = (s, extra = {}) => processFsClient({ session: s.port, retry: RETRY, ...extra });
@@ -181,6 +206,63 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   await assert.rejects(refused, (error) => error.code === 'EEXIST');
   await after;
   assert.equal(s.text('home/user/after'), 'a');
+}
+
+// ── Grants: taken after GRANT_AFTER mutations; decided there, numbered, recalled ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/g', { mode: 0o755 });
+  s.kernel.chown('home/user/g', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const released = [];
+  const c = client(s, { grantAfter: 3, grantIdleMs: 60_000, recallPollMs: 100, released: (root) => released.push(root) });
+  // Two mutations: the session decides them.
+  for (const name of ['a', 'b']) {
+    assert.equal(c.holder(`home/user/g/${name}`), undefined);
+    await c.submit(writeFile(`home/user/g/${name}`, name));
+  }
+  // The third asks for the subtree.
+  assert.equal(c.holder('home/user/g/c'), undefined);
+  const grant = await until(() => c.holder('home/user/g/c'), 'the grant');
+  assert.equal(grant.root, 'home/user/g');
+  assert.equal(c.stats().grants, 1);
+  // Decided here: answered at once, numbered from the grant, logged acknowledged.
+  const ino = c.number(grant);
+  assert.ok(Number.isInteger(ino));
+  c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/g/c', mode: 0o644, ino, data: enc.encode('decided') } }, { acknowledged: true });
+  c.submit({ type: 'call', call: { call: 'mkdir', path: 'home/user/g/sub', mode: 0o755, ino: c.number(grant) } }, { acknowledged: true });
+  // A foreign read recalls the subtree and finds the log sent.
+  const read = await withRecall(() => s.kernel.readFileString('home/user/g/c'));
+  assert.equal(read, 'decided');
+  assert.equal(s.kernel.stat('home/user/g/c').ino, ino, 'a name the holder made lost the number it showed');
+  assert.equal(c.stats().recalls, 1);
+  assert.deepEqual(released, ['home/user/g'], 'a shared subtree is still decided here');
+  assert.equal(c.holder('home/user/g/d'), undefined, 'a shared subtree is the session\'s to decide');
+  await c.settle();
+  assert.equal(s.files.delegations.size, 0, 'settle left a grant held');
+}
+
+// ── An idle grant is given back; a refused subtree is not asked for again ──
+{
+  const s = session();
+  s.kernel.mkdir('home/user/idle', { mode: 0o755 });
+  s.kernel.chown('home/user/idle', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const c = client(s, { grantAfter: 1, grantIdleMs: 30, recallPollMs: 100 });
+  c.holder('home/user/idle/x');
+  await until(() => c.holder('home/user/idle/x'), 'the grant');
+  await until(() => s.files.delegations.size === 0 && c.stats().released === 1, 'the idle release');
+  // Another process's lease over a subtree: the session refuses it, and it is not asked for again.
+  s.kernel.mkdir('home/user/theirs', { mode: 0o777 });
+  s.files.bind({ pid: PID + 1, cred: CRED_SESSION_USER });
+  await s.op({ op: 'fsAcquireExclusiveMutation', args: ['/home/user/theirs', {}], pid: PID + 1 });
+  const other = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  other.holder('home/user/theirs/x');
+  await until(() => other.stats().grantsRefused === 1, 'the refusal');
+  other.holder('home/user/theirs/y');
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(other.stats().grantsRefused, 1, 'a refused subtree was asked for again');
+  assert.equal(other.stats().grants, 0);
+  await other.settle();
+  await c.settle();
 }
 
 console.log('process-fs-client: ok');

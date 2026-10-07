@@ -220,6 +220,8 @@ interface Lease {
   readonly delegation: DelegationTerms | null;
   /** The inode numbers reserved for its holder (DelegationTerms.inos). */
   readonly inos: InodeRange | null;
+  /** Each of those numbers its holder has given a name, and the name it gave it (askedIno). */
+  readonly numbered: Map<number, string>;
   /** The ledger reservation its holder's writes draw on (DelegationTerms.bytes), released when it ends. */
   readonly reservation: string | null;
   /** A delegation another caller reads: its holder sends each operation as it decides it. */
@@ -3816,7 +3818,7 @@ export class SqliteVFS {
     let inos: InodeRange | null;
     try { inos = this.reserveInos(options.delegation?.inos ?? 0); } catch (error) { this.ledger.release(owner); throw error; }
     this.exclusiveMutationLeases.set(owner, {
-      root, delegation: options.delegation ?? null, inos, reservation: bytes > 0 ? owner : null, shared: false, recalling: null,
+      root, delegation: options.delegation ?? null, inos, numbered: new Map(), reservation: bytes > 0 ? owner : null, shared: false, recalling: null,
     });
     return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
   }
@@ -3827,7 +3829,7 @@ export class SqliteVFS {
       throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
     }
     const owner = crypto.randomUUID();
-    this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, inos: null, reservation: null, shared: false, recalling: null });
+    this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, inos: null, numbered: new Map(), reservation: null, shared: false, recalling: null });
     return { root: '', owner };
   }
 
@@ -3900,22 +3902,28 @@ export class SqliteVFS {
   /**
    * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
    * be numbered here. Only the holder of a delegation numbers its own
-   * entries, from its lease's reserved range, and a number already used by
+   * entries, from a range one of its leases reserved (the one its call is
+   * made under, or any its process holds), and a number already used by
    * another name is refused (there are no hard links).
    */
   private askedIno(entry: { path: string; ino?: number }): number | undefined {
     if (entry.ino === undefined) return undefined;
-    const lease = this.activeMutationOwner === null ? undefined : this.exclusiveMutationLeases.get(this.activeMutationOwner);
-    const range = lease?.inos;
-    if (range == null || entry.ino < range.first || entry.ino >= range.end) {
+    const ino = entry.ino;
+    const owners = [...(this.activeMutationOwner === null ? [] : [this.activeMutationOwner]), ...(this.activeHolds ?? [])];
+    const lease = owners
+      .map((owner) => this.exclusiveMutationLeases.get(owner))
+      .find((held) => held?.inos != null && ino >= held.inos.first && ino < held.inos.end);
+    if (lease === undefined) {
       throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is not one this writer's delegation reserved`);
     }
-    const holder = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', entry.ino)][0];
-    if (holder !== undefined && String(holder.path) !== entry.path) {
-      const moved = this.inodes.peek(entry.path);
-      if (moved?.ino !== entry.ino) throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is ${String(holder.path)}'s`);
+    // A reserved number is only ever this lease's to give: one it gave
+    // another name is refused, unless that name is the file this one is now.
+    const given = lease.numbered.get(ino);
+    if (given !== undefined && given !== entry.path && this.inodes.peek(entry.path)?.ino !== ino) {
+      throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is ${given}'s`);
     }
-    return entry.ino;
+    lease.numbered.set(ino, entry.path);
+    return ino;
   }
 
   /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
@@ -4035,7 +4043,8 @@ export class SqliteVFS {
     }
   }
 
-  private mkdir(path: string, options: { recursive?: boolean; mode?: number } | undefined, cred: VfsCred): void {
+  /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
+  private mkdir(path: string, options: { recursive?: boolean; mode?: number; ino?: number } | undefined, cred: VfsCred): void {
     const normalized = this.storageKey(path, cred);
     // A directory that is there is made already: no mutation, so no lease
     // refuses it (a session's mkdir -p of its home while a lease holds a
@@ -4050,7 +4059,7 @@ export class SqliteVFS {
       const placed = this.resolvePath(name, cred, false, true).path;
       this.assertMutationsAllowed([placed]);
       this.checkParentAccess(placed, cred);
-      this._mkdirSingle(placed, options?.mode, cred);
+      this._mkdirSingle(placed, options?.mode, cred, options?.recursive ? undefined : options?.ino);
     };
     if (!options?.recursive) {
       create(normalized);
@@ -4063,7 +4072,7 @@ export class SqliteVFS {
     }
   }
 
-  private _mkdirSingle(path: string, requestedMode: number | undefined, cred: VfsCred): void {
+  private _mkdirSingle(path: string, requestedMode: number | undefined, cred: VfsCred, ino?: number): void {
     const now = this.now();
     const made = this.creationAttrs(path, requestedMode ?? 0o777, cred, true);
     const builder = this.newPlan();
@@ -4080,6 +4089,7 @@ export class SqliteVFS {
       gid: made.gid,
       content: { type: 'none' },
       defaultAcl: made.defaultAcl,
+      ...(ino === undefined ? {} : { ino: this.askedIno({ path, ino }) }),
     });
     this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
   }
@@ -4092,7 +4102,7 @@ export class SqliteVFS {
   private fileWriteInode(
     path: string,
     size: number,
-    options: { mode?: number } | undefined,
+    options: { mode?: number; ino?: number } | undefined,
     cred: VfsCred,
   ): BatchInodeEntry {
     const resolved = this.checkAccess(path, 0, cred, { allowMissingLeaf: true });
@@ -4124,13 +4134,16 @@ export class SqliteVFS {
       uid: prior?.uid ?? cred.uid,
       gid: prior?.gid ?? made!.gid,
       chunkCount: w7ChunkCount(size),
+      // Asked only for a name this makes: a file there keeps its own number.
+      ...(prior === undefined && options?.ino !== undefined ? { ino: options.ino } : {}),
     };
   }
 
+  /** `ino`: the number a delegation's holder gave the file it made (askedIno), kept when this makes it. */
   private writeFile(
     path: string,
     content: string | Uint8Array,
-    options: { mode?: number } | undefined,
+    options: { mode?: number; ino?: number } | undefined,
     cred: VfsCred,
     onCommit?: () => void,
   ): void {
@@ -4144,7 +4157,7 @@ export class SqliteVFS {
     }
   }
 
-  private symlink(target: string, path: string, cred: VfsCred): void {
+  private symlink(target: string, path: string, cred: VfsCred, ino?: number): void {
     const normalized = this.storageKey(path, cred);
     // Created where the name resolves with its last component unfollowed, as
     // symlink(2) does: under a link to a directory, inside that directory.
@@ -4169,6 +4182,7 @@ export class SqliteVFS {
       uid: cred.uid,
       gid: this.creationAttrs(placed, 0o777, cred, false).gid,
       chunkCount: w7ChunkCount(data.length),
+      ...(ino === undefined ? {} : { ino }),
     };
     const chunks = w7Chunks(placed, data);
     this.writeBatch({ inodes: [inode], chunks }, cred);
@@ -9113,11 +9127,11 @@ export class SqliteVFS {
   ): VfsStat | null {
     switch (file.call) {
       case 'writeFile':
-        this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+        this.writeFile(file.path, bytes, { mode: file.mode, ino: file.ino }, cred);
         return this.stat(file.path, cred, true);
       case 'appendFile': {
         const prior = this.checkAccess(file.path, 0, cred, { allowMissingLeaf: true }).inode;
-        if (prior === undefined) this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+        if (prior === undefined) this.writeFile(file.path, bytes, { mode: file.mode, ino: file.ino }, cred);
         else this.writeRange(file.path, prior.size, bytes, cred);
         return this.stat(file.path, cred, true);
       }
@@ -9932,7 +9946,7 @@ export class SqliteVFS {
                   if (this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode !== undefined) {
                     throw vfsError('EEXIST', call.path);
                   }
-                  this.mkdir(call.path, { mode: call.mode }, cred);
+                  this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
                 }
                 else if (call.call === 'unlink') this.unlink(call.path, cred);
                 else if (call.call === 'rmdir') this.rmdir(call.path, cred);
@@ -9940,7 +9954,7 @@ export class SqliteVFS {
                   const at = this.describedFile(call.path, call.ino, cred);
                   if (at !== null) this.truncate(at, call.size, cred);
                 }
-                else this.symlink(call.target, call.path, cred);
+                else this.symlink(call.target, call.path, cred, call.ino);
               }));
               progress.committedGroupSequence++;
               progress.committedPathCount++;
