@@ -37,7 +37,7 @@
 import type { RuntimeFileHandle, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import { type ProcessFsClient, type ProcessFsSession } from '../../_shared/process-fs-client.js';
+import { type ProcessFsClient, type ProcessFsJournal, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 /** What the holder reads of the process's resident store (its own decisions aside). */
 export interface HolderStore {
     readonly device: number;
