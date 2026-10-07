@@ -7,7 +7,7 @@
 // leaves the module's job ("in ES module scope", the package.json that made
 // a .js a module, top-level await's ambiguity), and the module's own line as
 // its stack's first frame. module-format-matches-node covers the rest of the
-// scope, in-process.
+// scope, in-process. A SyntaxError's text, V8's, is compared here too.
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, writeFileSync } from 'node:fs';
@@ -28,16 +28,26 @@ const files = {
   'via-require.cjs': `${REPORT}try { require('./require-in-esm.mjs'); } catch (e) { report('require', e); }\n`,
   'via-import.cjs': `${REPORT}import('./typed/module-exports.js').catch((e) => report('import', e))
   .then(() => import('./tla-require.mjs')).catch((e) => report('tla', e));\n`,
-  // Thrown in a callback, after the module's job: V8's own text.
+  // Thrown in a callback, after the module's job: V8's own text, an
+  // uncaught exception (a timer's was reported as a rejected promise).
   'later.mjs': `${REPORT}process.on('uncaughtException', (e) => report('later', e));\nsetTimeout(() => { __dirname; }, 0);\n`,
+  // An import statement where Node runs CommonJS: V8's SyntaxError.
+  'import-in.cjs': "import { sep } from 'node:path';\nconsole.log(sep);\n",
+  'commonjs/package.json': JSON.stringify({ name: 'commonjs', type: 'commonjs' }),
+  'commonjs/import.js': "import { sep } from 'node:path';\nconsole.log(sep);\n",
 };
 // Entries print their uncaught error; the rest report what they caught.
-const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs', 'later.mjs'];
+const RUNS = ['require-in-esm.mjs', 'typed/module-exports.js', 'chain.mjs', 'via-require.cjs', 'via-import.cjs', 'later.mjs', 'import-in.cjs', 'commonjs/import.js'];
 
-/** An uncaught error's `<Name>: <message>` and further message lines, and its first frame's file. */
+/**
+ * An uncaught error's `<Name>: <message>` and further message lines, and its
+ * first frame's file: the module's own, where a module threw. A SyntaxError
+ * is thrown compiling a module, from the loader's frames, Node's or ours.
+ */
 function uncaught(text) {
   const block = /^[A-Z]\w*Error(?::[^\n]*)?(?:\n(?!    at )[^\n]+)*/m.exec(text)?.[0] ?? null;
-  const frame = block === null ? '' : text.slice(text.indexOf(block) + block.length).split('\n').find((l) => l.startsWith('    at ')) ?? '';
+  if (block === null || block.startsWith('SyntaxError')) return [block, null];
+  const frame = text.slice(text.indexOf(block) + block.length).split('\n').find((l) => l.startsWith('    at ')) ?? '';
   return [block, /([^/\s:()]+):\d+:\d+\)?$/.exec(frame)?.[1] ?? null];
 }
 /** What a run says: its reports, or its uncaught error. */

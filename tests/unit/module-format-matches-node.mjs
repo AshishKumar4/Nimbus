@@ -210,7 +210,11 @@ for (let i = 0; i < RUNS.length; i++) {
   const label = `node ${argsOf(run).join(' ').slice(0, 60)}`;
   if (failsWith(run)) {
     assert.notEqual(exitCode, 0, `${label} fails, as in node: ${stdout}${out}`);
-    assert.equal(uncaught(stderr + out + stdout), expected[i], `${label} throws what node throws: ${stderr}${out}`);
+    // A SyntaxError's text is the engine's: JSC's here, where Bun compiles
+    // the cells; es-module-scope-errors-workerd compares V8's.
+    const thrown = uncaught(stderr + out + stdout);
+    if (expected[i].startsWith('SyntaxError')) assert.match(thrown ?? '', /^SyntaxError\b/, `${label} throws what node throws: ${stderr}${out}`);
+    else assert.equal(thrown, expected[i], `${label} throws what node throws: ${stderr}${out}`);
     continue;
   }
   const printed = (out + stdout).trim().split('\n').at(-1) ?? '';
