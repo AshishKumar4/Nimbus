@@ -154,6 +154,8 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     let cleanupTimer;
     let exitCode = null;
     let exitSignal = null;
+    /** Why the process never started, when it did not: launchError. @type {string | undefined} */
+    let notStarted;
     // The case's whole process tree, where its cgroup can be read: null otherwise.
     let cpuMs = null;
     let memoryPeakBytes = null;
@@ -189,10 +191,11 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     executable = resolvePath(cwd ?? process.cwd(), executable);
     if (!isExecutableFile(executable)) { resolveResultMissing(); return; }
     function resolveResultMissing() {
-      resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
+      const launchError = `spawn failed: ${command} not found in PATH`;
+      resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: launchError, launchError, code: null, signal: null, outputTruncated: false });
     }
     // NIMBUS_TEST_CGROUP names a cgroup v2 directory this runner may create
-    // groups in; the CI containers delegate one (apps/ci-runner). Each case
+    // groups in; a CI container can delegate one (.armada.json's env). Each case
     // gets its own group there and joins it before exec, so nothing it starts
     // is ever outside it. Its CPU and peak memory are read from that group,
     // and cgroup.kill ends every descendant, setsid and reparented ones too.
@@ -224,12 +227,14 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
     let requestFile;
     if (unit) {
       try { accessSync('/usr/bin/bwrap', constants.X_OK); } catch {
-        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: 'required PID isolation unavailable: /usr/bin/bwrap', code: null, signal: null, outputTruncated: false });
+        const launchError = 'required PID isolation unavailable: /usr/bin/bwrap';
+        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: launchError, launchError, code: null, signal: null, outputTruncated: false });
         return;
       }
       const request = JSON.stringify({ executable, args, env });
       if (Buffer.byteLength(request) > 1024 * 1024) {
-        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: 'launch request exceeds 1048576 bytes', code: null, signal: null, outputTruncated: false });
+        const launchError = 'launch request exceeds 1048576 bytes';
+        resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: launchError, launchError, code: null, signal: null, outputTruncated: false });
         return;
       }
       statusDir = mkdtempSync(resolvePath(tmpdir(), 'bounded-status-'));
@@ -365,7 +370,8 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
         } finally { rmSync(statusDir, { recursive: true, force: true }); }
       }
       // The join shell's own failure: the target never started.
-      const launchError = caseGroup && code === 125 && stderr.text().toString().includes(JOIN_FAILED) ? `could not join case cgroup ${caseGroup}` : undefined;
+      const launchError = notStarted
+        ?? (caseGroup && code === 125 && stderr.text().toString().includes(JOIN_FAILED) ? `could not join case cgroup ${caseGroup}` : undefined);
       if (launchError) reason ||= launchError;
       const settle = () => resolve({ ok: code === 0 && !reason, stdout: stdout.text(), stderr: stderr.text(), reason, ...(launchError ? { launchError } : {}), code, signal, outputTruncated, cpuMs, memoryPeakBytes, commands: [...commands].sort() });
       if (!caseGroup) { settle(); return; }
@@ -389,7 +395,12 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       };
       release();
     };
-    child.on('error', (error) => { reason = `spawn failed: ${error.message}`; finish(null); });
+    child.on('error', (error) => {
+      reason = `spawn failed: ${error.message}`;
+      // No pid: the process never started (EAGAIN, a missing cwd), which is no test's verdict.
+      if (child.pid === undefined) notStarted = reason;
+      finish(null);
+    });
     child.on('close', (code, signal) => finish(code, signal));
   });
 }

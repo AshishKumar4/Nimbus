@@ -50,7 +50,7 @@
 //   up      [--no-build] [--rotate-secrets]
 //   test    [--ttl-ms <ms>] [...run-all.mjs flags]
 //   status
-//   token   [--ttl-ms <ms>]
+//   token   [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //
 // STATE
@@ -242,7 +242,9 @@ function status() {
 }
 
 async function token() {
-  process.stdout.write(await mintProbeToken(requireState().probe.secret, ttlMs()));
+  const state = requireState();
+  const jwt = await mintProbeToken(state.probe.secret, ttlMs());
+  process.stdout.write(flags.json ? `${JSON.stringify({ base: state.probe.base, token: jwt })}\n` : jwt);
 }
 
 async function session() {

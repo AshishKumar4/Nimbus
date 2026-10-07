@@ -20,13 +20,6 @@
         "zod": "^4.4.3",
       },
     },
-    "apps/ci-runner": {
-      "name": "@nimbus-sh/ci-runner",
-      "version": "0.1.0",
-      "devDependencies": {
-        "wrangler": "^4.143.0",
-      },
-    },
     "apps/docs": {
       "name": "@nimbus-sh/docs",
       "version": "0.0.1",
@@ -584,8 +577,6 @@
     "@napi-rs/lzma-linux-x64-gnu": ["@napi-rs/lzma-linux-x64-gnu@1.5.1", "", { "os": "linux", "cpu": "x64" }, "sha512-oTXEIha4SsuXdTA4Iyskj0kpdx2yVXdhd75c2v3xGrHFfVMsbhTPZU/nMPL4sWKo4pBHm3aucLaqGlF696dTyQ=="],
 
     "@napi-rs/wasm-runtime": ["@napi-rs/wasm-runtime@1.1.6", "", { "dependencies": { "@tybys/wasm-util": "^0.10.3" }, "peerDependencies": { "@emnapi/core": "^1.7.1", "@emnapi/runtime": "^1.7.1" } }, "sha512-ZLv/JdUfkvOy9eCnnBaGfiO+XimbjebAeO+MRQqD/B+FR1tnRN0tpKSJHRbE8sFfS6aqsXZ67TQjfwfsxULVbg=="],
-
-    "@nimbus-sh/ci-runner": ["@nimbus-sh/ci-runner@workspace:apps/ci-runner"],
 
     "@nimbus-sh/cli": ["@nimbus-sh/cli@workspace:packages/cli"],
 

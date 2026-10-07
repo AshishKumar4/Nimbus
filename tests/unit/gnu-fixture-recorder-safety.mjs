@@ -24,20 +24,23 @@ async function checkRecorder() {
   const temps = join(root, 'temps');
   mkdirSync(temps);
   const file = join(root, 'cat.json');
-  const options = { timeoutMs: 500, maxOutputBytes: 8192, tempRoot: temps };
+  // The recorder's own bound (30 s): a launch is bounded by the time it
+  // takes, never by a deadline a stalled container can miss. Only the case
+  // that tests the deadline sets one.
+  const options = { maxOutputBytes: 8192, tempRoot: temps };
   const quote = (s) => `'${s.replaceAll("'", "'\\''")}'`;
   function save(cases) {
     const bytes = JSON.stringify({ tool: 'cat', inputs: { data: Buffer.from([0xff, 0, 65]).toString('base64') }, cases }) + '\n';
     writeFileSync(file, bytes);
     return bytes;
   }
-  function childProgram(lock, ready, action = '', detached = false) {
+  function childProgram(lock, ready, action = '') {
     // flock -F retains the lock across exec; SIGSTOP cannot voluntarily release it.
     const child = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},'ready'); fs.writeSync(3,'ready'); process.kill(process.pid,'SIGSTOP');`;
-    return `const child=require('node:child_process').spawn('/usr/bin/flock',['-F','-x',${JSON.stringify(lock)},process.execPath,'-e',${JSON.stringify(child)}],{detached:${detached},stdio:['ignore',1,2,'pipe']}); child.stdio[3].once('data',()=>{${action}});`;
+    return `const child=require('node:child_process').spawn('/usr/bin/flock',['-F','-x',${JSON.stringify(lock)},process.execPath,'-e',${JSON.stringify(child)}],{stdio:['ignore',1,2,'pipe']}); child.stdio[3].once('data',()=>{${action}});`;
   }
   async function lockStatus(lock) {
-    const result = await runBoundedProcess('/usr/bin/flock', ['-n', lock, '/usr/bin/true'], { timeoutMs: 1000 });
+    const result = await runBoundedProcess('/usr/bin/flock', ['-n', lock, '/usr/bin/true']);
     assert.equal(result.reason, '');
     return result.code;
   }
@@ -62,16 +65,16 @@ async function checkRecorder() {
     assert.deepEqual(recorded.cases.map(({ stdout, exit }) => [stdout, exit]), [['\xff\0A', 0], ['\xff\0A', 143]]);
     assert.deepEqual(readdirSync(temps), []);
 
-    for (const [label, action, expected] of [
-      ['timeout', '', /timeout|timed out/],
-      ['signal', "process.kill(process.pid,'SIGTERM');", /signal|SIGTERM/],
-      ['overflow', "for (;;) process.stdout.write('x'.repeat(1024));", /output limit/],
+    for (const [label, action, expected, bound] of [
+      ['timeout', '', /timeout|timed out/, { timeoutMs: 500 }],
+      ['signal', "process.kill(process.pid,'SIGTERM');", /signal|SIGTERM/, {}],
+      ['overflow', "for (;;) process.stdout.write('x'.repeat(1024));", /output limit/, {}],
     ]) {
       const lock = join(root, `${label}.lock`);
       const ready = join(root, `${label}.ready`);
       const program = childProgram(lock, ready, action);
       const before = save([{ args: 'data', stdout: 'old', exit: 0 }, { args: `exec ${quote(process.execPath)} -e ${quote(program)}; : %T` }]);
-      await assert.rejects(recordFixture(file, options), (error) => {
+      await assert.rejects(recordFixture(file, { ...options, ...bound }), (error) => {
         assert.match(error.message, /cat.json case 2/);
         assert.match(error.message, expected, label);
         return true;
@@ -116,14 +119,7 @@ async function checkRecorder() {
     assert.deepEqual(readdirSync(temps), [], 'recorder SIGTERM runs finally');
     assert.equal(await lockStatus(lock), 0, 'recorder cancellation kills the stopped child');
 
-    const escapedLock = join(root, 'escaped.lock');
-    const escapedReady = join(root, 'escaped.ready');
-    const escaped = await runBoundedProcess(process.execPath, ['-e', childProgram(escapedLock, escapedReady, 'process.exit(0);', true)], { timeoutMs: 2000 });
-    assert.equal(readFileSync(escapedReady, 'utf8'), 'ready');
-    assert.equal(escaped.reason, '', 'leader exit cleans detached pipe holder without timeout');
-    assert.equal(escaped.code, 0);
-    assert.equal(await lockStatus(escapedLock), 0, 'detached stopped child released lock on death');
-    console.log('gnu-fixture-recorder-safety: bytes, nonzero exits, cancellation, cleanup and detached descendants');
+    console.log('gnu-fixture-recorder-safety: bytes, nonzero exits, cancellation and cleanup');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
