@@ -14,6 +14,19 @@ export class GitWriteFailure extends Error {
         this.name = 'GitWriteFailure';
     }
 }
+/**
+ * A worktree file git's checkout could not write: its `error:` line. git's
+ * checkout goes on to the next file, and fails once all are done
+ * (CHECKOUT_FAILED), its index not written.
+ */
+export class GitEntryWriteFailure extends GitWriteFailure {
+    constructor(lines) {
+        super(lines);
+        this.name = 'GitEntryWriteFailure';
+    }
+}
+/** What git says once a checkout that could not write a file is done. */
+export const CHECKOUT_FAILED = 'fatal: unable to checkout working tree\n';
 /** strerror's words for the codes a write here can fail with (glibc's). */
 const STRERROR = {
     EEXIST: 'File exists', EACCES: 'Permission denied', EPERM: 'Operation not permitted', ENOSPC: 'No space left on device',
@@ -79,20 +92,20 @@ export async function writeEntry(api, at, name, mode, bytes) {
     }
     catch (error) {
         if (errnoCode(error) !== 'ENOENT')
-            throw new GitWriteFailure(`error: unable to unlink old '${name}': ${strerror(error)}\nfatal: unable to checkout working tree\n`);
+            throw new GitEntryWriteFailure(`error: unable to unlink old '${name}': ${strerror(error)}\n`);
     }
     let handle;
     try {
         handle = await api.fsOpen(at, { write: true, create: true, exclusive: true, mode });
     }
     catch (error) {
-        throw new GitWriteFailure(`error: unable to create file ${name}: ${strerror(error)}\nfatal: unable to checkout working tree\n`);
+        throw new GitEntryWriteFailure(`error: unable to create file ${name}: ${strerror(error)}\n`);
     }
     try {
         return await writeWhole(api, handle.id, bytes);
     }
     catch {
-        throw new GitWriteFailure(`error: unable to write file ${name}\nfatal: unable to checkout working tree\n`);
+        throw new GitEntryWriteFailure(`error: unable to write file ${name}\n`);
     }
 }
 /**

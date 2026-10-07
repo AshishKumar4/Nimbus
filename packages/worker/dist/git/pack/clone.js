@@ -20,6 +20,7 @@ import { coneMatcher, coneOf, coneSparseCheckout } from './sparse.js';
 import { ENTRY_BYTES, entryOffset } from './idx.js';
 import { installPack, RangedPackFile, readRange, resumeInstall } from './install.js';
 import { ByteLru } from './byte-lru.js';
+import { GitEntryWriteFailure } from './mount-writer.js';
 import { GRAPH_RECORDS_DIR } from './commit-graph.js';
 import { MissingBaseError, PackObjectResolver, runAsync } from './reader.js';
 import { encodeIndexEntry, encodeIndexFile, splitIndexEntries } from '../worktree/dircache.js';
@@ -742,6 +743,8 @@ export async function cloneBatch(context, request) {
     let resolved = 0;
     let files = 0;
     const written = [];
+    // A file that cannot be written: git's error, the checkout going on to the next (check_updates).
+    const checkoutErrors = [];
     const emit = async (oid, data) => {
         const paths = blobs.get(oidToHex(oid));
         if (paths === undefined)
@@ -750,10 +753,18 @@ export async function cloneBatch(context, request) {
         // The writer takes what it is given, and the base cache keeps `data`:
         // each path gets its own copy.
         for (const { mode, path } of paths) {
-            if (mode === MODE_SYMLINK)
-                await writer.symlink(path, decoder.decode(data));
-            else
-                await writer.file(path, mode, data.slice());
+            try {
+                if (mode === MODE_SYMLINK)
+                    await writer.symlink(path, decoder.decode(data));
+                else
+                    await writer.file(path, mode, data.slice());
+            }
+            catch (error) {
+                if (!(error instanceof GitEntryWriteFailure))
+                    throw error;
+                checkoutErrors.push(error.lines);
+                continue;
+            }
             written.push({ path, mode, oid });
             files++;
         }
@@ -795,7 +806,7 @@ export async function cloneBatch(context, request) {
     const indexBytes = share.byteLength;
     await writer.file(STAGE_DIR + '/index-' + request.index, 0o644, share);
     await writer.flush();
-    return { index: request.index, blobs: resolved, files, indexBytes, pack: summary };
+    return { index: request.index, blobs: resolved, files, indexBytes, pack: summary, ...(checkoutErrors.length > 0 ? { checkoutErrors } : {}) };
 }
 /**
  * The index, from the batches' shares; then the staging directory goes. A
@@ -824,7 +835,8 @@ export async function cloneFinish(context, request) {
     const indexBytes = index.byteLength;
     const writer = context.writer();
     writer.setPin(context.marker.path, context.marker.text, true);
-    await writer.file('.git/index', 0o644, index);
+    if (request.checkoutFailed !== true)
+        await writer.file('.git/index', 0o644, index);
     // With its history fetched (history.ts) the clone is no longer shallow.
     if (request.full === true)
         await writer.remove('.git/shallow');

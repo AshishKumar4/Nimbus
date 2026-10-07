@@ -15,5 +15,5 @@ export { cloneDiscover, cloneFast, cloneBatch, cloneFinish, clonePlanFromStore, 
 export { historyStep, historyResume, historyPlan, treeSlices } from './history.js';
 export { graphFiltersPlan, graphFiltersPiece, graphFiltersAssemble, graphFiltersDiscard } from './graph-filters.js';
 export { facetPacks } from './facet-packs.js';
-export { mountWriter, replaceFile, withinDeadline, GitWriteFailure, MOUNT_WAVE_FILE_MAX } from './mount-writer.js';
+export { mountWriter, replaceFile, withinDeadline, GitWriteFailure, CHECKOUT_FAILED, MOUNT_WAVE_FILE_MAX } from './mount-writer.js';
 export { retryingGitHttp } from './transport.js';

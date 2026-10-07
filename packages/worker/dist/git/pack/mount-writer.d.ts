@@ -9,10 +9,11 @@
  * waves hold before it is published, so it lands in git's order: its
  * directory made, the old entry unlinked (so a hard link to it keeps its
  * content), then created exclusively with the entry's mode, written whole,
- * and closed. The index, of any size, is written as git's lockfile.c writes
- * it: index.lock created exclusively, written, closed, renamed over the
- * index; our own lock removed if that fails. A failure says what git says
- * (GitWriteFailure), and fails the clone. Each stat is the receipt a wave
+ * and closed; one that cannot be written is git's error (GitEntryWriteFailure),
+ * and the checkout goes on without it, to fail once it is done. The index, of
+ * any size, is written as git's lockfile.c writes it: index.lock created
+ * exclusively, written, closed, renamed over the index; our own lock removed
+ * if that fails, which is git's fatal error (GitWriteFailure). Each stat is the receipt a wave
  * would have answered. No call starts past the phase's deadline, but a
  * close, or the removal of our own lock, which clean up what was started.
  */
@@ -57,6 +58,16 @@ export declare class GitWriteFailure extends Error {
     readonly lines: string;
     constructor(lines: string);
 }
+/**
+ * A worktree file git's checkout could not write: its `error:` line. git's
+ * checkout goes on to the next file, and fails once all are done
+ * (CHECKOUT_FAILED), its index not written.
+ */
+export declare class GitEntryWriteFailure extends GitWriteFailure {
+    constructor(lines: string);
+}
+/** What git says once a checkout that could not write a file is done. */
+export declare const CHECKOUT_FAILED = "fatal: unable to checkout working tree\n";
 /**
  * `api` within a phase's `deadline` (ms since the epoch; null for none): a
  * call past it is refused, but a close or an unlink, which clean up what a

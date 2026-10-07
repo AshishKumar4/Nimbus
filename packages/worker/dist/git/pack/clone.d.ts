@@ -132,6 +132,8 @@ export interface CloneBatchResult {
     indexBytes: number;
     /** The batch's own pack; null for a streamed clone's batch, read from the clone's pack. */
     pack: PackSummary | null;
+    /** git's error for each file it could not write (mount-writer.ts GitEntryWriteFailure): the checkout fails once it is done. */
+    checkoutErrors?: string[];
 }
 /** A clone whose server takes no wants by id: its one pack, stored, perhaps still to be decoded. */
 export interface CloneStreamed {
@@ -254,6 +256,8 @@ export declare function cloneFinish(context: CloneContext, request: {
         name: string;
         bytes: number;
     }[] | null;
+    /** A file could not be written: as git dies before it writes its index, there is none. */
+    checkoutFailed?: boolean;
 }): Promise<{
     indexEntries: number;
     indexBytes: number;
