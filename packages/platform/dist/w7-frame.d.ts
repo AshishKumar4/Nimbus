@@ -198,6 +198,12 @@ export interface W7DecodedStream {
  */
 export declare function encodeWriteBatchStream(payload: BatchWritePayload): ReadableStream<Uint8Array>;
 /**
+ * The bytes encodeWriteBatchStream would stream for `payload`, as one buffer:
+ * for a payload held in memory (no streamed sources), the same records in
+ * the same order, copied once.
+ */
+export declare function encodeWriteBatch(payload: BatchWritePayload): Promise<Uint8Array>;
+/**
  * Parse the v3 preamble eagerly, then expose validated operation records
  * incrementally. Chunk credit is acquired after its bounded header validates
  * and before its payload bytes are read or copied.

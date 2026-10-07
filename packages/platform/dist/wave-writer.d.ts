@@ -278,8 +278,21 @@ export declare class WaveWriter<Meta = undefined> {
     /**
      * Send one wave, again while its transport is lost (see the module's
      * comment), and answer with what the session answered.
+     *
+     * Across a transport (a supervisor that opens epochs), a wave held in
+     * memory is encoded whole as it is sent, and the transport's first read
+     * waits for that; it then takes the wave in SEND_SLICE_BYTES pieces and
+     * never waits on the encoder again. A re-send sends the same bytes, and the
+     * wave's records are let go once it is encoded.
+     * Measured, eight producers into one session, Markflow's file sizes: the
+     * encoder's stream, pulled through the watchdog as the transport read it,
+     * took 1,002 files/s; the wave encoded first, 1,374 (re-chunking that
+     * stream to 64 KiB or 1 MiB gained nothing). A wave with a streamed
+     * source is never held whole, and a session's own writer has no transport
+     * to wait on: both stream as the encoder makes them.
      */
     private send;
+    private sendAttempts;
     /**
      * The epoch this writer's waves are fenced under: opened before its first
      * wave, and again once half of WAVE_EPOCH_TTL_MS has passed, so a wave is
