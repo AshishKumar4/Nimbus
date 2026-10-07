@@ -1,4 +1,4 @@
-import { descriptorSupervisor } from './lib/descriptor-supervisor.mjs';
+import { memorySupervisor } from './lib/descriptor-supervisor.mjs';
 // wasi-live-adoption — the authority filesystem is actually adopted, and a
 // reused isolate never leaks one process's capability into the next.
 //
@@ -9,12 +9,12 @@ import { descriptorSupervisor } from './lib/descriptor-supervisor.mjs';
 // per-process capability introduces.
 
 import assert from 'node:assert';
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { buildRubySocketProcessWorker } from '../../packages/worker/src/runtime/ruby-resident.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
 import { readFileSync } from 'node:fs';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { loadWasiPreamble } from './lib/wasi-authority.mjs';
 
 const RUBY_RUNNER_SRC = join(
   dirname(fileURLToPath(import.meta.url)), '..', '..',
@@ -24,49 +24,8 @@ const RUBY_RUNNER_SRC = join(
 const enc = new TextEncoder();
 const dec = new TextDecoder();
 
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const P = await new AsyncFunction(`${WASI_INSTANCE_PREAMBLE_SRC}
-return { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, fdTable };`)();
+const P = await loadWasiPreamble();
 
-function mockSupervisor(seed = {}) {
-  const store = new Map();
-  for (const [k, v] of Object.entries(seed)) store.set(k, enc.encode(v));
-  const log = [];
-  return descriptorSupervisor({
-    store, log,
-    async fsReadRange(p, offset, length) {
-      log.push(['fsReadRange', p]);
-      const bytes = store.get(p);
-      if (!bytes) return null;
-      return bytes.slice(offset, Math.min(bytes.length, offset + length));
-    },
-    async writeFile(p, content) {
-      log.push(['writeFile', p]);
-      store.set(p, new Uint8Array(content));
-    },
-    async fsWriteRange(p, offset, bytes) {
-      const old = store.get(p) ?? new Uint8Array();
-      const next = new Uint8Array(Math.max(old.length, offset + bytes.length));
-      next.set(old); next.set(bytes, offset); store.set(p, next);
-      log.push(['fsWriteRange', p]);
-      return bytes.length;
-    },
-    async fsTruncate(p, size) {
-      const next = new Uint8Array(size);
-      next.set((store.get(p) ?? new Uint8Array()).subarray(0, size));
-      store.set(p, next);
-    },
-    async unlink(p) { log.push(['unlink', p]); store.delete(p); },
-    async mkdir(p) { log.push(['mkdir', p]); },
-    async rmdir(p) { log.push(['rmdir', p]); },
-    async rename(a, b) { log.push(['rename', a, b]); },
-    async stat(p) {
-      log.push(['stat', p]);
-      const bytes = store.get(p);
-      return bytes ? { type: 'file', size: bytes.length, mtime: Date.now() } : null;
-    },
-  });
-}
 
 function host() {
   const memory = new WebAssembly.Memory({ initial: 8 });
@@ -104,7 +63,7 @@ const INIT = () => ({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
 
 // ── 1. A pool isolate is reused: process B must not inherit A's supervisor ──
 {
-  const supA = mockSupervisor();
+  const supA = memorySupervisor();
   P.__wasiInitFS(INIT());
   P.__wasiAdoptSupervisor(supA);
   const a = host();
@@ -126,7 +85,7 @@ const INIT = () => ({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
 
 // ── 2. Adopting never downgrades a live stub ────────────────────────────────
 {
-  const sup = mockSupervisor();
+  const sup = memorySupervisor();
   P.__wasiInitFS(INIT());
   P.__wasiAdoptSupervisor(sup);
   // A routed fetch/handleHttpRequest hop resolves the entrypoint with no
@@ -141,7 +100,7 @@ const INIT = () => ({ root: '', preopens: [{ wasiPath: '/', vfsPath: '' }] });
 
 // ── 3. Whatever the authority holds is readable, with nothing seeded ────────
 {
-  const sup = mockSupervisor({ 'home/user/big.txt': 'demand-loaded' });
+  const sup = memorySupervisor({ 'home/user/big.txt': 'demand-loaded' });
   P.__wasiInitFS(INIT());
   P.__wasiAdoptSupervisor(sup);
   const h = host();
@@ -172,7 +131,7 @@ console.log('wasi-live-adoption: all assertions passed');
 // Measured ceiling: a cross-request suspension past ~15-18s idle leaves the
 // promise permanently unsettled. Without a deadline the guest wedges silently.
 {
-  const sup = mockSupervisor({ 'home/user/wedge.txt': 'ten bytes!' });
+  const sup = memorySupervisor({ 'home/user/wedge.txt': 'ten bytes!' });
   // A supervisor whose read never settles is exactly the wedge case.
   sup.fsReadRange = () => new Promise(() => {});
   P.__wasiInitFS(INIT());

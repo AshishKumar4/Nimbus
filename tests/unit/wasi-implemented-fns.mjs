@@ -11,7 +11,8 @@
 // concludes a syscall is missing and works around a function that is right
 // there.
 
-import { WASI_INSTANCE_PREAMBLE_SRC, WASI_IMPLEMENTED_FNS } from '../../packages/core/src/runtime/wasi-instance.ts';
+import { WASI_IMPLEMENTED_FNS } from '../../packages/core/src/runtime/wasi-instance.ts';
+import { loadWasiPreamble } from './lib/wasi-authority.mjs';
 
 let failures = 0;
 const check = (name, ok, detail) => {
@@ -20,15 +21,11 @@ const check = (name, ok, detail) => {
 };
 
 const memory = new WebAssembly.Memory({ initial: 1 });
-// The preamble is a module body - it awaits `import('cloudflare:sockets')` at
-// the top level - so it needs an async function to host it. That import fails
-// here and the preamble's own catch disables socket dialling, which changes
-// nothing about which imports exist.
-const AsyncFunction = Object.getPrototypeOf(async function () {}).constructor;
-const makeImports = await new AsyncFunction(
-  `${WASI_INSTANCE_PREAMBLE_SRC}\nreturn __wasiMakeImports;`,
-)();
-const { wasiImport } = makeImports({ argv: [], env: {}, getMemory: () => memory });
+// The preamble's top-level `import('cloudflare:sockets')` fails here, and its
+// own catch disables socket dialling, which changes nothing about which
+// imports exist.
+const { __wasiMakeImports } = await loadWasiPreamble();
+const { wasiImport } = __wasiMakeImports({ argv: [], env: {}, getMemory: () => memory });
 const implemented = Object.keys(wasiImport).sort();
 const advertised = [...WASI_IMPLEMENTED_FNS].sort();
 
