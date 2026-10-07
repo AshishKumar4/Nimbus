@@ -9900,12 +9900,9 @@ const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
 const __nimbusCommonJSGlobalLike = ${JSON.stringify([...COMMONJS_WRAPPER_NAMES])};
 Object.defineProperty(globalThis, ${JSON.stringify(ES_MODULE_SCOPE_GLOBAL)}, { configurable: true, value: Object.freeze(Object.create(null, Object.fromEntries(
   __nimbusCommonJSGlobalLike.map((name) => {
-    const unbound = function __nimbusUnbound() {
+    const unbound = function () {
       const error = new ReferenceError(name + " is not defined");
       Error.captureStackTrace(error, unbound);
-      // An engine that keeps the accessor's own frame (JSC: the shims' tests
-      // in Bun) names it; V8 has cut it already.
-      if (typeof error.stack === "string") error.stack = error.stack.replace(/\\n {4}at (?:get )?__nimbusUnbound \\([^\\n]*/, "");
       throw error;
     };
     return [name, { get: unbound, set: unbound }];
@@ -9928,19 +9925,24 @@ function __nimbusIsCommonJSGlobalLikeError(e) {
 function __nimbusExplainCommonJSGlobalLike(e, url, hasTopLevelAwait) {
   if (e?.name === "ReferenceError" && __nimbusCommonJSGlobalLike.some((name) => e.message === name + " is not defined")) {
     __nimbusExplained.add(e);
+    // The stack Node's error prints was formatted after this, with the
+    // message as it ends; one formatted already leads with it too.
+    const header = e.name + ": " + e.message;
+    const stack = e.stack;
     if (hasTopLevelAwait) {
       e.message = "Cannot determine intended module format because both require() and top-level await are present. If the code is intended to be CommonJS, wrap await in an async function. If the code is intended to be an ES module, replace require() with import.";
       e.code = "ERR_AMBIGUOUS_MODULE_SYNTAX";
-      return;
+    } else {
+      e.message += " in ES module scope";
+      if (e.message.startsWith("require ")) e.message += ", you can use import instead";
+      const packageConfig = url.startsWith("file://") && /\\.js(\\?[^#]*)?(#.*)?$/.exec(url) !== null
+        && __esmResolver.packageScopeSync(url);
+      if (packageConfig.type === "module") {
+        e.message += "\\nThis file is being treated as an ES module because it has a '.js' file extension and '"
+          + packageConfig.pjsonPath + "' contains \\"type\\": \\"module\\". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.";
+      }
     }
-    e.message += " in ES module scope";
-    if (e.message.startsWith("require ")) e.message += ", you can use import instead";
-    const packageConfig = url.startsWith("file://") && /\\.js(\\?[^#]*)?(#.*)?$/.exec(url) !== null
-      && __esmResolver.packageScopeSync(url);
-    if (packageConfig.type === "module") {
-      e.message += "\\nThis file is being treated as an ES module because it has a '.js' file extension and '"
-        + packageConfig.pjsonPath + "' contains \\"type\\": \\"module\\". To treat it as a CommonJS script, rename it to use the '.cjs' file extension.";
-    }
+    if (typeof stack === "string" && stack.startsWith(header)) e.stack = e.name + ": " + e.message + stack.slice(header.length);
   }
 }
 
