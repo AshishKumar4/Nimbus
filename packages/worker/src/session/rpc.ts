@@ -94,6 +94,7 @@ import { registerServingPort } from './serving-port.js';
 import { normalizeVfsPath, parentVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { z } from 'zod/v4';
 import type { NimbusSession } from './nimbus-session.js';
+import type { WsRelayHeaders, WsRelayOpened } from './ws-relay.js';
 import type { HmrEvent } from '../facets/real-vite-hmr.js';
 
 // `RpcHost` is intentionally `any`-shaped: extracting an exact subset
@@ -544,10 +545,10 @@ const FsListArgsSchema = z.object({
  * session/ws-relay.ts for why mediating the transport is not enough.
  *
  * The URL is untrusted input, so it is parsed rather than pattern-matched and
- * only the two WebSocket schemes are accepted. Nothing else about the request
- * comes from the facet — no facet-supplied header is forwarded, so the
- * supervisor cannot be induced to attach its own ambient credentials to a
- * destination the facet chose.
+ * only the two WebSocket schemes are accepted. The facet's request headers
+ * are bounded here and filtered by the relay (ws-relay.ts open): the
+ * supervisor sends what the program could have sent itself, and nothing of
+ * its own.
  */
 const WsOpenArgsSchema = z.object({
   url: z.string().max(2048).refine(
@@ -559,16 +560,20 @@ const WsOpenArgsSchema = z.object({
     { message: 'a relayed socket needs a ws: or wss: URL' },
   ),
   protocols: z.array(z.string().max(64)).max(8),
+  headers: z.array(z.tuple([z.string().min(1).max(256), z.string().max(8192)])).max(64),
+  refusalBody: z.boolean(),
 });
 
 export async function _rpcWsOpen(
   self: RpcHost,
   url: string,
   protocols: string[],
+  headers?: WsRelayHeaders | null,
+  refusalBody?: boolean | null,
   pid?: number,
-): Promise<{ id: number; protocol: string }> {
-  const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [] });
-  return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols);
+): Promise<WsRelayOpened> {
+  const args = WsOpenArgsSchema.parse({ url, protocols: protocols ?? [], headers: headers ?? [], refusalBody: refusalBody ?? false });
+  return self._ensureWebSocketRelay().open(processPid(pid), args.url, args.protocols, args.headers, args.refusalBody);
 }
 
 export async function _rpcWsPoll(

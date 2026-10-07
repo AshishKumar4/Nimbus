@@ -9,8 +9,10 @@
  * would therefore give every process the same first port (49152). Nimbus
  * allocates that number through the supervisor instead.
  *
- * No upgrade support is added: workerd's HTTP dispatcher emits request, not
- * upgrade. The separate Cirrus HMR bridge is not part of this path.
+ * No server upgrade support is added: workerd's HTTP dispatcher emits
+ * request, not upgrade. The separate Cirrus HMR bridge is not part of this
+ * path. A client's WebSocket upgrade (a request with `Upgrade: websocket`) is
+ * answered by node-ws-upgrade.ts, which the shims install over both modules.
  */
 export const NATIVE_HTTP_SOURCE = `
 const __nativeHttpResponse = globalThis.Response;
