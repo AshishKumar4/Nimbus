@@ -7940,17 +7940,43 @@ function __nimbusNodeInspect() {
     }
     return false;
   }
-  // Whether workerd formats 'holder' with none of a program's code run: no
-  // proxy on its prototype chain (its constructor name is read there), and
-  // no accessor for its Symbol.toStringTag, read as workerd reads it.
+  // The prototypes workerd's constructor discovery names without asking
+  // their constructors anything (its well-known prototypes).
+  const intrinsicPrototypes = new Set([
+    Object.prototype, Function.prototype, Array.prototype, Error.prototype,
+    Promise.prototype, Map.prototype, Set.prototype, WeakMap.prototype, WeakSet.prototype,
+  ]);
+  // Whether reading 'key' of 'object' runs none of a program's code: no
+  // proxy on the way to the first object holding it, whose descriptor is
+  // data; or, given 'intrinsicHolder', that first holder is it.
+  function readsInertly(object, key, intrinsicHolder) {
+    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
+      if (isProxy(at)) return false;
+      const own = Object.getOwnPropertyDescriptor(at, key);
+      if (own === undefined) continue;
+      if (intrinsicHolder !== undefined) return at === intrinsicHolder;
+      return own.get === undefined && own.set === undefined;
+    }
+    return true;
+  }
+  // Whether workerd formats 'holder' with none of a program's code run, as
+  // its inspect reads the chain: no proxy on it; no accessor for its
+  // Symbol.toStringTag; and, for its constructor discovery, no constructor
+  // whose name is read through an accessor or whose instanceof check is a
+  // program's (Symbol.hasInstance held anywhere but Function.prototype).
   function formatsInertly(holder) {
     let tag = false;
     for (let at = holder; at !== null; at = Object.getPrototypeOf(at)) {
       if (isProxy(at)) return false;
       const own = tag ? undefined : Object.getOwnPropertyDescriptor(at, Symbol.toStringTag);
-      if (own === undefined) continue;
-      if (own.get !== undefined || own.set !== undefined) return false;
-      tag = true;
+      if (own !== undefined) {
+        if (own.get !== undefined || own.set !== undefined) return false;
+        tag = true;
+      }
+      if (intrinsicPrototypes.has(at)) continue;
+      const constructor = Object.getOwnPropertyDescriptor(at, "constructor");
+      if (constructor === undefined || typeof constructor.value !== "function") continue;
+      if (!readsInertly(constructor.value, "name") || !readsInertly(constructor.value, Symbol.hasInstance, Function.prototype)) return false;
     }
     return true;
   }

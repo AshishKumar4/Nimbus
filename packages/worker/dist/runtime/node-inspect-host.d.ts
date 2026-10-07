@@ -28,7 +28,8 @@
  * which no program code is ever handed: shown without showProxy, one whose
  * target has a custom inspect shows as unknown (Node calls the hook with the
  * proxy as this), and a proxy inside it is shown by its innermost target,
- * its traps not run; and a holder whose own Symbol.toStringTag is an accessor, or with
+ * its traps not run; and a holder whose class has its own instanceof check
+ * or a name getter, whose own Symbol.toStringTag is an accessor, or with
  * a proxy on its prototype chain, shows its slot as unknown, since reading
  * it would run that code once more than Node.
  *
