@@ -17,7 +17,7 @@
 // (NIMBUS_TEST_CGROUP), which is where its CPU time is read and how every
 // process it leaves behind is killed.
 import { spawn, spawnSync } from 'node:child_process';
-import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { appendFileSync, cpSync, existsSync, mkdirSync, readdirSync, readFileSync, writeFileSync } from 'node:fs';
 
 const WORK = '/work';
 const SRC = `${WORK}/src`;
@@ -78,11 +78,7 @@ async function run() {
   // Recorded, and printed with the verdict: the runner is not the commit's.
   // Laid over before the repository's commit, so git sees a clean tree.
   const overlay = !readFileSync(`${SRC}/tests/unit/run-all.mjs`, 'utf8').includes("'--shard'");
-  if (overlay) {
-    for (const file of ['tests/unit/run-all.mjs', 'scripts/lib/bounded-process.mjs', 'scripts/lib/subprocess-entry.mjs']) {
-      writeFileSync(`${SRC}/${file}`, readFileSync(`/opt/ci/runner/${file}`));
-    }
-  }
+  if (overlay) cpSync('/opt/ci/runner', SRC, { recursive: true });
   setPhase('overlay', { runnerOverlay: overlay });
   // A repository whose one commit is the archive's tree: tests that ask git
   // about the checkout (ls-files, status, diff) see what a clone would show.

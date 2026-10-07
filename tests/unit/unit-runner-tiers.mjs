@@ -28,9 +28,9 @@ const scratch = mkdtempSync(join(tmpdir(), 'unit-tiers-'));
 /** A scratch repository holding the runner and the given test files. */
 function tree(label, files) {
   const root = join(scratch, label);
-  mkdirSync(join(root, 'tests/unit'), { recursive: true });
+  mkdirSync(join(root, 'tests/unit/lib'), { recursive: true });
   mkdirSync(join(root, 'scripts/lib'), { recursive: true });
-  copyFileSync(join(repo, 'tests/unit/run-all.mjs'), join(root, 'tests/unit/run-all.mjs'));
+  for (const file of ['run-all.mjs', 'lib/partition.mjs']) copyFileSync(join(repo, 'tests/unit', file), join(root, 'tests/unit', file));
   for (const lib of ['bounded-process.mjs', 'subprocess-entry.mjs']) copyFileSync(join(repo, 'scripts/lib', lib), join(root, 'scripts/lib', lib));
   for (const [name, source] of Object.entries(files)) writeFileSync(join(root, 'tests/unit', name), source);
   return root;

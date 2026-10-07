@@ -1,0 +1,21 @@
+{
+  "name": "nimbus",
+  "environment": {
+    "base": "registry.cloudflare.com/f44999d1ddda7012e9a87729eba250f1/nimbus-ci-base@sha256:8acb4ddf93a29aea696c85cff24629a3fe3fdc1d907be1391fef022e4423957c",
+    "setup": "scripts/armada/setup.sh",
+    "install": "scripts/armada/install.sh",
+    "key": ["bun.lock", "bunfig.toml", "package.json", "apps/*/package.json", "packages/*/package.json", "packages/worker/scripts/patch-install-deps.mjs", "lean/lean-toolchain"],
+    "smoke": "bun --version && node --version && redis-server --version && $HOME/.elan/bin/lean --version && bun tests/unit/run-all.mjs --list > /dev/null"
+  },
+  "history": "commit",
+  "env": {
+    "PATH": "/home/ci/.elan/bin:/usr/local/bin:/usr/bin:/bin",
+    "TMPDIR": "/home/ci/tmp",
+    "USER": "ci",
+    "LOGNAME": "ci",
+    "SHELL": "/bin/bash",
+    "NIMBUS_TEST_MEMORY_MAX": "4G"
+  },
+  "plan": { "command": ["bun", "scripts/armada/unit.mjs", "plan", "--target", "{target}", "--timings", "{timings}"] },
+  "task": { "command": ["bun", "scripts/armada/unit.mjs", "task", "{item}", "--timings", "{timings}", "--out", "{out}"] }
+}
