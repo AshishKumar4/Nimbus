@@ -259,7 +259,8 @@ function scripted(overrides) {
   // A backend that cannot write in place takes a file whole, up to HELD_FILE_BYTES.
   const whole = scripted({ writeRange: undefined });
   s.files.vfs.mount('/whole', whole);
-  assert.equal((await s.send(wave(file('whole/small', new Uint8Array(1024 * 1024).fill(1))))).ok, true);
+  const small = await s.send(wave(file('whole/small', new Uint8Array(1024 * 1024).fill(1))));
+  assert.equal(small.ok, true, JSON.stringify(small.error));
   const refused = await s.send(wave(file('whole/huge', new Uint8Array(HELD_FILE_BYTES + 1))));
   assert.equal(refused.ok, false);
   assert.equal(refused.error.errno, 'ENOTSUP');
