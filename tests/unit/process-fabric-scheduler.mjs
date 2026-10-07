@@ -140,9 +140,8 @@ for (const mode of PROCESS_HOST_MODES) {
 
     assert.equal(world.boots.length, 1, "the user's program evaluated exactly once");
     const [boot] = world.boots;
-    // The facet is named for its SLOT, not its pid: a Durable Object never
-    // reclaims a facet ID, so names have to be reusable and a pid never is.
-    // One process in a fresh host, so it holds the first slot.
+    // The facet is named for its slot, not its pid. One process in a fresh
+    // host, so it holds the first slot.
     assert.equal(boot.facetName, residentFacetName(0), 'the facet is named for its slot');
     assert.equal(boot.className, RESIDENT_PROCESS_CLASS, 'one class name for every runtime');
     assert.equal(boot.loaderId, 'nimbus-process:coord-do-id:42', 'the loader id is the process key');

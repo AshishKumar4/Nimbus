@@ -2,9 +2,8 @@
 // A durable application's facet is a store, not an isolate.
 //
 // The two release classes only diverge where it matters: an ephemeral
-// process's `proc-slot-<n>` name goes back to the free list AND its SQLite is
-// dropped, because the name will be handed to the next process and the store
-// must not be; a durable `app-slot-<n>` name is released with abort alone,
+// process's `proc-slot-<n>` SQLite is dropped with it, because the store was
+// the process's alone; a durable `app-slot-<n>` name is released with abort alone,
 // because the store IS the application — the next boot of it has to re-attach
 // the same rows, whether that boot is a re-drive after a platform reset or an
 // explicit relaunch.
@@ -22,7 +21,6 @@ import { ProcessFabric } from '../../packages/fabric/src/process-fabric.ts';
 import { PortRegistry } from '../../packages/core/src/runtime/port-registry.ts';
 import { SessionProcessSupervisor } from '../../packages/core/src/runtime/session-process-supervisor.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
-import { facetNameCountDurable } from '../../packages/fabric/src/budgets.ts';
 import {
   createFacetWorld,
   createFacetCtx,
@@ -229,25 +227,5 @@ function setup({ doId = 'durable-do', storage = new Map() } = {}) {
   await Promise.all([other.done, running.done]);
 }
 
-// ── 6. the ledger counts durable mints, not durable relaunches or releases ─
-{
-  const { ctx, fm } = setup();
-  const before = await facetNameCountDurable(ctx);
-  const first = await fm.spawnWorker('export default {}', 'durable app', '/app', {
-    durable: { owner: 'A', image: { runner: 'r-a', application: 'app-a' } },
-  });
-  assert.equal(await facetNameCountDurable(ctx), before + 1,
-    'minting a durable slot burns one facet ID');
-  fm.kill(first.pid);
-  assert.equal(await facetNameCountDurable(ctx), before + 1,
-    'a kill does not mint or refund a durable name');
-  const relaunched = await fm.spawnWorker('export default {}', 'durable app', '/app', {
-    durable: { owner: 'A', image: { runner: 'r-a', application: 'app-a' } },
-  });
-  assert.equal(await facetNameCountDurable(ctx), before + 1,
-    'a relaunch on the same slot mints nothing new');
-  fm.kill(relaunched.pid);
-}
-
 resetProcessFacetStorage();
-console.log('ok - durable-facet-storage (name pinned, abort retains store, removeDurableApp is the only delete, ledger honest)');
+console.log('ok - durable-facet-storage (name pinned, abort retains store, removeDurableApp is the only delete)');

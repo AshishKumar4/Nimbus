@@ -29,11 +29,7 @@ import {
   beginLoaderFetch,
   beginLoaderFetchWhenFree,
   claimAdmission,
-  facetNameCount,
-  facetNameCountDurable,
-  chargeFacetSlot,
   withDynamicWorkerCapNamed,
-  withFacetBudgetNamed,
 } from './budgets.js';
 import {
   RESIDENT_PROCESS_CLASS,
@@ -199,8 +195,7 @@ function facetContainer(ctx: DurableObjectState): FacetContainer {
  * The primitive itself, measured: a reflink, 18–31 ms for a 45.73 MB corpus
  * and 34–54 ms for 1 GB — flat, because nothing is copied — with the data
  * visible from the destination's constructor. Same-Durable-Object only.
- * Quiesce and await writes to the source first; the destination name consumes
- * a facet ID on first use like any other facet name; and the shared ~10 GiB
+ * Quiesce and await writes to the source first; and the shared ~10 GiB
  * storage budget grants no copy-on-write credit — crossing it resets the
  * object rather than raising an error.
  */
@@ -239,26 +234,28 @@ export async function cloneStorage(
 /**
  * The facet name for an ephemeral slot.
  *
- * A Durable Object admits 65,536 facets over its LIFETIME: the IDs are
- * append-only and are never reclaimed, so every name ever created spends one,
- * and the lifetime ledger (budgets.ts) counts them and names the wall.
+ * On Cloudflare a name costs nothing once its facet is deleted: one object
+ * created 70,000 names, deleting each after use, and none failed. Facets
+ * kept are what is bounded: with none deleted, the object failed at 32,240
+ * (2026-10-07). Local workerd's on-disk facet index allows 65,535 names over
+ * the object's lifetime (facet-tree-index.c++). Either wall answers
+ * "internal error; reference = …", which startFailure names.
  *
- * A released name is not handed to a later process of the same incarnation,
- * though that would cost no new ID. Getting a name a just-released process
- * held, with the next process's class, failed on Cloudflare: the next
- * process's first call answered "internal error; reference = …" with
- * durableObjectReset. That was vite8 after vinext, 7 of 7 on a throwaway,
- * while 4 of 4 started on a fresh name (2026-10-07). An earlier reuse, of a
- * released name's kept store, reset the whole object (82894375b). The
- * platform gives no signal that a released facet is gone, so no reuse can be
- * timed to follow it. The pid stays what it always was: the process
- * identity in the ProcessTable.
+ * A released name is not handed to a later process of the same incarnation.
+ * Getting a name a just-released process held, with the next process's
+ * class, failed on Cloudflare: the next process's first call answered
+ * "internal error; reference = …" with durableObjectReset. That was vite8
+ * after vinext, 7 of 7 on a throwaway, while 4 of 4 started on a fresh name
+ * (2026-10-07). An earlier reuse, of a released name's kept store, reset the
+ * whole object (82894375b). The platform gives no signal that a released
+ * facet is gone, so no reuse can be timed to follow it. The pid stays what
+ * it always was: the process identity in the ProcessTable.
  *
- * The book shares the facet-ID space with one other namespace: durable
- * applications, which mint `app-slot-<n>` names of their own (one ID per app,
- * ever). The prefixes are disjoint BY CONSTRUCTION, and that disjointness is
- * load-bearing — a proc-slot name reissued onto a durable app's retained
- * storage would boot the wrong process into someone else's disk.
+ * The book shares the facet namespace with durable applications, which mint
+ * `app-slot-<n>` names of their own (one per app, ever). The prefixes are
+ * disjoint BY CONSTRUCTION, and that disjointness is load-bearing — a
+ * proc-slot name reissued onto a durable app's retained storage would boot
+ * the wrong process into someone else's disk.
  */
 export function residentFacetName(slot: number): string {
   return `proc-slot-${slot}`;
@@ -291,8 +288,7 @@ interface SlotBook {
  *
  * The book allocates only the `proc-slot-` space. Durable `app-slot-` names
  * are allocated against DO storage instead (their owner survives a reset), so
- * a fresh incarnation's `next` starting at 0 can never collide with them even
- * before the durable ledger is adopted.
+ * a fresh incarnation's `next` starting at 0 can never collide with them.
  */
 const slotBooks = new WeakMap<DurableObjectState, SlotBook>();
 
@@ -309,8 +305,7 @@ function slotBook(ctx: DurableObjectState): SlotBook {
  * Take the next slot for `pid` (residentFacetName: never one a released
  * process held), or the one it holds. A `minted` name may still hold storage
  * a previous incarnation of this actor left there, so the caller deletes it
- * before the first get. The caller charges the slot (chargeFacetSlot) before
- * its facet is created.
+ * before the first get.
  */
 function acquireSlot(ctx: DurableObjectState, pid: number): { slot: number; minted: boolean } {
   const book = slotBook(ctx);
@@ -451,12 +446,6 @@ function spawnResident(
   if (grant?.minted) {
     try { deleteFacetStorage(ctx, name); } catch { /* nothing stored under this name */ }
   }
-  // A slot's name is a lifetime facet ID the first time it is created, so it
-  // is charged, durably, before the first call creates the facet. Charged on
-  // every use: a slot whose charge failed is reused uncharged otherwise, and
-  // one already counted costs nothing. An explicit name was charged when it
-  // was allocated (acquireDurableFacetSlot).
-  const charged = slot === undefined ? Promise.resolve() : chargeFacetSlot(ctx, slot);
   // The start callback is the ONLY way this facet is ever created, and it
   // fires AT MOST ONCE. Every later use goes through the stub below, so the
   // callback running a second time means the facet was released or died —
@@ -495,7 +484,7 @@ function spawnResident(
     facet = facets.get(name, start);
   } catch (error) {
     if (slot !== undefined) releaseSlot(ctx, params.pid);
-    throw withFacetBudgetNamed(facetNameCount(ctx), error);
+    throw error;
   }
   if (explicit) book.live.add(name);
   // The facet's worker is one Dynamic Worker in flight for as long as the
@@ -531,15 +520,11 @@ function spawnResident(
     const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
       ? { ...(params.startArgs as Record<string, unknown>), storage: { facet: name, grant: params.storageBytes } }
       : params.startArgs;
-    started = charged.then(() => facet.startProcess(startArgs));
+    started = facet.startProcess(startArgs);
   } catch (error) {
     void release();
-    throw withFacetBudgetNamed(facetNameCount(ctx), error);
+    throw error;
   }
-  // The rejection that carries the platform's failure at ID exhaustion is
-  // this one, and it is annotated AFTER awaiting the ledger — the first
-  // failure of a fresh incarnation must compare against the persisted count,
-  // not the zero its adoption read has not yet replaced.
   started = started.then((payload) => {
     // Once the facet is up (N18) its row is the cap its store keeps under
     // (what it measures plus what it may still grow into), or what it
@@ -550,13 +535,10 @@ function spawnResident(
     const row = capped !== null ? Math.max(capped, measured ?? 0) : measured;
     if (ledger !== null && row !== null) ledger.reportSize(name, row);
     return payload;
-  }, async (error) => {
+  }, (error) => {
     // A start that rejects after its release is the process ending or being
     // ended as it booted (json-server --version), not a failure to start.
-    const named = released ? error : startFailure(error, name, params.pid);
-    // The count is read only to name the budget: a count storage cannot answer names nothing.
-    const consumed = await facetNameCountDurable(ctx).catch(() => null);
-    throw consumed === null ? named : withFacetBudgetNamed(consumed, named);
+    throw released ? error : startFailure(error, name, params.pid);
   });
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.
@@ -567,8 +549,8 @@ function spawnResident(
     // with it, so there is no independent death to report.
     lost: new Promise<never>(() => {}),
     // A request can arrive before the boot call; it creates the facet as that call would.
-    handleHttpRequest: (request: Request) => charged.then(() => facet.handleHttpRequest(request)),
-    handleWebSocketRequest: (request: Request) => charged.then(() => facet.fetch(request)),
+    handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
+    handleWebSocketRequest: (request: Request) => facet.fetch(request),
     release,
     name,
     slot,

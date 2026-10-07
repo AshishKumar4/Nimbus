@@ -11,22 +11,19 @@
  *
  * The rows:
  *
- *   durable-slot:next    — the lowest never-issued slot number. Minting burns
- *                          one facet ID forever, so a freed name goes to
- *                          `free`, never back to `next`.
+ *   durable-slot:next    — the lowest never-issued slot number. A freed
+ *                          name goes to `free`, never back to `next`.
  *   durable-slot:free    — slot numbers whose applications were removed.
  *   durable-slot:<owner> — the owner's pinned slot. Written once, ever;
  *                          re-read on every relaunch and re-drive.
  *
  * Names carry the `app-slot-` prefix, disjoint by construction from the
- * ephemeral book's `proc-slot-` — the two namespaces share the facet-ID
- * budget, and a collision would hand one application's retained storage to
- * another process.
+ * ephemeral book's `proc-slot-` — a collision would hand one application's
+ * retained storage to another process.
  */
 
 import { DURABLE_SLOT_KEY_PREFIX } from '../session/keys.js';
 import { DURABLE_FACET_NAME_PREFIX } from '@nimbus-sh/fabric/workerd-facet-host.js';
-import { chargeFacetName } from '@nimbus-sh/fabric/budgets.js';
 
 const NEXT_KEY = `${DURABLE_SLOT_KEY_PREFIX}next`;
 const FREE_KEY = `${DURABLE_SLOT_KEY_PREFIX}free`;
@@ -42,9 +39,6 @@ export function durableFacetName(slot: number): string {
  * application's life. The owner key, counter and free list move inside one
  * transaction, so a concurrent spawn cannot split the claim, and a re-read
  * after a reset — or after eviction — answers the same name.
- *
- * The name is charged to the lifetime facet-ID ledger, which every facet
- * name on this DO shares.
  */
 export async function acquireDurableFacetSlot(
   ctx: DurableObjectState,
@@ -68,14 +62,7 @@ export async function acquireDurableFacetSlot(
     await txn.put(ownerKey(owner), slot);
     return slot;
   });
-  // Charged on every acquire, not only the one that minted it: a reset
-  // between the claim above and its charge would otherwise leave the name
-  // uncounted for good. A name the ledger already counted costs nothing. Not
-  // refused at the wall: the launch that called this has claimed its process,
-  // and the platform's failure to create the facet is named by the ledger.
-  const name = durableFacetName(slot);
-  await chargeFacetName(ctx, name, { refuseAtWall: false });
-  return name;
+  return durableFacetName(slot);
 }
 
 /**

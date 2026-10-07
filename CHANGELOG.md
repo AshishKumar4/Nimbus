@@ -243,17 +243,17 @@ published independently in the `@nimbus-sh` npm scope.
 
 These need a minor version of fabric and of platform at the next publish.
 
-- fabric: `recordFacetNameMinted` is removed. Its callers set a facet-name
-  count of their own, and three such counters drifted apart, so the
-  lifetime facet-ID count could miss names. Charge a name with
-  `chargeFacetName(ctx, name, { refuseAtWall })`. It counts a name's
-  first use once, in this incarnation or any later one. The slot book
-  charges its own names.
-- fabric: a `FacetPoolContext`'s `storage.put` takes one object of
-  entries, Durable Object storage's atomic multi-key form, in place of
-  `put(key, value)`. The facet-name ledger writes a charge's counts and
-  its name's mark in that one put. A `DurableObjectState` already
-  provides it.
+- fabric: the facet-ID ledger is removed: `FACET_ID_LIFETIME_BUDGET`,
+  `FACET_NAME_HIGH_WATER_KEY`, `recordFacetNameMinted`, `facetNameCount`,
+  `facetNameCountDurable`, `facetIdBudget` and `withFacetBudgetNamed`.
+  Cloudflare does not bound the facet names an object uses: one object
+  created 70,000, deleting each after use, and none failed. It bounds
+  facets kept: with none deleted, one object failed at 32,240
+  (2026-10-07). `facetPool` no longer refuses a new name past 65,536, and
+  a start failure is no longer called permanent for the object. A
+  `FacetPoolContext`'s `storage` needs only `sql`. The session
+  diagnostics no longer report `facet.idBudget`. The rows the ledger
+  wrote stay in storage, unread.
 - platform: `SQLITE_MAX_BOUND_PARAMETERS` is removed. It was a second name
   for the same measured bound as `SQL_MAX_BOUND_PARAMETERS`, which every
   caller uses. Use `SQL_MAX_BOUND_PARAMETERS`.
