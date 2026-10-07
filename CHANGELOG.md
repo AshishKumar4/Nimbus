@@ -15,7 +15,10 @@ published independently in the `@nimbus-sh` npm scope.
   entrypoints retain their broker-owned pid/fd0 and forward logged bytes
   without feeding the same foreground subscriber back into itself. A child's
   parent-side stdin is destroyed on exit, so a delayed end cannot write to
-  a removed reader and abort its parent's asynchronous work.
+  a removed reader and abort its parent's asynchronous work. A source read
+  failure preserves queued input and then reports EIO instead of clean EOF.
+  Broker-owned WASI runs reuse the same process and stream their bytes rather
+  than returning a rendered, truncated process-log tail.
 - Fixed: echo, progress, replay wakeups and impossible-child refusals use a
   timer-independent continuation fence, so incoming filesystem RPC traffic
   cannot withhold their bookkeeping. Fresh CPU turns still use the session's
@@ -27,6 +30,10 @@ published independently in the `@nimbus-sh` npm scope.
   and REPL/server control frames are bounded metadata rather than stored text.
 - Fixed: Node byte-mode readable streams expose Buffer chunks at their public
   edge, preserving Buffer methods and encoding-aware toString calls.
+- Fixed: live Node console output no longer retains a second whole-output
+  string. Opencode's explicit one-shot text-result capture is bounded to
+  1 MiB per stream; an oversized result fails with EFBIG and a nonzero exit
+  instead of silently truncating it or exhausting the facet's memory.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
