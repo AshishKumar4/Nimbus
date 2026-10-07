@@ -7,6 +7,8 @@ import { ByteQueue } from './byte-queue.js';
  */
 export class TerminalStdin extends ByteQueue {
     _rawMode = false;
+    /** termios ISIG (TerminalInputStream.signalKeys). */
+    signalKeys = true;
     /** When true, the shell should bypass line editing and feed raw keypresses. */
     get rawMode() {
         return this._rawMode;

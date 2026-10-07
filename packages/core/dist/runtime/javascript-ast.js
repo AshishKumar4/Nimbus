@@ -121,26 +121,26 @@ const COMMONJS_WRAPPER_NAMES = new Set(['exports', 'require', 'module', '__filen
  * module. A source that does not tokenize as a module is not one.
  */
 export function containsModuleSyntax(source) {
+    const word = (token, text) => token.type === tokTypes.name && token.end - token.start === text.length && source.startsWith(text, token.start);
+    const scan = unscopedAwaitScanner(source);
     let previous = tokTypes.eof;
     let lexical = false;
     let candidate = false;
-    let awaits = false;
     const found = walkTopLevelModuleTokens(source, (token, syntax, topLevel) => {
         if (syntax !== null)
             return true;
-        const member = previous === tokTypes.dot || previous === tokTypes.questionDot;
-        const name = token.type === tokTypes.name ? source.slice(token.start, token.end) : null;
-        if (lexical && name !== null && COMMONJS_WRAPPER_NAMES.has(name))
+        if (lexical && token.type === tokTypes.name && COMMONJS_WRAPPER_NAMES.has(source.slice(token.start, token.end)))
             candidate = true;
-        if (!member && name === 'await')
-            awaits = true;
-        lexical = topLevel && !member && (token.type === tokTypes._const || token.type === tokTypes._class || name === 'let');
+        if (!candidate && scan(token))
+            candidate = true;
+        const member = previous === tokTypes.dot || previous === tokTypes.questionDot;
+        lexical = topLevel && !member && (token.type === tokTypes._const || token.type === tokTypes._class || word(token, 'let'));
         previous = token.type;
         return false;
     });
     if (found !== false)
         return found === true;
-    if (!candidate && !(awaits && hasUnscopedAwait(source)))
+    if (!candidate && !scan.atEnd())
         return false;
     return !compilesAsCommonJs(source) && parses(source, MODULE_PARSE_OPTIONS);
 }
@@ -170,107 +170,13 @@ export function hasUnscopedAwait(source) {
             sourceType: 'module',
             allowHashBang: true,
         });
-        const functionBraces = [];
-        const functionParenDepths = [];
-        const methodParenCandidates = [];
-        const arrowExpressions = [];
-        let bracketDepth = 0;
-        let pendingMethodBody = false;
-        let pendingArrowBody = false;
-        let pendingFunctionKeyword = false;
-        let previous = tokTypes.eof;
-        let previousEnd = 0;
-        while (true) {
+        const scan = unscopedAwaitScanner(source);
+        for (;;) {
             const token = tokens.getToken();
-            const type = token.type;
-            if (type === tokTypes.eof)
-                return false;
-            if (pendingMethodBody && type !== tokTypes.braceL)
-                pendingMethodBody = false;
-            if (pendingArrowBody && type !== tokTypes.braceL) {
-                arrowExpressions.push({
-                    parens: methodParenCandidates.length,
-                    braces: functionBraces.length,
-                    brackets: bracketDepth,
-                });
-                pendingArrowBody = false;
-            }
-            if (pendingFunctionKeyword) {
-                if (type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
-                    || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq)
-                    functionParenDepths.pop();
-                pendingFunctionKeyword = false;
-            }
-            if (source.slice(previousEnd, token.start).includes('\n')) {
-                while (arrowExpressions.length > 0) {
-                    const arrow = arrowExpressions[arrowExpressions.length - 1];
-                    if (methodParenCandidates.length !== arrow.parens
-                        || functionBraces.length !== arrow.braces
-                        || bracketDepth !== arrow.brackets)
-                        break;
-                    arrowExpressions.pop();
-                }
-            }
-            while (arrowExpressions.length > 0) {
-                const arrow = arrowExpressions[arrowExpressions.length - 1];
-                const delimited = (type === tokTypes.semi || type === tokTypes.comma)
-                    && methodParenCandidates.length === arrow.parens
-                    && functionBraces.length === arrow.braces
-                    && bracketDepth === arrow.brackets;
-                const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
-                    || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
-                    || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
-                if (!delimited && !closed)
-                    break;
-                arrowExpressions.pop();
-            }
-            if (type === tokTypes.name
-                && source.slice(token.start, token.end) === 'await'
-                && !functionBraces.includes(true)
-                && arrowExpressions.length === 0)
+            if (token.type === tokTypes.eof)
+                return scan.atEnd();
+            if (scan(token))
                 return true;
-            if (type === tokTypes._function || type === tokTypes._class) {
-                if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
-                    functionParenDepths.push(methodParenCandidates.length);
-                    pendingFunctionKeyword = true;
-                }
-            }
-            else if (type === tokTypes.arrow) {
-                pendingArrowBody = true;
-            }
-            else if (type === tokTypes.parenL) {
-                methodParenCandidates.push(functionBraces.length > 0
-                    && (previous === tokTypes.name || previous === tokTypes.string
-                        || previous === tokTypes.num || previous === tokTypes.bracketR));
-            }
-            else if (type === tokTypes.parenR) {
-                pendingMethodBody = methodParenCandidates.pop() === true;
-            }
-            else if (type === tokTypes.bracketL) {
-                bracketDepth++;
-            }
-            else if (type === tokTypes.bracketR) {
-                bracketDepth = Math.max(0, bracketDepth - 1);
-            }
-            else if (type === tokTypes.dollarBraceL) {
-                functionBraces.push(false);
-            }
-            else if (type === tokTypes.braceL) {
-                const functionBody = pendingArrowBody
-                    || pendingMethodBody
-                    || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
-                if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
-                    functionParenDepths.pop();
-                }
-                functionBraces.push(functionBody);
-                pendingArrowBody = false;
-                pendingMethodBody = false;
-            }
-            else if (type === tokTypes.braceR) {
-                functionBraces.pop();
-            }
-            previousEnd = token.end;
-            previous = type;
         }
     }
     catch {
@@ -278,14 +184,128 @@ export function hasUnscopedAwait(source) {
     }
 }
 /**
+ * The state of {@link hasUnscopedAwait}'s walk, handed `source`'s tokens in
+ * order: true for the token after an `await` outside every function body
+ * that is not an object key (`{ await: 135 }`, as typescript's keyword table
+ * has), and `atEnd()` for one that ends the source.
+ */
+function unscopedAwaitScanner(source) {
+    const functionBraces = [];
+    const functionParenDepths = [];
+    const methodParenCandidates = [];
+    const arrowExpressions = [];
+    let bracketDepth = 0;
+    let pendingMethodBody = false;
+    let pendingArrowBody = false;
+    let pendingFunctionKeyword = false;
+    let pendingAwait = false;
+    let previous = tokTypes.eof;
+    let previousEnd = 0;
+    const scan = (token) => {
+        const type = token.type;
+        if (pendingAwait) {
+            if (type !== tokTypes.colon)
+                return true;
+            pendingAwait = false;
+        }
+        if (pendingMethodBody && type !== tokTypes.braceL)
+            pendingMethodBody = false;
+        if (pendingArrowBody && type !== tokTypes.braceL) {
+            arrowExpressions.push({
+                parens: methodParenCandidates.length,
+                braces: functionBraces.length,
+                brackets: bracketDepth,
+            });
+            pendingArrowBody = false;
+        }
+        if (pendingFunctionKeyword) {
+            if (type === tokTypes.colon || type === tokTypes.comma || type === tokTypes.braceR
+                || type === tokTypes.parenR || type === tokTypes.bracketR || type === tokTypes.eq)
+                functionParenDepths.pop();
+            pendingFunctionKeyword = false;
+        }
+        if (source.slice(previousEnd, token.start).includes('\n')) {
+            while (arrowExpressions.length > 0) {
+                const arrow = arrowExpressions[arrowExpressions.length - 1];
+                if (methodParenCandidates.length !== arrow.parens
+                    || functionBraces.length !== arrow.braces
+                    || bracketDepth !== arrow.brackets)
+                    break;
+                arrowExpressions.pop();
+            }
+        }
+        while (arrowExpressions.length > 0) {
+            const arrow = arrowExpressions[arrowExpressions.length - 1];
+            const delimited = (type === tokTypes.semi || type === tokTypes.comma)
+                && methodParenCandidates.length === arrow.parens
+                && functionBraces.length === arrow.braces
+                && bracketDepth === arrow.brackets;
+            const closed = (type === tokTypes.parenR && methodParenCandidates.length === arrow.parens)
+                || (type === tokTypes.bracketR && bracketDepth === arrow.brackets)
+                || (type === tokTypes.braceR && functionBraces.length === arrow.braces);
+            if (!delimited && !closed)
+                break;
+            arrowExpressions.pop();
+        }
+        if (type === tokTypes.name
+            && previous !== tokTypes.dot && previous !== tokTypes.questionDot
+            && source.slice(token.start, token.end) === 'await'
+            && !functionBraces.includes(true)
+            && arrowExpressions.length === 0)
+            pendingAwait = true;
+        if (type === tokTypes._function || type === tokTypes._class) {
+            if (previous !== tokTypes.dot && previous !== tokTypes.questionDot) {
+                functionParenDepths.push(methodParenCandidates.length);
+                pendingFunctionKeyword = true;
+            }
+        }
+        else if (type === tokTypes.arrow) {
+            pendingArrowBody = true;
+        }
+        else if (type === tokTypes.parenL) {
+            methodParenCandidates.push(functionBraces.length > 0
+                && (previous === tokTypes.name || previous === tokTypes.string
+                    || previous === tokTypes.num || previous === tokTypes.bracketR));
+        }
+        else if (type === tokTypes.parenR) {
+            pendingMethodBody = methodParenCandidates.pop() === true;
+        }
+        else if (type === tokTypes.bracketL) {
+            bracketDepth++;
+        }
+        else if (type === tokTypes.bracketR) {
+            bracketDepth = Math.max(0, bracketDepth - 1);
+        }
+        else if (type === tokTypes.dollarBraceL) {
+            functionBraces.push(false);
+        }
+        else if (type === tokTypes.braceL) {
+            const functionBody = pendingArrowBody
+                || pendingMethodBody
+                || functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length;
+            if (functionParenDepths[functionParenDepths.length - 1] === methodParenCandidates.length) {
+                functionParenDepths.pop();
+            }
+            functionBraces.push(functionBody);
+            pendingArrowBody = false;
+            pendingMethodBody = false;
+        }
+        else if (type === tokTypes.braceR) {
+            functionBraces.pop();
+        }
+        previousEnd = token.end;
+        previous = type;
+        return false;
+    };
+    return Object.assign(scan, { atEnd: () => pendingAwait });
+}
+/**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
- * sees each token with whether it sits at top level and the module syntax
+ * sees every token with whether it sits at top level and the module syntax
  * it opens: for a top-level `import` or `export` keyword, the declaration
  * (not `import(`), and for an `import` anywhere, `import.meta`; never for a
- * member named so (after `.` or `?.`). The token after an `import` keyword
- * is read to decide that and not visited. `visit` returns true to stop the
- * walk.
+ * member named so (after `.` or `?.`). `visit` returns true to stop the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize.
@@ -297,22 +317,11 @@ export function walkTopLevelModuleTokens(source, visit) {
         let parens = 0;
         let brackets = 0;
         let previous = tokTypes.eof;
-        const updateDepth = (type) => {
-            if (type === tokTypes.braceL || type === tokTypes.dollarBraceL)
-                braces++;
-            else if (type === tokTypes.braceR)
-                braces = Math.max(0, braces - 1);
-            else if (type === tokTypes.parenL)
-                parens++;
-            else if (type === tokTypes.parenR)
-                parens = Math.max(0, parens - 1);
-            else if (type === tokTypes.bracketL)
-                brackets++;
-            else if (type === tokTypes.bracketR)
-                brackets = Math.max(0, brackets - 1);
-        };
+        // The token read past an `import` to tell its syntax, walked next.
+        let ahead = null;
         for (;;) {
-            const token = tokens.getToken();
+            const token = ahead ?? tokens.getToken();
+            ahead = null;
             const type = token.type;
             if (type === tokTypes.eof)
                 return false;
@@ -324,17 +333,24 @@ export function walkTopLevelModuleTokens(source, visit) {
                 syntax = 'export';
             }
             else if (keyword && type === tokTypes._import) {
-                const next = tokens.getToken();
-                previous = next.type;
-                updateDepth(next.type);
-                if (next.type === tokTypes.dot)
+                ahead = tokens.getToken();
+                if (ahead.type === tokTypes.dot)
                     syntax = 'import.meta';
-                else if (topLevel && next.type !== tokTypes.parenL)
+                else if (topLevel && ahead.type !== tokTypes.parenL)
                     syntax = 'import';
             }
-            else {
-                updateDepth(type);
-            }
+            else if (type === tokTypes.braceL || type === tokTypes.dollarBraceL)
+                braces++;
+            else if (type === tokTypes.braceR)
+                braces = Math.max(0, braces - 1);
+            else if (type === tokTypes.parenL)
+                parens++;
+            else if (type === tokTypes.parenR)
+                parens = Math.max(0, parens - 1);
+            else if (type === tokTypes.bracketL)
+                brackets++;
+            else if (type === tokTypes.bracketR)
+                brackets = Math.max(0, brackets - 1);
             if (visit(token, syntax, topLevel))
                 return true;
         }
