@@ -41,7 +41,9 @@ import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
-import { declaredPackageType, isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleSource, isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { packageScopeType } from './require-resolution.js';
+import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
@@ -231,17 +233,20 @@ export function buildRuntimeHandler(spec, ctx0) {
                 : flagSlice[inputTypeAt].slice('--input-type='.length);
         /**
          * A program's source as the CommonJS a facet runs (core/_shared/commonjs-cell.ts):
-         * TypeScript, JSX or an ES module compiled by esbuild, its import() calls kept
+         * TypeScript, JSX or an ES module (`esm`) compiled by esbuild, its import() calls kept
          * and routed to the process's ESM loader (dynamic-import-rewrite.ts), its
          * import.meta the module's own (url, resolve, dirname and filename, read
          * directly, as an object or destructured: the runner's __nimbusFileImportMeta;
          * CommonJS output alone would make it {}). Null when the transform failed,
          * which it has reported.
          */
-        async function lowerToCommonJs(code, loader, url, what) {
+        async function lowerToCommonJs(code, loader, url, what, esm) {
             try {
                 const eb = await getEsbuild();
-                return (await eb.transform(code, { loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true })).code;
+                // An ES module keeps its scope (module-format.ts): strict, no CommonJS wrapper name.
+                return (await eb.transform(esm ? esModuleSource(code) : code, {
+                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { define: ES_MODULE_UNBOUND_NAMES } : {}),
+                })).code;
             }
             catch (e) {
                 ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
@@ -273,7 +278,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 return 1;
             }
             if (isEsModuleInput(code, inputType)) {
-                const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[eval]');
+                const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[eval]', true);
                 if (lowered === null)
                     return 1;
                 code = lowered;
@@ -324,7 +329,7 @@ export function buildRuntimeHandler(spec, ctx0) {
         if (scriptPath === '-') {
             let code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
             if (isEsModuleInput(code, inputType)) {
-                const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[stdin]');
+                const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[stdin]', true);
                 if (lowered === null)
                     return 1;
                 code = lowered;
@@ -411,29 +416,24 @@ export function buildRuntimeHandler(spec, ctx0) {
         // emits __require / module.exports / exports.X, ordinary CJS source.
         // The guest's registry could take the ES module itself, but not resolve
         // its package imports or give it the file's own URL (commonjs-cell.ts).
-        async function nearestPackageType(absPath) {
-            // The nearest package.json decides; ancestors past it are not consulted.
-            const key = absPath.replace(/^\/+/, '');
-            const slash = key.lastIndexOf('/');
-            const dir = await nearestPackageDir(fs, slash > 0 ? key.substring(0, slash) : '');
-            if (dir === null)
-                return null;
-            try {
-                return declaredPackageType(await fs.readFileString(`${dir}/package.json`));
-            }
-            catch {
-                return null;
-            }
-        }
         const scriptExt = vfsPathExtension(resolvedPath);
-        const packageType = scriptExt === '.js' || scriptExt === '' ? await nearestPackageType(resolvedPath) : null;
+        // The package scope's "type", through the resolver's own lookup.
+        const packageType = scriptExt === '.js' || scriptExt === ''
+            ? await packageScopeType({
+                exists: (path) => fs.exists(path),
+                isDirectory: (path) => isDirectory(fs, path),
+                readFileString: (path) => fs.readFileString(path),
+                stat: (path) => fs.stat(path),
+            }, resolvedPath.slice(0, Math.max(0, resolvedPath.lastIndexOf('/'))))
+            : null;
         // TypeScript by the same table the bundle's ESM pass reads.
         const typescript = typescriptLoader(resolvedPath);
         // esbuild transform for TypeScript / TSX / JSX (both node and bun)
         // AND for ESM entry scripts.
-        if (typescript !== null || scriptExt === '.jsx' || isEsModuleFile(resolvedPath, code, () => packageType)) {
+        const esm = typescript === null && scriptExt !== '.jsx' && isEsModuleFile(resolvedPath, code, () => packageType);
+        if (typescript !== null || scriptExt === '.jsx' || esm) {
             const loader = typescript ?? (scriptExt === '.jsx' ? 'jsx' : 'js');
-            const lowered = await lowerToCommonJs(code, loader, 'file:///' + resolvedPath.replace(/^\/+/, ''), scriptPath);
+            const lowered = await lowerToCommonJs(code, loader, 'file:///' + resolvedPath.replace(/^\/+/, ''), scriptPath, esm);
             if (lowered === null)
                 return 1;
             code = lowered;

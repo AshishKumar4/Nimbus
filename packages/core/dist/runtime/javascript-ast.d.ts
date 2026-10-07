@@ -44,6 +44,11 @@ export declare function calleeName(callee: AnyNode): string | null;
 /** The module syntax a token opens: a top-level declaration, or `import.meta` anywhere. */
 export type ModuleSyntaxToken = 'import' | 'export' | 'import.meta';
 /**
+ * The names Node's CommonJS wrapper binds: what a CommonJS module's top level
+ * may not redeclare lexically, and what no ES module's scope has.
+ */
+export declare const COMMONJS_WRAPPER_NAMES: ReadonlySet<string>;
+/**
  * Whether `source` holds syntax only an ES module can, as Node's syntax
  * detection defines it (doc/api/packages.md "Syntax detection", on by
  * default from v22.7.0): syntax that throws when evaluated as CommonJS. That

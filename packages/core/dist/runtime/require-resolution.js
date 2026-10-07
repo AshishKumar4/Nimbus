@@ -12,6 +12,7 @@
 import { resolvePackageEntry as sharedResolvePackageEntry, resolveExports as sharedResolveExports, packageSelfReferenceSubpath, DEFAULT_CJS_CONDITIONS, DEFAULT_ESM_CONDITIONS, } from '../_shared/exports-resolver.js';
 import { TYPESCRIPT_INDEX_CANDIDATES, typescriptFallbackCandidates, } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { packageTypeOf } from './module-format.js';
 export function requireFsOverBridge(bridge) {
     const decoder = new TextDecoder();
     const absent = (read) => (async () => {
@@ -310,6 +311,14 @@ async function nearestPackageScope(vfs, fromDir, sink, progress) {
         const lastSlash = dir.lastIndexOf('/');
         dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
     }
+}
+/**
+ * The "type" of the package scope a file in `dir` belongs to
+ * (module-format.ts PackageType): what Node reads, through the same
+ * lookup, to tell a .js or extensionless file's module format.
+ */
+export async function packageScopeType(vfs, dir, progress) {
+    return packageTypeOf((await nearestPackageScope(vfs, dir, undefined, progress))?.pkg ?? null);
 }
 /**
  * Resolve an imports-field specifier `#name` against the nearest

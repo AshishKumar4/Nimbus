@@ -10,6 +10,7 @@
  * (worker facets/data-plan.ts, which only names files).
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
+import { type PackageType } from './module-format.js';
 /**
  * The filesystem questions resolution needs; held-cell reuse can additionally
  * check current read authority without rereading bytes. A missing path is
@@ -82,4 +83,10 @@ export interface ResolveSubpathResult {
 }
 /** The require resolver `prefetchForRequire` walks with. */
 export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null>;
+/**
+ * The "type" of the package scope a file in `dir` belongs to
+ * (module-format.ts PackageType): what Node reads, through the same
+ * lookup, to tell a .js or extensionless file's module format.
+ */
+export declare function packageScopeType(vfs: RequireFs, dir: string, progress?: WalkProgress): Promise<PackageType>;
 //# sourceMappingURL=require-resolution.d.ts.map

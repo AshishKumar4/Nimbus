@@ -19,6 +19,7 @@
  * Nothing that decides a cell's output may live outside that closure.
  */
 import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
+import { type PackageType } from './module-format.js';
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
  * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
@@ -64,18 +65,18 @@ export declare function bundleTypescriptLoader(path: string): 'ts' | 'tsx' | nul
 /** `name.d.ts` / `name.d.mts` / `name.d.cts`, by TypeScript's own rule. */
 export declare function isTypescriptDeclarationFile(path: string): boolean;
 /**
- * Whether a staged JavaScript file is an ES module, by its syntax as Node's
- * detection reads it (containsModuleSyntax), and for an extensionless file a
- * parse. Its package's "type" is not read: a module is lowered for what its
- * syntax needs, which a file without module syntax does not.
+ * Whether Node runs a staged JavaScript file as an ES module
+ * (module-format.ts isEsModuleFile: its extension, its package scope's
+ * `packageType`, then its syntax), and for an extensionless file whether it
+ * parses as one: a bin script, not data such as a LICENSE.
  */
-export declare function looksLikeEsm(path: string, src: string): boolean;
+export declare function looksLikeEsm(path: string, src: string, packageType: PackageType): boolean;
 /**
  * Whether the staged cell at `path` goes through the pipeline at all: an ES
  * module or TypeScript source to lower, or CommonJS (`.cjs` included) whose
  * dynamic `import()` calls are the process's.
  */
-export declare function needsBundleCellTransform(path: string, src: string): boolean;
+export declare function needsBundleCellTransform(path: string, src: string, packageType: PackageType): boolean;
 /**
  * Parseable CommonJS standing in for a module esbuild could not transform: it
  * throws the esbuild reason when required, so the failure surfaces at the
@@ -121,7 +122,7 @@ export interface BundleCellResult {
  * the provided-module pre-pass and, for large bundled ESM, its lowering to
  * CommonJS — so a paced caller accounts the source before it.
  */
-export declare function prepareBundleCell(path: string, source: string): BundleCell;
+export declare function prepareBundleCell(path: string, source: string, packageType: PackageType): BundleCell;
 /**
  * The cell's result from the host's (or the session's) outcome. A transient
  * error is no verdict on the source — the host could not run the transform
@@ -148,9 +149,10 @@ export interface StoredBundleCell {
 export interface BundleCellResultStore {
     /**
      * The content address of `source` staged at `at` as a `kind`: a module
-     * cell at its bundle path, or an entry script at its URL.
+     * cell at its bundle path, under its package scope's `packageType` (which
+     * decides whether it is an ES module), or an entry script at its URL.
      */
-    key(kind: 'cell' | 'entry', at: string, source: string): Promise<string>;
+    key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType): Promise<string>;
     /** The results held for `keys`; a key the store does not hold is absent. */
     getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
     /**
@@ -208,6 +210,7 @@ export interface BundleCellTransformStats {
 export declare function transformBundleCells(cells: ReadonlyArray<{
     readonly path: string;
     readonly source: string;
+    readonly packageType: PackageType;
 }>, { host, store, pacer }: {
     host: BundleCellHost;
     store?: BundleCellResultStore | null;

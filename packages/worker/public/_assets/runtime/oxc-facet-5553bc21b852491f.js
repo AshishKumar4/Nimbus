@@ -5946,6 +5946,7 @@ error: the Oxc transform crashed (${reason})`);
     parser.hooks = hooks;
     parser.parse();
   }
+  var COMMONJS_WRAPPER_NAMES =   new Set(["exports", "require", "module", "__filename", "__dirname"]);
   function applySourceEdits(source, edits) {
     const ordered = [...edits].sort((a, b) => a.start - b.start || a.end - b.end);
     const parts = [];
@@ -9027,6 +9028,9 @@ const ${binding} = arguments[2];
     }
   }
   var FUNCTIONS =   new Set(["FunctionDeclaration", "FunctionExpression", "ArrowFunctionExpression"]);
+  function programNames(statement) {
+    return [...varNames([statement], false), ...lexicalNames([statement])];
+  }
   function* lexicalNames(statements) {
     for (const statement of statements) {
       const node = statement.type === "ExportNamedDeclaration" || statement.type === "ExportDefaultDeclaration" ? child(statement, "declaration") : statement;
@@ -9144,12 +9148,18 @@ const ${binding} = arguments[2];
     return emitCommonJs(esm, readEsmRecords(esm), { body: "async" });
   }
   function readEsmRecords(source) {
+    return readEsmModule(source).records;
+  }
+  function readEsmModule(source) {
     const first = readModule(source, null);
-    return first.importsAfterCode ? readModule(source, first.imported).records : first.records;
+    const read = first.importsAfterCode ? readModule(source, first.imported) : first;
+    return { records: read.records, wrapperUses: read.wrapperUses };
   }
   function readModule(source, known) {
     const nameOf = (node) => node.type === "Identifier" ? String(node.name) : String(node.value);
     const imported = new Set(known ?? []);
+    const tracked =   new Set([...imported, ...COMMONJS_WRAPPER_NAMES]);
+    const declared =   new Set();
     const records = [];
     const uses =   new Map();
     let code = false;
@@ -9181,7 +9191,7 @@ const ${binding} = arguments[2];
         }
         if (node.type === "ObjectPattern") for (const property of list(node, "properties")) patternProperties.add(property);
         const name = node.type === "Identifier" ? stringOf(node, "name") : null;
-        if (name === null || !imported.has(name) || parent === null || !namesBinding(parent, key)) continue;
+        if (name === null || !tracked.has(name) || parent === null || !namesBinding(parent, key)) continue;
         if (bindingScope(scope, name) !== null) continue;
         free.push({ name, start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
       }
@@ -9189,12 +9199,13 @@ const ${binding} = arguments[2];
     };
     const onIdentifier = (identifier) => {
       const name = stringOf(identifier, "name");
-      if (name === null || !imported.has(name)) return;
+      if (name === null || !tracked.has(name)) return;
       let at2 = mentions.length;
       while (at2 > 0 && mentions[at2 - 1] > identifier.start) at2--;
       mentions.splice(at2, 0, identifier.start);
     };
     const onStatement = (node) => {
+      for (const name of programNames(node)) declared.add(name);
       if (node.type !== "ImportDeclaration") {
         for (const { name, start, end, use } of freeUses(node)) {
           const found = uses.get(name) ?? [];
@@ -9208,6 +9219,7 @@ const ${binding} = arguments[2];
             if (specifier.type === "ImportNamespaceSpecifier") continue;
             if (code && !imported.has(specifier.local.name)) importsAfterCode = true;
             imported.add(specifier.local.name);
+            tracked.add(specifier.local.name);
           }
           records.push({
             kind: "import",
@@ -9291,7 +9303,12 @@ const ${binding} = arguments[2];
       ...record,
       bindings: record.bindings.map((binding) => binding.kind === "namespace" ? binding : { ...binding, references: uses.get(binding.local) ?? [] })
     });
-    return { records: withUses, imported, importsAfterCode };
+    const wrapperUses =   new Map();
+    for (const name of COMMONJS_WRAPPER_NAMES) {
+      const found = uses.get(name);
+      if (found && !declared.has(name)) wrapperUses.set(name, found);
+    }
+    return { records: withUses, imported, importsAfterCode, wrapperUses };
   }
   function useOf(parent, key, patternProperties) {
     switch (parent.type) {

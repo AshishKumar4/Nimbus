@@ -17,7 +17,8 @@ import { tokenizer, tokTypes } from 'acorn';
 import { rewriteDynamicImports } from './dynamic-import-rewrite.js';
 import { packageNameFromSpecifier } from './barrel-detect.js';
 import { bundlerConditions, createBundlerResolver } from './bundler-resolution.js';
-import { emitCommonJs, lowerAsyncModule, readEsmRecords } from './async-module-lowering.js';
+import { emitCommonJs, lowerAsyncModule, readEsmModule } from './async-module-lowering.js';
+import { ES_MODULE_UNBOUND_NAMES } from './module-format.js';
 import { applySourceEdits, hasUnscopedAwait, nodeList, nodeName, nodeProp, parseJavaScriptModule, walkTopLevelModuleTokens, } from './javascript-ast.js';
 import { VITE_ASSET_QUERY_SUFFIXES, splitImportQuery, viteAssetLoader, } from './vite-assets.js';
 /**
@@ -318,18 +319,27 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = fals
     // Read a statement at a time (readEsmRecords), so a multi-MiB bundle reads
     // in bounded memory, imports live. What acorn cannot parse is left to the
     // transform host, which has the last word on syntax.
-    let records;
+    let read;
     try {
-        records = readEsmRecords(source);
+        read = readEsmModule(source);
     }
     catch {
         return null;
     }
+    const { records, wrapperUses } = read;
     if (records.length === 0)
         return null;
     const metaEdits = importMetaEdits(source, absoluteUrl, moduleFactory);
     if (!metaEdits)
         return null;
+    // A free use of a CommonJS wrapper name binds nothing in an ES module, as
+    // the transform's define has it (ES_MODULE_UNBOUND_NAMES).
+    const unbound = [];
+    for (const [name, references] of wrapperUses) {
+        const to = ES_MODULE_UNBOUND_NAMES[name];
+        for (const { start, end, use } of references)
+            unbound.push({ start, end, text: use === 'shorthand' ? `${name}: ${to}` : to });
+    }
     // Only generated references use wrapper arguments. Source declarations
     // named module/require/exports retain their own meanings. An import.meta
     // is one token run, so it is inside a record's range or outside every one.
@@ -337,7 +347,7 @@ export function rewriteBundledEsmToCjs(source, absoluteUrl, moduleFactory = fals
         body: 'sync',
         exportsObject: moduleFactory ? 'arguments[2].exports' : 'module.exports',
         requireFunction: moduleFactory ? 'arguments[1]' : 'module.require',
-        edits: metaEdits.filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
+        edits: [...metaEdits, ...unbound].filter((edit) => !records.some(({ start, end }) => edit.start >= start && edit.end <= end)),
     });
     return { code: (moduleFactory ? '"use strict";\n' : '') + code, map: '', warnings: [] };
 }
