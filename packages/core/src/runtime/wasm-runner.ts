@@ -406,6 +406,7 @@ export function makeWasmRunner(deps: {
         wasiFs?: {
           root: string;
           preopens: Array<{ wasiPath: string; vfsPath: string }>;
+          cred?: { uid: number; gid: number; groups: number[] };
         };
       },
       facetEnv?: { SUPERVISOR?: unknown },
@@ -463,7 +464,10 @@ export function makeWasmRunner(deps: {
         // Install the preopens. fd 3 = the user's session root preopen. The
         // shim's fd table is reset by initFS each call.
         if (args.wasiFs) {
-          initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens });
+          // With its credential the process answers what it can from its own
+          // store and sends its changes as waves (wasi/resident-filesystem.ts);
+          // without, every call is a round trip to the session.
+          initFS({ root: args.wasiFs.root, preopens: args.wasiFs.preopens, cred: args.wasiFs.cred });
           // initFS resets the live state, so adoption has to follow it. Every
           // file the guest touches is then read from and written to the
           // authority through the stub.
@@ -678,7 +682,7 @@ export function makeWasmRunner(deps: {
     if (processFs) {
       // Session root = cwd of the shell invocation. Falls back to /home/user.
       const root = (opts.cwd || '/home/user').replace(/^\/+/, '');
-      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }] };
+      wasiFs = { root, preopens: [{ wasiPath: '/', vfsPath: root }], cred: { uid: cred.uid, gid: cred.gid, groups: [...cred.groups] } };
     }
 
     /**
