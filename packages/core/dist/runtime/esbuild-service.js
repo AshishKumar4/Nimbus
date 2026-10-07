@@ -212,6 +212,12 @@ function importMetaEdits(source, absoluteUrl, moduleFactory) {
         return null;
     }
 }
+/**
+ * The runtime's function a bound record calls for its package: the one the
+ * module system serves (node-shims.ts), named apart from the module's own
+ * `require`, which an ES module does not have (module-format.ts).
+ */
+export const PROVIDED_PACKAGE_HOOK = '__nimbusProvidedPackage';
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export function rewriteProvidedCommonJsModules(source) {
     const helpers = new Set(['__commonJS']);
@@ -286,7 +292,7 @@ export function rewriteProvidedCommonJsModules(source) {
                 last = token;
             }
             if (singleModule && bodySeen && braces === 0) {
-                edits.push({ start: a.start, end: last.end, text: '(() => require(' + JSON.stringify(entry[0]) + '))' });
+                edits.push({ start: a.start, end: last.end, text: `(() => ${PROVIDED_PACKAGE_HOOK}(${JSON.stringify(entry[0])}))` });
             }
             previous = last.type;
             a = tokens.getToken();

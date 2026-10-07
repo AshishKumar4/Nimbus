@@ -84,6 +84,12 @@ export interface ResolveSubpathResult {
 /** The require resolver `prefetchForRequire` walks with. */
 export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null>;
 /**
+ * Whether a package.json is at `path` for a package scope walk. One the
+ * user may not look up is none, as Node's lookup reads it: a device mount
+ * shows nothing above the directory its user consented to.
+ */
+export declare function packageJsonVisible(vfs: RequireFs, path: string): Promise<boolean>;
+/**
  * The "type" of the package scope a file in `dir` belongs to
  * (module-format.ts PackageType): what Node reads, through the same
  * lookup, to tell a .js or extensionless file's module format.

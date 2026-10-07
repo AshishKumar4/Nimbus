@@ -1120,9 +1120,10 @@ export async function registerHostedCommands(self, workspace) {
                 return 1;
             }
             const name = cwd.split('/').pop() || 'project';
+            // No "type", as npm 10's init writes none: a .js in the project runs as
+            // Node detects it, its CommonJS as CommonJS.
             const pkg = {
                 name, version: '1.0.0', description: '', main: 'index.js',
-                type: 'module',
                 scripts: { dev: 'vite', build: 'vite build', preview: 'vite preview', test: 'echo "no test"' },
                 keywords: [], author: '', license: 'MIT', dependencies: {}, devDependencies: {},
             };
