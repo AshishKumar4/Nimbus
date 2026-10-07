@@ -24,6 +24,7 @@ import {
   facetIdBudget,
 } from '../../packages/fabric/src/budgets.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
+import { facetPool } from '../../packages/fabric/src/facet-pool.ts';
 import { processHostFor } from '../../packages/worker/src/loaders/process-host.ts';
 import {
   createCtxExports,
@@ -156,6 +157,40 @@ function spawn(fabric, pid) {
   );
   handle.kill();
   await handle.done.catch(() => {});
+}
+
+// ── (4) every name space counts once, in one object ─────────────────────────
+// A lease's explicit name and the slot book's names share one budget. Each
+// first use is one ID, whichever book minted it, and an explicit name used
+// again after a reset is not minted again.
+{
+  const storage = new Map();
+  const first = setup({ storage });
+  const lease = await facetPool(first.ctx).acquire('lease-1', async () => ({ class: {} }));
+  lease.detach();
+  await lease.retire();
+  const p1 = await spawn(first.fabric, 1);
+  const p2 = await spawn(first.fabric, 2);
+  await Promise.all([p1.booted(), p2.booted()]);
+  assert.equal(
+    (await facetIdBudget(first.ctx)).consumed, 3,
+    'lease-1, proc-slot-0 and proc-slot-1 are three IDs',
+  );
+  p1.kill(); p2.kill();
+  await Promise.all([p1.done, p2.done]);
+
+  const second = setup({ storage });
+  const again = await facetPool(second.ctx).acquire('lease-1', async () => ({ class: {} }));
+  again.detach();
+  await again.retire();
+  const p3 = await spawn(second.fabric, 3);
+  await p3.booted();
+  assert.equal(
+    (await facetIdBudget(second.ctx)).consumed, 3,
+    'after a reset, lease-1 and proc-slot-0 are names this object already minted',
+  );
+  p3.kill();
+  await p3.done;
 }
 
 console.log('ok - facet-id-ledger (minted counted, reuse free, durable across resets, wall named)');
