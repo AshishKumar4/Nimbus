@@ -439,6 +439,37 @@ async function until(ready, what) {
   assert.equal(await withRecall(() => s.kernel.readFileString('home/user/rr.txt')), 'other');
 }
 
+// ── Review D (41b-2): a write past a piece goes through its description, every piece ──
+// Red before: the client split a 6 MiB write into pieces and only the first
+// kept the description; the rest went by inode or name, dropped after an
+// unlink (no name has the file) and refused after a chmod (EACCES).
+{
+  const s = session();
+  const big = new Uint8Array(6 * 1024 * 1024);
+  for (let i = 0; i < big.length; i++) big[i] = i % 251;
+  const tail = (bytes) => Array.from(bytes.subarray(bytes.length - 8));
+  s.kernel.writeFile('home/user/gone.bin', enc.encode(''));
+  s.kernel.chown('home/user/gone.bin', 1000, 1000);
+  const gone = await s.fs.open('/home/user/gone.bin', { read: true, write: true });
+  await withRecall(() => s.kernel.unlink('home/user/gone.bin'));
+  await s.fs.write(gone.id, 0, big);
+  await s.fs.fsync(gone.id);
+  assert.equal((await s.fs.fstat(gone.id)).size, big.length, 'the pieces after the first were dropped after an unlink');
+  assert.deepEqual(Array.from(await s.fs.read(gone.id, big.length - 8, 8)), tail(big), 'the last piece is not what was written');
+  await s.fs.close(gone.id);
+  s.kernel.writeFile('home/user/locked.bin', enc.encode(''));
+  s.kernel.chown('home/user/locked.bin', 1000, 1000);
+  const locked = await s.fs.open('/home/user/locked.bin', { read: true, write: true });
+  await withRecall(() => s.kernel.chmod('home/user/locked.bin', 0o000));
+  await s.fs.write(locked.id, 0, big);
+  await s.fs.fsync(locked.id);
+  await s.fs.close(locked.id);
+  await s.fs.settle();
+  const stored = await withRecall(() => s.kernel.readFile('home/user/locked.bin'));
+  assert.equal(stored.length, big.length, 'the pieces after the first were refused after a chmod');
+  assert.deepEqual(tail(stored), tail(big));
+}
+
 // ── Review D8 (race): what a description writes while its grant's recall is sent goes through ──
 // Red before: the description went on deciding while the recall's flush
 // waited, and the drain after it replayed the whole file over the peer's write.
