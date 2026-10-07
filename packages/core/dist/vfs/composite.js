@@ -946,12 +946,17 @@ export class CompositeVFS {
      * or killed (or its host lease disposed) does not land. `owner`: the
      * exclusive-mutation lease its mutations present to the guard (a wave's,
      * routed onto a mount). Shares this view's table, principal and backend
-     * views; not cached, so the check is the holder's alone.
+     * views; not cached, so the check is the holder's alone. A scoped view
+     * scoped again keeps the checks it had (they run first) and its lease,
+     * unless another is given.
      */
     scoped(check, owner) {
+        const outer = this.check;
+        const composed = outer === undefined ? check : () => { outer(); check(); };
+        const lease = owner ?? this.owner;
         return new CompositeVFS(this.table.mounts.get(ROOT_POINT).source, undefined, {
-            table: this.table, principal: this.viewer, views: this.views, viewed: this.viewed, check,
-            ...(owner === undefined ? {} : { owner }),
+            table: this.table, principal: this.viewer, views: this.views, viewed: this.viewed, check: composed,
+            ...(lease === undefined ? {} : { owner: lease }),
         });
     }
     as(cred, actor) {

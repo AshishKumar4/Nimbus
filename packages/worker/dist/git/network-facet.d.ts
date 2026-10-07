@@ -170,6 +170,8 @@ export interface GitNetworkResult {
     phases?: GitNetworkPhaseDiagnostic[];
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;
+    /** A write git would have failed: git's own lines for it (pack/mount-writer.ts GitWriteFailure). */
+    gitFailure?: string;
     budget?: GitCloneBudgetDiagnostic;
     /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
     cleanup?: boolean;

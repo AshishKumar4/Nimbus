@@ -2833,7 +2833,11 @@ export class SqliteVFS {
     mutationRefusal(path, cred, owner) {
         return this.refusalAt(this.storageKey(path, cred), owner ?? this.activeMutationOwner);
     }
-    /** `owner`: the lease the mutation presents (null for none), passed by the caller, never read from ambient state. */
+    /**
+     * `owner`: the lease the mutation presents (null for none). A routed or
+     * awaited mutation passes its own; a synchronous one inside
+     * withMutationOwner is presented by activeMutationOwner, the default.
+     */
     refusalAt(key, owner = this.activeMutationOwner) {
         const normalized = normalizeVfsPath(key);
         // Another owner's lease first (EBUSY), whoever asks; then a lease

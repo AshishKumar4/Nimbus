@@ -267,19 +267,28 @@ export function reserveInterruptedClones(vfs, records) {
 export async function finishReservedClones(vfs, storage, reserved, options = {}) {
     const outcomes = [];
     let failure = null;
+    // Each record on its own: one that fails (its namespace not made, its cleanup or its namespace's
+    // disposal failing) keeps its record for the next generation, its lease released, and the rest go on.
     for (const { record, owner } of reserved) {
-        // A clone on a mount is cleaned up through the namespace; one there is no namespace for stays recorded.
-        const namespace = record.mount === true ? vfs.namespace?.(record.cred, owner) : undefined;
         try {
-            if (record.mount === true && namespace === undefined)
-                throw new Error(`no namespace to clean up the clone at /${record.dir} through`);
-            outcomes.push(await cleanUpClone(namespace?.fs ?? vfs.as(record.cred, { mutationOwner: owner }), storage, record, options));
+            // A clone on a mount is cleaned up through the namespace.
+            let namespace;
+            try {
+                if (record.mount === true) {
+                    namespace = vfs.namespace?.(record.cred, owner);
+                    if (namespace === undefined)
+                        throw new Error(`no namespace to clean up the clone at /${record.dir} through`);
+                }
+                outcomes.push(await cleanUpClone(namespace?.fs ?? vfs.as(record.cred, { mutationOwner: owner }), storage, record, options));
+            }
+            finally {
+                await namespace?.dispose();
+            }
         }
         catch (error) {
             failure ??= error;
         }
         finally {
-            await namespace?.dispose();
             vfs.releaseExclusiveMutation(owner);
         }
     }

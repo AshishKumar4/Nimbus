@@ -438,7 +438,9 @@ export declare class CompositeVFS implements VFS {
      * or killed (or its host lease disposed) does not land. `owner`: the
      * exclusive-mutation lease its mutations present to the guard (a wave's,
      * routed onto a mount). Shares this view's table, principal and backend
-     * views; not cached, so the check is the holder's alone.
+     * views; not cached, so the check is the holder's alone. A scoped view
+     * scoped again keeps the checks it had (they run first) and its lease,
+     * unless another is given.
      */
     scoped(check: () => void, owner?: string): CompositeVFS;
     as(cred: VfsCred, actor?: string): CompositeVFS;

@@ -749,7 +749,7 @@ class AwaitingProcessBridge {
     }
     writeRange(path, offset, bytes, options) {
         return this.either([path], () => this.bridge.writeRange(path, offset, bytes, options), async () => {
-            await this.namespace.writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
+            await this.owned(options).writeRange(await this.path(path), offset, bytes, { parents: options?.createParents === true });
             return this.receipt();
         });
     }
@@ -768,7 +768,7 @@ class AwaitingProcessBridge {
     }
     truncate(path, size, options) {
         return this.either([path], () => this.bridge.truncate(path, size, options), async () => {
-            await this.namespace.truncate((await this.path(path)), size);
+            await this.owned(options).truncate((await this.path(path)), size);
             return this.receipt();
         });
     }
@@ -823,7 +823,7 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.rmdir(path, options), async () => this.owned(options).rmdir((await this.path(path, false))));
     }
     rename(from, to, options) {
-        return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.namespace.rename((await this.path(from, false)), (await this.path(to, false))));
+        return this.either([from, to], () => this.bridge.rename(from, to, options), async () => this.owned(options).rename((await this.path(from, false)), (await this.path(to, false))));
     }
     realpath(path) {
         return this.either([path], () => this.bridge.realpath(path), async () => this.namespace.realpathAsync(await this.path(path)));
@@ -892,9 +892,11 @@ class AwaitingProcessBridge {
                 throw syscallError('EISDIR', 'open', p);
             if (flags.directory && stat !== null && stat.type !== 'directory')
                 throw syscallError('ENOTDIR', 'open', p);
+            const mutates = !!(flags.write || flags.create || flags.truncate || flags.append);
             if (stat === null || flags.truncate)
-                await this.owned(flags.write || flags.create || flags.truncate || flags.append ? options : undefined).writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
+                await this.owned(mutates ? options : undefined).writeFile(p, new Uint8Array(0), flags.mode === undefined ? undefined : { mode: flags.mode });
             return this.issue({
+                ...(mutates && options?.mutationOwner !== undefined ? { owner: options.mutationOwner } : {}),
                 // The file it opened, by the name the namespace resolved for it: a
                 // link on the way repointed later does not move the descriptor.
                 path: await this.namespace.realpathAsync(p),
@@ -939,7 +941,7 @@ class AwaitingProcessBridge {
             const start = d.flags.append ? ((await this.namespace.stat(d.path))?.size ?? 0) : offset ?? d.position;
             this.live();
             try {
-                await this.namespace.writeRange(d.path, start, bytes);
+                await this.owned({ mutationOwner: d.owner }).writeRange(d.path, start, bytes);
             }
             catch (error) {
                 if (!(error instanceof VfsError && error.code === 'ENOTSUP'))
@@ -948,7 +950,7 @@ class AwaitingProcessBridge {
                 const next = new Uint8Array(Math.max(file.byteLength, start + bytes.byteLength));
                 next.set(file);
                 next.set(bytes, start);
-                await this.namespace.writeFile(d.path, next);
+                await this.owned({ mutationOwner: d.owner }).writeFile(d.path, next);
             }
             if (offset === null || d.flags.append)
                 d.position = start + bytes.byteLength;
@@ -996,17 +998,17 @@ class AwaitingProcessBridge {
         return this.on(handleId, () => this.bridge.ftruncate(handleId, size), async (d) => {
             if (!d.flags.write)
                 throw fsError('EINVAL', 'ftruncate', d.path);
-            await this.namespace.truncate(d.path, size);
+            await this.owned({ mutationOwner: d.owner }).truncate(d.path, size);
         });
     }
     fchmod(handleId, mode) {
-        return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.namespace.chmod(d.path, mode); });
+        return this.on(handleId, () => this.bridge.fchmod(handleId, mode), async (d) => { await this.owned({ mutationOwner: d.owner }).chmod(d.path, mode); });
     }
     fchown(handleId, uid, gid) {
-        return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.namespace.chown(d.path, uid, gid); });
+        return this.on(handleId, () => this.bridge.fchown(handleId, uid, gid), async (d) => { await this.owned({ mutationOwner: d.owner }).chown(d.path, uid, gid); });
     }
     futimes(handleId, atimeMs, mtimeMs) {
-        return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.namespace.utimes(d.path, atimeMs, mtimeMs); });
+        return this.on(handleId, () => this.bridge.futimes(handleId, atimeMs, mtimeMs), async (d) => { await this.owned({ mutationOwner: d.owner }).utimes(d.path, atimeMs, mtimeMs); });
     }
 }
 /** A command's view for a process binding, over any binding authority. */

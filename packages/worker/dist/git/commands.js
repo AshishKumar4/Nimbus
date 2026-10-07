@@ -2957,12 +2957,14 @@ filesystem) {
                             await deleteCloneJob(doCtx.storage, job.dir);
                             progress.write(`\n[git] clone complete (${result.filesWritten} files, ` +
                                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
-                            return true;
+                            return 0;
                         }
-                        ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+                        // A write git would have failed: git's words, and git's 128 (it dies); else what failed.
+                        const code = result.gitFailure !== undefined ? 128 : 1;
+                        ctx.stderr.write(result.gitFailure ?? `\n[git] clone failed: ${result.error}\n`);
                         if (result.cleanup !== true) {
                             await deleteCloneJob(doCtx.storage, job.dir);
-                            return false;
+                            return code;
                         }
                         // As git's remove_junk: in the DO, under the clone's lease (its
                         // current owner: the facets were fenced), as the clone's credential.
@@ -2985,7 +2987,7 @@ filesystem) {
                         finally {
                             await host?.dispose();
                         }
-                        return false;
+                        return code;
                     }
                     finally {
                         vfs.releaseExclusiveMutation(mutationOwner);
@@ -3034,7 +3036,7 @@ filesystem) {
                         progress.write('[git] clone running in background...\n');
                         return 0;
                     }
-                    return (await task) ? 0 : 1;
+                    return await task;
                 }
                 finally {
                     if (!handedOff)
