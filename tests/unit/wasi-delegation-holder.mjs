@@ -474,9 +474,8 @@ async function until(ready, what) {
   const fd = await s.fs.open('/home/user/full.txt', { write: true });
   failNext = true;
   await s.fs.write(fd.id, 0, enc.encode('lost'));
-  // Sent and refused by an unrelated call's send (the session is asked something).
-  await s.fs.stat('/home/user');
-  assert.equal(s.fs.holding(), false, 'the refused write was still pending');
+  // Sent (the client sends on its own) and refused: nothing is pending, the refusal recorded.
+  await until(() => s.fs.holding() === false, 'the refused write sent');
   const st = await s.fs.fstat(fd.id);
   await assert.rejects(async () => s.fs.syncInode(st.dev, st.ino), (error) => typeof error?.code === 'string', 'a sync of the file did not report the recorded refusal');
   await s.fs.close(fd.id);
@@ -484,7 +483,7 @@ async function until(ready, what) {
   const again = await s.fs.open('/home/user/full.txt', { write: true });
   failNext = true;
   await s.fs.write(again.id, 0, enc.encode('lost too'));
-  await s.fs.stat('/home/user');
+  await until(() => s.fs.holding() === false, 'the second refused write sent');
   await assert.rejects(async () => s.fs.close(again.id), (error) => typeof error?.code === 'string', 'a close did not report the recorded refusal');
   await s.fs.settle();
 }
