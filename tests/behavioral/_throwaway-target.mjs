@@ -83,6 +83,7 @@ const ROOT = join(import.meta.dirname, '..', '..');
 // through packages/worker, which only an install provides.
 assertInstalled(ROOT, '_throwaway-target.mjs');
 const {
+  MACHINE_STATE_DIR,
   PROBE_TARGET_VARS,
   WRANGLER,
   apiToken,
@@ -102,6 +103,8 @@ const { assertDeployIsolated } = await import('../../scripts/deploy-isolation.mj
 const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 
 const PROBE_APP = join(ROOT, 'apps', 'probe');
+/** Machine state: every Preview this machine deleted, until its hostname stops answering. */
+const DELETED_PATH = join(MACHINE_STATE_DIR, 'deleted-previews.json');
 const STATE_DIR = join(ROOT, '.wrangler', 'throwaway-targets');
 
 /** Throwaways are always `<prefix><suffix>` so a stray one is obvious. */
@@ -255,11 +258,15 @@ async function down() {
 
   for (const name of names) {
     const preview = readState(statePath(name))?.preview ?? previewName(name);
+    const base = readState(statePath(name))?.base ?? null;
+    const existing = await cfApi(`/workers/workers/${PREVIEW_PARENT}/previews/${encodeURIComponent(preview)}`, { account, token });
     log(`deleting Preview ${preview} of ${PREVIEW_PARENT}`);
     wrangle(WRANGLER, ['preview', 'delete', '--name', preview, '--worker-name', PREVIEW_PARENT, '--skip-confirmation'], {
       cwd: PROBE_APP, account, allowFail: true,
     });
     const gone = await confirmDeleted({ name, preview, account, token });
+    // Its hostname may go on being served (spike/preview-stale): `list` looks.
+    if (existing.ok && base) recordDeleted({ name, preview, id: existing.result?.id ?? null, base });
     rmSync(statePath(name), { force: true });
     if (!gone.ok) {
       console.error(`FAILED to confirm ${name} is gone: ${gone.reason}`);
@@ -285,6 +292,36 @@ async function list() {
     const local = held.get(p.name);
     process.stdout.write(`${p.name}\t${workersDevUrlOf(p.urls) ?? '(no URL)'}\t${p.created_on ?? ''}\t${local ? `held here as ${local}` : 'not held here'}\n`);
   }
+  // Every Preview this machine deleted whose hostname still answers. The
+  // edge can go on serving a deleted Preview's first deployment for hours,
+  // under the deleted Preview's id, after the API has forgotten both
+  // (spike/preview-stale), and nothing can delete it. It holds the secret
+  // `down` discarded, so it mints nothing; listed so it is never mistaken
+  // for a live target. One whose hostname has gone (404) is dropped.
+  const live = new Set((listed.result ?? []).map((p) => p.name));
+  const still = [];
+  for (const entry of readDeleted()) {
+    if (live.has(entry.preview)) continue;
+    const status = await fetch(entry.base, { redirect: 'manual', signal: AbortSignal.timeout(15_000) }).then((r) => r.status, () => 404);
+    if (status === 404) continue;
+    still.push(entry);
+    process.stdout.write(`${entry.preview}\t${entry.base}\tdeleted ${entry.deletedAt}\tSTILL SERVED by the edge (${status}): a deployment of this deleted Preview (last id ${entry.id ?? '?'}); nothing can delete it, and its secret is gone\n`);
+  }
+  writeDeleted(still);
+}
+
+// ── Deleted Previews ─────────────────────────────────────────────────
+
+function readDeleted() {
+  return readState(DELETED_PATH)?.previews ?? [];
+}
+
+function writeDeleted(previews) {
+  writeState(DELETED_PATH, { previews });
+}
+
+function recordDeleted({ name, preview, id, base }) {
+  writeDeleted([...readDeleted().filter((entry) => entry.preview !== preview), { name, preview, id, base, deletedAt: new Date().toISOString() }]);
 }
 
 // ── Previews ─────────────────────────────────────────────────────────
