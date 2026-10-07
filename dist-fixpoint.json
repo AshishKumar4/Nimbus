@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b9a63a305f8dfaefe19db215065bd1818937ad143406fa56a27692924691bdb7",
+  "fingerprint": "b214023620d8b19614ec2f5a2af795918836acc1763c7e7a1daf6bae255a522e",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -703,8 +703,8 @@
     "packages/core/dist/substrate/lifo/commands/system/npm-log.d.ts.map": "020ea5b0c45c09e94337431389f4feec4aee26432b2e0a8628ac1c567c5671c8",
     "packages/core/dist/substrate/lifo/commands/system/npm-log.js": "4a2eeeade8072b9a97c3eeef1443200b26e0bbde69f4f513c9cad6aede48fa39",
     "packages/core/dist/substrate/lifo/commands/system/npm.d.ts": "cea453ce21dec9a7af21396a14027d556d2213b1fcee25dd3cca8df0b5eb5fcd",
-    "packages/core/dist/substrate/lifo/commands/system/npm.d.ts.map": "93cf09f608d01dc17defc63f71e1451728cd63b4d03822480831f47d41a21775",
-    "packages/core/dist/substrate/lifo/commands/system/npm.js": "5c2dce21244a0448629f07eebda82f8b34d66d0946363574edcd8f96953879cb",
+    "packages/core/dist/substrate/lifo/commands/system/npm.d.ts.map": "8a0d43aa0eee6408a521c30b09cdd6d07b2161a5888beddd73ca5534200397c6",
+    "packages/core/dist/substrate/lifo/commands/system/npm.js": "72cb01562f27aeb76c11e154cd1eac4e1ca9ab99c64fa1b57eb1da7474d1462d",
     "packages/core/dist/substrate/lifo/commands/system/ps.d.ts": "f6809f295df27c2f004353bede3edbbb8e32803f85cfb26e47384e42220d1fc3",
     "packages/core/dist/substrate/lifo/commands/system/ps.d.ts.map": "5aea5bfa8d2e4a774559efb753c49275e7edc9e78ae03c88e64545bde94f34ce",
     "packages/core/dist/substrate/lifo/commands/system/ps.js": "86070859381a0fc3f57176e5095c48b5da3a4424841ffd075b71e9d459f22d73",
@@ -1278,7 +1278,7 @@
     "packages/core/src/substrate/lifo/commands/system/node.ts": "bf531f00329a81db3e880e18fe6342ed33a7821337377f318374f642dedd41a4",
     "packages/core/src/substrate/lifo/commands/system/npm-install-args.ts": "a1fc5977cc3582207b454eff66a65330534017a7f324154faf1e5958aa212d98",
     "packages/core/src/substrate/lifo/commands/system/npm-log.ts": "51c0297f3f3ea797efa130d7c623b984092772ddc7fbd5b02d0274bc24a4c581",
-    "packages/core/src/substrate/lifo/commands/system/npm.ts": "414df6963df87cd26c92aa90fc6508d138caba95b117feb948dc01d2cda03515",
+    "packages/core/src/substrate/lifo/commands/system/npm.ts": "d044fcfa1f58cd1dbf5d14e9574471029637ee924d087f8fdd9de6e7e42d47a7",
     "packages/core/src/substrate/lifo/commands/system/ps.ts": "0a80460b2d28e3887069563a0dfca5fce10ffbcef2d667ccc0fb3d4e5f30e3f8",
     "packages/core/src/substrate/lifo/commands/system/registry-schemas.ts": "7b437c2d33bc2b7f1b6c08bb1a4ebf51ce0e07073c4eac8d236bf9f713455dbe",
     "packages/core/src/substrate/lifo/commands/system/sl.ts": "29a70d4d38d26bb36b510af607484c200b4fc2cbcd7fd55a5526edb269646277",
