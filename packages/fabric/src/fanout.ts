@@ -83,6 +83,21 @@ export const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
 export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
 
 /**
+ * How long a call to a peer DO waits before attempt `attempt + 1` after it
+ * failed with `error`, or null to give up: a transient reset on the reset
+ * schedule, an overloaded peer on the overload schedule where the caller
+ * waits for one (`retryOverloaded`), anything else never.
+ */
+export function peerRetryDelay(error: unknown, attempt: number, policy: { retryOverloaded: boolean }): number | null {
+  if (attempt >= PEER_TRANSIENT_RESET_RETRIES) return null;
+  const cls = classifyDoCall(error);
+  const schedule = cls === 'overloaded'
+    ? (policy.retryOverloaded ? PEER_OVERLOAD_BACKOFF_MS : null)
+    : isRetryableDoCall(cls) ? PEER_RETRY_BACKOFF_MS : null;
+  return schedule === null ? null : schedule[Math.min(attempt, schedule.length - 1)];
+}
+
+/**
  * Peer shards dispatched per phase. Each phase is a barrier that costs its
  * slowest member, so a wide fan-out pays ⌈shards / FANOUT_PHASE_SIZE⌉ serial
  * round-trips; the size trades that serialization against simultaneous cold
@@ -436,12 +451,9 @@ export class Fanout {
             }
             return;
           } catch (err) {
-            const cls = classifyDoCall(err);
-            const schedule = cls === 'overloaded' ? PEER_OVERLOAD_BACKOFF_MS
-              : isRetryableDoCall(cls) ? PEER_RETRY_BACKOFF_MS
-              : null;
-            if (schedule && attempt < PEER_TRANSIENT_RESET_RETRIES) {
-              const backoff = schedule[Math.min(attempt, schedule.length - 1)];
+            // A shard waits out an overloaded peer: it never ran there.
+            const backoff = peerRetryDelay(err, attempt, { retryOverloaded: true });
+            if (backoff !== null) {
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
