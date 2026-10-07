@@ -80,9 +80,9 @@ Resident filesystem transport retains its subrequest charging scope across
 incoming HTTP calls. Native tail telemetry showed separate HTTP invocations
 while a default `10000` budget failed on the tenth 1000-write call to one
 resident process. The deliberately generous but finite process ceiling permits
-long-lived servers, and never exceeds the documented Workers maximum of10M.
+long-lived servers, and never exceeds the documented Workers maximum of 10M.
 Acceptance of a larger Loader input does not prove a larger enforced ceiling.
-The lifetime ceiling eventually stops10M transport operations, not necessarily
+The lifetime ceiling eventually stops 10M transport operations, not necessarily
 quickly. CPU bounds hot loops per native invocation and task wall time bounds
 one-shot I/O; a low-CPU resident loop spanning calls can run until the ceiling.
 The injected guest budget reserves 64 requests for reporting and must not reset

@@ -1,7 +1,7 @@
 export declare const FACET_LIMITS: Readonly<{
     process: Readonly<{
         cpuMs: 300000;
-        subRequests: 1000000000;
+        subRequests: 10000000;
         taskTimeoutMs: 300000;
     }>;
     build: Readonly<{

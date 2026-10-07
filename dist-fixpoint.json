@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "2cc250e515e08c3d4a97992e6e62523f5e90b2e1301165bd6b30e03212dea65b",
+  "fingerprint": "80de069eea36bb4f425c56fac62f6679da23c3c68e7f209d935aa0c906ceaa4b",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1438,9 +1438,9 @@
     "packages/fabric/dist/do-calls.d.ts": "c426cc0caf78f62c3a54297e47c6819ff978f840b787d2da54b0a123d97d4098",
     "packages/fabric/dist/do-calls.d.ts.map": "2a3cfe5cf377ad66707ed9ce3a9f3380f3b25740514a99d855771fca42799f9f",
     "packages/fabric/dist/do-calls.js": "33c2131ccfb37dd493e89c6bc013eb15d85a0f2249ba5dd4401b87dc5885f7a3",
-    "packages/fabric/dist/facet-limits.d.ts": "e8c7d3d43d4ef942825feaa0a698f7876d9b0f46619284ababddc5de29636811",
-    "packages/fabric/dist/facet-limits.d.ts.map": "01c39795e07b923f13e9217590b723b5f4e78386e8f502c2fce855fa6476eca0",
-    "packages/fabric/dist/facet-limits.js": "7e2bd25bd317455b49bdf1737fc9c9dd7c14c0a5d5286e4e176d1a68499fcddd",
+    "packages/fabric/dist/facet-limits.d.ts": "b23313e8989c62fb39b3ba8a9469efa4fa1396e5444e1ca78190d326be809c1b",
+    "packages/fabric/dist/facet-limits.d.ts.map": "474894beeb56d0fc119d260ef741c948b9ef50dee0e5ee4fee386778f832852e",
+    "packages/fabric/dist/facet-limits.js": "65564eb9c49331731996459be562eef88bd506d819f3af318a44242017554125",
     "packages/fabric/dist/facet-pool.d.ts": "da616e32ee8e9c69965e45b5c928239bc1f208e8da81e3c6d654b02341a6b6b3",
     "packages/fabric/dist/facet-pool.d.ts.map": "a057e5a39fe3c7dfed828f2867a6f62a0f9cb6f344b57480f3c42eaebe329271",
     "packages/fabric/dist/facet-pool.js": "3ba602bbd9c2d91e81ebf42f5889790baf504043d1db1543d791918e10fa1c6d",
@@ -1521,7 +1521,7 @@
     "packages/fabric/src/connections.ts": "c3a9c8d5ef3b76dbbd6b9de331ab1399135c3cb445fe06196ff5f0285ce9709d",
     "packages/fabric/src/derived.ts": "a5277821af28ea74b571f41c5ff2460d7f72befc0b719a7fe328e11afcdace52",
     "packages/fabric/src/do-calls.ts": "a21074c90aebc8ea28132e26b7100a2f9c14147da3ce1a40cbbc6a8e800b2b90",
-    "packages/fabric/src/facet-limits.ts": "54d5724f5a0fae01aa625770b7a156f51648a86a16b635dd9b22522a99f5e553",
+    "packages/fabric/src/facet-limits.ts": "cfa19ca96dd28f801a44ee1255606d914cdc42e0cfac893d26f391f555646e69",
     "packages/fabric/src/facet-pool.ts": "8d329728e4e972a031b647cb872c2fc664ad0de0be064b8f5d2ca7303d8d4d53",
     "packages/fabric/src/fanout.ts": "bbe276ea514726dc12c515fa918244f6f6f0f4356267943b816c7305cab6f92e",
     "packages/fabric/src/fenced-work.ts": "dc178399bfdebb63fcfad0ec793bc3fb3e30ef00e74c5a1b3adab615e50a6efd",
