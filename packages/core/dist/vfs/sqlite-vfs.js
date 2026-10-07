@@ -71,6 +71,15 @@ export const ROOT_INODE = 1;
 const nodeHost = globalThis;
 /** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
 export const ROUTED_LINK_TARGET_MAX = 4096;
+/**
+ * The largest file a wave writes to a mount. A routed file is one
+ * whole-file writeFile, its bytes held under the wave's credit until that
+ * call (half the shared write credit, so a held file never starves the
+ * wave); a larger one is refused (ENOTSUP, naming this) before anything is
+ * touched. A backend that declares an atomic streaming write could take
+ * more; none does yet.
+ */
+export const ROUTED_FILE_MAX = 4 * 1024 * 1024;
 const INODE_ROW_COLUMNS = 15;
 const CHUNK_ROW_COLUMNS = 4;
 const MANIFEST_ROW_COLUMNS = 4;
@@ -7322,14 +7331,19 @@ export class SqliteVFS {
     /**
      * Whether the namespace places every one of `names` (as `cred` names
      * them) on this filesystem, by lookups made in this turn: false when one
-     * lands on a mount, when a lookup leaves the synchronous backends, or
-     * when it fails. A caller that writes in this same turn writes where the
+     * lands on a mount or (unless `aboveMounts`) is a directory above a mount
+     * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
      * namespace would.
      */
-    placesHere(names, cred = CRED_KERNEL) {
-        return this.placedHere(names, cred);
+    placesHere(names, cred = CRED_KERNEL, options) {
+        return this.placedHere(names, cred, undefined, options?.aboveMounts === true);
     }
-    placedHere(names, cred, signal) {
+    /**
+     * `aboveMounts`: a directory above a mount point counts as this
+     * filesystem's, as a directory record there is (making, reading or
+     * owning the root's directory); else it is the namespace's to answer.
+     */
+    placedHere(names, cred, signal, aboveMounts = false) {
         const router = this.waveRouter;
         if (router === null)
             return true;
@@ -7353,7 +7367,9 @@ export class SqliteVFS {
                 resolved = answer;
                 routes.set(parent, resolved);
             }
-            if (router.placement(`${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`) !== null)
+            const path = `${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`;
+            // On a mount, or a directory above a mount point: the namespace's to answer.
+            if (router.placement(path) !== null || (!aboveMounts && router.composes(path)))
                 return false;
         }
         return true;
@@ -7387,21 +7403,29 @@ export class SqliteVFS {
     async routeRecord(record, router, cred, at) {
         /**
          * Where `named` lands, by the namespace's lookup: its directory resolved
-         * once per wave (until a link or removal), then the name placed by the
+         * (again when anything has committed since), then the name placed by the
          * mount table. The namespace path when that is on a mount; else null,
-         * the placement noted for its commit to recheck.
+         * the placement noted with the revision its resolution saw, for its
+         * commit to recheck. A removal of a directory above a mount point is
+         * EBUSY and a file at one EISDIR, as the single call is, before anything
+         * commits.
          */
         const mountOf = async (kind, named) => {
             const parent = this.parentPath(named);
-            let resolved = at.routes.get(parent);
-            if (resolved === undefined) {
-                resolved = parent === '' ? '' : await router.resolveDirectory('/' + parent, cred, at.signal);
-                at.routes.set(parent, resolved);
+            let route = at.routes.get(parent);
+            if (route === undefined || route.revision !== this._revision) {
+                const revision = this._revision;
+                const resolved = parent === '' ? '' : await router.resolveDirectory('/' + parent, cred, at.signal);
+                route = { resolved, revision };
+                at.routes.set(parent, route);
             }
-            const path = `${resolved === '/' ? '' : resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
+            const path = `${route.resolved === '/' ? '' : route.resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
             if (router.placement(path) !== null)
                 return path;
-            at.placedHere(kind, named, path);
+            if (kind !== 'directory' && router.composes(path)) {
+                throw vfsError(kind === 'delete' ? 'EBUSY' : 'EISDIR', named, 'a directory above a mount point');
+            }
+            at.placedHere(kind, named, path, route.revision);
             return null;
         };
         /** Refuse a record an earlier attempt may have applied; note this one. */
@@ -7413,7 +7437,6 @@ export class SqliteVFS {
             }
             at.reach.note(at.index);
         };
-        const receiptOf = (named, stat) => (stat === null ? null : { path: named, ...stat });
         switch (record.type) {
             case 'delete': {
                 // A removal may change where later names resolve.
@@ -7448,32 +7471,17 @@ export class SqliteVFS {
                     at.routes.clear();
                 at.setPhase('validation');
                 this.validateInodeContentShape(record.inode);
+                // Refused before anything is touched: past what one whole-file call carries.
                 if (record.inode.kind === 'symlink' && record.inode.size > ROUTED_LINK_TARGET_MAX) {
                     throw vfsError('ENAMETOOLONG', record.inode.path, `a link's target is at most ${ROUTED_LINK_TARGET_MAX} bytes; this one is ${record.inode.size}`);
                 }
-                at.setPhase('publish');
-                at.settleBefore();
-                reached();
-                const queue = new ChunkQueue();
-                const named = record.inode.path;
-                const published = record.inode.kind === 'symlink'
-                    ? (async () => {
-                        // Its bytes keep their credit until the link is published.
-                        const held = [];
-                        try {
-                            for await (const chunk of queue)
-                                held.push(chunk);
-                            return await router.apply({ type: 'symlink', path: placed, target: new TextDecoder().decode(concatBytes(held.map((chunk) => chunk.data))) }, cred, at.guard);
-                        }
-                        finally {
-                            for (const chunk of held)
-                                chunk.release();
-                        }
-                    })()
-                    : router.apply({ type: 'file', path: placed, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard);
-                // Its failure is the file's, met at its end (or the wave's).
-                published.catch(() => { });
-                at.file = { streamContentId: record.streamContentId, named, size: record.inode.size, received: 0, nextChunk: 0, queue, published };
+                if (record.inode.kind !== 'symlink' && record.inode.size > ROUTED_FILE_MAX) {
+                    throw vfsError('ENOTSUP', record.inode.path, `a wave writes a file to a mount in one call, up to ${ROUTED_FILE_MAX} bytes; this one is ${record.inode.size}`);
+                }
+                at.file = {
+                    streamContentId: record.streamContentId, named: record.inode.path, placed, link: record.inode.kind === 'symlink',
+                    mode: record.inode.mode, size: record.inode.size, received: 0, nextChunk: 0, held: [], index: at.index,
+                };
                 return true;
             }
             case 'file-chunk': {
@@ -7489,8 +7497,8 @@ export class SqliteVFS {
                 }
                 file.nextChunk++;
                 file.received += record.data.byteLength;
-                // The router releases its credit once it has written it.
-                file.queue.push({ data: record.data, release: () => record.retention.release() });
+                // Held under the wave's credit until the file's call.
+                file.held.push({ data: record.data, release: () => record.retention.release() });
                 return true;
             }
             case 'file-end': {
@@ -7504,10 +7512,21 @@ export class SqliteVFS {
                 if (file.received !== file.size) {
                     throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
                 }
-                at.file = null;
                 at.setPhase('publish');
-                file.queue.end();
-                at.committed(receiptOf(file.named, await file.published));
+                try {
+                    at.settleBefore();
+                    reached();
+                    const bytes = concatBytes(file.held.map((chunk) => chunk.data));
+                    const stat = await router.apply(file.link
+                        ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
+                        : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
+                    at.committed(stat === null ? null : { path: file.named, ...stat });
+                }
+                finally {
+                    at.file = null;
+                    for (const chunk of file.held)
+                        chunk.release();
+                }
                 return true;
             }
             default:
@@ -7542,8 +7561,10 @@ export class SqliteVFS {
         const router = this.waveRouter;
         /** A file the namespace places on a mount, its chunks handed to the router as they arrive. */
         const routed = { file: null };
-        /** Each directory's resolved namespace path, while the wave changes no link and removes nothing. */
+        /** Each directory's resolved namespace path and the revision it saw, until a link or removal of the wave's. */
         const routes = new Map();
+        /** This wave's own name: the slots its routed links are staged at. */
+        const waveId = crypto.randomUUID().slice(0, 8);
         /**
          * Names the namespace placed on this filesystem, by the commit that
          * publishes them, each dated by the revision it was placed at. Right
@@ -7589,7 +7610,7 @@ export class SqliteVFS {
                     }
                     now = dir === null ? '' : `${dir === '/' ? '' : dir}/${named.slice(named.lastIndexOf('/') + 1)}`;
                 }
-                if (now !== placed.resolved || router.placement(now) !== null) {
+                if (now !== placed.resolved || router.placement(now) !== null || (placements !== placedHere.directory && router.composes(now))) {
                     throw vfsError('ESTALE', named, 'the namespace changed under the wave: this name no longer lands where the wave placed it');
                 }
             }
@@ -7881,8 +7902,9 @@ export class SqliteVFS {
                     get file() { return routed.file; },
                     set file(file) { routed.file = file; },
                     index: recordIndex,
+                    waveId,
                     routes,
-                    placedHere: (kind, named, resolved) => { placedHere[kind].set(named, { resolved, revision: this._revision }); },
+                    placedHere: (kind, named, resolved, revision) => { placedHere[kind].set(named, { resolved, revision }); },
                     signal: options.signal,
                     reach: options.mountReach,
                     // Right before each call to the backend: the wave is still admitted, and not cancelled.
@@ -8101,11 +8123,11 @@ export class SqliteVFS {
             for (const lease of activeFile?.heldLeases ?? [])
                 lease.release();
             groupLeases = [];
-            // A routed file the wave did not finish: its writer stops, and what it had not taken is released.
+            // A routed file the wave did not finish: what it held goes back.
             if (routed.file !== null) {
-                const file = routed.file;
-                file.queue.fail(vfsError('EIO', '/' + file.named, 'the wave ended before the file did'));
-                await file.published.catch(() => { });
+                for (const chunk of routed.file.held)
+                    chunk.release();
+                routed.file = null;
             }
             if (!recordIteratorFinished && recordIterator?.return) {
                 try {
@@ -10144,63 +10166,6 @@ class GcQueue {
     }
     rows() {
         return this.values;
-    }
-}
-/**
- * A routed file's chunks, from the wave's record loop to the router: pushed
- * as they are decoded, taken as the router writes them. Each chunk holds the
- * wave's credit until its taker releases it, so a router slower than the
- * wave slows the wave instead of buffering it. A failed wave fails the taker
- * and releases what it had not taken.
- */
-class ChunkQueue {
-    queued = [];
-    ended = false;
-    failure = null;
-    waiting = null;
-    push(chunk) {
-        if (this.waiting !== null) {
-            const waiting = this.waiting;
-            this.waiting = null;
-            waiting.resolve({ value: chunk, done: false });
-        }
-        else {
-            this.queued.push(chunk);
-        }
-    }
-    end() {
-        this.ended = true;
-        if (this.waiting !== null && this.queued.length === 0) {
-            const waiting = this.waiting;
-            this.waiting = null;
-            waiting.resolve({ value: undefined, done: true });
-        }
-    }
-    fail(error) {
-        if (this.ended && this.queued.length === 0)
-            return;
-        this.failure = error;
-        for (const chunk of this.queued.splice(0))
-            chunk.release();
-        if (this.waiting !== null) {
-            const waiting = this.waiting;
-            this.waiting = null;
-            waiting.reject(error);
-        }
-    }
-    [Symbol.asyncIterator]() {
-        return {
-            next: () => {
-                if (this.failure !== null)
-                    return Promise.reject(this.failure);
-                const chunk = this.queued.shift();
-                if (chunk !== undefined)
-                    return Promise.resolve({ value: chunk, done: false });
-                if (this.ended)
-                    return Promise.resolve({ value: undefined, done: true });
-                return new Promise((resolve, reject) => { this.waiting = { resolve, reject }; });
-            },
-        };
     }
 }
 function concatBytes(parts) {

@@ -920,12 +920,23 @@ export const SEED_FILES = [
  *   - Sentinel exists (already seeded; user can `rm ~/.nimbus-seeded` to opt in again)
  *   - Project dir already exists (user has their own ~/example-app we must not clobber)
  */
+/** Every name the seed writes: its sentinel, its files and the directories they are in. */
+function seedPaths() {
+    const paths = new Set([SEED_SENTINEL_PATH, SEED_PROJECT_DIR]);
+    for (const { path } of SEED_FILES) {
+        paths.add(path);
+        for (let at = path.lastIndexOf('/'); at > 0; at = path.lastIndexOf('/', at - 1))
+            paths.add(path.slice(0, at));
+    }
+    return [...paths];
+}
 export function shouldSeedProject(vfs) {
     const view = vfs.as(CRED_KERNEL);
     try {
-        // The session's own filesystem only: a mount over the home is not
-        // seeded, and its names are not read from beneath it.
-        if (!vfs.placesHere([SEED_SENTINEL_PATH, SEED_PROJECT_DIR]))
+        // The session's own filesystem only: no name of the project lands on a
+        // mount (each placed by the namespace's dispatcher), and none is read
+        // from beneath one.
+        if (!vfs.placesHere(seedPaths()))
             return false;
         if (view.exists(SEED_SENTINEL_PATH))
             return false;
@@ -1036,7 +1047,7 @@ export function seedProject(vfs, opts) {
     try {
         // Phase 1: all project files + directories in ONE transactionSync, in
         // the turn their placement on the session's filesystem was checked.
-        if (!vfs.placesHere([SEED_PROJECT_DIR, SEED_SENTINEL_PATH]))
+        if (!vfs.placesHere(inodes.map((inode) => inode.path).concat(SEED_SENTINEL_PATH)))
             return { seeded: false, files: 0, reason: 'not-on-the-session-filesystem' };
         const result = view.writeBatch({ inodes, chunks });
         fileCount = SEED_FILES.length;

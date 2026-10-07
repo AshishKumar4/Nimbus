@@ -311,16 +311,21 @@ export interface WriteStreamReceipt {
 }
 /** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
 export declare const ROUTED_LINK_TARGET_MAX = 4096;
-/** One chunk of a routed file's bytes, held by the wave's credit until `release`. */
-export interface RoutedChunk {
-    readonly data: Uint8Array;
-    release(): void;
-}
 /**
- * A wave's record that the namespace places on a mount (WaveRouter.apply).
- * Paths are where the namespace's lookup placed them ('/'-rooted, the
- * directory's links resolved). A file's bytes arrive as the wave delivers
- * them, each chunk held by the wave's credit until the router releases it.
+ * The largest file a wave writes to a mount. A routed file is one
+ * whole-file writeFile, its bytes held under the wave's credit until that
+ * call (half the shared write credit, so a held file never starves the
+ * wave); a larger one is refused (ENOTSUP, naming this) before anything is
+ * touched. A backend that declares an atomic streaming write could take
+ * more; none does yet.
+ */
+export declare const ROUTED_FILE_MAX: number;
+/**
+ * A wave's record that the namespace places on a mount (WaveRouter.apply),
+ * each the single call a program would make there. Paths are where the
+ * namespace's lookup placed them ('/'-rooted, the directory's links
+ * resolved). A link is made at `slot` beside its name first: a name the
+ * wave owns (its id and the record's index), renamed over the link's.
  */
 export type RoutedWaveRecord = {
     readonly type: 'delete';
@@ -333,12 +338,12 @@ export type RoutedWaveRecord = {
     readonly type: 'file';
     readonly path: string;
     readonly mode: number;
-    readonly size: number;
-    readonly chunks: AsyncIterable<RoutedChunk>;
+    readonly bytes: Uint8Array;
 } | {
     readonly type: 'symlink';
     readonly path: string;
     readonly target: string;
+    readonly slot: string;
 };
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
@@ -368,6 +373,12 @@ export interface WaveRouter {
     resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
     /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
     placement(path: string): string | null;
+    /**
+     * Whether resolved namespace path `path` is a directory the namespace
+     * composes (one above a mount point): a removal of it is EBUSY and a file
+     * or link at it EISDIR, before anything commits.
+     */
+    composes(path: string): boolean;
     /**
      * Apply `record` on the namespace as `cred`; `guard` runs right before
      * each call to the backend (the wave's admission and cancellation). A
@@ -1855,11 +1866,18 @@ export declare class SqliteVFS {
     /**
      * Whether the namespace places every one of `names` (as `cred` names
      * them) on this filesystem, by lookups made in this turn: false when one
-     * lands on a mount, when a lookup leaves the synchronous backends, or
-     * when it fails. A caller that writes in this same turn writes where the
+     * lands on a mount or (unless `aboveMounts`) is a directory above a mount
+     * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
      * namespace would.
      */
-    placesHere(names: readonly string[], cred?: VfsCred): boolean;
+    placesHere(names: readonly string[], cred?: VfsCred, options?: {
+        aboveMounts?: boolean;
+    }): boolean;
+    /**
+     * `aboveMounts`: a directory above a mount point counts as this
+     * filesystem's, as a directory record there is (making, reading or
+     * owning the root's directory); else it is the namespace's to answer.
+     */
     private placedHere;
     /**
      * writeBatch where the namespace places it. When every record is placed on

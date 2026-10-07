@@ -806,6 +806,15 @@ export class CompositeVFS {
         }));
     }
     /**
+     * Whether `path` is a directory above a live mount point (not the root):
+     * one the namespace keeps a directory for its mounts, so removing it is
+     * EBUSY and a file at it EISDIR.
+     */
+    isAboveMount(path) {
+        const at = normalizePath(path);
+        return at !== ROOT_POINT && !this.table.mounts.has(at) && this.isStructural(at);
+    }
+    /**
      * Whether the namespace answers `path` itself rather than the root
      * backend alone: a path on another mount, a directory above a mount point
      * (whose listing includes the mount's name), or a path under such a
