@@ -110,6 +110,8 @@ export interface RunFreshOpts {
   execArgv?: string[];
   /** The program's own conditions (RuntimeRunOpts.conditions). */
   conditions?: string[];
+  /** `-e`'s code (RuntimeRunOpts.eval). */
+  eval?: string;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -129,7 +131,8 @@ export async function runFresh(
   // their PID accounting assumes a single foreground exec.
   const wantsLongRunning =
     opts.forceLongRunning ||
-    isLongRunningInvocation(args) ||
+    // Node's options are its execArgv now, not its argv (node-cli.ts).
+    isLongRunningInvocation([...(opts.execArgv ?? []), ...args]) ||
     (!opts.skipSpawn && opts.launchesServer === true);
 
   if (!wantsLongRunning) {
@@ -190,6 +193,7 @@ export async function runFresh(
       bundleProfile: opts.bundleProfile,
       ...(opts.execArgv ? { execArgv: opts.execArgv } : {}),
       ...(opts.conditions ? { conditions: opts.conditions } : {}),
+      ...(opts.eval !== undefined ? { eval: opts.eval } : {}),
     });
   } catch (e: any) {
     // Hard-fail per anti-requirement: missing env.LOADER throws here.

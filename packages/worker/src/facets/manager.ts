@@ -104,12 +104,10 @@ import {
 import { TransformStore } from './transform-store.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import {
-  DEFAULT_CJS_CONDITIONS,
-  DEFAULT_ESM_CONDITIONS,
-  resolvePackageEntry,
   parseResolvablePackageJson,
   type ResolvablePackageJson,
 } from '@nimbus-sh/core/_shared/exports-resolver.js';
+import { requirePackageEntry } from '@nimbus-sh/core/runtime/require-resolution.js';
 import { type ExecDiagSink, isExecDiagEnabled, recordExecTelemetry } from './exec-telemetry.js';
 import { LaunchLearningStore, type LaunchLearning, type LaunchReport } from './launch-learning-store.js';
 import { disposeRpcResource, disposeRpcResources } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -1305,9 +1303,10 @@ export async function generateLongRunningNodeCode(
   vfsState: FacetVfsState,
   opts: {
     argv?: string[];
-    /** Node's options before the program, and the program's conditions (core runtime/node-cli.ts). */
+    /** Node's options before the program, the program's conditions and `-e`'s code (core runtime/node-cli.ts). */
     execArgv?: string[];
     conditions?: string[];
+    eval?: string;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -1325,7 +1324,7 @@ export async function generateLongRunningNodeCode(
   const entry = entryModule(userCode, opts.filename);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
-    nodeCommandLine: { execArgv: opts.execArgv ?? [], conditions: opts.conditions ?? [] },
+    nodeCommandLine: { execArgv: opts.execArgv ?? [], conditions: opts.conditions ?? [], eval: opts.eval ?? null },
     env: opts.env || {},
     cwd: opts.cwd || '/home/user',
     filename: opts.filename || '<script>',
@@ -2713,7 +2712,7 @@ export async function greedyAddMainEntries(
           purpose: 'dependency-closure', held: bundle,
           maxAdditionalBytes: Math.max(0, bound - rawBytes),
           maxAdditionalFiles: Math.max(0, VFS_BUNDLE_MAX_FILES - budgetState.fileCount),
-        });
+        }, undefined, options.conditions);
       if ('kind' in closure || closure.bundle[stripped] === undefined) return false;
       for (const deferral of closure.deferred ?? []) if (deferral.alternatives === 1) deferred.push(deferral);
       for (const [member, cell] of Object.entries(closure.bundle)) {
@@ -2817,8 +2816,8 @@ export async function greedyAddMainEntries(
     // `index.js`, which does not exist.
     const candidates: string[] = [];
     if (pkg) {
-      let entry = resolvePackageEntry(pkg, '.', DEFAULT_CJS_CONDITIONS);
-      if (entry === null && pkg.exports != null) entry = resolvePackageEntry(pkg, '.', DEFAULT_ESM_CONDITIONS);
+      // As require resolves it, under the program's conditions (require-resolution.ts requirePackageEntry).
+      const entry = requirePackageEntry(pkg, '.', options.conditions ?? []);
       if (entry !== null) candidates.push(entry);
       if (pkg.main !== undefined) candidates.push(pkg.main);
     }
@@ -4559,6 +4558,8 @@ export interface ResidentSpawnOptions {
   execArgv?: string[];
   /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
   conditions?: string[];
+  /** `-e`'s code (`process._eval`). */
+  eval?: string;
   env?: Record<string, string>;
   cwd?: string;
   filename?: string;
@@ -5582,7 +5583,7 @@ export class FacetManager {
     const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
     const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
     // The program's conditions choose what it resolves: a map walked under other ones is another map.
-    const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${(spec.conditions ?? []).join('\x01')}`;
+    const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${JSON.stringify(spec.conditions ?? [])}`;
     const revision = (await vfs.revision());
     // An entry built at an older revision can never be SERVED again — the
     // lookup below requires an exact match — so from the first write after it
@@ -6001,6 +6002,8 @@ export class FacetManager {
       execArgv?: string[];
       /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
       conditions?: string[];
+      /** `-e`'s code (`process._eval`). */
+      eval?: string;
     },
   ): Promise<FacetExecResult> {
     const command = opts.command
@@ -6775,7 +6778,7 @@ export class FacetManager {
     const body = JSON.stringify({
       pid: entry.pid,
       argv: opts.argv || [],
-      nodeCommandLine: { execArgv: opts.execArgv ?? [], conditions: opts.conditions ?? [] },
+      nodeCommandLine: { execArgv: opts.execArgv ?? [], conditions: opts.conditions ?? [], eval: opts.eval ?? null },
       env: opts.env || {},
       cwd: opts.cwd || '/home/user',
       filename: opts.filename || '<eval>',

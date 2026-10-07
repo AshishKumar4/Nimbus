@@ -7,7 +7,17 @@
 // module map the first staged (keyed by the conditions), and must answer the
 // same, so a map staged under one set of conditions never serves another.
 // NODE_OPTIONS with an option Node does not allow there is refused as Node
-// refuses it.
+// refuses it. And at the edges (the review of 38a267381):
+//   - a package whose map has its entry only under `import`, nested under
+//     conditions ({ import: { development, default } }), reached by a
+//     static import the shims load through require, takes -C development;
+//   - a package reached only by a computed require (the launch's
+//     speculative root selection, not its walk) answers under -C
+//     development on the first launch;
+//   - fork passes the parent's execArgv to the child (an eval's -e left
+//     out), or options.execArgv when given, as Node's fork does;
+//   - two launches whose conditions differ only in how a list joins
+//     (['a', 'b'] and ['a\u0001b']) are not served one module map.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -23,6 +33,8 @@ const W = '/home/user/cond';
 const FILES = {
   'package.json': JSON.stringify({
     name: 'cond-app', type: 'module',
+    // The packages a computed require may reach: the launch's speculative roots.
+    dependencies: { r: '*', s: '*' },
     imports: {
       '#cond': { development: './t.js', default: './f.js' },
       '#condc': { development: './t.cjs', default: './f.cjs' },
@@ -37,6 +49,28 @@ const FILES = {
   'node_modules/p/prod.mjs': 'export default "p-prod";',
   'node_modules/p/dev.cjs': 'module.exports = "p-dev";',
   'node_modules/p/prod.cjs': 'module.exports = "p-prod";',
+  'node_modules/q/package.json': JSON.stringify({ name: 'q', type: 'module', exports: { '.': { import: { development: './dev.js', default: './prod.js' } } } }),
+  'node_modules/q/dev.js': 'export default "q-dev";',
+  'node_modules/q/prod.js': 'export default "q-prod";',
+  'node_modules/r/package.json': JSON.stringify({ name: 'r', exports: { development: './dev.cjs', default: './prod.cjs' } }),
+  'node_modules/r/dev.cjs': 'module.exports = "r-dev";',
+  'node_modules/r/prod.cjs': 'module.exports = "r-prod";',
+  'node_modules/s/package.json': JSON.stringify({ name: 's', exports: { a: './a.cjs', default: './d.cjs' } }),
+  'node_modules/s/a.cjs': 'module.exports = "s-a";',
+  'node_modules/s/d.cjs': 'module.exports = "s-d";',
+  'nested.mjs': "import q from 'q'; console.log('COND ' + JSON.stringify({ q }));",
+  'computed.cjs': "const name = ['r'].join(''); console.log('COND ' + JSON.stringify({ r: require(name) }));",
+  'joined.cjs': "const name = ['s'].join(''); console.log('COND ' + JSON.stringify({ s: require(name), conditions: process.execArgv }));",
+  'joined-run.cjs': [
+    "const { execFile } = require('child_process');",
+    "execFile('node', ['-C', 'a\\u0001b', 'joined.cjs'], { encoding: 'utf8' }, (error, out) => process.stdout.write(error ? String(error) : out));",
+  ].join('\n'),
+  'fork-child.mjs': "import c from '#cond'; console.log('COND ' + JSON.stringify({ child: c, execArgv: process.execArgv }));",
+  'fork-parent.mjs': [
+    "import { fork } from 'node:child_process';",
+    "const opts = process.argv[2] === 'none' ? { execArgv: [] } : {};",
+    "fork('./fork-child.mjs', [], { ...opts, stdio: 'inherit' }).on('exit', (code) => process.exit(code));",
+  ].join('\n'),
   'main.mjs': [
     "import c from '#cond';",
     "import p from 'p';",
@@ -47,7 +81,16 @@ const FILES = {
   ].join('\n'),
 };
 
+const FORK_EVAL = "require('child_process').fork('./fork-child.mjs', [], { stdio: 'inherit' })";
 const COMMANDS = [
+  'node -C development nested.mjs',
+  'node nested.mjs',
+  'node -C development computed.cjs',
+  'node -C a -C b joined.cjs',
+  'node joined-run.cjs',
+  'node -C development fork-parent.mjs',
+  'node -C development fork-parent.mjs none',
+  `node -C development -e "${FORK_EVAL}"`,
   'node main.mjs a',
   'node --conditions=development main.mjs a b',
   'node -C development main.mjs',
@@ -73,7 +116,7 @@ const probe = await startLocalProbe({ runtimes: [] });
 try {
   const session = await localTerminal(probe, { install: [] });
   try {
-    const made = await session.run(`mkdir -p ${W}/node_modules/p`, 30_000);
+    const made = await session.run(`mkdir -p ${['p', 'q', 'r', 's'].map((name) => `${W}/node_modules/${name}`).join(' ')}`, 30_000);
     assert.equal(made.status, 0, made.stdout);
     for (const [path, text] of Object.entries(FILES)) await session.writeFile(`${W}/${path}`, text);
     for (const command of COMMANDS) {
