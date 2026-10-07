@@ -70,7 +70,7 @@ package's constant is generated from it, not a runtime dependency on fabric.
 
 Each fabric-created Loader worker and its entrypoint or Durable Object class
 receive explicit limits from that table. CPU is currently `300000` milliseconds
-for every kind. Subrequest ceilings are `1000000000` for resident processes,
+for every kind. Subrequest ceilings are `10000000` for resident processes,
 `1000000` for git, and `100000` for build, esbuild, transform, generic isolate,
 fanout, and hosted Worker kinds. Task wall time is a separate policy value:
 awaited filesystem I/O does not consume only CPU time, so Wasm dispatch uses the
@@ -80,7 +80,11 @@ Resident filesystem transport retains its subrequest charging scope across
 incoming HTTP calls. Native tail telemetry showed separate HTTP invocations
 while a default `10000` budget failed on the tenth 1000-write call to one
 resident process. The deliberately generous but finite process ceiling permits
-long-lived servers; CPU and per-operation bounds still constrain runaway work.
+long-lived servers, and never exceeds the documented Workers maximum of10M.
+Acceptance of a larger Loader input does not prove a larger enforced ceiling.
+The lifetime ceiling eventually stops10M transport operations, not necessarily
+quickly. CPU bounds hot loops per native invocation and task wall time bounds
+one-shot I/O; a low-CPU resident loop spanning calls can run until the ceiling.
 The injected guest budget reserves 64 requests for reporting and must not reset
 on HTTP entry or charge the same actual transport twice.
 

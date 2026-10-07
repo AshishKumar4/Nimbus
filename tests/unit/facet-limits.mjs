@@ -16,6 +16,7 @@ for (const [kind, configured] of Object.entries(FACET_LIMITS)) {
   assert.equal(applied.env.PRESERVED, 'value');
   assert.deepEqual(code.limits, { cpuMs: 1, subRequests: 1 }, `${kind}: caller config is not mutated`);
   assert.ok(configured.subRequests > 12000 + 64);
+  assert.ok(configured.subRequests <= 10_000_000, `${kind}: never claims more than the provider maximum`);
   assert.ok(facetLoaderKey(kind, 'fixture').includes(`:${configured.cpuMs}:${configured.subRequests}:`));
   seen.add(kind);
 }

@@ -4,12 +4,17 @@ const FACET_CPU_MS = 300_000;
 const FACET_TASK_TIMEOUT_MS = 300_000;
 
 export const FACET_LIMITS = Object.freeze({
-  // Resident filesystem transport is charged to its initiating invocation:
-  // incoming HTTP requests do not reset it. A billion leaves hours-long
-  // servers practical while CPU, per-operation and this finite ceiling bound
-  // runaway work. Native default 10000 failed across 9x1000 persisted writes;
-  // the explicit ceiling passed 12x1000 on the same resident pid in CI.
-  process: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 1_000_000_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
+  // Resident filesystem transport retains its charging scope across HTTP
+  // calls (native10000 failed on the tenth1000-write call). Workers documents
+  // a10M maximum, and Loader custom limits only lower platform limits:
+  // https://developers.cloudflare.com/workers/platform/limits/#subrequests
+  // https://developers.cloudflare.com/dynamic-workers/usage/limits/
+  // Acceptance of a larger input is not proof of a larger enforced ceiling.
+  // This finite lifetime bound eventually stops10M transport operations, not
+  // necessarily quickly. CPU bounds hot loops per invocation; the separate
+  // task wall deadline bounds one-shot I/O. A low-CPU resident loop spanning
+  // requests may run until this lifetime ceiling; do not promise fast shutdown.
+  process: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 10_000_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
   build: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
   esbuild: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
   transform: Object.freeze({ cpuMs: FACET_CPU_MS, subRequests: 100_000, taskTimeoutMs: FACET_TASK_TIMEOUT_MS }),
