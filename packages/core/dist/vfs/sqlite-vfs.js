@@ -1423,7 +1423,7 @@ export class SqliteVFS {
      * is the one its write events name and its held appends are written as.
      */
     openDescription(path, cred, rights, principal, 
-    /** The exclusive-mutation lease the open presented: its writes and truncates present it too, as the right was checked at open. */
+    /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
     mutationOwner) {
         const origin = principal ?? this.activeOrigin ?? Object.freeze({ cred });
         const asOpener = (call) => (...args) => this.asOrigin(origin, () => call(...args));
@@ -1529,8 +1529,8 @@ export class SqliteVFS {
                     throw vfsKeyError('EBADF', path);
                 return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
             },
-            chmod: asOpener((mode) => this.chmodInode(current(), mode, cred, opened.path)),
-            chown: asOpener((uid, gid) => {
+            chmod: owned((mode) => this.chmodInode(current(), mode, cred, opened.path)),
+            chown: owned((uid, gid) => {
                 if (cred.uid !== 0)
                     throw vfsKeyError('EPERM', path);
                 if (opened.path !== null)
@@ -1541,7 +1541,7 @@ export class SqliteVFS {
                     current().ctime = this.now();
                 }
             }),
-            utimes: asOpener((atime, mtime) => {
+            utimes: owned((atime, mtime) => {
                 if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write)
                     throw vfsKeyError('EPERM', path);
                 if (opened.path !== null)
