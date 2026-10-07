@@ -86,9 +86,27 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
  * refusal then is reported as an acknowledged change's is. Counts the change
  * toward taking the subtree when none is held.
  */
-function __nimbusDecidedHere(path) {
-  return typeof __supervisor !== "undefined" && __supervisor !== null
-    && __nimbusProcessFs().holder(__nimbusVfsPathKey(path)) !== undefined;
+function __nimbusDecidedHere(path, bytes = 0) {
+  if (typeof __supervisor === "undefined" || __supervisor === null) return false;
+  // What it decided and the session has not answered yet (logged or not)
+  // stays under the client's bound: past it, the change waits for its own
+  // answer. A process that dies holds at most that, unsent.
+  if (__nimbusDecidedOps >= __nimbusProcessFsModule.DECIDED_BACKLOG_OPS
+      || __nimbusDecidedBytes + bytes > __nimbusProcessFsModule.DECIDED_BACKLOG_BYTES) return false;
+  return __nimbusProcessFs().holder(__nimbusVfsPathKey(path)) !== undefined;
+}
+
+/** Changes decided here (__nimbusDecidedHere) the session has not answered: their count and bytes. */
+let __nimbusDecidedOps = 0;
+let __nimbusDecidedBytes = 0;
+
+/** \`work\`, a change decided here of \`bytes\`: counted until the session answers it. */
+function __nimbusDecided(work, bytes = 0) {
+  __nimbusDecidedOps++;
+  __nimbusDecidedBytes += bytes;
+  const settled = () => { __nimbusDecidedOps--; __nimbusDecidedBytes -= bytes; };
+  Promise.resolve(work).then(settled, settled);
+  return work;
 }
 
 /**
