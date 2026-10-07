@@ -71,8 +71,9 @@ function authority(files) {
   return new ProcessFiles(raw);
 }
 
-async function dispatch(bytes, argv) {
+async function dispatch(bytes, argv, output) {
   const filesystem = authority({ 'home/user/program.wasm': bytes });
+  const processes = new SessionProcessSupervisor();
   const opened = [];
   const submitted = [];
   const run = makeWasmRunner({
@@ -90,7 +91,7 @@ async function dispatch(bytes, argv) {
         };
       },
     },
-    processes: new SessionProcessSupervisor(),
+    processes,
   });
   const result = await run('', {
     argv,
@@ -100,8 +101,9 @@ async function dispatch(bytes, argv) {
     dirname: '/home/user',
     command: 'wasm-runner /home/user/program.wasm',
     cred: USER_CRED,
+    ...(output ? { output } : {}),
   });
-  return { result, opened, submitted };
+  return { result, opened, submitted, processes };
 }
 
 {
@@ -119,6 +121,13 @@ async function dispatch(bytes, argv) {
 {
   const { submitted } = await dispatch(both, []);
   assert.equal(submitted[0]?.wasiAbi, 'preview1', 'a module importing both namespaces is preview1');
+}
+
+{
+  const { result, processes } = await dispatch(directWithCustomNeedle, ['f'], () => {});
+  assert.equal(result.stdout, '7\n');
+  const pid = processes.getAll()[0].pid;
+  assert.equal(processes.allLogs(pid).map(chunk => chunk.data).join(''), '7\n', 'a direct scalar result is stored in the process log even when the caller supplies a live output sink');
 }
 
 // A broker already owns the process, fd0, and byte-log delivery. In particular
