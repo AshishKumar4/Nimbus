@@ -1284,7 +1284,7 @@ export declare class SqliteVFS {
     private askedIno;
     /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
     private isHolder;
-    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
+    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
     private recallDelegationsAt;
     /**
      * The refusal for an access to `key` that `lease`'s holder must answer

@@ -2930,11 +2930,11 @@ export class SqliteVFS {
     isHolder(owner) {
         return this.activeMutationOwner === owner || this.activeHolds?.has(owner) === true;
     }
-    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
-    async recallDelegationsAt(key, owner) {
+    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
+    async recallDelegationsAt(key, holds) {
         for (;;) {
             const normalized = normalizeVfsPath(key);
-            const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (lease.delegation !== null && id !== owner && pathsOverlap(normalized, lease.root)));
+            const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (lease.delegation !== null && holds?.has(id) !== true && pathsOverlap(normalized, lease.root)));
             if (met === undefined)
                 return;
             await this.recallRequired(met[0], met[1], 'revoke', normalized).recall();
@@ -8267,7 +8267,7 @@ export class SqliteVFS {
                 // its group's commit would otherwise be refused.
                 if (this.exclusiveMutationLeases.size > 0) {
                     for (const lands of recordPaths(record))
-                        await this.recallDelegationsAt(lands, options.mutationOwner);
+                        await this.recallDelegationsAt(lands, holds);
                 }
                 if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end')
                     recordIndex++;
