@@ -17,7 +17,7 @@ import { nodeEvalProgram, nodeStdinPrintProgram } from '../../packages/core/src/
 import { isEsModuleInput } from '../../packages/core/src/runtime/module-format.ts';
 
 // Whether the code is a module is the runtime's decision (module-format.ts), as Node's is its syntax detection's.
-const nodeEvalCode = (code, print) => nodeEvalProgram(code, print, isEsModuleInput(code, undefined)).code;
+const nodeEvalCode = (code, print) => nodeEvalProgram(code, print, isEsModuleInput(code, undefined) ? 'module' : 'default').code;
 
 const SAMPLES = [
   '1+1', '"use strict"', '"use strict"; var x = 1', '"a"; "b"; var x', 'var x = 5', 'let y = 1; y', 'const z = 2',
@@ -104,15 +104,18 @@ console.log(`  ok  ${REFUSED.length} refused as Node refuses them`);
 // compiles it, it refuses before loading --import's modules.
 assert.equal(nodeEvalCode('1 +', true), '1 +');
 for (const sample of ['1 +', ...REFUSED.map(([sample]) => sample)]) {
-  assert.equal(nodeEvalProgram(sample, true, isEsModuleInput(sample, undefined)).refusedBeforeImports, true, `${JSON.stringify(sample)}: refused before --import`);
+  assert.equal(nodeEvalProgram(sample, true, isEsModuleInput(sample, undefined) ? 'module' : 'default').refusedBeforeImports, true, `${JSON.stringify(sample)}: refused before --import`);
 }
-assert.equal(nodeEvalProgram('1', true).refusedBeforeImports, false);
+assert.equal(nodeEvalProgram('1', true, 'default').refusedBeforeImports, false);
+// --input-type=commonjs compiles as the code runs, after --import's modules load.
+assert.equal(nodeEvalProgram('return 1', true, 'commonjs').refusedBeforeImports, false);
+assert.equal(nodeEvalProgram('return 1', true, 'default').refusedBeforeImports, true);
 // -e: code that names crypto has node:crypto, as Node's eval does.
 const EVALS = ['console.log(typeof crypto.createHash, crypto === require("node:crypto"))', 'console.log(typeof globalThis.crypto.subtle, 1)'];
 const evaluated = runAll(EVALS.map((sample) => nodeEvalCode(sample, false)));
 EVALS.forEach((sample, i) => assert.equal(evaluated[i].logged, host(['-e', sample]).stdout, `node -e ${JSON.stringify(sample)}`));
 // From stdin: Node's eval_stdin, with no crypto wrapper.
-const [fromStdin] = runAll([nodeStdinPrintProgram('2 * 21', isEsModuleInput('2 * 21', undefined)).code]);
+const [fromStdin] = runAll([nodeStdinPrintProgram('2 * 21', isEsModuleInput('2 * 21', undefined) ? 'module' : 'default').code]);
 assert.equal(fromStdin.printed, host(['-p'], '2 * 21').stdout);
 console.log('  ok  -e keeps crypto node:crypto; -p from stdin');
 

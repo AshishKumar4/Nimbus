@@ -1,4 +1,4 @@
-import { COMMONJS_WRAPPER_NAMES, applySourceEdits, containsModuleSyntax, parseStatements } from './javascript-ast.js';
+import { COMMONJS_WRAPPER_NAMES, MODULE_PARSE_OPTIONS, applySourceEdits, containsModuleSyntax, parseStatements } from './javascript-ast.js';
 import { vfsPathExtension } from '../vfs/path.js';
 /** The "type" a parsed package.json declares. */
 export function packageTypeOf(pkg) {
@@ -93,4 +93,27 @@ function isUnboundNameAccessor(node) {
 export function esModuleSource(source) {
     const hashbang = source.startsWith('#!') ? (source.indexOf('\n') + 1 || source.length) : 0;
     return source.slice(0, hashbang) + '"use strict";' + source.slice(hashbang) + '\nexport {};\n';
+}
+/**
+ * Code that throws, when the process evaluates it, the SyntaxError an ES
+ * module's `source` at `url` has (acorn's, at its line and column), or null
+ * when it parses. Node reports a module's syntax error as it evaluates the
+ * entry, after `-r`'s modules have run and `--import`'s have loaded, so the
+ * process runs this in the module's place.
+ */
+export function esModuleSyntaxError(source, url) {
+    try {
+        parseStatements(source, MODULE_PARSE_OPTIONS, {});
+        return null;
+    }
+    catch (error) {
+        if (!(error instanceof SyntaxError))
+            throw error;
+        const loc = Reflect.get(error, 'loc');
+        const line = loc !== null && typeof loc === 'object' ? Reflect.get(loc, 'line') : undefined;
+        const column = loc !== null && typeof loc === 'object' ? Reflect.get(loc, 'column') : undefined;
+        const message = error.message.replace(/ \(\d+:\d+\)$/, '');
+        const at = typeof line === 'number' && typeof column === 'number' ? `${url}:${line}:${column + 1}` : url;
+        return `const e = new SyntaxError(${JSON.stringify(message)}); e.stack = ${JSON.stringify(`SyntaxError: ${message}\n    at ${at}`)}; throw e;`;
+    }
 }

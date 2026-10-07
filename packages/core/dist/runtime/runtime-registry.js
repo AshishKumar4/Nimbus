@@ -41,7 +41,7 @@ import { normalizeVfsPath, resolveVfsPath, vfsPathExtension } from '../vfs/path.
 import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
-import { isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { esModuleSyntaxError, isEsModuleFile, isEsModuleInput } from './module-format.js';
 import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
@@ -276,8 +276,10 @@ export function buildRuntimeHandler(spec, ctx0) {
          * and routed to the process's ESM loader (dynamic-import-rewrite.ts), its
          * import.meta the module's own (url, resolve, dirname and filename, read
          * directly, as an object or destructured: the runner's __nimbusFileImportMeta;
-         * CommonJS output alone would make it {}). Null when the transform failed,
-         * which it has reported.
+         * CommonJS output alone would make it {}). An ES module that does not
+         * parse is code that throws its SyntaxError as Node's evaluation does
+         * (module-format.ts esModuleSyntaxError). Null when the transform failed
+         * otherwise, which it has reported.
          */
         async function lowerToCommonJs(code, loader, url, what, esm) {
             try {
@@ -288,6 +290,9 @@ export function buildRuntimeHandler(spec, ctx0) {
                 })).code;
             }
             catch (e) {
+                const syntaxError = esm && loader === 'js' ? esModuleSyntaxError(code, url) : null;
+                if (syntaxError !== null)
+                    return syntaxError;
                 ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);
                 return null;
             }
@@ -307,7 +312,8 @@ export function buildRuntimeHandler(spec, ctx0) {
             }
             if (!spec.nodeCommandLine)
                 return { code: source, refusedBeforeImports: false, esModule: false };
-            const prepared = what === '[eval]' ? nodeEvalProgram(source, print, esModule) : print ? nodeStdinPrintProgram(source, esModule) : { code: source, refusedBeforeImports: false };
+            const mode = esModule ? 'module' : inputType === 'commonjs' ? 'commonjs' : 'default';
+            const prepared = what === '[eval]' ? nodeEvalProgram(source, print, mode) : print ? nodeStdinPrintProgram(source, mode) : { code: source, refusedBeforeImports: false };
             return { ...prepared, esModule: false };
         }
         // ── --version ──
