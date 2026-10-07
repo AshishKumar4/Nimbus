@@ -2336,7 +2336,7 @@ export class SqliteVFS {
     cred: VfsCred,
     rights: { read: boolean; write: boolean; sync?: boolean },
     principal?: Principal,
-    /** The exclusive-mutation lease the open presented: its writes and truncates present it too, as the right was checked at open. */
+    /** The exclusive-mutation lease the open presented: the description's own mutations (write, truncate, chmod, chown, utimes) present it too. */
     mutationOwner?: string,
   ): VfsOpenDescription {
     const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
@@ -2425,13 +2425,13 @@ export class SqliteVFS {
         if (!rights.read) throw vfsKeyError('EBADF', path);
         return opened.path === null ? [] : this.readdir(opened.path, CRED_KERNEL);
       },
-      chmod: asOpener((mode: number): void => this.chmodInode(current(), mode, cred, opened.path)),
-      chown: asOpener((uid: number, gid: number): void => {
+      chmod: owned((mode: number): void => this.chmodInode(current(), mode, cred, opened.path)),
+      chown: owned((uid: number, gid: number): void => {
         if (cred.uid !== 0) throw vfsKeyError('EPERM', path);
         if (opened.path !== null) this.chown(opened.path, uid, gid, CRED_KERNEL, true);
         else { current().uid = uid; current().gid = gid; current().ctime = this.now(); }
       }),
-      utimes: asOpener((atime: number, mtime: number): void => {
+      utimes: owned((atime: number, mtime: number): void => {
         if (cred.uid !== 0 && cred.uid !== current().uid && !rights.write) throw vfsKeyError('EPERM', path);
         if (opened.path !== null) this.utimes(opened.path, atime, mtime, CRED_KERNEL);
         else { current().atime = atime; current().mtime = mtime; current().ctime = this.now(); }
