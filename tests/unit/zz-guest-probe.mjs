@@ -4,12 +4,13 @@ const writer = await guest.open('home/user/refused.bin', { create: true, truncat
 guest.kernel.chown('home/user/refused.bin', 0, 0);
 guest.kernel.chmod('home/user/refused.bin', 0o444);
 console.log('write', await guest.write(writer, 'lost bytes'));
-globalThis.__guestTrace = [];
+const before = JSON.stringify(guest.stats());
+let error = null;
 try {
-  const reader = await guest.open('home/user/refused.bin');
-  console.log('reader opened', reader);
-} catch (error) {
-  console.log('reader failed', error.errno, JSON.stringify(globalThis.__guestTrace));
-}
+  await guest.open('home/user/refused.bin');
+} catch (e) { error = e.errno; }
+console.log('reader', error, '\nBEFORE', before, '\nAFTER', JSON.stringify(guest.stats()));
+// The same open again, and a stat: which one fails?
+try { console.log('stat errno', await guest.stat?.('home/user/refused.bin')); } catch (e) { console.log('stat threw', e.errno); }
 await guest.dispose();
 throw new Error('PROBE-END');
