@@ -65,7 +65,8 @@ export function delegationHolder(options) {
     const drain = () => {
         for (const file of [...dirty]) {
             dirty.delete(file);
-            client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, data: file.bytes.subarray(0, file.length) } }, { acknowledged: true });
+            // A copy: the file's buffer keeps changing as the process writes.
+            client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
         }
     };
     /** Forget what was decided under `root`: sent, so the store (after its barrier) answers. */

@@ -2652,12 +2652,26 @@ const __fsMod = (() => {
     });
   }
 
-  // A sync caller has no frame to receive the outcome. The ledger already
-  // marks a queued result handled and retains what the exit drain must
-  // report; this only keeps a ledger-less embedding from raising an
-  // unhandled rejection for a verdict nobody could catch.
-  function _detachStructuralMutation(mutation) {
-    if (mutation) mutation.then(undefined, () => undefined);
+  // A sync caller (or an async one decided here) has no frame to receive the
+  // outcome: the program was told it succeeded. A refusal or an unknown fate
+  // is reported as the process's client reports its own, at the next effect
+  // and when it settles (__nimbusAcknowledged); `syscall` and `p` name it.
+  // Without a ledger, a verdict nobody could catch is not an unhandled rejection.
+  //
+  // A removal whose name the session no longer has (ENOENT) reached what it
+  // was for: a file this process made and removed before its write was ever
+  // sent is one, and nothing is lost.
+  function _detachStructuralMutation(mutation, syscall, p) {
+    if (!mutation) return;
+    const removal = syscall === "unlink" || syscall === "rmdir" || syscall === "rm";
+    const work = removal ? mutation.then(undefined, (error) => { if (!error || error.code !== "ENOENT") throw error; }) : mutation;
+    if (syscall !== undefined && typeof __nimbusAcknowledged === "function") __nimbusAcknowledged(work, syscall, _resolve(p));
+    else work.then(undefined, () => undefined);
+  }
+
+  /** Whether an async change at `absPath` is decided here (the ledger's __nimbusDecidedHere). */
+  function _decidedHere(absPath) {
+    return typeof __nimbusDecidedHere === "function" && __nimbusDecidedHere(absPath);
   }
 
   // A rename lives at two names. Its mutation is queued under the source;
@@ -3315,6 +3329,16 @@ const __fsMod = (() => {
     // destination is: parked and written back like any other write, and
     // refused (and the parked bytes dropped) if the authority refuses it.
     _parkWholeWrite(p, data, !!supervisor);
+    if (supervisor && _decidedHere(absPath)) {
+      // Decided here: its sync view already has it; the write goes with the log's waves.
+      _detachStructuralMutation(__nimbusFlushVfsWrite(
+        absPath,
+        (content, snapshot) => __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
+        false,
+        true,
+      ), "write", p);
+      return;
+    }
     if (supervisor) {
       await _announceLocalDirs(absPath, supervisor);
       // The revision comes back so the ledger can stamp the cell: an async
@@ -3354,6 +3378,16 @@ const __fsMod = (() => {
     appendFileSync(p, data, opts);
     const supervisor = _supervisor();
     if (!supervisor) return;
+    if (_decidedHere(absPath)) {
+      // Decided here: the append goes with the log's waves.
+      _detachStructuralMutation(__nimbusFlushVfsWrite(
+        absPath,
+        (content, snapshot) => __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
+        false,
+        true,
+      ), "write", p);
+      return;
+    }
     await _announceLocalDirs(absPath, supervisor);
     await __nimbusFlushVfsWrite(
       absPath,
@@ -3370,10 +3404,18 @@ const __fsMod = (() => {
   // The async structural calls ARE the sync ones, awaited: the same local
   // effect and the same queued authority RPC, so the two forms cannot
   // disagree about order, and a program mixing them sees one sequence.
-  async function _mkdirAsync(p, opts) { await _mkdirQueued(p, opts); }
-  async function _unlinkAsync(p) { await _unlinkQueued(p); }
-  async function _rmdirAsync(p) { await _rmdirQueued(p); }
-  async function _renameAsync(oldP, newP) { await _renameQueued(oldP, newP, true); }
+  // In a subtree the process holds, the change is decided here: answered
+  // once logged, the session's answer reported if it refuses.
+  async function _structuralAsync(queue, syscall, p) {
+    const decided = _decidedHere(_resolve(p));
+    const queued = queue();
+    if (decided) _detachStructuralMutation(queued, syscall, p);
+    else await queued;
+  }
+  async function _mkdirAsync(p, opts) { await _structuralAsync(() => _mkdirQueued(p, opts), "mkdir", p); }
+  async function _unlinkAsync(p) { await _structuralAsync(() => _unlinkQueued(p), "unlink", p); }
+  async function _rmdirAsync(p) { await _structuralAsync(() => _rmdirQueued(p), "rmdir", p); }
+  async function _renameAsync(oldP, newP) { await _structuralAsync(() => _renameQueued(oldP, newP, true), "rename", oldP); }
 
   async function _truncateAsync(p, len) {
     const absPath = _resolveFollow(p, "open");
@@ -3594,8 +3636,8 @@ const __fsMod = (() => {
       ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { uid, gid } })
       : __nimbusVfsCall("lchown", absPath, () => supervisor.chown(absPath, uid, gid, { followSymlinks: false }));
   }
-  function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown")); }
-  function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown")); }
+  function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
+  function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
   function lchmodSync(p, mode) { chmodSync(p, mode); }
 
   /**
@@ -3944,7 +3986,7 @@ const __fsMod = (() => {
     if (queued) for (const dir of created) _announcedDirs.add(dir);
     return queued;
   }
-  function mkdirSync(p, opts) { _detachStructuralMutation(_mkdirQueued(p, opts)); }
+  function mkdirSync(p, opts) { _detachStructuralMutation(_mkdirQueued(p, opts), "mkdir", p); }
 
   // ── unlinkSync ──
   /**
@@ -3976,7 +4018,7 @@ const __fsMod = (() => {
     _forgetSyncPath(k);
     return _queueStructuralMutation(absPath, "unlink", p, () => _vfsCall({ call: "unlink", path: k }));
   }
-  function unlinkSync(p) { _detachStructuralMutation(_unlinkQueued(p)); }
+  function unlinkSync(p) { _detachStructuralMutation(_unlinkQueued(p), "unlink", p); }
 
   // ── rmdirSync ──
   function _rmdirQueued(p) {
@@ -3991,7 +4033,7 @@ const __fsMod = (() => {
       () => __nimbusAwaitSubtreeMutations(absPath),
     );
   }
-  function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p)); }
+  function rmdirSync(p) { _detachStructuralMutation(_rmdirQueued(p), "rmdir", p); }
 
   // ── renameSync ──
   /** `live`: the async form, which the authority answers for a destination the namespace cannot judge. */
@@ -4142,7 +4184,7 @@ const __fsMod = (() => {
     }
     return queued;
   }
-  function renameSync(oldP, newP) { _detachStructuralMutation(_renameQueued(oldP, newP)); }
+  function renameSync(oldP, newP) { _detachStructuralMutation(_renameQueued(oldP, newP), "rename", oldP); }
 
   // ── copyFileSync ──
   // Bytes, not utf8: a utf8 round trip replaces every byte ≥ 0x80 with
@@ -4239,7 +4281,7 @@ const __fsMod = (() => {
       "fsRemove",
     );
   }
-  function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true)); }
+  function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }
   async function _rmAsync(p, opts) { await _rmQueued(p, opts, false); }
 
   // ── cpSync ──
@@ -4847,7 +4889,7 @@ const __fsMod = (() => {
   function fchownSync(fd, uid, gid) {
     if (_isStdioFd(fd)) throw _fsErr("EINVAL", "fchown", fd);
     const handle = _fdHandle(fd, "fchown");
-    _detachStructuralMutation(_chownQueued(handle._path, uid, gid, undefined, "fchown"));
+    _detachStructuralMutation(_chownQueued(handle._path, uid, gid, undefined, "fchown"), "fchown", handle._path);
   }
 
   // Scatter/gather, sync: readSync/writeSync per buffer; stdio fds keep the

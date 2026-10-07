@@ -155,7 +155,8 @@ export interface ProcessFsClientOptions {
 }
 export interface ProcessFsClient {
     /**
-     * Log `op` (its bytes copied now, its place in the log taken now) and
+     * Log `op` (its place in the log taken now; its bytes are the client's
+     * from now on: the caller hands over a buffer nothing writes to again) and
      * answer once the session has it: resolved when committed, rejected with
      * its errno when refused. `acknowledged`: the program was already told
      * it succeeded (a synchronous call), so its refusal is a failure to
@@ -180,8 +181,23 @@ export interface ProcessFsClient {
     settle(): Promise<void>;
     /** The failures not yet reported, taken (the next effect reports them). */
     takeFailures(): ProcessFsFailure[];
+    /**
+     * A change the program was told succeeded, refused or unanswered where the
+     * runtime awaited it on the program's behalf (a synchronous call's own
+     * work): reported with the client's own (takeFailures, settle).
+     */
+    noteFailure(failure: ProcessFsFailure): void;
     /** Bytes logged and not yet answered. */
     readonly pendingBytes: number;
+    /**
+     * A window for `bytes` a writer is about to log, granted in the order
+     * asked once the bytes granted and not yet given back leave room for them
+     * under PROCESS_FS_ROOM_BYTES (or when none are): a writer with many to
+     * send (a drain of parked writes) logs them a window at a time, so they
+     * are never all held twice. Answers the window's release, for when the
+     * bytes are answered.
+     */
+    room(bytes: number): Promise<() => void>;
     /**
      * The grant a mutation at `key` is decided under now (held, not shared),
      * or undefined: the session decides it. Counts the mutation toward taking
@@ -216,6 +232,8 @@ export interface ProcessFsStats {
 }
 /** A synchronous loop's bytes held at once, at most (ProcessFsClientOptions.syncCapBytes). */
 export declare const PROCESS_FS_SYNC_CAP_BYTES: number;
+/** What a writer that waits for room (ProcessFsClient.room) lets the client hold unanswered: two waves' worth. */
+export declare const PROCESS_FS_ROOM_BYTES: number;
 /** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
 export declare const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */

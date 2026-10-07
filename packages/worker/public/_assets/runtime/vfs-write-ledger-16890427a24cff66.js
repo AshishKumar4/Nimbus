@@ -23,6 +23,7 @@ var __nimbusProcessFsModule = (() => {
     GRANT_AFTER: () => GRANT_AFTER,
     GRANT_IDLE_MS: () => GRANT_IDLE_MS,
     MAX_DELEGATIONS_PER_PROCESS: () => MAX_DELEGATIONS_PER_PROCESS,
+    PROCESS_FS_ROOM_BYTES: () => PROCESS_FS_ROOM_BYTES,
     PROCESS_FS_SYNC_CAP_BYTES: () => PROCESS_FS_SYNC_CAP_BYTES,
     processFsClient: () => processFsClient
   });
@@ -947,6 +948,7 @@ var __nimbusProcessFsModule = (() => {
   };
 
   var PROCESS_FS_SYNC_CAP_BYTES = 64 * 1024 * 1024;
+  var PROCESS_FS_ROOM_BYTES = 2 * WAVE_BYTES;
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
@@ -997,10 +999,6 @@ var __nimbusProcessFsModule = (() => {
   function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
   }
-  function owned(op) {
-    if (op.type !== "call" || !("data" in op.call)) return op;
-    return { type: "call", call: { ...op.call, data: op.call.data.slice() } };
-  }
   function pieces(op) {
     if (op.type !== "call" || !("data" in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES) return [op];
     const call = op.call;
@@ -1033,6 +1031,21 @@ var __nimbusProcessFsModule = (() => {
     let logged = 0;
     let answered = 0;
     const marks = [];
+    let windowed = 0;
+    const roomWaiters = [];
+    const grantRoom = (bytes) => {
+      windowed += bytes;
+      let released = false;
+      return () => {
+        if (released) return;
+        released = true;
+        windowed -= bytes;
+        while (roomWaiters.length > 0 && (windowed === 0 || windowed + roomWaiters[0].bytes <= PROCESS_FS_ROOM_BYTES)) {
+          const next = roomWaiters.shift();
+          next.resolve(grantRoom(next.bytes));
+        }
+      };
+    };
     const counters = {
       ops: 0,
       waves: 0,
@@ -1092,7 +1105,7 @@ var __nimbusProcessFsModule = (() => {
     const cut = () => {
       const limit = marks.reduce((least, waiting) => Math.min(least, waiting.mark), Infinity);
       const taken = [];
-      const owned2 =   new Set();
+      const owned =   new Set();
       let pathBytes = 0;
       let bytes = 0;
       while (queue.length > 0) {
@@ -1101,10 +1114,10 @@ var __nimbusProcessFsModule = (() => {
           if (taken.length === 0) taken.push(queue.shift());
           break;
         }
-        const fresh = next.paths.filter((path) => !owned2.has(path));
+        const fresh = next.paths.filter((path) => !owned.has(path));
         const freshBytes = fresh.reduce((sum, path) => sum + utf8Length2(path), 0);
-        if (taken.length > 0 && (next.order > limit || owned2.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
-        for (const path of fresh) owned2.add(path);
+        if (taken.length > 0 && (next.order > limit || owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
+        for (const path of fresh) owned.add(path);
         pathBytes += freshBytes;
         bytes += next.bytes;
         taken.push(queue.shift());
@@ -1319,6 +1332,7 @@ var __nimbusProcessFsModule = (() => {
           for (const grant2 of covered) await end(grant2);
           counters.widened++;
         }
+        await client.flush();
         paused = true;
         await quiet();
         const inos = (rangeOf.get(target) ?? GRANT_INOS / 2) * 2;
@@ -1326,8 +1340,8 @@ var __nimbusProcessFsModule = (() => {
         try {
           charge("fsAcquireExclusiveMutation");
           granted = await port.acquire("/" + target, { reads: true, inos, bytes: GRANT_BYTES });
-        } catch {
-          refusedRoots.add(target);
+        } catch (error) {
+          if (error?.code !== "ENOENT") refusedRoots.add(target);
           counters.grantsRefused++;
           return;
         }
@@ -1365,11 +1379,14 @@ var __nimbusProcessFsModule = (() => {
         }
         if (session.grants === void 0 || settling) return void 0;
         if (grants.some((grant) => !grant.ended && within(key, grant.root))) return void 0;
-        const root = parentKey(key);
-        if (!allowedRoot(root) || [...refusedRoots].some((refused) => within(root, refused))) return void 0;
-        const seen = (mutations.get(root) ?? 0) + 1;
-        mutations.set(root, seen);
-        if (seen >= grantAfter) claim(root);
+        let deepest;
+        for (let root = parentKey(key); allowedRoot(root); root = parentKey(root)) {
+          if ([...refusedRoots].some((refused) => within(root, refused))) break;
+          const seen = (mutations.get(root) ?? 0) + 1;
+          mutations.set(root, seen);
+          if (seen >= grantAfter && deepest === void 0) deepest = root;
+        }
+        if (deepest !== void 0) claim(deepest);
         return void 0;
       },
       number(grant) {
@@ -1396,7 +1413,7 @@ var __nimbusProcessFsModule = (() => {
         const acknowledged = submitOptions?.acknowledged === true;
         const named = pathsOf(op);
         for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
-        const parts = pieces(owned(op));
+        const parts = pieces(op);
         const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
         if (acknowledged && pendingSyncBytes + bytes > syncCap) {
           throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? "");
@@ -1465,8 +1482,17 @@ var __nimbusProcessFsModule = (() => {
       takeFailures() {
         return failures.splice(0, failures.length);
       },
+      noteFailure(failure) {
+        failures.push(failure);
+      },
       get pendingBytes() {
         return pendingBytes;
+      },
+      room(bytes) {
+        if (roomWaiters.length === 0 && (windowed === 0 || windowed + bytes <= PROCESS_FS_ROOM_BYTES)) return Promise.resolve(grantRoom(bytes));
+        return new Promise((resolve) => {
+          roomWaiters.push({ bytes, resolve });
+        });
       },
       stats() {
         return { ...counters };
@@ -1575,7 +1601,17 @@ function __nimbusProcessFs() {
       writeBatchStream: (stream, fence, owner) => (owner === undefined
         ? supervisor().writeBatchStream(stream, fence)
         : supervisor().writeBatchStream(stream, fence, owner)),
+      // The subtrees the process writes often enough: decided here
+      // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
+      grants: {
+        acquire: (path, delegate) => supervisor().fsAcquireExclusiveMutation(path, { delegate }),
+        release: async (owner) => { await supervisor().fsReleaseExclusiveMutation(owner); },
+        awaitRecall: (owner, waitMs) => supervisor().fsAwaitRecall(owner, waitMs),
+        recalled: async (owner, kind) => { await supervisor().fsRecalled(owner, kind); },
+      },
     },
+    // Home directories themselves are never held: the shell and the editor live there.
+    isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
   });
   globalThis.__nimbusProcessFs = __nimbusProcessFsInstance;
@@ -1598,6 +1634,33 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   answer.then(settled, settled);
   return answer;
+}
+
+/**
+ * Whether a change at `path` is decided here: in a subtree the process
+ * holds, its async form is answered once it is logged (its sync view is
+ * already changed), and the session's answer comes with the log's waves; a
+ * refusal then is reported as an acknowledged change's is. Counts the change
+ * toward taking the subtree when none is held.
+ */
+function __nimbusDecidedHere(path) {
+  return typeof __supervisor !== "undefined" && __supervisor !== null
+    && __nimbusProcessFs().holder(__nimbusVfsPathKey(path)) !== undefined;
+}
+
+/**
+ * `work`, a change the program was already told succeeded (a synchronous
+ * call, or an async one decided here): not awaited, and its refusal or
+ * unknown fate reported as the client reports its own, at the next effect
+ * and when the process settles.
+ */
+function __nimbusAcknowledged(work, syscall, path) {
+  if (!work || typeof work.then !== "function") return;
+  work.then(undefined, (error) => {
+    if (typeof __supervisor === "undefined" || __supervisor === null) return;
+    const code = error && typeof error.code === "string" ? error.code : "EIO";
+    __nimbusProcessFs().noteFailure({ op: syscall, path: __nimbusVfsPathKey(path), errno: code, message: error && error.message ? error.message : String(error) });
+  });
 }
 
 /** A mutation no call record carries, made by `run` in its place in the client's log (ProcessFsClient.call). */
@@ -2263,14 +2326,22 @@ async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
     // answers a re-sent one rather than appending it twice.
     for (const operation of __nimbusVfsAppendOperations(snapshot)) {
       __nimbusBeginVfsAppendOperation(snapshot, operation);
-      await __nimbusSubmitVfs({ type: "call", call: { call: "appendFile", path: key, mode: 0o666, data: operation.bytes } });
+      const release = await __nimbusProcessFs().room(operation.bytes.byteLength);
+      try { await __nimbusSubmitVfs({ type: "call", call: { call: "appendFile", path: key, mode: 0o666, data: operation.bytes } }); }
+      finally { release(); }
       __nimbusCommitVfsAppendOperation(snapshot, operation);
     }
     return __nimbusVfsAppendRangeResult;
   }
   // The revision this write produced. It is what lets the ACQUIRE barrier
-  // tell this facet's own mutation apart from a peer's.
-  const answer = await __nimbusSubmitVfs({ type: "call", call: { call: "writeFile", path: key, mode: 0o666, data: __nimbusVfsCellBytes(content) } });
+  // tell this facet's own mutation apart from a peer's. Logged a window at a
+  // time: a drain of thousands of parked cells never holds them all twice.
+  // The window is asked before the cell is encoded: thousands of parked
+  // cells waiting for one are never all encoded at once.
+  const release = await __nimbusProcessFs().room(typeof content === "string" ? content.length : content.byteLength);
+  let answer;
+  try { answer = await __nimbusSubmitVfs({ type: "call", call: { call: "writeFile", path: key, mode: 0o666, data: __nimbusVfsCellBytes(content) } }); }
+  finally { release(); }
   return answer.receipt?.revision;
 }
 
