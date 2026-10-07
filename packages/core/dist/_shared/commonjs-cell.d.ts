@@ -65,6 +65,13 @@ export declare const RUNTIME_CODE_MAX_BYTES: number;
 /** Pieces of runtime code one launch records, and the supervisor keeps. */
 export declare const RUNTIME_CODE_MAX_ENTRIES = 1024;
 /**
+ * The largest wasm image a launch learns (a `wasm` entry): one the program
+ * compiled from bytes the launch did not carry, which comes from no file the
+ * closure walk could record (node-shims' WebAssembly seam). Bigger images
+ * are named when refused, not learned: an image a package ships is a file.
+ */
+export declare const RUNTIME_WASM_MAX_BYTES: number;
+/**
  * What each piece is charged beyond its text, against RUNTIME_CODE_MAX_BYTES:
  * its key, its bookkeeping, and the module it becomes. Without it a flood of
  * tiny pieces is nearly free by text and not at all by heap.
@@ -84,6 +91,11 @@ export type RuntimeCodeEntry = {
  | {
     kind: 'expression';
     code: string;
+}
+/** A wasm image compiled from bytes the launch did not carry, as base64 (RUNTIME_WASM_MAX_BYTES). */
+ | {
+    kind: 'wasm';
+    bytes: string;
 };
 /**
  * What of a file's path decides the module its text becomes: its directory

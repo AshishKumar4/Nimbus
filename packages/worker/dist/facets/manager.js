@@ -974,6 +974,19 @@ export function facetWasmImports(named, closure) {
     return [...byPath.values()].map((image, index) => ({ ...image, moduleName: facetWasmModuleName(index) }));
 }
 /**
+ * The wasm images earlier runs of a command learned (runtime code of kind
+ * `wasm`: bytes the program compiled that the launch did not carry, which
+ * the WebAssembly seam named and recorded), for this launch to carry.
+ */
+export function learnedWasmImages(code) {
+    const images = [];
+    for (const entry of code.values()) {
+        if (entry.kind === 'wasm')
+            images.push(Uint8Array.from(atob(entry.bytes), (c) => c.charCodeAt(0)));
+    }
+    return images;
+}
+/**
  * A launch's wasm images, parked by VFS path and by digest for the
  * node-shims WebAssembly seam, each as the compile of its map member: the
  * seam runs it when the program first compiles those bytes. A static import
@@ -992,8 +1005,8 @@ export function facetWasmImportsSource(wasmImports) {
         ? null
         : `[${JSON.stringify(entry.digest)}, __nimbusWasm${index}]`))
         .filter((line) => line !== null);
-    return 'import { createRequire as __nimbusWasmCreateRequire } from "node:module";'
-        + '\nconst __nimbusWasmRequire = __nimbusWasmCreateRequire(import.meta.url);'
+    // __nimbusCreateRequire: the registry's, imported with COMMONJS_CELL_IMPORTS.
+    return 'const __nimbusWasmRequire = __nimbusCreateRequire(import.meta.url);'
         + '\nconst __nimbusWasmCompile = (member) => { let compiled; return () => compiled ??= __nimbusWasmRequire(member); };'
         + `\n${compiles.join('\n')}`
         + `\nglobalThis.__nimbusPrecompiledWasm = new Map([${entries.join(', ')}]);`
@@ -4501,15 +4514,16 @@ export class FacetManager {
         return modules;
     }
     /**
-     * Stage every wasm image the closure inlines as base64 (findInlineWasmImages)
-     * as a kernel-owned file named by its content key, and return the records
-     * the launch registers it under: by that path, which both launch forms read
-     * it from, and by digest, which is how the program's own compile of the
-     * decoded bytes is recognised. Small (es-module-lexer's parser is 11.8 KB)
-     * and written once per session per image.
+     * Stage wasm images that come from no file — those the closure inlines as
+     * base64 (findInlineWasmImages), and those earlier runs compiled from bytes
+     * in memory (learnedWasmImages) — each as a kernel-owned file named by its
+     * content key, and return the records the launch registers it under: by
+     * that path, which both launch forms read it from, and by digest, which is
+     * how the program's own compile of the decoded bytes is recognised. Small
+     * (es-module-lexer's parser is 11.8 KB; a learned one is at most
+     * RUNTIME_WASM_MAX_BYTES) and written once per session per image.
      */
-    _stageInlineWasmImages(bundle) {
-        const images = findInlineWasmImages(bundle);
+    _stageWasmImageBytes(images) {
         if (images.length === 0 || !this.vfs)
             return [];
         const fs = this.vfs.as(CRED_KERNEL);
@@ -4930,7 +4944,8 @@ export class FacetManager {
         // Wasm a package inlines as base64 in its own source (Vite's copy of
         // es-module-lexer) never passes through the filesystem, so the closure
         // walk's by-path records cannot name it; it is staged here instead.
-        const inlineWasm = this._stageInlineWasmImages(vfsState.bundle);
+        // And so do the images earlier runs compiled from bytes in memory (learnedWasmImages).
+        const inlineWasm = this._stageWasmImageBytes([...findInlineWasmImages(vfsState.bundle), ...learnedWasmImages(learning.code)]);
         if (inlineWasm.length > 0)
             vfsState.wasmImages = [...(vfsState.wasmImages ?? []), ...inlineWasm];
         // And what the module map costs the facet's store, which adopts it at boot
@@ -5021,6 +5036,9 @@ export class FacetManager {
     async _stagedRuntimeCode(learning, pacer) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
+            // An image is carried as a wasm member (learnedWasmImages), not as code.
+            if (entry.kind === 'wasm')
+                continue;
             if (entry.kind === 'expression') {
                 modules.set(codeKey, runtimeExpressionModule(entry.code));
                 continue;
