@@ -2061,7 +2061,12 @@ export class SqliteVFS {
       // The tables of the append protocol a process's write log replaced
       // (its calls are numbered under its writer's cursor instead): gone
       // from every store, whatever they still held.
-      for (const table of RETIRED_STORE_TABLES) this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
+      // Read first: a current store opens without a write statement.
+      const retired = new Set<string>(RETIRED_STORE_TABLES);
+      const present = [...this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vfs_append_%'")]
+        .map((row) => String(row.name))
+        .filter((name) => retired.has(name));
+      for (const table of present) this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
 
       // Every counter moves inside the transaction that consumes it.
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_state (
