@@ -567,8 +567,11 @@ stage_assets() {
 	# one that can run is the host build — so point it at the cross data.
 	( cd "$PYSRC/build-wasi"
 	  # The one module the build writes rather than unpacks: its .pyc records
-	  # its source's mtime, so the source is dated like every other stamp.
+	  # its source's mtime, so the source is dated like every other stamp, and
+	  # the .pyc the build already compiled from it (newer, so writepy would
+	  # keep it) is dropped.
 	  touch -d "@$CPYTHON_SOURCE_DATE_EPOCH" "$(cat pybuilddir.txt)"/_sysconfigdata__wasi_wasm32-wasi.py
+	  rm -f "$(cat pybuilddir.txt)"/__pycache__/_sysconfigdata__wasi_wasm32-wasi.*.pyc
 	  _PYTHON_SYSCONFIGDATA_NAME=_sysconfigdata__wasi_wasm32-wasi \
 	  PYTHONPATH="$(cat pybuilddir.txt)" \
 	  "$PYSRC/build-host/python" "$PYSRC/Tools/wasm/wasm_assets.py" \
