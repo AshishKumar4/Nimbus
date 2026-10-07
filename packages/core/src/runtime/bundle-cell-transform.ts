@@ -30,7 +30,7 @@ import {
   type EsbuildTransformOutcome,
   type EsbuildTransformRequest,
 } from './esbuild-service.js';
-import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast.js';
+import { hasTopLevelModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
@@ -92,9 +92,10 @@ export function isTypescriptDeclarationFile(path: string): boolean {
 export function looksLikeEsm(path: string, src: string): boolean {
   if (!hasTopLevelModuleSyntax(src)) return false;
   if (vfsPathExtension(path) !== '') return true;
-  // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse tells them apart.
+  // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse
+  // tells them apart: one keeping no tree, as a bin can be a multi-MiB bundle.
   try {
-    parseJavaScriptModule(src);
+    parseStatements(src, MODULE_PARSE_OPTIONS, {});
     return true;
   } catch {
     return false;

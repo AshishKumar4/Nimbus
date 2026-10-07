@@ -9,6 +9,10 @@
  * bounded reader analyzes and drops as it parses), in a class's getter, in
  * a name a parameter or a block shadows, of an import declared after its
  * use, and a write, which throws.
+ * And each scope a construct's parts are evaluated in: a switch's
+ * discriminant outside its cases' (which may declare the import's name
+ * again), a for loop's head beside its body's, a class's heritage, and a
+ * parameter's default outside its function's body.
  */
 
 import assert from 'node:assert/strict';
@@ -19,7 +23,7 @@ import { join } from 'node:path';
 import { BUNDLED_ESM_REWRITE_MIN_BYTES, prepareBundleCell } from '../../packages/core/src/runtime/bundle-cell-transform.ts';
 import { emitCommonJs, readEsmRecords } from '../../packages/core/src/runtime/async-module-lowering.ts';
 
-const COUNTER = 'export let count = 0; export function increment() { count++; }';
+const COUNTER = 'export let count = 0; export function increment() { count++; } export let switchInput = 7; export class BaseClass { kind() { return "base"; } }';
 const LATE = 'export let lateValue = "early"; export function bump() { lateValue = "late"; }';
 const padding = [];
 for (let i = 0; padding.join('\n').length < BUNDLED_ESM_REWRITE_MIN_BYTES; i++) {
@@ -28,7 +32,7 @@ for (let i = 0; padding.join('\n').length < BUNDLED_ESM_REWRITE_MIN_BYTES; i++) 
 }
 // As a bundler emits it: declarations, then one export list.
 const BIG = [
-  "import { count, increment } from './counter.mjs';",
+  "import { count, increment, switchInput, BaseClass } from './counter.mjs';",
   'const uses = [];',
   'const before = count;',
   ...padding,
@@ -40,7 +44,11 @@ const BIG = [
   'function late() { return lateValue; }',
   "function write() { try { count = 5; return 'wrote'; } catch (error) { return error.constructor.name; } }",
   "import { lateValue, bump } from './late.mjs';",
-  'export { before, uses, read, nested, shadow, blockShadow, Holder, late, write, increment, bump };',
+  "function switched() { switch (switchInput) { case 7: let switchInput = 0; return 'seven ' + switchInput; default: return 'other'; } }",
+  "function forScopes() { const seen = []; for (let i = count; i < count + 1; i++) { let count = 'body'; seen.push(i, count); } return seen; }",
+  "function withDefault(a = count) { var count = 'body'; return [a, count]; }",
+  'class Derived extends BaseClass { get base() { return super.kind(); } }',
+  'export { before, uses, read, nested, shadow, blockShadow, Holder, late, write, increment, bump, switched, forScopes, withDefault, Derived };',
 ].join('\n');
 assert.ok(BIG.length >= BUNDLED_ESM_REWRITE_MIN_BYTES, `the module is ${BIG.length} bytes`);
 
@@ -50,6 +58,7 @@ const PROGRAM = `
   return {
     before: m.before, read: [...before, m.read()], uses: m.uses.map((use) => use()), nested: m.nested()(),
     shadow: m.shadow('param'), blockShadow: m.blockShadow(), holder: new m.Holder().value, late: m.late(), write: m.write(),
+    switched: m.switched(), forScopes: m.forScopes(), withDefault: m.withDefault(), derived: new m.Derived().base,
   };
 `;
 

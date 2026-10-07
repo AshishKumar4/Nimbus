@@ -189,7 +189,10 @@ export function* scoped(
     const fields = Object.keys(item);
     for (let i = fields.length - 1; i >= 0; i--) {
       const name = fields[i]!;
-      if (name !== 'parent') stack.push([item[name], inner, isFunction && name === 'body', item, name]);
+      if (name === 'parent') continue;
+      // A switch's discriminant is evaluated before its cases' scope exists.
+      const fieldScope = item.type === 'SwitchStatement' && name === 'discriminant' ? at : inner;
+      stack.push([item[name], fieldScope, isFunction && name === 'body', item, name]);
     }
   }
 }

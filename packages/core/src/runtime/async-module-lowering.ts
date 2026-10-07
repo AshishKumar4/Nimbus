@@ -38,9 +38,9 @@
  * Runs in the transform facet (installed by oxc-facet/preamble.ts), in
  * esbuild-service.ts, and in the shell's `node` command.
  */
-import { Parser, tokTypes, type ModuleDeclaration, type Options, type Pattern, type Program, type Statement } from 'acorn';
-import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
-import { bindingScope, isNode, list, namesBinding, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
+import type { ModuleDeclaration, Pattern, Statement } from 'acorn';
+import { applySourceEdits, MODULE_PARSE_OPTIONS, parseStatements, type SourceEdit } from './javascript-ast.js';
+import { bindingScope, list, namesBinding, scoped, stringOf, type EsNode, type Scope } from './javascript-scope.js';
 
 /**
  * One name an import binds: the module's namespace, or one of its exports
@@ -126,59 +126,6 @@ export function lowerAsyncModule(esm: string): string {
   return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
 }
 
-/**
- * The parts of acorn's Parser a plugin uses (acorn's plugin API, which its
- * declarations leave out).
- */
-interface AcornParser {
-  type: unknown;
-  inModule: boolean;
-  undefinedExports: Record<string, { start: number }>;
-  parse(): Program;
-  parseStatement(context: null, topLevel: boolean, exports: object): Statement | ModuleDeclaration;
-  finishNode<T>(node: T, type: string): T;
-  raiseRecoverable(pos: number, message: string): void;
-  next(): void;
-}
-const AcornParserClass = Parser as unknown as new (options: Options, input: string) => AcornParser;
-
-const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
-
-/**
- * Acorn's module parse with no tree of the whole module: each top-level
- * statement goes to `onStatement` as it is parsed and is not kept, and each
- * function goes to `onFunction` as it is finished, after which its body is
- * dropped (its parameters stay, which acorn checks after). What is held at
- * once is the chain of functions being parsed and their code outside
- * functions: a bundle's 3.5 MB statement of nested functions included.
- */
-class StatementParser extends AcornParserClass {
-  onStatement: (statement: Statement | ModuleDeclaration) => void = () => {};
-  onFunction: (fn: EsNode) => void = () => {};
-  onIdentifier: (identifier: EsNode) => void = () => {};
-
-  parseTopLevel(node: Program): Program {
-    const exports = Object.create(null);
-    while (this.type !== tokTypes.eof) this.onStatement(this.parseStatement(null, true, exports));
-    if (this.inModule) {
-      for (const name of Object.keys(this.undefinedExports)) this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
-    }
-    this.next();
-    return this.finishNode(node, 'Program');
-  }
-
-  finishNode<T>(node: T, type: string): T {
-    const finished = super.finishNode(node, type);
-    if (type === 'Identifier' && isNode(finished)) this.onIdentifier(finished);
-    if (FUNCTION_TYPES.has(type) && isNode(finished)) {
-      this.onFunction(finished);
-      const body = finished.body;
-      if (isNode(body) && body.type === 'BlockStatement') Reflect.set(body, 'body', []);
-    }
-    return finished;
-  }
-}
-
 /** A use of a name an import may bind, before the module's imports are all known. */
 interface NamedUse extends EsmReference {
   readonly name: string;
@@ -255,9 +202,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
     return free;
   };
 
-  const parser = new StatementParser({ ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true }, source);
-  parser.onFunction = (fn) => { freeIn.set(fn, freeUses(fn)); };
-  parser.onIdentifier = (identifier) => {
+  const onIdentifier = (identifier: EsNode) => {
     const name = stringOf(identifier, 'name');
     if (name === null || !imported.has(name)) return;
     // Identifiers finish in source order; one out of it is put in its place.
@@ -265,7 +210,7 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
     while (at > 0 && mentions[at - 1]! > identifier.start) at--;
     mentions.splice(at, 0, identifier.start);
   };
-  parser.onStatement = (node) => {
+  const onStatement = (node: Statement | ModuleDeclaration) => {
     if (node.type !== 'ImportDeclaration') {
       // A top-level statement's free uses are its imports' (none redeclares one).
       for (const { name, start, end, use } of freeUses(node as unknown as EsNode)) {
@@ -340,7 +285,14 @@ function readModule(source: string, known: ReadonlySet<string> | null): {
     }
     code = true;
   };
-  parser.parse();
+  parseStatements(source, MODULE_PARSE_OPTIONS, {
+    onStatement: (statement) => onStatement(statement as Statement | ModuleDeclaration),
+    onNode: (node) => {
+      if (node.type === 'Identifier') onIdentifier(node);
+      // A function, once finished: its free uses, before its body is dropped.
+      else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression') freeIn.set(node, freeUses(node));
+    },
+  });
   const withUses = records.map((record): EsmRecord => record.kind !== 'import' ? record : {
     ...record,
     bindings: record.bindings.map((binding): EsmImportBinding => binding.kind === 'namespace' ? binding : { ...binding, references: uses.get(binding.local) ?? [] }),
