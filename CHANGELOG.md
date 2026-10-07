@@ -23,6 +23,57 @@ published independently in the `@nimbus-sh` npm scope.
 - Fixed: `react-router dev` (React Router 8.4) exited at once with "Oops, Node
   v22.19.0 detected": processes now report Node v22.22.3, the release the
   tests use as Node's reference, which meets its `>=22.22.0` engines floor.
+- Fixed: a file a process faulted in could stay unreadable for good when its
+  fetch completed without its bytes landing (a barrier spoiled the fill, or
+  the store refused it): the path counted as asked. It is now asked for again
+  by the next read that misses it, and an `import()`'s prefetch takes another
+  round for it (`astro dev`, now and then: "Cannot load module
+  '…/zod/v4/classic/index.js'").
+- Fixed: a process whose file store was at its storage budget could never
+  read a file it had not staged: the fetch a refused read starts was declined
+  for want of room, room was asked for only afterwards, and the fetch was not
+  tried again (`nuxt dev` stuck at "Starting Nuxt..."). The fetch now asks for
+  the room first, and concurrent asks each get theirs.
+- Fixed: `astro dev` logged an unhandled "EAGAIN … aria-query/lib/index.js":
+  Vite's dependency optimizer reads, synchronously, the entries of what a
+  framework includes for itself (Astro's dev toolbar includes `astro >
+  aria-query`, `astro > axobject-query` and `astro > html-escaper`), and a
+  launch planned only the entries of the project's own dependencies. It now
+  also plans the entries of those dependencies' dependencies.
+- Fixed: `vinext dev` answered every App Router page 404, because `fs.glob`
+  matched no braces: `fs.glob`, `fs.globSync` and `fs.promises.glob` are now
+  Node's own, its Glob over the minimatch it vendors, with every option
+  (`cwd`, `exclude`, `withFileTypes`). `fs.glob` and `fs.globSync` were missing.
+- Fixed: `nuxt dev` died at start with "BroadcastChannel is not a constructor":
+  `node:worker_threads` and the global now provide `BroadcastChannel`, which
+  delivers to the process's other open channels of the same name as Node does
+  and keeps the process alive until it is closed or unref'd.
+- Fixed: an `import()` that reaches installed files a launch did not stage
+  loads them on the first run. A launch's store holds its static closure and
+  its data plan; any other file on disk was known by name but not held, and the
+  synchronous load an `import()` ends in failed with "Cannot load module '…':
+  it was not in this launch's module map; the next launch of the same command
+  stages it" (or "Cannot find module", when it was a `package.json` that
+  resolution needed). That never helped a file named afresh on each run.
+  `astro dev` failed its first request this way, on `zod/v4` imported by its
+  server code, and so did Vite's own config loading on react-router's
+  template: the config Vite bundles to `node_modules/.vite-temp` imports
+  `@react-router/dev`. Before loading, `import()` now fetches through the
+  store's own fill: exactly the files Node's resolvers read for it (a bare
+  name's `package.json`, a file URL's package scope, through links), then
+  every module the target requests, as the runtime-code interpreter's parser
+  reads requests and each resolved as the loader will evaluate it (a static
+  import under `require`'s conditions, `import()` under `import`'s), outside
+  the launch's map, breadth first. The bound, 4096 files and 64 MiB of raw
+  bytes, is charged as each fetch is issued and as each range of it is
+  read, manifests included; past it nothing more is fetched and the `import()`
+  fails with `ERR_NIMBUS_PREFETCH_BOUND` rather than load on part of its
+  closure. A file whose fetches never land fails it with
+  `ERR_NIMBUS_PREFETCH_UNREADABLE`, naming the file, rather than resolve past
+  it. Its reads are its own: a file the program itself failed to
+  read stays in the program's exit report. A floating `import(...).then(...)`
+  keeps the process while it fetches, and an `import()` of a module already
+  loaded fetches nothing.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
