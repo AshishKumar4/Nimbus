@@ -180,15 +180,18 @@ assert.throws(() => parseCloneArgs(['--porcelain', url]), /unknown option '--por
 // against the cwd. Repeated, each -C is relative to the previous one. An
 // unknown leading option is refused, because swallowing it would run the
 // next word as the subcommand.
-assert.deepEqual(parseGitGlobals(['status'], '/home/user'), { sub: 'status', subArgs: [], dir: '/home/user' });
-assert.deepEqual(parseGitGlobals(['-C', '/srv/app', 'branch', '--show-current'], '/home/user'), { sub: 'branch', subArgs: ['--show-current'], dir: '/srv/app' });
-assert.deepEqual(parseGitGlobals(['-C', 'app', 'status'], '/home/user'), { sub: 'status', subArgs: [], dir: '/home/user/app' });
-assert.deepEqual(parseGitGlobals(['-C', 'a', '-C', 'b', 'log'], '/home/user'), { sub: 'log', subArgs: [], dir: '/home/user/a/b' });
+assert.deepEqual(parseGitGlobals(['status'], '/home/user'), { sub: 'status', subArgs: [], dir: '/home/user', config: new Map() });
+assert.deepEqual(parseGitGlobals(['-C', '/srv/app', 'branch', '--show-current'], '/home/user'), { sub: 'branch', subArgs: ['--show-current'], dir: '/srv/app', config: new Map() });
+assert.deepEqual(parseGitGlobals(['-C', 'app', 'status'], '/home/user'), { sub: 'status', subArgs: [], dir: '/home/user/app', config: new Map() });
+assert.deepEqual(parseGitGlobals(['-C', 'a', '-C', 'b', 'log'], '/home/user'), { sub: 'log', subArgs: [], dir: '/home/user/a/b', config: new Map() });
 assert.deepEqual(parseGitGlobals(['-C/srv/app', 'status'], '/home/user').dir, '/srv/app');
-assert.deepEqual(parseGitGlobals(['--no-pager', 'log', '-1'], '/home/user'), { sub: 'log', subArgs: ['-1'], dir: '/home/user' });
+assert.deepEqual(parseGitGlobals(['--no-pager', 'log', '-1'], '/home/user'), { sub: 'log', subArgs: ['-1'], dir: '/home/user', config: new Map() });
 assert.deepEqual(parseGitGlobals(['--version'], '/home/user').sub, '--version');
-assert.deepEqual(parseGitGlobals([], '/home/user'), { sub: undefined, subArgs: [], dir: '/home/user' });
+assert.deepEqual(parseGitGlobals([], '/home/user'), { sub: undefined, subArgs: [], dir: '/home/user', config: new Map() });
 assert.throws(() => parseGitGlobals(['-C'], '/home/user'), /requires a value/);
 assert.throws(() => parseGitGlobals(['--git-dir=/x', 'status'], '/home/user'), /unknown option '--git-dir=\/x'/);
+// -c <name>=<value>: each key's section and name in lower case, its values in order.
+assert.deepEqual(parseGitGlobals(['-c', 'User.Name=a', '-c', 'remote.Up.URL=x', '-c', 'user.name=b', '-c', 'core.bare', 'status'], '/home/user').config,
+  new Map([['user.name', ['a', 'b']], ['remote.Up.url', ['x']], ['core.bare', ['true']]]));
 
 console.log('git-clone-args: ok');
