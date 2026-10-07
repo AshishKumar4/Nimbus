@@ -9675,7 +9675,8 @@ export class SqliteVFS {
         }
       }
       const after = this._revision;
-      for (const [at, result] of applied.results.entries()) {
+      // Read as the wave's writer: its receipts recall none of what it holds.
+      this.withHolds(holds, () => applied.results.entries().forEach(([at, result]) => {
         const call = calls[at]!;
         progress.committedGroupSequence++;
         progress.committedPathCount += call.paths;
@@ -9689,7 +9690,7 @@ export class SqliteVFS {
           });
         }
         if (call.seq !== null) advanced(call.seq);
-      }
+      }));
       if (refused !== null) {
         applying = refused.call.seq;
         throw refused.error;
