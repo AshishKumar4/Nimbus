@@ -9067,12 +9067,12 @@ export class SqliteVFS {
    * admits nothing more. A wave that starts past the op after the cursor
    * names ops the session never had: refused, ESTALE (they are lost).
    */
-  private openSequence(sequence: WaveSequence): { cursor: number; refused: WaveSequenceAnswer['refused'] | null } {
+  private openSequence(sequence: WaveSequence): { cursor: number; refused: NonNullable<WaveSequenceAnswer['refused']> | null } {
     if (!Number.isSafeInteger(sequence.first) || sequence.first < 1 || !Number.isSafeInteger(sequence.ack) || sequence.ack < 0) {
       throw vfsError('EINVAL', sequence.writer, 'a sequenced wave numbers its ops from 1');
     }
     const now = Date.now();
-    let state: { cursor: number; refused: WaveSequenceAnswer['refused'] | null } = { cursor: 0, refused: null };
+    let state: { cursor: number; refused: NonNullable<WaveSequenceAnswer['refused']> | null } = { cursor: 0, refused: null };
     this.transactionSync(() => {
       this.sql.exec('DELETE FROM vfs_wave_cursors WHERE touched_at < ?', now - WAVE_EPOCH_TTL_MS);
       const row = [...this.sql.exec(
