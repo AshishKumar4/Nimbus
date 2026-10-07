@@ -31,7 +31,7 @@ import {
   claimAdmission,
   facetNameCount,
   facetNameCountDurable,
-  recordFacetNameMinted,
+  chargeFacetSlot,
   withDynamicWorkerCapNamed,
   withFacetBudgetNamed,
 } from './budgets.js';
@@ -309,7 +309,8 @@ function slotBook(ctx: DurableObjectState): SlotBook {
  * Take the next slot for `pid` (residentFacetName: never one a released
  * process held), or the one it holds. A `minted` name may still hold storage
  * a previous incarnation of this actor left there, so the caller deletes it
- * before the first get.
+ * before the first get. The caller charges the slot (chargeFacetSlot) before
+ * its facet is created.
  */
 function acquireSlot(ctx: DurableObjectState, pid: number): { slot: number; minted: boolean } {
   const book = slotBook(ctx);
@@ -317,9 +318,6 @@ function acquireSlot(ctx: DurableObjectState, pid: number): { slot: number; mint
   if (existing !== undefined) return { slot: existing, minted: false };
   const slot = book.next++;
   book.held.set(pid, slot);
-  // A fresh name is a permanently consumed facet ID; the durable count lives
-  // in the budgets ledger (see budgets.ts).
-  recordFacetNameMinted(ctx, book.next);
   return { slot, minted: true };
 }
 
@@ -453,6 +451,12 @@ function spawnResident(
   if (grant?.minted) {
     try { deleteFacetStorage(ctx, name); } catch { /* nothing stored under this name */ }
   }
+  // A slot's name is a lifetime facet ID the first time it is created, so it
+  // is charged, durably, before the first call creates the facet. Charged on
+  // every use: a slot whose charge failed is reused uncharged otherwise, and
+  // one already counted costs nothing. An explicit name was charged when it
+  // was allocated (acquireDurableFacetSlot).
+  const charged = slot === undefined ? Promise.resolve() : chargeFacetSlot(ctx, slot);
   // The start callback is the ONLY way this facet is ever created, and it
   // fires AT MOST ONCE. Every later use goes through the stub below, so the
   // callback running a second time means the facet was released or died —
@@ -527,7 +531,7 @@ function spawnResident(
     const startArgs = ledger !== null && params.storageBytes !== undefined && params.startArgs !== null && typeof params.startArgs === 'object'
       ? { ...(params.startArgs as Record<string, unknown>), storage: { facet: name, grant: params.storageBytes } }
       : params.startArgs;
-    started = facet.startProcess(startArgs);
+    started = charged.then(() => facet.startProcess(startArgs));
   } catch (error) {
     void release();
     throw withFacetBudgetNamed(facetNameCount(ctx), error);
@@ -549,7 +553,10 @@ function spawnResident(
   }, async (error) => {
     // A start that rejects after its release is the process ending or being
     // ended as it booted (json-server --version), not a failure to start.
-    throw withFacetBudgetNamed(await facetNameCountDurable(ctx), released ? error : startFailure(error, name, params.pid));
+    const named = released ? error : startFailure(error, name, params.pid);
+    // The count is read only to name the budget: a count storage cannot answer names nothing.
+    const consumed = await facetNameCountDurable(ctx).catch(() => null);
+    throw consumed === null ? named : withFacetBudgetNamed(consumed, named);
   });
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.
@@ -559,8 +566,9 @@ function spawnResident(
     // A facet cannot die without taking its Durable Object — and this object —
     // with it, so there is no independent death to report.
     lost: new Promise<never>(() => {}),
-    handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
-    handleWebSocketRequest: (request: Request) => facet.fetch(request),
+    // A request can arrive before the boot call; it creates the facet as that call would.
+    handleHttpRequest: (request: Request) => charged.then(() => facet.handleHttpRequest(request)),
+    handleWebSocketRequest: (request: Request) => charged.then(() => facet.fetch(request)),
     release,
     name,
     slot,

@@ -59,6 +59,13 @@ export interface NimbusAuthEnv {
   JWT_SECRET_PREVIOUS?: string;
 }
 
+/** Whether `env` carries a signing secret: a non-empty `JWT_SECRET`. */
+export function hasJwtSecret(env: unknown): env is NimbusAuthEnv {
+  if (typeof env !== 'object' || env === null) return false;
+  const secret: unknown = Reflect.get(env, 'JWT_SECRET');
+  return typeof secret === 'string' && secret.length > 0;
+}
+
 /**
  * Mint a Nimbus JWT.
  *
@@ -98,7 +105,7 @@ export async function issueNimbusToken(
   },
   opts: IssueTokenOptions = {},
 ): Promise<string> {
-  if (!env || typeof env.JWT_SECRET !== 'string' || env.JWT_SECRET.length === 0) {
+  if (!hasJwtSecret(env)) {
     throw new NimbusAuthConfigError(
       'JWT_SECRET is not configured (set via `wrangler secret put JWT_SECRET`)',
     );
@@ -157,7 +164,7 @@ export async function verifyNimbusToken(
   env: NimbusAuthEnv,
   token: string,
 ): Promise<VerifiedNimbusToken> {
-  if (!env || typeof env.JWT_SECRET !== 'string' || env.JWT_SECRET.length === 0) {
+  if (!hasJwtSecret(env)) {
     throw new NimbusAuthConfigError(
       'JWT_SECRET is not configured (set via `wrangler secret put JWT_SECRET`)',
     );

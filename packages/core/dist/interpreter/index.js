@@ -29,7 +29,7 @@ import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, reflectGetOwnPropertyDescriptor, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectKeys, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -92,6 +92,95 @@ function leadingSlashes(path) {
         i++;
     return i;
 }
+/** A string literal, or a template with no substitutions: the specifier a request spells. */
+function spelledString(node) {
+    if (typeof node !== 'object' || node === null)
+        return undefined;
+    const type = reflectGet(node, 'type');
+    if (type === 'Literal') {
+        const value = reflectGet(node, 'value');
+        return typeof value === 'string' ? value : undefined;
+    }
+    if (type !== 'TemplateLiteral')
+        return undefined;
+    const expressions = reflectGet(node, 'expressions');
+    const quasis = reflectGet(node, 'quasis');
+    if (!arrayIsArray(expressions) || expressions.length !== 0 || !arrayIsArray(quasis) || quasis.length !== 1)
+        return undefined;
+    const value = reflectGet(quasis[0], 'value');
+    const cooked = typeof value === 'object' && value !== null ? reflectGet(value, 'cooked') : undefined;
+    return typeof cooked === 'string' ? cooked : undefined;
+}
+/**
+ * The modules a file's text asks for, as this parser reads it: import and
+ * export-from sources, `import()` of a string, and `require()` of a string
+ * (any call of a `require` binding, the module's own or one createRequire
+ * made). A specifier spelled with escapes or in a template is read as the
+ * language reads it; one in a comment or a string is not a request. Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
+ * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ */
+export function moduleRequests(path, text) {
+    if (UNPARSED_EXTENSIONS[extensionOf(path)])
+        return [];
+    let program;
+    try {
+        program = parseQuick(text, MODULE_OPTIONS);
+    }
+    catch {
+        try {
+            program = parseQuick(text, COMMONJS_OPTIONS);
+        }
+        catch {
+            return [];
+        }
+    }
+    const requests = [];
+    const add = (specifier, kind) => {
+        if (specifier !== undefined)
+            requests[requests.length] = { specifier, kind };
+    };
+    const pending = [program];
+    while (pending.length > 0) {
+        const node = pending[pending.length - 1];
+        pending.length -= 1;
+        if (typeof node !== 'object' || node === null)
+            continue;
+        if (arrayIsArray(node)) {
+            for (let i = 0; i < node.length; i++)
+                pending[pending.length] = node[i];
+            continue;
+        }
+        const type = reflectGet(node, 'type');
+        if (typeof type !== 'string')
+            continue;
+        if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration') {
+            add(spelledString(reflectGet(node, 'source')), 'static');
+        }
+        else if (type === 'ImportExpression') {
+            add(spelledString(reflectGet(node, 'source')), 'dynamic');
+        }
+        else if (type === 'CallExpression') {
+            const callee = reflectGet(node, 'callee');
+            const args = reflectGet(node, 'arguments');
+            if (typeof callee === 'object' && callee !== null && reflectGet(callee, 'type') === 'Identifier'
+                && reflectGet(callee, 'name') === 'require' && arrayIsArray(args) && args.length > 0) {
+                add(spelledString(args[0]), 'require');
+            }
+        }
+        const keys = objectKeys(node);
+        for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range')
+                continue;
+            // A literal's or template element's value is data; elsewhere `value` holds a node (a property's).
+            if ((key === 'value' || key === 'regex') && (type === 'Literal' || type === 'TemplateElement'))
+                continue;
+            pending[pending.length] = reflectGet(node, key);
+        }
+    }
+    return requests;
+}
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {
     return someItem(program.body, (s) => s.type === 'ImportDeclaration' || s.type === 'ExportNamedDeclaration'
@@ -110,18 +199,6 @@ let installed = null;
 function unitContext(source, module, host, moduleScope) {
     return { source, module, host, imports: new SafeMap(), moduleScope };
 }
-/** A unit's host: `origin`'s import() and `Function` binding, or else the host's import() against `parentUrl` and the global `Function`. */
-function unitHost(host, origin, parentUrl) {
-    if (origin === undefined) {
-        return { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options), functionBinding: null };
-    }
-    // Its own property only: an origin without a Function must not take one a program put on Object.prototype.
-    const own = reflectGetOwnPropertyDescriptor(origin, 'Function');
-    return {
-        dynamicImport: (specifier, options) => origin.import(specifier, options),
-        functionBinding: own === undefined || own.value === undefined ? null : { value: own.value },
-    };
-}
 export function createInterpreter(hostOps, host) {
     if (host.primordials !== LAUNCH_PRIMORDIALS)
         throw new Error('interpreter: its built-ins were not captured at the launch start');
@@ -130,7 +207,7 @@ export function createInterpreter(hostOps, host) {
         installed = hostOps;
     }
     const interpreter = {
-        compileFunction(kind, params, body, origin) {
+        compileFunction(kind, params, body) {
             // A trailing source map is parsed only when the shortened body fails.
             const short = withoutTrailingLineComments(body);
             let parsed;
@@ -146,20 +223,20 @@ export function createInterpreter(hostOps, host) {
             const node = ownFunctionExpression(parsed.node);
             const analysis = analyzeFunction(node);
             const root = analysis.functionScopeOf(node);
-            const unit = unitContext(text, false, unitHost(host, origin, undefined), null);
+            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
             const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
             releaseScopes(root);
             return makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileModule(path, text, origin) {
+        compileModule(path, text) {
             if (UNPARSED_EXTENSIONS[extensionOf(path)])
                 throw new UnsupportedSyntax(`${extensionOf(path)} source`);
             const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
-            const moduleHost = unitHost(host, origin, parentUrl);
+            const unitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
             const compileCell = (program) => {
                 const analysis = analyzeProgram(program, { kind: 'module', strict: true });
                 const root = analysis.functionScopeOf(program);
-                const cell = moduleCell(new Compiler(analysis, unitContext(text, true, moduleHost, root), text, 0, root).modulePlan(program, root));
+                const cell = moduleCell(new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).modulePlan(program, root));
                 releaseScopes(root);
                 return cell;
             };
@@ -184,23 +261,23 @@ export function createInterpreter(hostOps, host) {
             }
             const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
             const root = analysis.functionScopeOf(script);
-            const fi = new Compiler(analysis, unitContext(text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+            const fi = new Compiler(analysis, unitContext(text, false, unitHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
             releaseScopes(root);
             // Called as the loader calls a staged cell, so `this` matches the next launch's.
             return makeFunction(fi, ROOT_ENV, undefined);
         },
-        compileExpression(code, origin) {
+        compileExpression(code) {
             const at = scriptExpression(code, REALM);
             if (at === null)
                 throw new UnsupportedSyntax('a vm script that is not one expression');
             const body = expressionFunctionBody(stringSlice(code, 0, at.prologueEnd), stringSlice(code, at.start, at.end));
-            return interpreter.compileFunction('function', [], body, origin);
+            return interpreter.compileFunction('function', [], body);
         },
         runScript(text) {
             const program = ownProgram(parse(text, SCRIPT_OPTIONS));
             const analysis = analyzeProgram(program, { kind: 'script', strict: false });
             const root = analysis.functionScopeOf(program);
-            const unit = unitContext(text, false, unitHost(host, undefined, undefined), null);
+            const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
             const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
             releaseScopes(root);
             if (body.g !== null)

@@ -293,8 +293,9 @@ export function launchNamedPaths(cwd: string, program: string | null, argv: read
 
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-  // copyTree yields between slices, so it has no synchronous form.
-  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]:
+  // copyTree yields between slices, so it has no synchronous form; nor has
+  // writeBatch, whose records may land on a mount only an awaited call reaches.
+  [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]:
     RuntimeFsBridge[K] extends (...args: infer A) => infer R
       ? (...args: A) => Awaited<R> : never;
 };
@@ -437,13 +438,14 @@ export interface RuntimeFsBridge {
   futimes(handleId: number, atimeMs: number, mtimeMs: number): Awaitable<void>;
   appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): Awaitable<number>;
   acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): Awaitable<void>;
-  writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload): Awaitable<{ inodes: number; chunks: number }>;
+  /** `signal`: cancels it before its commit (a released process publishes nothing). */
+  writeBatch(payload: import('@nimbus-sh/platform/w7-frame.js').BatchWritePayload, options?: { signal?: AbortSignal }): Awaitable<{ inodes: number; chunks: number }>;
   /**
    * `admit`, when given, is asked before the stream's first commit and every
    * later one; it throws to refuse them (a fenced write wave its writer has
    * since re-sent: SupervisorDeliveries.admitWave).
    */
-  writeStream(stream: ReadableStream<Uint8Array>, options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number; admit?: () => void }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
+  writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
   acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): Awaitable<{ root: string; owner: string }>;
   releaseExclusiveMutation(owner: string): Awaitable<void>;
 }

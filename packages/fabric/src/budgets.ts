@@ -903,28 +903,44 @@ export const FACET_ID_LIFETIME_BUDGET = 65_536;
 /** Where the ledger persists the count of facet names ever minted. */
 export const FACET_NAME_HIGH_WATER_KEY = 'fabric_facet_name_high_water';
 
-/** The slice of storage the facet-name ledger persists through. */
+/** Where it persists how many `proc-slot-` names the slot book has ever minted. */
+const FACET_SLOT_HIGH_WATER_KEY = 'fabric_facet_slot_high_water';
+
+/** The row that marks one explicit facet name (a lease's, a durable application's) as minted. */
+const mintedNameKey = (name: string): string => `fabric_facet_name_minted:${name}`;
+
+/**
+ * The slice of storage the facet-name ledger persists through. A multi-key
+ * put is one atomic write, as Durable Object storage's is: a charge's counts
+ * and its name's row land together or not at all.
+ */
 interface FacetNameLedgerStorage {
   storage: {
     get(key: string): Promise<unknown> | unknown;
-    put(key: string, value: unknown): Promise<void>;
+    put(entries: Record<string, unknown>): Promise<void>;
   };
 }
 
+/** Every facet name ever minted, and how many of them are the slot book's `proc-slot-` names. */
+interface FacetNameCounts {
+  names: number;
+  slots: number;
+}
+
 /**
- * One hosting actor's durable facet-name count, as an adopt-then-advance
- * chain. It starts as the read of {@link FACET_NAME_HIGH_WATER_KEY} and
- * every later link writes only a LARGER count — a fresh incarnation restarts
- * its slot cursor at zero, and a write that had not adopted first would
- * clobber the lifetime count down to this incarnation's. The chain never
- * rejects.
+ * One hosting actor's facet-name ledger. Its charges run one at a time, in
+ * order, each against what storage holds: a charge is acknowledged only once
+ * the write that records it has landed, and a read that fails fails the
+ * charge, never counts as nothing stored. A failed charge changes nothing and
+ * the next one runs.
  */
 interface FacetNameLedger {
-  chain: Promise<number>;
-  /** The largest count the chain has adopted or durably written. */
-  known: number;
-  /** The largest count ever recorded this incarnation, durable or not. */
-  minted: number;
+  /** The counts storage holds, once a read of both has succeeded. */
+  counts: FacetNameCounts | null;
+  /** The last charge, settled or not: the next one runs after it. */
+  queue: Promise<unknown>;
+  /** Explicit names storage marks minted. */
+  minted: Set<string>;
 }
 
 const facetNameLedgers = new WeakMap<object, FacetNameLedger>();
@@ -932,52 +948,118 @@ const facetNameLedgers = new WeakMap<object, FacetNameLedger>();
 function facetNameLedger(ctx: FacetNameLedgerStorage): FacetNameLedger {
   let ledger = facetNameLedgers.get(ctx);
   if (!ledger) {
-    const created: FacetNameLedger = { chain: Promise.resolve(0), known: 0, minted: 0 };
-    created.chain = Promise.resolve(ctx.storage.get(FACET_NAME_HIGH_WATER_KEY))
-      .then((value) => (typeof value === 'number' ? value : 0))
-      .catch(() => 0)
-      .then((adopted) => {
-        created.known = Math.max(created.known, adopted);
-        return adopted;
-      });
-    ledger = created;
+    ledger = { counts: null, queue: Promise.resolve(), minted: new Set() };
     facetNameLedgers.set(ctx, ledger);
   }
   return ledger;
 }
 
+/** A stored value, read inside a charge: a failure, thrown at once or later, rejects. */
+function readStored(ctx: FacetNameLedgerStorage, key: string): Promise<unknown> {
+  return Promise.resolve().then(() => ctx.storage.get(key));
+}
+
+/** What one charge does: the counts it leaves, the explicit name it mints, and what it answers. */
+interface FacetNameCharge<T> {
+  counts: FacetNameCounts;
+  minted?: string;
+  answer: T;
+}
+
 /**
- * Advance the durable ledger to this incarnation's name count, if it is a new
- * lifetime high. Chained behind adoption so the comparison is always against
- * the real persisted value; a failed write leaves the old link's count and the
- * next mint tries again — the ledger may transiently undercount, never over.
+ * Run one charge on the ledger, after the charges before it: read the counts
+ * if no read has yet succeeded, apply `charge`, and write what changed (the
+ * counts, and the minted name's mark) in one put. Answers once that put has
+ * landed; a failed read, a refusal or a failed put rejects, and the ledger
+ * stays as storage holds it.
  */
-export function recordFacetNameMinted(ctx: FacetNameLedgerStorage, count: number): void {
+function runCharge<T>(
+  ctx: FacetNameLedgerStorage,
+  charge: (counts: FacetNameCounts) => Promise<FacetNameCharge<T>>,
+): Promise<T> {
   const ledger = facetNameLedger(ctx);
-  ledger.minted = Math.max(ledger.minted, count);
-  ledger.chain = ledger.chain.then(async (durable) => {
-    if (count <= durable) return durable;
-    try {
-      await ctx.storage.put(FACET_NAME_HIGH_WATER_KEY, count);
-    } catch {
-      return durable;
+  const run = ledger.queue.then(async () => {
+    if (ledger.counts === null) {
+      const [names, slots] = await Promise.all([
+        readStored(ctx, FACET_NAME_HIGH_WATER_KEY),
+        readStored(ctx, FACET_SLOT_HIGH_WATER_KEY),
+      ]);
+      const total = typeof names === 'number' ? names : 0;
+      // A ledger persisted before the slot high-water existed kept slots and
+      // names in one count. That count bounds the slots, so no slot under it
+      // is charged twice.
+      ledger.counts = { names: total, slots: typeof slots === 'number' ? slots : total };
     }
-    ledger.known = Math.max(ledger.known, count);
-    return count;
+    const before = ledger.counts;
+    const after = await charge(before);
+    if (after.counts.names !== before.names || after.counts.slots !== before.slots) {
+      await ctx.storage.put({
+        [FACET_NAME_HIGH_WATER_KEY]: after.counts.names,
+        [FACET_SLOT_HIGH_WATER_KEY]: after.counts.slots,
+        ...(after.minted !== undefined && { [mintedNameKey(after.minted)]: true }),
+      });
+    }
+    ledger.counts = after.counts;
+    if (after.minted !== undefined) ledger.minted.add(after.minted);
+    return after.answer;
+  });
+  ledger.queue = run.catch(() => undefined);
+  return run;
+}
+
+/**
+ * Charge the slot book's `slot` before its facet is created. A fresh
+ * incarnation restarts the book at zero and issues the same `proc-slot-`
+ * names again, so only a slot past the slot high-water is a name never
+ * minted before; any other costs nothing, so a slot may be charged on every
+ * use. Resolves once the charge is durable.
+ */
+export function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): Promise<void> {
+  return runCharge(ctx, async (counts) => ({
+    counts: slot < counts.slots ? counts : { names: counts.names + slot + 1 - counts.slots, slots: slot + 1 },
+    answer: undefined,
+  }));
+}
+
+/**
+ * Charge an explicit facet name before its facet is created: its first use
+ * ever consumes one lifetime ID, and any later use, in this incarnation or
+ * another, costs nothing, so a caller may charge a name on every use.
+ * `refuseAtWall` refuses a first use at the wall; without it the platform's
+ * own failure at creation is what stops it, named by the ledger
+ * (withFacetBudgetNamed). Resolves with the count once the charge is durable.
+ */
+export function chargeFacetName(
+  ctx: FacetNameLedgerStorage,
+  name: string,
+  { refuseAtWall }: { refuseAtWall: boolean },
+): Promise<number> {
+  const ledger = facetNameLedger(ctx);
+  return runCharge(ctx, async (counts) => {
+    if (ledger.minted.has(name)) return { counts, answer: counts.names };
+    if (await readStored(ctx, mintedNameKey(name)) === true) {
+      ledger.minted.add(name);
+      return { counts, answer: counts.names };
+    }
+    if (refuseAtWall && counts.names >= FACET_ID_LIFETIME_BUDGET) {
+      throw withFacetBudgetNamed(
+        counts.names,
+        new Error(`facet '${name}' refused before creation: no lifetime ids remain`),
+      );
+    }
+    const after = { names: counts.names + 1, slots: counts.slots };
+    return { counts: after, minted: name, answer: after.names };
   });
 }
 
-/** The best count available without awaiting storage: minted or adopted. */
+/** The count as last read or charged, without awaiting storage: 0 before the first read. */
 export function facetNameCount(ctx: FacetNameLedgerStorage): number {
-  const ledger = facetNameLedger(ctx);
-  return Math.max(ledger.known, ledger.minted);
+  return facetNameLedger(ctx).counts?.names ?? 0;
 }
 
-/** The count with adoption awaited, for a first failure on a fresh boot. */
-export async function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number> {
-  const ledger = facetNameLedger(ctx);
-  const durable = await ledger.chain;
-  return Math.max(durable, ledger.minted);
+/** The count once every charge so far has settled, read from storage if no read has yet succeeded. */
+export function facetNameCountDurable(ctx: FacetNameLedgerStorage): Promise<number> {
+  return runCharge(ctx, async (counts) => ({ counts, answer: counts.names }));
 }
 
 /**

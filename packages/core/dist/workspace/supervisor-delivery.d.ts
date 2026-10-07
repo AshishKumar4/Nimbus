@@ -27,6 +27,7 @@
  * mutation without a receipt for its repeat to find.
  */
 import type { SupervisorOpDispatch } from './supervisor-op.js';
+import type { WaveMountReach } from '../vfs/sqlite-vfs.js';
 /**
  * The filesystem mutations a process's supervisor delivers exactly once.
  *
@@ -216,8 +217,13 @@ export declare class SupervisorDeliveries {
      * again before each of the attempt's commits, which is what stops an
      * attempt overtaken, or outlived by its epoch, while it runs.
      */
+    /**
+     * `reach`: how far an earlier attempt of this wave may have reached into
+     * mounted records, and where this one notes its own (WaveMountReach).
+     */
     admitWave(pid: number, writer: string, wave: number, attempt: number): {
         check(): void;
+        reach: WaveMountReach;
     };
     /** Reads being served, which repeats of them would join. */
     get readsServing(): number;

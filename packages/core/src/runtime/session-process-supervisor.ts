@@ -32,6 +32,7 @@ import {
   type SequencedLogChunk,
 } from './process-logs.js';
 import type { ProcessSignalName } from './process-io-protocol.js';
+import { exitCodeForSignal, parseSignalName, signalDisposition } from '../substrate/lifo/shell/signals.js';
 import type { VfsCred } from './os-contracts.js';
 import { StreamTextDecoders } from '../_shared/bytes.js';
 
@@ -63,11 +64,6 @@ export interface ProcessTerminalDescriptor {
   columns: number;
   rows: number;
 }
-
-/** Signals whose default action terminates the process, by number. */
-const DEFAULT_TERMINATING_SIGNALS: Partial<Record<ProcessSignalName, number>> = {
-  SIGHUP: 1, SIGINT: 2, SIGQUIT: 3, SIGKILL: 9, SIGTERM: 15,
-};
 
 export class SessionProcessSupervisor {
   private readonly table = new ProcessTable();
@@ -461,7 +457,10 @@ export class SessionProcessSupervisor {
    * in the queue for however long the program takes to start.
    */
   signal(pid: number, signal: ProcessSignalName): { ok: boolean } {
-    const signo = DEFAULT_TERMINATING_SIGNALS[signal];
+    // Whether its default action ends a process, and the status it ends with:
+    // the shell's table (signals.ts), Linux's dispositions and numbers.
+    const name = parseSignalName(signal);
+    const terminates = name !== null && signalDisposition(name) === 'terminate';
     const entry = this.table.get(pid);
     // Only an attached program reads its signals from this channel; a job
     // that never reads it is not "not yet started". SIGKILL cannot be caught,
@@ -470,9 +469,9 @@ export class SessionProcessSupervisor {
     // (a top-level await that never settles) or a background job that never
     // opens one was otherwise unkillable.
     const uncatchable = signal === 'SIGKILL';
-    if (signo !== undefined && entry?.state === 'running'
+    if (terminates && entry?.state === 'running'
       && (uncatchable || (entry.attachedTty === true && this.input.has(pid) && !this.input.hasReader(pid)))) {
-      const code = 128 + signo;
+      const code = exitCodeForSignal(name);
       // Stop the work first: exit() drops the terminator without running it.
       this.terminate(pid);
       if (this.defaultSignalAction) {

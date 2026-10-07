@@ -44,8 +44,16 @@ export const NIMBUS_VERSION = '2.0.0';
 // ABI numbers (v8, modules) are mostly cosmetic but mirrored to Node 22
 // for fingerprint consistency. v8 12.4 ships with Node 22.x; modules
 // (NODE_MODULE_VERSION) is 127 for the v22 line.
-export const NODE_VERSION = 'v22.19.0';
-export const NODE_VERSIONS = { node: '22.19.0', v8: '12.4.254.21', modules: '127' };
+//
+// One release, and the one the tests run as the oracle: the CI image's
+// pinned node (v22.22.3, 2026-05-13), whose process.versions these are
+// verbatim (tests/unit/node-version-floor.mjs compares them). Node's CLI
+// option table is generated from the same release. The patch level matters:
+// React Router 8.4 declares `engines.node: ">=22.22.0"` and `react-router
+// dev` exits 1 below it.
+const NODE_RELEASE = '22.22.3';
+export const NODE_VERSION = `v${NODE_RELEASE}`;
+export const NODE_VERSIONS = { node: NODE_RELEASE, v8: '12.4.254.21-node.56', modules: '127' };
 export const ESBUILD_VERSION = '0.24.2';
 //
 // sql.js (Emscripten SQLite) version, backing the node:sqlite shim. The

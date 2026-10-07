@@ -15,6 +15,7 @@
  * which every consumer (supervisor RPC, facets, runners) already speaks.
  */
 import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
+import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator } from './hydration.js';
 import { CompositeVFS, isAsyncMountRefusal, normalizePath, runtimeStatOf } from '../vfs/composite.js';
 import { FS_LIST_PAGE_LIMIT, MOUNT_LIST_NAME_LIMIT } from '../constants.js';
@@ -202,7 +203,12 @@ class GuardedProcessBridge {
         this.ownPid(pid);
         return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
     }
-    writeBatch(payload) { this.guard(); return this.target.writeBatch(payload); }
+    writeBatch(payload, options) {
+        this.guard();
+        // As writeStream: closing the scope cancels the commit.
+        const linked = linkedSignal([options?.signal, this.signal, this.scope.abort.signal]);
+        return Promise.resolve(this.target.writeBatch(payload, { signal: linked.signal })).finally(linked.dispose);
+    }
     writeStream(stream, options) {
         this.guard();
         // Closing the scope cancels the commit, so a released process cannot keep
@@ -250,6 +256,11 @@ export class ProcessFiles {
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
         this.vfs.mount('/dev', new DevVFS());
+        // Every wave's records, whoever streams it (a process's binding, or a
+        // command holding the engine), are placed by this namespace's mutation
+        // lookup, and those it places on a mount are applied there by its own
+        // operations (wave-router.ts).
+        engine.setWaveRouter(namespaceWaveRouter(this.vfs, immutableCredential));
     }
     /**
      * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
@@ -546,7 +557,7 @@ class AwaitingProcessBridge {
     acknowledgeAppend(pid, writerId, moduleId, operationId) {
         return this.bridge.acknowledgeAppend(pid, writerId, moduleId, operationId);
     }
-    writeBatch(payload) { return this.bridge.writeBatch(payload); }
+    writeBatch(payload, options) { return this.bridge.writeBatch(payload, options); }
     writeStream(stream, options) { return this.bridge.writeStream(stream, options); }
     acquireExclusiveMutation(path, options) {
         return this.bridge.acquireExclusiveMutation(path, options);

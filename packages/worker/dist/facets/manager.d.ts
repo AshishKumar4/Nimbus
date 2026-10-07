@@ -24,7 +24,8 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { NimbusFilesystemAuthority, RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { PortRegistry } from '@nimbus-sh/core/runtime/port-registry.js';
 import { type PortVisibility } from '../session/port-capability.js';
-import { type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
+import { type PreloadModuleRoot, type RequiredModuleRoot } from '@nimbus-sh/core/runtime/require-resolver.js';
+import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import { type StagedProfileEntry } from './read-profile.js';
 import { TurnBudget } from '@nimbus-sh/fabric/turn-budget.js';
 import { type EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
@@ -206,6 +207,8 @@ export declare function facetWasmImports(named: readonly {
 }[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
+    /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+    node?: NodeLaunch;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -239,18 +242,28 @@ interface FacetVfsState {
     };
     bundle: FacetVfsBundle;
     /**
-     * The executable form of each TypeScript source in `bundle`, by the
-     * source's path: esbuild's emit, which becomes the path's module cell while
-     * `bundle` keeps the source a program reads. A JavaScript cell needs none —
-     * its transformed text replaces it in `bundle` and serves both.
+     * The module of each cell a transform changed, by its path: esbuild's emit
+     * for a TypeScript source or an ES module, a CommonJS file with its
+     * dynamic import() calls rewritten, a diagnostic shim. It becomes the
+     * path's module cell, while `bundle` keeps the file a program reads (a
+     * code-only file's cell holds the emit: the file is not carried). A cell
+     * with none is its own module.
      */
     emits?: Map<string, string>;
     /**
-     * The JavaScript cells lowered from ESM (transformEsmInBundle), whose
-     * module wraps them in the block scope (commonjs-cell.ts, THE WRAPPER).
-     * Every other code cell is CommonJS as Node would run it.
+     * The cells lowered from ESM or compiled from TypeScript
+     * (transformEsmInBundle), whose module wraps them in the block scope
+     * (commonjs-cell.ts, THE WRAPPER). Every other code cell is CommonJS as
+     * Node would run it.
      */
     lowered?: Set<string>;
+    /**
+     * The files staged only to run whose module is an emit: the map carries the
+     * emit and not the file, which no read asked for. A synchronous read of one
+     * is a miss the next launch stages, unless a data plan holds the file. Kept
+     * past serialization, for the data plans.
+     */
+    codeOnly?: Set<string>;
     /** What the module map costs the facet's store, taken before its cells are released (N18). */
     moduleStorageBytes?: number;
     /**
@@ -399,11 +412,13 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Every code cell becomes its own `{ cjs }` module (commonjs-cell.ts), which
- * the guest's registry compiles the first time the program requires it. Its
- * text is the one copy the map carries: the process's store adopts the file
- * by reading that module back, so a cell is never also data — except where
- * the read-back cannot name it (commonJsCellReadsBack) and for a TypeScript
- * source, whose file is the source and whose module is the emit.
+ * the guest's registry compiles the first time the program requires it. A
+ * file that is its own module is carried once, as that module: the process's
+ * store adopts the file by reading the module back, so the cell is never also
+ * data — except where the read-back cannot name it (commonJsCellReadsBack).
+ * A cell whose module is an emit (a transform changed it) is never read back,
+ * since the emit is not the file: its file is data when it was staged to be
+ * read, or is not carried at all (`codeOnly`).
  *
  * The data cells stay one bundle. Small bundles remain inline. Large bundles
  * are partitioned into side modules below the existing per-module encoded
@@ -411,11 +426,14 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, lowered, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, lowered, codeOnly, runtimeCode, }?: {
     consume?: boolean;
+    /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
-    /** Cells lowered from ESM, wrapped in the block scope. */
+    /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
     lowered?: ReadonlySet<string>;
+    /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
+    codeOnly?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
 }): Promise<FacetVfsBundleSource>;
@@ -454,6 +472,7 @@ export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle:
 }, requiredPaths?: ReadonlySet<string>, options?: {
     maxBundleBytes?: number;
     pacer?: TurnBudget;
+    conditions?: readonly string[];
 }): Promise<{
     added: number;
     groups: OptionalModuleGroup[];
@@ -692,6 +711,10 @@ export interface PrefetchBundleOptions {
     executedModules?: readonly RequiredModuleRoot[];
     /** Where the launch's transform results are kept by content. */
     transformStore?: BundleCellResultStore;
+    /** The program's own conditions (`node --conditions`), as the process resolves under them. */
+    conditions?: readonly string[];
+    /** What the command line preloads (`node -r`, `--import`): required roots, walked first, as they run first. */
+    preloads?: readonly PreloadModuleRoot[];
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -886,6 +909,8 @@ export interface SpawnedWorker {
 /** What `spawnNode` needs to build and boot one resident Node process. */
 export interface ResidentSpawnOptions {
     argv?: string[];
+    /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+    node?: NodeLaunch;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -1458,6 +1483,8 @@ export declare class FacetManager {
             offset: number;
             syncRead: boolean;
         };
+        /** A node program's command line: its options, conditions, preloads and `-e`/`-p` code (core runtime/node-cli.ts). */
+        node?: NodeLaunch;
     }): Promise<FacetExecResult>;
     /**
      * A process stopped at a synchronous read of stdin that needs input not

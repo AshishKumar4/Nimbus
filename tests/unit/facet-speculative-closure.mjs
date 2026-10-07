@@ -170,7 +170,8 @@ async function walk(world, root, held = {}, allowance = 10000, files = 100, prog
     assert.equal(state.bundle[APP+'/keep.cjs']!==undefined,true);
     assert.equal(state.bundle['opt/evidence.cjs'],files['opt/evidence.cjs']);
     const emitted=[...(state.emits?.values()??[])].reduce((n,s)=>n+bytes(s),0);
-    assert.ok(Object.values(state.bundle).reduce((n,s)=>n+(typeof s==='string'?bytes(s):s.byteLength),0)+emitted<=bound);
+    const carried=Object.entries(state.bundle).filter(([p])=>!state.codeOnly?.has(p)).reduce((n,[,s])=>n+(typeof s==='string'?bytes(s):s.byteLength),0);
+    assert.ok(carried+emitted<=bound,'what the map carries is within the bound');
   }
 }
 // A guessed module's one deferral of its own package's file is a guess too:

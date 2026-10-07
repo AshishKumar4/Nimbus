@@ -47,5 +47,26 @@ export interface Interpreter {
     /** Run a script at global scope: its vars and functions become global object properties. */
     runScript(text: string): void;
 }
+/**
+ * One module a module's text asks for, and how: `static` (an import or
+ * export-from declaration), `dynamic` (import()) or `require`. The kind
+ * decides the resolution, as the loader makes it: a static import is
+ * evaluated through the module's scoped require (modules.ts), so it resolves
+ * under require's conditions; import() resolves under import's.
+ */
+export interface ModuleRequest {
+    readonly specifier: string;
+    readonly kind: 'static' | 'dynamic' | 'require';
+}
+/**
+ * The modules a file's text asks for, as this parser reads it: import and
+ * export-from sources, `import()` of a string, and `require()` of a string
+ * (any call of a `require` binding, the module's own or one createRequire
+ * made). A specifier spelled with escapes or in a template is read as the
+ * language reads it; one in a comment or a string is not a request. Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
+ * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ */
+export declare function moduleRequests(path: string, text: string): ModuleRequest[];
 export declare function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter;
 //# sourceMappingURL=index.d.ts.map
