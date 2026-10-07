@@ -41,6 +41,7 @@ import { GIT_PACK_NODE_IMPORTS, GIT_PACK_SRC } from './pack/facet.generated.js';
 import { tagsHeld, type CloneBatchResult, type ClonePrepared, type CloneStreamed, type CloneTag } from './pack/clone.js';
 import { COMMITS_PER_CHUNK, treeSlices, type HistoryKind, type HistoryStepResult, type StagedFile } from './pack/history.js';
 import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js';
+import { CHECKOUT_FAILED } from './pack/mount-writer.js';
 
 export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'graph-filters';
 
@@ -671,6 +672,8 @@ interface CloneBatchRun {
   phases: GitNetworkPhaseDiagnostic[];
   accountResult(result: FacetInvocationResult): void;
   progress: GitSupervisorStub | null;
+  /** git's error for each worktree file a batch could not write, by batch: the checkout fails once all are done. */
+  checkoutErrors: Map<number, string[]>;
 }
 
 /**
@@ -800,6 +803,7 @@ async function runCloneBatches(
     const result = (invocation.result as { batch?: CloneBatchResult }).batch;
     if (result === undefined) throw new GitClonePhaseError('clone-batch', 'clone-batch returned no batch', invocation.diagnostic);
     shares.push({ name: 'index-' + result.index, bytes: result.indexBytes });
+    if (result.checkoutErrors !== undefined) run.checkoutErrors.set(result.index, result.checkoutErrors);
     completed++;
     run.budgetContext.batchesCompleted++;
     run.budgetContext.filesWritten += result.files;
@@ -936,8 +940,10 @@ async function runCloneFinish(
   /** A full clone's commit records (runCloneHistory), for its commit-graph. */
   graph: StagedFile[] | null,
   run: CloneBatchRun,
+  /** A file could not be written: no index, and the marker stays for the clone's cleanup. */
+  checkoutFailed = false,
 ): Promise<void> {
-  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph }, run);
+  const finish = await invokeClonePhase('clone-finish', { ...facetOpts, ...identity, shares, full, cacheTreeBytes, tags, graph, checkoutFailed }, run);
   if (run.progress) await writeClonePhaseProgress(run.progress, finish.diagnostic);
 }
 
@@ -1200,6 +1206,7 @@ export async function execGitNetwork(
             phases,
             accountResult,
             progress: opts.quiet ? null : supervisorBinding,
+            checkoutErrors: new Map(),
           };
           const identity = { jobId, optionsHash };
           let fast = prepared.fast;
@@ -1226,7 +1233,26 @@ export async function execGitNetwork(
           // A clone that is not partial has every object once its batches (and history) are in.
           if (prepared.fast !== undefined && facetOpts.filter === undefined) await onCloneCheckoutPhase?.();
           const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
-          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run);
+          // A file a batch could not write: as git, every object fetched first, the clone
+          // finished but its index, then the checkout's failure with git's errors (its repository kept).
+          const checkoutErrors = [...run.checkoutErrors.entries()].sort(([a], [b]) => a - b).flatMap(([, errors]) => errors);
+          await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run, checkoutErrors.length > 0);
+          if (checkoutErrors.length > 0) {
+            facets.fence?.();
+            return {
+              success: false,
+              error: 'unable to checkout working tree',
+              errorPhase: 'clone-finish',
+              gitFailure: checkoutErrors.join('') + CHECKOUT_FAILED,
+              cleanup: true,
+              elapsed: Date.now() - start,
+              filesWritten,
+              bytesWritten,
+              supervisorRpc,
+              metadataOverlay,
+              phases,
+            };
+          }
           return {
             success: true,
             elapsed: Date.now() - start,
@@ -2559,11 +2585,15 @@ export default {
           cacheTreeBytes: opts.cacheTreeBytes,
           tags: opts.tags,
           graph: opts.graph,
+          checkoutFailed: opts.checkoutFailed === true,
         });
         // The marker goes last: until it does, a failure leaves the clone abortable.
-        const writer = context.writer();
-        await writer.remove('.git/' + CLONE_JOB_MARKER);
-        await writer.flush();
+        // A checkout that failed keeps it: the clone's cleanup (git's junk mode) is still to come.
+        if (opts.checkoutFailed !== true) {
+          const writer = context.writer();
+          await writer.remove('.git/' + CLONE_JOB_MARKER);
+          await writer.flush();
+        }
         return respond(true, { finished, metadataOverlay: emptyMetadataOverlayStats() });
       }
       if (phase === 'clone-prepare') {

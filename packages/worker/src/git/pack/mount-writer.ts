@@ -9,10 +9,11 @@
  * waves hold before it is published, so it lands in git's order: its
  * directory made, the old entry unlinked (so a hard link to it keeps its
  * content), then created exclusively with the entry's mode, written whole,
- * and closed. The index, of any size, is written as git's lockfile.c writes
- * it: index.lock created exclusively, written, closed, renamed over the
- * index; our own lock removed if that fails. A failure says what git says
- * (GitWriteFailure), and fails the clone. Each stat is the receipt a wave
+ * and closed; one that cannot be written is git's error (GitEntryWriteFailure),
+ * and the checkout goes on without it, to fail once it is done. The index, of
+ * any size, is written as git's lockfile.c writes it: index.lock created
+ * exclusively, written, closed, renamed over the index; our own lock removed
+ * if that fails, which is git's fatal error (GitWriteFailure). Each stat is the receipt a wave
  * would have answered. No call starts past the phase's deadline, but a
  * close, or the removal of our own lock, which clean up what was started.
  */
@@ -56,6 +57,21 @@ export class GitWriteFailure extends Error {
     this.name = 'GitWriteFailure';
   }
 }
+
+/**
+ * A worktree file git's checkout could not write: its `error:` line. git's
+ * checkout goes on to the next file, and fails once all are done
+ * (CHECKOUT_FAILED), its index not written.
+ */
+export class GitEntryWriteFailure extends GitWriteFailure {
+  constructor(lines: string) {
+    super(lines);
+    this.name = 'GitEntryWriteFailure';
+  }
+}
+
+/** What git says once a checkout that could not write a file is done. */
+export const CHECKOUT_FAILED = 'fatal: unable to checkout working tree\n';
 
 /** strerror's words for the codes a write here can fail with (glibc's). */
 const STRERROR: Readonly<Record<string, string>> = {
@@ -123,18 +139,18 @@ export async function writeEntry(api: FileApi, at: string, name: string, mode: n
   try {
     await api.unlink(at);
   } catch (error) {
-    if (errnoCode(error) !== 'ENOENT') throw new GitWriteFailure(`error: unable to unlink old '${name}': ${strerror(error)}\nfatal: unable to checkout working tree\n`);
+    if (errnoCode(error) !== 'ENOENT') throw new GitEntryWriteFailure(`error: unable to unlink old '${name}': ${strerror(error)}\n`);
   }
   let handle: { id: number };
   try {
     handle = await api.fsOpen(at, { write: true, create: true, exclusive: true, mode });
   } catch (error) {
-    throw new GitWriteFailure(`error: unable to create file ${name}: ${strerror(error)}\nfatal: unable to checkout working tree\n`);
+    throw new GitEntryWriteFailure(`error: unable to create file ${name}: ${strerror(error)}\n`);
   }
   try {
     return await writeWhole(api, handle.id, bytes);
   } catch {
-    throw new GitWriteFailure(`error: unable to write file ${name}\nfatal: unable to checkout working tree\n`);
+    throw new GitEntryWriteFailure(`error: unable to write file ${name}\n`);
   }
 }
 

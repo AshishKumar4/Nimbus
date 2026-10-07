@@ -122,8 +122,10 @@ try {
   // A file past the limited mount's size, compressed small in its pack.
   const compressible = join(work, 'compressible');
   hostGit(work, ['init', '-q', '-b', 'main', compressible]);
-  writeFileSync(join(compressible, 'small.txt'), 'small\n');
+  // Files on either side of it, so its batch is one of many: the failure lands mid-fetch.
+  for (let i = 0; i < 12; i++) writeFileSync(join(compressible, `a${String(i).padStart(2, '0')}.txt`), `before ${i}\n`);
   writeFileSync(join(compressible, 'big.txt'), 'the same line, again and again\n'.repeat(200_000));
+  for (let i = 0; i < 12; i++) writeFileSync(join(compressible, `z${String(i).padStart(2, '0')}.txt`), `after ${i}\n`);
   hostGit(compressible, ['add', '-A']);
   hostGit(compressible, ['commit', '-q', '-m', 'one']);
   hostGit(work, ['clone', '-q', '--bare', compressible, join(served, 'compressible.git')]);
@@ -251,22 +253,26 @@ try {
       console.log('  ok  clone onto an asynchronous mount: host git\'s worktree and index, files over 4 MiB included');
     }
 
-    // A write that fails: host git under a file size limit, ours on a mount with the same limit.
+    // A write that fails mid-fetch (its batch one of many, one at a time): host git under a file
+    // size limit, ours on a mount with the same limit. As git, every object is fetched and the
+    // other files written, the index is not, and the repository is kept with git's warning.
     {
       const hostDest = join(work, 'host-limited');
       const host = spawnSync('bash', ['-c', `trap '' XFSZ; ulimit -f ${FILE_LIMIT / 1024}; exec git clone file://${join(served, 'compressible.git')} ${hostDest}`], {
         encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', LC_ALL: 'C' },
       });
-      const ours = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/compressible.git', '/mnt/limited/repo']);
-      // git's error and its fatal one, and its exit.
-      assert.deepEqual([ours.code, gitLines(ours.stderr).slice(0, 2)], [host.status, gitLines(host.stderr).slice(0, 2)], `a failed write: ours ${ours.stderr}; git's ${host.stderr}`);
-      // Then the junk mode: git had every object before it checked out, and keeps the repository
-      // with its warning; a clone of ours that checks out as its objects arrive keeps it only once
-      // they all have (its checkout phase), and else removes it, as a transport failure.
-      const kept = limited.stat('/repo/.git/HEAD') !== null;
-      assert.deepEqual(gitLines(ours.stderr).slice(2), kept ? gitLines(host.stderr).slice(2) : [], `the junk mode's lines: ${ours.stderr}`);
-      if (!kept) assert.equal(limited.stat('/repo'), null, 'removed whole');
-      console.log(`  ok  a write that fails: git's "unable to write file" and "unable to checkout working tree"; the repository ${kept ? 'kept' : 'removed'}`);
+      const ours = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/compressible.git', '/mnt/limited/repo'], {
+        NIMBUS_GIT_BLOBS_PER_BATCH: '2', NIMBUS_GIT_BATCH_CONCURRENCY: '1',
+      });
+      assert.deepEqual([ours.code, gitLines(ours.stderr)], [host.status, gitLines(host.stderr)], `a failed write: ours ${ours.stderr}; git's ${host.stderr}`);
+      const copy = await session.materializeAt('/mnt/limited/repo', join(work, 'ours-limited'));
+      assert.deepEqual(worktreeOf(copy), worktreeOf(hostDest), 'the worktree: every other file, and what was written of the one that failed');
+      assert.equal(limited.stat('/repo/.git/index'), null, 'no index, as git writes none');
+      const fsck = spawnSync('git', ['fsck', '--full', '--no-dangling'], { cwd: copy, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+      assert.equal(fsck.status, 0, `every object fetched: ${fsck.stdout}${fsck.stderr}`);
+      assert.equal(hostGit(copy, ['rev-parse', 'HEAD']), hostGit(hostDest, ['rev-parse', 'HEAD']), 'HEAD');
+      assert.equal(limited.stat('/repo/.git/nimbus-clone-job'), null, 'and the clone\'s marker gone');
+      console.log('  ok  a write that fails mid-fetch: git\'s errors and warning, every object fetched, the repository kept without its index');
     }
 
     // An index.lock already there: git's "Unable to create", as host git says it for its own lock.

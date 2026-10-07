@@ -4,8 +4,7 @@
 //   - writeEntry (entry.c write_entry): the old entry unlinked, then created
 //     exclusively with the entry's mode, written whole, closed; a create or
 //     write that fails is git's "error: unable to create file" / "unable to
-//     write file", then "fatal: unable to checkout working tree", the file
-//     closed;
+//     write file" for that file (the checkout goes on), the file closed;
 //   - writeLockedIndex (lockfile.c): index.lock created exclusively, written,
 //     closed, renamed over the index; one there already is git's "Unable to
 //     create '….lock': File exists." with its advice; a write that fails
@@ -17,7 +16,7 @@
 
 import assert from 'node:assert/strict';
 
-import { GitWriteFailure, mountWriter, withinDeadline, writeEntry, writeLockedIndex } from '../../packages/worker/src/git/pack/mount-writer.ts';
+import { GitEntryWriteFailure, GitWriteFailure, mountWriter, withinDeadline, writeEntry, writeLockedIndex } from '../../packages/worker/src/git/pack/mount-writer.ts';
 
 const enc = new TextEncoder();
 const fsError = (code, path) => Object.assign(new Error(`${code}: ${path}`), { code });
@@ -88,13 +87,13 @@ const big = new Uint8Array(3 * 1024 * 1024 + 7).fill(7);
 }
 {
   const failing = fakeApi((call, [, offset]) => (call === 'fsWrite' && offset > 0 ? fsError('EFBIG', 'w') : undefined));
-  await assert.rejects(writeEntry(failing, '/r/b.bin', 'dir/b.bin', 0o644, big), (error) => error instanceof GitWriteFailure
-    && error.lines === 'error: unable to write file dir/b.bin\nfatal: unable to checkout working tree\n');
+  await assert.rejects(writeEntry(failing, '/r/b.bin', 'dir/b.bin', 0o644, big), (error) => error instanceof GitEntryWriteFailure
+    && error.lines === 'error: unable to write file dir/b.bin\n');
   assert.equal(failing.calls.at(-1)[0], 'fsClose', 'the file is closed');
   const uncreated = fakeApi((call) => (call === 'fsOpen' ? fsError('EACCES', 'o') : undefined));
-  await assert.rejects(writeEntry(uncreated, '/r/c.bin', 'c.bin', 0o644, big), (error) => error instanceof GitWriteFailure
-    && error.lines === 'error: unable to create file c.bin: Permission denied\nfatal: unable to checkout working tree\n');
-  console.log('  ok  writeEntry: a write or a create that fails is git\'s error, and the checkout fails');
+  await assert.rejects(writeEntry(uncreated, '/r/c.bin', 'c.bin', 0o644, big), (error) => error instanceof GitEntryWriteFailure
+    && error.lines === 'error: unable to create file c.bin: Permission denied\n');
+  console.log('  ok  writeEntry: a write or a create that fails is git\'s error for that file');
 }
 
 // ── writeLockedIndex ──
