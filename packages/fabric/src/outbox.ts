@@ -48,6 +48,7 @@
 
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { z } from 'zod/v4';
+import { fabricTableName, TableIds } from './table-ids.js';
 import { timers, type TimerContext, type TimerHandlerResult, type TimerHost, type TimerStorage } from './timers.js';
 import type { TurnBudget } from './turn-budget.js';
 
@@ -188,8 +189,6 @@ const RecordRowSchema = z.object({
   last_error: z.string().nullable(),
 });
 
-const NAME_PATTERN = /^[a-z][a-z0-9_]{0,40}$/;
-
 /** One named outbox on one hosting actor. Cheap accessor, like `timers()`. */
 export function outbox<M, C = void>(
   host: TimerHost,
@@ -223,9 +222,8 @@ export class Outbox<M, C = void> {
   private readonly table: string;
   private schemaReady = false;
   private draining = false;
-  /** Largest id ever seen, so a replacement instance mints above it. */
-  private lastId = '';
-  private seq = 0;
+  /** Ids order the drain, so they must grow. */
+  private readonly ids = new TableIds();
 
   constructor(
     private readonly ctx: OutboxSqlContext,
@@ -233,10 +231,7 @@ export class Outbox<M, C = void> {
     private readonly policy: OutboxPolicy<M, C>,
     private readonly scheduling: OutboxScheduling,
   ) {
-    if (!NAME_PATTERN.test(name)) {
-      throw new Error(`fabric: outbox name '${name}' must match ${NAME_PATTERN}`);
-    }
-    this.table = `outbox_${name}`;
+    this.table = fabricTableName('outbox', name);
     this.reason = `outbox:${name}`;
   }
 
@@ -263,21 +258,8 @@ export class Outbox<M, C = void> {
     // exactly this partial index.
     sql.exec(`CREATE INDEX IF NOT EXISTS idx_${this.table}_pending
       ON ${this.table} (next_attempt_at) WHERE state = 'pending'`);
-    const rows = [...sql.exec(`SELECT MAX(id) AS id FROM ${this.table}`)] as Array<{ id: string | null }>;
-    this.lastId = rows[0]?.id ?? '';
+    this.ids.adopt(sql, this.table);
     this.schemaReady = true;
-  }
-
-  /**
-   * Ids order the drain, so they must grow: time-prefixed, tie-broken by a
-   * per-instance counter, and forced above the largest stored id so a
-   * replacement instance with a lagging clock cannot mint into the past.
-   */
-  private mintId(now: number): string {
-    let id = `${now.toString(36).padStart(9, '0')}-${(this.seq++).toString(36).padStart(6, '0')}`;
-    if (this.lastId !== '' && id <= this.lastId) id = `${this.lastId}0`;
-    this.lastId = id;
-    return id;
   }
 
   /**
@@ -317,7 +299,7 @@ export class Outbox<M, C = void> {
         return { id: existing[0].id, admitted: false };
       }
     }
-    const id = this.mintId(now);
+    const id = this.ids.mint(now);
     sql.exec(
       `INSERT INTO ${this.table} (id, dedupe_key, order_key, message, next_attempt_at, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`,
