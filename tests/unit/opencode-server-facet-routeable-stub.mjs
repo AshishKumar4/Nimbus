@@ -7,10 +7,10 @@
 // SUPERVISOR.registerPort the reserved port already resolves to a handler a
 // later routing request can re-enter. This pins that:
 //
-//   1. the serve facet is the session's facet for that pid, minted from the
-//      session's own loader and keyed on the process;
-//   2. the pid's port resolves through the bound route target (loopback +
+//   1. the pid's port resolves through the bound route target (loopback +
 //      /port/<n>);
+//   2. the serve facet is the session's facet for that pid, minted from the
+//      session's own loader and keyed on the process;
 //   3. _awaitOpencodeServerReady resolves once /doc answers 200 through the
 //      loopback router, and fails loud (with the log tail) if the facet exits.
 //
@@ -71,17 +71,10 @@ const staged = {
 
 const result = await fm._runOpencodeServerFacet(staged, port);
 
-// ── 1. one facet per process, keyed on the pid ──────────────────────────────
-assert.equal(world.boots.length, 1, 'the serve facet evaluated exactly once');
-// The facet is named for its reusable slot; the pid identity is carried by the
-// loader key asserted just below.
-assert.equal(world.boots[0].facetName, residentFacetName(0), 'the facet is the process\'s');
-assert.equal(world.boots[0].loaderId, `nimbus-process:do-test:${pid}`, 'keyed on the pid workerKey');
-assert.deepEqual(world.liveFacets(), [residentFacetName(0)]);
 assert.equal(result.pid, pid);
 assert.equal(result.exitCode, 0);
 
-// ── 2. the pid's port resolves to the bound route stub ───────────────────────
+// ── 1. the pid's port resolves to the bound route stub ───────────────────────
 const portEntry = portRegistry.get(port);
 assert.ok(portEntry, 'port reserved after _runOpencodeServerFacet');
 assert.ok(portEntry.facetStub, 'port resolves to the bound (re-resolvable) route target');
@@ -94,6 +87,16 @@ assert.equal(res.status, 200, 'loopback/`/port/<n>` reaches the locally hosted s
 assert.equal(res.headers.get('X-Served-By'), 'opencode-serve');
 assert.equal(seen.at(-1).port, String(port), 'X-Nimbus-Port threaded to the facet');
 assert.equal(new URL(seen.at(-1).url).pathname, '/doc');
+
+// ── 2. one facet per process, keyed on the pid ───────────────────────────────
+// The facet is created once its slot's charge is durable, by the boot call
+// or a request, whichever comes first; after the request it is up.
+assert.equal(world.boots.length, 1, 'the serve facet evaluated exactly once');
+// The facet is named for its reusable slot; the pid identity is carried by the
+// loader key asserted just below.
+assert.equal(world.boots[0].facetName, residentFacetName(0), 'the facet is the process\'s');
+assert.equal(world.boots[0].loaderId, `nimbus-process:do-test:${pid}`, 'keyed on the pid workerKey');
+assert.deepEqual(world.liveFacets(), [residentFacetName(0)]);
 
 // ── 3. health-gate resolves when /doc answers 200 ────────────────────────────
 await fm._awaitOpencodeServerReady(pid, port, 2000); // resolves fast (already 200)

@@ -2,12 +2,12 @@ import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js
 import { generateTransformFacetRuntimeSource, transformSlices, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
-import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
 import { OXC_FACET_BUILD_ID } from '../oxc-facet-artifact.generated.js';
 import { fetchOxcFacetRuntime, fetchOxcWasmBytes } from '../runtime/oxc-wasm-bytes.js';
+import { SharedHelperFacet } from './helper-facet.js';
 /**
  * The Oxc wasm's linear memory past which the facet drops its instance after
  * a call. The module starts at 4.25 MiB and a call grows it to the module's
@@ -45,7 +45,7 @@ const OXC_FACET_BODY = [
     '}',
 ].join('\n');
 // The loader serves the code it cached under an id, so the id carries the code.
-export const OXC_FACET_WORKER_ID = facetLoaderKey('transform', `nimbus-oxc:${OXC_WASM_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(OXC_FACET_BODY)}`);
+export const OXC_FACET_WORKER_ID = `nimbus-oxc:${OXC_WASM_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(OXC_FACET_BODY)}`;
 /**
  * Slim Worker Loader module whose DO class owns the Oxc wasm. `wasm` is the
  * staged module's verified bytes, compiled by the loader at startup; `runtime`
@@ -69,45 +69,16 @@ export function oxcFacetWorkerCode(wasm, runtime) {
         globalOutbound: null,
     };
 }
-/**
- * A Durable Object's transform facet: one loader-backed child that owns the
- * Oxc wasm, so the object's own isolate never instantiates it. Needs
- * `env.LOADER`, `env.ASSETS` and `ctx.facets`, and nothing of any host.
- */
-async function oxcFacet(ctx, env) {
-    const loader = Reflect.get(Object(env), 'LOADER');
-    if (!loader || typeof loader.get !== 'function')
-        throw new Error('Nimbus: env.LOADER unavailable for the transform facet');
-    const assets = Reflect.get(Object(env), 'ASSETS');
-    if (!assets || typeof assets.fetch !== 'function')
-        throw new Error('Nimbus: env.ASSETS unavailable for the transform facet');
-    const worker = await loader.get(OXC_FACET_WORKER_ID, async () => {
-        const assetsEnv = { ASSETS: assets };
-        const [wasm, runtime] = await Promise.all([fetchOxcWasmBytes(assetsEnv), fetchOxcFacetRuntime(assetsEnv)]);
-        return applyFacetLimits('transform', oxcFacetWorkerCode(wasm, runtime));
-    });
-    const facetClass = worker.getDurableObjectClass('OxcFacet', { limits: facetLimits('transform') });
-    return ctx.facets.get(OXC_FACET_WORKER_ID, async () => ({ class: facetClass }));
-}
-/**
- * One stub per Durable Object: a caller that starts while another is still
- * loading the facet waits on that load. A load or call that failed drops the
- * entry; the next caller mints a fresh stub.
- */
-const sharedFacets = new WeakMap();
-function sharedOxcFacet(ctx, env) {
-    const current = sharedFacets.get(ctx);
-    if (current)
-        return current;
-    const minted = oxcFacet(ctx, env);
-    sharedFacets.set(ctx, minted);
-    minted.catch(() => forgetOxcFacet(ctx, minted));
-    return minted;
-}
-function forgetOxcFacet(ctx, stub) {
-    if (sharedFacets.get(ctx) === stub)
-        sharedFacets.delete(ctx);
-}
+/** A Durable Object's transform facet: the child that owns the Oxc wasm. */
+const oxcFacet = new SharedHelperFacet({
+    id: OXC_FACET_WORKER_ID,
+    className: 'OxcFacet',
+    what: 'the transform facet',
+    async code(assets) {
+        const [wasm, runtime] = await Promise.all([fetchOxcWasmBytes(assets), fetchOxcFacetRuntime(assets)]);
+        return oxcFacetWorkerCode(wasm, runtime);
+    },
+});
 /** Modules one stack-fallback call carries; a batch with more makes more calls. */
 const STACK_FALLBACK_MODULES = 4;
 /** How long one stack-fallback call may take before its modules' answers are transient. */
@@ -158,13 +129,13 @@ export function oxcTransformHost(ctx, env, stackFallback, { fallbackDeadlineMs =
                 let failure = null;
                 for (let attempt = 1; answered === null && attempt <= SLICE_ATTEMPTS; attempt++) {
                     try {
-                        facet ??= sharedOxcFacet(ctx, env);
+                        facet ??= oxcFacet.stub(ctx, env);
                         answered = await (await facet).transformMany(slice);
                     }
                     catch (error) {
                         // A stub that threw may be broken for good; the next call mints its own.
                         if (facet)
-                            forgetOxcFacet(ctx, facet);
+                            oxcFacet.forget(ctx, facet);
                         facet = null;
                         failure = error;
                         if (classifyDoCall(error) === 'overloaded')

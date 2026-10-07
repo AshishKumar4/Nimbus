@@ -293,5 +293,23 @@ function makeWokenSession(storage = {}, { faults, extraFiles, reads, bundlePool 
   console.log('  [7] two cold builds never hold slices beside each other under the supervisor budget');
 }
 
+// 8. A subdirectory's index.html (a multi-page app's /about/) gets the same
+//    dev head as the root's: the error overlay, the HMR client and, for a
+//    Tailwind project, its stylesheet, wherever the page leaves room for
+//    them. The same page served from both places is the same document.
+{
+  const page = '<!DOCTYPE html><html><body><h1>page</h1><script type="module" src="/src/main.js"></script></body></html>';
+  const extraFiles = new Map([[`${ROOT}/index.html`, page], [`${ROOT}/about/index.html`, page]]);
+  const self = makeWokenSession(HIBERNATED, { extraFiles });
+  const root = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/`));
+  const about = await handleFetch(self, hostRequest(`/port/${VITE_PORT}/about/`));
+  assert.equal(root.status, 200);
+  assert.equal(about.status, 200);
+  const rootHtml = await root.text();
+  assert.notEqual(rootHtml, page, 'the root page carries the dev head');
+  assert.equal(await about.text(), rootHtml, 'a subdirectory page gets the dev head the root page gets');
+  console.log('  [8] a subdirectory index.html is served with the root index.html\'s dev head');
+}
+
 
 console.log('port-route-vite-mount OK: the dev-server mount base follows the door the request came through');

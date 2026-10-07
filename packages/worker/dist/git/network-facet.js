@@ -30,6 +30,7 @@ import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
 import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
 import { fetchGitBundleSource } from '../runtime/git-bundle-artifact.js';
 import { W7_FRAME_PREAMBLE, WAVE_WRITER_PREAMBLE } from '../loaders/generated-workers.js';
@@ -235,8 +236,7 @@ async function hashCloneOptions(opts) {
         exclusiveDestination: opts.exclusiveDestination === true,
         exclusiveMutationRoot: opts.exclusiveMutationRoot ?? null,
     });
-    const digest = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(immutable));
-    return Array.from(new Uint8Array(digest), byte => byte.toString(16).padStart(2, '0')).join('');
+    return sha256Hex(immutable);
 }
 function phaseErrorMessage(error) {
     return error instanceof Error ? error.message : String(error);

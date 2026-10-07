@@ -19,7 +19,7 @@
  */
 
 import { networkRef, requireNetwork, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { serializeFunction } from './vendor/serialize.js';
+import { djb2, serializeFunction } from './vendor/serialize.js';
 import { BindingError } from './vendor/errors.js';
 import { IsolatePool, type FacetTaskFn } from './isolate-pool.js';
 import { claimDynamicWorkers, dynamicWorkerHeadroom, type DynamicWorkerClaim } from './budgets.js';
@@ -81,6 +81,21 @@ export const PEER_RETRY_BACKOFF_MS = [250, 750, 1500];
  * reset schedule. A whole-batch abort here used to fail an entire install.
  */
 export const PEER_OVERLOAD_BACKOFF_MS = [1000, 3000, 6000];
+
+/**
+ * How long a call to a peer DO waits before attempt `attempt + 1` after it
+ * failed with `error`, or null to give up: a transient reset on the reset
+ * schedule, an overloaded peer on the overload schedule where the caller
+ * waits for one (`retryOverloaded`), anything else never.
+ */
+export function peerRetryDelay(error: unknown, attempt: number, policy: { retryOverloaded: boolean }): number | null {
+  if (attempt >= PEER_TRANSIENT_RESET_RETRIES) return null;
+  const cls = classifyDoCall(error);
+  const schedule = cls === 'overloaded'
+    ? (policy.retryOverloaded ? PEER_OVERLOAD_BACKOFF_MS : null)
+    : isRetryableDoCall(cls) ? PEER_RETRY_BACKOFF_MS : null;
+  return schedule === null ? null : schedule[Math.min(attempt, schedule.length - 1)];
+}
 
 /**
  * Peer shards dispatched per phase. Each phase is a barrier that costs its
@@ -437,12 +452,9 @@ export class Fanout {
             }
             return;
           } catch (err) {
-            const cls = classifyDoCall(err);
-            const schedule = cls === 'overloaded' ? PEER_OVERLOAD_BACKOFF_MS
-              : isRetryableDoCall(cls) ? PEER_RETRY_BACKOFF_MS
-              : null;
-            if (schedule && attempt < PEER_TRANSIENT_RESET_RETRIES) {
-              const backoff = schedule[Math.min(attempt, schedule.length - 1)];
+            // A shard waits out an overloaded peer: it never ran there.
+            const backoff = peerRetryDelay(err, attempt, { retryOverloaded: true });
+            if (backoff !== null) {
               await new Promise((r) => setTimeout(r, backoff));
               continue;
             }
@@ -484,27 +496,17 @@ export class Fanout {
 }
 
 /**
- * Stable hash → shard. Uses a fresh djb2 over the key (NOT
- * hashSource) and modulos by peerCount.
+ * Stable hash → shard: the key's djb2 integer modulo peerCount.
  *
- * Why not reuse hashSource: hashSource returns a base-36 string,
- * NOT hex — its alphabet is `[0-9a-z]`. parseInt(str, 16) on a
- * base-36 string aborts at the first non-hex char (any of g-z),
- * which produces extremely poor distribution: keys with the same
- * leading-hex-prefix collide regardless of their suffix. (Seen in
- * the wild: `task-0 .. task-7` all collided onto shard 4.)
+ * The integer, never hashSource's base-36 text: parseInt(text, 16)
+ * stops at the first letter past f, so keys with one leading prefix
+ * collided (`task-0 .. task-7` all landed on shard 4). peerCount <=
+ * MAX_PEER_FANOUT (32) << 2^32, so the modulo distributes uniformly.
  *
  * Deterministic: same key + same peerCount → same shard, every run.
  * Tests use this to predict placement.
  */
 export function hashKeyToShard(key: string, peerCount: number): number {
   if (peerCount <= 1) return 0;
-  // djb2, returning an unsigned 32-bit integer — full 2^32 range,
-  // no string-format conversion gotchas. peerCount <= MAX_PEER_FANOUT
-  // (32) << 2^32, so the modulo distributes uniformly for any input.
-  let h = 5381;
-  for (let i = 0; i < key.length; i++) {
-    h = ((h << 5) + h + key.charCodeAt(i)) | 0;
-  }
-  return (h >>> 0) % peerCount;
+  return djb2(key) % peerCount;
 }

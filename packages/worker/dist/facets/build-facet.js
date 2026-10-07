@@ -1,7 +1,7 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
-import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
+import { loadHelperFacet } from './helper-facet.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset } from '../runtime/staged-source.js';
 import { NAPI_WASM_LOADER, NAPI_WASM_TRAMPOLINE, fetchStagedBindingAsset, stagedBinding, } from '../runtime/staged-bindings.js';
@@ -119,14 +119,14 @@ const BUILD_FACET_BODY = [
     '}',
 ].join('\n');
 // The loader serves the code it cached under an id, so the id carries the code.
-export const BUILD_FACET_WORKER_ID = facetLoaderKey('build', [
+export const BUILD_FACET_WORKER_ID = [
     'nimbus-build',
     `rolldown-${ROLLDOWN.version}-${ROLLDOWN.wasm.sha256.slice(0, 16)}`,
     NAPI_WASM_LOADER.sha256.slice(0, 16),
     NAPI_WASM_TRAMPOLINE.sha256.slice(0, 16),
     ROLLDOWN_FACET_BUILD_ID,
     hashSource(BUILD_FACET_BODY),
-].join(':'));
+].join(':');
 export async function fetchBuildFacetParts(env) {
     const [loader, trampoline, rolldown, runtime] = await Promise.all([
         fetchStagedBindingAsset(env, NAPI_WASM_LOADER).then((bytes) => new TextDecoder().decode(bytes)),
@@ -176,17 +176,6 @@ export function buildFacetWorkerCode(parts) {
  */
 let generation = 0;
 const generationId = (n) => `${BUILD_FACET_WORKER_ID}:g${n}`;
-async function buildFacet(ctx, env, id) {
-    const loader = Reflect.get(Object(env), 'LOADER');
-    if (!loader || typeof loader.get !== 'function')
-        throw new Error('Nimbus: env.LOADER unavailable for the build facet');
-    const assets = Reflect.get(Object(env), 'ASSETS');
-    if (!assets || typeof assets.fetch !== 'function')
-        throw new Error('Nimbus: env.ASSETS unavailable for the build facet');
-    const worker = await loader.get(id, async () => applyFacetLimits('build', buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets }))));
-    const facetClass = worker.getDurableObjectClass('BuildFacet', { limits: facetLimits('build') });
-    return ctx.facets.get(id, async () => ({ class: facetClass }));
-}
 /**
  * One stub per Durable Object: callers that overlap wait on one facet load.
  * A load or call that failed drops the entry; the next caller mints a fresh one.
@@ -200,7 +189,13 @@ function sharedBuildFacet(ctx, env) {
         return current;
     if (current)
         retireFacet(ctx, current);
-    const minted = { generation, stub: buildFacet(ctx, env, generationId(generation)), calls: 0, retired: false, crashed: false };
+    const stub = loadHelperFacet(ctx, env, {
+        id: generationId(generation),
+        className: 'BuildFacet',
+        what: 'the build facet',
+        code: async (assets) => buildFacetWorkerCode(await fetchBuildFacetParts(assets)),
+    });
+    const minted = { generation, stub, calls: 0, retired: false, crashed: false };
     sharedFacets.set(ctx, minted);
     minted.stub.catch(() => forgetBuildFacet(ctx, minted));
     return minted;

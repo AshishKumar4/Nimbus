@@ -42,6 +42,7 @@ import type { EsbuildService } from './esbuild-service.js';
 import { type FacetBundleProfile } from './bundle-profile.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
+import { type NodeLaunch } from './node-cli.js';
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
  * the existing RunFreshResult / RunBunResult shapes — kept narrow so
@@ -90,6 +91,12 @@ export interface RuntimeRunOpts {
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
     /**
+     * A Node program's command line (RuntimeSpec.nodeCommandLine): its options
+     * (`process.execArgv`), its conditions, what it preloads, and its `-e`
+     * code; with `print`, the program's code returns the value to print.
+     */
+    node?: NodeLaunch;
+    /**
      * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
      * `node x.js < in.txt`); absent when stdin is the terminal. A runner
      * delivers its bytes as they arrive, never holding the program for the
@@ -120,14 +127,6 @@ export interface ScriptResolutionFs {
     isFile(path: string): boolean | Promise<boolean>;
     readFileString(path: string): string | Promise<string>;
 }
-/**
- * Resolve a runtime target — `./cli.ts`, `sub/x`, `.`, or a bare name — to a
- * canonical VFS key, or null when nothing runnable sits there.
- *
- * A directory never resolves to itself: it falls through to the index
- * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
- * rather than trying to read the directory as source.
- */
 export declare function resolveRuntimeScriptPath(fs: ScriptResolutionFs, cwd: string, target: string, opts?: {
     preferModuleField?: boolean;
 }): Promise<string | null>;
@@ -178,6 +177,12 @@ export interface RuntimeSpec {
      * iff they share the runFresh contract.
      */
     supportsBinSpawn?: boolean;
+    /**
+     * The command line is Node's (node-cli.ts): its options take their values
+     * as Node's table says, NODE_OPTIONS is read (and refused as Node refuses
+     * it), and the program's conditions and execArgv go to the run.
+     */
+    nodeCommandLine?: boolean;
     /**
      * The runner routes a program that starts a server to a resident process
      * (node-runner.ts runFresh), so the handler reports whether it does

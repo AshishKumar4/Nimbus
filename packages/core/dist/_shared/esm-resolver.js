@@ -12,15 +12,16 @@
  *   - `#name` resolves through the package scope's `imports`, a bare name
  *     through the package's own name (self-reference), then node_modules,
  *     then `exports` (conditions `node`, `import`, `module-sync`, `default`,
- *     taken in the map's own key order) or the legacy main;
+ *     and the program's own from `--conditions`, taken in the map's own key
+ *     order) or the legacy main;
  *   - `file:`, `node:` and `data:` URLs; every other scheme is refused.
  *
  * The node shims embed it as source (scripts/bundle-facet-workers.mjs
  * compiles it into loaders/generated-workers.ts), so the resolver is one
  * self-contained function: nothing inside may refer to this module.
  */
-export function createEsmResolver(host) {
-    const conditions = new Set(['node', 'import', 'module-sync']);
+export function createEsmResolver(host, options = {}) {
+    const conditions = new Set(['node', 'import', 'module-sync', ...(options.conditions ?? [])]);
     // The host's questions, each yielded as-is and typed by what it answers.
     const ask = {
         *kind(path) {

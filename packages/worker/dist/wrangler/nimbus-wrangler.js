@@ -14,7 +14,6 @@
  * Cloudflare Workers runtime, not a simulation.
  */
 import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
@@ -389,17 +388,17 @@ export class NimbusWrangler {
             // (inner-do-env.ts): the bundle's first import replaces it in the env
             // every handler, entrypoint and object of the isolate sees.
             const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, doBindings.map((b) => b.name));
-            const worker = this.loaderEnv.LOADER.load(applyFacetLimits('worker', {
+            const worker = this.loaderEnv.LOADER.load({
                 compatibilityDate: wrangCompatDate,
                 compatibilityFlags: wrangCompatFlags,
                 mainModule,
                 modules,
                 env: this.buildInnerEnv(),
                 ...loaderOutbound(this.network),
-            }));
+            });
             if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings)))
                 return false;
-            this.workerStub = worker.getEntrypoint(undefined, { limits: facetLimits('worker') });
+            this.workerStub = worker.getEntrypoint();
             for (const w of result.warnings || []) {
                 this.onLog(`  \x1b[33mwarning: ${w.text}\x1b[0m\n`);
             }
@@ -434,7 +433,7 @@ export class NimbusWrangler {
      * logged, when one is missing.
      */
     async registerDoClasses(worker, classesEntrypoint, bindings) {
-        const missing = new Set(await worker.getEntrypoint(classesEntrypoint, { limits: facetLimits('worker') }).missing(bindings.map((b) => b.class_name)));
+        const missing = new Set(await worker.getEntrypoint(classesEntrypoint).missing(bindings.map((b) => b.class_name)));
         for (const b of bindings) {
             if (missing.has(b.class_name)) {
                 this.onLog(`  \x1b[31merror: durable_objects binding '${b.name}' => class '${b.class_name}' is not exported by the Worker\x1b[0m\n`);
@@ -446,7 +445,7 @@ export class NimbusWrangler {
         if (doId)
             clearInnerDoClasses(doId);
         for (const b of bindings) {
-            const cls = worker.getDurableObjectClass(b.class_name, { limits: facetLimits('worker') });
+            const cls = worker.getDurableObjectClass(b.class_name);
             this.doClassMap.set(b.name, cls);
             if (doId)
                 registerInnerDoClass(doId, b.name, cls);
@@ -455,6 +454,13 @@ export class NimbusWrangler {
     }
     buildInnerEnv() {
         const env = {};
+        // Every binding phase after vars claims its name here, so a name a
+        // vars entry or an earlier binding already took is overwritten loudly.
+        const claim = (kind, name, value) => {
+            if (name in env)
+                this.onLog(`  \x1b[33mwarning: ${kind} binding '${name}' overwrites a previous key\x1b[0m\n`);
+            env[name] = value;
+        };
         // ── vars ──
         // Straight string copy. Collisions with synthesized binding names
         // (later phases) would be surprising, so later phases will warn if
@@ -506,17 +512,14 @@ export class NimbusWrangler {
                 this.onLog(`  \x1b[33mwarning: supervisor DO id unavailable; env.${binding} will not work\x1b[0m\n`);
             }
             else {
-                if (binding in env) {
-                    this.onLog(`  \x1b[33mwarning: assets binding '${binding}' overwrites a vars/services key with the same name\x1b[0m\n`);
-                }
-                env[binding] = ctxExports.NimbusAssetsRPC({
+                claim('assets', binding, ctxExports.NimbusAssetsRPC({
                     props: {
                         vfsRoot: this.root,
                         assetsDir,
                         doId,
                         route: hostRoute() ?? undefined,
                     },
-                });
+                }));
             }
         }
         // ── worker_loaders ──
@@ -541,12 +544,9 @@ export class NimbusWrangler {
                     const binding = wl.binding;
                     if (!binding)
                         continue;
-                    if (binding in env) {
-                        this.onLog(`  \x1b[33mwarning: worker_loaders binding '${binding}' overwrites a previous key\x1b[0m\n`);
-                    }
-                    env[binding] = ctxExports.NimbusLoaderRPC({
+                    claim('worker_loaders', binding, ctxExports.NimbusLoaderRPC({
                         props: { depth: nextDepth },
-                    });
+                    }));
                 }
             }
         }
@@ -571,16 +571,13 @@ export class NimbusWrangler {
             }
             else {
                 for (const bindingName of doBindingNames) {
-                    if (bindingName in env) {
-                        this.onLog(`  \x1b[33mwarning: durable_objects binding '${bindingName}' overwrites a previous key\x1b[0m\n`);
-                    }
-                    env[bindingName] = ctxExports.NimbusDurableObjectNamespace({
+                    claim('durable_objects', bindingName, ctxExports.NimbusDurableObjectNamespace({
                         props: {
                             bindingName,
                             supervisorDoId: doId,
                             route: hostRoute() ?? undefined,
                         },
-                    });
+                    }));
                 }
             }
         }
@@ -595,15 +592,12 @@ export class NimbusWrangler {
             for (const kv of this.config.kv_namespaces) {
                 if (!kv.binding)
                     continue;
-                if (kv.binding in env) {
-                    this.onLog(`  \x1b[33mwarning: kv_namespaces binding '${kv.binding}' overwrites a previous key\x1b[0m\n`);
-                }
-                env[kv.binding] = new KvEmulator({
+                claim('kv_namespaces', kv.binding, new KvEmulator({
                     vfs: this.vfs,
                     root: this.root,
                     binding: kv.binding,
                     onLog: this.onLog,
-                });
+                }));
             }
         }
         // ── d1_databases ── (W10)
@@ -626,9 +620,6 @@ export class NimbusWrangler {
                 for (const d1 of this.config.d1_databases) {
                     if (!d1.binding)
                         continue;
-                    if (d1.binding in env) {
-                        this.onLog(`  \x1b[33mwarning: d1_databases binding '${d1.binding}' overwrites a previous key\x1b[0m\n`);
-                    }
                     const emu = new D1Emulator({
                         sqlStorage,
                         binding: d1.binding,
@@ -637,7 +628,7 @@ export class NimbusWrangler {
                         migrationsDir: d1.migrations_dir,
                         onLog: this.onLog,
                     });
-                    env[d1.binding] = emu;
+                    claim('d1_databases', d1.binding, emu);
                     // Fire migrations in the background. They're idempotent so
                     // racing rebuilds is safe.
                     if (d1.migrations_dir) {
@@ -664,15 +655,12 @@ export class NimbusWrangler {
             for (const r2 of this.config.r2_buckets) {
                 if (!r2.binding)
                     continue;
-                if (r2.binding in env) {
-                    this.onLog(`  \x1b[33mwarning: r2_buckets binding '${r2.binding}' overwrites a previous key\x1b[0m\n`);
-                }
-                env[r2.binding] = new R2Emulator({
+                claim('r2_buckets', r2.binding, new R2Emulator({
                     vfs: this.vfs,
                     root: this.root,
                     binding: r2.binding,
                     onLog: this.onLog,
-                });
+                }));
             }
         }
         return env;
@@ -831,9 +819,9 @@ export class NimbusWrangler {
     }
     // ── Test seams (W10 probes) ───────────────────────────────────────────
     //
-    // These exist so probes can drive specific code paths (config parse,
-    // env synthesis, watcher installation) without running the full
-    // start() pipeline (which requires a real esbuild + LOADER + ctx).
+    // These exist so probes can drive specific code paths without running
+    // the full start() pipeline (which requires a real esbuild + LOADER +
+    // ctx).
     //
     // Production code does NOT use these; they're stable contracts only
     // for the test probes. Naming convention: leading underscore + ForTest
@@ -842,47 +830,5 @@ export class NimbusWrangler {
     _readConfigForTest() {
         this.config = this.readConfig();
         return this.config != null;
-    }
-    /** @internal — test seam: invoke buildInnerEnv() without a probe-load pass. */
-    _buildInnerEnvForTest() {
-        return this.buildInnerEnv();
-    }
-    /** @internal — test seam: install the VFS file-watch listener and the
-     * mock-rebuild path (esbuild.build() is called, but the real
-     * buildAndLoad() pipeline is bypassed in favour of just calling
-     * esbuild). Used for hot-reload latency + nimbus-paths-not-watched
-     * probes. Production calls start() which installs the watcher AND the
-     * full rebuild pipeline. */
-    _installWatchersForTest() {
-        this.running = true;
-        this.unsubVfs = this.vfsEvents.on(async (events) => {
-            let needsRebuild = false;
-            for (const event of events) {
-                if (event.type !== 'change' && event.type !== 'add' && event.type !== 'unlink')
-                    continue;
-                if (event.path.startsWith(this.root) &&
-                    !event.path.includes('node_modules/') &&
-                    !event.path.includes('/.nimbus/')) {
-                    needsRebuild = true;
-                    break;
-                }
-            }
-            if (!needsRebuild)
-                return;
-            if (this.rebuildTimer)
-                clearTimeout(this.rebuildTimer);
-            this.rebuildTimer = setTimeout(async () => {
-                this.rebuildTimer = null;
-                try {
-                    // Same canonicalization as the initial build — see
-                    // resolveEntryPath().
-                    await this.esbuild.build([this.resolveEntryPath()], {
-                        bundle: true, format: 'esm', target: 'esnext', platform: 'neutral',
-                    });
-                    this.onHmrMessage({ type: 'nimbus-hmr', event: 'full-reload' });
-                }
-                catch { }
-            }, 250);
-        });
     }
 }
