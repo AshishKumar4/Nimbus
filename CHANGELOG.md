@@ -238,6 +238,29 @@ published independently in the `@nimbus-sh` npm scope.
   dev server again exposes every key of a CommonJS `module.exports = {...}`
   literal as a named export (for example `color-name`'s `red`), checked
   against Vite 7.3.6.
+- Fixed: `create-nimbus-app` wrote a `wrangler.jsonc` without
+  `limits.cpu_ms`, so a scaffolded session ran under the 30 s default CPU
+  limit. The scaffold now writes the config that `@nimbus-sh/config`
+  builds, with `limits.cpu_ms` 300000.
+- Fixed: `nimbus wrangler dev` and its unsupported-binding warning refused a
+  `wrangler.jsonc` with a trailing comma, which wrangler accepts. Every
+  reader of the file now parses it as wrangler does, and refuses a config
+  that is not an object.
+- Fixed: a warm Worker Loader slot could run a stale WebAssembly image. An
+  image was identified by its name, its length and its first and last
+  bytes, so two images that matched there shared a slot. An image is now
+  identified by its SHA-256.
+- Fixed: the named preview host of a session whose id holds `--`
+  (`api--team--sandbox`) did not resolve, and a capability host accepted a
+  zero-padded port (`03000`) that no Nimbus URL contains. One grammar now
+  parses every preview host form, as the URL builders write it.
+- Fixed: the dev server served every HTML page but the root `index.html`
+  (a multi-page app's `/about/`) without the error overlay, the HMR client,
+  the Tailwind bundle or the mount base on its paths. Every page now gets
+  the root page's dev head; only the root page gets a `<base>`.
+- Fixed: an SDK sandbox whose id holds capitals, `_` or `.` (for example
+  `Build_7.a`) could not finish the Agent's Cloudflare login: its OAuth
+  start and callback were refused with 400.
 
 ### Breaking changes for embedders
 
