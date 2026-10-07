@@ -221,7 +221,7 @@ class RubyReplAdapter implements ReplAdapter {
       tag: 'ruby-repl',
       concurrency: 1,
       supervisorPid: this.deps.pid,
-      processSupervisor: supervisorBindingProps(ctx, this.deps.pid, { writerId: crypto.randomUUID() }),
+      processSupervisor: supervisorBindingProps(ctx, this.deps.pid, { writerId: crypto.randomUUID(), network }),
       preamble,
       // The workspace's, as every facet a manager's runtimes open (facetHostForManager).
       network,

@@ -46,7 +46,7 @@ export function loaderFacetHost(env: unknown, ctx: DurableObjectState, network: 
         wasmModules: spec.wasmModules,
         omitSupervisor: spec.syscalls === undefined,
         supervisorPid: spec.syscalls?.pid,
-        processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID() }) : undefined,
+        processSupervisor: spec.syscalls ? supervisorBindingProps(ctx, spec.syscalls.pid, { writerId: crypto.randomUUID(), network }) : undefined,
         cacheScope: spec.reuse,
         network,
       });
