@@ -875,7 +875,7 @@ export class IsolatePool {
     // worker whose SUPERVISOR binding still names the dead generation's
     // pid. See the supervisorKey field comment for the failure mode.
     const buildId = (generation: number): string =>
-      `nfp:${this.facetKind}:${this.tag}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
+      `nfp:${facetLoaderKey(this.facetKind, this.tag)}:${this.doIdShort}:${fnHash}:${this.preambleHash}:${this.wasmHash}:${perCallWasmHash}:${this.supervisorKey}:slot-${slotIndex}:g${generation}${this.scope ? `:${this.scope}` : ''}${this.network?.id ? `:${this.network.id}` : ''}`;
     let id = buildId(this.slotGenerations.get(slotIndex) ?? 0);
     const code = this.#buildCode(fnSource, perCallWasmEntries);
 
@@ -920,7 +920,7 @@ export class IsolatePool {
       const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
       admitted = undefined;
       try {
-        const stub = this.loader.get(facetLoaderKey(this.facetKind, id), async () => applyFacetLimits(this.facetKind, code));
+        const stub = this.loader.get(id, async () => applyFacetLimits(this.facetKind, code));
         const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.
