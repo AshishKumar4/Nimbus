@@ -490,13 +490,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  open(path: RuntimeFsPath, flags: RuntimeOpenFlags): RuntimeFileHandle {
+  /** `options.mutationOwner`: the exclusive-mutation lease an open for writing presents (a read-only open presents none). */
+  open(path: RuntimeFsPath, flags: RuntimeOpenFlags, options: RuntimeMutationOwner = {}): RuntimeFileHandle {
     return called({ syscall: 'open', path }, () => {
       const normalizedFlags = normalizeOpenFlags(flags);
       const mutates = normalizedFlags.write || normalizedFlags.create ||
         normalizedFlags.truncate || normalizedFlags.append;
+      const owner = mutates ? options.mutationOwner : undefined;
       const located = mutates
-        ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open')
+        ? this.locateMutation(path, normalizedFlags.followSymlinks, 'open', owner)
         : this.locate(path, normalizedFlags.followSymlinks);
       if (located === null) throw fsError('ELOOP', 'open', path);
       if (located.mount) return this.openMount(located.mount, located.path, path, normalizedFlags, flags.mode, flags.sync === true);
@@ -519,9 +521,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
       if (exists && this.vfs.isDirectory(p) && (normalizedFlags.truncate || normalizedFlags.append)) throw fsError('EISDIR', 'open', path);
       if (exists) this.vfs.access(p, (normalizedFlags.read ? 4 : 0) | (normalizedFlags.write && !this.vfs.isDirectory(p) ? 2 : 0));
       if (!exists) {
-        this.vfs.writeFile(p, new Uint8Array(0), { mode: flags.mode });
+        this.owned(owner).writeFile(p, new Uint8Array(0), { mode: flags.mode });
       } else if (normalizedFlags.truncate) {
-        this.vfs.truncate(p, 0);
+        this.owned(owner).truncate(p, 0);
       }
 
       const stat = this.vfs.stat(p);
@@ -612,16 +614,16 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  unlink(path: RuntimeFsPath): void {
+  unlink(path: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
     return called({ syscall: 'unlink', path }, () => {
-      const located = this.locateMutation(path, false, 'unlink');
+      const located = this.locateMutation(path, false, 'unlink', options.mutationOwner);
       if (located.mount) { located.mount.unlink(located.path); return; }
       const p = located.path;
       const key = this.legacyKey(p);
       if (this.vfs.exists(p)) {
         const staleLegacy = this.legacySymlinks.isSymlink(key);
         if (staleLegacy) this.legacySymlinks.assertMutable(key);
-        this.vfs.unlink(p);
+        this.owned(options.mutationOwner).unlink(p);
         if (staleLegacy) this.legacySymlinks.delete(key);
         return;
       }
@@ -631,15 +633,15 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  rmdir(path: RuntimeFsPath): void {
+  rmdir(path: RuntimeFsPath, options: RuntimeMutationOwner = {}): void {
     return called({ syscall: 'rmdir', path }, () => {
-      const located = this.locateMutation(path, false, 'rmdir');
+      const located = this.locateMutation(path, false, 'rmdir', options.mutationOwner);
       if (located.mount) { mountOp(located.mount.rmdir, 'rmdir', path)(located.path); return; }
       const p = located.path;
       // rmdir(2): a missing path is ENOENT, anything but a directory (a file, a link) ENOTDIR.
       if (!this.vfs.exists(p) && !this.legacySymlinks.isSymlink(this.legacyKey(p))) throw fsError('ENOENT', 'rmdir', path);
       if (!this.vfs.isDirectory(p)) throw fsError('ENOTDIR', 'rmdir', path);
-      this.vfs.rmdir(p);
+      this.owned(options.mutationOwner).rmdir(p);
     });
   }
 
