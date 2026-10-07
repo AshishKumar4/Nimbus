@@ -200,6 +200,8 @@ try {
       source: await store.key('cell', `${APP}/lib.mjs`, 'export const a = 2;\n'),
       path: await store.key('cell', `${APP}/lib2.mjs`, 'export const a = 1;\n'),
       kind: await store.key('entry', `${APP}/lib.mjs`, 'export const a = 1;\n'),
+      // Its package scope's "type" decides whether a .js file is an ES module.
+      packageType: await store.key('cell', `${APP}/lib.mjs`, 'export const a = 1;\n', 'module'),
       host: await storeOver(new Database(':memory:'), { host: 'test-host/2' }).store.key('cell', `${APP}/lib.mjs`, 'export const a = 1;\n'),
       pipeline: await storeOver(new Database(':memory:'), { pipeline: `${TRANSFORM_PIPELINE_ID}-next` }).store.key('cell', `${APP}/lib.mjs`, 'export const a = 1;\n'),
       // A field boundary cannot be moved to make two inputs one.

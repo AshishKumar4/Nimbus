@@ -25,6 +25,7 @@ import {
   typescriptFallbackCandidates,
 } from '../_shared/typescript-specifiers.js';
 import { normalizeVfsPath, stripLeadingSlashes } from '../vfs/path.js';
+import { packageTypeOf, type PackageType } from './module-format.js';
 
 /**
  * The filesystem questions resolution needs; held-cell reuse can additionally
@@ -350,6 +351,15 @@ async function nearestPackageScope(
     const lastSlash = dir.lastIndexOf('/');
     dir = lastSlash > 0 ? dir.substring(0, lastSlash) : '';
   }
+}
+
+/**
+ * The "type" of the package scope a file in `dir` belongs to
+ * (module-format.ts PackageType): what Node reads, through the same
+ * lookup, to tell a .js or extensionless file's module format.
+ */
+export async function packageScopeType(vfs: RequireFs, dir: string, progress?: WalkProgress): Promise<PackageType> {
+  return packageTypeOf((await nearestPackageScope(vfs, dir, undefined, progress))?.pkg ?? null);
 }
 
 /**

@@ -168,6 +168,7 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   const cells = Array.from({ length: 6 }, (_, i) => ({
     path: `node_modules/deep/d${i}.mjs`,
     source: `export const x${i} = ${'['.repeat(4000)}${i}${']'.repeat(4000)};`,
+    packageType: null,
   }));
   const placed = new Map();
   const warn = console.warn;

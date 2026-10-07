@@ -68,6 +68,8 @@ import {
   type BridgeRequireFs, type DeferredImport, type RequiredModuleRoot,
 } from '@nimbus-sh/core/runtime/require-resolver.js';
 import { findStaticFsReferences, type StaticFsRefs } from '@nimbus-sh/core/runtime/static-fs-refs.js';
+import { packageScopeType } from '@nimbus-sh/core/runtime/require-resolution.js';
+import { ES_MODULE_UNBOUND_NAMES, esModuleSource, type PackageType } from '@nimbus-sh/core/runtime/module-format.js';
 import { linkTargetOf, packageRootOf, planFacetData } from './data-plan.js';
 import {
   principalTag, profilePrincipal, ReadProfile, verifiedEvidence, type ReadProfileBucket, type StagedProfileEntry,
@@ -3923,6 +3925,7 @@ async function addEntryAbsPathReads(
 function _markBundleEsmAsFailed(
   bundle: Record<string, string | Uint8Array>,
   placeEmit: (path: string, code: string) => void,
+  packageTypeOf: (path: string) => PackageType,
   reason: string,
 ): void {
   for (const path of Object.keys(bundle)) {
@@ -3931,8 +3934,25 @@ function _markBundleEsmAsFailed(
     if (typeof src !== 'string') continue;
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
-    if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src)) placeEmit(path, esbuildDiagnosticShim(path, reason));
+    if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src, packageTypeOf(path))) placeEmit(path, esbuildDiagnosticShim(path, reason));
   }
+}
+
+/**
+ * The package scope "type" of each JavaScript cell of `paths` it decides
+ * the format of (a .js or extensionless file: module-format.ts), read
+ * through the resolver's own lookup (require-resolution.ts
+ * packageScopeType) once per directory, as a lookup by path.
+ */
+async function cellPackageTypes(vfs: LaunchFs, paths: Iterable<string>): Promise<(path: string) => PackageType> {
+  const dirOf = (path: string) => path.slice(0, Math.max(0, path.lastIndexOf('/')));
+  const byDir = new Map<string, PackageType>();
+  for (const path of paths) {
+    const ext = vfsPathExtension(path);
+    if ((ext !== '.js' && ext !== '') || byDir.has(dirOf(path))) continue;
+    byDir.set(dirOf(path), await packageScopeType(filesOf(vfs), dirOf(path)));
+  }
+  return (path) => byDir.get(dirOf(path)) ?? null;
 }
 
 /**
@@ -3953,16 +3973,18 @@ async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
   placeEmit: (path: string, code: string) => void,
   lowered: Set<string>,
+  packageTypeOf: (path: string) => PackageType,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
   store?: BundleCellResultStore,
 ): Promise<BundleCellTransformStats> {
   // Snapshot the cells first — transforms await; never iterate-and-mutate.
-  const cells: Array<{ path: string; source: string }> = [];
+  const cells: Array<{ path: string; source: string; packageType: PackageType }> = [];
   for (const path of Object.keys(bundle)) {
     const source = bundle[path];
+    const packageType = packageTypeOf(path);
     // hardening-r5: binary cells are not modules.
-    if (typeof source === 'string' && needsBundleCellTransform(path, source)) cells.push({ path, source });
+    if (typeof source === 'string' && needsBundleCellTransform(path, source, packageType)) cells.push({ path, source, packageType });
   }
   return transformBundleCells(cells, { host: esbuild, store, pacer }, (path, result) => {
     placeEmit(path, result.code);
@@ -4257,15 +4279,16 @@ async function _buildPrefetchBundle(
     codeOnly.add(path);
   };
   let transforms: BundleCellTransformStats | undefined;
+  const packageTypeOf = await cellPackageTypes(vfs, Object.keys(bundle).filter(isBundleModuleCandidate));
   if (esbuild) {
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformEsmInBundle.
-    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, esbuild, pacer, transformStore);
+    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, packageTypeOf, esbuild, pacer, transformStore);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
-    _markBundleEsmAsFailed(bundle, placeEmit, 'no esbuild service was given to this launch');
+    _markBundleEsmAsFailed(bundle, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
   }
   // Each module's bundled records of the runtime's provided packages are
   // bound to them: the emit's, or the file's own when it is its module (a
@@ -5717,7 +5740,7 @@ export class FacetManager {
         emits: vfsState.emits,
         lowered: vfsState.lowered,
         codeOnly: vfsState.codeOnly,
-        runtimeCode: await this._stagedRuntimeCode(learning, pacer),
+        runtimeCode: await this._stagedRuntimeCode(learning, vfs, pacer),
       },
     );
     vfsState.cacheHit = false;
@@ -5795,7 +5818,7 @@ export class FacetManager {
    * path as a cell: the guest looks a path up first and the key only for a
    * path the map lacks — the same text written under a fresh name.
    */
-  private async _stagedRuntimeCode(learning: LaunchLearning, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
+  private async _stagedRuntimeCode(learning: LaunchLearning, vfs: LaunchFs, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
     for (const [codeKey, entry] of learning.code) {
       if (entry.kind === 'expression') {
@@ -5808,9 +5831,10 @@ export class FacetManager {
       }
       if (entry.path.startsWith('data:')) {
         if (!this.esbuild) throw new Error('No transformer for a staged data URL module');
-        const result = await this.esbuild.transform(entry.text, {
+        // A data: URL is always an ES module to Node.
+        const result = await this.esbuild.transform(esModuleSource(entry.text), {
           loader: 'js', format: 'cjs', target: 'esnext',
-          moduleMetadata: true, dynamicImportParent: 'data:text/javascript,',
+          moduleMetadata: true, dynamicImportParent: 'data:text/javascript,', define: ES_MODULE_UNBOUND_NAMES,
         });
         modules.set(codeKey, wrapCommonJsCell(result.code, 'block').text);
         continue;
@@ -5820,8 +5844,9 @@ export class FacetManager {
       const emits = new Map<string, string>();
       const placeEmit = (at: string, code: string) => { emits.set(at, code); };
       const lowered = new Set<string>();
-      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, this.esbuild, pacer, this._transformStore());
-      else _markBundleEsmAsFailed(file, placeEmit, 'no esbuild service was given to this launch');
+      const packageTypeOf = await cellPackageTypes(vfs, [path]);
+      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, packageTypeOf, this.esbuild, pacer, this._transformStore());
+      else _markBundleEsmAsFailed(file, placeEmit, packageTypeOf, 'no esbuild service was given to this launch');
       let code = emits.get(path) ?? file[path];
       try {
         code = rewriteProvidedCommonJsModules(code);

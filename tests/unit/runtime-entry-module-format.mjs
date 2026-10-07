@@ -31,6 +31,7 @@ function makeHandler(files) {
     // Every fixture entry is a file; the bound VFS distinguishes the two so
     // script resolution can send a directory on to its index.
     isFile: (p) => Object.hasOwn(files, p),
+    stat: (p) => (Object.hasOwn(files, p) ? { type: 'file', size: files[p].length } : null),
     readFileString: (p) => {
       if (!Object.hasOwn(files, p)) throw new Error('ENOENT ' + p);
       return files[p];
