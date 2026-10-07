@@ -20,6 +20,7 @@ import { cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob, type Clo
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import {
   DEFAULT_CONTEXT,
@@ -2496,6 +2497,36 @@ async function resetCommand(
  * this module and its ~106 KB network-facet dependency out of the cold
  * script-eval graph.
  */
+/**
+ * `path` in the namespace as `view` sees it, every link resolved: the
+ * nearest name above it that is there, resolved, and the rest as given.
+ */
+async function namespacePath(view: Pick<ProcessView, 'realpath'>, path: string): Promise<string> {
+  let at = '/' + normalizeVfsPath(path);
+  let below = '';
+  for (;;) {
+    try {
+      const real = await view.realpath(at);
+      return below === '' ? real : `${real === '/' ? '' : real}/${below}`;
+    } catch (error) {
+      if (at === '/' || (!isVfsError(error, 'ENOENT') && !isVfsError(error, 'ENOTDIR'))) throw error;
+      const cut = at.lastIndexOf('/');
+      below = below === '' ? at.slice(cut + 1) : `${at.slice(cut + 1)}/${below}`;
+      at = at.slice(0, cut) || '/';
+    }
+  }
+}
+
+/** The first name on the way to `path` (a resolved namespace path) that is not there, or `path` itself when it is. */
+async function firstMissing(view: Pick<ProcessView, 'stat'>, path: string): Promise<string> {
+  const parts = normalizeVfsPath(path).split('/');
+  for (let i = 1; i <= parts.length; i++) {
+    const prefix = '/' + parts.slice(0, i).join('/');
+    if (await view.stat(prefix, { follow: false }) === null) return prefix;
+  }
+  return '/' + parts.join('/');
+}
+
 export async function runGitCommand(
   ctx: Ctx,
   vfs: SqliteVFS,
@@ -2603,6 +2634,14 @@ export async function runGitCommand(
       if (key === null) await ctx.stderr.write(`fatal: git ${sub} writes a repository only on the workspace filesystem; '${target}' is on a mounted one\n`);
       return key === null ? null : '/' + key;
     };
+    // Where a clone writes: its engine key, or on a mount its path in the
+    // namespace (every link resolved), which the facet's writes reach as the
+    // command's own would.
+    const placeClone = async (target: string): Promise<{ dir: string; mount: boolean }> => {
+      const key = await engineKey(ctx.vfs, vfs, target);
+      if (key !== null) return { dir: '/' + key, mount: false };
+      return { dir: await namespacePath(ctx.vfs, target), mount: true };
+    };
     // A clone still running owns its repository: git would not show one
     // half-made, and a command reading it now would take its shallow or
     // partial state for the finished clone's.
@@ -2657,8 +2696,8 @@ export async function runGitCommand(
         } else {
           dest = dir + '/' + url.split('/').pop()?.replace('.git', '');
         }
-        const target = await onEngine(dest);
-        if (target === null) return 128;
+        const place = await placeClone(dest);
+        const target = place.dir;
 
         if (!doCtx || !doEnv) {
           ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
@@ -2672,9 +2711,13 @@ export async function runGitCommand(
         // through the trusted SupervisorRPC binding. Taken as the command's
         // credential: the clone writes as it, so a confined caller's /tmp is
         // held where those writes land, not at the shared tmp/ of that name.
-        const mutationLease = vfs.as(ctx.cred).acquireExclusiveMutation(target, {
-          includeMissingAncestors: true,
-        });
+        // On a mount the lease's root is the first name missing on the way
+        // to the destination as the namespace sees it (SQLite's own inodes do
+        // not say), held at that path: the namespace refuses another's
+        // mutations there by it, as it does on SQLite.
+        const mutationLease = place.mount
+          ? vfs.as(ctx.cred).acquireExclusiveMutation(await firstMissing(ctx.vfs, target))
+          : vfs.as(ctx.cred).acquireExclusiveMutation(target, { includeMissingAncestors: true });
         // A piece of the clone that hung may still write: the facet runner
         // hands the lease to a new owner before it runs the piece again.
         let mutationOwner = mutationLease.owner;
