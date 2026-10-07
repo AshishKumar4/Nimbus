@@ -65,11 +65,13 @@ const FILES = {
     "const { execFile } = require('child_process');",
     "execFile('node', ['-C', 'a\\u0001b', 'joined.cjs'], { encoding: 'utf8' }, (error, out) => process.stdout.write(error ? String(error) : out));",
   ].join('\n'),
-  'fork-child.mjs': "import c from '#cond'; console.log('COND ' + JSON.stringify({ child: c, execArgv: process.execArgv }));",
+  // The child says what it saw in a file (a fork's stdout is its IPC channel here), and the parent prints it.
+  'fork-child.mjs': "import fs from 'node:fs'; import c from '#cond'; fs.writeFileSync('fork-out.json', JSON.stringify({ child: c, execArgv: process.execArgv })); process.exit(0);",
   'fork-parent.mjs': [
     "import { fork } from 'node:child_process';",
+    "import fs from 'node:fs';",
     "const opts = process.argv[2] === 'none' ? { execArgv: [] } : {};",
-    "fork('./fork-child.mjs', [], { ...opts, stdio: 'inherit' }).on('exit', (code) => process.exit(code));",
+    "fork('./fork-child.mjs', [], opts).on('exit', () => { console.log('COND ' + fs.readFileSync('fork-out.json', 'utf8')); process.exit(0); });",
   ].join('\n'),
   'main.mjs': [
     "import c from '#cond';",
@@ -81,7 +83,7 @@ const FILES = {
   ].join('\n'),
 };
 
-const FORK_EVAL = "require('child_process').fork('./fork-child.mjs', [], { stdio: 'inherit' })";
+const FORK_EVAL = "require('child_process').fork('./fork-child.mjs').on('exit', () => { console.log('COND ' + require('fs').readFileSync('fork-out.json', 'utf8')); process.exit(0); })";
 const COMMANDS = [
   'node -C development nested.mjs',
   'node nested.mjs',
