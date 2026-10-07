@@ -3245,17 +3245,22 @@ const __fsMod = (() => {
   function _faultIn(k) {
     if (!_supervisor()) return;
     const speculation = _speculation();
-    if (!_faultOnce("content", k)) {
+    if (_faulted.has("content:" + k)) {
       // Asked for already: a speculation waits on that same fill.
       const pending = _repairOf.get(k);
       if (speculation && pending) speculation.repairs.push(pending);
       return;
     }
+    // A speculation's fetch is charged to its quota before it is issued, and
+    // past the quota is not issued at nor marked asked: the program's own
+    // read of it later still faults it in.
+    if (speculation && speculation.quota && !speculation.quota.file()) return;
+    _faultOnce("content", k);
     // Swallowed here rather than at the settle: a repair nobody asked for
     // must not surface as an unhandled rejection, and a failed one is simply
     // a path that stays unanswered and stays in the ledger.
     try {
-      const repair = _observeThenFill(k).catch(() => {}).finally(() => _repairOf.delete(k));
+      const repair = _observeThenFill(k, speculation && speculation.quota).catch(() => {}).finally(() => _repairOf.delete(k));
       _repairs.push(repair);
       _repairOf.set(k, repair);
       if (speculation) speculation.repairs.push(repair);
@@ -3271,9 +3276,12 @@ const __fsMod = (() => {
    * have failed, and it is the one observation that settles whether the run
    * was denied anything.
    */
-  async function _observeThenFill(k) {
+  async function _observeThenFill(k, quota) {
     const supervisor = _supervisor();
     const absPath = "/" + k;
+    // A quota's charge is the file's size, so a fetch under one is issued
+    // only once a stat has given it, and not at all past the quota.
+    if (quota && typeof supervisor.stat !== "function") { _faulted.delete("content:" + k); return; }
     if (typeof supervisor.stat === "function") {
       let meta;
       // A thrown stat is the authority failing to answer, not an answer:
@@ -3284,6 +3292,7 @@ const __fsMod = (() => {
       catch { return; }
       if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
       if (meta.type === "directory") return;
+      if (quota && !quota.bytes(Number(meta.size) || 0)) { _faulted.delete("content:" + k); return; }
     }
     await _liveReadFile(absPath, undefined);
   }
@@ -16634,25 +16643,40 @@ const __IMPORT_STAGE_BYTES = 64 * 1024 * 1024;
 // links or listings the namespace did not hold.
 const __IMPORT_HYDRATE_ROUNDS = 32;
 
-// What one import() may fetch ahead, every fill counted: a module's text
-// and the package.json or listing a resolution needed alike.
-function __nimbusPrefetchBudget(specifier) {
+// What one import() may fetch ahead: one quota of files and raw bytes, which
+// the fs charges at the repair and read boundary, before any data I/O
+// (_faultIn admits the file, _observeThenFill its size from the stat): a
+// module's text and a manifest or link a resolution read alike. Once a charge
+// does not fit, nothing more is issued under it, and the import() fails with
+// the bound once the fills already admitted have landed. `limits` is for
+// tests: the bound itself is fixed.
+function __nimbusPrefetchQuota(specifier, limits) {
+  const maxFiles = (limits && limits.files) || __IMPORT_STAGE_FILES;
+  const maxBytes = (limits && limits.bytes) || __IMPORT_STAGE_BYTES;
   let files = 0;
   let bytes = 0;
-  const exceeded = (what) => {
-    const error = new Error("import() of '" + specifier + "' would fetch more than " + what
+  let error = null;
+  const exceed = (what) => {
+    error = new Error("import() of '" + specifier + "' would fetch more than " + what
       + " ahead (the bound on one import()'s prefetch); it is not loaded on a closure fetched in part");
     error.code = "ERR_NIMBUS_PREFETCH_BOUND";
-    return error;
+    return false;
   };
   return {
-    files(count) {
-      files += count;
-      if (files > __IMPORT_STAGE_FILES) throw exceeded(__IMPORT_STAGE_FILES + " files");
+    get error() { return error; },
+    // One more file fetched: whether it may be.
+    file() {
+      if (error) return false;
+      if (files + 1 > maxFiles) return exceed(maxFiles + " files");
+      files++;
+      return true;
     },
-    bytes(count) {
-      bytes += count;
-      if (bytes > __IMPORT_STAGE_BYTES) throw exceeded((__IMPORT_STAGE_BYTES >> 20) + " MiB");
+    // Its size, before its bytes are read: whether they may be.
+    bytes(size) {
+      if (error) return false;
+      if (bytes + size > maxBytes) return exceed(maxBytes + " bytes");
+      bytes += size;
+      return true;
     },
   };
 }
@@ -16660,34 +16684,33 @@ function __nimbusPrefetchBudget(specifier) {
 // Run a synchronous step (resolutions, reads) until it stops missing. Its
 // reads of files that exist but are not held are faulted in: under a
 // speculation (the fs's __nimbusVfsSpeculation), so they are the prefetch's
-// own and never the program's ledger, and the step waits for exactly the
-// fills it caused, then runs again. Every fill counts against the budget;
-// `fetched`, if given, collects the paths the step had fetched.
-// A step that misses only what its fills could not bring stands as it is.
-async function __nimbusHydrated(step, budget, fetched) {
+// own and never the program's ledger, and charged to the quota as they are
+// issued. The step waits for exactly the fills it caused, every one of
+// them, whatever comes next, so none outlives it; then runs again. A step
+// that misses only what its fills could not bring stands as it is.
+async function __nimbusHydrated(step, quota) {
   let missed = null;
   for (let round = 1; ; round++) {
-    const speculation = { misses: new Set(), repairs: [] };
+    const speculation = { misses: new Set(), repairs: [], quota };
     const outer = globalThis.__nimbusVfsSpeculation;
     globalThis.__nimbusVfsSpeculation = speculation;
     let value;
     let error;
     let threw = false;
     try { value = step(); } catch (e) { error = e; threw = true; } finally { globalThis.__nimbusVfsSpeculation = outer; }
+    await Promise.allSettled(speculation.repairs);
+    if (quota.error) throw quota.error;
     const fresh = [...speculation.misses].filter((k) => missed === null || !missed.has(k));
     if (fresh.length === 0 || speculation.repairs.length === 0) {
       if (threw) throw error;
       return value;
     }
-    budget.files(fresh.length);
     if (round >= __IMPORT_HYDRATE_ROUNDS) {
       const bound = new Error("import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching (" + fresh.slice(0, 3).join(", ") + ")");
       bound.code = "ERR_NIMBUS_PREFETCH_BOUND";
       throw bound;
     }
     missed = new Set([...(missed || []), ...speculation.misses]);
-    if (fetched) for (const k of speculation.misses) fetched.add(k);
-    await Promise.allSettled(speculation.repairs);
   }
 }
 
@@ -16717,7 +16740,7 @@ function __nimbusRequestTarget(kind, specifier, importer) {
   return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
 }
 
-function __nimbusImportStager(budget) {
+function __nimbusImportStager(quota) {
   // The fill a synchronous read's miss starts (the fs's residency fault-in),
   // which only a process with a supervisor has.
   const supervisor = typeof __supervisor !== "undefined" ? __supervisor : null;
@@ -16739,18 +16762,16 @@ function __nimbusImportStager(budget) {
       while (frontier.length > 0) {
         const round = frontier.filter((k) => !visited.has(k) && !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
         for (const k of round) visited.add(k);
-        const fetched = new Set();
-        const texts = await __nimbusHydrated(() => round.map((k) => __readFileOr(k, null)), budget, fetched);
+        const texts = await __nimbusHydrated(() => round.map((k) => __readFileOr(k, null)), quota);
         const wanted = [];
         for (let i = 0; i < round.length; i++) {
           const text = texts[i];
           if (typeof text !== "string") continue;
-          if (fetched.has(round[i])) budget.bytes(text.length);
           if (!/\.[cm]?js$/.test(round[i])) continue;
           // An import() in the closure is its own: it prefetches when it runs.
           for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
         }
-        const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), budget);
+        const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);
         const next = new Set();
         for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
         frontier = [...next];
@@ -16759,10 +16780,10 @@ function __nimbusImportStager(budget) {
   };
 }
 async function __nimbusStageImport(specifier, parentUrl) {
-  const budget = __nimbusPrefetchBudget(specifier);
-  const stager = __nimbusImportStager(budget);
+  const quota = __nimbusPrefetchQuota(specifier);
+  const stager = __nimbusImportStager(quota);
   if (stager === null) return __esmResolver.resolveSync(specifier, parentUrl);
-  const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl), budget);
+  const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl), quota);
   // A module this process has loaded already brought what it requests.
   if (resolution.path && !__esmNamespaces.has(resolution.url)) await stager.closure(resolution.path);
   return resolution;
