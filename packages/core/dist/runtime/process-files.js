@@ -279,6 +279,7 @@ export class ProcessFiles {
         this.delegations = new Delegations({
             release: (owner) => engine.releaseExclusiveMutation(owner),
             revoked: options.delegationRevoked,
+            ...(options.delegationOrphaned === undefined ? {} : { orphaned: options.delegationOrphaned }),
             recallTimeoutMs: options.delegationRecallTimeoutMs,
         });
         this.bufferedWriteBytes = options.bufferedWriteBytes;

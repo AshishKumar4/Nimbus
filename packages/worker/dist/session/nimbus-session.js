@@ -705,6 +705,13 @@ export class NimbusSession extends CloudflareDurableObject {
                 if (!this.facetManager?.kill(pid, 'KILL'))
                     this.processes.kill(pid, 137);
             },
+            // A holder that ended still holding a subtree (killed mid-run): what it
+            // had decided there and not yet sent is lost, at most what it logged
+            // after its last wave. Said in its own output, naming the subtree.
+            delegationOrphaned: ({ pid, root }) => {
+                console.warn(`[delegation] pid ${pid} ended holding /${root}`);
+                this.processes.appendOutput(pid, 'stderr', `[nimbus] process ${pid} ended holding /${root}: changes it made there after its last write wave reached the session are lost\n`);
+            },
         });
     }
     supervisorOps() {

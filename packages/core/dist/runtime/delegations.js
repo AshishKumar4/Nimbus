@@ -96,7 +96,12 @@ export class Delegations {
         if (owned === undefined)
             this.byPid.set(pid, owned = new Set());
         owned.add(lease.owner);
-        scope.subscriptions.add(end);
+        // The process ended holding it: reported, then given up.
+        scope.subscriptions.add(() => {
+            if (this.held.get(lease.owner) === held)
+                this.options.orphaned?.({ pid, root: lease.root });
+            end();
+        });
         return { ...lease, recallTimeoutMs: this.recallTimeoutMs };
     }
     /** The next recall of `owner`'s delegation, as soon as one is asked; null after `waitMs` with none, or once it has ended. */

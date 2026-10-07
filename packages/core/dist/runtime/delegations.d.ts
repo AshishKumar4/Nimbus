@@ -56,6 +56,15 @@ export interface DelegationsOptions {
     readonly release: (owner: string) => void;
     /** Told of a holder revoked for not answering, so the host can stop it. */
     readonly revoked?: (event: DelegationRevoked) => void;
+    /**
+     * Told of a holder that ended still holding a delegation (killed, or gone
+     * without giving it back): what it decided there and had not sent is
+     * lost, and the host says so where the process's output goes.
+     */
+    readonly orphaned?: (event: {
+        readonly pid: number;
+        readonly root: string;
+    }) => void;
     readonly recallTimeoutMs?: number;
 }
 /** What the session's delegations did since it started (the diag route's). */
