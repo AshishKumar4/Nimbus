@@ -53,6 +53,19 @@ export interface BridgeRequireFs extends RequireFs {
   readBytes(path: string): Promise<Uint8Array | null>;
 }
 
+/**
+ * The conditions `require` resolves `exports` and `imports` under: Node's
+ * (DEFAULT_CJS_CONDITIONS), and the program's own (`node --conditions`).
+ */
+function requireConditions(conditions: readonly string[]): string[] {
+  return conditions.length === 0 ? DEFAULT_CJS_CONDITIONS : [...DEFAULT_CJS_CONDITIONS, ...conditions];
+}
+
+/** The conditions of the fallback for a package whose map exposes an entry only under `import`, the program's own beside them. */
+function importConditions(conditions: readonly string[]): string[] {
+  return conditions.length === 0 ? DEFAULT_ESM_CONDITIONS : [...DEFAULT_ESM_CONDITIONS, ...conditions];
+}
+
 export function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs {
   const decoder = new TextDecoder();
   const absent = <T>(read: () => Awaitable<T | null>): Promise<T | null> => (async () => {
@@ -200,7 +213,7 @@ export interface ResolveSubpathResult {
  *   3. For non-root subpath: `<pkgDir>/<subpath>` as a file, then as a
  *      directory (its package.json `main`, then its index).
  */
-async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
+async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: string, sink?: PkgJsonSink, progress?: WalkProgress, conditions: readonly string[] = []): Promise<ResolveSubpathResult | null> {
   const pkgJsonPath = pkgDir + '/package.json';
   if (progress) await progress(METADATA_CANDIDATE_WORK + pkgJsonPath.length);
   if (!(await vfs.exists(pkgJsonPath))) {
@@ -221,9 +234,9 @@ async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: stri
   }
   // The runtime resolver reads this package.json unconditionally to walk
   // exports/main; record it so its content ships in the bundle.
-  let entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_CJS_CONDITIONS);
+  let entry = sharedResolvePackageEntry(pkg, subpath, requireConditions(conditions));
   if (entry == null && pkg.exports != null) {
-    entry = sharedResolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
+    entry = sharedResolvePackageEntry(pkg, subpath, importConditions(conditions));
   }
   if (entry != null) {
     const resolved = (await resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''), sink, progress));
@@ -247,7 +260,7 @@ async function resolvePkgSubpathEx(vfs: RequireFs, pkgDir: string, subpath: stri
 }
 
 /** Bare-spec resolver: the node_modules walk from `fromDir`. */
-async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
+async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress, conditions: readonly string[] = []): Promise<ResolveSubpathResult | null> {
   let pkgName: string;
   let subpath: string;
   if (name.startsWith('@')) {
@@ -274,7 +287,7 @@ async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string
     const nmDir = (dir ? dir + '/' : '') + 'node_modules/' + pkgName;
     if (progress) await progress(METADATA_CANDIDATE_WORK + nmDir.length);
     if ((await vfs.exists(nmDir))) {
-      const r = (await resolvePkgSubpathEx(vfs, nmDir, subpath, sink, progress));
+      const r = (await resolvePkgSubpathEx(vfs, nmDir, subpath, sink, progress, conditions));
       if (r) return r;
     }
     if (!dir) break;
@@ -285,7 +298,11 @@ async function resolveNodeModuleEx(vfs: RequireFs, name: string, fromDir: string
 }
 
 /** The require resolver `prefetchForRequire` walks with. */
-export async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null> {
+export async function resolveRequireEx(
+  vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress,
+  /** The program's own conditions (`node --conditions`), beside require's. */
+  conditions: readonly string[] = [],
+): Promise<ResolveSubpathResult | null> {
   if (id.startsWith('./') || id.startsWith('../') || id.startsWith('/')) {
     const base = id.startsWith('/')
       ? stripLeadingSlashes(id)
@@ -305,7 +322,7 @@ export async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: stri
   // "Cannot find module '#name' (from ...)" error.
   //
   if (id.startsWith('#')) {
-    const r = (await resolveImportsField(vfs, id, fromDir, sink, progress));
+    const r = (await resolveImportsField(vfs, id, fromDir, sink, progress, conditions));
     return r ? { resolved: r } : null;
   }
   // The enclosing package's own name resolves through its exports map
@@ -313,9 +330,9 @@ export async function resolveRequireEx(vfs: RequireFs, id: string, fromDir: stri
   // enclosing package claims the name, its map is the whole answer: a
   // subpath it does not expose is not found, never a node_modules copy's.
   // Mirrors node-shims.ts:__resolvePackageSelf.
-  const self = await resolvePackageSelf(vfs, id, fromDir, sink, progress);
+  const self = await resolvePackageSelf(vfs, id, fromDir, sink, progress, conditions);
   if (self) return self.resolved ? { resolved: self.resolved } : null;
-  return (await resolveNodeModuleEx(vfs, id, fromDir, sink, progress));
+  return (await resolveNodeModuleEx(vfs, id, fromDir, sink, progress, conditions));
 }
 
 /**
@@ -363,12 +380,13 @@ async function resolveImportsField(
   fromDir: string,
   sink?: PkgJsonSink,
   progress?: WalkProgress,
+  conditions: readonly string[] = [],
 ): Promise<string | null> {
   // First package.json wins (Node spec), even if no imports field.
   const scope = await nearestPackageScope(vfs, fromDir, sink, progress);
   if (!scope || !scope.pkg || !scope.pkg.imports) return null;
   const dir = scope.dir;
-  const target = sharedResolveExports(scope.pkg.imports, name, DEFAULT_CJS_CONDITIONS);
+  const target = sharedResolveExports(scope.pkg.imports, name, requireConditions(conditions));
   if (!target || typeof target !== 'string') return null;
   // imports targets are relative to the package root (`dir`).
   if (target.startsWith('./')) {
@@ -379,7 +397,7 @@ async function resolveImportsField(
     return (await resolveFile(vfs, stripLeadingSlashes(target), sink, progress));
   }
   // Bare specifier — re-resolve as a node_module from `dir`.
-  const r = (await resolveNodeModuleEx(vfs, target, dir, sink, progress));
+  const r = (await resolveNodeModuleEx(vfs, target, dir, sink, progress, conditions));
   return r ? r.resolved : null;
 }
 
@@ -403,13 +421,14 @@ async function resolvePackageSelf(
   fromDir: string,
   sink?: PkgJsonSink,
   progress?: WalkProgress,
+  conditions: readonly string[] = [],
 ): Promise<{ resolved: string | null } | null> {
   const scope = await nearestPackageScope(vfs, fromDir, sink, progress);
   if (!scope || !scope.pkg) return null;
   const subpath = packageSelfReferenceSubpath(scope.pkg, name);
   if (subpath === null) return null;
-  let entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_CJS_CONDITIONS);
-  if (entry == null) entry = sharedResolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
+  let entry = sharedResolveExports(scope.pkg.exports, subpath, requireConditions(conditions));
+  if (entry == null) entry = sharedResolveExports(scope.pkg.exports, subpath, importConditions(conditions));
   if (entry == null) return { resolved: null };
   const resolved = await resolveFile(vfs, normalizeVfsPath(`${scope.dir ? `${scope.dir}/` : ''}${entry.replace(/^\.\//, '')}`), sink, progress);
   return { resolved };

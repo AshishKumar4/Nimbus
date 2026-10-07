@@ -106,6 +106,10 @@ export interface RunFreshOpts {
   signal?: AbortSignal;
   /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
   launchesServer?: boolean;
+  /** Node's options before the program (RuntimeRunOpts.execArgv). */
+  execArgv?: string[];
+  /** The program's own conditions (RuntimeRunOpts.conditions). */
+  conditions?: string[];
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -184,6 +188,8 @@ export async function runFresh(
       callerPid: opts.callerPid,
       invokerPid: opts.invokerPid,
       bundleProfile: opts.bundleProfile,
+      ...(opts.execArgv ? { execArgv: opts.execArgv } : {}),
+      ...(opts.conditions ? { conditions: opts.conditions } : {}),
     });
   } catch (e: any) {
     // Hard-fail per anti-requirement: missing env.LOADER throws here.

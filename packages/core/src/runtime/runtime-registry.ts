@@ -48,6 +48,7 @@ import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
 import { exists } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
+import { parseNodeCommandLine } from './node-cli.js';
 
 /**
  * Result shape that runtime-registry expects from a runner. Mirrors
@@ -97,6 +98,10 @@ export interface RuntimeRunOpts {
   invokerPid?: number;
   /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
   signal?: AbortSignal;
+  /** A Node command line's options before the program (`process.execArgv`; RuntimeSpec.nodeCommandLine). */
+  execArgv?: string[];
+  /** The program's own conditions (`--conditions`, `-C`, NODE_OPTIONS'), for its resolvers. */
+  conditions?: string[];
   /**
    * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
    * `node x.js < in.txt`); absent when stdin is the terminal. A runner
@@ -227,6 +232,12 @@ export interface RuntimeSpec {
    * iff they share the runFresh contract.
    */
   supportsBinSpawn?: boolean;
+  /**
+   * The command line is Node's (node-cli.ts): its options take their values
+   * as Node's table says, NODE_OPTIONS is read (and refused as Node refuses
+   * it), and the program's conditions and execArgv go to the run.
+   */
+  nodeCommandLine?: boolean;
   /**
    * The runner routes a program that starts a server to a resident process
    * (node-runner.ts runFresh), so the handler reports whether it does
@@ -366,17 +377,31 @@ export function buildRuntimeHandler(
     // args array, breaking `node /path/to/tsc --version` (the user's
     // --version was misinterpreted as a node flag).
     let flagSpan = 0;
-    // A bare `-` is not a flag: it is the program itself, read from stdin
-    // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
-    while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
-      flagSpan++;
-      const prev = args[flagSpan - 1];
-      // -e / --eval consumes one value; advance past it.
-      if ((prev === '-e' || prev === '--eval') && flagSpan < args.length) {
+    // Node's command line, read as Node reads it: each option's value taken
+    // with it, NODE_OPTIONS beside it, and what the run needs of them.
+    let nodeLine: { execArgv: string[]; conditions: string[] } | null = null;
+    if (spec.nodeCommandLine) {
+      const parsed = parseNodeCommandLine(args, ctx.env?.NODE_OPTIONS ?? '');
+      if ('error' in parsed) {
+        ctx.stderr.write(parsed.error);
+        return parsed.exitCode;
+      }
+      flagSpan = parsed.programIndex;
+      nodeLine = { execArgv: parsed.execArgv, conditions: parsed.conditions };
+    } else {
+      // A bare `-` is not a flag: it is the program itself, read from stdin
+      // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
+      while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
         flagSpan++;
+        const prev = args[flagSpan - 1];
+        // -e / --eval consumes one value; advance past it.
+        if ((prev === '-e' || prev === '--eval') && flagSpan < args.length) {
+          flagSpan++;
+        }
       }
     }
     const flagSlice = args.slice(0, flagSpan);
+    const nodeRun = nodeLine === null ? {} : nodeLine;
 
     // ── --version ──
     if (flagSlice.includes('-v') || flagSlice.includes('--version')) {
@@ -412,6 +437,7 @@ export function buildRuntimeHandler(
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -e ...`,
+        ...nodeRun,
         ...programStdin,
         ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
@@ -452,6 +478,7 @@ export function buildRuntimeHandler(
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
+        ...nodeRun,
         ...reservedProcess,
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
@@ -611,6 +638,7 @@ export function buildRuntimeHandler(
       dirname,
       command:
         binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+      ...nodeRun,
       ...programStdin,
       ...reservedProcess,
       ...(captureOutput ? { captureOutput: true } : {}),

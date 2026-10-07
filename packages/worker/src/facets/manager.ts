@@ -934,7 +934,7 @@ class __ProcessExit extends Error {
 export default {
   async fetch(request, workerEnv, workerCtx) {
     const args = await request.json();
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, cred, diag: __diag, vfsCursor, dataPlan } = args;
     const __nimbusProcessId = Number(args.pid || 1);
     // A pipe or redirect streams through this input channel (exec's
     // _pumpStdinPipe); node-shims' process.stdin and fd 0 read it.
@@ -1305,6 +1305,9 @@ export async function generateLongRunningNodeCode(
   vfsState: FacetVfsState,
   opts: {
     argv?: string[];
+    /** Node's options before the program, and the program's conditions (core runtime/node-cli.ts). */
+    execArgv?: string[];
+    conditions?: string[];
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -1322,6 +1325,7 @@ export async function generateLongRunningNodeCode(
   const entry = entryModule(userCode, opts.filename);
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
+    nodeCommandLine: { execArgv: opts.execArgv ?? [], conditions: opts.conditions ?? [] },
     env: opts.env || {},
     cwd: opts.cwd || '/home/user',
     filename: opts.filename || '<script>',
@@ -1439,7 +1443,7 @@ async function __nimbusEnsureStarted(workerEnv, workerCtx, __startArgs) {
   if (__nimbusStarting) return __nimbusStarting;
   __nimbusStarting = (async () => {
     const args = __NIMBUS_ARGS;
-    const { argv, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
+    const { argv, nodeCommandLine, env, cwd: _cwd, filename, dirname, stdin, captureOutput, attachedTty, cred } = args;
     const __nimbusProcessId = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 1);
     // Every resident process has a live input channel on its pid.
     const __nimbusLiveInputPid = Number(__startArgs?.pid || env?.NIMBUS_CP_CHILD_PID || 0);
@@ -1960,6 +1964,8 @@ interface ProcessBundleSpec {
   cwd: string;
   entryCode: string;
   bundleProfile?: FacetBundleProfile;
+  /** The program's own conditions (`node --conditions`): the map is what it resolves under them. */
+  conditions?: readonly string[];
 }
 
 /**
@@ -2680,7 +2686,7 @@ export async function greedyAddMainEntries(
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
   requiredPaths: ReadonlySet<string> = new Set(),
-  options: { maxBundleBytes?: number; pacer?: TurnBudget } = {},
+  options: { maxBundleBytes?: number; pacer?: TurnBudget; conditions?: readonly string[] } = {},
 ): Promise<{ added: number; groups: OptionalModuleGroup[] }> {
   let added = 0;
   const groups: OptionalModuleGroup[] = [];
@@ -2893,7 +2899,7 @@ export async function greedyAddMainEntries(
   const followed = new Set<string>();
   for (let i = 0; i < deferred.length; i++) {
     if (rawBytes >= bound || budgetState.fileCount >= VFS_BUNDLE_MAX_FILES) break;
-    const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i]!, options.pacer?.spend.bind(options.pacer));
+    const target = await resolveDeferredImport(requireFsOverBridge(vfs), deferred[i]!, options.pacer?.spend.bind(options.pacer), options.conditions);
     // Its own package: where the deferral lands, not how it is spelled.
     const own = packageRootOf(deferred[i]!.fromDir.replace(/^\/+/, '') + '/_');
     if (target === null || own === null || packageRootOf(target) !== own || followed.has(target)) continue;
@@ -3962,6 +3968,8 @@ export interface PrefetchBundleOptions {
   executedModules?: readonly RequiredModuleRoot[];
   /** Where the launch's transform results are kept by content. */
   transformStore?: BundleCellResultStore;
+  /** The program's own conditions (`node --conditions`), as the process resolves under them. */
+  conditions?: readonly string[];
 }
 
 /** A tool's config file: `<tool>.config.js|ts|mjs|cjs|mts|cts` (vite.config.ts, astro.config.mjs). */
@@ -4049,6 +4057,7 @@ async function _buildPrefetchBundle(
     learnedFor,
     executedModules,
     transformStore,
+    conditions = [],
   }: PrefetchBundleOptions,
 ): Promise<FacetVfsState> {
   // Read the cursor BEFORE the walk: a mutation that lands while the bundle
@@ -4066,7 +4075,7 @@ async function _buildPrefetchBundle(
   // configs ride along, as optional roots (RequiredModuleRoot.config).
   const requiredRoots = [...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
   const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
-    pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined));
+    pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined, conditions));
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
@@ -4121,7 +4130,7 @@ async function _buildPrefetchBundle(
   //    regex prefetch misses. Its budget is independent from the complete
   //    static require closure, which is correctness-critical.
   const independentBeforeGroups = new Set(Object.keys(bundle));
-  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer }));
+  const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
   await paceAfterPass();
 
   // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
@@ -4546,6 +4555,10 @@ const DURABLE_ENSURE_BOOT_BUDGET_MS = 12_000;
 /** What `spawnNode` needs to build and boot one resident Node process. */
 export interface ResidentSpawnOptions {
   argv?: string[];
+  /** Node's options before the program (`process.execArgv`; core runtime/node-cli.ts). */
+  execArgv?: string[];
+  /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
+  conditions?: string[];
   env?: Record<string, string>;
   cwd?: string;
   filename?: string;
@@ -5568,7 +5581,8 @@ export class FacetManager {
     const { cred } = entry;
     const profile = spec.bundleProfile ?? DEFAULT_FACET_BUNDLE_PROFILE;
     const credKey = `${cred.uid}:${cred.gid}:${cred.groups.join(',')}`;
-    const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}`;
+    // The program's conditions choose what it resolves: a map walked under other ones is another map.
+    const key = `${profile}\x00${credKey}\x00${spec.cwd}\x00${spec.scriptPath ?? ''}\x00${_fnv1a(spec.entryCode)}\x00${(spec.conditions ?? []).join('\x01')}`;
     const revision = (await vfs.revision());
     // An entry built at an older revision can never be SERVED again — the
     // lookup below requires an exact match — so from the first write after it
@@ -5625,6 +5639,7 @@ export class FacetManager {
       learnedFor,
       executedModules: executed,
       transformStore: this._transformStore(),
+      conditions: spec.conditions,
     });
     if (offered.length > 0) {
       const staged: StagedProfileEntry[] = [];
@@ -5982,6 +5997,10 @@ export class FacetManager {
        * stopped at a synchronous read of it).
        */
       stdinFile?: { path: string; offset: number; syncRead: boolean };
+      /** Node's options before the program (`process.execArgv`; core runtime/node-cli.ts). */
+      execArgv?: string[];
+      /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
+      conditions?: string[];
     },
   ): Promise<FacetExecResult> {
     const command = opts.command
@@ -6046,7 +6065,7 @@ export class FacetManager {
     try {
       vfsState = await this._buildProcessBundle(
         entry,
-        { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile },
+        { scriptPath: opts.filename, cwd: opts.cwd || '/home/user', entryCode: code, bundleProfile: opts.bundleProfile, conditions: opts.conditions },
         pacer,
       );
     } catch (err: unknown) {
@@ -6190,7 +6209,7 @@ export class FacetManager {
         if (vfsState.generatedSourcesReleased) {
           vfsState = await this._buildProcessBundle(
             entry,
-            { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile },
+            { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, conditions: opts.conditions },
             pacer,
           );
           dataPlan = await this._staticReadPlan(entry, vfsState, cwd, pacer);
@@ -6756,6 +6775,7 @@ export class FacetManager {
     const body = JSON.stringify({
       pid: entry.pid,
       argv: opts.argv || [],
+      nodeCommandLine: { execArgv: opts.execArgv ?? [], conditions: opts.conditions ?? [] },
       env: opts.env || {},
       cwd: opts.cwd || '/home/user',
       filename: opts.filename || '<eval>',
@@ -7769,7 +7789,7 @@ export class FacetManager {
     if (this.debugEnabled) this.processes.appendOutput(entry.pid, 'stderr', '[nimbus-debug] launch: building the module map\n');
     const vfsState = await this._buildProcessBundle(
       entry,
-      { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile },
+      { scriptPath: opts.filename, cwd, entryCode: code, bundleProfile: opts.bundleProfile, conditions: opts.conditions },
       pacer,
     );
     if (this.debugEnabled) {

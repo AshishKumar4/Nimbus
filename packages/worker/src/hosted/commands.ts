@@ -379,6 +379,7 @@ const nodeSpec: RuntimeSpec = {
   run: (code, opts) => runFresh(facetMgr, code, opts),
   supportsBinSpawn: true,
   routesServers: true,
+  nodeCommandLine: true,
 };
 {
   const oneShotNode = buildRuntimeHandler(nodeSpec, {
