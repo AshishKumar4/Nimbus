@@ -398,10 +398,14 @@ function __nimbusWasmDigest(bytes) {
     if (compiled !== undefined) {
       return realInstantiate(compiled, imports).then((instance) => ({ module: compiled, instance }));
     }
-    // A Module source instantiates; only BYTES are a compile, and only those
-    // can be refused for it.
+    // A Module source instantiates; only BYTES are a compile, and only the
+    // compile can be refused: an instantiate that fails after it (a link
+    // failure, a trap in its start) keeps its own error.
     if (source instanceof RealModule) return realInstantiate(source, imports);
-    return realInstantiate(source, imports).catch((e) => { throw refusal(e, source); });
+    return realCompile(source).then(
+      (module) => realInstantiate(module, imports).then((instance) => ({ module, instance })),
+      (e) => { throw refusal(e, source); },
+    );
   };
   WA.__nimbusPrecompiledSeam = true;
 })();
