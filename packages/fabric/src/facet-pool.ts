@@ -60,7 +60,8 @@ export interface FacetPoolContext {
   facets?: FacetPoolContainer;
   storage: {
     get(key: string): Promise<unknown> | unknown;
-    put(key: string, value: unknown): Promise<void>;
+    /** One atomic write of several keys, as Durable Object storage's multi-key put is. */
+    put(entries: Record<string, unknown>): Promise<void>;
     /** The session's SQL, where the storage ledger (N18) records facet databases. */
     sql?: SqlDatabase;
   };

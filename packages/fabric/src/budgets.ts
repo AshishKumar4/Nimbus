@@ -909,11 +909,15 @@ const FACET_SLOT_HIGH_WATER_KEY = 'fabric_facet_slot_high_water';
 /** The row that marks one explicit facet name (a lease's, a durable application's) as minted. */
 const mintedNameKey = (name: string): string => `fabric_facet_name_minted:${name}`;
 
-/** The slice of storage the facet-name ledger persists through. */
+/**
+ * The slice of storage the facet-name ledger persists through. A multi-key
+ * put is one atomic write, as Durable Object storage's is: a charge's counts
+ * and its name's row land together or not at all.
+ */
 interface FacetNameLedgerStorage {
   storage: {
     get(key: string): Promise<unknown> | unknown;
-    put(key: string, value: unknown): Promise<void>;
+    put(entries: Record<string, unknown>): Promise<void>;
   };
 }
 
@@ -935,23 +939,38 @@ interface FacetNameLedger {
   names: number;
   /** Explicit names this incarnation knows are minted. */
   minted: Set<string>;
+  /** What storage holds: the counts last written, and minted names whose rows a failed write left out. */
+  written: FacetNameCounts;
+  unwritten: Set<string>;
 }
 
 const facetNameLedgers = new WeakMap<object, FacetNameLedger>();
 
+/** A stored value, read inside the chain: a read that fails, at once or later, reads as absent. */
+function readStored(ctx: FacetNameLedgerStorage, key: string): Promise<unknown> {
+  return Promise.resolve().then(() => ctx.storage.get(key)).catch(() => undefined);
+}
+
 function facetNameLedger(ctx: FacetNameLedgerStorage): FacetNameLedger {
   let ledger = facetNameLedgers.get(ctx);
   if (!ledger) {
-    const read = (key: string): Promise<number | undefined> => Promise.resolve(ctx.storage.get(key))
-      .then((value) => (typeof value === 'number' ? value : undefined), () => undefined);
-    const created: FacetNameLedger = { chain: Promise.resolve({ names: 0, slots: 0 }), names: 0, minted: new Set() };
-    created.chain = Promise.all([read(FACET_NAME_HIGH_WATER_KEY), read(FACET_SLOT_HIGH_WATER_KEY)])
-      .then(([names = 0, slots]) => {
-        created.names = names;
+    const count = (value: unknown): number | undefined => (typeof value === 'number' ? value : undefined);
+    const created: FacetNameLedger = {
+      chain: Promise.resolve({ names: 0, slots: 0 }),
+      names: 0,
+      minted: new Set(),
+      written: { names: 0, slots: 0 },
+      unwritten: new Set(),
+    };
+    created.chain = Promise.all([readStored(ctx, FACET_NAME_HIGH_WATER_KEY), readStored(ctx, FACET_SLOT_HIGH_WATER_KEY)])
+      .then(([names, slots]) => {
         // A ledger persisted before the slot high-water existed kept slots
         // and names in one count. That count bounds the slots, so no slot
         // under it is charged twice.
-        return { names, slots: slots ?? names };
+        const adopted = { names: count(names) ?? 0, slots: count(slots) ?? count(names) ?? 0 };
+        created.names = adopted.names;
+        created.written = adopted;
+        return adopted;
       });
     ledger = created;
     facetNameLedgers.set(ctx, ledger);
@@ -966,30 +985,39 @@ interface FacetNameCharge {
 }
 
 /**
- * Append one charge to the ledger and persist what it changed: the counts,
- * then the minted name's row, in that order, and nothing after a write that
- * failed. A row never outlives its count, so a lost write charges a name
- * again (an overcount) rather than never; a failed write keeps the charge in
- * memory, and the next charge's write carries it.
+ * Append one charge to the ledger, and write what storage lacks in one put:
+ * the counts, and the row of every name minted since the last write that
+ * landed. A failed write keeps it all in memory for the next charge's
+ * write. A charge that throws leaves the counts as they were, and only its
+ * own caller sees the error.
  */
 function appendCharge(
   ctx: FacetNameLedgerStorage,
   ledger: FacetNameLedger,
   charge: (counts: FacetNameCounts) => Promise<FacetNameCharge>,
 ): Promise<FacetNameCounts> {
-  ledger.chain = ledger.chain.then(async (counts) => {
+  const before = ledger.chain;
+  const applied = before.then(async (counts) => {
     const after = await charge(counts);
-    if (after.counts.names !== counts.names || after.counts.slots !== counts.slots) {
+    if (after.minted !== undefined) ledger.unwritten.add(after.minted);
+    const { written } = ledger;
+    if (after.counts.names !== written.names || after.counts.slots !== written.slots || ledger.unwritten.size > 0) {
+      const entries: Record<string, unknown> = {
+        [FACET_NAME_HIGH_WATER_KEY]: after.counts.names,
+        [FACET_SLOT_HIGH_WATER_KEY]: after.counts.slots,
+      };
+      for (const name of ledger.unwritten) entries[mintedNameKey(name)] = true;
       try {
-        await ctx.storage.put(FACET_NAME_HIGH_WATER_KEY, after.counts.names);
-        await ctx.storage.put(FACET_SLOT_HIGH_WATER_KEY, after.counts.slots);
-        if (after.minted !== undefined) await ctx.storage.put(mintedNameKey(after.minted), true);
-      } catch { /* the next charge writes both counts again */ }
+        await ctx.storage.put(entries);
+        ledger.written = after.counts;
+        ledger.unwritten.clear();
+      } catch { /* the next charge's write carries it */ }
     }
     ledger.names = after.counts.names;
     return after.counts;
   });
-  return ledger.chain;
+  ledger.chain = applied.catch(() => before);
+  return applied;
 }
 
 /**
@@ -1021,8 +1049,7 @@ export async function chargeFacetName(
   let refused = false;
   const counts = await appendCharge(ctx, ledger, async (before) => {
     if (ledger.minted.has(name)) return { counts: before };
-    const marked = await Promise.resolve(ctx.storage.get(mintedNameKey(name))).then((value) => value === true, () => false);
-    if (marked) {
+    if (await readStored(ctx, mintedNameKey(name)) === true) {
       ledger.minted.add(name);
       return { counts: before };
     }
