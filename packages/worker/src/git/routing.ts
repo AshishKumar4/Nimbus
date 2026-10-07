@@ -66,15 +66,23 @@ const JAVASCRIPT_COMMANDS = new Set([
 /** Known operations inside a JS family that its implementation lacks. */
 function needsRealGit(sub: string | undefined, args: string[]): boolean {
   if (!JAVASCRIPT_COMMANDS.has(sub)) return true;
-  const end = args.indexOf('--');
-  const options = end < 0 ? args : args.slice(0, end);
+  const options: string[] = [];
+  let operandsAfterDashDash = 0;
+  for (let i = 0; i < args.length; i++) {
+    const arg = args[i];
+    if (arg === '--') { operandsAfterDashDash = args.length - i - 1; break; }
+    options.push(arg);
+    // A commit message is data even when it spells a capability flag or
+    // `--`. Inspect the option, never its required value; keep argv intact.
+    if (sub === 'commit' && ['-m', '--message', '--cleanup'].includes(arg)) i++;
+  }
   const has = (names: string[]) => options.some((arg) => names.some((name) => arg === name || arg.startsWith(name + '=')
     || (name.length === 2 && name.startsWith('-') && arg.startsWith(name) && arg.length > 2)));
   if (sub === 'merge') {
     // The JS merge takes one revision and quiet only; it must not ignore
     // strategy selection, --ff-only, conflict continuation or an octopus.
     return options.some((arg) => arg.startsWith('-') && arg !== '-q' && arg !== '--quiet')
-      || options.filter((arg) => !arg.startsWith('-')).length > 1;
+      || options.filter((arg) => !arg.startsWith('-')).length + operandsAfterDashDash > 1;
   }
   if (sub === 'add') return has(['-p', '--patch', '-i', '--interactive', '-e', '--edit']);
   if (sub === 'commit') return has(['--amend', '--fixup', '--squash', '--interactive', '--patch', '-p', '-i']);

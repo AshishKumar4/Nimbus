@@ -62,14 +62,15 @@ for (const [family, [javascriptMs, wasiMs]] of Object.entries(regressions)) {
   assert.deepEqual(GIT_FAMILY_POLICY[family], { backend: 'javascript', reason: 'latency-regression', javascriptMs, wasiMs });
 }
 for (const args of [
-  ['merge', '-s', 'ours', 'topic'], ['merge', '--strategy=ort', 'topic'], ['merge', '--ff-only', 'topic'], ['merge', '--abort'], ['merge', 'one', 'two'],
+  ['merge', '-s', 'ours', 'topic'], ['merge', '--strategy=ort', 'topic'], ['merge', '--ff-only', 'topic'], ['merge', '--abort'], ['merge', 'one', 'two'], ['merge', '--', 'one', 'two'],
   ['add', '-p'], ['commit', '--amend'], ['branch', '-m', 'new'], ['checkout', '--orphan', 'new'],
   ['config', '--global', 'user.name', 'Ada'], ['log', '--graph'], ['pull', '--rebase'],
   ['show', 'HEAD'], ['blame', 'a'], ['switch', 'main'], ['restore', 'a'], ['notes', 'list'], ['worktree', 'list'],
+  ['commit', '-m', '--', '--amend'],
 ]) {
   assert.equal(routeGitInvocation(args, '/home/user').policy.backend, 'wasi', args.join(' '));
 }
-for (const args of [['merge', '-q', 'topic'], ['add', '-A'], ['commit', '-m', 'message'], ['checkout', '--', '--orphan'], ['log', '--oneline', '-n', '10']]) {
+for (const args of [['merge', '-q', 'topic'], ['add', '-A'], ['commit', '-m', 'message'], ['commit', '-m', '-p'], ['commit', '--message', '--amend'], ['commit', '-m', '--'], ['checkout', '--', '--orphan'], ['log', '--oneline', '-n', '10']]) {
   assert.equal(routeGitInvocation(args, '/home/user').policy.backend, 'javascript', args.join(' '));
 }
 assert.ok(Object.isFrozen(GIT_FAMILY_POLICY));
