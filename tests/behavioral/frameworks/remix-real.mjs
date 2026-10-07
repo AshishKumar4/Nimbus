@@ -25,15 +25,22 @@
 // of its own, which pipeline must take as the destination it is. The
 // minimal repros below pin both, against Node's own output.
 //
-// Boundary (documented, not faked): `react-router dev` decides whether to
-// relaunch itself by a subpath import with a condition
-// (`#development-condition-enabled`: "development" true, else false), and
-// relaunches with `node --conditions=development`. Nimbus's node does not
-// take --conditions (nor -C, nor NODE_OPTIONS'), so the relaunched CLI
-// resolves the import to false again and stops: "restartWithMergedOptions()
-// was called, but the process has already been restarted". The repro below
-// pins it against Node (which prints COND=true); when Nimbus takes the flag,
-// the dev server is the next milestone, and this probe asserts it serves.
+// `react-router dev` decides whether to relaunch itself by a subpath import
+// with a condition (`#development-condition-enabled`: "development" true,
+// else false), and relaunches with `node --conditions=development`. Nimbus's
+// node takes the flag (a repro pins it against Node: COND=true), so the
+// relaunched CLI takes its dev path.
+//
+// Boundary (documented, not faked): the dev path loads vite.config.ts, which
+// vite bundles at run time into node_modules/.vite-temp/<config>.timestamp-
+// <random>.mjs and imports: a module no launch can stage (its name is new
+// each run), and the modules it reaches (@react-router/dev/vite) are not in
+// the launch's module map either; with the template's Tailwind plugin
+// beside it the load fails earlier, "Invalid array buffer length". The repro
+// below runs vite's own config loader on the project's config and pins that
+// failure (ContinuedMackerel's: first-launch staging and run-time import()
+// of unstaged modules); once the config loads, the probe requires the dev
+// page.
 
 import { Terminal, mintSession, sleep, stripAnsi, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
 import { launchFrameworkDev } from '../_framework-dev.mjs';
@@ -110,7 +117,21 @@ try {
     await t.run(`printf '%s' '${Buffer.from(text).toString('base64')}' | base64 -d > /home/user/remix-probe/cond/${name}`, 15_000);
   }
   const cond = stripAnsi((await t.run('cd /home/user/remix-probe/cond && node --conditions=development main.mjs 2>&1', 30_000)).output);
-  const conditionsTaken = /COND=true/.test(cond);
+
+  a.check('node --conditions=development resolves the development condition, as Node (COND=true)',
+    /COND=true/.test(cond), JSON.stringify(cond.slice(-200)));
+
+  // The next boundary, run directly: vite's config loader on the project's own config.
+  const loadConfig = [
+    "const { loadConfigFromFile } = await import('vite');",
+    "try {",
+    "  const r = await loadConfigFromFile({ command: 'serve', mode: 'development' }, '/home/user/remix-probe/mvp/vite.config.ts');",
+    "  console.log('CONFIG=loaded ' + r.config.plugins.length);",
+    "} catch (e) { console.log('CONFIG=failed ' + String(e && e.message).split('\\n')[0]); }",
+  ].join('\n');
+  await t.run(`printf '%s' '${Buffer.from(loadConfig).toString('base64')}' | base64 -d > /home/user/remix-probe/mvp/load-config.mjs`, 15_000);
+  const configOut = stripAnsi((await t.run('cd /home/user/remix-probe/mvp && node --conditions=development load-config.mjs 2>&1', 180_000)).output);
+  const configLoaded = /CONFIG=loaded/.test(configOut);
 
   const dev = await launchFrameworkDev({
     terminal: t, sid, cwd: '/home/user/remix-probe/mvp', port: 5173,
@@ -121,13 +142,13 @@ try {
     a.check('react-router dev serves the app through the port route', true, dev.last);
     dev.process.signal('SIGKILL');
     dev.process.ws.close();
-  } else if (!conditionsTaken) {
-    // The documented boundary, exactly: the relaunch cannot take its condition.
-    a.check('boundary: node --conditions=development is not taken (Node: COND=true), so react-router dev stops at its relaunch',
-      /COND=false/.test(cond) && /Relaunching with --conditions=development/.test(dev.output) && /has already been restarted/.test(dev.output),
-      JSON.stringify({ cond: cond.slice(-200), dev: dev.output.slice(-600) }));
+  } else if (!configLoaded) {
+    // The documented boundary, exactly: the relaunch takes its dev path, and vite's config load stops at the module map.
+    a.check("boundary: the relaunched dev path stops loading vite.config.ts (vite's run-time bundle of it is not in the launch's module map)",
+      !/has already been restarted/.test(dev.output) && /^CONFIG=failed .*(not in this launch's module map|Invalid array buffer length)/m.test(configOut),
+      JSON.stringify({ config: /^CONFIG=.*$/m.exec(configOut)?.[0] ?? configOut.slice(-400), dev: dev.output.slice(-400) }));
   } else {
-    a.check('react-router dev serves the app through the port route (node takes --conditions now)', false, `${dev.last}\n${dev.output.slice(-800)}`);
+    a.check('react-router dev serves the app through the port route (vite loads its config now)', false, `${dev.last}\n${dev.output.slice(-800)}`);
   }
 } finally {
   await t.close();
