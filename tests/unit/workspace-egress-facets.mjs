@@ -133,12 +133,14 @@ function recordingEgress() {
   const opened = [];
   const relay = new WebSocketRelay(() => workspaceNetwork({
     async fetch(request) {
-      opened.push(`${request.headers.get('upgrade')} ${request.url}`);
+      opened.push(`${request.headers.get('upgrade')} ${request.url} ${request.headers.get('authorization')}`);
       return new Response('no', { status: 404 });
     },
+    connect() { throw new Error('no TCP'); },
   }));
-  await assert.rejects(relay.open(7, 'wss://example.test/socket', []), /did not upgrade \(HTTP 404\)/);
-  assert.deepEqual(opened, ['websocket https://example.test/socket']);
+  const refused = await relay.open(7, 'wss://example.test/socket', [], [['Authorization', 'Bearer t']]);
+  assert.equal(refused.refused.status, 404, 'the egress answered the upgrade');
+  assert.deepEqual(opened, ['websocket https://example.test/socket Bearer t']);
 
   assert.match(EGRESS_TLS_REFUSAL, /TLS sockets are not available.*egress.*plain TCP only/);
 

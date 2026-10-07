@@ -28,6 +28,27 @@ published independently in the `@nimbus-sh` npm scope.
   slice walk passes over only a file removed under it (ENOENT); any other
   read failure fails that pre-bundle with its error. A slice without its entry
   fails, naming the entry, before the bundler runs.
+- axios works in a node child, with its http adapter (its Node default)
+  and its fetch adapter: the child's `process` is tagged as Node's
+  (`[object process]`, the same `Symbol.toStringTag` descriptor), which is
+  how axios picks its Node path; `fetch`/`Request` drop the cache modes
+  Node accepts and workerd refuses (`default`, `reload`, `force-cache`);
+  the child's stream classes are callable as Node's are
+  (`Writable.call(this)`, as follow-redirects inherits); and
+  `stream.pipeline` takes an array of streams, as axios passes a
+  compressed response and its decompressor.
+- The `ws` package works in a node child, for ws:// and wss://, through the
+  workspace's egress when it has one: an `http(s).request` with
+  `Upgrade: websocket` is answered over the supervisor's relayed socket
+  (the one the global WebSocket uses), which now sends the request's own
+  headers (Authorization, Origin, Cookie; never the handshake's or
+  hop-by-hop ones) and answers a refused upgrade with its status, headers
+  and up to 64 KiB of its body. The global WebSocket takes Node's
+  `{ protocols, headers }` init. A WebSocket server inside the session is
+  not available (docs/sandbox-sdk.md).
+- A binary WebSocket frame reached a node child empty: the supervisor's
+  relayed socket read workerd's default Blob as bytes. It reads
+  ArrayBuffers now.
 - Fixed: a build facet no longer fills with the builds it has run until its
   isolate is reset. rolldown (1.2.11 and 1.2.12, native and wasm alike) never
   frees a build whose plugin has an output hook or `buildStart`: for those

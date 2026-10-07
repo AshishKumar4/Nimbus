@@ -150,10 +150,11 @@ pool and fanout takes a network; Nimbus's own work states `ISOLATE_NETWORK`.
 | npm install (registry and tarballs, every install facet and peer) | yes; the shared packument cache is not used, but an integrity-checked tarball may come from Nimbus's shared tarball cache |
 | curl, wget, dig, ping, `npm view`/`search`, gem/bundle | yes |
 | pip: PyPI metadata, and the wheel and source downloads (made inside CPython) | yes |
-| a node or bun program's fetch, `http`/`https` and clients over them (node-fetch, undici), WebSocket | yes |
+| a node or bun program's fetch, `http`/`https` and clients over them (axios, node-fetch, undici), the `ws` package and the global WebSocket (ws: and wss:, with the program's own upgrade headers) | yes |
 | one-shot Python, Ruby, Bash, Clang and WASI programs, and the Node, Bun, Python and Ruby REPLs | yes: every facet a session or a `loaderFacetHost` opens goes out through it |
 | a plain TCP socket a program opens | yes, to the egress's `connect()` |
 | TLS a runtime makes itself over a plain socket (CPython's `ssl`: pip's downloads, `urllib` over https) | yes: the egress's `connect()` carries the encrypted stream |
+| a WebSocket server in the session (`ws`'s `WebSocketServer`, an `http` server's `'upgrade'`) | not available, egress or not: workerd's HTTP server emits `'request'`, never `'upgrade'`; a session's client connecting to one closes with 1006 (`Network connection lost`), measured with `ws` 8.22 and the global WebSocket |
 | a node program's TLS socket (`tls.connect`) | refused by name (`ERR_NIMBUS_EGRESS_TLS`): a Fetcher's `connect()` carries plain TCP only, so the TLS session could only be made off the egress |
 | a worker or dev server a command starts (wrangler dev, vite) | yes |
 | an inline `node` program (a host without Dynamic Workers: Bun, Node): fetch, `http`/`https` | yes, as Node's fetch: the response streams, an unread body is not read, the program's redirect mode is honored and each hop is its own request through the egress |

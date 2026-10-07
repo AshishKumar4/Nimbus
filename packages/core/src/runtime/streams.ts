@@ -77,35 +77,67 @@ const __streamMod = (() => {
   // this shape). \`_flow\` below is the single pump used by flowing mode,
   // \`read()\`, and the async iterator, so a source that pushes
   // ASYNCHRONOUSLY (a live VFS range read) works through all three.
-  class Readable extends __eventsMod {
+  /**
+   * A stream class as Node defines one: constructed with \`new\`, extended
+   * with \`class extends\`, and also CALLED on an object that inherits its
+   * prototype (\`Writable.call(this, opts)\`), which pre-class modules do to
+   * inherit: follow-redirects (axios's http adapter) does exactly that, and a
+   * class constructor refuses to be called. Node's stream constructors are
+   * functions for this reason (lib/internal/streams/writable.js); \`init\`
+   * does to \`this\` what constructing does. Called on anything else, it
+   * constructs, as Node's does.
+   */
+  function __legacyConstructor(Class, name, init) {
+    // A function, not a method: only a function is a constructor; the key names it.
+    const Constructor = {
+      [name]: function (...args) {
+        if (new.target) return Reflect.construct(Class, args, new.target);
+        if (this instanceof Constructor) {
+          init(this, ...args);
+          return undefined;
+        }
+        return new Constructor(...args);
+      },
+    }[name];
+    Constructor.prototype = Class.prototype;
+    Object.defineProperty(Class.prototype, 'constructor', { value: Constructor, writable: true, configurable: true, enumerable: false });
+    Object.setPrototypeOf(Constructor, Object.getPrototypeOf(Class));
+    return Constructor;
+  }
+
+  function _initReadable(stream, opts) {
+    stream._readableState = {
+      buffer: [],
+      ended: false,
+      endEmitted: false,
+      flowing: null,
+      // reading — a _read() call is outstanding: no push() and no EOF has
+      // landed since. Keeps the pump from stacking redundant _read calls
+      // while an async source is in flight.
+      reading: false,
+      pumping: false,
+      highWaterMark: opts?.highWaterMark ?? 16384,
+      encoding: opts?.encoding || null,
+      objectMode: opts?.objectMode ?? false,
+      autoDestroy: opts?.autoDestroy !== false,
+      emitClose: opts?.emitClose !== false,
+      destroyed: false,
+      readableLength: 0,
+      // A consumer reads it in readable mode: a 'readable' listener, or an
+      // async iterator, which owns it until it completes. Node's
+      // flushStdio leaves such a stream to its consumer. Kept current as
+      // listeners come and go (_updateReadableListening).
+      readableListening: false,
+      iterating: false,
+    };
+    stream.readable = true;
+    if (opts?.read) stream._read = opts.read.bind(stream);
+  }
+
+  class ReadableClass extends __eventsMod {
     constructor(opts) {
       super();
-      this._readableState = {
-        buffer: [],
-        ended: false,
-        endEmitted: false,
-        flowing: null,
-        // reading — a _read() call is outstanding: no push() and no EOF has
-        // landed since. Keeps the pump from stacking redundant _read calls
-        // while an async source is in flight.
-        reading: false,
-        pumping: false,
-        highWaterMark: opts?.highWaterMark ?? 16384,
-        encoding: opts?.encoding || null,
-        objectMode: opts?.objectMode ?? false,
-        autoDestroy: opts?.autoDestroy !== false,
-        emitClose: opts?.emitClose !== false,
-        destroyed: false,
-        readableLength: 0,
-        // A consumer reads it in readable mode: a 'readable' listener, or an
-        // async iterator, which owns it until it completes. Node's
-        // flushStdio leaves such a stream to its consumer. Kept current as
-        // listeners come and go (_updateReadableListening).
-        readableListening: false,
-        iterating: false,
-      };
-      this.readable = true;
-      if (opts?.read) this._read = opts.read.bind(this);
+      _initReadable(this, opts);
     }
 
     _read(size) { /* override in subclass */ }
@@ -335,6 +367,10 @@ const __streamMod = (() => {
       return iterator;
     }
   }
+  const Readable = __legacyConstructor(ReadableClass, 'Readable', (stream, opts) => {
+    __eventsMod.call(stream, opts);
+    _initReadable(stream, opts);
+  });
 
   // ── Readable.from / Readable.fromWeb ────────────────────────────────
   // Node exposes these statics; libraries that stream a fetch
@@ -528,14 +564,18 @@ const __streamMod = (() => {
     if (state.autoDestroy && (!rs || (rs.autoDestroy && rs.endEmitted))) queueMicrotask(() => stream.destroy());
   }
 
-  class Writable extends __eventsMod {
+  function _initWritable(stream, opts) {
+    stream._writableState = _writableState(opts, opts?.highWaterMark ?? 16384);
+    stream.writable = true;
+    if (opts?.write) stream._write = opts.write.bind(stream);
+    if (opts?.final) stream._final = opts.final.bind(stream);
+    if (opts?.destroy) stream._destroy = opts.destroy.bind(stream);
+  }
+
+  class WritableClass extends __eventsMod {
     constructor(opts) {
       super();
-      this._writableState = _writableState(opts, opts?.highWaterMark ?? 16384);
-      this.writable = true;
-      if (opts?.write) this._write = opts.write.bind(this);
-      if (opts?.final) this._final = opts.final.bind(this);
-      if (opts?.destroy) this._destroy = opts.destroy.bind(this);
+      _initWritable(this, opts);
     }
 
     _write(chunk, encoding, callback) { callback(); }
@@ -550,15 +590,28 @@ const __streamMod = (() => {
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
   }
+  const Writable = __legacyConstructor(WritableClass, 'Writable', (stream, opts) => {
+    __eventsMod.call(stream, opts);
+    _initWritable(stream, opts);
+  });
 
   // ── Duplex ──────────────────────────────────────────────────────────
-  class Duplex extends Readable {
+  function _initDuplexWritable(stream, opts) {
+    stream._writableState = _writableState(opts, opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384);
+    stream.writable = true;
+    if (opts?.write) stream._write = opts.write.bind(stream);
+    if (opts?.final) stream._final = opts.final.bind(stream);
+  }
+  const _initDuplex = (stream, opts) => {
+    __eventsMod.call(stream, opts);
+    _initReadable(stream, opts);
+    _initDuplexWritable(stream, opts);
+  };
+
+  class DuplexClass extends Readable {
     constructor(opts) {
       super(opts);
-      this._writableState = _writableState(opts, opts?.writableHighWaterMark ?? opts?.highWaterMark ?? 16384);
-      this.writable = true;
-      if (opts?.write) this._write = opts.write.bind(this);
-      if (opts?.final) this._final = opts.final.bind(this);
+      _initDuplexWritable(this, opts);
     }
     _write(chunk, encoding, callback) { callback(); }
     write(chunk, encoding, callback) { return _write(this, chunk, encoding, callback); }
@@ -569,13 +622,22 @@ const __streamMod = (() => {
     get writableFinished() { return this._writableState.finished; }
     get writableLength() { return this._writableState.bufferedLength; }
   }
+  const Duplex = __legacyConstructor(DuplexClass, 'Duplex', _initDuplex);
 
   // ── Transform ───────────────────────────────────────────────────────
-  class Transform extends Duplex {
+  function _initTransform(stream, opts) {
+    if (opts?.transform) stream._transform = opts.transform.bind(stream);
+    if (opts?.flush) stream._flush = opts.flush.bind(stream);
+  }
+  const _initTransformStream = (stream, opts) => {
+    _initDuplex(stream, opts);
+    _initTransform(stream, opts);
+  };
+
+  class TransformClass extends Duplex {
     constructor(opts) {
       super(opts);
-      if (opts?.transform) this._transform = opts.transform.bind(this);
-      if (opts?.flush) this._flush = opts.flush.bind(this);
+      _initTransform(this, opts);
     }
 
     _transform(chunk, encoding, callback) { callback(null, chunk); }
@@ -599,16 +661,22 @@ const __streamMod = (() => {
     }
   }
 
+  const Transform = __legacyConstructor(TransformClass, 'Transform', _initTransformStream);
+
   // ── PassThrough ─────────────────────────────────────────────────────
-  class PassThrough extends Transform {
+  class PassThroughClass extends Transform {
     constructor(opts) { super(opts); }
     _transform(chunk, encoding, callback) { callback(null, chunk); }
   }
+  const PassThrough = __legacyConstructor(PassThroughClass, 'PassThrough', _initTransformStream);
 
   // ── pipeline ────────────────────────────────────────────────────────
   function pipeline(...args) {
     const callback = typeof args[args.length - 1] === 'function' ? args.pop() : null;
-    const streams = args;
+    // pipeline(streams[, callback]), as Node takes it too (axios passes its
+    // response and decompressor so); a copy, since the adapting below
+    // replaces entries.
+    const streams = args.length === 1 && Array.isArray(args[0]) ? [...args[0]] : args;
     if (streams.length < 2) {
       if (callback) callback(new Error('pipeline requires at least 2 streams'));
       return streams[0];

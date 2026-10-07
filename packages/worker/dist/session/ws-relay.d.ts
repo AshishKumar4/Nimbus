@@ -56,6 +56,35 @@ export type WsRelayEvent = {
  * small fraction of that, because a session can hold several.
  */
 export declare const WS_RELAY_MAX_BACKLOG_BYTES: number;
+/**
+ * The most of a refused upgrade's body the facet is handed (an HTTP 401's
+ * JSON, say): enough to read why, never a download through the relay.
+ */
+export declare const WS_RELAY_REFUSAL_BODY_MAX_BYTES: number;
+/** How long a refused upgrade's body is read for: one held open past this is cut there. */
+export declare const WS_RELAY_REFUSAL_BODY_MAX_MS = 30000;
+/** A header list as it crosses to and from a facet: in order, a name once per value. */
+export type WsRelayHeaders = [string, string][];
+/**
+ * What `open` answers: the socket, or the destination's refusal to upgrade,
+ * as it answered, at once. A refusal's body, when it was asked for, is read
+ * by polling `body` as a socket is (its chunks as binary messages, then a
+ * close: 1000 at its end, 1009 cut at WS_RELAY_REFUSAL_BODY_MAX_BYTES, 1001
+ * still open after WS_RELAY_REFUSAL_BODY_MAX_MS); null when not asked for or
+ * there is none.
+ */
+export type WsRelayOpened = {
+    id: number;
+    protocol: string;
+    headers: WsRelayHeaders;
+} | {
+    refused: {
+        status: number;
+        statusText: string;
+        headers: WsRelayHeaders;
+        body: number | null;
+    };
+};
 export declare class WebSocketRelay {
     private readonly network;
     private entries;
@@ -66,15 +95,16 @@ export declare class WebSocketRelay {
      * Open the real socket and start buffering for the facet.
      *
      * Workers has no client `new WebSocket(url)` inside a Durable Object; the
-     * upgrade is an ordinary fetch whose response carries the socket. No header
-     * from the facet is forwarded — the facet supplies a URL and subprotocols
-     * and nothing else, so the supervisor cannot be used to attach its own
-     * ambient credentials to a request the facet chose the destination of.
+     * upgrade is an ordinary fetch, through the workspace's network, whose
+     * response carries the socket. The facet's own request headers go with it
+     * (an Authorization, an Origin, a Cookie: what `ws` and Node's WebSocket
+     * send), but those the relay owns (RELAY_OWNED_HEADERS); the supervisor
+     * adds none of its own, so the request is the one the program could have
+     * sent itself, to the destination it chose, through the same egress. A
+     * destination that does not upgrade is answered as it answered, at once:
+     * its status and headers, and (`refusalBody`) its body to read as it comes.
      */
-    open(pid: number, url: string, protocols: string[]): Promise<{
-        id: number;
-        protocol: string;
-    }>;
+    open(pid: number, url: string, protocols: string[], requestHeaders?: WsRelayHeaders, refusalBody?: boolean): Promise<WsRelayOpened>;
     /**
      * The facet's long poll. Returns whatever has arrived, or parks until
      * something does. Every event it returns is a supervisor reply, which is
@@ -85,6 +115,13 @@ export declare class WebSocketRelay {
     close(pid: number, id: number, code?: number, reason?: string): void;
     /** Every socket a process opened dies with it. */
     closeForPid(pid: number): void;
+    /**
+     * A refused upgrade's body, to the facet as it comes: each chunk a binary
+     * message, up to WS_RELAY_REFUSAL_BODY_MAX_BYTES and for at most
+     * WS_RELAY_REFUSAL_BODY_MAX_MS, then a close saying how it ended. The rest
+     * is cancelled: nothing of it waits here past the bound.
+     */
+    private relayRefusalBody;
     private entryFor;
     private drain;
     private deliver;
