@@ -130,6 +130,18 @@ Nimbus already has a real base:
   apart, the modules a run tried to execute that its map lacked (the next
   map's graph roots) and the files it read and did not have (staged as data,
   never walked as code, whatever their extension).
+- `node` and `bun` with no script at the terminal run their REPL as a
+  program of the runtime (`core/runtime/js-repl.ts`), and each line typed
+  there is runtime code the same way: compiled as an async function
+  (`interpreter/repl-line.ts`, Node's REPL await rules, declarations kept
+  as globals), interpreted in the launch that first runs it and staged for
+  the next. Prompts, values, `_` and `_error`, `Uncaught` errors (an
+  unhandled rejection or a timer's exception included), multi-line input,
+  top-level `await`, `import()` from the working directory, Ctrl-C and the
+  `.break`, `.clear`, `.exit` and `.help` commands follow Node's REPL.
+  `.editor`, `.load`, `.save`, tab completion, history and preview are not
+  supported; a `const` stays assignable, and redeclaring a `let` does not
+  throw.
 - Real Request/Response preview routing through `PortRegistry` without JSON
   serialization. Some current runtime adapters still buffer internally; the
   final socket/preview adapters should stream end to end.

@@ -12,6 +12,8 @@ export class TerminalStdin implements TerminalInputStream {
   private closed = false;
   private resolvers: Array<(value: Uint8Array | null) => void> = [];
   private _rawMode = false;
+  /** termios ISIG (TerminalInputStream.signalKeys). */
+  signalKeys = true;
   private decoder = new TextDecoder('utf-8');
 
   /** True when a command has called read() and is waiting for input. */

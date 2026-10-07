@@ -364,6 +364,42 @@ export function buildRuntimeHandler(
       : pipedStdin.file
         ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
         : { stdin: pipedStdin };
+    /**
+     * Run `code` as this invocation's program, whichever way the arguments
+     * named it (-e, the REPL, stdin, a file): what the program is (its argv,
+     * file, command line, stdin) with what every mode shares, and its output
+     * written through. `reserved` is false where the runner keeps no process
+     * a bin wrapper reserved (wasm-runner's).
+     */
+    const runProgram = async (code: string, program: {
+      argv: string[];
+      filename: string;
+      dirname: string;
+      command: string;
+      stdin?: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile'>;
+      reserved?: boolean;
+      launchesServer?: boolean;
+    }): Promise<number> => {
+      const result = await spec.run(code, {
+        cred: ctx.cred,
+        invokerPid: ctx.pid,
+        signal: ctx.signal,
+        argv: program.argv,
+        env: ctx.env,
+        cwd: ctx.cwd,
+        filename: program.filename,
+        dirname: program.dirname,
+        command: program.command,
+        ...program.stdin,
+        ...(program.reserved === false ? {} : reservedProcess),
+        ...(captureOutput ? { captureOutput: true } : {}),
+        ...(bundleProfile ? { bundleProfile } : {}),
+        ...(program.launchesServer ? { launchesServer: true } : {}),
+      });
+      if (result.stdout) ctx.stdout.write(result.stdout);
+      if (result.stderr) ctx.stderr.write(result.stderr);
+      return result.exitCode;
+    };
 
     // ── Flag-span computation (primitive #1) ──
     //
@@ -407,26 +443,14 @@ export function buildRuntimeHandler(
         ctx.stderr.write(`${name}: -e requires an argument\n`);
         return 1;
       }
-      const launchesServer = await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2));
-      const result = await spec.run(code, {
-        cred: ctx.cred,
-        invokerPid: ctx.pid,
-        signal: ctx.signal,
+      return runProgram(code, {
         argv: args.slice(evalIdx + 2),
-        env: ctx.env,
-        cwd: ctx.cwd,
         filename: '<eval>',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -e ...`,
-        ...programStdin,
-        ...reservedProcess,
-        ...(captureOutput ? { captureOutput: true } : {}),
-        ...(bundleProfile ? { bundleProfile } : {}),
-        ...(launchesServer ? { launchesServer: true } : {}),
+        stdin: programStdin,
+        launchesServer: await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2)),
       });
-      if (result.stdout) ctx.stdout.write(result.stdout);
-      if (result.stderr) ctx.stderr.write(result.stderr);
-      return result.exitCode;
     }
 
     // ── script path (or .wasm path for bypassesScriptRead) ──
@@ -434,24 +458,22 @@ export function buildRuntimeHandler(
     // No script: the REPL at a terminal, otherwise the program is stdin, as
     // Node decides between them by whether stdin is a TTY.
     const terminalInput = ctx.terminalStdin !== undefined && (ctx.stdin === undefined || ctx.stdin === ctx.terminalStdin) && ctx.isFdTerminal?.(0) !== false;
-    if (args[scriptIdx] === undefined && spec.repl !== undefined && terminalInput) {
-      const result = await spec.run(spec.repl, {
-        cred: ctx.cred,
-        invokerPid: ctx.pid,
-        signal: ctx.signal,
-        argv: args.slice(0, scriptIdx),
-        env: ctx.env,
-        cwd: ctx.cwd,
-        filename: '<repl>',
-        dirname: ctx.cwd || '/home/user',
-        command: binSpawn?.command || name,
-        stdin: ctx.terminalStdin,
-        ...reservedProcess,
-        ...(captureOutput ? { captureOutput: true } : {}),
-      });
-      if (result.stdout) ctx.stdout.write(result.stdout);
-      if (result.stderr) ctx.stderr.write(result.stderr);
-      return result.exitCode;
+    if (args[scriptIdx] === undefined && spec.repl !== undefined && terminalInput && ctx.terminalStdin) {
+      // The REPL takes Ctrl-C as input, as Node's readline does: the
+      // terminal's signal keys are off while it runs (termios ISIG).
+      const terminal = ctx.terminalStdin;
+      terminal.signalKeys = false;
+      try {
+        return await runProgram(spec.repl, {
+          argv: args.slice(0, scriptIdx),
+          filename: '<repl>',
+          dirname: ctx.cwd || '/home/user',
+          command: binSpawn?.command || name,
+          stdin: { stdin: terminal },
+        });
+      } finally {
+        terminal.signalKeys = true;
+      }
     }
     const scriptPath = args[scriptIdx] ?? (spec.repl !== undefined && ctx.stdin !== undefined ? '-' : undefined);
     if (!scriptPath) {
@@ -469,25 +491,13 @@ export function buildRuntimeHandler(
     // program's own stdin is what is left after the read: nothing.
     if (scriptPath === '-') {
       const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
-      const launchesServer = await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]);
-      const result = await spec.run(code, {
-        cred: ctx.cred,
-        invokerPid: ctx.pid,
-        signal: ctx.signal,
+      return runProgram(code, {
         argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
-        env: ctx.env,
-        cwd: ctx.cwd,
         filename: '[stdin]',
         dirname: ctx.cwd || '/home/user',
         command: binSpawn?.command || `${name} -`,
-        ...reservedProcess,
-        ...(captureOutput ? { captureOutput: true } : {}),
-        ...(bundleProfile ? { bundleProfile } : {}),
-        ...(launchesServer ? { launchesServer: true } : {}),
+        launchesServer: await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
       });
-      if (result.stdout) ctx.stdout.write(result.stdout);
-      if (result.stderr) ctx.stderr.write(result.stderr);
-      return result.exitCode;
     }
 
     // ── bypassesScriptRead branch (wasm-runner) ──
@@ -503,22 +513,13 @@ export function buildRuntimeHandler(
         : '/';
       // `args.slice(scriptIdx + 1)` are the runner's user args (e.g.
       // [exportName, intArg1, intArg2, ...] for wasm-runner).
-      const result = await spec.run('', {
-        cred: ctx.cred,
-        invokerPid: ctx.pid,
-        signal: ctx.signal,
+      return runProgram('', {
         argv: args.slice(scriptIdx + 1),
-        env: ctx.env,
-        cwd: ctx.cwd,
         filename,
         dirname,
         command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-        ...(captureOutput ? { captureOutput: true } : {}),
-        ...(bundleProfile ? { bundleProfile } : {}),
+        reserved: false,
       });
-      if (result.stdout) ctx.stdout.write(result.stdout);
-      if (result.stderr) ctx.stderr.write(result.stderr);
-      return result.exitCode;
     }
 
     // Resolve against cwd: `.` → the package entry, then extension probing.
@@ -624,30 +625,15 @@ export function buildRuntimeHandler(
     const dirname = filename.includes('/')
       ? filename.substring(0, filename.lastIndexOf('/'))
       : '/';
-    // Judged on the code as it will run, after any TypeScript/ESM transform.
-    const launchesServer = await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]);
-
-    const leadingFlags = args.slice(0, scriptIdx);
-    const result = await spec.run(code, {
-      cred: ctx.cred,
-      invokerPid: ctx.pid,
-      signal: ctx.signal,
-      argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
-      env: ctx.env,
-      cwd: ctx.cwd,
+    return runProgram(code, {
+      argv: [...args.slice(0, scriptIdx), filename, ...args.slice(scriptIdx + 1)],
       filename,
       dirname,
-      command:
-        binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-      ...programStdin,
-      ...reservedProcess,
-      ...(captureOutput ? { captureOutput: true } : {}),
-      ...(bundleProfile ? { bundleProfile } : {}),
-      ...(launchesServer ? { launchesServer: true } : {}),
+      command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+      stdin: programStdin,
+      // Judged on the code as it will run, after any TypeScript/ESM transform.
+      launchesServer: await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
     });
-    if (result.stdout) ctx.stdout.write(result.stdout);
-    if (result.stderr) ctx.stderr.write(result.stderr);
-    return result.exitCode;
   }
 
   return async function runtimeHandler(ctx: CommandContext): Promise<number> {
