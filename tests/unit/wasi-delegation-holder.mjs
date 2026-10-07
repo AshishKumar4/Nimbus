@@ -205,10 +205,14 @@ async function create(fs, path, text) {
 {
   const journal = sqlJournal(createSqliteVfsTestHarness().sql);
   const gate = Promise.withResolvers();
-  const s = session({ journal, gate: gate.promise });
+  // The session's waves are held from the second file on: the first takes the subtree.
+  let holding = false;
+  const s = session({ journal, gate: { then: (resolve, reject) => (holding ? gate.promise : Promise.resolve()).then(resolve, reject) } });
   // Made beforehand: every change of the process goes through the held waves.
   s.kernel.mkdir('home/user/proj/logged', { mode: 0o755 });
   s.kernel.chown('home/user/proj/logged', 1000, 1000);
+  await create(s.fs, '/home/user/proj/logged/first.txt', 'first\n');
+  holding = true;
   for (let index = 0; index < 20; index++) await create(s.fs, `/home/user/proj/logged/f${index}.txt`, `file ${index}\n`);
   const flushed = s.fs.flush();
   await new Promise((resolve) => setTimeout(resolve, 10));
