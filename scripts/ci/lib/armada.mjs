@@ -30,7 +30,8 @@ const git = (cwd, args, options = {}) => {
 
 /**
  * A commit object, on no branch, whose tree is `sha`'s with each `files`
- * path replaced by the bytes and executable bit it has under `from`. Its
+ * path replaced by the bytes and executable bit it has under `from` (or by
+ * the `{ path, bytes }` given, as a plain file). Its
  * parent is `sha`. Each call makes a new one (its date is now): armada keeps
  * the pack it was sent for a commit, so a commit reused across runs would
  * reuse a pack that was wrong once.
@@ -40,9 +41,10 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
   try {
     const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
     git(repo, ['read-tree', sha], { env });
-    for (const path of files) {
-      const blob = git(repo, ['hash-object', '-w', '--stdin'], { input: readFileSync(join(from, path)) });
-      const mode = statSync(join(from, path)).mode & 0o100 ? '100755' : '100644';
+    for (const file of files) {
+      const path = typeof file === 'string' ? file : file.path;
+      const blob = git(repo, ['hash-object', '-w', '--stdin'], { input: typeof file === 'string' ? readFileSync(join(from, path)) : file.bytes });
+      const mode = typeof file === 'string' && statSync(join(from, path)).mode & 0o100 ? '100755' : '100644';
       git(repo, ['update-index', '--add', '--cacheinfo', `${mode},${blob},${path}`], { env });
     }
     const tree = git(repo, ['write-tree'], { env });
@@ -61,9 +63,10 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
 
 /**
  * Map `command` over `items` on `sha` (run from its repo), with `files`
- * laid over its tree. `setup`, a script path here, is appended to the
- * recipe's setup: an environment of its own, so what only some tasks need
- * is not in every container. `env` joins the recipe's for this job only: armada
+ * laid over its tree. `setup`, a script path here, replaces the recipe's
+ * setup (it runs that one itself, then adds what only its tasks need): an
+ * environment of its own, keyed on both scripts, so the others stay lean.
+ * `env` joins the recipe's for this job only: armada
  * keeps a job's spec while the job lives, so a credential put here must be
  * one minted for this run and short-lived. Interrupting the process cancels
  * the job. Resolves to each outcome in item order and each task's {out}
@@ -78,8 +81,15 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   if (fixed.status !== 0) throw new Error(`the armada in ${armadaDir} lacks its packing fix ${ARMADA_PACK_FIX}${fixed.stderr ? `: ${fixed.stderr.trim()}` : ''}`);
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
-  const commit = overlayCommit(repo, sha, [...RECIPE, ...files]);
-  log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${[...RECIPE, ...files].join(', ')})`);
+  const overlay = [...RECIPE, ...files];
+  if (setup) {
+    // The commit's .armada.json names the environment armada packs for.
+    const config = JSON.parse(readFileSync(join(SELF_ROOT, '.armada.json'), 'utf8'));
+    const environment = { ...config.environment, setup, key: [...config.environment.key, config.environment.setup] };
+    overlay.splice(0, 1, { path: '.armada.json', bytes: `${JSON.stringify({ ...config, environment }, null, 2)}\n` }, setup);
+  }
+  const commit = overlayCommit(repo, sha, overlay);
+  log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${overlay.map((file) => (typeof file === 'string' ? file : file.path)).join(', ')})`);
   const armada = connect();
   // armada resolves the commit in the working directory's repository.
   const cwd = process.cwd();
@@ -90,8 +100,7 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
   } finally {
     process.chdir(cwd);
   }
-  const recipe = setup ? { ...where.recipe, setup: `${where.recipe.setup}\n${readFileSync(join(SELF_ROOT, setup), 'utf8')}` } : where.recipe;
-  const job = await armada.map({ ...where, recipe, env: { ...where.env, ...env }, items, run: { command }, output: true, pool, timeout, label });
+  const job = await armada.map({ ...where, env: { ...where.env, ...env }, items, run: { command }, output: true, pool, timeout, label });
   log(`armada: job ${job.id}`);
   const cancel = () => { job.cancel().finally(() => process.exit(130)); };
   process.once('SIGINT', cancel);
