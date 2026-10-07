@@ -7418,10 +7418,15 @@ export class FacetManager {
     // its lifecycle with the death: its log is drained as it is released, and
     // only then is its exit told. A lifetime resident's caller watches its
     // lifecycle itself.
-    // Not waitUntil: the lifecycle lasts as long as the process does, and the
-    // rejection that ends it arrives in the event that carried the death.
+    // Only once booted: a boot that fails or stops (to wait for stdin) is
+    // its launcher's to handle. Not waitUntil: the lifecycle lasts as long
+    // as the process does, and the rejection that ends it arrives in the
+    // event that carried the death.
     if (spec.startContract === 'boot' && spec.journaled) {
-      void handle.done.catch((error: unknown) => this._residentDied(pid, error));
+      void handle.booted().then(
+        () => handle.done.catch((error: unknown) => this._residentDied(pid, error)),
+        () => {},
+      );
     }
     return handle;
   }
