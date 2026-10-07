@@ -109,4 +109,64 @@ export const EMNAPI = {
     { name: '@emnapi/runtime', version: '2.0.0-alpha.5' },
     { name: '@emnapi/wasi-threads', version: '2.1.0' },
   ],
+  // emnapi views the binding's heap with subarray at a heap pointer. In a
+  // Worker an ArrayBuffer is capped at 128 MiB and only a WebAssembly.Memory
+  // grows past it; on one that has, V8's subarray refuses a begin past the
+  // cap ("Invalid array buffer length": CalculateByteLength against the
+  // embedder's maximum, src/builtins/typed-array-subarray.tq), where the
+  // constructor and fill take any offset within the buffer. rolldown
+  // pre-bundling React with lucide-react reaches 152 MiB. Each seam is an
+  // exact edit, applied only if its text occurs `count` times (default 1).
+  seams: [
+    {
+      file: '@emnapi/core/dist/emnapi-core.js',
+      from: 'return isShared || isResizable ? heap.slice(start, end) : heap.subarray(start, end);',
+      to: 'return isShared || isResizable ? heap.slice(start, end) : new heap.constructor(heap.buffer, heap.byteOffset + start * heap.BYTES_PER_ELEMENT, Math.max(0, end - start));',
+      reason: 'strings read from the heap (UTF8ToString, UTF16ToString)',
+    },
+    {
+      file: '@emnapi/core/dist/emnapi-core.js',
+      from: 'view.set(wasmMemoryU8.subarray(pointer, pointer + len));',
+      to: 'view.set(new Uint8Array(wasmMemoryU8.buffer, wasmMemoryU8.byteOffset + pointer, len));',
+      count: 2,
+      reason: 'syncing a typed array or a DataView from the heap',
+    },
+    {
+      file: '@emnapi/core/dist/emnapi-core.js',
+      from: 'new Uint8Array(sab).set(emnapiExternalMemory.getHEAPU8().subarray(external_data, external_data + meta.byte_length));',
+      to: 'new Uint8Array(sab).set(new Uint8Array(emnapiExternalMemory.getHEAPU8().buffer, emnapiExternalMemory.getHEAPU8().byteOffset + external_data, meta.byte_length));',
+      reason: 'an external SharedArrayBuffer copied from the heap',
+    },
+    {
+      file: '@emnapi/core/dist/emnapi-core.js',
+      from: 'u8arr.set(emnapiExternalMemory.getHEAPU8().subarray(external_data, external_data + byte_length));',
+      to: 'u8arr.set(new Uint8Array(emnapiExternalMemory.getHEAPU8().buffer, emnapiExternalMemory.getHEAPU8().byteOffset + external_data, byte_length));',
+      count: 2,
+      reason: 'an external ArrayBuffer copied from the heap',
+    },
+    {
+      file: '@emnapi/core/dist/emnapi-core.js',
+      from: 'emnapiExternalMemory.getHEAPU8().subarray(pointer, pointer + size).fill(0);',
+      to: 'emnapiExternalMemory.getHEAPU8().fill(0, pointer, pointer + size);',
+      reason: 'a zeroed buffer allocated on the heap',
+    },
+    {
+      file: '@emnapi/core/dist/emnapi-core.js',
+      from: 'buffer.set(emnapiExternalMemory.getHEAPU8().subarray(data, data + length));',
+      to: 'buffer.set(new Uint8Array(emnapiExternalMemory.getHEAPU8().buffer, emnapiExternalMemory.getHEAPU8().byteOffset + data, length));',
+      reason: 'a Buffer copied from the heap',
+    },
+    {
+      file: '@emnapi/core/dist/plugins/async-work.js',
+      from: 'new Uint8Array(emnapiAWMT.ensureBufferFor(aw + sizeofAW)).subarray(aw, aw + sizeofAW).fill(0);',
+      to: 'new Uint8Array(emnapiAWMT.ensureBufferFor(aw + sizeofAW)).fill(0, aw, aw + sizeofAW);',
+      reason: 'an async work struct zeroed on the heap',
+    },
+    {
+      file: '@emnapi/core/dist/plugins/threadsafe-function.js',
+      from: 'new Uint8Array(emnapiTSFN.ensureBufferFor(tsfn + sizeofTSFN)).subarray(tsfn, tsfn + sizeofTSFN).fill(0);',
+      to: 'new Uint8Array(emnapiTSFN.ensureBufferFor(tsfn + sizeofTSFN)).fill(0, tsfn, tsfn + sizeofTSFN);',
+      reason: 'a threadsafe function struct zeroed on the heap',
+    },
+  ],
 };

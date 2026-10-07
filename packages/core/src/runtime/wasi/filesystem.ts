@@ -163,12 +163,18 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   // through its semantics rather than dropping the entry.
   const hostClose = imports.fd_close;
   const memory = () => new Uint8Array(options.memory().buffer);
+  // Guest memory at a guest pointer is viewed by the constructor, never by
+  // subarray: in a Worker, a WebAssembly.Memory grows past the 128 MiB an
+  // ArrayBuffer may have, and subarray refuses a begin past that ("Invalid
+  // array buffer length", V8's CalculateByteLength against the embedder's
+  // maximum), where the constructor takes any offset within the buffer.
+  const guestBytes = (ptr: number, length: number) => new Uint8Array(options.memory().buffer, ptr, length);
   const view = () => new DataView(options.memory().buffer);
   const u32 = (ptr: number, value: number) => view().setUint32(ptr, value, true);
   const u64 = (ptr: number, value: bigint | number) => view().setBigUint64(ptr, BigInt(value), true);
   const path = (ptr: number, length: number): string => {
     if (ptr < 0 || length < 0 || ptr + length > memory().length) fail('EFAULT');
-    const p = decoder.decode(memory().subarray(ptr, ptr + length));
+    const p = decoder.decode(guestBytes(ptr, length));
     if (p.includes('\0')) fail('EINVAL');
     return p;
   };
@@ -323,7 +329,7 @@ export function installAuthorityFilesystem(imports: Partial<FilesystemImports>, 
   const write = (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, ptr: number, count: number, offset: number | null, written: number): SyscallResult => {
     const e = right(fd, 6), vectors = iovs(ptr, count), data = new Uint8Array(vectors.total); let used = 0;
     if (e.kind === 'resident') fail('ENOTCAPABLE');
-    for (const v of vectors.result) { data.set(memory().subarray(v.ptr, v.ptr + v.length), used); used += v.length; }
+    for (const v of vectors.result) { data.set(guestBytes(v.ptr, v.length), used); used += v.length; }
     return after(fs.write(e.handle.id, offset, data), n => { u32(written, n); return 0; });
   };
   imports.path_open = guard(imports.path_open, (fs: RuntimeFsBridge | RuntimeSynchronousFs, fd: number, lookup: number, p: number, n: number, flags: number, rights: bigint, inherit: bigint, status: number, out: number) => {

@@ -326,7 +326,22 @@ async function fetchEmnapi() {
     await fs.rename(path.join(staging, 'package'), dir);
     out[`${name}@${version}`] = { tarball, integrity };
   }
-  return { npmDir, packages: out };
+  return { npmDir, packages: out, seams: await applyEmnapiSeams(npmDir) };
+}
+
+/** EMNAPI.seams over the fetched packages: each exact edit made only where its text occurs `count` times. */
+async function applyEmnapiSeams(npmDir) {
+  for (const seam of EMNAPI.seams) {
+    const file = path.join(npmDir, 'node_modules', seam.file);
+    const text = await fs.readFile(file, 'utf8');
+    const count = seam.count ?? 1;
+    const hits = text.split(seam.from).length - 1;
+    if (hits !== count) {
+      throw new Error(`napi-wasm: emnapi seam expects \`${seam.from}\` ${count} time(s) in ${seam.file}, found ${hits}: upstream changed; re-derive the seam`);
+    }
+    await fs.writeFile(file, text.split(seam.from).join(seam.to));
+  }
+  return EMNAPI.seams.map(({ file, from, to, count, reason }) => ({ file, from, to, count: count ?? 1, reason }));
 }
 
 async function buildLoader(emnapi) {
@@ -355,6 +370,7 @@ async function buildLoader(emnapi) {
   const provenance = {
     artifact: 'napi-wasm',
     npm: emnapi.packages,
+    seams: emnapi.seams,
     trampolineDispatches: Object.keys(DISPATCHED_WASI_IMPORTS).sort(),
     outputs: {
       'napi-wasm-loader.mjs': { bytes: loader.length, sha256: sha256(loader) },
