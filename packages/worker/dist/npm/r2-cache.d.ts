@@ -273,11 +273,19 @@ export declare class R2CacheClient {
      */
     getTarball(integrity: string): Promise<Uint8Array | null>;
     /**
-     * Store a tarball at `integrity`'s content address. Bytes are stored
-     * as-is (gzipped tar). No-op if the bucket binding is missing, if the
-     * integrity string is not a verifiable SRI, or if the bytes do not
-     * hash to the address — a caller cannot place bytes under someone
-     * else's key, which keeps the store's contract absolute.
+     * The colo copy of verified tarball bytes, kept as long as the cache layer
+     * will: a content address never changes what it names. Best-effort: a
+     * failed put is silent.
+     */
+    private fillTarballL2;
+    /**
+     * Store a tarball at `integrity`'s content address, in R2 and in this
+     * colo's L2. Bytes are stored as-is (gzipped tar). No-op if the bucket
+     * binding is missing, if the integrity string is not a verifiable SRI,
+     * or if the bytes do not hash to the address — a caller cannot place
+     * bytes under someone else's key, which keeps the store's contract
+     * absolute. Filling R2 alone sent the next session in the colo to R2
+     * for bytes this one had just fetched from the registry.
      *
      * Returns true on success, false otherwise (the cache is best-effort;
      * failure must not break the install).
