@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { buildRuntimeHandler } from '../../packages/core/src/runtime/runtime-registry.ts';
-const pieces = [Buffer.concat([Buffer.alloc(4095,65),Buffer.from([0xc3])]),Buffer.from([0xa9,66])];
+const pieces = [Buffer.concat([Buffer.alloc(4095,65),Buffer.from([0xc3])]),Buffer.from([0xa9,66,0xc3])];
 let stdout='';
 const handler=buildRuntimeHandler({name:'node',version:'v22',helpText:'help',supportsBinSpawn:true,
  async run(_code,opts){for(const bytes of pieces)await opts.output('stdout',bytes);return{exitCode:0,stdout:'',stderr:''};}},
@@ -9,5 +9,5 @@ const vfs={process:{},exists(){return false},isFile(){return false},readFileStri
 const code=await handler({pid:1,cred:{uid:1000,gid:1000,groups:[1000],umask:0o022},args:['-e','unused'],cwd:'/home/user',env:{},vfs,
  stdout:{write(text){stdout+=text}},stderr:{write(text){throw new Error(text)}},signal:new AbortController().signal,isFdTerminal(){return true}});
 assert.equal(code,0);
-assert.equal(stdout,Buffer.concat(pieces).toString(),'one streaming text edge preserves a character split across 4096');
+assert.equal(stdout,Buffer.concat(pieces).toString(),'one streaming text edge preserves a character split across 4096 and flushes an incomplete final character');
 console.log('runtime-output-text-edge: byte chunks are decoded at one streaming display edge');

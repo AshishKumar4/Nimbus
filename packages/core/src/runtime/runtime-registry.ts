@@ -46,7 +46,7 @@ import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profi
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
-import { textSink } from '../_shared/bytes.js';
+import { SinkWriter } from '../_shared/byte-stream.js';
 import { exists } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
 
@@ -365,13 +365,10 @@ export function buildRuntimeHandler(
     // synchronous read that needs more than has arrived waits for it in the
     // runner, which stops the run and runs it again once the input is there
     // (worker runtime/stop-replay.ts).
-    const textOutput = { stdout: textSink(data => ctx.stdout.write(data)), stderr: textSink(data => ctx.stderr.write(data)) };
+    const outputStreams = { stdout: new SinkWriter(ctx.stdout), stderr: new SinkWriter(ctx.stderr) };
     const programStdin: Pick<RuntimeRunOpts, 'stdin' | 'stdinFile' | 'output' | 'stdinPid'> = {
       ...(nimbusCtx.__nimbusBinSpawn?.liveInput ? { stdinPid: nimbusCtx.__nimbusBinSpawn.callerPid } : {}),
-      output: nimbusCtx.__nimbusBinSpawn?.liveInput ? undefined : (stream, bytes) => {
-        const sink = stream === 'stdout' ? ctx.stdout : ctx.stderr;
-        return sink.writeBytes ? sink.writeBytes(bytes) : textOutput[stream](bytes);
-      },
+      output: nimbusCtx.__nimbusBinSpawn?.liveInput ? undefined : (stream, bytes) => outputStreams[stream].write(bytes),
       ...(pipedStdin === undefined ? (spec.bypassesScriptRead && ctx.stdin ? { stdin: ctx.stdin } : {})
       : pipedStdin.file
         ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
@@ -393,23 +390,31 @@ export function buildRuntimeHandler(
       reserved?: boolean;
       launchesServer?: boolean;
     }): Promise<number> => {
-      const result = await spec.run(code, {
-        cred: ctx.cred,
-        invokerPid: ctx.pid,
-        signal: ctx.signal,
-        argv: program.argv,
-        env: ctx.env,
-        cwd: ctx.cwd,
-        filename: program.filename,
-        dirname: program.dirname,
-        command: program.command,
-        output: programStdin.output,
-        ...program.stdin,
-        ...(program.reserved === false ? {} : reservedProcess),
-        ...(captureOutput ? { captureOutput: true } : {}),
-        ...(bundleProfile ? { bundleProfile } : {}),
-        ...(program.launchesServer ? { launchesServer: true } : {}),
-      });
+      let result: RuntimeRunResult;
+      try {
+        result = await spec.run(code, {
+          cred: ctx.cred,
+          invokerPid: ctx.pid,
+          signal: ctx.signal,
+          argv: program.argv,
+          env: ctx.env,
+          cwd: ctx.cwd,
+          filename: program.filename,
+          dirname: program.dirname,
+          command: program.command,
+          output: programStdin.output,
+          ...program.stdin,
+          ...(program.reserved === false ? {} : reservedProcess),
+          ...(captureOutput ? { captureOutput: true } : {}),
+          ...(bundleProfile ? { bundleProfile } : {}),
+          ...(program.launchesServer ? { launchesServer: true } : {}),
+        });
+      } finally {
+        // Flush a trailing incomplete character at the actual display edge,
+        // including a runner that failed after publishing some output.
+        await outputStreams.stdout.end();
+        await outputStreams.stderr.end();
+      }
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
       return result.exitCode;
