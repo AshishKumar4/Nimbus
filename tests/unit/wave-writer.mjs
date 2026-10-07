@@ -8,7 +8,7 @@ import assert from 'node:assert/strict';
 
 import { CHUNK_SIZE } from '../../packages/platform/src/limits.ts';
 import { decodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createWaveWriter, WAVE_PATHS } from '../../packages/platform/src/wave-writer.ts';
+import { createWaveWriter, WAVE_BYTES, WAVE_PATHS } from '../../packages/platform/src/wave-writer.ts';
 
 function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
   const files = new Map();
@@ -202,12 +202,17 @@ function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
 const quick = { backoffMs: [1, 1, 1], stallMs: 200, answerDeadlineMs: 200 };
 const payloadOf = (index) => new TextEncoder().encode(`record ${index}\n`.padEnd(20_000, '.'));
 
-/** A session whose first `losses` calls fail as `loss` does, after reading part of the stream. */
-function lossy(loss, losses = 1) {
+/**
+ * A session whose first `losses` calls fail as `loss` does, after reading
+ * part of the stream. With `epochs`, its supervisor opens writer epochs, as
+ * one across a transport does: the writer then sends each wave encoded whole.
+ */
+function lossy(loss, losses = 1, epochs = false) {
   const target = session();
   let calls = 0;
   const abandoned = [];
   const supervisor = {
+    ...(epochs ? { openWaveWriter: async () => null } : {}),
     async writeBatchStream(stream) {
       calls++;
       if (calls <= losses) {
@@ -228,25 +233,28 @@ function lossy(loss, losses = 1) {
   return { target, supervisor, get calls() { return calls; }, abandoned };
 }
 
-{
-  const lost = lossy(new Error('Network connection lost.'));
-  const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
-  for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
-  await writer.flush();
-  assert.equal(lost.calls, 2, 'a wave whose connection was lost was not sent again');
-  assert.equal(writer.stats().retries, 1);
-  for (let index = 0; index < 50; index++) assert.deepEqual(new Uint8Array(lost.target.files.get(`r/f${index}`).bytes), payloadOf(index));
-}
+// Streamed as the encoder makes it, and encoded whole (a supervisor that opens epochs).
+for (const epochs of [false, true]) {
+  {
+    const lost = lossy(new Error('Network connection lost.'), 1, epochs);
+    const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
+    for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+    await writer.flush();
+    assert.equal(lost.calls, 2, 'a wave whose connection was lost was not sent again');
+    assert.equal(writer.stats().retries, 1);
+    for (let index = 0; index < 50; index++) assert.deepEqual(new Uint8Array(lost.target.files.get(`r/f${index}`).bytes), payloadOf(index));
+  }
 
-{
-  const lost = lossy('unanswered');
-  const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
-  for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
-  await writer.flush();
-  assert.equal(lost.calls, 2, 'an unanswered wave was not sent again');
-  assert.match(await lost.abandoned[0], /^errored: writeBatchStream (unanswered|stalled)/,
-    'the abandoned attempt could still read its stream');
-  assert.deepEqual(new Uint8Array(lost.target.files.get('r/f49').bytes), payloadOf(49));
+  {
+    const lost = lossy('unanswered', 1, epochs);
+    const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
+    for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+    await writer.flush();
+    assert.equal(lost.calls, 2, 'an unanswered wave was not sent again');
+    assert.match(await lost.abandoned[0], /^errored: writeBatchStream (unanswered|stalled)/,
+      'the abandoned attempt could still read its stream');
+    assert.deepEqual(new Uint8Array(lost.target.files.get('r/f49').bytes), payloadOf(49));
+  }
 }
 
 {
@@ -362,11 +370,12 @@ function lossy(loss, losses = 1) {
 // the stream (~1 MiB live) and nothing more, and no answer came. It is sent
 // again once nothing has read it for stallMs, not after a long answer
 // deadline. Red before: the writer waited its 60 s answer deadline (live:
-// a 4 s clone batch took 63 s).
-{
+// a 4 s clone batch took 63 s). Streamed as encoded, and encoded whole.
+for (const epochs of [false, true]) {
   const target = session();
   let calls = 0;
   const supervisor = {
+    ...(epochs ? { openWaveWriter: async () => null } : {}),
     async writeBatchStream(stream) {
       calls++;
       if (calls === 1) {
@@ -455,6 +464,268 @@ function lossy(loss, losses = 1) {
   await writer.flush();
   assert.equal(writer.stats().files, 1_016);
   assert.ok(target.waves.length >= 2, 'a thousand 300-byte paths were sent as one wave');
+}
+
+// ── Across a transport, a wave held in memory is encoded whole ────────
+// A supervisor that opens epochs is across a transport: the writer encodes
+// a wave whose bytes it holds before sending it, and hands it over in 1 MiB
+// pieces, so the transport never waits on the encoder; a re-send sends the
+// same bytes. Red before: the encoder's stream crossed in the pieces it made
+// as the transport pulled it, and a re-send encoded the wave again.
+const MiB = 1024 * 1024;
+/** `bytes` as the byte stream a session reads (bun's Response bodies take no BYOB reads). */
+const byteStream = (bytes) => new ReadableStream({ type: 'bytes', start(controller) { if (bytes.byteLength) controller.enqueue(bytes.slice()); controller.close(); } });
+/** A supervisor across a transport whose calls record each wave's pieces as the transport read them. */
+function transported(target) {
+  const waves = [];
+  return {
+    waves,
+    supervisor: {
+      openWaveWriter: async () => null,
+      async writeBatchStream(stream, fence) {
+        const reader = stream.getReader();
+        const pieces = [];
+        for (;;) {
+          const next = await reader.read();
+          if (next.done) break;
+          pieces.push(next.value);
+        }
+        waves.push(pieces);
+        return target.supervisor.writeBatchStream(byteStream(new Uint8Array(await new Blob(pieces).arrayBuffer())), fence);
+      },
+    },
+  };
+}
+{
+  const target = session();
+  const transport = transported(target);
+  const writer = createWaveWriter({ supervisor: transport.supervisor, root: 'r', base: 'r' });
+  for (let index = 0; index < 400; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+  await writer.flush();
+  assert.ok(transport.waves.length >= 2);
+  for (const pieces of transport.waves) {
+    const sizes = pieces.map((piece) => piece.byteLength);
+    const total = sizes.reduce((sum, size) => sum + size, 0);
+    assert.deepEqual(sizes, [...Array(Math.floor(total / MiB)).fill(MiB), ...(total % MiB ? [total % MiB] : [])],
+      `a wave of ${total} bytes crossed in pieces of ${sizes.join(', ')}`);
+  }
+  for (let index = 0; index < 400; index++) assert.deepEqual(new Uint8Array(target.files.get(`r/f${index}`).bytes), payloadOf(index));
+
+  // A streamed source is never held whole, across a transport too: its wave
+  // crosses as the encoder makes it.
+  const size = 3 * CHUNK_SIZE + 12_345;
+  const expected = new Uint8Array(size).map((_, index) => (index * 7 + 3) & 0xff);
+  const streamedTransport = transported(target);
+  const streamedWriter = createWaveWriter({ supervisor: streamedTransport.supervisor, root: 'r', base: 'r' });
+  await streamedWriter.fileChunks('big.bin', 0o644, size, (async function* () { yield expected.slice(0, 100_000); yield expected.slice(100_000); })());
+  await streamedWriter.flush();
+  assert.deepEqual(new Uint8Array(target.files.get('r/big.bin').bytes), expected);
+  assert.ok(streamedTransport.waves[0].every((piece) => piece.byteLength < MiB), 'a streamed wave was encoded whole');
+}
+{
+  // A re-send sends the bytes the lost attempt carried.
+  const lost = lossy(new Error('Network connection lost.'), 1, true);
+  const first = [];
+  const sent = lost.supervisor.writeBatchStream;
+  lost.supervisor.writeBatchStream = async (stream, fence) => {
+    const bytes = new Uint8Array(await new Response(stream).arrayBuffer());
+    first.push(bytes);
+    return sent(byteStream(bytes), fence);
+  };
+  const writer = createWaveWriter({ supervisor: lost.supervisor, root: 'r', base: 'r', retry: quick });
+  for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+  await writer.flush();
+  assert.equal(lost.calls, 2);
+  assert.ok(first[0].byteLength > 0);
+  assert.deepEqual(first[1], first[0], 'the re-send encoded its wave again');
+}
+
+{
+  // What a producer holds: one wave encoded (its records let go) and the
+  // next buffering, never more. Six waves' worth of files through a session
+  // that takes each wave's pieces as they come and answers later.
+  const gc = () => (globalThis.Bun ? Bun.gc(true) : globalThis.gc?.());
+  const held = () => { gc(); return process.memoryUsage().arrayBuffers; };
+  const base = held();
+  let peak = 0;
+  const sample = () => { peak = Math.max(peak, held() - base); };
+  const supervisor = {
+    openWaveWriter: async () => null,
+    async writeBatchStream(stream) {
+      const reader = stream.getReader();
+      for (;;) {
+        const next = await reader.read();
+        sample();
+        if (next.done) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      sample();
+      return { ok: true, committedGroupSequence: 1, committedPathCount: 1 };
+    },
+  };
+  const writer = createWaveWriter({ supervisor, root: 'r', base: 'r' });
+  const files = Math.ceil(6 * WAVE_BYTES / 20_000);
+  for (let index = 0; index < files; index++) {
+    await writer.file(`f${index}`, 0o644, new Uint8Array(20_000).fill(index & 255));
+    if (index % 25 === 0) sample();
+  }
+  await writer.flush();
+  assert.ok(writer.stats().waves >= 6);
+  assert.ok(peak <= 2 * WAVE_BYTES + 2 * MiB, `a producer held ${(peak / MiB).toFixed(2)} MiB across ${writer.stats().waves} waves`);
+  console.log(`  ok  a producer held at most ${(peak / MiB).toFixed(2)} MiB: one wave encoded, one buffering`);
+}
+
+// ── Review: oversized waves, slow readers, the answer after EOF, the cut ──
+{
+  // A file larger than a wave travels alone and is never copied whole: its
+  // wave crosses as the encoder makes it, across a transport too. Red
+  // before: it was encoded whole (a full-file allocation; 1 MiB pieces).
+  const target = session();
+  const transport = transported(target);
+  const writer = createWaveWriter({ supervisor: transport.supervisor, root: 'r', base: 'r' });
+  const big = new Uint8Array(WAVE_BYTES + 3 * CHUNK_SIZE + 17).map((_, index) => (index * 13) & 255);
+  await writer.file('big.bin', 0o644, big);
+  await writer.flush();
+  assert.deepEqual(new Uint8Array(target.files.get('r/big.bin').bytes), big);
+  assert.equal(writer.stats().wholeWaves, 0);
+  assert.ok(transport.waves[0].every((piece) => piece.byteLength < MiB), 'a file larger than a wave was encoded whole');
+}
+
+/** A session that takes each wave in `size`-byte BYOB reads `gapMs` apart, then answers. */
+function slowReader(target, epochs, size, gapMs) {
+  let calls = 0;
+  return {
+    get calls() { return calls; },
+    supervisor: {
+      ...(epochs ? { openWaveWriter: async () => null } : {}),
+      async writeBatchStream(stream, fence) {
+        calls++;
+        const reader = stream.getReader({ mode: 'byob' });
+        const parts = [];
+        for (;;) {
+          const next = await reader.read(new Uint8Array(size));
+          if (next.done) break;
+          parts.push(next.value.slice());
+          await new Promise((resolve) => setTimeout(resolve, gapMs));
+        }
+        return target.supervisor.writeBatchStream(byteStream(new Uint8Array(await new Blob(parts).arrayBuffer())), fence);
+      },
+    },
+  };
+}
+
+for (const epochs of [false, true]) {
+  // A healthy reader that takes a piece in small reads, slower than the
+  // stall period per piece but never idle that long, is not lost. Red
+  // before: the watchdog counted the source's pulls, which a piece queued
+  // whole does not make while it drains, and re-sent the wave.
+  const target = session();
+  const slow = slowReader(target, epochs, 32 * 1024, quick.stallMs / 4);
+  const writer = createWaveWriter({ supervisor: slow.supervisor, root: 'r', base: 'r', retry: quick });
+  for (let index = 0; index < 60; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+  await writer.flush();
+  assert.equal(slow.calls, 1, `a slow, healthy reader was taken as lost (${epochs ? 'encoded whole' : 'streamed'})`);
+  assert.equal(writer.stats().retries, 0);
+  assert.equal(writer.stats().wholeWaves, epochs ? 1 : 0);
+  for (let index = 0; index < 60; index++) assert.deepEqual(new Uint8Array(target.files.get(`r/f${index}`).bytes), payloadOf(index));
+}
+
+for (const epochs of [false, true]) {
+  // A stream read to its end with no answer: sent again once the answer
+  // deadline after its end passes, not the stall period.
+  const target = session();
+  let calls = 0;
+  const supervisor = {
+    ...(epochs ? { openWaveWriter: async () => null } : {}),
+    async writeBatchStream(stream, fence) {
+      calls++;
+      if (calls === 1) {
+        await new Response(stream).arrayBuffer();
+        return new Promise(() => {});
+      }
+      return target.supervisor.writeBatchStream(stream, fence);
+    },
+  };
+  const resends = [];
+  const policy = { backoffMs: [1], stallMs: 60_000, answerDeadlineMs: 300 };
+  const writer = createWaveWriter({ supervisor, root: 'r', base: 'r', retry: policy, onResend: (resend) => resends.push(resend) });
+  for (let index = 0; index < 50; index++) await writer.file(`f${index}`, 0o644, payloadOf(index));
+  const started = Date.now();
+  await writer.flush();
+  assert.equal(calls, 2);
+  assert.ok(Date.now() - started < 10 * policy.answerDeadlineMs);
+  assert.match(resends[0]['do_call.lost_reason'], /unanswered 300 ms after its stream ended/);
+  assert.deepEqual(new Uint8Array(target.files.get('r/f49').bytes), payloadOf(49));
+}
+
+{
+  // The cut that sends a wave completes once the wave is encoded, so the
+  // next wave buffers beside its encoded bytes, never beside its records
+  // too. Red before: a 4 MiB wave, then a write of WAVE_BYTES - 1 buffered
+  // while the encode yielded, held the first wave's records, its encoding
+  // and the next buffer at once (about 12 MiB).
+  const gc = () => (globalThis.Bun ? Bun.gc(true) : globalThis.gc?.());
+  const held = () => { gc(); return process.memoryUsage().arrayBuffers; };
+  const base = held();
+  let peak = 0;
+  const sample = () => { peak = Math.max(peak, held() - base); };
+  const supervisor = {
+    openWaveWriter: async () => null,
+    async writeBatchStream(stream) {
+      const reader = stream.getReader();
+      for (;;) {
+        const next = await reader.read();
+        sample();
+        if (next.done) break;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 20));
+      return { ok: true, committedGroupSequence: 1, committedPathCount: 1 };
+    },
+  };
+  const writer = createWaveWriter({ supervisor, root: 'r', base: 'r' });
+  await writer.file('a', 0o644, new Uint8Array(WAVE_BYTES).fill(1));
+  sample();
+  await writer.file('b', 0o644, new Uint8Array(WAVE_BYTES - 1).fill(2));
+  assert.equal(writer.stats().wholeWaves, 1, 'the write after a cut went on before its wave was encoded');
+  sample();
+  for (let index = 0; index < 3; index++) {
+    await writer.file(`c${index}`, 0o644, new Uint8Array(WAVE_BYTES - 1).fill(3 + index));
+    sample();
+  }
+  await writer.flush();
+  assert.equal(writer.stats().wholeWaves, 5);
+  assert.ok(peak <= 2 * WAVE_BYTES + 2 * MiB, `a producer of 4 MiB files held ${(peak / MiB).toFixed(2)} MiB`);
+  console.log(`  ok  a producer of 4 MiB files held at most ${(peak / MiB).toFixed(2)} MiB`);
+}
+
+{
+  // A wave being encoded is in flight: settled() asked while its cut awaits
+  // the encode waits for its publication, so a read after it finds its
+  // files. Red before: the cut cleared its records, then awaited the encode
+  // before it registered the publication, and settled() returned at once
+  // (the git facet read stale bytes or ENOENT for a buffered write).
+  const target = session();
+  const transport = transported(target);
+  let writer = null;
+  let checked = null;
+  const onCut = ({ wave }) => {
+    if (wave !== 1) return;
+    // Runs once the cut yields to its encode.
+    queueMicrotask(() => {
+      checked = writer.settled().then(() => ({
+        a: target.files.has('r/a'),
+        b: target.files.has('r/b'),
+      }));
+    });
+  };
+  writer = createWaveWriter({ supervisor: transport.supervisor, root: 'r', base: 'r', onCut });
+  await writer.file('a', 0o644, payloadOf(1));
+  await writer.file('b', 0o644, payloadOf(2));
+  const flushed = writer.flush();
+  await new Promise((resolve) => setTimeout(resolve, 0));
+  assert.ok(checked !== null, 'the check never ran');
+  assert.deepEqual(await checked, { a: true, b: true }, 'settled() returned before the wave being encoded was published');
+  await flushed;
 }
 
 // ── An RPC stub supervisor ─────────────────────────────────────────────

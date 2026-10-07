@@ -82,6 +82,12 @@ export interface ProjectImports {
     bareSpecifiers: string[];
     /** Per package, the names imported from its root: `import { A, B as C } from 'pkg'`. */
     namedImports: NamedImportMap;
+    /**
+     * Null when every source file was read. Otherwise (a `budget` was given
+     * and the walk left files unread) what was not read, for a caller to say
+     * so: the imports above then may miss names some source asks for.
+     */
+    unread: string | null;
 }
 /**
  * Scan the project's browser source under `projDir`: `.ts/.tsx/.jsx/.js/.mjs`
@@ -112,9 +118,20 @@ export interface ProjectImports {
  *
  * With a `budget`, the walk reads at most what it allows, checked with a
  * stat before each read: a file past the per-file or the remaining total
- * bytes is skipped, and the walk ends after `files` candidate files.
+ * bytes is skipped, and the walk ends at the first candidate file past
+ * `files`. What it left unread is reported (`unread`), never dropped
+ * silently.
  */
 export declare function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports>;
+/**
+ * What every scan of a project for a barrel's names reads, at most: the
+ * installer's (pre-bundling a barrel from a synthesized entry) and the Vite
+ * dev server's (serving one) alike, so that both reach one decision for an
+ * unchanged project, and one bundle row serves both. A scan that leaves
+ * files unread (`unread`) synthesizes nothing: every barrel is bundled
+ * whole, from its own entry.
+ */
+export declare const PROJECT_SCAN: ScanBudget;
 /** What a source scan may read, at most. */
 export interface ScanBudget {
     /** Files considered (each stat'd, then read or skipped). */

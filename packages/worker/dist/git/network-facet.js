@@ -46,7 +46,7 @@ import { RETRY_ATTEMPTS, isLostTransport, retryDelay } from './pack/transport.js
 export const GIT_CLONE_JOB_MARKER = 'nimbus-clone-job';
 const WAVE_DIAGNOSTIC_FIELDS = [
     'waves', 'files', 'bytes', 'rpcWallMs', 'maxRpcWallMs', 'producerWaitMs',
-    'ownershipVisits', 'maxWavePaths', 'maxWaveBytes', 'retries',
+    'ownershipVisits', 'maxWavePaths', 'maxWaveBytes', 'retries', 'wholeWaves',
 ];
 /** The facet's wave writer counters, as it reported them. */
 function parseWaveDiagnostic(value) {
@@ -54,7 +54,7 @@ function parseWaveDiagnostic(value) {
         return undefined;
     const parsed = {
         waves: 0, files: 0, bytes: 0, rpcWallMs: 0, maxRpcWallMs: 0, producerWaitMs: 0,
-        ownershipVisits: 0, maxWavePaths: 0, maxWaveBytes: 0, retries: 0,
+        ownershipVisits: 0, maxWavePaths: 0, maxWaveBytes: 0, retries: 0, wholeWaves: 0,
     };
     for (const field of WAVE_DIAGNOSTIC_FIELDS) {
         parsed[field] = nonNegativeCounter(Reflect.get(value, field));
