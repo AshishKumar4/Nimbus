@@ -36,7 +36,9 @@ published independently in the `@nimbus-sh` npm scope.
   the refusal carried on without it, silently, on every launch (one of 286
   bytes during `nuxt dev`'s startup). The refusal is now named on stderr, once
   per module, and a module that validates (up to 1 MiB) is staged: the next
-  launch of the command carries it.
+  launch of the command carries it. And `WebAssembly.instantiate(bytes)` that
+  fails after its compile (a link failure, a trap) keeps its own error, where
+  it was reported as a refused compile and lost its class.
 - Changed: a process compiles a wasm image its launch carries when the
   program first compiles it, not when the process starts. A Vite 8 or Astro
   dev server no longer compiles lightningcss's 15.8 MB image on every launch,
