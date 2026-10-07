@@ -19,9 +19,9 @@
 // not change it; the throwaway reads its Preview's latest deployment back
 // the same way.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Terminal, stripAnsi } from './_driver.mjs';
@@ -63,12 +63,16 @@ export function requireAccountPin() {
   return account;
 }
 
-export function wrangle(bin, args, { cwd, account, input, env = {}, allowFail = false }) {
+export function wrangle(bin, args, { cwd, account, input, env = {}, allowFail = false, leaseFd = null }) {
   const result = spawnSync(bin, args, {
     cwd,
     input,
     encoding: 'utf8',
     env: { ...process.env, ...env, CLOUDFLARE_ACCOUNT_ID: account },
+    // A writer to a leased environment holds the lease itself, as its fd 3
+    // (scripts/ci/lib/lease.mjs): killed, the caller frees nothing while
+    // the upload it started still writes.
+    ...(leaseFd === null ? {} : { stdio: [input === undefined ? 'ignore' : 'pipe', 'pipe', 'pipe', leaseFd] }),
   });
   if (result.error) throw result.error;
   if (result.status !== 0 && !allowFail) {
@@ -105,11 +109,11 @@ export function activeVersionId(name, { cwd, account }) {
  *   - the id differs from the one served before (a no-op deploy is a
  *     stale deploy, and the whole point is to probe what was just built).
  */
-export function deployAndVerify({ cwd, account, name, envName = null, args = [] }) {
+export function deployAndVerify({ cwd, account, name, envName = null, args = [], leaseFd = null }) {
   const before = activeVersionId(name, { cwd, account });
 
   const deployArgs = ['deploy', ...(envName ? ['-e', envName] : []), ...args];
-  const result = wrangle(WRANGLER, deployArgs, { cwd, account, allowFail: true });
+  const result = wrangle(WRANGLER, deployArgs, { cwd, account, allowFail: true, leaseFd });
   const output = `${result.stdout || ''}${result.stderr || ''}`;
 
   const printed = output.match(new RegExp(`Current Version ID:\\s*(${UUID_RE.source})`))?.[1] ?? null;
@@ -148,9 +152,29 @@ export function workersDevSubdomain(base) {
   return base?.match(/^https:\/\/[^.]+\.([^.]+)\.workers\.dev$/)?.[1] ?? null;
 }
 
-export function putSecret({ cwd, account, name, key, value }) {
-  wrangle(WRANGLER, ['secret', 'put', key, '--name', name], { cwd, account, input: value });
+/**
+ * Run `fn` with the path of a JSON file holding `secrets`, for wrangler's
+ * --secrets-file: created 0600 in a private directory of its own, and
+ * removed, with the directory, when `fn` returns or throws. A secret that
+ * travels with the upload is in the version the upload creates, so one
+ * upload is one version.
+ *
+ * @template T
+ * @param {Record<string, string>} secrets
+ * @param {(path: string) => T} fn
+ * @returns {T}
+ */
+export function withSecretsFile(secrets, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'nimbus-secrets-'));
+  try {
+    const path = join(dir, 'secrets.json');
+    writeFileSync(path, JSON.stringify(secrets), { mode: 0o600 });
+    return fn(path);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
+
 
 // ── Cloudflare API ───────────────────────────────────────────────────
 //

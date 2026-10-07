@@ -82,17 +82,46 @@ if (top.status !== 0 || !head || dirty) {
 // The gate's own list of what it writes: the patch carries those paths only.
 const { OUTPUT_ROOTS, FIXPOINT_RECORD } = await import(pathToFileURL(join(root, 'scripts', 'dist-integrity.mjs')).href);
 const outputs = [...OUTPUT_ROOTS, FIXPOINT_RECORD];
-const moved = () => git(['status', '--porcelain', '--untracked-files=all', '--', ...outputs], { cwd: root }).stdout !== '';
+/** The outputs as they stand, as a git tree id (through a scratch index). */
+function outputsTree() {
+  const scratch = mkdtempSync(join(tmpdir(), 'ci-build-outputs-'));
+  try {
+    const env = { ...process.env, GIT_INDEX_FILE: join(scratch, 'index') };
+    git(['read-tree', 'HEAD'], { cwd: root, env });
+    const present = outputs.filter((path) => existsSync(join(root, path)) || git(['cat-file', '-e', `HEAD:${path}`], { cwd: root }).status === 0);
+    git(['add', '--all', '--', ...present], { cwd: root, env });
+    return git(['write-tree'], { cwd: root, env }).stdout.trim();
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
 
-const gate = await step('dist-fixpoint', root, 'bun', ['scripts/dist-integrity.mjs', ...cache]);
-const fixpoint = { ...gate };
-if (gate.exitCode === 1 && moved()) {
-  // The first run rebuilt a stale dist and, by design, recorded nothing; the
-  // second proves the rebuilt tree is the fixpoint and records it.
-  const again = await step('dist-fixpoint', root, 'bun', ['scripts/dist-integrity.mjs', '--no-cache']);
-  fixpoint.seconds += again.seconds;
-  fixpoint.output = `${gate.output}\n── rebuilt; the gate again, on the rebuilt tree ──\n${again.output}`.slice(-OUTPUT_CAP);
-  fixpoint.exitCode = again.exitCode === 0 ? 1 : again.exitCode;
+/**
+ * Gate passes until one leaves the outputs as it found them. A pass whose
+ * rebuild moved dist records nothing, by design; the pass after it proves the
+ * rebuilt tree is the fixpoint and records it, so the patch carries the
+ * record and the gate accepts the patched commit. The gate's build plan
+ * should reach the fixpoint in one rebuild (two passes); a third is said, by
+ * name, as the plan's bug it is, and more than MAX_PASSES is red.
+ */
+const MAX_PASSES = 4;
+const fixpoint = { name: 'dist-fixpoint', exitCode: 1, seconds: 0, output: '' };
+for (let pass = 1; ; pass++) {
+  const before = outputsTree();
+  const run = await step('dist-fixpoint', root, 'bun', ['scripts/dist-integrity.mjs', ...(pass === 1 ? cache : ['--no-cache'])]);
+  fixpoint.seconds += run.seconds;
+  fixpoint.output = `${fixpoint.output}${pass > 1 ? `\n── rebuilt; the gate again (pass ${pass}), on the rebuilt tree ──\n` : ''}${run.output}`.slice(-OUTPUT_CAP);
+  const rebuilt = outputsTree() !== before;
+  if (run.exitCode !== 1 || !rebuilt) {
+    // 0 on the first pass: this commit's dist is the fixpoint. 0 later: the patch makes it so.
+    fixpoint.exitCode = run.exitCode === 0 && pass > 1 ? 1 : run.exitCode;
+    if (pass > 2) fixpoint.output += `\nthe build reached its fixpoint only on rebuild ${pass - 1}: dist-integrity's BUILD_FIXPOINT should reach it in one\n`;
+    break;
+  }
+  if (pass === MAX_PASSES) {
+    fixpoint.output += `\nthe build did not reach a fixpoint in ${MAX_PASSES} passes: each rebuild moved dist again\n`;
+    break;
+  }
 }
 
 // What the build wrote outside its outputs would not be in the patch: the
