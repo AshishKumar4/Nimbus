@@ -543,8 +543,9 @@ stage_sci() {
 }
 
 # A zip as `src` holds it, rewritten to `dest` with its entries sorted by name and
-# dated CPYTHON_SOURCE_DATE_EPOCH: wasm_assets.py writes the stdlib's in the
-# order it walks and dates each entry by its .pyc file's build-time mtime.
+# dated CPYTHON_SOURCE_DATE_EPOCH, at wasm_assets.py's compression level: it
+# writes the stdlib's in the order it walks and dates each entry by its .pyc
+# file's build-time mtime.
 normalize_zip() {
 	"$PYSRC/build-host/python" - "$1" "$2" "$CPYTHON_SOURCE_DATE_EPOCH" <<-'PYEOF'
 	import sys
@@ -557,7 +558,7 @@ normalize_zip() {
 	        entry = zipfile.ZipInfo(info.filename, stamp)
 	        entry.compress_type = info.compress_type
 	        entry.external_attr = info.external_attr
-	        dest.writestr(entry, source.read(info))
+	        dest.writestr(entry, source.read(info), compresslevel=9)
 	PYEOF
 }
 
