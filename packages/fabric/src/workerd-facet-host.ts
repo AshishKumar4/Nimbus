@@ -725,7 +725,7 @@ async function runOneShot<T>(
  * the same SQLite. The name is aborted first: a get with a new class of a
  * facet still running (a previous incarnation's) would reset this object.
  */
-export function facetJournal(ctx: DurableObjectState, env: ResidentFacetEnv, name: string): ProcessFsJournalSource {
+export function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string): ProcessFsJournalSource {
   const loader = env.LOADER;
   if (!loader) throw new Error('Nimbus: env.LOADER is missing: a process\'s write log cannot be read');
   const facets = facetContainer(ctx);
@@ -746,6 +746,13 @@ export function facetJournal(ctx: DurableObjectState, env: ResidentFacetEnv, nam
     number: (numbering) => open().number(numbering),
     readAfter: (after, maxBytes) => open().readAfter(after, maxBytes),
     dropThrough: (jid) => open().dropThrough(jid),
+  };
+}
+
+/** What facetJournal loads its reader with: the Worker Loader's unkeyed load. */
+export interface JournalReaderEnv {
+  LOADER?: {
+    load(code: { compatibilityDate: string; mainModule: string; modules: Record<string, string> }): { getDurableObjectClass(name: string): unknown };
   };
 }
 

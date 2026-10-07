@@ -350,6 +350,7 @@ export interface StagedArtifactExecResult extends FacetExecResult {
 
 interface LoadedWorkerStub {
   getEntrypoint(): LoadedWorkerEntrypointStub;
+  getDurableObjectClass(name: string): unknown;
 }
 
 interface NimbusWorkerLoader {
@@ -4996,7 +4997,7 @@ export class FacetManager {
     onColdStart(ctx, () => this.processJournals.drainPending({
       reserved: reservedFacetNames(this.ctx),
       drain: async (row) => {
-        await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env as Parameters<typeof facetJournal>[1], row.facet));
+        await this._drainJournalAs(row.pid, row.cred, facetJournal(this.ctx, this.env, row.facet));
         this.vfs?.forgetSequences(row.pid);
         deleteFacetStorage(this.ctx, row.facet);
       },

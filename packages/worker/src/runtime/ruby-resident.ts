@@ -267,6 +267,11 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     '  __wasiAdoptSupervisor(supervisor);',
     '}',
     'export class NimbusProcess extends DurableObject {',
+    '  constructor(ctx, env) {',
+    '    super(ctx, env);',
+    // Its write log is kept in its own store (process-fs-journal.ts).
+    '    globalThis.__nimbusFsJournalSql = ctx.storage.sql;',
+    '  }',
     '  async startProcess(args) {',
     '    __nimbusAdoptRubySupervisor(this.env);',
     '    return __nimbusStartRubyProcess(args || {});',

@@ -68,6 +68,8 @@ export interface HolderOptions {
   readonly grantAfter?: number;
   /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
   readonly grantInos?: number;
+  /** Where the client logs what it sends until the session answers: the process's own store, where it has one (process-fs-journal.ts). */
+  readonly journal?: ProcessFsJournal;
 }
 
 /** A file made or rewritten here: its bytes until they are sent. */
@@ -195,6 +197,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
     ...(options.isHomeRoot === undefined ? {} : { isHomeRoot: options.isHomeRoot }),
     ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
     ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
+    ...(options.journal === undefined ? {} : { journal: options.journal }),
     released: dropDecisions,
     drain,
   });

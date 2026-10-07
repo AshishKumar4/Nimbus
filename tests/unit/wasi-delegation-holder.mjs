@@ -17,7 +17,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
-import { MAX_DELEGATIONS_PER_PROCESS } from '../../packages/core/src/_shared/process-fs-client.ts';
+import { MAX_DELEGATIONS_PER_PROCESS, sqlJournal } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -26,7 +26,7 @@ const enc = new TextEncoder();
 const dec = new TextDecoder();
 const user = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 
-function session({ grantInos } = {}) {
+function session({ grantInos, journal, gate } = {}) {
   const harness = createSqliteVfsTestHarness();
   const engine = new SqliteVFS(harness.sql, harness.ctx);
   const kernel = engine.as(CRED_KERNEL);
@@ -74,6 +74,7 @@ function session({ grantInos } = {}) {
   const processSession = {
     openWriter: async () => null,
     writeBatchStream: async (stream, _fence, owner) => {
+      if (gate) await gate;
       const result = await bridge.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner });
       waves.push(result);
       return result;
@@ -90,6 +91,7 @@ function session({ grantInos } = {}) {
     session: processSession,
     grantAfter: 1,
     ...(grantInos === undefined ? {} : { grantInos }),
+    ...(journal === undefined ? {} : { journal }),
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
   });
   return { engine, kernel, filesystem, fs, waves };
@@ -193,6 +195,25 @@ async function create(fs, path, text) {
   assert.equal(s.kernel.exists('home/user/proj/d2/a.txt'), false);
   assert.equal(dec.decode(s.kernel.readFile('home/user/proj/d2/b.txt')), 'A');
   assert.equal(s.kernel.exists('home/user/proj/d2/c.txt'), false);
+}
+
+// ── A resident's process logs what it sends in its own store until the session answers ──
+// (process-fs-journal.ts): what it dies holding, the session drains from
+// there. Red before: the holder's client was made without the journal.
+{
+  const journal = sqlJournal(createSqliteVfsTestHarness().sql);
+  const gate = Promise.withResolvers();
+  const s = session({ journal, gate: gate.promise });
+  await s.fs.mkdir('/home/user/proj/logged', { mode: 0o755 });
+  for (let index = 0; index < 20; index++) await create(s.fs, `/home/user/proj/logged/f${index}.txt`, `file ${index}\n`);
+  const flushed = s.fs.flush();
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.ok(journal.entries().length > 0, 'what the process sent was not in its journal while unanswered');
+  gate.resolve();
+  await flushed;
+  assert.equal(journal.entries().length, 0, 'answered changes stayed in the journal');
+  await s.fs.settle();
+  assert.equal(dec.decode(s.kernel.readFile('home/user/proj/logged/f19.txt')), 'file 19\n');
 }
 
 console.log('wasi delegation holder: ok');

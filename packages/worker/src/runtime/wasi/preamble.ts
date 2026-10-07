@@ -60,6 +60,7 @@ import {
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { ProcessFsSession } from '@nimbus-sh/core/_shared/process-fs-client.js';
+import { sqlJournal, type JournalSql } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 
@@ -262,7 +263,14 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
       recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
     },
   };
-  return residentFilesystem(authority, booting, { session, isHomeRoot: isHomeDirectory });
+  // A resident's facet keeps the log of what it sends in its own store
+  // (process-fs-journal.ts), drained by the session once the process is gone.
+  const journalSql: JournalSql | undefined = Reflect.get(globalThis, '__nimbusFsJournalSql');
+  return residentFilesystem(authority, booting, {
+    session,
+    isHomeRoot: isHomeDirectory,
+    ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+  });
 }
 
 /** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */

@@ -46,7 +46,7 @@ import type {
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
-import type { ProcessFsSession } from '../../_shared/process-fs-client.js';
+import type { ProcessFsJournal, ProcessFsSession } from '../../_shared/process-fs-client.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -289,6 +289,8 @@ export interface ResidentDelegation {
   /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
   readonly grantInos?: number;
   readonly isHomeRoot?: (key: string) => boolean;
+  /** The process's own store's write log (HolderOptions.journal). */
+  readonly journal?: ProcessFsJournal;
 }
 
 export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem {
@@ -349,6 +351,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
       isHomeRoot: delegation.isHomeRoot,
       ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
       ...(delegation.grantInos === undefined ? {} : { grantInos: delegation.grantInos }),
+      ...(delegation.journal === undefined ? {} : { journal: delegation.journal }),
       // What it sent changed the session: the store catches up before it answers next.
       sent: () => { owed = true; },
     });
