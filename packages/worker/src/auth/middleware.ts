@@ -81,6 +81,12 @@ export function extractBearerToken(request: Request): string | null {
  *         `requireToken` is true (default).
  * @throws Any error from {@link verifyNimbusToken}.
  */
+export function verifyRequestToken(request: Request, env: NimbusAuthEnv): Promise<VerifiedNimbusToken>;
+export function verifyRequestToken(
+  request: Request,
+  env: NimbusAuthEnv,
+  opts: { requireToken?: boolean },
+): Promise<VerifiedNimbusToken | null>;
 export async function verifyRequestToken(
   request: Request,
   env: NimbusAuthEnv,
@@ -94,6 +100,23 @@ export async function verifyRequestToken(
     );
   }
   return verifyNimbusToken(env, token);
+}
+
+/**
+ * Authorize a request for a route: verify its token, require every scope in
+ * `scopes`, and, on a route that addresses a session, require the token's
+ * pin to match it. Throws the NimbusAuthError of the first check that fails;
+ * each route keeps its own legacy policy and error envelope.
+ */
+export async function authorizeRequest(
+  request: Request,
+  env: NimbusAuthEnv,
+  required: { scopes: readonly string[]; sessionId?: string },
+): Promise<VerifiedNimbusToken> {
+  const verified = await verifyRequestToken(request, env);
+  requireScopes(verified, required.scopes);
+  if (required.sessionId !== undefined) requireSessionPin(verified, required.sessionId);
+  return verified;
 }
 
 /**

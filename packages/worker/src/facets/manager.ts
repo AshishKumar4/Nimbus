@@ -7762,9 +7762,23 @@ export class FacetManager {
       ...ranAs,
     };
     let duplicateOf: number | null;
+    let reservedPort: number | undefined;
+    let durableFacetName: string | undefined;
+    let launchEnv: Record<string, string> | undefined;
     try {
       duplicateOf = await this._claimResident(initial);
       this._assertLaunchStillOwned(entry.pid);
+      // The reservation the identity holds, if any: its port is what `$PORT`
+      // is set to and what the facet's durable slot is bound for, so the
+      // resident's `ctx.storage` persists across resets the way a durable
+      // worker's does. Taken inside the claim's cleanup: a slot whose ledger
+      // charge fails must not leave the claim held.
+      const held = duplicateOf !== null ? null : await readPortReservationByOwner(this.ctx, owner);
+      if (held !== null) {
+        durableFacetName = await acquireDurableFacetSlot(this.ctx, owner);
+        reservedPort = held.port;
+        launchEnv = { PORT: String(held.port), NIMBUS_APP: held.reservation.name ?? owner };
+      }
     } catch (e: unknown) {
       pacer.settle();
       await this._releaseResidentClaim(entry.pid);
@@ -7773,20 +7787,6 @@ export class FacetManager {
       throw e;
     }
     const ephemeral = duplicateOf !== null;
-    // The reservation the identity holds, if any: its port is what `$PORT`
-    // is set to and what the facet's durable slot is bound for, so the
-    // resident's `ctx.storage` persists across resets the way a durable
-    // worker's does.
-    const held = ephemeral ? null : await readPortReservationByOwner(this.ctx, owner);
-    let durableFacetName: string | undefined;
-    let launchEnv: Record<string, string> | undefined;
-    if (held !== null) {
-      durableFacetName = await acquireDurableFacetSlot(this.ctx, owner);
-      launchEnv = {
-        PORT: String(held.port),
-        NIMBUS_APP: held.reservation.name ?? owner,
-      };
-    }
     if (ephemeral) {
       this.ephemeralPids.set(entry.pid, owner);
       this.hooks.notify?.(
@@ -7801,7 +7801,7 @@ export class FacetManager {
       phase: 'starting',
       recipe,
       owner,
-      ...(held !== null ? { port: held.port, injectedPort: held.port } : {}),
+      ...(reservedPort !== undefined ? { port: reservedPort, injectedPort: reservedPort } : {}),
       restart: residentRestartPolicy(opts.env),
       ...ranAs,
     };

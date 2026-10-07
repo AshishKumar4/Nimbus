@@ -92,9 +92,9 @@ export declare const WRANGLER_UNSUPPORTED_CONFIG_FIELDS: string[];
  * namespace) and return any field names from
  * WRANGLER_UNSUPPORTED_CONFIG_FIELDS that are present and non-empty.
  *
- * Best-effort: tolerates JSONC comments and syntax errors (returns [] on
- * parse failure). The caller decides whether to warn or block — we only
- * report; nimbus-wrangler itself still runs.
+ * Best-effort: a config wrangler cannot parse reports nothing (nimbus-wrangler
+ * says why it cannot read it). The caller decides whether to warn or block —
+ * we only report; nimbus-wrangler itself still runs.
  */
 export declare function detectUnsupportedWranglerConfig(vfs: Pick<VFS, 'stat' | 'readFile'>, root: string): Promise<string[]>;
 /**

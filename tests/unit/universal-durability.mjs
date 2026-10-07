@@ -524,6 +524,8 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
     [`my-api-2--${SID}`, { name: 'my-api-2', sid: SID }],
     [`${CAP}--3000--${SID}`, { port: 3000, sid: SID, capability: CAP }],
     [`${CAP}--api--${SID}`, { name: 'api', sid: SID, capability: CAP }],
+    // A sid may hold `--`; a name never does, so the name is the first label.
+    [`a--b--${SID}`, { name: 'a', sid: `b--${SID}` }],
   ];
   for (const [label, expected] of cases) {
     assert.deepEqual(parsePreviewHost(`${label}.${SUFFIX}`, SUFFIX), expected, label);
@@ -531,7 +533,6 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   for (const bad of [
     `03000--${SID}`,             // a non-canonical port is not a name either
     `${CAP}--${SID}`,            // a 24-hex label is never a name
-    `a--b--${SID}`,              // three labels without a capability
     `${CAP}--0--${SID}`,
     `api.x--${SID}`,
     `-api--${SID}`,
@@ -780,6 +781,39 @@ async function waitFor(probe, budgetMs) {
     if (Date.now() > deadline) throw new Error(`waitFor: nothing within ${budgetMs}ms`);
     await new Promise((r) => setTimeout(r, 25));
   }
+}
+
+// ── 12. a launch whose durable slot cannot be charged leaves nothing behind ──
+// The identity holds a reservation, so its launch takes a durable slot and
+// charges it to the facet-ID ledger after the identity is claimed. The
+// ledger's write fails: the launch fails, its process ends, its claim and
+// its row are released, and a retry is the identity's durable instance, not
+// a duplicate of a ghost.
+{
+  const { fm, ctx, processes, notices, world } = setup();
+  const cwd = '/home/user/ledger-app';
+  const argv = [`${cwd}/server.js`];
+  const owner = await deriveResidentOwner(cwd, argv);
+  await reservePort(ctx, { owner, preferredPort: 20860, occupiedPorts: NONE });
+  const put = ctx.storage.put;
+  let failing = true;
+  ctx.storage.put = async (entries, value) => {
+    // The ledger writes a charge as one multi-key put; nothing else here does.
+    if (failing && typeof entries === 'object') throw new Error('ledger write failed');
+    return put(entries, value);
+  };
+  const spawn = () => fm.spawnNode(SERVER, { command: 'node ledger-app', argv, cwd });
+  const boots = world.boots.length;
+  await assert.rejects(spawn(), /ledger write failed/);
+  assert.equal(world.boots.length, boots, 'nothing booted');
+  assert.deepEqual(processes.getRunning().filter((entry) => entry.command === 'node ledger-app'), [],
+    'the failed launch left no process running');
+  assert.equal(await ctx.storage.get(`resident-owner:${owner}`), undefined, 'the identity is not held');
+  assert.deepEqual((await journalRows(ctx)).filter((row) => row.owner === owner), [], 'no launch row is left');
+  failing = false;
+  const retry = await spawn();
+  assert.ok(!notices.some((line) => line.includes('is not the durable one')), 'the retry is not taken for a duplicate');
+  assert.equal((await rowFor(ctx, retry.pid)).injectedPort, 20860, 'the retry launched under the reservation');
 }
 
 console.log('ok - universal durability (unconditional stamp + re-drive without reservation, derived identity, ephemeral duplicate, lazy expose, capability bound to identity, rotate, remove, name hosts, $PORT injection + mismatch, restart policy, apps.list)');
