@@ -457,7 +457,10 @@ const NATIVE_OPS = {
       return { revision };
     }
   },
-  mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1])),
+  mkdir: (e, t) => fsFor(e, t).mkdir(FsPath.parse(e.args?.[0]), {
+    ...z.object({ recursive: z.boolean().optional(), mode: z.number().int().nonnegative().optional() }).default({ recursive: true }).parse(e.args?.[1]),
+    ...leaseOf(e),
+  }),
   rmdir: (e, t) => fsFor(e, t).rmdir(FsPath.parse(e.args?.[0]), leaseOf(e)),
   unlink: (e, t) => fsFor(e, t).unlink(FsPath.parse(e.args?.[0]), leaseOf(e)),
   rename: (e, t) => fsFor(e, t).rename(FsPath.parse(e.args?.[0]), FsPath.parse(e.args?.[1]), leaseOf(e)),

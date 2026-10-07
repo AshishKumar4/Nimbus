@@ -375,7 +375,7 @@ export interface RuntimeFsBridge {
   write(handleId: number, offset: number | null, bytes: Uint8Array): Awaitable<number>;
   close(handleId: number): Awaitable<void>;
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): Awaitable<RuntimeVfsDirEntry[]>;
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): Awaitable<void>;
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner): Awaitable<void>;
   unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
   rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;

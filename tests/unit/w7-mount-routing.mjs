@@ -625,12 +625,15 @@ function scripted(overrides) {
   s.engine.releaseExclusiveMutation(lease.owner);
 }
 
-// ── A lease holder's open, unlink and rmdir on a mount and on SQLite present its lease ──
-// (Red before: the bridge's open for writing, unlink and rmdir presented none:
+// ── A lease holder's mkdir, open, unlink and rmdir on a mount and on SQLite present its lease ──
+// (Red before: the bridge's mkdir, open for writing, unlink and rmdir presented none:
 // under its own lease the holder was EBUSY.)
 {
   const s = session();
-  for (const [root, at] of [['shared/held', (p) => s.inMount(s.shared, '/held/' + p)], ['home/user/held', (p) => s.inSqlite('home/user/held/' + p)]]) {
+  // A mount the session user owns: what it may write there is the lease's question, not its mode's.
+  const mine = new MemoryVFS({ uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid });
+  s.files.vfs.mount('/mine', mine);
+  for (const [root, at] of [['mine/held', (p) => s.inMount(mine, '/held/' + p)], ['home/user/held', (p) => s.inSqlite('home/user/held/' + p)]]) {
     await s.op({ op: 'mkdir', args: ['/' + root], cred: CRED_SESSION_USER });
     await s.op({ op: 'mkdir', args: ['/' + root + '/d'], cred: CRED_SESSION_USER });
     const lease = s.engine.as(CRED_SESSION_USER).acquireExclusiveMutation(root);
@@ -647,6 +650,8 @@ function scripted(overrides) {
     assert.equal(at('big.bin'), null, `${root}: unlinked under the lease`);
     await assert.rejects(s.op({ op: 'rmdir', args: ['/' + root + '/d'], cred: CRED_SESSION_USER }), /EBUSY/, `${root}: an rmdir without it`);
     await leased('rmdir', ['/' + root + '/d']);
+    await assert.rejects(s.op({ op: 'mkdir', args: ['/' + root + '/e'], cred: CRED_SESSION_USER }), /EBUSY/, `${root}: a mkdir without it`);
+    await leased('mkdir', ['/' + root + '/e/f', { recursive: true }]);
     s.engine.releaseExclusiveMutation(lease.owner);
   }
 }

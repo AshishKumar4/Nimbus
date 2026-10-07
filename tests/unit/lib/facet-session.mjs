@@ -100,7 +100,8 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
         return refused(async () => bridge.writeRange(path, offset, bytes, { createParents: true, ...lease }));
       },
       async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
-      // The session's file API: an open for writing presents the lease (supervisor-op.ts fsOpen).
+      // The session's file API: a mkdir and an open for writing present the lease (supervisor-op.ts).
+      async mkdir(path, options) { return refused(async () => bridge.mkdir(path, { ...options, ...lease })); },
       async fsOpen(path, flags) { return refused(async () => bridge.open(path, { ...flags, sync: true }, lease)); },
       async fsWrite(id, offset, bytes) { return refused(async () => bridge.write(id, offset, bytes)); },
       async fsFstat(id) { return bridge.fstat(id); },

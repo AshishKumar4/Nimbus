@@ -596,9 +596,9 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     });
   }
 
-  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } = {}): void {
+  mkdir(path: RuntimeFsPath, options: { recursive?: boolean; mode?: number } & RuntimeMutationOwner = {}): void {
     return called({ syscall: 'mkdir', path }, () => {
-      const located = this.locateMutation(path, false, 'mkdir');
+      const located = this.locateMutation(path, false, 'mkdir', options.mutationOwner);
       if (located.mount) { located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode }); return; }
       const p = located.path;
       // `/` has no row (stat answers it with rootStat), but it exists: mkdir of
@@ -610,7 +610,7 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         if (options.recursive && this.stat(path)?.type === 'directory') return;
         throw fsError('EEXIST', 'mkdir', path);
       }
-      this.vfs.mkdir(p, { recursive: !!options.recursive, mode: options.mode });
+      this.owned(options.mutationOwner).mkdir(p, { recursive: !!options.recursive, mode: options.mode });
     });
   }
 

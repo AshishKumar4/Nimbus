@@ -185,7 +185,7 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   write(handleId: number, offset: number | null, bytes: Uint8Array): number { this.guard(); return this.target.write(handleId, offset, bytes); }
   close(handleId: number): void { return this.target.close(handleId); }
   readdir(path: RuntimeFsPath, options?: { followSymlinks?: boolean }): RuntimeVfsDirEntry[] { this.guard(); return this.target.readdir(path, options); }
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }): void { this.guard(); return this.target.mkdir(path, options); }
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner): void { this.guard(); return this.target.mkdir(path, options); }
   unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.unlink(path, options); }
   rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.rmdir(path, options); }
   rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void { this.guard(); return this.target.rename(from, to, options); }
@@ -850,8 +850,11 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
     return this.either([path], () => this.bridge.readdir(path, options), async () =>
       (await this.namespace.readdir((await this.path(path, options?.followSymlinks !== false)))).map((entry) => ({ name: entry.name, type: entry.type })));
   }
-  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number }) {
-    return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir((await this.path(path)), options));
+  mkdir(path: RuntimeFsPath, options?: { recursive?: boolean; mode?: number } & RuntimeMutationOwner) {
+    return this.either([path], () => this.bridge.mkdir(path, options), async () => this.owned(options).mkdir((await this.path(path)), {
+      ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
+      ...(options?.mode === undefined ? {} : { mode: options.mode }),
+    }));
   }
   /** The namespace presenting `options`' exclusive-mutation lease to its guard, for a mutation that carries one. */
   private owned(options?: RuntimeMutationOwner): CompositeVFS {

@@ -1557,6 +1557,7 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       if (opts.onMount !== true) return waves;
       // On a mount a file past a wave's limit is written through the session's file API (pack/mount-writer.ts).
       return __nimbusGitPack.mountWriter(waves, {
+        mkdir: (path, options) => mutation('fileApi', () => supervisor.mkdir(path, options)),
         fsOpen: (path, flags) => mutation('fileApi', () => supervisor.fsOpen(path, flags)),
         fsWrite: (id, offset, bytes) => mutation('fileApi', () => supervisor.fsWrite(id, offset, bytes)),
         fsFstat: (id) => counted('fileApi', () => supervisor.fsFstat(id)),

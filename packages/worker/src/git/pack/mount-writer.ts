@@ -6,7 +6,8 @@
  * that goes in the wave as on the session's own filesystem, and a larger
  * one is written as any program writes a large file: through the session's
  * file API (open, write in pieces, close), under the clone's lease, once
- * what the waves hold before it is published, so it lands in git's order.
+ * what the waves hold before it is published, so it lands in git's order;
+ * its directory is made first, as `mkdir -p` would.
  * The index, which git writes whole to index.lock and renames over
  * .git/index, is written the same way. Its stat is the receipt a wave would
  * have answered.
@@ -32,6 +33,7 @@ export interface FileStat {
 
 /** The session's file API, as the clone's supervisor binding offers it (its lease presented). */
 export interface FileApi {
+  mkdir(path: string, options: { recursive: true }): Promise<void>;
   fsOpen(path: string, flags: { write: true; create: true; truncate: true; mode: number }): Promise<{ id: number }>;
   fsWrite(handleId: number, offset: number, bytes: Uint8Array): Promise<number>;
   fsFstat(handleId: number): Promise<FileStat>;
@@ -52,6 +54,7 @@ export function mountWriter(writer: CloneWriter, api: FileApi, dir: string, onRe
       // What the waves hold before it (its directory among them) lands first.
       await writer.flush();
       const at = root + '/' + path;
+      await api.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true });
       // git writes its index whole to index.lock, then renames it over the index.
       const written = path === '.git/index' ? at + '.lock' : at;
       const handle = await api.fsOpen(written, { write: true, create: true, truncate: true, mode });
