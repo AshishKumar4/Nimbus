@@ -13,9 +13,9 @@ export const NODE_SHIMS_ENTRY = "/_assets/runtime/node-shims-46977e6b2ceede28.js
 export const NODE_SHIMS_BUILD_ID = "46977e6b2ceede28";
 export const NODE_SHIMS_SHA256 = "46977e6b2ceede28e04ca477f62114203ab4a123f41efe737ed1768641a0c195";
 /** @nimbus-sh/core dist/_shared/vfs-write-ledger.js VFS_WRITE_LEDGER_SOURCE */
-export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-2e03476681f13735.js";
-export const VFS_WRITE_LEDGER_BUILD_ID = "2e03476681f13735";
-export const VFS_WRITE_LEDGER_SHA256 = "2e03476681f1373516a2c6592c207c6cf541ae6ad063bd544c676d62c1241d12";
+export const VFS_WRITE_LEDGER_ENTRY = "/_assets/runtime/vfs-write-ledger-edc83aaba7479750.js";
+export const VFS_WRITE_LEDGER_BUILD_ID = "edc83aaba7479750";
+export const VFS_WRITE_LEDGER_SHA256 = "edc83aaba747975048bb590fd45c33ea8eacb31d607292198102a90add3fe080";
 /** dist/vfs/facet-resident-store.js FACET_RESIDENT_STORE_SOURCE */
 export const RESIDENT_STORE_ENTRY = "/_assets/runtime/resident-store-8fa9c31b1b1571ad.js";
 export const RESIDENT_STORE_BUILD_ID = "8fa9c31b1b1571ad";

@@ -770,6 +770,10 @@ export function processFsClient(options) {
         takeFailures() {
             return failures.splice(0, failures.length);
         },
+        takeFailuresError() {
+            const taken = failures.splice(0, failures.length);
+            return taken.length === 0 ? null : failuresError(taken);
+        },
         noteFailure(failure) {
             failures.push(failure);
         },
@@ -786,7 +790,7 @@ const DRAIN_WAVE_BASE = 2 ** 40;
  */
 export function failuresError(failures) {
     return Object.assign(new Error(`${failures.length} filesystem change${failures.length === 1 ? '' : 's'} this process made did not reach the session:\n`
-        + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n')), { code: failures.length === 1 ? failures[0].errno : 'EIO', failures });
+        + failures.map((failure) => `  ${failure.op} ${failure.path}: ${failure.errno}: ${failure.message}`).join('\n')), { code: 'EIO', failures });
 }
 /**
  * Send what a process's journal still holds, as the process would have:

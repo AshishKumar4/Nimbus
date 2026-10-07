@@ -187,6 +187,10 @@ export interface ProcessFsClient {
     settle(): Promise<void>;
     /** The failures not yet reported, taken (the next effect reports them). */
     takeFailures(): ProcessFsFailure[];
+    /** The failures not yet reported, taken as the error an effect fails with (failuresError), or null. */
+    takeFailuresError(): (Error & {
+        code: string;
+    }) | null;
     /**
      * A change the program was told succeeded, refused or unanswered where the
      * runtime awaited it on the program's behalf (a synchronous call's own

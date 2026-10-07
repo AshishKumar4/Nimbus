@@ -1096,8 +1096,8 @@ async function __nimbusFlushRuntime() {
     if (__vfsFailure) throw __vfsFailure.reason;
     // A change the program was told succeeded that the session refused or
     // never answered: this boundary (a response, the exit) reports it.
-    const __fsFailures = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.takeFailures() : [];
-    if (__fsFailures.length > 0) throw __nimbusProcessFsModule.failuresError(__fsFailures);
+    const __fsFailure = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.takeFailuresError() : null;
+    if (__fsFailure) throw __fsFailure;
   });
   rt.pendingDrainChain = __pendingDrain.catch(() => {});
   await __pendingDrain;
