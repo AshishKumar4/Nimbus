@@ -235,7 +235,8 @@ interface FacetVfsState {
      * The module of each cell a transform changed, by its path: esbuild's emit
      * for a TypeScript source or an ES module, a CommonJS file with its
      * dynamic import() calls rewritten, a diagnostic shim. It becomes the
-     * path's module cell, while `bundle` keeps the file a program reads. A cell
+     * path's module cell, while `bundle` keeps the file a program reads (a
+     * code-only file's cell holds the emit: the file is not carried). A cell
      * with none is its own module.
      */
     emits?: Map<string, string>;

@@ -3455,15 +3455,15 @@ async function addEntryAbsPathReads(vfs, entryCode, bundle, budgetState) {
 /**
  * framework-fixes-F4 (2026-05-12): helper for the "esbuild unavailable
  * or fatally errored" paths. Walks the bundle for ESM-shaped files and
- * gives each a JS-valid diagnostic shim as its module (`emits`), which
- * throws an informative Error at require-time; the file stays as it is.
+ * gives each a JS-valid diagnostic shim as its module (`placeEmit`), which
+ * throws an informative Error at require-time.
  * Mirrors the per-file catch in transformEsmInBundle so the user gets the
  * same actionable error surface regardless of whether transform failed for
  * the whole batch or for one file.
  *
  * Does NOT touch non-ESM files, which run as the CommonJS they are.
  */
-function _markBundleEsmAsFailed(bundle, emits, reason) {
+function _markBundleEsmAsFailed(bundle, placeEmit, reason) {
     for (const path of Object.keys(bundle)) {
         if (!isBundleModuleCandidate(path))
             continue;
@@ -3473,7 +3473,7 @@ function _markBundleEsmAsFailed(bundle, emits, reason) {
         // A TypeScript source is never runnable as staged, so it always needs
         // the emit it cannot get; a JavaScript file only if it is ESM.
         if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src))
-            emits.set(path, esbuildDiagnosticShim(path, reason));
+            placeEmit(path, esbuildDiagnosticShim(path, reason));
     }
 }
 /**
@@ -3482,15 +3482,15 @@ function _markBundleEsmAsFailed(bundle, emits, reason) {
  * launch's store and pacer. A module esbuild rejects becomes a diagnostic
  * shim that throws the reason when required (esbuildDiagnosticShim).
  *
- * Each result goes to `emits`, to become the path's module cell, and the
- * bundle keeps the file: what a program reads is the file on disk, never
- * the launch's CommonJS rendering of it (tsc compiling its own project's
+ * Each result is the path's emit (`placeEmit`), to become its module cell,
+ * and never the file: what a program reads is the file on disk, never the
+ * launch's CommonJS rendering of it (tsc compiling its own project's
  * sources; a script patching an installed ES module and writing it back).
  *
  * Every cell lowered from ESM or compiled from TypeScript is added to
  * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER).
  */
-async function transformEsmInBundle(bundle, emits, lowered, esbuild, pacer, store) {
+async function transformEsmInBundle(bundle, placeEmit, lowered, esbuild, pacer, store) {
     // Snapshot the cells first — transforms await; never iterate-and-mutate.
     const cells = [];
     for (const path of Object.keys(bundle)) {
@@ -3500,7 +3500,7 @@ async function transformEsmInBundle(bundle, emits, lowered, esbuild, pacer, stor
             cells.push({ path, source });
     }
     return transformBundleCells(cells, { host: esbuild, store, pacer }, (path, result) => {
-        emits.set(path, result.code);
+        placeEmit(path, result.code);
         if (result.lowered)
             lowered.add(path);
     });
@@ -3739,17 +3739,38 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
     //     cannot take the ES module itself).
     const emits = new Map();
     const lowered = new Set();
+    // A file staged only to run carries its emit and not itself
+    // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
+    // module carried twice would halve the closure the bound admits. One staged
+    // to be read is carried as itself beside its emit: by a pass after the
+    // module walk, because a run read it, or as a file of the working tree, the
+    // project that tools read their sources and configs from (Vite bundling
+    // vite.config.ts, tsc, a linter).
+    const projectRoot = cwdProjectRoot(cwd);
+    const codeOnly = new Set();
+    const runOnly = (path) => stagedToRun.has(path) && !observedPaths.has(path) && !learnedPaths.has(path) && !inCwdProject(projectRoot, path);
+    // A code-only file's cell is given its emit, the one string, the moment it
+    // has one: the build never holds the file's bytes and its module both, and
+    // what reads the cells for their code (bundleUsesNodeSqlite, the wasm and
+    // binding scans) reads the module, which is all the map carries.
+    const placeEmit = (path, code) => {
+        emits.set(path, code);
+        if (!runOnly(path))
+            return;
+        bundle[path] = code;
+        codeOnly.add(path);
+    };
     let transforms;
     if (esbuild) {
         // Transient failures propagate through the launch failure path before
         // serialization/cache/LOADER publication. Per-source verdicts still use
         // the lazy diagnostic cells installed by transformEsmInBundle.
-        transforms = await transformEsmInBundle(bundle, emits, lowered, esbuild, pacer, transformStore);
+        transforms = await transformEsmInBundle(bundle, placeEmit, lowered, esbuild, pacer, transformStore);
     }
     else {
         // No esbuild service was given: the ESM cells stage as diagnostics that
         // say so, rather than as source the registry rejects without a reason.
-        _markBundleEsmAsFailed(bundle, emits, 'no esbuild service was given to this launch');
+        _markBundleEsmAsFailed(bundle, placeEmit, 'no esbuild service was given to this launch');
     }
     // Each module's bundled records of the runtime's provided packages are
     // bound to them: the emit's, or the file's own when it is its module (a
@@ -3770,21 +3791,7 @@ async function _buildPrefetchBundle(vfs, { scriptPath, cwd, entryCode, esbuild, 
             continue;
         }
         if (bound !== code)
-            emits.set(path, bound);
-    }
-    // A file staged only to run carries its emit and not itself
-    // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
-    // module carried twice would halve the closure the bound admits. One staged
-    // to be read is carried as itself beside its emit: by a pass after the
-    // module walk, because a run read it, or as a file of the working tree, the
-    // project that tools read their sources and configs from (Vite bundling
-    // vite.config.ts, tsc, a linter).
-    const projectRoot = cwdProjectRoot(cwd);
-    const codeOnly = new Set();
-    for (const path of emits.keys()) {
-        if (!stagedToRun.has(path) || observedPaths.has(path) || learnedPaths.has(path) || inCwdProject(projectRoot, path))
-            continue;
-        codeOnly.add(path);
+            placeEmit(path, bound);
     }
     await paceAfterPass();
     // 4. The snapshot's size guard, in the unit the session DO's memory was
@@ -4996,11 +5003,12 @@ export class FacetManager {
             const path = entry.path.replace(/^\/+/, '');
             const file = { [path]: entry.text };
             const emits = new Map();
+            const placeEmit = (at, code) => { emits.set(at, code); };
             const lowered = new Set();
             if (this.esbuild)
-                await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer, this._transformStore());
+                await transformEsmInBundle(file, placeEmit, lowered, this.esbuild, pacer, this._transformStore());
             else
-                _markBundleEsmAsFailed(file, emits, 'no esbuild service was given to this launch');
+                _markBundleEsmAsFailed(file, placeEmit, 'no esbuild service was given to this launch');
             let code = emits.get(path) ?? file[path];
             try {
                 code = rewriteProvidedCommonJsModules(code);
