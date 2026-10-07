@@ -105,8 +105,9 @@ export function residentFilesystem(session, resident, delegation) {
             if (typeof value !== 'function')
                 return value;
             // Whatever the session is asked, it has what this process decided first.
+            // A refusal it met is the next sync's to report, not this call's.
             return (...args) => (holder !== null && holder.pending()
-                ? timed(holder.flush().then(() => Reflect.apply(value, target, args)))
+                ? timed(holder.send().then(() => Reflect.apply(value, target, args)))
                 : timed(Reflect.apply(value, target, args)));
         },
     });

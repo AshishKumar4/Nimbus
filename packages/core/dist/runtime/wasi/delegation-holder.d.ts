@@ -95,6 +95,11 @@ export interface DelegationHolder {
         followSymlinks?: boolean;
         mode?: number;
     }): Promise<RuntimeFileHandle>;
+    /**
+     * Everything logged so far answered, what the session refused kept for the
+     * next sync (flush) to report: what goes before a call to the session.
+     */
+    send(): Promise<void>;
     /** Whether `handleId` writes through: its reads are the session's (readThrough). */
     through(handleId: number): boolean;
     /** The size this process gave file `ino` through a description of it still open, or undefined: what a stat of it by name reports here. */

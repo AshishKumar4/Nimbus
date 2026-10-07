@@ -212,7 +212,10 @@ export function delegationHolder(options) {
     const failed = () => {
         const failures = client.takeFailures();
         if (failures.length > 0) {
-            throw new Error(`the session refused what this process decided: ${failures.map((failure) => `${failure.op} ${failure.path}: ${failure.message}`).join('; ')}`);
+            // Its first refusal's errno is the call's (EACCES, ENOSPC, …), as the session said it.
+            throw fsError(failures[0].errno, 'fsync', failures[0].path, undefined, {
+                detail: `the session refused what this process decided: ${failures.map((failure) => `${failure.op} ${failure.path}: ${failure.message}`).join('; ')}`,
+            });
         }
     };
     const holder = {
@@ -594,6 +597,10 @@ export function delegationHolder(options) {
             await client.flush();
             sentSome();
             failed();
+        },
+        send: async () => {
+            await client.flush();
+            sentSome();
         },
         settle: async () => {
             drain();
