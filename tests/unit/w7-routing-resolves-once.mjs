@@ -93,18 +93,17 @@ function aliasSession() {
   return { ...s, real };
 }
 /**
- * Run `change` once, at a publication some groups into the wave, in its turn:
- * a synchronous listener of the store's change events, which the commit
- * delivers before it returns.
+ * Run `change` once, inline, as the wave's own commit publishes `path`
+ * (an inline path listener, in that commit's turn, some groups into the
+ * wave): the write it makes lands inside the wave's commit.
  */
-function atFirstCommit(s, change) {
-  let seen = 0;
+function atCommitOf(s, path, change) {
   let committed = -1;
-  const stop = s.engine.events.on(() => {
-    // Some groups in: the wave's view has held across its own commits by now.
-    if (++seen !== 3) return;
+  const stop = s.engine.events.onPath(path, () => {
+    if (committed !== -1) return;
+    committed = -2;
     change();
-    // What that commit published, counted once it returns (before the next).
+    // What had been published, counted once that commit returns (before the next).
     queueMicrotask(() => { committed = s.real(); });
   });
   return () => { stop(); return committed; };
@@ -114,7 +113,7 @@ function atFirstCommit(s, change) {
 {
   const s = aliasSession();
   const mounted = new MemoryVFS();
-  const done = atFirstCommit(s, () => s.files.vfs.mount('/home/user/repo/alias', mounted));
+  const done = atCommitOf(s, 'home/user/repo/real/f200', () => s.files.vfs.mount('/home/user/repo/alias', mounted));
   const result = await s.user.writeStream(encodeWriteBatchStream(aliased(FILES)));
   const before = done();
   assert.ok(before > 0 && before < FILES, `the mount came between groups (${before} committed before it)`);
@@ -123,17 +122,15 @@ function atFirstCommit(s, change) {
   else assert.equal(result.error.errno, 'ESTALE', JSON.stringify(result.error));
 }
 
-// P1: a listener of the wave's own commit repoints the alias into a mount.
-// (The store delivers its events once the commit returns, so this is a peer
-// commit between groups: it passes on the reviewed code as well. The case
-// the review names, a write inside the commit absorbed as the wave's own,
-// is closed by taking the revision at the publication itself (publishWatch),
-// which no public hook can run inside.)
+// P1: a listener inline in the wave's own commit repoints the alias into a
+// mount. Red before: the repoint was absorbed as the wave's own commit (its
+// revision taken after the commit returned), the old view held, and the later
+// files were written to /real, under a name that now leads to /shared.
 {
   const s = aliasSession();
   const shared = new MemoryVFS();
   s.files.vfs.mount('/shared', shared);
-  const done = atFirstCommit(s, () => {
+  const done = atCommitOf(s, 'home/user/repo/real/f200', () => {
     s.kernel.unlink('home/user/repo/alias');
     s.kernel.symlink('/shared', 'home/user/repo/alias');
   });
