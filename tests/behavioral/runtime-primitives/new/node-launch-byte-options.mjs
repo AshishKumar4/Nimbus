@@ -1,4 +1,4 @@
-import { deleteSession, heredocCommand, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
+import { deleteSession, makeAsserter, mintSession, Terminal } from '../../_driver.mjs';
 import { terminalCommandRunner } from '../../../unit/lib/workerd-probe.mjs';
 
 if (!process.env.BASE) throw new Error('BASE is required');
@@ -19,7 +19,10 @@ try {
     'main.cjs': 'console.log("MODE=" + require("#mode")); console.log("PRE=" + (globalThis.PRELOAD ?? "none")); console.log("EXEC=" + JSON.stringify(process.execArgv));',
   };
   for (const [path, content] of Object.entries(files)) {
-    const written = await run(heredocCommand(`${dir}/${path}`, content));
+    // The marker runner appends a command: a heredoc's final delimiter must
+    // stand alone, so use the same byte-safe fixture writer as localTerminal.
+    const encoded = Buffer.from(content).toString('base64');
+    const written = await run(`node -e "require('fs').writeFileSync('${dir}/${path}', Buffer.from('${encoded}', 'base64'))"`);
     a.check(`fixture ${path} written`, written.status === 0, written.stdout.slice(-300));
   }
   const execute = command => run(`cd ${dir} && ${command}`, 120_000);
