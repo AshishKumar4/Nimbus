@@ -78,7 +78,7 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
       const ns = view(cred, guard);
       // Removing its own slot after a failure is the record's own, unguarded.
       const cleanup = view(cred);
-      return applyRecord(ns, cleanup, record, pinOf(ns, parentOf(record.path)));
+      return applyRecord(ns, cleanup, record, pinOf(ns, parentOf(record.type === 'call' ? record.call.path : record.path)));
     },
   };
 }
