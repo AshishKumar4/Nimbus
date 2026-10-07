@@ -5,7 +5,12 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
-- Fixed: `astro dev` failed some first runs with an unhandled "EAGAIN … aria-query/lib/index.js":
+- Fixed: a process whose file store was at its storage budget could never
+  read a file it had not staged: the fetch a refused read starts was declined
+  for want of room, room was asked for only afterwards, and the fetch was not
+  tried again (`nuxt dev` stuck at "Starting Nuxt..."). The fetch now asks for
+  the room first, and concurrent asks each get theirs.
+- Fixed: `astro dev` logged an unhandled "EAGAIN … aria-query/lib/index.js":
   Vite's dependency optimizer reads, synchronously, the entries of what a
   framework includes for itself (Astro's dev toolbar includes `astro >
   aria-query`, `astro > axobject-query` and `astro > html-escaper`), and a
