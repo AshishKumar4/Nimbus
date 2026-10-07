@@ -146,7 +146,8 @@ export declare const COMMONJS_CELL_IMPORTS: string;
  * answer runtime code from the launch's `gen/` modules, or else record it for
  * the next launch and interpret it (`__nimbusRuntimeCode`, which the shims'
  * Function constructors, `vm.compileFunction`, `vm.runInThisContext`,
- * `Module.prototype._compile` and the loader of a file outside the map call).
+ * `Module.prototype._compile`, the loader of a file outside the map and the
+ * REPL call).
  *
  * Expects COMMONJS_CELL_IMPORTS, a `__NIMBUS_CODE_CELLS` table of
  * CommonJsCellRow rows and a `__NIMBUS_RUNTIME_CODE` list of staged keys.

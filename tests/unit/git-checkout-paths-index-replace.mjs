@@ -7,12 +7,14 @@
 
 import assert from 'node:assert/strict';
 import { replacedIndexEntries } from '../../packages/worker/src/git/commands.ts';
-import { DirCache, EMPTY_BLOB } from '../../packages/worker/src/git/worktree/dircache.ts';
+import { DirCache, EMPTY_BLOB, NewEntries } from '../../packages/worker/src/git/worktree/dircache.ts';
 
 /** An index holding `paths`, as git would write it. */
-const indexOf = (paths) => DirCache.parse(DirCache.empty().encode({
-  added: paths.map((path) => ({ path, mode: 0o100644, oid: EMPTY_BLOB, stat: null })),
-}), 0);
+const indexOf = (paths) => {
+  const added = new NewEntries();
+  for (const path of paths) added.add({ path, mode: 0o100644, oid: EMPTY_BLOB, stat: null });
+  return DirCache.parse(DirCache.empty().encode({ added }), 0);
+};
 const replacedPaths = (paths, restored) => {
   const dc = indexOf(paths);
   return [...replacedIndexEntries(dc, restored)].sort((a, b) => a - b).map((i) => dc.path(i));

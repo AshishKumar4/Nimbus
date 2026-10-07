@@ -199,8 +199,15 @@ type ExecutionIo = {
    * to a field a nested execute reassigns.
    */
   writeToTerminal?: (text: string) => void;
+  /** The controlling terminal: fd 0 by default, and what `/dev/tty` opens. */
   terminalStdin?: TerminalInputStream;
   terminalFds?: TerminalFdState;
+  /**
+   * A job started with `&`, and what it runs: it still has the controlling
+   * terminal (an explicit `/dev/tty` opens it) but is not its foreground
+   * job, so it does not read it by default or own its modes.
+   */
+  background?: boolean;
   scriptMode?: boolean;
   signal?: AbortSignal;
   registerProcess?: boolean;
@@ -481,6 +488,17 @@ export class Interpreter {
       const abortController = new AbortController();
       const commandText = this.getListCommandText(list);
       const backgroundIo = this.createCommandIo(io);
+      // A job does not read the terminal by default: before any redirection
+      // of its own, its stdin is /dev/null, as POSIX gives an asynchronous
+      // list (bash's, for a shell without job control). It keeps the
+      // controlling terminal for `/dev/tty`, but only the foreground job
+      // owns the terminal's modes: a background REPL (`node &`) never takes
+      // the Ctrl-C meant for the foreground.
+      if (io.terminalFds?.stdin ?? (!io.stdin && Boolean(io.terminalStdin))) {
+        backgroundIo.stdin = this.createEmptyReader();
+        backgroundIo.terminalFds = { ...io.terminalFds, stdin: false };
+      }
+      backgroundIo.background = true;
       backgroundIo.signal = abortController.signal;
       backgroundIo.registerProcess = false;
       backgroundIo.positionals = this.forkPositionals(io);
@@ -993,8 +1011,9 @@ export class Interpreter {
     stderr = fds.outputFds.get(2) ?? this.createNullWriter();
     stdin = fds.inputFds.get(0);
 
-    // If no stdin from pipe or redirect, fall back to terminal stdin
-    if (!stdin && io.terminalStdin) {
+    // If no stdin from pipe or redirect, fall back to terminal stdin (the
+    // foreground job's: a background job's fd 0 never falls back to it)
+    if (!stdin && io.terminalStdin && !io.background) {
       stdin = io.terminalStdin;
     }
 
@@ -1094,7 +1113,8 @@ export class Interpreter {
                   stdout,
                   stderr,
                   stdin,
-                  terminalStdin: io.terminalStdin,
+                  // The terminal whose modes it may set: the foreground job's.
+                  terminalStdin: io.background ? undefined : io.terminalStdin,
                   isFdTerminal: (fd: number) => this.isFdTerminal(fds, fd),
                   isFdPipe: (fd: number) => isPipeEnd(fds.outputFds.get(fd) ?? fds.inputFds.get(fd)),
                   signal: io.signal ?? this.config.getAbortSignal?.() ?? new AbortController().signal,
@@ -1425,6 +1445,7 @@ export class Interpreter {
     if (io.writeToTerminal) next.writeToTerminal = io.writeToTerminal;
     if (io.terminalStdin) next.terminalStdin = io.terminalStdin;
     if (io.terminalFds) next.terminalFds = io.terminalFds;
+    if (io.background) next.background = true;
     if (io.scriptMode) next.scriptMode = true;
     if (io.signal) next.signal = io.signal;
     if (io.registerProcess === false) next.registerProcess = false;

@@ -527,6 +527,11 @@ const MANIFEST_ROW_COLUMNS = 4;
 const CONTENT_ROW_COLUMNS = 6;
 const GC_ROW_COLUMNS = 2;
 export const INODE_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / INODE_ROW_COLUMNS);
+
+/** A batch's directory record over a symbolic link it does not remove: refused, never followed or replaced. */
+function linkedDirectoryRefusal(path: string): Error {
+  return vfsError('ENOTDIR', path, 'a directory record never replaces a symbolic link; remove the link in the same batch');
+}
 const CHUNK_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / CHUNK_ROW_COLUMNS);
 const MANIFEST_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / MANIFEST_ROW_COLUMNS);
 const CONTENT_ROWS_PER_SQL_EXEC = Math.floor(SQL_MAX_BOUND_PARAMETERS / CONTENT_ROW_COLUMNS);
@@ -8374,6 +8379,9 @@ export class SqliteVFS {
       const key = this.storageKey(path, cred);
       return this.inodes.get(key) ? key : this.createdPath(key, cred, placed);
     };
+    const deletes = (payload.deletePaths ?? []).map(deleted);
+    const linked = this.linkReplacedByDirectory(inodes.filter((entry) => entry.isDir).map((entry) => entry.path), deletes, priors);
+    if (linked !== null) throw linkedDirectoryRefusal(linked);
     for (const path of payload.deletePaths ?? []) {
       const normalized = deleted(path);
       const existing = this.checkAccess(normalized, 0, cred, {
@@ -8397,8 +8405,26 @@ export class SqliteVFS {
       ...payload,
       inodes,
       chunks,
-      deletePaths: payload.deletePaths?.map(deleted),
+      deletePaths: payload.deletePaths === undefined ? undefined : deletes,
     };
+  }
+
+  /**
+   * Of the places `directories` are written at, the first that holds a
+   * symbolic link `deletes` (the same batch's removals, at their places) do
+   * not remove; null when there is none. A directory record never replaces a
+   * link: a producer that means to (git's checkout, over a link in a leading
+   * path) removes it first, in the same batch. `priors`: what stands at the
+   * places, where the caller has read it.
+   */
+  private linkReplacedByDirectory(directories: readonly string[], deletes: readonly string[], priors?: Map<string, INode | undefined>): string | null {
+    for (const path of directories) {
+      const prior = priors?.has(path) ? priors.get(path) : this.inodes.get(path);
+      if (prior?.kind !== 'symlink') continue;
+      if (deletes.some((removed) => removed === path || path.startsWith(`${removed}/`))) continue;
+      return path;
+    }
+    return null;
   }
 
   /**
@@ -8810,6 +8836,55 @@ export class SqliteVFS {
       progress.inodes += result.inodes;
     };
 
+    // A removal observes everything the stream wrote before it.
+    const commitDelete = (path: string): void => {
+      flushGroup();
+      flushDirectories();
+      options.admit?.();
+      const affected = Math.max(1, this.collectSubtreeInodes([path]).length);
+      asCaller(() => {
+        this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] }, cred);
+      });
+      progress.committedGroupSequence++;
+      progress.committedPathCount += affected;
+    };
+
+    // The wave's leading removals and directories (an encoder sends them
+    // before its first file) are held until the first file or the end, and
+    // checked together before any of them commits: a directory record over
+    // a symbolic link they do not remove refuses the wave with nothing
+    // committed (linkReplacedByDirectory). Then the removals commit, then
+    // the directories, in batches the plan's accounting bounds.
+    let leading = true;
+    let leadingDeletes: string[] = [];
+    const endLeading = (): void => {
+      if (!leading) return;
+      leading = false;
+      const deletes = leadingDeletes;
+      leadingDeletes = [];
+      asCaller(() => {
+        const placedAt = (path: string): string => {
+          const key = this.storageKey(path, cred);
+          return this.inodes.get(key) ? key : this.createdPath(key, cred);
+        };
+        const linked = this.linkReplacedByDirectory(
+          pendingDirectories.map((inode) => this.createdPath(this.storageKey(inode.path, cred), cred)),
+          deletes.map(placedAt),
+        );
+        if (linked !== null) throw linkedDirectoryRefusal(linked);
+      });
+      // Held aside while the removals commit: commitDelete flushes what is
+      // pending, and the directories go in the bounded batches below.
+      const directories = pendingDirectories;
+      pendingDirectories = [];
+      for (const path of deletes) commitDelete(path);
+      for (const inode of directories) {
+        if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null) flushDirectories();
+        pendingDirectories.push(inode);
+      }
+      flushDirectories();
+    };
+
     const stagePiece = (file: NonNullable<typeof activeFile>, piece: Piece): void => {
       if (file.held !== null) {
         file.held.push(piece);
@@ -8925,17 +9000,9 @@ export class SqliteVFS {
         const ended = this.withHolds(holds, (): boolean => {
           switch (record.type) {
             case 'delete': {
-              // A delete observes everything the stream wrote before it.
               phase = 'publish';
-              flushGroup();
-              flushDirectories();
-              options.admit?.();
-              const affected = Math.max(1, this.collectSubtreeInodes([record.path]).length);
-              asCaller(() => {
-                this.writeBatch({ inodes: [], chunks: [], deletePaths: [record.path] }, cred);
-              });
-              progress.committedGroupSequence++;
-              progress.committedPathCount += affected;
+              if (leading) leadingDeletes.push(record.path);
+              else commitDelete(record.path);
               break;
             }
             case 'directory': {
@@ -8948,8 +9015,9 @@ export class SqliteVFS {
               // Directory inodes carry no payload: rows are the only bound in
               // reach, priced by the plan's own accounting (each row, the
               // parent it dates, and a snapshot's before-images of both), so
-              // the strict batch the flush commits always fits.
-              if (this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null) flushDirectories();
+              // the strict batch the flush commits always fits. The leading
+              // ones are bounded as they commit (endLeading).
+              if (!leading && this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null) flushDirectories();
               pendingDirectories.push(record.inode);
               break;
             }
@@ -8960,6 +9028,7 @@ export class SqliteVFS {
               phase = 'publish';
               // Authorising a file reads its parent from the committed inode
               // tree, so pending directories become visible first.
+              endLeading();
               flushDirectories();
               phase = 'validation';
               // The file lands where its name resolves (links followed, as a
@@ -9083,6 +9152,7 @@ export class SqliteVFS {
             case 'setattr': {
               // Like a delete, it observes everything the stream wrote before it.
               phase = 'publish';
+              endLeading();
               flushGroup();
               flushDirectories();
               options.admit?.();
@@ -9099,6 +9169,7 @@ export class SqliteVFS {
             }
             case 'batch-end':
               phase = 'publish';
+              endLeading();
               flushDirectories();
               flushGroup();
               return true;

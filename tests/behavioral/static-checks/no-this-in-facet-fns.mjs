@@ -77,11 +77,11 @@ const SUBMIT = '.submit(';
  * The floor that keeps this check from going quiet again. If a refactor
  * renames `submit` or moves dispatch elsewhere, discovery drops and the run
  * fails rather than printing a cheerful zero. Each package has its own, so
- * losing either package's dispatch fails the run: the worker's REPL steps
- * (js-repl, ruby-repl, the fan-out diagnostic's literal), core's runners
- * (wasm, bash, clang, ruby, cpython).
+ * losing either package's dispatch fails the run: the worker's (ruby-repl's
+ * step, the fan-out diagnostic's literal), core's runners (wasm, bash,
+ * clang, ruby, cpython).
  */
-const MIN_EXPECTED_FACET_FNS = { worker: 3, core: 5 };
+const MIN_EXPECTED_FACET_FNS = { worker: 2, core: 5 };
 
 // ── scanning ────────────────────────────────────────────────────────────────
 //
