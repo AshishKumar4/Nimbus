@@ -17,7 +17,7 @@ const commands = {
   rebase: ['rebase'],
   stash: ['stash'],
   sparse: ['sparse-checkout'],
-  transport: ['fetch', 'pull', 'push'],
+  transport: ['ls-remote', 'fetch', 'pull', 'push'],
   other: [undefined, '--version', '-v', '--help', '-h', 'help', 'archive', 'user-alias', 'constructor', '__proto__', 'toString'],
 };
 const jsCommands = new Set([undefined, '--version', '-v', '--help', '-h', 'clone', 'init', 'status', 'diff', 'add', 'commit', 'checkout', 'reset', 'log', 'branch', 'tag', 'remote', 'config', 'rev-parse', 'ls-files', 'merge', 'fetch', 'pull', 'push']);
@@ -66,6 +66,7 @@ for (const args of [
   ['add', '-p'], ['commit', '--amend'], ['branch', '-m', 'new'], ['checkout', '--orphan', 'new'],
   ['config', '--global', 'user.name', 'Ada'], ['log', '--graph'], ['pull', '--rebase'],
   ['show', 'HEAD'], ['blame', 'a'], ['switch', 'main'], ['restore', 'a'], ['notes', 'list'], ['worktree', 'list'],
+  ['ls-remote', 'https://example.test/repo.git'],
   ['commit', '-m', '--', '--amend'],
 ]) {
   assert.equal(routeGitInvocation(args, '/home/user').policy.backend, 'wasi', args.join(' '));
