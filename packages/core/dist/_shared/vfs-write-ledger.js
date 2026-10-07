@@ -9,8 +9,11 @@ const __vfsWriteClaims = new Map();
 // asked to apply whose acknowledgement is not adjudicated yet
 // (__nimbusOwnAcknowledgement). Each entry settles, never rejects.
 const __vfsOwnAcks = new Map();
+// What a logged change answers when the parked cell is not the file's
+// whole content (an append to a file the process never held): retired by
+// eviction, never stamped. And what one answers when the session refused it.
 const __nimbusVfsAppendRangeResult = {};
-let __nimbusVfsAppendOperationSequence = 0;
+const __nimbusVfsRefusedResult = {};
 
 function __nimbusVfsPathKey(path) {
   return String(path).replace(/^\\/+/, "");
@@ -25,6 +28,11 @@ function __nimbusVfsPathKey(path) {
  * late), its timers the raw ones captured below, and published for the
  * runtime's effect and exit boundaries (globalThis.__nimbusProcessFs).
  */
+// The platform's timers, captured before the shims wrap setTimeout with the
+// VFS resumption barrier: the client's resends and watches are the shim's own
+// infrastructure, not a user resumption.
+const __nimbusRawTimer = globalThis.setTimeout;
+const __nimbusRawClearTimer = globalThis.clearTimeout;
 let __nimbusProcessFsInstance = null;
 function __nimbusProcessFs() {
   if (__nimbusProcessFsInstance !== null) return __nimbusProcessFsInstance;
@@ -55,6 +63,10 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
+    // The process's own SQLite, where it has one (a process facet): every
+    // change is there before the program is told it succeeded, and what the
+    // process holds when it dies the session drains from it.
+    ...(globalThis.__nimbusFsJournal ? { journal: globalThis.__nimbusFsJournal } : {}),
   });
   globalThis.__nimbusProcessFs = __nimbusProcessFsInstance;
   return __nimbusProcessFsInstance;
@@ -76,6 +88,28 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   answer.then(settled, settled);
   return answer;
+}
+
+/**
+ * Log \`op\`, the change a synchronous call (or an async one) just made to
+ * the parked cell at \`path\`, in the client's log now, in the order the
+ * program made it, and claim the cell with its answer: once the session has
+ * it, the cell retires (stamped with the revision it made, or evicted when
+ * it was not the file's whole content: \`partial\`); refused, it is dropped.
+ * Answers the session's answer; \`acknowledged\`: the program was already
+ * told it succeeded, so a refusal is reported, never thrown.
+ */
+function __nimbusLogVfsWrite(path, op, options = {}) {
+  const acknowledged = options.acknowledged === true;
+  const answer = __nimbusSubmitVfs(op, acknowledged);
+  const claimed = __nimbusClaimVfsWrite(path, () => answer.then((answered) => {
+    if (answered.failed) return __nimbusVfsRefusedResult;
+    if (options.partial) return __nimbusVfsAppendRangeResult;
+    return answered.receipt?.revision ?? answered.mutation?.after;
+  }), false, acknowledged);
+  // The claim settles with the answer; a refusal is the answer's to report.
+  claimed.catch(() => {});
+  return { answer, claimed };
 }
 
 /**
@@ -121,17 +155,6 @@ function __nimbusAcknowledged(work, syscall, path) {
     const code = error && typeof error.code === "string" ? error.code : "EIO";
     __nimbusProcessFs().noteFailure({ op: syscall, path: __nimbusVfsPathKey(path), errno: code, message: error && error.message ? error.message : String(error) });
   });
-}
-
-/** A mutation no call record carries, made by \`run\` in its place in the client's log (ProcessFsClient.call). */
-function __nimbusVfsCall(name, path, run) {
-  if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
-  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(name);
-  const answer = __nimbusProcessFs().call(name, __nimbusVfsPathKey(path), run);
-  globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
-  answer.then(settled, settled);
-  return answer;
 }
 
 /** A cell's bytes, as a data call carries them. */
@@ -367,43 +390,17 @@ async function __nimbusDrainVfsMutations() {
   }
 }
 
-function __nimbusCapturePendingVfsAppend(path) {
+/**
+ * Put \`next\` in the parked cell at \`path\` as the view of a change already
+ * logged (a ranged write's overlay, a truncate's trim): the same generation,
+ * so the change's claim still retires it.
+ */
+function __nimbusReplaceParkedCell(path, next) {
   const key = __nimbusVfsPathKey(path);
-  const append = __vfsAppendWrites[key];
-  return append && append.generation === __vfsWriteGenerations[key]
-    ? append
-    : null;
-}
-
-function __nimbusConcatVfsBytes(left, right) {
-  const bytes = new Uint8Array(left.byteLength + right.byteLength);
-  bytes.set(left, 0);
-  bytes.set(right, left.byteLength);
-  return bytes;
-}
-
-function __nimbusRecordVfsAppend(path, delta, fragment, previous) {
-  const key = __nimbusVfsPathKey(path);
-  const chain = previous ? previous.chain : { pending: [] };
-  let operation;
-  if (previous &&
-      !previous.claimed &&
-      !chain.pending.includes(previous.operation)) {
-    operation = previous.operation;
-    operation.bytes = __nimbusConcatVfsBytes(operation.bytes, delta);
-  } else {
-    operation = {
-      id: String(++__nimbusVfsAppendOperationSequence),
-      bytes: delta.slice(),
-    };
-  }
-  __vfsAppendWrites[key] = {
-    generation: __vfsWriteGenerations[key],
-    fragment,
-    chain,
-    operation,
-    claimed: false,
-  };
+  if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key)) return;
+  const generation = __vfsWriteGenerations[key];
+  __vfsWrites[key] = next;
+  __vfsWriteGenerations[key] = generation;
 }
 
 function __nimbusCaptureVfsWrite(path) {
@@ -413,27 +410,7 @@ function __nimbusCaptureVfsWrite(path) {
     key,
     content: __vfsWrites[key],
     generation: __vfsWriteGenerations[key],
-    append: __nimbusCapturePendingVfsAppend(key),
   };
-}
-
-function __nimbusVfsAppendOperations(snapshot) {
-  const operations = snapshot.append.chain.pending.slice();
-  if (!operations.includes(snapshot.append.operation)) {
-    operations.push(snapshot.append.operation);
-  }
-  return operations;
-}
-
-function __nimbusBeginVfsAppendOperation(snapshot, operation) {
-  if (!snapshot.append.chain.pending.includes(operation)) {
-    snapshot.append.chain.pending.push(operation);
-  }
-}
-
-function __nimbusCommitVfsAppendOperation(snapshot, operation) {
-  const index = snapshot.append.chain.pending.indexOf(operation);
-  if (index !== -1) snapshot.append.chain.pending.splice(index, 1);
 }
 
 /**
@@ -464,19 +441,20 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen) 
     try {
       value = await mutation(snapshot.content, snapshot);
     } catch (error) {
-      // A verdict is the authority's answer; anything else (the client could
-      // not get one) may have landed. A whole write's parked bytes stay (sent
-      // again, they replace the same file); an append's go, as refused: sent
-      // again under a new number, it could land twice.
-      if (!__nimbusIsDurabilityFailure(error) || snapshot.append) throw __nimbusRefuseParkedWrite(snapshot, error, unseen);
-      throw error;
+      throw __nimbusRefuseParkedWrite(snapshot, error, unseen);
+    }
+    // Refused (an acknowledged change: the client reports it): the bytes are not the file's.
+    if (value === __nimbusVfsRefusedResult) {
+      __nimbusRefuseParkedWrite(snapshot, null, false);
+      return value;
     }
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
       // What the barriers reported for this path while the write was in
       // flight. Read before the parked cell is retired below, which drops it.
       const reported = __vfsParkedReports[snapshot.key];
-      if (snapshot.append &&
-          value === __nimbusVfsAppendRangeResult &&
+      // Past the own changes logged after it (__nimbusFollowOwnWrite).
+      value = __nimbusFollowedRevision(snapshot.key, value);
+      if (value === __nimbusVfsAppendRangeResult &&
           typeof __vfsBundle !== "undefined" &&
           __vfsBundle) {
         delete __vfsBundle[snapshot.key];
@@ -697,7 +675,7 @@ function __nimbusNoteVfsReportUnder(prefix, revision) {
  * the row inside the window owns it from then on, and its flush dates it.
  */
 function __nimbusEndOwnMutation(key, held, receipt) {
-  if (!held) return;
+  if (!held) { __nimbusFollowOwnWrite(key, receipt); return; }
   const lease = __vfsOwnLeases[key];
   if (!lease) return;
   lease.pending--;
@@ -725,6 +703,49 @@ function __nimbusEndOwnMutation(key, held, receipt) {
 }
 
 /**
+ * Own mutations of a path made while its cell was PARKED (a chownSync right
+ * after a writeFileSync: both logged at once, in order): no lease could be
+ * taken, the cell having no stamp yet. Their receipts are chained here
+ * (\`before\` of each is the \`after\` of the one before it, or nothing can be
+ * said) and the parked write's claim folds them into the revision it
+ * stamps: its own revision R, then every own change whose chain starts at
+ * or below R, so the barrier reporting the last of them reads it as this
+ * facet's own. \`null\`: a gap in the chain (or an unknown outcome).
+ */
+const __vfsOwnFollowers = Object.create(null);
+
+function __nimbusFollowOwnWrite(key, receipt) {
+  const known = receipt && typeof receipt.before === "number" && typeof receipt.after === "number";
+  if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key)) {
+    // Its write's claim already stamped the cell: carried past this change
+    // as a lease's end would (nobody else between: the stamp is its before).
+    if (!known) return;
+    if (__nimbusResidentRows()) {
+      const dated = __residentLease(key);
+      if (dated === undefined) return;
+      __residentStamp(key, dated >= receipt.before ? receipt.after : dated);
+      return;
+    }
+    const stamp = __vfsBundleRevisions[key];
+    if (typeof stamp === "number" && stamp !== Infinity && stamp >= receipt.before) __vfsBundleRevisions[key] = receipt.after;
+    return;
+  }
+  const chain = __vfsOwnFollowers[key];
+  if (!known) { __vfsOwnFollowers[key] = null; return; }
+  if (chain === undefined) { __vfsOwnFollowers[key] = { before: receipt.before, after: receipt.after }; return; }
+  if (chain === null) return;
+  __vfsOwnFollowers[key] = chain.after >= receipt.before ? { before: chain.before, after: Math.max(chain.after, receipt.after) } : null;
+}
+
+/** The revision a parked write's claim stamps: its own, carried past the own changes that followed it. */
+function __nimbusFollowedRevision(key, revision) {
+  const chain = __vfsOwnFollowers[key];
+  delete __vfsOwnFollowers[key];
+  if (typeof revision !== "number" || !chain) return revision;
+  return chain.before <= revision ? Math.max(revision, chain.after) : revision;
+}
+
+/**
  * Drop a cell the way the shims' own invalidation does.
  *
  * Content view, stat view and the invalidation count move together in the
@@ -740,21 +761,28 @@ function __nimbusEvictLeasedCell(key) {
   if (typeof __vfsBundle !== "undefined" && __vfsBundle) delete __vfsBundle[key];
 }
 
-/** \`unseen\`: no caller awaits this flush, so a refusal must be retained to be heard. */
-function __nimbusFlushVfsWrite(path, mutation, retainFailure = true, unseen = false) {
+/**
+ * Wait for the parked cell at \`path\` to be answered: its change was
+ * logged when it was made (__nimbusLogVfsWrite), and this is its claim.
+ * Resolves at once when nothing of the path is out.
+ */
+function __nimbusFlushVfsWrite(path) {
+  const claim = __vfsWriteClaims.get(__nimbusVfsPathKey(path));
+  return claim ? claim.promise : Promise.resolve(undefined);
+}
+
+/**
+ * Claim the parked cell at \`path\` as it is now with \`mutation\`, whose
+ * answer retires it (__nimbusRunVfsWriteMutation). \`unseen\`: no caller
+ * awaits it, so a refusal must be retained to be heard.
+ */
+function __nimbusClaimVfsWrite(path, mutation, retainFailure = true, unseen = false) {
   const snapshot = __nimbusCaptureVfsWrite(path);
-  if (!snapshot) {
-    // Nothing parked: what was is already in flight (a directory rename
-    // sends its descendants' writes ahead of it), and flushing the path
-    // means waiting for that write to land.
-    const inFlight = __vfsWriteClaims.get(__nimbusVfsPathKey(path));
-    return inFlight ? inFlight.promise : Promise.resolve(undefined);
-  }
+  if (!snapshot) return Promise.resolve(undefined);
   const existing = __vfsWriteClaims.get(snapshot.key);
   if (existing && existing.generation === snapshot.generation) {
     return existing.promise;
   }
-  if (snapshot.append) snapshot.append.claimed = true;
   const result = __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen);
   const claim = { generation: snapshot.generation, promise: result };
   __vfsWriteClaims.set(snapshot.key, claim);
@@ -769,128 +797,17 @@ function __nimbusFlushVfsWrite(path, mutation, retainFailure = true, unseen = fa
     // path (owner, mode) for their sync view.
     const landed = globalThis.__nimbusVfsWriteLanded;
     if (typeof landed === "function") landed(snapshot.key);
-  }, () => {
-    release();
-    if (snapshot.append &&
-        __vfsAppendWrites[snapshot.key] === snapshot.append) {
-      snapshot.append.claimed = false;
-    }
-  });
+  }, release);
   return result;
 }
 
-async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
-  const key = __nimbusVfsPathKey(path);
-  if (snapshot.append) {
-    // Each append the process made, as its own call: the client's cursor
-    // answers a re-sent one rather than appending it twice.
-    for (const operation of __nimbusVfsAppendOperations(snapshot)) {
-      __nimbusBeginVfsAppendOperation(snapshot, operation);
-      const release = await __nimbusProcessFs().room(operation.bytes.byteLength);
-      try { await __nimbusSubmitVfs({ type: "call", call: { call: "appendFile", path: key, mode: 0o666, data: operation.bytes } }); }
-      finally { release(); }
-      __nimbusCommitVfsAppendOperation(snapshot, operation);
-    }
-    return __nimbusVfsAppendRangeResult;
-  }
-  // The revision this write produced. It is what lets the ACQUIRE barrier
-  // tell this facet's own mutation apart from a peer's. Logged a window at a
-  // time: a drain of thousands of parked cells never holds them all twice.
-  // The window is asked before the cell is encoded: thousands of parked
-  // cells waiting for one are never all encoded at once.
-  const release = await __nimbusProcessFs().room(typeof content === "string" ? content.length : content.byteLength);
-  let answer;
-  try { answer = await __nimbusSubmitVfs({ type: "call", call: { call: "writeFile", path: key, mode: 0o666, data: __nimbusVfsCellBytes(content) } }); }
-  finally { release(); }
-  return answer.receipt?.revision;
-}
-
 /**
- * Write back the cells parked at THIS instant, and only those.
- *
- * Bounded on purpose, and deliberately not routed through
- * \`__nimbusDrainVfsWrites\`, whose \`while (pending > 0)\` waits for the mutation
- * queue to be EMPTY. That wait is correct at process exit, where no new writes
- * are coming. Anywhere else it is a livelock: a facet unpacking a tarball adds
- * mutations faster than the loop retires them, so the loop never returns.
- * Sited ahead of egress — where it was — that stopped the request from ever
- * leaving the facet, and \`npx sv create\` ran, printed its intro, and then
- * never reported an exit at all. A barrier may delay a request; it may not
- * wait on a condition a busy process never reaches.
- *
- * Failures are retained rather than thrown. The two callers — the debounce
- * below, and the RELEASE barrier ahead of egress — have no frame that could
- * act on one: rejecting the fetch that happened to trigger the flush would
- * blame the wrong operation. The exit drain reports what is retained, so a
- * lost write is loud exactly once and never silent.
+ * The end of the process: every change it made is already in its client's
+ * log (taken there when it was made); what is left is their answers.
  */
-async function __nimbusFlushVfsWriteBack(supervisor) {
-  if (!supervisor) return;
-  const paths = Object.keys(__vfsWrites);
-  if (paths.length === 0) return;
-  await Promise.allSettled(paths.map((path) => __nimbusFlushVfsWrite(
-    path,
-    (content, snapshot) => __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
-    true,
-    true,
-  )));
-}
-
-/**
- * A synchronous write can only park bytes in \`__vfsWrites\`: a sync syscall
- * has no channel to the authority. Something else therefore has to carry
- * them across, and the only thing that did was the drain at process exit —
- * so a resident server that writes synchronously never wrote back at all,
- * and a peer reading the same path got the pre-write bytes for the whole
- * life of the process. Measured, not theorised: \`writeFileSync\` then 50 ms
- * left the authority at null with zero write RPCs issued.
- *
- * Flushing on every write is not the repair — 500 sync writes would become
- * 500 round trips, and an npm install writes thousands. Debounce instead:
- * parking a cell schedules one write-back, and every write that lands before
- * it fires joins that same batch. Steady state costs no more round trips
- * than the exit drain already paid; what changes is when they happen.
- *
- * The timer is the raw platform one, captured before the shims wrap
- * \`setTimeout\` with the VFS resumption barrier: a write-back is the shim's
- * own infrastructure, not a user resumption, and must not pay an ACQUIRE to
- * deliver an ACQUIRE.
- */
-const __NIMBUS_VFS_WRITE_BACK_DELAY_MS = 10;
-const __nimbusRawTimer = globalThis.setTimeout;
-const __nimbusRawClearTimer = globalThis.clearTimeout;
-let __nimbusVfsWriteBackTimer = null;
-function __nimbusScheduleVfsWriteBack() {
-  if (__nimbusVfsWriteBackTimer !== null) return;
-  if (typeof __nimbusRawTimer !== 'function') return;
-  __nimbusVfsWriteBackTimer = __nimbusRawTimer(() => {
-    __nimbusVfsWriteBackTimer = null;
-    const supervisor = typeof __supervisor !== 'undefined' ? __supervisor : null;
-    if (!supervisor) return;
-    // Not registered in __nimbusPendingVfsMutations: each write it starts
-    // registers itself there through __nimbusQueueVfsMutation, so the exit
-    // drain already awaits the work. Registering the orchestration too would
-    // add an entry nothing ever removes, and that set is drained by a
-    // while-loop on its size.
-    void __nimbusFlushVfsWriteBack(supervisor);
-  }, __NIMBUS_VFS_WRITE_BACK_DELAY_MS);
-}
-
 async function __nimbusDrainVfsWrites(supervisor) {
-  const paths = Object.keys(__vfsWrites);
-  const outcomes = await Promise.allSettled([
-    // Each sent once: the process's client re-sends a write whose answer was
-    // lost (under its number, so it applies once), and what it could not
-    // send is a failure, not another attempt.
-    ...paths.map((path) => __nimbusFlushVfsWrite(
-      path,
-      (content, snapshot) =>
-        __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
-      false,
-      true,
-    )),
-    __nimbusDrainVfsMutations(),
-  ]);
+  void supervisor;
+  const outcomes = await Promise.allSettled([__nimbusDrainVfsMutations()]);
   const failure = outcomes.find((outcome) => outcome.status === "rejected");
   if (failure) throw failure.reason;
   // Everything the process made, answered; a change it was told succeeded
@@ -937,22 +854,14 @@ const __vfsOwnLeases = Object.create(null);
 // what finally says whether that report was its own write coming back.
 // Bounded by the parked set — the entry is retired with the cell below.
 const __vfsParkedReports = Object.create(null);
-const __vfsAppendWrites = Object.create(null);
 const __vfsWrites = new Proxy(Object.create(null), {
   set(target, path, value) {
     target[path] = value;
-    delete __vfsAppendWrites[path];
     delete __vfsParkedReports[path];
     __vfsWriteGenerations[path] = (__vfsWriteGenerations[path] || 0) + 1;
-    // Parking a cell is the only signal a synchronous write leaves. It is
-    // therefore the one place a write-back can be scheduled from, and it
-    // covers every sync mutation — writeFileSync, appendFileSync, the fd
-    // writes, rename — with no per-call-site duplication.
-    __nimbusScheduleVfsWriteBack();
     return true;
   },
   deleteProperty(target, path) {
-    delete __vfsAppendWrites[path];
     delete __vfsParkedReports[path];
     if (Object.prototype.hasOwnProperty.call(target, path)) {
       delete target[path];

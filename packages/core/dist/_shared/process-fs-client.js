@@ -44,10 +44,18 @@ import { encodeWriteBatch } from '@nimbus-sh/platform/w7-frame.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, sendWaveAttempts, waveAttemptsOf } from '@nimbus-sh/platform/wave-writer.js';
 import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
-/** A synchronous loop's bytes held at once, at most (ProcessFsClientOptions.syncCapBytes). */
-export const PROCESS_FS_SYNC_CAP_BYTES = 64 * 1024 * 1024;
-/** What a writer that waits for room (ProcessFsClient.room) lets the client hold unanswered: two waves' worth. */
-export const PROCESS_FS_ROOM_BYTES = 2 * WAVE_BYTES;
+import { memoryJournal } from './process-fs-journal.js';
+export { memoryJournal, sqlJournal } from './process-fs-journal.js';
+/**
+ * A synchronous loop's bytes held unanswered at once, at most
+ * (ProcessFsClientOptions.syncCapBytes): in a journal that outlives the
+ * process (on disk, the heap holding a window of it), and in one that lives
+ * in its heap.
+ */
+export const PROCESS_FS_SYNC_CAP_BYTES = 256 * 1024 * 1024;
+export const PROCESS_FS_HEAP_SYNC_CAP_BYTES = 64 * 1024 * 1024;
+/** Data bytes of unsent changes the heap holds (two waves' worth); past it, they are read back from the journal when sent. */
+export const PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
 /**
  * The most a process holds acknowledged (told it succeeded) and not yet
  * answered by the session before a change in a held subtree stops being
@@ -95,7 +103,6 @@ function utf8Length(text) {
 }
 function pathsOf(op) {
     switch (op.type) {
-        case 'run': return [op.path];
         case 'call': return [op.call.path];
         case 'rename': return [op.from, op.to];
         case 'truncate':
@@ -107,10 +114,47 @@ function canonical(path) {
     return path !== '' && path.split('/').every((part) => part !== '' && part !== '.' && part !== '..') && !path.includes('\0');
 }
 function nameOf(op) {
-    return op.type === 'call' ? op.call.call : op.type === 'run' ? op.name : op.type;
+    return op.type === 'call' ? op.call.call : op.type;
 }
 function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
+}
+/**
+ * `next` folded into `last`, the log's unsent tail, when it is the same
+ * file's next bytes and nothing was logged between them: a whole write
+ * replacing a whole write (its make, mode and number kept), an append
+ * extending a write or an append, a positional write continuing one. As the
+ * page cache folds them; null when it is not such a change, or the folded
+ * bytes would pass a piece.
+ */
+function folded(last, next) {
+    if (last.type !== 'call' || next.type !== 'call' || !('data' in last.call) || !('data' in next.call))
+        return null;
+    const a = last.call;
+    const b = next.call;
+    if (a.path !== b.path || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES)
+        return null;
+    const inoOf = (call) => ('ino' in call ? call.ino : undefined);
+    const join = (left, right) => {
+        const out = new Uint8Array(left.byteLength + right.byteLength);
+        out.set(left, 0);
+        out.set(right, left.byteLength);
+        return out;
+    };
+    if (b.call === 'writeFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
+        // The last write's file is made (or kept) by the first: its make wins, the bytes are the last's.
+        return { type: 'call', call: { ...a, call: 'writeFile', data: b.data } };
+    }
+    if (b.call === 'appendFile' && inoOf(b) === undefined && (a.call === 'writeFile' || a.call === 'appendFile')) {
+        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+    }
+    if (b.call === 'append' && a.call === 'append' && inoOf(a) === inoOf(b)) {
+        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+    }
+    if (b.call === 'write' && a.call === 'write' && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
+        return { type: 'call', call: { ...a, data: join(a.data, b.data) } };
+    }
+    return null;
 }
 /** A data call larger than a piece: its first piece as the call, the rest as writes at their offsets. */
 function pieces(op) {
@@ -133,7 +177,10 @@ export function processFsClient(options) {
     const { session } = options;
     const timers = options.timers ?? GLOBAL_TIMERS;
     const now = options.now ?? Date.now;
-    const syncCap = options.syncCapBytes ?? PROCESS_FS_SYNC_CAP_BYTES;
+    const journal = options.journal ?? memoryJournal();
+    const syncCap = options.syncCapBytes ?? (journal.durable ? PROCESS_FS_SYNC_CAP_BYTES : PROCESS_FS_HEAP_SYNC_CAP_BYTES);
+    /** Data bytes the heap holds of unsent entries: past a window, an entry's data is read back from the journal when sent. */
+    let heapBytes = 0;
     /** Logged, not yet sent; the first ones may carry numbers from a wave they came back from. */
     const queue = [];
     let inFlight = null;
@@ -141,9 +188,8 @@ export function processFsClient(options) {
     let pendingBytes = 0;
     let pendingSyncBytes = 0;
     let pendingSyncOps = 0;
-    /** The writer epoch the log is numbered under, when it was opened, and its numbering. */
+    /** The writer epoch the log is numbered under, when it was opened, and where its numbering starts (journal.number). */
     let epoch = null;
-    let nextSeq = 1;
     let ack = 0;
     let wave = 0;
     const failures = [];
@@ -151,26 +197,9 @@ export function processFsClient(options) {
     let logged = 0;
     let answered = 0;
     const marks = [];
-    /** Bytes in granted windows, and the writers waiting for one, in the order they asked. */
-    let windowed = 0;
-    const roomWaiters = [];
-    const grantRoom = (bytes) => {
-        windowed += bytes;
-        let released = false;
-        return () => {
-            if (released)
-                return;
-            released = true;
-            windowed -= bytes;
-            while (roomWaiters.length > 0 && (windowed === 0 || windowed + roomWaiters[0].bytes <= PROCESS_FS_ROOM_BYTES)) {
-                const next = roomWaiters.shift();
-                next.resolve(grantRoom(next.bytes));
-            }
-        };
-    };
     const counters = {
         ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
-        grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0, renewed: 0,
+        grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0, renewed: 0, folded: 0,
     };
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -203,25 +232,46 @@ export function processFsClient(options) {
         settled(entry);
         const path = entry.paths[0] ?? '';
         if (entry.acknowledged) {
-            failures.push({ op: nameOf(entry.op), path, errno, message });
-            entry.resolve({});
+            failures.push({ op: entry.name, path, errno, message });
+            entry.resolve({ failed: { errno, message } });
         }
         else {
             entry.reject(fsError(errno, message, path));
         }
     };
-    /** The epoch a new wave is numbered under: a fresh one before the first, and once half its life has passed with nothing unanswered. */
-    const writerFor = async () => {
-        if (epoch !== null && (epoch.writer === null || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2))
+    /** An entry's change: the heap's copy, or the journal's. */
+    const opOf = (entry) => entry.op ?? journal.read(entry.jid);
+    /**
+     * The epoch `entries` (the next wave) are numbered under: a fresh one
+     * before the first, and once half its life has passed with no entry
+     * numbered under the last still unanswered. A fresh one numbers the log
+     * from the first entry not yet numbered, recorded in the journal so a
+     * drain sends each entry under the number it was given.
+     */
+    const writerFor = async (entries) => {
+        const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
+        if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2))
             return epoch.writer;
         const openedAt = now();
         const writer = await session.openWriter(counters.epochs === 0);
-        epoch = { writer, openedAt };
+        epoch = { writer, openedAt, numbering: null };
         counters.epochs++;
-        nextSeq = 1;
         ack = 0;
         wave = 0;
         return writer;
+    };
+    /** Number `entries` under the epoch: from where its numbering starts, one each in journal order. */
+    const numberEntries = (entries) => {
+        const current = epoch;
+        for (const entry of entries) {
+            if (entry.seq !== 0)
+                continue;
+            if (current.numbering === null) {
+                current.numbering = { writer: current.writer, seq: 1, jid: entry.jid };
+                journal.number(current.numbering);
+            }
+            entry.seq = current.numbering.seq + (entry.jid - current.numbering.jid);
+        }
     };
     /**
      * The ops of the next wave: in log order, up to W7's bounds, at least one,
@@ -236,12 +286,6 @@ export function processFsClient(options) {
         let bytes = 0;
         while (queue.length > 0) {
             const next = queue[0];
-            // A session call of its own is never in a wave: it is made alone, in its place.
-            if (next.op.type === 'run') {
-                if (taken.length === 0)
-                    taken.push(queue.shift());
-                break;
-            }
             const fresh = next.paths.filter((path) => !owned.has(path));
             const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
             if (taken.length > 0 && (next.order > limit || owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES))
@@ -255,34 +299,26 @@ export function processFsClient(options) {
         return taken;
     };
     const send = async (entries) => {
-        const first = entries[0];
-        if (first.op.type === 'run') {
-            const { run } = first.op;
-            try {
-                const value = await run();
-                settled(first);
-                first.resolve({ value });
-            }
-            catch (error) {
-                const code = error?.code;
-                fail(first, typeof code === 'string' ? code : 'EIO', error instanceof Error ? error.message : String(error));
-            }
-            return;
-        }
         let writer;
         try {
-            writer = await writerFor();
+            writer = await writerFor(entries);
         }
         catch (error) {
             for (const entry of entries)
                 fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`);
+            journal.dropThrough(entries[entries.length - 1].jid);
             return;
         }
-        const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops: entries.map((entry) => entry.op) });
-        // Numbered once, under the epoch they are first sent under; a re-send keeps them.
+        const ops = entries.map(opOf);
+        // Sent: the heap's copy is the wave's now.
         for (const entry of entries)
-            if (entry.seq === 0)
-                entry.seq = nextSeq++;
+            if (entry.op !== null) {
+                heapBytes -= entry.bytes;
+                entry.op = null;
+            }
+        const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
+        // Numbered once, under the epoch they are first sent under; a re-send keeps them.
+        numberEntries(entries);
         const firstSeq = entries[0].seq;
         counters.waves++;
         counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
@@ -333,7 +369,8 @@ export function processFsClient(options) {
             if (entry.seq <= cursor) {
                 settled(entry);
                 let answered = {};
-                const path = entry.op.type === 'call' && 'data' in entry.op.call ? entry.op.call.path : null;
+                const op = ops[index];
+                const path = op.type === 'call' && 'data' in op.call ? op.call.path : null;
                 const published = answer.receipts[receipt];
                 if (path !== null && published?.path === path) {
                     receipt++;
@@ -348,6 +385,10 @@ export function processFsClient(options) {
             }
             back.push(entry);
         }
+        // What was answered is forgotten: a prefix of the log (waves are cut in order).
+        const answeredThrough = back.length === 0 ? entries[entries.length - 1].jid : back[0].jid - 1;
+        if (answeredThrough >= entries[0].jid)
+            journal.dropThrough(answeredThrough);
         if (back.length === 0)
             return;
         if (answer.ok || refused !== null) {
@@ -367,6 +408,7 @@ export function processFsClient(options) {
             counters.lost++;
             fail(entry, 'EIO', message);
         }
+        journal.dropThrough(entries[entries.length - 1].jid);
         epoch = null;
         for (const entry of queue)
             entry.seq = 0;
@@ -632,9 +674,42 @@ export function processFsClient(options) {
             if (acknowledged && pendingSyncBytes + bytes > syncCap) {
                 throw fsError('ENOMEM', `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? '');
             }
+            // The same file's next bytes, right after its last unsent change: folded into it.
+            const tail = queue[queue.length - 1];
+            // (The queue holds only unsent changes; one sent and back for a re-send is numbered.)
+            const merged = parts.length === 1 && tail !== undefined && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged
+                ? folded(tail.op, parts[0]) : null;
+            if (merged !== null && tail !== undefined) {
+                const mergedBytes = merged.type === 'call' && 'data' in merged.call ? merged.call.data.byteLength : 0;
+                journal.replace(tail.jid, merged);
+                const grown = mergedBytes - tail.bytes;
+                tail.op = merged;
+                tail.bytes = mergedBytes;
+                heapBytes += grown;
+                pendingBytes += grown;
+                if (acknowledged)
+                    pendingSyncBytes += grown;
+                counters.ops++;
+                counters.folded++;
+                const answer = new Promise((resolve, reject) => {
+                    const resolveTail = tail.resolve;
+                    const rejectTail = tail.reject;
+                    tail.resolve = (answered) => { resolveTail(answered); resolve(answered); };
+                    tail.reject = (error) => { rejectTail(error); reject(error); };
+                });
+                if (acknowledged)
+                    answer.catch(() => { });
+                return answer;
+            }
             const answers = parts.map((part) => new Promise((resolve, reject) => {
                 const partBytes = part.type === 'call' && 'data' in part.call ? part.call.data.byteLength : 0;
-                queue.push({ op: part, seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
+                // Logged where the process's death does not reach, before it is told anything.
+                const jid = journal.append(part);
+                // The heap keeps a window of what is unsent; the rest is read back from the journal.
+                const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+                if (kept)
+                    heapBytes += partBytes;
+                queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
                 pendingBytes += partBytes;
                 if (acknowledged) {
                     pendingSyncBytes += partBytes;
@@ -650,23 +725,16 @@ export function processFsClient(options) {
                 const last = all[all.length - 1];
                 if (last === undefined)
                     return {};
+                // An acknowledged piece refused: the call's failure (reported once, by the client).
+                const failed = all.find((piece) => piece.failed !== undefined)?.failed;
+                if (failed !== undefined)
+                    return { failed };
                 const { mutation: _mutation, ...rest } = last;
                 return first !== undefined && last.mutation !== undefined ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
             });
             if (acknowledged)
                 answer.catch(() => { });
             return answer;
-        },
-        call(name, path, run, callOptions) {
-            const acknowledged = callOptions?.acknowledged === true;
-            const answer = new Promise((resolve, reject) => {
-                queue.push({ op: { type: 'run', name, path, run }, seq: 0, order: ++logged, bytes: 0, paths: [path], acknowledged, resolve, reject });
-                counters.ops++;
-            });
-            schedule();
-            if (acknowledged)
-                answer.catch(() => { });
-            return answer.then((answered) => answered.value);
         },
         flush() {
             options.drain?.();
@@ -708,12 +776,110 @@ export function processFsClient(options) {
             failures.push(failure);
         },
         get pendingBytes() { return pendingBytes; },
-        room(bytes) {
-            if (roomWaiters.length === 0 && (windowed === 0 || windowed + bytes <= PROCESS_FS_ROOM_BYTES))
-                return Promise.resolve(grantRoom(bytes));
-            return new Promise((resolve) => { roomWaiters.push({ bytes, resolve }); });
-        },
         stats() { return { ...counters }; },
     };
     return client;
+}
+/** Where a drain's wave numbers start: past any a process sends (2^40 waves). */
+const DRAIN_WAVE_BASE = 2 ** 40;
+/**
+ * Send what a process's journal still holds, as the process would have:
+ * each entry under the writer and number it was given (journal.numberings),
+ * so the session's cursor answers what already landed and applies the rest
+ * once; entries never numbered under a fresh writer. The journal is empty
+ * when it resolves. A refusal is the change's answer, reported in what it
+ * resolves with; a session that cannot be reached rejects, and the journal
+ * keeps what it holds for the next drain.
+ */
+export async function drainProcessFsJournal(options) {
+    const { journal, session } = options;
+    const drained = { landed: 0, failures: [] };
+    let held = journal.entries();
+    if (held.length === 0)
+        return drained;
+    // Entries no numbering covers (the process died before its first wave): a fresh writer numbers them.
+    const numberings = journal.numberings();
+    if (numberings.length === 0 || numberings[0].jid > held[0].jid) {
+        const writer = await session.openWriter(false);
+        const numbering = { writer, seq: 1, jid: held[0].jid };
+        journal.number(numbering);
+        numberings.unshift(numbering);
+    }
+    const numberingOf = (jid) => {
+        let found = numberings[0];
+        for (const numbering of numberings)
+            if (numbering.jid <= jid)
+                found = numbering;
+        return found;
+    };
+    // Its waves are numbered past any the process sent under the same writer:
+    // the session's fence takes them as the newest attempts, and refuses any
+    // late attempt of the dead process after them (its cursor answers both).
+    let wave = DRAIN_WAVE_BASE;
+    while (held.length > 0) {
+        // A wave: entries under one numbering, their numbers contiguous, within W7's bounds.
+        const numbering = numberingOf(held[0].jid);
+        const taken = [];
+        const owned = new Set();
+        let bytes = 0;
+        let pathBytes = 0;
+        for (const entry of held) {
+            if (numberingOf(entry.jid) !== numbering)
+                break;
+            const seq = numbering.seq + (entry.jid - numbering.jid);
+            if (taken.length > 0 && seq !== taken[taken.length - 1].seq + 1)
+                break;
+            const paths = pathsOf(entry.op).filter((path) => !owned.has(path));
+            const entryBytes = entry.op.type === 'call' && 'data' in entry.op.call ? entry.op.call.data.byteLength : 0;
+            const entryPathBytes = paths.reduce((sum, path) => sum + utf8Length(path), 0);
+            if (taken.length > 0 && (owned.size + paths.length > WAVE_PATHS || pathBytes + entryPathBytes > WAVE_PATH_BYTES || bytes + entryBytes > WAVE_BYTES))
+                break;
+            for (const path of paths)
+                owned.add(path);
+            bytes += entryBytes;
+            pathBytes += entryPathBytes;
+            taken.push({ ...entry, seq });
+        }
+        const encoded = await encodeWriteBatch({ inodes: [], chunks: [], ops: taken.map((entry) => entry.op) });
+        const result = await sendWaveAttempts({
+            supervisor: session,
+            writer: async () => numbering.writer,
+            open: waveAttemptsOf(encoded),
+            streamed: false,
+            wave: ++wave,
+            ...(numbering.writer === null ? {} : { sequence: { seq: taken[0].seq, ack: 0 } }),
+            ...(options.retry === undefined ? {} : { retry: options.retry }),
+            ...(options.timers === undefined ? {} : { timers: options.timers }),
+        });
+        const cursor = numbering.writer === null
+            ? taken[0].seq - 1 + (result.ok ? taken.length : result.committedOps)
+            : result.sequence?.cursor;
+        if (cursor === undefined) {
+            throw new Error(`the session answered a drained write without its cursor: ${result.ok ? 'no error' : result.error.message}`);
+        }
+        const refused = numbering.writer === null
+            ? (!result.ok && result.error.errno !== undefined && SYSCALL_VERDICTS.has(result.error.errno)
+                ? { seq: cursor + 1, errno: result.error.errno, message: result.error.message } : null)
+            : result.sequence?.refused ?? null;
+        let through = 0;
+        for (const entry of taken) {
+            if (entry.seq <= cursor && (refused === null || entry.seq !== refused.seq)) {
+                drained.landed++;
+                through = entry.jid;
+                continue;
+            }
+            if (refused !== null && entry.seq === refused.seq) {
+                drained.failures.push({ op: nameOf(entry.op), path: pathsOf(entry.op)[0] ?? '', errno: refused.errno, message: refused.message });
+                through = entry.jid;
+                continue;
+            }
+            break;
+        }
+        if (through === 0) {
+            throw new Error(`the session applied none of a drained write: ${result.ok ? 'no error' : result.error.message}`);
+        }
+        journal.dropThrough(through);
+        held = held.filter((entry) => entry.jid > through);
+    }
+    return drained;
 }

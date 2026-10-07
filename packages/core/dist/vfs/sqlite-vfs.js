@@ -1064,7 +1064,12 @@ export class SqliteVFS {
             // The tables of the append protocol a process's write log replaced
             // (its calls are numbered under its writer's cursor instead): gone
             // from every store, whatever they still held.
-            for (const table of RETIRED_STORE_TABLES)
+            // Read first: a current store opens without a write statement.
+            const retired = new Set(RETIRED_STORE_TABLES);
+            const present = [...this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vfs_append_%'")]
+                .map((row) => String(row.name))
+                .filter((name) => retired.has(name));
+            for (const table of present)
                 this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
             // Every counter moves inside the transaction that consumes it.
             this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_state (
@@ -7305,7 +7310,8 @@ export class SqliteVFS {
                 const call = record.call;
                 if (call.call !== 'mkdir')
                     at.routes.clear();
-                const placed = await mountOf(call.call === 'mkdir' ? 'directory' : call.call === 'symlink' || call.call === 'ftruncate' ? 'file' : 'delete', call.path);
+                const placed = await mountOf(call.call === 'mkdir' ? 'directory'
+                    : call.call === 'symlink' || call.call === 'ftruncate' || call.call === 'lchown' || call.call === 'lutimes' ? 'file' : 'delete', call.path);
                 if (placed === null)
                     return false;
                 at.setPhase('publish');
@@ -8342,6 +8348,23 @@ export class SqliteVFS {
                                     if (at !== null)
                                         this.truncate(at, call.size, cred);
                                 }
+                                else if (call.call === 'rm') {
+                                    // fs.rm: a name not there is no refusal when forced.
+                                    try {
+                                        if (call.recursive)
+                                            this.removeRecursive(call.path, cred);
+                                        else
+                                            this.unlink(call.path, cred);
+                                    }
+                                    catch (error) {
+                                        if (!(call.force && errnoOf(error) === 'ENOENT'))
+                                            throw error;
+                                    }
+                                }
+                                else if (call.call === 'lchown')
+                                    this.chown(call.path, call.uid, call.gid, cred, false);
+                                else if (call.call === 'lutimes')
+                                    this.utimes(call.path, call.atime, call.mtime, cred, false);
                                 else
                                     this.symlink(call.target, call.path, cred, call.ino);
                             }, { alone: call.call !== 'mkdir' });

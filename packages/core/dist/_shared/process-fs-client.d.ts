@@ -44,6 +44,8 @@ import { type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
 import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
 import { type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import type { WriteStreamReceipt } from '../vfs/sqlite-vfs.js';
+import { type ProcessFsJournal } from './process-fs-journal.js';
+export { memoryJournal, sqlJournal, type ProcessFsJournal, type JournalSql } from './process-fs-journal.js';
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
 export type ProcessFsOp = {
     type: 'call';
@@ -103,8 +105,11 @@ export interface ProcessFsAnswer {
         before: number;
         after: number;
     };
-    /** What a session call of its own (ProcessFsClient.call) answered. */
-    value?: unknown;
+    /** An acknowledged op the session refused or never answered (it is reported, never thrown). */
+    failed?: {
+        errno: string;
+        message: string;
+    };
 }
 /** An op the program was told succeeded that the session refused, or whose fate it could not answer. */
 export interface ProcessFsFailure {
@@ -135,6 +140,12 @@ export interface ProcessFsClientOptions {
         stallMs: number;
         answerDeadlineMs: number;
     };
+    /**
+     * Where every change is logged before the program is told it succeeded
+     * (process-fs-journal.ts): the process's own SQLite, which outlives it; by
+     * default its heap, which does not.
+     */
+    readonly journal?: ProcessFsJournal;
     /** Mutations in a subtree before the client takes it (GRANT_AFTER). */
     readonly grantAfter?: number;
     /** A grant unused this long is given back (GRANT_IDLE_MS). */
@@ -170,15 +181,6 @@ export interface ProcessFsClient {
     submit(op: ProcessFsOp, options?: {
         acknowledged?: boolean;
     }): Promise<ProcessFsAnswer>;
-    /**
-     * A mutation no call record carries (a tree's removal, a copy), made by
-     * `run` as one session call in its place in the log: once every op logged
-     * before it is answered, and before any logged after it is sent.
-     * Answers what `run` answers; a failure of an acknowledged one is reported.
-     */
-    call<T>(name: string, path: string, run: () => Promise<T>, options?: {
-        acknowledged?: boolean;
-    }): Promise<T>;
     /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
     flush(): Promise<void>;
     /** The end of the run: everything answered; throws naming every failure not yet taken. */
@@ -193,15 +195,6 @@ export interface ProcessFsClient {
     noteFailure(failure: ProcessFsFailure): void;
     /** Bytes logged and not yet answered. */
     readonly pendingBytes: number;
-    /**
-     * A window for `bytes` a writer is about to log, granted in the order
-     * asked once the bytes granted and not yet given back leave room for them
-     * under PROCESS_FS_ROOM_BYTES (or when none are): a writer with many to
-     * send (a drain of parked writes) logs them a window at a time, so they
-     * are never all held twice. Answers the window's release, for when the
-     * bytes are answered.
-     */
-    room(bytes: number): Promise<() => void>;
     /**
      * The grant a mutation at `key` is decided under now (held, not shared),
      * or undefined: the session decides it. Counts the mutation toward taking
@@ -234,11 +227,19 @@ export interface ProcessFsStats {
     released: number;
     widened: number;
     renewed: number;
+    /** Changes folded into the unsent change before them (the same file's next bytes). */
+    folded: number;
 }
-/** A synchronous loop's bytes held at once, at most (ProcessFsClientOptions.syncCapBytes). */
+/**
+ * A synchronous loop's bytes held unanswered at once, at most
+ * (ProcessFsClientOptions.syncCapBytes): in a journal that outlives the
+ * process (on disk, the heap holding a window of it), and in one that lives
+ * in its heap.
+ */
 export declare const PROCESS_FS_SYNC_CAP_BYTES: number;
-/** What a writer that waits for room (ProcessFsClient.room) lets the client hold unanswered: two waves' worth. */
-export declare const PROCESS_FS_ROOM_BYTES: number;
+export declare const PROCESS_FS_HEAP_SYNC_CAP_BYTES: number;
+/** Data bytes of unsent changes the heap holds (two waves' worth); past it, they are read back from the journal when sent. */
+export declare const PROCESS_FS_HEAP_WINDOW_BYTES: number;
 /**
  * The most a process holds acknowledged (told it succeeded) and not yet
  * answered by the session before a change in a held subtree stops being
@@ -255,4 +256,28 @@ export declare const GRANT_AFTER = 8;
 /** A grant unused this long is given back. */
 export declare const GRANT_IDLE_MS = 2000;
 export declare function processFsClient(options: ProcessFsClientOptions): ProcessFsClient;
+/** What a drain of a dead process's journal did: the changes that landed, and those the session refused. */
+export interface ProcessFsDrain {
+    landed: number;
+    failures: ProcessFsFailure[];
+}
+/**
+ * Send what a process's journal still holds, as the process would have:
+ * each entry under the writer and number it was given (journal.numberings),
+ * so the session's cursor answers what already landed and applies the rest
+ * once; entries never numbered under a fresh writer. The journal is empty
+ * when it resolves. A refusal is the change's answer, reported in what it
+ * resolves with; a session that cannot be reached rejects, and the journal
+ * keeps what it holds for the next drain.
+ */
+export declare function drainProcessFsJournal(options: {
+    journal: ProcessFsJournal;
+    session: ProcessFsSession;
+    retry?: {
+        backoffMs: readonly number[];
+        stallMs: number;
+        answerDeadlineMs: number;
+    };
+    timers?: WaveTimers;
+}): Promise<ProcessFsDrain>;
 //# sourceMappingURL=process-fs-client.d.ts.map

@@ -144,6 +144,31 @@ export type W7Call =
     path: string;
     target: string;
     ino?: number;
+}
+/**
+ * rm(1) as fs.rm makes it: a file or link unlinked, a directory with all
+ * it holds when `recursive` (else EISDIR's refusal, as unlink's), and a
+ * name not there no refusal when `force`.
+ */
+ | {
+    call: 'rm';
+    path: string;
+    recursive?: true;
+    force?: true;
+}
+/** chown(2) of the link itself (lchown): the name's own entry, never what it names. */
+ | {
+    call: 'lchown';
+    path: string;
+    uid: number;
+    gid: number;
+}
+/** utimes of the link itself (lutimes). */
+ | {
+    call: 'lutimes';
+    path: string;
+    atime: number;
+    mtime: number;
 };
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, {

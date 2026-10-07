@@ -25,9 +25,13 @@ var __nimbusProcessFsModule = (() => {
     GRANT_AFTER: () => GRANT_AFTER,
     GRANT_IDLE_MS: () => GRANT_IDLE_MS,
     MAX_DELEGATIONS_PER_PROCESS: () => MAX_DELEGATIONS_PER_PROCESS,
-    PROCESS_FS_ROOM_BYTES: () => PROCESS_FS_ROOM_BYTES,
+    PROCESS_FS_HEAP_SYNC_CAP_BYTES: () => PROCESS_FS_HEAP_SYNC_CAP_BYTES,
+    PROCESS_FS_HEAP_WINDOW_BYTES: () => PROCESS_FS_HEAP_WINDOW_BYTES,
     PROCESS_FS_SYNC_CAP_BYTES: () => PROCESS_FS_SYNC_CAP_BYTES,
-    processFsClient: () => processFsClient
+    drainProcessFsJournal: () => drainProcessFsJournal,
+    memoryJournal: () => memoryJournal,
+    processFsClient: () => processFsClient,
+    sqlJournal: () => sqlJournal
   });
 
   var CRC_NATIVE_MIN_BYTES = 128;
@@ -477,6 +481,33 @@ var __nimbusProcessFsModule = (() => {
           path: path(value.path, "ftruncate path"),
           size: safeInteger(value.size, "ftruncate size"),
           ...value.ino === void 0 ? {} : { ino: inodeNumber(value.ino, "ftruncate ino") }
+        };
+      case "rm": {
+        if (keys.replace(",force", "").replace(",recursive", "") !== "call,path")
+          break;
+        for (const flag of ["recursive", "force"]) {
+          if (value[flag] !== void 0 && value[flag] !== true)
+            throw new Error(`w7-frame: rm ${flag} is true or absent`);
+        }
+        return {
+          call: "rm",
+          path: path(value.path, "rm path"),
+          ...value.recursive === true ? { recursive: true } : {},
+          ...value.force === true ? { force: true } : {}
+        };
+      }
+      case "lchown":
+        if (keys !== "call,gid,path,uid")
+          break;
+        return { call: "lchown", path: path(value.path, "lchown path"), uid: u32(value.uid, "lchown uid"), gid: u32(value.gid, "lchown gid") };
+      case "lutimes":
+        if (keys !== "atime,call,mtime,path")
+          break;
+        return {
+          call: "lutimes",
+          path: path(value.path, "lutimes path"),
+          atime: safeInteger(value.atime, "lutimes atime"),
+          mtime: safeInteger(value.mtime, "lutimes mtime")
         };
       default:
         throw new Error(`w7-frame: unknown call ${String(value.call)}`);
@@ -949,8 +980,123 @@ var __nimbusProcessFsModule = (() => {
     EFAULT: "bad address in system call argument"
   };
 
-  var PROCESS_FS_SYNC_CAP_BYTES = 64 * 1024 * 1024;
-  var PROCESS_FS_ROOM_BYTES = 2 * WAVE_BYTES;
+  function dataOf(op) {
+    return op.type === "call" && "data" in op.call ? op.call.data : null;
+  }
+  function rowOf(op) {
+    const data = dataOf(op);
+    if (data === null) return { json: JSON.stringify(op), data: null };
+    const { data: _data, ...call } = op.call;
+    return { json: JSON.stringify({ type: "call", call }), data };
+  }
+  function opOf(json, data) {
+    const op = JSON.parse(json);
+    if (data === null || data === void 0) return op;
+    const bytes = data instanceof Uint8Array ? data : new Uint8Array(data);
+    return { type: "call", call: { ...op.call, data: bytes } };
+  }
+  function sqlJournal(sql) {
+    sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_journal (jid INTEGER PRIMARY KEY, op TEXT NOT NULL, data BLOB)`);
+    sql.exec(`CREATE TABLE IF NOT EXISTS nimbus_fs_numbering (jid INTEGER PRIMARY KEY, writer TEXT, seq INTEGER NOT NULL)`);
+    const last = [...sql.exec("SELECT MAX(jid) AS jid FROM nimbus_fs_journal")][0];
+    let next = Number(last?.jid ?? 0) + 1;
+    const held = [...sql.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal")][0];
+    let bytes = Number(held?.bytes ?? 0);
+    return {
+      durable: true,
+      append(op) {
+        const jid = next++;
+        const row = rowOf(op);
+        sql.exec("INSERT INTO nimbus_fs_journal (jid, op, data) VALUES (?, ?, ?)", jid, row.json, row.data);
+        bytes += row.data?.byteLength ?? 0;
+        return jid;
+      },
+      read(jid) {
+        const row = [...sql.exec("SELECT op, data FROM nimbus_fs_journal WHERE jid = ?", jid)][0];
+        if (row === void 0) throw new Error(`process-fs journal: entry ${jid} is not held`);
+        return opOf(String(row.op), row.data);
+      },
+      replace(jid, op) {
+        const before = [...sql.exec("SELECT LENGTH(data) AS bytes FROM nimbus_fs_journal WHERE jid = ?", jid)][0];
+        const row = rowOf(op);
+        sql.exec("UPDATE nimbus_fs_journal SET op = ?, data = ? WHERE jid = ?", row.json, row.data, jid);
+        bytes += (row.data?.byteLength ?? 0) - Number(before?.bytes ?? 0);
+      },
+      entries() {
+        return [...sql.exec("SELECT jid, op, data FROM nimbus_fs_journal ORDER BY jid")].map((row) => ({ jid: Number(row.jid), op: opOf(String(row.op), row.data) }));
+      },
+      dropThrough(jid) {
+        const freed = [...sql.exec("SELECT COALESCE(SUM(LENGTH(data)), 0) AS bytes FROM nimbus_fs_journal WHERE jid <= ?", jid)][0];
+        bytes -= Number(freed?.bytes ?? 0);
+        sql.exec("DELETE FROM nimbus_fs_journal WHERE jid <= ?", jid);
+        sql.exec(
+          "DELETE FROM nimbus_fs_numbering WHERE jid < (SELECT COALESCE(MAX(jid), 0) FROM nimbus_fs_numbering WHERE jid <= ?)",
+          jid + 1
+        );
+      },
+      number(numbering) {
+        sql.exec("DELETE FROM nimbus_fs_numbering WHERE jid >= ?", numbering.jid);
+        sql.exec("INSERT INTO nimbus_fs_numbering (jid, writer, seq) VALUES (?, ?, ?)", numbering.jid, numbering.writer, numbering.seq);
+      },
+      numberings() {
+        return [...sql.exec("SELECT jid, writer, seq FROM nimbus_fs_numbering ORDER BY jid")].map((row) => ({ jid: Number(row.jid), writer: row.writer === null ? null : String(row.writer), seq: Number(row.seq) }));
+      },
+      get bytes() {
+        return bytes;
+      }
+    };
+  }
+  function memoryJournal() {
+    const held =   new Map();
+    const numbered = [];
+    let next = 1;
+    let bytes = 0;
+    return {
+      durable: false,
+      append(op) {
+        const jid = next++;
+        held.set(jid, op);
+        bytes += dataOf(op)?.byteLength ?? 0;
+        return jid;
+      },
+      read(jid) {
+        const op = held.get(jid);
+        if (op === void 0) throw new Error(`process-fs journal: entry ${jid} is not held`);
+        return op;
+      },
+      replace(jid, op) {
+        const before = held.get(jid);
+        if (before === void 0) throw new Error(`process-fs journal: entry ${jid} is not held`);
+        bytes += (dataOf(op)?.byteLength ?? 0) - (dataOf(before)?.byteLength ?? 0);
+        held.set(jid, op);
+      },
+      entries() {
+        return [...held].map(([jid, op]) => ({ jid, op }));
+      },
+      dropThrough(jid) {
+        for (const [at, op] of held) {
+          if (at > jid) break;
+          bytes -= dataOf(op)?.byteLength ?? 0;
+          held.delete(at);
+        }
+        while (numbered.length > 1 && numbered[1].jid <= jid + 1) numbered.shift();
+      },
+      number(numbering) {
+        while (numbered.length > 0 && numbered[numbered.length - 1].jid >= numbering.jid) numbered.pop();
+        numbered.push({ ...numbering });
+      },
+      numberings() {
+        return numbered.map((numbering) => ({ ...numbering }));
+      },
+      get bytes() {
+        return bytes;
+      }
+    };
+  }
+
+  var PROCESS_FS_SYNC_CAP_BYTES = 256 * 1024 * 1024;
+  var PROCESS_FS_HEAP_SYNC_CAP_BYTES = 64 * 1024 * 1024;
+  var PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
   var DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
   var DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
   var DATA_PIECE_BYTES = WAVE_BYTES;
@@ -983,8 +1129,6 @@ var __nimbusProcessFsModule = (() => {
   }
   function pathsOf(op) {
     switch (op.type) {
-      case "run":
-        return [op.path];
       case "call":
         return [op.call.path];
       case "rename":
@@ -998,10 +1142,36 @@ var __nimbusProcessFsModule = (() => {
     return path !== "" && path.split("/").every((part) => part !== "" && part !== "." && part !== "..") && !path.includes("\0");
   }
   function nameOf(op) {
-    return op.type === "call" ? op.call.call : op.type === "run" ? op.name : op.type;
+    return op.type === "call" ? op.call.call : op.type;
   }
   function fsError(errno, message, path) {
     return Object.assign(new Error(message), { code: errno, path });
+  }
+  function folded(last, next) {
+    if (last.type !== "call" || next.type !== "call" || !("data" in last.call) || !("data" in next.call)) return null;
+    const a = last.call;
+    const b = next.call;
+    if (a.path !== b.path || a.data.byteLength + b.data.byteLength > DATA_PIECE_BYTES) return null;
+    const inoOf = (call) => "ino" in call ? call.ino : void 0;
+    const join = (left, right) => {
+      const out = new Uint8Array(left.byteLength + right.byteLength);
+      out.set(left, 0);
+      out.set(right, left.byteLength);
+      return out;
+    };
+    if (b.call === "writeFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
+      return { type: "call", call: { ...a, call: "writeFile", data: b.data } };
+    }
+    if (b.call === "appendFile" && inoOf(b) === void 0 && (a.call === "writeFile" || a.call === "appendFile")) {
+      return { type: "call", call: { ...a, data: join(a.data, b.data) } };
+    }
+    if (b.call === "append" && a.call === "append" && inoOf(a) === inoOf(b)) {
+      return { type: "call", call: { ...a, data: join(a.data, b.data) } };
+    }
+    if (b.call === "write" && a.call === "write" && inoOf(a) === inoOf(b) && a.offset + a.data.byteLength === b.offset) {
+      return { type: "call", call: { ...a, data: join(a.data, b.data) } };
+    }
+    return null;
   }
   function pieces(op) {
     if (op.type !== "call" || !("data" in op.call) || op.call.data.byteLength <= DATA_PIECE_BYTES) return [op];
@@ -1019,7 +1189,9 @@ var __nimbusProcessFsModule = (() => {
     const { session } = options;
     const timers = options.timers ?? GLOBAL_TIMERS2;
     const now = options.now ?? Date.now;
-    const syncCap = options.syncCapBytes ?? PROCESS_FS_SYNC_CAP_BYTES;
+    const journal = options.journal ?? memoryJournal();
+    const syncCap = options.syncCapBytes ?? (journal.durable ? PROCESS_FS_SYNC_CAP_BYTES : PROCESS_FS_HEAP_SYNC_CAP_BYTES);
+    let heapBytes = 0;
     const queue = [];
     let inFlight = null;
     let scheduled = false;
@@ -1027,28 +1199,12 @@ var __nimbusProcessFsModule = (() => {
     let pendingSyncBytes = 0;
     let pendingSyncOps = 0;
     let epoch = null;
-    let nextSeq = 1;
     let ack = 0;
     let wave = 0;
     const failures = [];
     let logged = 0;
     let answered = 0;
     const marks = [];
-    let windowed = 0;
-    const roomWaiters = [];
-    const grantRoom = (bytes) => {
-      windowed += bytes;
-      let released = false;
-      return () => {
-        if (released) return;
-        released = true;
-        windowed -= bytes;
-        while (roomWaiters.length > 0 && (windowed === 0 || windowed + roomWaiters[0].bytes <= PROCESS_FS_ROOM_BYTES)) {
-          const next = roomWaiters.shift();
-          next.resolve(grantRoom(next.bytes));
-        }
-      };
-    };
     const counters = {
       ops: 0,
       waves: 0,
@@ -1062,7 +1218,8 @@ var __nimbusProcessFsModule = (() => {
       recalls: 0,
       released: 0,
       widened: 0,
-      renewed: 0
+      renewed: 0,
+      folded: 0
     };
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -1091,22 +1248,34 @@ var __nimbusProcessFsModule = (() => {
       settled(entry);
       const path = entry.paths[0] ?? "";
       if (entry.acknowledged) {
-        failures.push({ op: nameOf(entry.op), path, errno, message });
-        entry.resolve({});
+        failures.push({ op: entry.name, path, errno, message });
+        entry.resolve({ failed: { errno, message } });
       } else {
         entry.reject(fsError(errno, message, path));
       }
     };
-    const writerFor = async () => {
-      if (epoch !== null && (epoch.writer === null || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
+    const opOf2 = (entry) => entry.op ?? journal.read(entry.jid);
+    const writerFor = async (entries) => {
+      const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
+      if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
       const openedAt = now();
       const writer = await session.openWriter(counters.epochs === 0);
-      epoch = { writer, openedAt };
+      epoch = { writer, openedAt, numbering: null };
       counters.epochs++;
-      nextSeq = 1;
       ack = 0;
       wave = 0;
       return writer;
+    };
+    const numberEntries = (entries) => {
+      const current = epoch;
+      for (const entry of entries) {
+        if (entry.seq !== 0) continue;
+        if (current.numbering === null) {
+          current.numbering = { writer: current.writer, seq: 1, jid: entry.jid };
+          journal.number(current.numbering);
+        }
+        entry.seq = current.numbering.seq + (entry.jid - current.numbering.jid);
+      }
     };
     const cut = () => {
       const limit = marks.reduce((least, waiting) => Math.min(least, waiting.mark), Infinity);
@@ -1116,10 +1285,6 @@ var __nimbusProcessFsModule = (() => {
       let bytes = 0;
       while (queue.length > 0) {
         const next = queue[0];
-        if (next.op.type === "run") {
-          if (taken.length === 0) taken.push(queue.shift());
-          break;
-        }
         const fresh = next.paths.filter((path) => !owned.has(path));
         const freshBytes = fresh.reduce((sum, path) => sum + utf8Length2(path), 0);
         if (taken.length > 0 && (next.order > limit || owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
@@ -1131,28 +1296,21 @@ var __nimbusProcessFsModule = (() => {
       return taken;
     };
     const send = async (entries) => {
-      const first = entries[0];
-      if (first.op.type === "run") {
-        const { run } = first.op;
-        try {
-          const value = await run();
-          settled(first);
-          first.resolve({ value });
-        } catch (error2) {
-          const code = error2?.code;
-          fail(first, typeof code === "string" ? code : "EIO", error2 instanceof Error ? error2.message : String(error2));
-        }
-        return;
-      }
       let writer;
       try {
-        writer = await writerFor();
+        writer = await writerFor(entries);
       } catch (error2) {
         for (const entry of entries) fail(entry, "EIO", `the session gave this process no writer: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        journal.dropThrough(entries[entries.length - 1].jid);
         return;
       }
-      const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops: entries.map((entry) => entry.op) });
-      for (const entry of entries) if (entry.seq === 0) entry.seq = nextSeq++;
+      const ops = entries.map(opOf2);
+      for (const entry of entries) if (entry.op !== null) {
+        heapBytes -= entry.bytes;
+        entry.op = null;
+      }
+      const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
+      numberEntries(entries);
       const firstSeq = entries[0].seq;
       counters.waves++;
       counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
@@ -1198,7 +1356,8 @@ var __nimbusProcessFsModule = (() => {
         if (entry.seq <= cursor) {
           settled(entry);
           let answered2 = {};
-          const path = entry.op.type === "call" && "data" in entry.op.call ? entry.op.call.path : null;
+          const op = ops[index];
+          const path = op.type === "call" && "data" in op.call ? op.call.path : null;
           const published = answer.receipts[receipt];
           if (path !== null && published?.path === path) {
             receipt++;
@@ -1212,6 +1371,8 @@ var __nimbusProcessFsModule = (() => {
         }
         back.push(entry);
       }
+      const answeredThrough = back.length === 0 ? entries[entries.length - 1].jid : back[0].jid - 1;
+      if (answeredThrough >= entries[0].jid) journal.dropThrough(answeredThrough);
       if (back.length === 0) return;
       if (answer.ok || refused !== null) {
         queue.unshift(...back);
@@ -1224,6 +1385,7 @@ var __nimbusProcessFsModule = (() => {
         counters.lost++;
         fail(entry, "EIO", message);
       }
+      journal.dropThrough(entries[entries.length - 1].jid);
       epoch = null;
       for (const entry of queue) entry.seq = 0;
     };
@@ -1422,9 +1584,41 @@ var __nimbusProcessFsModule = (() => {
         if (acknowledged && pendingSyncBytes + bytes > syncCap) {
           throw fsError("ENOMEM", `ENOMEM: ${pendingSyncBytes} bytes of synchronous writes are waiting for the session, and this one (${bytes}) would pass the ${syncCap}-byte cap; let the program yield (an await) for them to be sent`, pathsOf(op)[0] ?? "");
         }
+        const tail = queue[queue.length - 1];
+        const merged = parts.length === 1 && tail !== void 0 && tail.seq === 0 && tail.op !== null && tail.acknowledged === acknowledged ? folded(tail.op, parts[0]) : null;
+        if (merged !== null && tail !== void 0) {
+          const mergedBytes = merged.type === "call" && "data" in merged.call ? merged.call.data.byteLength : 0;
+          journal.replace(tail.jid, merged);
+          const grown = mergedBytes - tail.bytes;
+          tail.op = merged;
+          tail.bytes = mergedBytes;
+          heapBytes += grown;
+          pendingBytes += grown;
+          if (acknowledged) pendingSyncBytes += grown;
+          counters.ops++;
+          counters.folded++;
+          const answer2 = new Promise((resolve, reject) => {
+            const resolveTail = tail.resolve;
+            const rejectTail = tail.reject;
+            tail.resolve = (answered2) => {
+              resolveTail(answered2);
+              resolve(answered2);
+            };
+            tail.reject = (error) => {
+              rejectTail(error);
+              reject(error);
+            };
+          });
+          if (acknowledged) answer2.catch(() => {
+          });
+          return answer2;
+        }
         const answers = parts.map((part) => new Promise((resolve, reject) => {
           const partBytes = part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0;
-          queue.push({ op: part, seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
+          const jid = journal.append(part);
+          const kept = !journal.durable || heapBytes + partBytes <= PROCESS_FS_HEAP_WINDOW_BYTES;
+          if (kept) heapBytes += partBytes;
+          queue.push({ op: kept ? part : null, jid, name: nameOf(part), seq: 0, order: ++logged, bytes: partBytes, paths: pathsOf(part), acknowledged, resolve, reject });
           pendingBytes += partBytes;
           if (acknowledged) {
             pendingSyncBytes += partBytes;
@@ -1437,23 +1631,14 @@ var __nimbusProcessFsModule = (() => {
           const first = all[0]?.mutation;
           const last = all[all.length - 1];
           if (last === void 0) return {};
+          const failed = all.find((piece) => piece.failed !== void 0)?.failed;
+          if (failed !== void 0) return { failed };
           const { mutation: _mutation, ...rest } = last;
           return first !== void 0 && last.mutation !== void 0 ? { ...rest, mutation: { before: first.before, after: last.mutation.after } } : rest;
         });
         if (acknowledged) answer.catch(() => {
         });
         return answer;
-      },
-      call(name, path, run, callOptions) {
-        const acknowledged = callOptions?.acknowledged === true;
-        const answer = new Promise((resolve, reject) => {
-          queue.push({ op: { type: "run", name, path, run }, seq: 0, order: ++logged, bytes: 0, paths: [path], acknowledged, resolve, reject });
-          counters.ops++;
-        });
-        schedule();
-        if (acknowledged) answer.catch(() => {
-        });
-        return answer.then((answered2) => answered2.value);
       },
       flush() {
         options.drain?.();
@@ -1495,17 +1680,87 @@ var __nimbusProcessFsModule = (() => {
       get pendingBytes() {
         return pendingBytes;
       },
-      room(bytes) {
-        if (roomWaiters.length === 0 && (windowed === 0 || windowed + bytes <= PROCESS_FS_ROOM_BYTES)) return Promise.resolve(grantRoom(bytes));
-        return new Promise((resolve) => {
-          roomWaiters.push({ bytes, resolve });
-        });
-      },
       stats() {
         return { ...counters };
       }
     };
     return client;
+  }
+  var DRAIN_WAVE_BASE = 2 ** 40;
+  async function drainProcessFsJournal(options) {
+    const { journal, session } = options;
+    const drained = { landed: 0, failures: [] };
+    let held = journal.entries();
+    if (held.length === 0) return drained;
+    const numberings = journal.numberings();
+    if (numberings.length === 0 || numberings[0].jid > held[0].jid) {
+      const writer = await session.openWriter(false);
+      const numbering = { writer, seq: 1, jid: held[0].jid };
+      journal.number(numbering);
+      numberings.unshift(numbering);
+    }
+    const numberingOf = (jid) => {
+      let found = numberings[0];
+      for (const numbering of numberings) if (numbering.jid <= jid) found = numbering;
+      return found;
+    };
+    let wave = DRAIN_WAVE_BASE;
+    while (held.length > 0) {
+      const numbering = numberingOf(held[0].jid);
+      const taken = [];
+      const owned =   new Set();
+      let bytes = 0;
+      let pathBytes = 0;
+      for (const entry of held) {
+        if (numberingOf(entry.jid) !== numbering) break;
+        const seq = numbering.seq + (entry.jid - numbering.jid);
+        if (taken.length > 0 && seq !== taken[taken.length - 1].seq + 1) break;
+        const paths = pathsOf(entry.op).filter((path) => !owned.has(path));
+        const entryBytes = entry.op.type === "call" && "data" in entry.op.call ? entry.op.call.data.byteLength : 0;
+        const entryPathBytes = paths.reduce((sum, path) => sum + utf8Length2(path), 0);
+        if (taken.length > 0 && (owned.size + paths.length > WAVE_PATHS || pathBytes + entryPathBytes > WAVE_PATH_BYTES || bytes + entryBytes > WAVE_BYTES)) break;
+        for (const path of paths) owned.add(path);
+        bytes += entryBytes;
+        pathBytes += entryPathBytes;
+        taken.push({ ...entry, seq });
+      }
+      const encoded = await encodeWriteBatch({ inodes: [], chunks: [], ops: taken.map((entry) => entry.op) });
+      const result = await sendWaveAttempts({
+        supervisor: session,
+        writer: async () => numbering.writer,
+        open: waveAttemptsOf(encoded),
+        streamed: false,
+        wave: ++wave,
+        ...numbering.writer === null ? {} : { sequence: { seq: taken[0].seq, ack: 0 } },
+        ...options.retry === void 0 ? {} : { retry: options.retry },
+        ...options.timers === void 0 ? {} : { timers: options.timers }
+      });
+      const cursor = numbering.writer === null ? taken[0].seq - 1 + (result.ok ? taken.length : result.committedOps) : result.sequence?.cursor;
+      if (cursor === void 0) {
+        throw new Error(`the session answered a drained write without its cursor: ${result.ok ? "no error" : result.error.message}`);
+      }
+      const refused = numbering.writer === null ? !result.ok && result.error.errno !== void 0 && SYSCALL_VERDICTS.has(result.error.errno) ? { seq: cursor + 1, errno: result.error.errno, message: result.error.message } : null : result.sequence?.refused ?? null;
+      let through = 0;
+      for (const entry of taken) {
+        if (entry.seq <= cursor && (refused === null || entry.seq !== refused.seq)) {
+          drained.landed++;
+          through = entry.jid;
+          continue;
+        }
+        if (refused !== null && entry.seq === refused.seq) {
+          drained.failures.push({ op: nameOf(entry.op), path: pathsOf(entry.op)[0] ?? "", errno: refused.errno, message: refused.message });
+          through = entry.jid;
+          continue;
+        }
+        break;
+      }
+      if (through === 0) {
+        throw new Error(`the session applied none of a drained write: ${result.ok ? "no error" : result.error.message}`);
+      }
+      journal.dropThrough(through);
+      held = held.filter((entry) => entry.jid > through);
+    }
+    return drained;
   }
   return __toCommonJS(process_fs_client_exports);
 })();
@@ -1540,22 +1795,14 @@ const __vfsOwnLeases = Object.create(null);
 // what finally says whether that report was its own write coming back.
 // Bounded by the parked set — the entry is retired with the cell below.
 const __vfsParkedReports = Object.create(null);
-const __vfsAppendWrites = Object.create(null);
 const __vfsWrites = new Proxy(Object.create(null), {
   set(target, path, value) {
     target[path] = value;
-    delete __vfsAppendWrites[path];
     delete __vfsParkedReports[path];
     __vfsWriteGenerations[path] = (__vfsWriteGenerations[path] || 0) + 1;
-    // Parking a cell is the only signal a synchronous write leaves. It is
-    // therefore the one place a write-back can be scheduled from, and it
-    // covers every sync mutation — writeFileSync, appendFileSync, the fd
-    // writes, rename — with no per-call-site duplication.
-    __nimbusScheduleVfsWriteBack();
     return true;
   },
   deleteProperty(target, path) {
-    delete __vfsAppendWrites[path];
     delete __vfsParkedReports[path];
     if (Object.prototype.hasOwnProperty.call(target, path)) {
       delete target[path];
@@ -1574,8 +1821,11 @@ const __vfsWriteClaims = new Map();
 // asked to apply whose acknowledgement is not adjudicated yet
 // (__nimbusOwnAcknowledgement). Each entry settles, never rejects.
 const __vfsOwnAcks = new Map();
+// What a logged change answers when the parked cell is not the file's
+// whole content (an append to a file the process never held): retired by
+// eviction, never stamped. And what one answers when the session refused it.
 const __nimbusVfsAppendRangeResult = {};
-let __nimbusVfsAppendOperationSequence = 0;
+const __nimbusVfsRefusedResult = {};
 
 function __nimbusVfsPathKey(path) {
   return String(path).replace(/^\/+/, "");
@@ -1590,6 +1840,11 @@ function __nimbusVfsPathKey(path) {
  * late), its timers the raw ones captured below, and published for the
  * runtime's effect and exit boundaries (globalThis.__nimbusProcessFs).
  */
+// The platform's timers, captured before the shims wrap setTimeout with the
+// VFS resumption barrier: the client's resends and watches are the shim's own
+// infrastructure, not a user resumption.
+const __nimbusRawTimer = globalThis.setTimeout;
+const __nimbusRawClearTimer = globalThis.clearTimeout;
 let __nimbusProcessFsInstance = null;
 function __nimbusProcessFs() {
   if (__nimbusProcessFsInstance !== null) return __nimbusProcessFsInstance;
@@ -1620,6 +1875,10 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
+    // The process's own SQLite, where it has one (a process facet): every
+    // change is there before the program is told it succeeded, and what the
+    // process holds when it dies the session drains from it.
+    ...(globalThis.__nimbusFsJournal ? { journal: globalThis.__nimbusFsJournal } : {}),
   });
   globalThis.__nimbusProcessFs = __nimbusProcessFsInstance;
   return __nimbusProcessFsInstance;
@@ -1641,6 +1900,28 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
   answer.then(settled, settled);
   return answer;
+}
+
+/**
+ * Log `op`, the change a synchronous call (or an async one) just made to
+ * the parked cell at `path`, in the client's log now, in the order the
+ * program made it, and claim the cell with its answer: once the session has
+ * it, the cell retires (stamped with the revision it made, or evicted when
+ * it was not the file's whole content: `partial`); refused, it is dropped.
+ * Answers the session's answer; `acknowledged`: the program was already
+ * told it succeeded, so a refusal is reported, never thrown.
+ */
+function __nimbusLogVfsWrite(path, op, options = {}) {
+  const acknowledged = options.acknowledged === true;
+  const answer = __nimbusSubmitVfs(op, acknowledged);
+  const claimed = __nimbusClaimVfsWrite(path, () => answer.then((answered) => {
+    if (answered.failed) return __nimbusVfsRefusedResult;
+    if (options.partial) return __nimbusVfsAppendRangeResult;
+    return answered.receipt?.revision ?? answered.mutation?.after;
+  }), false, acknowledged);
+  // The claim settles with the answer; a refusal is the answer's to report.
+  claimed.catch(() => {});
+  return { answer, claimed };
 }
 
 /**
@@ -1686,17 +1967,6 @@ function __nimbusAcknowledged(work, syscall, path) {
     const code = error && typeof error.code === "string" ? error.code : "EIO";
     __nimbusProcessFs().noteFailure({ op: syscall, path: __nimbusVfsPathKey(path), errno: code, message: error && error.message ? error.message : String(error) });
   });
-}
-
-/** A mutation no call record carries, made by `run` in its place in the client's log (ProcessFsClient.call). */
-function __nimbusVfsCall(name, path, run) {
-  if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
-  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(name);
-  const answer = __nimbusProcessFs().call(name, __nimbusVfsPathKey(path), run);
-  globalThis.__nimbusPendingOps++;
-  const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
-  answer.then(settled, settled);
-  return answer;
 }
 
 /** A cell's bytes, as a data call carries them. */
@@ -1932,43 +2202,17 @@ async function __nimbusDrainVfsMutations() {
   }
 }
 
-function __nimbusCapturePendingVfsAppend(path) {
+/**
+ * Put `next` in the parked cell at `path` as the view of a change already
+ * logged (a ranged write's overlay, a truncate's trim): the same generation,
+ * so the change's claim still retires it.
+ */
+function __nimbusReplaceParkedCell(path, next) {
   const key = __nimbusVfsPathKey(path);
-  const append = __vfsAppendWrites[key];
-  return append && append.generation === __vfsWriteGenerations[key]
-    ? append
-    : null;
-}
-
-function __nimbusConcatVfsBytes(left, right) {
-  const bytes = new Uint8Array(left.byteLength + right.byteLength);
-  bytes.set(left, 0);
-  bytes.set(right, left.byteLength);
-  return bytes;
-}
-
-function __nimbusRecordVfsAppend(path, delta, fragment, previous) {
-  const key = __nimbusVfsPathKey(path);
-  const chain = previous ? previous.chain : { pending: [] };
-  let operation;
-  if (previous &&
-      !previous.claimed &&
-      !chain.pending.includes(previous.operation)) {
-    operation = previous.operation;
-    operation.bytes = __nimbusConcatVfsBytes(operation.bytes, delta);
-  } else {
-    operation = {
-      id: String(++__nimbusVfsAppendOperationSequence),
-      bytes: delta.slice(),
-    };
-  }
-  __vfsAppendWrites[key] = {
-    generation: __vfsWriteGenerations[key],
-    fragment,
-    chain,
-    operation,
-    claimed: false,
-  };
+  if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key)) return;
+  const generation = __vfsWriteGenerations[key];
+  __vfsWrites[key] = next;
+  __vfsWriteGenerations[key] = generation;
 }
 
 function __nimbusCaptureVfsWrite(path) {
@@ -1978,27 +2222,7 @@ function __nimbusCaptureVfsWrite(path) {
     key,
     content: __vfsWrites[key],
     generation: __vfsWriteGenerations[key],
-    append: __nimbusCapturePendingVfsAppend(key),
   };
-}
-
-function __nimbusVfsAppendOperations(snapshot) {
-  const operations = snapshot.append.chain.pending.slice();
-  if (!operations.includes(snapshot.append.operation)) {
-    operations.push(snapshot.append.operation);
-  }
-  return operations;
-}
-
-function __nimbusBeginVfsAppendOperation(snapshot, operation) {
-  if (!snapshot.append.chain.pending.includes(operation)) {
-    snapshot.append.chain.pending.push(operation);
-  }
-}
-
-function __nimbusCommitVfsAppendOperation(snapshot, operation) {
-  const index = snapshot.append.chain.pending.indexOf(operation);
-  if (index !== -1) snapshot.append.chain.pending.splice(index, 1);
 }
 
 /**
@@ -2029,19 +2253,20 @@ function __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen) 
     try {
       value = await mutation(snapshot.content, snapshot);
     } catch (error) {
-      // A verdict is the authority's answer; anything else (the client could
-      // not get one) may have landed. A whole write's parked bytes stay (sent
-      // again, they replace the same file); an append's go, as refused: sent
-      // again under a new number, it could land twice.
-      if (!__nimbusIsDurabilityFailure(error) || snapshot.append) throw __nimbusRefuseParkedWrite(snapshot, error, unseen);
-      throw error;
+      throw __nimbusRefuseParkedWrite(snapshot, error, unseen);
+    }
+    // Refused (an acknowledged change: the client reports it): the bytes are not the file's.
+    if (value === __nimbusVfsRefusedResult) {
+      __nimbusRefuseParkedWrite(snapshot, null, false);
+      return value;
     }
     if (__vfsWriteGenerations[snapshot.key] === snapshot.generation) {
       // What the barriers reported for this path while the write was in
       // flight. Read before the parked cell is retired below, which drops it.
       const reported = __vfsParkedReports[snapshot.key];
-      if (snapshot.append &&
-          value === __nimbusVfsAppendRangeResult &&
+      // Past the own changes logged after it (__nimbusFollowOwnWrite).
+      value = __nimbusFollowedRevision(snapshot.key, value);
+      if (value === __nimbusVfsAppendRangeResult &&
           typeof __vfsBundle !== "undefined" &&
           __vfsBundle) {
         delete __vfsBundle[snapshot.key];
@@ -2262,7 +2487,7 @@ function __nimbusNoteVfsReportUnder(prefix, revision) {
  * the row inside the window owns it from then on, and its flush dates it.
  */
 function __nimbusEndOwnMutation(key, held, receipt) {
-  if (!held) return;
+  if (!held) { __nimbusFollowOwnWrite(key, receipt); return; }
   const lease = __vfsOwnLeases[key];
   if (!lease) return;
   lease.pending--;
@@ -2290,6 +2515,49 @@ function __nimbusEndOwnMutation(key, held, receipt) {
 }
 
 /**
+ * Own mutations of a path made while its cell was PARKED (a chownSync right
+ * after a writeFileSync: both logged at once, in order): no lease could be
+ * taken, the cell having no stamp yet. Their receipts are chained here
+ * (`before` of each is the `after` of the one before it, or nothing can be
+ * said) and the parked write's claim folds them into the revision it
+ * stamps: its own revision R, then every own change whose chain starts at
+ * or below R, so the barrier reporting the last of them reads it as this
+ * facet's own. `null`: a gap in the chain (or an unknown outcome).
+ */
+const __vfsOwnFollowers = Object.create(null);
+
+function __nimbusFollowOwnWrite(key, receipt) {
+  const known = receipt && typeof receipt.before === "number" && typeof receipt.after === "number";
+  if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key)) {
+    // Its write's claim already stamped the cell: carried past this change
+    // as a lease's end would (nobody else between: the stamp is its before).
+    if (!known) return;
+    if (__nimbusResidentRows()) {
+      const dated = __residentLease(key);
+      if (dated === undefined) return;
+      __residentStamp(key, dated >= receipt.before ? receipt.after : dated);
+      return;
+    }
+    const stamp = __vfsBundleRevisions[key];
+    if (typeof stamp === "number" && stamp !== Infinity && stamp >= receipt.before) __vfsBundleRevisions[key] = receipt.after;
+    return;
+  }
+  const chain = __vfsOwnFollowers[key];
+  if (!known) { __vfsOwnFollowers[key] = null; return; }
+  if (chain === undefined) { __vfsOwnFollowers[key] = { before: receipt.before, after: receipt.after }; return; }
+  if (chain === null) return;
+  __vfsOwnFollowers[key] = chain.after >= receipt.before ? { before: chain.before, after: Math.max(chain.after, receipt.after) } : null;
+}
+
+/** The revision a parked write's claim stamps: its own, carried past the own changes that followed it. */
+function __nimbusFollowedRevision(key, revision) {
+  const chain = __vfsOwnFollowers[key];
+  delete __vfsOwnFollowers[key];
+  if (typeof revision !== "number" || !chain) return revision;
+  return chain.before <= revision ? Math.max(revision, chain.after) : revision;
+}
+
+/**
  * Drop a cell the way the shims' own invalidation does.
  *
  * Content view, stat view and the invalidation count move together in the
@@ -2305,21 +2573,28 @@ function __nimbusEvictLeasedCell(key) {
   if (typeof __vfsBundle !== "undefined" && __vfsBundle) delete __vfsBundle[key];
 }
 
-/** `unseen`: no caller awaits this flush, so a refusal must be retained to be heard. */
-function __nimbusFlushVfsWrite(path, mutation, retainFailure = true, unseen = false) {
+/**
+ * Wait for the parked cell at `path` to be answered: its change was
+ * logged when it was made (__nimbusLogVfsWrite), and this is its claim.
+ * Resolves at once when nothing of the path is out.
+ */
+function __nimbusFlushVfsWrite(path) {
+  const claim = __vfsWriteClaims.get(__nimbusVfsPathKey(path));
+  return claim ? claim.promise : Promise.resolve(undefined);
+}
+
+/**
+ * Claim the parked cell at `path` as it is now with `mutation`, whose
+ * answer retires it (__nimbusRunVfsWriteMutation). `unseen`: no caller
+ * awaits it, so a refusal must be retained to be heard.
+ */
+function __nimbusClaimVfsWrite(path, mutation, retainFailure = true, unseen = false) {
   const snapshot = __nimbusCaptureVfsWrite(path);
-  if (!snapshot) {
-    // Nothing parked: what was is already in flight (a directory rename
-    // sends its descendants' writes ahead of it), and flushing the path
-    // means waiting for that write to land.
-    const inFlight = __vfsWriteClaims.get(__nimbusVfsPathKey(path));
-    return inFlight ? inFlight.promise : Promise.resolve(undefined);
-  }
+  if (!snapshot) return Promise.resolve(undefined);
   const existing = __vfsWriteClaims.get(snapshot.key);
   if (existing && existing.generation === snapshot.generation) {
     return existing.promise;
   }
-  if (snapshot.append) snapshot.append.claimed = true;
   const result = __nimbusRunVfsWriteMutation(snapshot, mutation, retainFailure, unseen);
   const claim = { generation: snapshot.generation, promise: result };
   __vfsWriteClaims.set(snapshot.key, claim);
@@ -2334,128 +2609,17 @@ function __nimbusFlushVfsWrite(path, mutation, retainFailure = true, unseen = fa
     // path (owner, mode) for their sync view.
     const landed = globalThis.__nimbusVfsWriteLanded;
     if (typeof landed === "function") landed(snapshot.key);
-  }, () => {
-    release();
-    if (snapshot.append &&
-        __vfsAppendWrites[snapshot.key] === snapshot.append) {
-      snapshot.append.claimed = false;
-    }
-  });
+  }, release);
   return result;
 }
 
-async function __nimbusPersistVfsWrite(supervisor, path, content, snapshot) {
-  const key = __nimbusVfsPathKey(path);
-  if (snapshot.append) {
-    // Each append the process made, as its own call: the client's cursor
-    // answers a re-sent one rather than appending it twice.
-    for (const operation of __nimbusVfsAppendOperations(snapshot)) {
-      __nimbusBeginVfsAppendOperation(snapshot, operation);
-      const release = await __nimbusProcessFs().room(operation.bytes.byteLength);
-      try { await __nimbusSubmitVfs({ type: "call", call: { call: "appendFile", path: key, mode: 0o666, data: operation.bytes } }); }
-      finally { release(); }
-      __nimbusCommitVfsAppendOperation(snapshot, operation);
-    }
-    return __nimbusVfsAppendRangeResult;
-  }
-  // The revision this write produced. It is what lets the ACQUIRE barrier
-  // tell this facet's own mutation apart from a peer's. Logged a window at a
-  // time: a drain of thousands of parked cells never holds them all twice.
-  // The window is asked before the cell is encoded: thousands of parked
-  // cells waiting for one are never all encoded at once.
-  const release = await __nimbusProcessFs().room(typeof content === "string" ? content.length : content.byteLength);
-  let answer;
-  try { answer = await __nimbusSubmitVfs({ type: "call", call: { call: "writeFile", path: key, mode: 0o666, data: __nimbusVfsCellBytes(content) } }); }
-  finally { release(); }
-  return answer.receipt?.revision;
-}
-
 /**
- * Write back the cells parked at THIS instant, and only those.
- *
- * Bounded on purpose, and deliberately not routed through
- * `__nimbusDrainVfsWrites`, whose `while (pending > 0)` waits for the mutation
- * queue to be EMPTY. That wait is correct at process exit, where no new writes
- * are coming. Anywhere else it is a livelock: a facet unpacking a tarball adds
- * mutations faster than the loop retires them, so the loop never returns.
- * Sited ahead of egress — where it was — that stopped the request from ever
- * leaving the facet, and `npx sv create` ran, printed its intro, and then
- * never reported an exit at all. A barrier may delay a request; it may not
- * wait on a condition a busy process never reaches.
- *
- * Failures are retained rather than thrown. The two callers — the debounce
- * below, and the RELEASE barrier ahead of egress — have no frame that could
- * act on one: rejecting the fetch that happened to trigger the flush would
- * blame the wrong operation. The exit drain reports what is retained, so a
- * lost write is loud exactly once and never silent.
+ * The end of the process: every change it made is already in its client's
+ * log (taken there when it was made); what is left is their answers.
  */
-async function __nimbusFlushVfsWriteBack(supervisor) {
-  if (!supervisor) return;
-  const paths = Object.keys(__vfsWrites);
-  if (paths.length === 0) return;
-  await Promise.allSettled(paths.map((path) => __nimbusFlushVfsWrite(
-    path,
-    (content, snapshot) => __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
-    true,
-    true,
-  )));
-}
-
-/**
- * A synchronous write can only park bytes in `__vfsWrites`: a sync syscall
- * has no channel to the authority. Something else therefore has to carry
- * them across, and the only thing that did was the drain at process exit —
- * so a resident server that writes synchronously never wrote back at all,
- * and a peer reading the same path got the pre-write bytes for the whole
- * life of the process. Measured, not theorised: `writeFileSync` then 50 ms
- * left the authority at null with zero write RPCs issued.
- *
- * Flushing on every write is not the repair — 500 sync writes would become
- * 500 round trips, and an npm install writes thousands. Debounce instead:
- * parking a cell schedules one write-back, and every write that lands before
- * it fires joins that same batch. Steady state costs no more round trips
- * than the exit drain already paid; what changes is when they happen.
- *
- * The timer is the raw platform one, captured before the shims wrap
- * `setTimeout` with the VFS resumption barrier: a write-back is the shim's
- * own infrastructure, not a user resumption, and must not pay an ACQUIRE to
- * deliver an ACQUIRE.
- */
-const __NIMBUS_VFS_WRITE_BACK_DELAY_MS = 10;
-const __nimbusRawTimer = globalThis.setTimeout;
-const __nimbusRawClearTimer = globalThis.clearTimeout;
-let __nimbusVfsWriteBackTimer = null;
-function __nimbusScheduleVfsWriteBack() {
-  if (__nimbusVfsWriteBackTimer !== null) return;
-  if (typeof __nimbusRawTimer !== 'function') return;
-  __nimbusVfsWriteBackTimer = __nimbusRawTimer(() => {
-    __nimbusVfsWriteBackTimer = null;
-    const supervisor = typeof __supervisor !== 'undefined' ? __supervisor : null;
-    if (!supervisor) return;
-    // Not registered in __nimbusPendingVfsMutations: each write it starts
-    // registers itself there through __nimbusQueueVfsMutation, so the exit
-    // drain already awaits the work. Registering the orchestration too would
-    // add an entry nothing ever removes, and that set is drained by a
-    // while-loop on its size.
-    void __nimbusFlushVfsWriteBack(supervisor);
-  }, __NIMBUS_VFS_WRITE_BACK_DELAY_MS);
-}
-
 async function __nimbusDrainVfsWrites(supervisor) {
-  const paths = Object.keys(__vfsWrites);
-  const outcomes = await Promise.allSettled([
-    // Each sent once: the process's client re-sends a write whose answer was
-    // lost (under its number, so it applies once), and what it could not
-    // send is a failure, not another attempt.
-    ...paths.map((path) => __nimbusFlushVfsWrite(
-      path,
-      (content, snapshot) =>
-        __nimbusPersistVfsWrite(supervisor, path, content, snapshot),
-      false,
-      true,
-    )),
-    __nimbusDrainVfsMutations(),
-  ]);
+  void supervisor;
+  const outcomes = await Promise.allSettled([__nimbusDrainVfsMutations()]);
   const failure = outcomes.find((outcome) => outcome.status === "rejected");
   if (failure) throw failure.reason;
   // Everything the process made, answered; a change it was told succeeded

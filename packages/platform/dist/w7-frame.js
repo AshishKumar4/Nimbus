@@ -368,7 +368,7 @@ v3) {
                         throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
                     summary.pathCount++;
                     summary.opCount++;
-                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing']);
+                    const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing', 'recursive', 'force', 'uid', 'gid', 'atime', 'mtime']);
                     yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
                     break;
                 }
@@ -803,6 +803,30 @@ function parsePathCall(value, path) {
             return {
                 call: 'ftruncate', path: path(value.path, 'ftruncate path'), size: safeInteger(value.size, 'ftruncate size'),
                 ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'ftruncate ino') }),
+            };
+        case 'rm': {
+            if (keys.replace(',force', '').replace(',recursive', '') !== 'call,path')
+                break;
+            for (const flag of ['recursive', 'force']) {
+                if (value[flag] !== undefined && value[flag] !== true)
+                    throw new Error(`w7-frame: rm ${flag} is true or absent`);
+            }
+            return {
+                call: 'rm', path: path(value.path, 'rm path'),
+                ...(value.recursive === true ? { recursive: true } : {}),
+                ...(value.force === true ? { force: true } : {}),
+            };
+        }
+        case 'lchown':
+            if (keys !== 'call,gid,path,uid')
+                break;
+            return { call: 'lchown', path: path(value.path, 'lchown path'), uid: u32(value.uid, 'lchown uid'), gid: u32(value.gid, 'lchown gid') };
+        case 'lutimes':
+            if (keys !== 'atime,call,mtime,path')
+                break;
+            return {
+                call: 'lutimes', path: path(value.path, 'lutimes path'),
+                atime: safeInteger(value.atime, 'lutimes atime'), mtime: safeInteger(value.mtime, 'lutimes mtime'),
             };
         default:
             throw new Error(`w7-frame: unknown call ${String(value.call)}`);

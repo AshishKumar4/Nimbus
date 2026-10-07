@@ -1658,6 +1658,17 @@ const __fsMod = (() => {
   function _vfsOp(op) {
     return __nimbusSubmitVfs(op);
   }
+  // A change the program just made to the parked cell at \`absPath\` (its
+  // sync view already shows it): logged in the client now, in program order,
+  // and the cell claimed by its answer (the ledger's __nimbusLogVfsWrite).
+  // Nothing without a supervisor: the view is all there is.
+  function _logParked(absPath, op, options) {
+    if (!_supervisor()) return null;
+    return __nimbusLogVfsWrite(absPath, op, options);
+  }
+  // Parked cells that are not the file's whole content (an append to a file
+  // this view never held): by generation, as the cell is.
+  const _parkedPartial = new Map();
   // What dates an own mutation's cell (__nimbusEndOwnMutation): a logged
   // op's mutation receipt, or what a call made in its place answered.
   function _receiptOf(answer) {
@@ -2511,9 +2522,7 @@ const __fsMod = (() => {
   async function _resumptionRelease() {
     // Everything logged before the effect (the structural changes, the
     // descriptor writes), marked now: what is logged after it is not waited for.
-    const logged = globalThis.__nimbusProcessFs?.flush();
-    await __nimbusFlushVfsWriteBack(_supervisor());
-    await logged;
+    await globalThis.__nimbusProcessFs?.flush();
   }
 
   // Every untrusted resumption — a facet-local timer, an outbound fetch
@@ -2629,39 +2638,33 @@ const __fsMod = (() => {
    * "w")\` — once per extracted entry — was answered ENOENT by an authority
    * that had never heard of \`dir\`; that is create-astro's template copy.
    *
-   * The sync effect stays exactly as it was. What is added is the same RPC
-   * the asynchronous form of the call issues, queued through the write
-   * ledger so it registers with the exit drain, is ordered behind pending
-   * mutations of its ancestors (the ledger does that for every queued
-   * mutation), and — for the two that act on a subtree — behind pending
-   * mutations beneath it. The async forms are that same queued call, awaited.
+   * The sync effect stays exactly as it was. What is added is the call the
+   * asynchronous form makes, logged in the process's client NOW, in the
+   * order the program made it: the client's log is the order every change
+   * reaches the session in, so nothing waits for its ancestors' or its
+   * subtree's changes to land before it is sent (they were logged first).
+   * Its answer is then queued through the write ledger, so it registers with
+   * the exit drain and a later change of the path settles after it. The
+   * async forms are that same call, awaited.
    *
    * \`null\` when there is no authority to tell: standalone and unit contexts
-   * keep today's local-only behaviour. Without a ledger the RPC is issued
-   * directly, which is what the async forms did before they were queued.
+   * keep today's local-only behaviour.
    */
-  // \`method\` names the supervisor RPC when it differs from the syscall the
-  // caller reports (lchown rides \`chown\`, rm rides \`fsRemove\`).
-  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, method, dest) {
+  function _queueStructuralMutation(absPath, syscall, displayPath, rpc, after, dest) {
+    void after;
     const settle = _nsTakeFresh();
     const supervisor = _supervisor();
     if (!supervisor) { settle(); return null; }
-    const queued = _hasVfsMutationQueue();
-    const before = queued && after ? after() : null;
-    const run = async () => {
-      if (before) await before;
-      // Only chown answers with a receipt. The rest (mkdir, unlink, rmdir,
-      // rename, rm) have already dropped the path's cell and stamp in their
-      // synchronous half, so no lease is taken at all; where one is — the
-      // stamp unlink leaves behind — an absent receipt retires it, which is
-      // what an unstamped cell already costs.
-      await _ownMutation(
-        absPath,
-        () => _fsRpc(rpc(supervisor), syscall, displayPath, _receiptOf, dest),
-      );
-      _markVfsStale();
-    };
-    const out = queued ? __nimbusQueueVfsMutation(absPath, run) : run();
+    // Logged in this turn (the lease's work runs to its first await, and the
+    // call is made before it): only chown answers with a receipt; the rest
+    // (mkdir, unlink, rmdir, rename, rm) dropped the path's cell and stamp
+    // in their synchronous half, so no lease is taken at all.
+    const sent = _ownMutation(
+      absPath,
+      () => _fsRpc(rpc(supervisor), syscall, displayPath, _receiptOf, dest),
+    ).then(() => { _markVfsStale(); });
+    sent.catch(() => {});
+    const out = _hasVfsMutationQueue() ? __nimbusQueueVfsMutation(absPath, () => sent) : sent;
     // Settled either way: a failed mutation leaves the authority as it was,
     // which the next barrier's table shows.
     Promise.resolve(out).then(settle, settle);
@@ -2746,16 +2749,8 @@ const __fsMod = (() => {
     if (!__vfsWrites || !(k in __vfsWrites)) {
       return Promise.resolve(undefined);
     }
-    return __nimbusFlushVfsWrite(
-      absPath,
-      (content, snapshot) => _fsRpc(
-        __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-        "write", absPath,
-        (result) => result,
-      ),
-      true,
-      true,
-    );
+    void supervisor;
+    return __nimbusFlushVfsWrite(absPath);
   }
 
   /**
@@ -2810,7 +2805,7 @@ const __fsMod = (() => {
       next = new Uint8Array(size);
       next.set(buf, 0);
     }
-    if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
+    if (__vfsWrites && k in __vfsWrites) __nimbusReplaceParkedCell(k, next);
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
@@ -2867,7 +2862,7 @@ const __fsMod = (() => {
     if (cell === undefined) return;
     _ownWriteTimes[k] = Date.now();
     const next = _spliceCell(_asBytes(cell), pos, bytes);
-    if (__vfsWrites && k in __vfsWrites) __vfsWrites[k] = next;
+    if (__vfsWrites && k in __vfsWrites) __nimbusReplaceParkedCell(k, next);
     if (__vfsBundle && k in __vfsBundle) __vfsBundle[k] = next;
   }
 
@@ -3383,19 +3378,17 @@ const __fsMod = (() => {
     // list it) is the authority's to answer for, as the async rename's
     // destination is: parked and written back like any other write, and
     // refused (and the parked bytes dropped) if the authority refuses it.
-    _parkWholeWrite(p, data, !!supervisor);
-    if (supervisor && _decidedHere(absPath, data.byteLength ?? data.length ?? 0)) {
-      // Decided here: its sync view already has it; the write goes with the log's waves.
-      _detachStructuralMutation(__nimbusDecided(__nimbusFlushVfsWrite(
-        absPath,
-        (content, snapshot) => __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-        false,
-        true,
-      ), data.byteLength ?? data.length ?? 0), "write", p);
+    const k = _parkWholeWrite(p, data, !!supervisor);
+    if (!supervisor) return;
+    const bytes = __nimbusVfsCellBytes(__vfsWrites[k]).slice();
+    const decided = _decidedHere(absPath, bytes.byteLength);
+    // Logged now, in program order; decided here, it is answered once logged.
+    const logged = _logParked(absPath, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: bytes } }, { acknowledged: decided });
+    if (decided) {
+      _detachStructuralMutation(__nimbusDecided(logged.claimed, bytes.byteLength), "write", p);
       return;
     }
-    if (supervisor) {
-      await _announceLocalDirs(absPath, supervisor);
+    {
       // The revision comes back so the ledger can stamp the cell: an async
       // whole write is the facet's own as much as a parked sync one is.
       // The authority's stat comes back with the write where it can, and is
@@ -3406,18 +3399,12 @@ const __fsMod = (() => {
       let kept = false;
       const ticket = _beginFill(_strip(absPath));
       try {
-        await __nimbusFlushVfsWrite(absPath, async (content) => {
-          const answer = await _fsRpc(
-            _vfsCall({ call: "writeFile", path: _strip(absPath), mode: 0o666, data: __nimbusVfsCellBytes(content) }),
-            "write", p,
-            (result) => result,
-          );
-          if (answer.receipt !== undefined) {
-            learned = _receiptStat(answer.receipt);
-            written = answer.receipt.revision;
-          }
-          return written;
-        });
+        const answer = await _fsRpc(logged.answer, "write", p, (result) => result);
+        await logged.claimed;
+        if (answer.receipt !== undefined) {
+          learned = _receiptStat(answer.receipt);
+          written = answer.receipt.revision;
+        }
         _markVfsStale();
         if (typeof written !== "number") written = undefined;
         if (learned !== undefined) kept = _noteLearnedStat(absPath, learned, ticket, written);
@@ -3430,29 +3417,18 @@ const __fsMod = (() => {
 
   async function _appendFileAsync(p, data, opts) {
     const absPath = _resolveFollow(p, "open");
-    appendFileSync(p, data, opts);
     const supervisor = _supervisor();
-    if (!supervisor) return;
     const appended = typeof data === "string" ? data.length : (data.byteLength ?? 0);
-    if (_decidedHere(absPath, appended)) {
-      // Decided here: the append goes with the log's waves.
-      _detachStructuralMutation(__nimbusDecided(__nimbusFlushVfsWrite(
-        absPath,
-        (content, snapshot) => __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-        false,
-        true,
-      ), appended), "write", p);
+    const decided = !!supervisor && _decidedHere(absPath, appended);
+    const logged = _appendLocal(p, data, opts, decided);
+    if (!supervisor) return;
+    if (decided) {
+      // Decided here: answered once logged.
+      _detachStructuralMutation(__nimbusDecided(logged.claimed, appended), "write", p);
       return;
     }
-    await _announceLocalDirs(absPath, supervisor);
-    await __nimbusFlushVfsWrite(
-      absPath,
-      (content, snapshot) => _fsRpc(
-        __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-        "write", p,
-        (result) => result,
-      ),
-    );
+    await _fsRpc(logged.answer, "write", p, (result) => result);
+    await logged.claimed;
     _markVfsStale();
     await _learnLive(absPath, supervisor);
   }
@@ -3482,38 +3458,25 @@ const __fsMod = (() => {
       await _announceLocalDirs(absPath, supervisor);
       const k = _strip(absPath);
       if (__vfsWrites && k in __vfsWrites) {
-        const append = __nimbusCapturePendingVfsAppend(k);
-        if (append) {
-          const flush = __nimbusFlushVfsWrite(
-            absPath,
-            (content, snapshot) =>
-              __nimbusPersistVfsWrite(supervisor, absPath, content, snapshot),
-          );
-          // Persisting the append drops the resident cell (the ledger
-          // refetches it on the next live read), so there is no cell to
-          // trim or stamp behind this truncate.
-          await __nimbusQueueVfsMutation(absPath, async () => {
-            await flush;
-            await _fsRpc(
-              _vfsOp({ type: "truncate", path: k, size }),
-              "truncate", p,
-              () => undefined,
-            );
-          });
-          _markVfsStale();
-          return;
-        }
-        // Unflushed sync writes: trim locally, then flush the pending
-        // cell whole (it was going to flush whole anyway).
+        // A parked cell: the truncate is logged now, in program order, and
+        // the cell trimmed as its view (or dropped when it was not the
+        // file's whole content: the session's answer is the file then).
         if (localCell === undefined) throw _fsErr("ENOENT", "truncate", p);
-        _truncateLocalCell(absPath, size);
-        await _flushLocalPathToSupervisor(absPath, supervisor);
+        const partial = _parkedPartial.get(k) === __vfsWriteGenerations[k];
+        if (!partial) {
+          _truncateLocalCell(absPath, size);
+          _parkWrite(k, __vfsWrites[k]);
+        }
+        const logged = _logParked(absPath, { type: "truncate", path: k, size }, { partial });
+        await _fsRpc(logged.answer, "truncate", p, () => undefined);
+        await logged.claimed;
+        _markVfsStale();
         return;
       }
       // Live file is the source of truth — supervisor trims only the
-      // boundary chunk; ENOENT propagates when it does not exist.
+      // boundary chunk; ENOENT propagates when it does not exist. Logged now.
       const generation = __vfsWriteGenerations[k];
-      await __nimbusQueueVfsMutation(absPath, () => _ownMutation(
+      const sent = _ownMutation(
         absPath,
         () => _fsRpc(_vfsOp({ type: "truncate", path: k, size }), "truncate", p, _receiptOf),
         () => {
@@ -3521,7 +3484,9 @@ const __fsMod = (() => {
             _truncateLocalCell(absPath, size);
           }
         },
-      ));
+      );
+      sent.catch(() => {});
+      await __nimbusQueueVfsMutation(absPath, () => sent);
       _markVfsStale();
       return;
     }
@@ -3557,11 +3522,11 @@ const __fsMod = (() => {
       // Ordered behind the path's pending mutations: an fd write queued a
       // moment ago (modern-tar writes, then futimes, then closes) would
       // otherwise land AFTER the timestamp and reset it to "now".
-      // A link's own times (lutimes) are no attribute record's: that call is made in its place in the log.
+      // A link's own times (lutimes): the call of that name, not an attribute record (which follows the link).
       const leased = () => _ownMutation(absPath, () => _fsRpc(
         followSymlinks
           ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { atime: time.atimeMs, mtime: time.mtimeMs } })
-          : __nimbusVfsCall("lutimes", absPath, () => supervisor.utimes(absPath, time.atimeMs, time.mtimeMs)),
+          : _vfsCall({ call: "lutimes", path: _strip(absPath), atime: time.atimeMs, mtime: time.mtimeMs }),
         syscall, p,
         _receiptOf,
       ));
@@ -3681,7 +3646,6 @@ const __fsMod = (() => {
       absPath, syscall, p,
       (s) => _chownCall(s, absPath, nextUid, nextGid, followSymlinks),
       () => _flushParkedWrite(absPath, supervisor),
-      "chown",
     );
   }
 
@@ -3690,7 +3654,7 @@ const __fsMod = (() => {
   function _chownCall(supervisor, absPath, uid, gid, followSymlinks) {
     return followSymlinks
       ? _vfsOp({ type: "setattr", path: _strip(absPath), attrs: { uid, gid } })
-      : __nimbusVfsCall("lchown", absPath, () => supervisor.chown(absPath, uid, gid, { followSymlinks: false }));
+      : _vfsCall({ call: "lchown", path: _strip(absPath), uid, gid });
   }
   function chownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, undefined, "chown"), "chown", p); }
   function lchownSync(p, uid, gid) { _detachStructuralMutation(_chownQueued(p, uid, gid, { followSymlinks: false }, "lchown"), "lchown", p); }
@@ -3847,7 +3811,8 @@ const __fsMod = (() => {
   // (the hot path for source code / package.json / user JS).
   // Anything else is stringified (Node's behaviour for e.g. numbers).
   function writeFileSync(p, data, opts) {
-    _parkWholeWrite(p, data, false);
+    const k = _parkWholeWrite(p, data, false);
+    _logParked("/" + k, { type: "call", call: { call: "writeFile", path: k, mode: 0o666, data: __nimbusVfsCellBytes(__vfsWrites[k]).slice() } }, { acknowledged: true });
   }
 
   /**
@@ -3864,6 +3829,8 @@ const __fsMod = (() => {
     else if (typeof data === "string") cell = data;
     else cell = String(data);
     _parkWrite(k, cell);
+    _parkedPartial.delete(k);
+    return k;
   }
 
   // ── appendFileSync ──
@@ -3871,11 +3838,18 @@ const __fsMod = (() => {
   // combined cell is bytes (lossless for both). When both are strings,
   // stay string (avoids re-encoding ASCII through TextEncoder).
   function appendFileSync(p, data, opts) {
+    _appendLocal(p, data, opts, true);
+  }
+
+  // The append's local effect, and the append itself logged now (acknowledged:
+  // the program was told it succeeded). The cell is the file's whole content
+  // only when it extends a parked cell of this process's that was whole.
+  function _appendLocal(p, data, opts, acknowledged) {
     const absPath = _resolveFollow(p, "open");
     _ensureWritable(absPath, "open", p);
     const k = _strip(absPath);
-    const previousAppend = __nimbusCapturePendingVfsAppend(k);
     const hadPendingWrite = Object.prototype.hasOwnProperty.call(__vfsWrites, k);
+    const wholeBefore = hadPendingWrite && _parkedPartial.get(k) !== __vfsWriteGenerations[k];
     const existing = _bundleLookup(absPath);
     const existingDefined = existing !== undefined;
     const dataIsBytes = data instanceof Uint8Array;
@@ -3900,14 +3874,12 @@ const __fsMod = (() => {
       cell = existing + (typeof data === "string" ? data : String(data));
     }
     _parkWrite(k, cell);
-    // Bundle content is only a sync-view cache and may be stale. It can supply
-    // the local display fragment, but only a pending full write owns its prefix.
-    if (!hadPendingWrite || previousAppend) {
-      const appended = _asBytes(
-        dataIsBytes ? data : (typeof data === "string" ? data : String(data)),
-      );
-      __nimbusRecordVfsAppend(k, appended, _asBytes(cell), previousAppend);
-    }
+    // Bundle content is only a sync-view cache and may be stale: only a
+    // pending whole write of this process's owns the cell's prefix.
+    if (wholeBefore) _parkedPartial.delete(k);
+    else _parkedPartial.set(k, __vfsWriteGenerations[k]);
+    const appended = _asBytes(dataIsBytes ? data : (typeof data === "string" ? data : String(data))).slice();
+    return _logParked(absPath, { type: "call", call: { call: "appendFile", path: k, mode: 0o666, data: appended } }, { acknowledged, partial: !wholeBefore });
   }
 
   // ── existsSync ──
@@ -4112,7 +4084,7 @@ const __fsMod = (() => {
     if (oldK === newK) {
       if (source !== undefined) return null;
       if (_nsUnlisted(oldAbs, false, false) === null) throw _fsErr("ENOENT", "rename", oldP, newP);
-      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, undefined, newP);
+      return _queueStructuralMutation(oldAbs, "rename", oldP, () => _vfsOp({ type: "rename", from: oldK, to: newK }), undefined, newP);
     }
     // What rename(2) refuses before it moves anything, refused here before
     // the local tables move: the sync view applies a rename at once and the
@@ -4140,12 +4112,19 @@ const __fsMod = (() => {
       .filter((key) => key === oldK || key.startsWith(oldPrefix))
       .map((key) => newK + key.slice(oldK.length));
     const content = __vfsBundle?.[oldK] ?? __vfsWrites?.[oldK];
+    // The file's own cell moves with its name (retired once the move is
+    // answered, below); one that is only an append's bytes cannot stand for
+    // the file, and its new name reads from the authority once the move lands.
+    const movedFile = [];
     if (content !== undefined) {
-      _parkWrite(newK, content);
+      const partial = _parkedPartial.get(oldK) === __vfsWriteGenerations[oldK];
+      const landed = _supervisor() ? _flushParkedWrite("/" + oldK, _supervisor()) : null;
+      if (!partial) _parkWrite(newK, content);
       if (__vfsBundle) delete __vfsBundle[oldK];
       delete __vfsBundleRevisions[oldK];
       delete __vfsWrites[oldK];
       _forgetSyncPath(oldK);
+      if (!partial && landed) movedFile.push([newK, landed, __vfsWriteGenerations[newK]]);
     } else if (__vfsDirs && oldK in __vfsDirs) {
       // A directory this process made travels under its new name, so the
       // sync view stops listing the old one and _announceLocalDirs cannot
@@ -4178,13 +4157,13 @@ const __fsMod = (() => {
     // With no authority the process's own tables are the filesystem, and the
     // cells move with the name.
     const supervisor = _supervisor();
-    const movedWrites = [];
+    const movedWrites = movedFile;
     for (const k of Object.keys(__vfsWrites)) {
       if (!k.startsWith(oldPrefix)) continue;
       const moved = newK + k.slice(oldK.length);
       const content = __vfsWrites[k];
       const writtenAt = _ownWriteTimes[k];
-      const append = !!supervisor && __nimbusCapturePendingVfsAppend(k) !== null;
+      const append = !!supervisor && _parkedPartial.get(k) === __vfsWriteGenerations[k];
       const landed = supervisor ? _flushParkedWrite("/" + k, supervisor) : null;
       if (__vfsBundle) delete __vfsBundle[k];
       delete __vfsWrites[k];
@@ -4214,7 +4193,6 @@ const __fsMod = (() => {
       // also needs the destination's ancestors to exist and every pending
       // mutation beneath the source to have landed under the old name.
       () => Promise.all([__nimbusAwaitAncestorMutations(newAbs), __nimbusAwaitSubtreeMutations(oldAbs)]),
-      undefined,
       newP,
     );
     _fenceVfsMutation(newAbs, queued);
@@ -4232,7 +4210,7 @@ const __fsMod = (() => {
         }
         return undefined;
       };
-      _detachStructuralMutation(__nimbusFlushVfsWrite(
+      _detachStructuralMutation(__nimbusClaimVfsWrite(
         "/" + moved,
         () => landed.then((revision) => queued.then(() => revision, refused)),
         false,
@@ -4268,10 +4246,9 @@ const __fsMod = (() => {
 
   // ── rmSync / rm ──
   // The local tables are edited at once (the same retraction unlinkSync and
-  // rmdirSync perform, over the whole subtree when recursive) and ONE
-  // authority RPC — fsRemove, which the bridge serves as unlink or a bounded
-  // recursive removal — is queued behind every pending mutation beneath the
-  // path. ENOENT under \`force\` is the authority's to swallow; locally an
+  // rmdirSync perform, over the whole subtree when recursive) and ONE call,
+  // rm (an unlink, or the tree when recursive), is logged behind every
+  // pending mutation beneath the path. ENOENT under \`force\` is the authority's to swallow; locally an
   // unknown path may still exist live, so it is asked rather than answered.
   function _rmQueued(p, opts, sync) {
     const o = opts || {};
@@ -4284,7 +4261,8 @@ const __fsMod = (() => {
       if (sync || error?.code !== "EAGAIN") throw error;
     }
     const supervisor = _supervisor();
-    const canRemove = !!supervisor && typeof supervisor.fsRemove === "function";
+    // Every session takes rm as a call in the process's log.
+    const canRemove = !!supervisor;
     if (st === undefined) {
       if (!canRemove) {
         if (o.force) return null;
@@ -4322,19 +4300,12 @@ const __fsMod = (() => {
       }
     }
     if (o.recursive) _forgetSyncTree(k); else _forgetSyncPath(k);
-    if (!canRemove) {
-      // No fsRemove: a plain file still has the unlink RPC.
-      if (st !== undefined && !st.isDirectory()) {
-        return _queueStructuralMutation(absPath, "rm", p, () => _vfsCall({ call: "unlink", path: k }), undefined, "unlink");
-      }
-      return null;
-    }
+    if (!canRemove) return null;
     return _queueStructuralMutation(
       absPath, "rm", p,
-      // A tree's removal is no call record: it is made in its place in the log.
-      (s) => __nimbusVfsCall("rm", absPath, () => s.fsRemove(absPath, { recursive: !!o.recursive, force: !!o.force || parked })),
+      // fs.rm as one call: the tree with it when recursive, an absent name no refusal when forced.
+      () => _vfsCall({ call: "rm", path: k, ...(o.recursive ? { recursive: true } : {}), ...(o.force || parked ? { force: true } : {}) }),
       () => __nimbusAwaitSubtreeMutations(absPath),
-      "fsRemove",
     );
   }
   function rmSync(p, opts) { _detachStructuralMutation(_rmQueued(p, opts, true), "rm", p); }
@@ -4402,7 +4373,10 @@ const __fsMod = (() => {
     const base = _residentWriteBase(absPath, p, "truncate");
     const next = new Uint8Array(size);
     next.set(base.subarray(0, Math.min(size, base.byteLength)), 0);
-    _parkWrite(_strip(absPath), next);
+    const k = _strip(absPath);
+    _parkWrite(k, next);
+    _parkedPartial.delete(k);
+    _logParked(absPath, { type: "truncate", path: k, size }, { acknowledged: true });
     _markVfsStale();
   }
 
@@ -4581,43 +4555,50 @@ const __fsMod = (() => {
       }
       let writeAt = at;
       const supervisor = _supervisor();
-      if (supervisor) {
-        const pendingSnapshot = __nimbusCaptureVfsWrite(this._abs);
-        const overlayGeneration = pendingSnapshot
-          ? pendingSnapshot.generation + 1
-          : __vfsWriteGenerations[_strip(this._abs)];
-        const flush = __nimbusFlushVfsWrite(
-          this._abs,
-          (content, snapshot) =>
-            __nimbusPersistVfsWrite(supervisor, this._abs, content, snapshot),
-        );
+      const parkedKey = _strip(this._abs);
+      if (supervisor && Object.prototype.hasOwnProperty.call(__vfsWrites, parkedKey) &&
+          _parkedPartial.get(parkedKey) !== __vfsWriteGenerations[parkedKey]) {
+        // The file's whole bytes are a parked cell of this process's (its
+        // changes logged, not yet answered): the write lands on it now and
+        // is logged after them, as writeSync's does, and answered in turn.
+        const base = _asBytes(__vfsWrites[parkedKey]);
+        writeAt = this._flags.append ? base.byteLength : at;
+        _parkWrite(parkedKey, _spliceCell(base, writeAt, bytes));
+        _parkedPartial.delete(parkedKey);
+        const logged = _logParked(this._abs, this._flags.append
+          ? { type: "call", call: { call: "append", path: parkedKey, data: bytes.slice() } }
+          : { type: "call", call: { call: "write", path: parkedKey, offset: writeAt, data: bytes.slice() } });
+        await _fsRpc(logged.answer, "write", this._path, () => undefined);
+        await logged.claimed;
+        _markVfsStale();
+      } else if (supervisor) {
+        const overlayGeneration = __vfsWriteGenerations[_strip(this._abs)];
         const key = _strip(this._abs);
-        await __nimbusQueueVfsMutation(this._abs, async () => {
-          await flush;
-          // The description's write, as write(2) makes it: at its offset, or
-          // (O_APPEND) at the file's end as it is when the write lands,
-          // which the receipt's size says.
-          await _ownMutation(
-            this._abs,
-            () => _fsRpc(
-              _vfsCall(this._flags.append
-                ? { call: "append", path: key, data: bytes.slice() }
-                : { call: "write", path: key, offset: writeAt, data: bytes.slice() }),
-              "write", this._path,
-              (answer) => {
-                if (this._flags.append && answer.receipt !== undefined) writeAt = answer.receipt.size - bytes.byteLength;
-                return answer.mutation;
-              },
-            ),
-            () => {
-              const key = _strip(this._abs);
-              if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
-                  __vfsWriteGenerations[key] === overlayGeneration) {
-                _overlayLocalCell(this._abs, writeAt, bytes);
-              }
+        // The description's write, as write(2) makes it, logged now: at its
+        // offset, or (O_APPEND) at the file's end as it is when the write
+        // lands, which the receipt's size says.
+        const sent = _ownMutation(
+          this._abs,
+          () => _fsRpc(
+            _vfsCall(this._flags.append
+              ? { call: "append", path: key, data: bytes.slice() }
+              : { call: "write", path: key, offset: writeAt, data: bytes.slice() }),
+            "write", this._path,
+            (answer) => {
+              if (this._flags.append && answer.receipt !== undefined) writeAt = answer.receipt.size - bytes.byteLength;
+              return answer.mutation;
             },
-          );
-        });
+          ),
+          () => {
+            const key = _strip(this._abs);
+            if (!Object.prototype.hasOwnProperty.call(__vfsWrites, key) &&
+                __vfsWriteGenerations[key] === overlayGeneration) {
+              _overlayLocalCell(this._abs, writeAt, bytes);
+            }
+          },
+        );
+        sent.catch(() => {});
+        await __nimbusQueueVfsMutation(this._abs, () => sent);
         _markVfsStale();
       } else {
         const cell = _writtenCell(this._abs);
@@ -4673,8 +4654,12 @@ const __fsMod = (() => {
       return bytes;
     }
     _writeBase(syscall) { return _residentWriteBase(this._abs, this._path, syscall); }
-    _commit(next) {
-      _parkWrite(_strip(this._abs), next);
+    // \`op\`: the change, logged now (acknowledged: a sync call returned).
+    _commit(next, op) {
+      const k = _strip(this._abs);
+      _parkWrite(k, next);
+      _parkedPartial.delete(k);
+      if (op) _logParked(this._abs, op, { acknowledged: true });
       _markVfsStale();
       this._size = next.byteLength;
     }
@@ -4705,7 +4690,10 @@ const __fsMod = (() => {
       const at = this._flags.append
         ? base.byteLength
         : (pos === null ? this._position : pos);
-      this._commit(_spliceCell(base, at, bytes));
+      const key = _strip(this._abs);
+      this._commit(_spliceCell(base, at, bytes), this._flags.append
+        ? { type: "call", call: { call: "append", path: key, data: bytes.slice() } }
+        : { type: "call", call: { call: "write", path: key, offset: at, data: bytes.slice() } });
       if (pos === null || this._flags.append) this._position = at + bytes.byteLength;
       return bytes.byteLength;
     }
@@ -4717,7 +4705,7 @@ const __fsMod = (() => {
       const base = this._writeBase("ftruncate");
       const next = new Uint8Array(size);
       next.set(base.subarray(0, Math.min(size, base.byteLength)), 0);
-      this._commit(next);
+      this._commit(next, { type: "call", call: { call: "ftruncate", path: _strip(this._abs), size } });
       if (this._position > size) this._position = size;
     }
     async chmod(mode) { this._assertOpen("fchmod"); await _chmodAsync(this._path, mode); }

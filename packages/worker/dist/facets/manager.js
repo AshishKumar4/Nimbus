@@ -1068,19 +1068,12 @@ async function __nimbusFlushRuntime() {
   const rt = __nimbusRuntime;
   if (!rt) return;
   const __pendingDrain = rt.pendingDrainChain.then(async () => {
-    const __vfsTasks = [];
-    if (rt.supervisor && Object.keys(rt.vfsWrites).length > 0) {
-      for (const path of Object.keys(rt.vfsWrites)) {
-        __vfsTasks.push(rt.flushVfsWrite(
-          path,
-          (content, snapshot) =>
-            rt.persistVfsWrite(rt.supervisor, path, content, snapshot),
-        ));
-      }
-    }
+    // Every change the program made is in its client's log already: the
+    // flush waits for their answers (the parked cells' claims among them).
     const __vfsOutcomes = await Promise.allSettled([
-      ...__vfsTasks,
+      ...(rt.supervisor ? Object.keys(rt.vfsWrites).map((path) => rt.flushVfsWrite(path)) : []),
       rt.drainVfsMutations(),
+      ...(globalThis.__nimbusProcessFs ? [globalThis.__nimbusProcessFs.flush()] : []),
     ]);
     for (let pass = 0; pass < 12; pass++) {
       const turn = Promise.withResolvers();
@@ -1340,7 +1333,6 @@ ${RESIDENCY_MISS_REPORT}
       settledIO: 0,
       vfsWrites: __vfsWrites,
       flushVfsWrite: __nimbusFlushVfsWrite,
-      persistVfsWrite: __nimbusPersistVfsWrite,
       drainVfsMutations: __nimbusDrainVfsMutations,
       pendingDrainChain: Promise.resolve(),
     };
