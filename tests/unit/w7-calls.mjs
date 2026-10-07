@@ -13,6 +13,8 @@ import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { decodeWriteBatchStream, encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
+import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 
 const enc = new TextEncoder();
 const USER = { ...CRED_SESSION_USER, umask: 0o027 };
@@ -184,6 +186,35 @@ await differential('rmdir of a file is ENOTDIR', [{ call: 'rmdir', path: 'home/u
     const bad = encodeWriteBatchStream({ inodes: [], chunks: [], ops: [{ type: 'call', call: { call: 'mkdir', path: 'a/d', mode: 0o700, target: 'x' } }] });
     for await (const _ of (await decodeWriteBatchStream(bad)).records) { /* drain */ }
   }, /mkdir takes other fields/);
+}
+
+// ── Calls on a mount are the namespace's calls ─────────────────────────
+{
+  const { raw, user } = engine();
+  const files = new ProcessFiles(raw);
+  const shared = new MemoryVFS();
+  files.vfs.mount('/shared', shared);
+  shared.mkdir('/there');
+  const calls = [
+    { call: 'writeFile', path: 'shared/a', mode: 0o644, data: enc.encode('on the mount') },
+    { call: 'appendFile', path: 'shared/a', mode: 0o644, data: enc.encode(', twice') },
+    { call: 'mkdir', path: 'shared/d', mode: 0o755 },
+    { call: 'symlink', path: 'shared/l', target: 'a' },
+    { call: 'unlink', path: 'shared/l' },
+    { call: 'writeFile', path: 'home/user/beside', mode: 0o644, data: enc.encode('on sqlite') },
+    { call: 'mkdir', path: 'shared/there', mode: 0o755 },
+    { call: 'writeFile', path: 'shared/never', mode: 0o644, data: enc.encode('x') },
+  ];
+  const result = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: calls.map((call) => ({ type: 'call', call })) }));
+  assert.equal(result.ok, false, 'a mkdir of a mounted name that is there was taken');
+  assert.equal(result.committedOps, 6, result.error?.message);
+  assert.equal(result.error.errno, 'EEXIST');
+  assert.equal(new TextDecoder().decode(shared.readFile('/a')), 'on the mount, twice');
+  assert.equal(shared.stat('/d')?.type, 'directory');
+  assert.equal(shared.stat('/l'), null);
+  assert.equal(new TextDecoder().decode(user.readFile('home/user/beside')), 'on sqlite');
+  assert.equal(shared.stat('/never'), null, 'a call after the refusal was made');
+  assert.equal(user.exists('shared/a'), false, 'a mounted call wrote SQLite under the mount point');
 }
 
 console.log('w7-calls: ok');
