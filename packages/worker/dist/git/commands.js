@@ -18,7 +18,7 @@ import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
-import { DirCache, comparePaths } from './worktree/dircache.js';
+import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
 import { PairList } from './worktree/pairs.js';
 import { WorktreeRepo, configBool } from './worktree/repo.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex } from './worktree/status.js';
@@ -338,6 +338,87 @@ export function parseCloneFilter(spec) {
  * parsed `dev` as the URL) and silently no-opped `--filter=blob:none` — a
  * "blobless" clone that was not blobless.
  */
+/** git init's usage line, as git 2.53 prints it for a second directory (usage()). */
+const INIT_USAGE_LINE = [
+    'usage: git init [-q | --quiet] [--bare] [--template=<template-directory>]',
+    '         [--separate-git-dir <git-dir>] [--object-format=<format>]',
+    '         [--ref-format=<format>]',
+    '         [-b <branch-name> | --initial-branch=<branch-name>]',
+    '         [--shared[=<permissions>]] [<directory>]',
+    '',
+].join('\n');
+/** git init's usage, as git 2.53 prints it after an option it does not know (usage_with_options()). */
+const INIT_USAGE = [
+    'usage: git init [-q | --quiet] [--bare] [--template=<template-directory>]',
+    '                [--separate-git-dir <git-dir>] [--object-format=<format>]',
+    '                [--ref-format=<format>]',
+    '                [-b <branch-name> | --initial-branch=<branch-name>]',
+    '                [--shared[=<permissions>]] [<directory>]',
+    '',
+    '    --[no-]template <template-directory>',
+    '                          directory from which templates will be used',
+    '    --[no-]bare           create a bare repository',
+    '    --shared[=<permissions>]',
+    '                          specify that the git repository is to be shared amongst several users',
+    '    -q, --[no-]quiet      be quiet',
+    '    --[no-]separate-git-dir <gitdir>',
+    '                          separate git dir from working tree',
+    '    -b, --[no-]initial-branch <name>',
+    '                          override the name of the initial branch',
+    '    --[no-]object-format <hash>',
+    '                          specify the hash algorithm to use',
+    '    --[no-]ref-format <format>',
+    '                          specify the reference format to use',
+    '', '',
+].join('\n');
+/**
+ * `git init`'s arguments: -q, --bare, the initial branch (`-b <name>`,
+ * `-b<name>`, `--initial-branch[=]<name>`) and the directory. The branch's
+ * name is never the directory (`git init -b main` initialized `./main`).
+ * git's other options are refused here as unsupported.
+ */
+export function parseInitArgs(args) {
+    let quiet = false;
+    let bare = false;
+    let branch;
+    let directory;
+    let dashdash = false;
+    for (let i = 0; i < args.length; i++) {
+        const arg = args[i];
+        if (dashdash || arg === '-' || !arg.startsWith('-')) {
+            if (directory !== undefined)
+                return { error: INIT_USAGE_LINE, code: 129 };
+            directory = arg;
+            continue;
+        }
+        if (arg === '--')
+            dashdash = true;
+        else if (arg === '-q' || arg === '--quiet')
+            quiet = true;
+        else if (arg === '--no-quiet')
+            quiet = false;
+        else if (arg === '--bare')
+            bare = true;
+        else if (arg === '--no-bare')
+            bare = false;
+        else if (arg === '-b' || arg === '--initial-branch') {
+            if (i + 1 >= args.length)
+                return { error: arg === '-b' ? "error: switch `b' requires a value\n" : "error: option `initial-branch' requires a value\n", code: 129 };
+            branch = args[++i];
+        }
+        else if (arg.startsWith('--initial-branch='))
+            branch = arg.slice('--initial-branch='.length);
+        else if (arg.startsWith('-b'))
+            branch = arg.slice(2);
+        else if (/^--(no-)?(template|separate-git-dir|object-format|ref-format|shared)(=|$)/.test(arg)) {
+            return { error: `fatal: git init ${arg.split('=')[0]} is not supported here\n`, code: 128 };
+        }
+        else {
+            return { error: `error: unknown ${arg.startsWith('--') ? `option \`${arg.slice(2).split('=')[0]}'` : `switch \`${arg.slice(1, 2)}'`}\n${INIT_USAGE}`, code: 129 };
+        }
+    }
+    return { quiet, bare, branch, directory };
+}
 export function parseCloneArgs(args) {
     let depthFlag;
     let branch;
@@ -523,11 +604,11 @@ async function stageTracked(ctx, wrepo, git) {
     for (const line of scan.errors.tracked)
         await ctx.stderr.write(`${line}\n`);
     const removed = new Set();
-    const added = [];
+    const added = new NewEntries();
     for (const [i, dirty] of scan.dirty) {
         const entry = dirty.change === 'D' ? null : await indexEntryFor(wrepo, git, dc, dc.path(i));
         if (entry)
-            added.push(entry);
+            added.add(entry);
         else
             removed.add(i);
     }
@@ -535,12 +616,12 @@ async function stageTracked(ctx, wrepo, git) {
     for (const { path, lo, hi, stat } of scan.unmerged) {
         const entry = stat === null || stat.type === 'directory' ? null : await indexEntryFor(wrepo, git, dc, path);
         if (entry)
-            added.push(entry);
+            added.add(entry);
         else
             for (let k = lo; k < hi; k++)
                 removed.add(k);
     }
-    if (removed.size || added.length || dc.refreshed)
+    if (removed.size || added.count || dc.refreshed)
         await wrepo.writeIndex(dc, { removed, added });
 }
 /**
@@ -756,6 +837,32 @@ function entriesInSpecs(dc, specs) {
     }
     return [...picked].sort((x, y) => x - y);
 }
+/**
+ * add's tracked changes in index order, as the walk left them, one at a time:
+ * each dirty entry, and each unmerged path (resolved with what the worktree
+ * holds, or by its removal). Removals but with --no-all (`all` false).
+ */
+function* trackedChanges(scan, all) {
+    const unmerged = [...scan.unmerged].sort((a, b) => a.lo - b.lo);
+    let u = 0;
+    const resolved = function* (at) {
+        for (; u < unmerged.length && unmerged[u].lo < at; u++) {
+            const { lo, hi, stat } = unmerged[u];
+            if (stat !== null && stat.type !== 'directory')
+                yield { at: lo, end: hi, action: 'add', stat, unmerged: true };
+            else if (all !== false)
+                yield { at: lo, end: hi, action: 'remove', stat: null, unmerged: true };
+        }
+    };
+    for (const [i, dirty] of scan.dirty) {
+        yield* resolved(i);
+        if (dirty.change !== 'D')
+            yield { at: i, end: i + 1, action: 'add', stat: null, unmerged: false };
+        else if (all !== false)
+            yield { at: i, end: i + 1, action: 'remove', stat: null, unmerged: false };
+    }
+    yield* resolved(Infinity);
+}
 const ADD_USAGE = 'usage: git add [-n | --dry-run] [-v | --verbose] [-f | --force] [-A | --all | --no-all] '
     + '[-u | --update] [--] <pathspec>...\n';
 /** git add's options this git does not do: they are git's, so they are refused as unsupported, not unknown. */
@@ -884,22 +991,6 @@ async function addCommand(ctx, git, vfs, fs, args) {
                 }
             }
         }
-        // Tracked paths first, in index order, then the new ones, as git's add_files_to_cache and add_files go.
-        // An unmerged path is resolved: what the worktree holds replaces its stages, or its deletion removes them.
-        const tracked = [];
-        for (const [i, dirty] of scan.dirty) {
-            if (dirty.change !== 'D')
-                tracked.push({ at: i, end: i + 1, action: 'add', stat: null, unmerged: false });
-            else if (all !== false)
-                tracked.push({ at: i, end: i + 1, action: 'remove', stat: null, unmerged: false });
-        }
-        for (const { lo, hi, stat } of scan.unmerged) {
-            if (stat !== null && stat.type !== 'directory')
-                tracked.push({ at: lo, end: hi, action: 'add', stat, unmerged: true });
-            else if (all !== false)
-                tracked.push({ at: lo, end: hi, action: 'remove', stat: null, unmerged: true });
-        }
-        tracked.sort((a, b) => a.at - b.at);
         // read_directory's warnings, then diff-files' lstat failures, then add_files' advice.
         for (const line of [...scan.errors.untracked, ...scan.errors.tracked])
             await ctx.stderr.write(`${line}\n`);
@@ -912,9 +1003,11 @@ async function addCommand(ctx, git, vfs, fs, args) {
         let out = '';
         const show = dryRun || verbose;
         const removed = new Set();
-        const added = [];
+        // Each new entry is held as its bytes as soon as it is made (a file of Linux's 96,000 changed: 10 MiB, not 80).
+        const added = new NewEntries();
         const tree = await wrepo.worktree();
-        for (const { at: i, end, action, stat: st, unmerged } of tracked) {
+        // Tracked paths first, in index order, then the new ones, as git's add_files_to_cache and add_files go.
+        for (const { at: i, end, action, stat: st, unmerged } of trackedChanges(scan, all)) {
             const path = dc.path(i);
             if (action === 'remove') {
                 if (show)
@@ -938,7 +1031,7 @@ async function addCommand(ctx, git, vfs, fs, args) {
             if (show && (unmerged || !(entry && entry.oid === dc.oid(i) && entry.mode === dc.mode(i))))
                 out += `add '${path}'\n`;
             if (entry)
-                added.push(entry);
+                added.add(entry);
             else
                 for (let k = i; k < end; k++)
                     removed.add(k);
@@ -981,12 +1074,12 @@ async function addCommand(ctx, git, vfs, fs, args) {
                 await ctx.stderr.write(text);
             }
             if (entry && !dryRun)
-                added.push(entry);
+                added.add(entry);
         }
         if (show)
             await writeBinary(ctx.stdout, binaryPath(out));
         // Its stat refreshes ride in the one index write that stages (git add writes once).
-        if (!dryRun && (removed.size || added.length || dc.refreshed))
+        if (!dryRun && (removed.size || added.count || dc.refreshed))
             await wrepo.writeIndex(dc, { removed, added });
         return ignored.length ? 1 : 0;
     });
@@ -1857,7 +1950,7 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
         }
         const writer = checkoutWriter(vfs, root);
         await wrepo.store.prefetch(files.map(({ oid }) => oid));
-        const added = [];
+        const added = new NewEntries();
         for (const { path, oid, mode } of files) {
             const file = `${root}/${path}`;
             const { data } = await wrepo.store.read(oid);
@@ -1868,13 +1961,13 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
                 await writer.writeFile(file, data);
                 await writer.chmod(file, mode === 0o100755 ? 0o755 : 0o644);
             }
-            added.push({ path, mode, oid, stat: await wrepo.fs.lstat(path) });
+            added.add({ path, mode, oid, stat: await wrepo.fs.lstat(path) });
         }
         // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
         // restored path replaces goes, as add_index_entry_with_check replaces it: a file at
         // one of its leading directories, or anything below it.
         const removed = replacedIndexEntries(dc, new Set(files.map(({ path }) => path)));
-        if (added.length || removed.size)
+        if (added.count || removed.size)
             await wrepo.writeIndex(dc, { removed, added });
         return 0;
     });
@@ -2452,16 +2545,16 @@ async function resetIndex(ctx, wrepo, tree, specs, quiet) {
 async function indexFromTree(wrepo, tree, specs) {
     const old = await wrepo.readIndex();
     const removed = new Set();
-    const added = [];
+    const added = new NewEntries();
     await walkTreeAndIndex(wrepo.store, tree, old, specs, (path, leaf, lo, hi) => {
         if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode)
             return;
         for (let i = lo; i < hi; i++)
             removed.add(i);
         if (leaf)
-            added.push({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
+            added.add({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
     }, { cacheTree: old.cacheTree() });
-    return removed.size || added.length ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
+    return removed.size || added.count ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
 }
 const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>]\n'
     + '   or: git reset [-q] [<tree-ish>] [--] <pathspec>...\n';
@@ -2602,7 +2695,8 @@ network = ISOLATE_NETWORK) {
         return 1;
     }
     // `git init <path>` works on that path, every other subcommand on the cwd.
-    const initPath = sub === 'init' ? subArgs.find((a) => !a.startsWith('-')) : undefined;
+    const initArgs = sub === 'init' ? parseInitArgs(subArgs) : null;
+    const initPath = initArgs !== null && !('error' in initArgs) ? initArgs.directory : undefined;
     const initDir = initPath === undefined ? dir : initPath.startsWith('/') ? initPath : dir + '/' + initPath;
     try {
         // The repository through the command's view of the namespace, as its
@@ -2665,15 +2759,19 @@ network = ISOLATE_NETWORK) {
         }
         switch (sub) {
             case 'init': {
+                if (initArgs === null || 'error' in initArgs) {
+                    ctx.stderr.write(initArgs?.error ?? INIT_USAGE);
+                    return initArgs?.code ?? 129;
+                }
                 if (initPath) {
                     // Ensure the target directory exists
                     const stripped = initDir.replace(/^\/+/, '');
                     if (!await repoVfs.exists(stripped))
                         await repoVfs.mkdir(stripped, { recursive: true });
                 }
-                await git.init({ fs, dir: initDir });
-                if (!subArgs.includes('-q') && !subArgs.includes('--quiet')) {
-                    ctx.stdout.write(`Initialized empty Git repository in ${initDir}/.git/\n`);
+                await git.init({ fs, dir: initDir, bare: initArgs.bare, ...(initArgs.branch === undefined ? {} : { defaultBranch: initArgs.branch }) });
+                if (!initArgs.quiet) {
+                    ctx.stdout.write(`Initialized empty Git repository in ${initDir}${initArgs.bare ? '' : '/.git'}/\n`);
                 }
                 return 0;
             }

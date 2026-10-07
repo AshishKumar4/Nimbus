@@ -72,11 +72,20 @@ export declare function parseFetchDepth(args: readonly string[]): {
  */
 export declare function parseCloneFilter(spec: string): string;
 /**
- * Every flag is either handled or refused loudly. Silently skipping unknown
- * flags corrupted positionals for value-taking ones (`--branch dev URL`
- * parsed `dev` as the URL) and silently no-opped `--filter=blob:none` — a
- * "blobless" clone that was not blobless.
+ * `git init`'s arguments: -q, --bare, the initial branch (`-b <name>`,
+ * `-b<name>`, `--initial-branch[=]<name>`) and the directory. The branch's
+ * name is never the directory (`git init -b main` initialized `./main`).
+ * git's other options are refused here as unsupported.
  */
+export declare function parseInitArgs(args: readonly string[]): {
+    quiet: boolean;
+    bare: boolean;
+    branch?: string;
+    directory?: string;
+} | {
+    error: string;
+    code: number;
+};
 export declare function parseCloneArgs(args: string[]): ParsedCloneArgs;
 /**
  * The index entries that restoring `restored` replaces (add_index_entry_with_check):

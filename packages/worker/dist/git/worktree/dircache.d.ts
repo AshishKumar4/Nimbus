@@ -7,7 +7,8 @@
  * and a table of where each entry starts: about 110 bytes a file, no object
  * per entry. A path is decoded only when asked for, and a lookup compares
  * bytes. A stat refresh patches the entry where it lies; any other change is
- * written by one ordered merge of the old entries' bytes with the new ones.
+ * written by one ordered merge of the old entries' bytes with the new ones,
+ * which are themselves held as bytes (NewEntries), straight into the file.
  */
 import { CacheTree } from './cachetree.js';
 export declare const S_IFMT = 61440;
@@ -40,7 +41,7 @@ export interface IndexEdit {
     /** Old entries that go, by number. */
     removed?: ReadonlySet<number>;
     /** New entries, in any order; one replaces every old entry at its path. */
-    added?: readonly NewEntry[];
+    added?: NewEntries;
 }
 /** The filesystem calls reading and writing the index make (ProjectFs's). */
 export interface IndexFs {
@@ -67,6 +68,36 @@ export declare function comparePaths(a: string, b: string): number;
 /** An object's id: SHA-1 of `<type> <size>\0` and the bytes. */
 export declare function objectId(type: string, data: Uint8Array): string;
 export declare class IndexFormatError extends Error {
+}
+/**
+ * New index entries as their bytes, each encoded (encodeIndexEntry's layout)
+ * as it is added, into chunks of CHUNK_BYTES: an entry costs its own size and
+ * eight bytes, no object. As objects (a path and an id as strings, a stat, a
+ * key for the sort, then the encoded piece), staging every file of a large
+ * worktree held about 900 bytes a file: 80 MiB for add -A at Linux's 96,000.
+ */
+export declare class NewEntries {
+    private readonly chunks;
+    /** Bytes used of the last chunk. */
+    private used;
+    private chunkOf;
+    private offsetOf;
+    count: number;
+    /** Encode `entry`; its path and stat are not kept. */
+    add(entry: NewEntry): void;
+    /** Entry `k`'s bytes, a view. */
+    entry(k: number): Uint8Array;
+    /** Entry `k`'s name bytes, a view. */
+    name(k: number): Uint8Array;
+    path(k: number): string;
+    stage(k: number): number;
+    /** The order of entries `k` and `j`: by name, then stage. */
+    private compare;
+    /**
+     * The entries' numbers in index order (name, then stage): as added when they
+     * came in it, as most commands add them. One path twice at one stage is refused.
+     */
+    order(): Int32Array;
 }
 /**
  * The index of one repository. `timestamp` is the index file's mtime in
@@ -139,12 +170,24 @@ export declare class DirCache {
     isRacy(i: number): boolean;
     /** fill_stat_cache_info: entry `i` takes the file's fresh stat, its content having matched. */
     refresh(i: number, stat: EntryStat): void;
+    /** Where entry `i` ends: the next one's start, or its own padded length for the last. */
+    private entryEnd;
+    /**
+     * The ordered merge an edit writes: the old entries but `removed` and those
+     * an added one replaces, and the added ones (`order`), each passed to
+     * `emit` in path order. Old entries kept one after another go as one run
+     * (but at version 4, which re-encodes each name); a `smudged` one alone.
+     */
+    private merge;
     /**
      * The index file with `edit` applied: header, entries in path order, the
      * extensions that still hold, and the checksum. `smudged` entries get size
      * 0 (ce_smudge_racily_clean_entry). The cache tree goes once an entry
      * changes, and the untracked cache and monitor tokens always: nothing here
      * keeps them, and git rebuilds them.
+     *
+     * Written straight into the file's bytes: the merge runs once to size the
+     * file and once to fill it, so the file is the one copy this makes.
      */
     encode(edit?: IndexEdit, smudged?: ReadonlySet<number>): Uint8Array;
 }
@@ -163,7 +206,7 @@ export declare function encodeIndexFile(entries: readonly Uint8Array[], extensio
  * 1-8 NULs to a multiple of 8. A skip-worktree entry takes the second flags
  * word, which makes the file version 3.
  */
-export declare function encodeIndexEntry(path: string | Uint8Array, mode: number, oid: string | Uint8Array, stat: EntryStat | null, { stage, skipWorktree }?: {
+export declare function encodeIndexEntry(path: string | Uint8Array, mode: number, oid: string | Uint8Array, stat: EntryStat | null, options?: {
     stage?: number;
     skipWorktree?: boolean;
 }): Uint8Array;
