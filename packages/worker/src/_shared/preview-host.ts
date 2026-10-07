@@ -73,6 +73,22 @@ export function buildPublicPreviewHost(
   return `${capability}--${target}--${sid}.${suffix}`;
 }
 
+/**
+ * The preview origin of a session's application: its name where it has one,
+ * else its port, and the public bearer form only when the application is
+ * public and has a capability; anything else is the session-attached host.
+ */
+export function previewHostUrl(
+  sid: string,
+  app: { port: number; name?: string | null; visibility?: string; capability?: string | null },
+  suffix: string,
+): string {
+  const label = app.name ?? app.port;
+  return app.visibility === 'public' && typeof app.capability === 'string'
+    ? `https://${buildPublicPreviewHost(sid, label, app.capability, suffix)}/`
+    : `https://${buildPreviewHost(sid, label, suffix)}/`;
+}
+
 export function isPreviewHostSafeSid(sid: string): boolean {
   return sid.length <= 56 && DNS_LABEL_RE.test(sid);
 }

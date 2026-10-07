@@ -3,9 +3,8 @@
  */
 
 import {
-  buildPreviewHost,
-  buildPublicPreviewHost,
   isPreviewHostSafeSid,
+  previewHostUrl,
   readPreviewHostSuffix,
 } from '@nimbus-sh/worker/preview-host';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -1285,15 +1284,7 @@ export class NimbusSandbox {
   ): string | undefined {
     const hostSuffix = this.config.previewHostSuffix;
     if (hostSuffix && !this.profile.preview?.pathStyle && isPreviewHostSafeSid(this.id)) {
-      // The name stands where the port stands when the app has one. The
-      // public form names its bearer in the label: a public port with a
-      // capability builds the unauthenticated host, anything else keeps the
-      // session-attached one.
-      const label = options.name ?? port;
-      if (options.visibility === 'public' && options.capability !== undefined) {
-        return `https://${buildPublicPreviewHost(this.id, label, options.capability, hostSuffix)}/`;
-      }
-      return `https://${buildPreviewHost(this.id, label, hostSuffix)}/`;
+      return previewHostUrl(this.id, { port, ...options }, hostSuffix);
     }
     const door = options.name !== undefined ? `/app/${options.name}/` : `/port/${port}/`;
     const explicit = this.profile.preview?.baseUrl;
