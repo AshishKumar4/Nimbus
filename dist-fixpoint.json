@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b3208c7f8c4c37f2828efdac1d78fff4192b7d71b7632202223f932c34dad167",
+  "fingerprint": "956e29272011760264a29ea9fe89b065538849c025ea39ed0d4065e87acdc6f6",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -456,9 +456,9 @@
     "packages/core/dist/runtime/ruby-green-threads.d.ts": "8eb2976a38a612ffbfca70ec1abbc4fc86f197ca79205e7306c59ba9cdbb8580",
     "packages/core/dist/runtime/ruby-green-threads.d.ts.map": "0e6d9ffaf2b349f901422993b9f014d0efccbc882db50c77ee956f195a78c6b7",
     "packages/core/dist/runtime/ruby-green-threads.js": "f81dd5af1a9149e7e5c1eb5774d5c134100ef98e1878e502ed9d59219265d45a",
-    "packages/core/dist/runtime/ruby-runner.d.ts": "dd2eb3cda1707d234b3990a476aec4611b9e863db85e2029f964356124abfc68",
-    "packages/core/dist/runtime/ruby-runner.d.ts.map": "a1bb2fe20ec770d49fca7444bbe18bd4f88cd7d94ca1d1aee937d123bf0cc4d0",
-    "packages/core/dist/runtime/ruby-runner.js": "72aecba8cfeea5cc53add0ed82712d251bf5a2701d76c10ebbf85823680d7ebb",
+    "packages/core/dist/runtime/ruby-runner.d.ts": "f9491dddaa19abd21231ee35cfa977e799a19d597cccceae4b66304f40b4d4a6",
+    "packages/core/dist/runtime/ruby-runner.d.ts.map": "b1240e80f2e31681a70f81652b5ee23104f6c6809aa8eb42e014d75788669159",
+    "packages/core/dist/runtime/ruby-runner.js": "3dc1f6e9a19c7a891414bdc8b9e7caea8b80fc9e9d33004fcac629524e7d0b82",
     "packages/core/dist/runtime/ruby-socket-shim.d.ts": "2f5e1db5828b6803f1ff37af55fd8555b19db5c1a13c82c552558bed8794d2cf",
     "packages/core/dist/runtime/ruby-socket-shim.d.ts.map": "ad7b952c242b2deb56091a37b8303271be41f2efbd0e6e76db5bbed2d709b3be",
     "packages/core/dist/runtime/ruby-socket-shim.js": "e7788c6276d5ea68a99ff320e2e61cc15eb2f300fff06e2a3a77f584576afbac",
@@ -1234,7 +1234,7 @@
     "packages/core/src/runtime/router-basename.ts": "64cd3f6058823f0f0d3c98491b4fc83c080007d63b0c63e78be202c9f76a0989",
     "packages/core/src/runtime/ruby-gems.ts": "118157bbcab9d2c770129404cf58cb8793db2ab3814018c805b25879f236c706",
     "packages/core/src/runtime/ruby-green-threads.ts": "7701efca15303c30d1ecd7bb9151a952c79e77ed2c5db3dc0819bbe4775f5eb6",
-    "packages/core/src/runtime/ruby-runner.ts": "a16b2f4ca412f1c8a0804a17d216805eca96632c457efc5f351faad59a7b78cc",
+    "packages/core/src/runtime/ruby-runner.ts": "206fe852e870c56703bdd64c3cf981c276e6e53cf835cc263860473bbe19c6aa",
     "packages/core/src/runtime/ruby-socket-shim.ts": "1aebdd31f52fdcb318258fca76bbc88f9b35b912aa924d8933bbb3ac6819cd1e",
     "packages/core/src/runtime/runtime-manager.ts": "17dca3b070000838db45363d8d8d100fe66c1d2ccedec83ef7cd5d609dd47301",
     "packages/core/src/runtime/runtime-manifest.ts": "e39d00e3bb1cf4f56a7fcf37cd80fd1ff042c78919168a5d7eaed6f750fcc46f",
