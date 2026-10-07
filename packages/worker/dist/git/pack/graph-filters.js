@@ -53,6 +53,21 @@ async function readLayer(context, name) {
         throw new PackFormatError('commit-graph layer ' + name + ' does not hash to its name');
     return file;
 }
+/**
+ * The chain names `layer` alone, as git commits it (commit-graph.c, a lock
+ * file renamed over it): the chain is read-only, so it is never written in
+ * place, and a reader sees the old chain or the new one, never part of one.
+ */
+async function installChain(context, layer) {
+    const lock = COMMIT_GRAPH_CHAIN + '.lock';
+    const writer = context.writer();
+    // A pass that stopped between the two leaves its lock: ours to replace.
+    if ((await context.supervisor.readdir(join(context.dir, COMMIT_GRAPHS_DIR))).includes('commit-graph-chain.lock'))
+        await writer.remove(lock);
+    await writer.file(lock, 0o444, encoder.encode(layer + '\n'));
+    await writer.flush();
+    await context.supervisor.rename(join(context.dir, lock), join(context.dir, COMMIT_GRAPH_CHAIN));
+}
 /** A file whole, its length unknown: ranged reads until one comes back short. */
 async function readWhole(context, path) {
     const PIECE = 4 * 1024 * 1024;
@@ -94,7 +109,8 @@ async function writeBaseLayer(context) {
             const name = graphName(built.file);
             await writer.directory(COMMIT_GRAPHS_DIR);
             await writer.file(COMMIT_GRAPHS_DIR + '/graph-' + name + '.graph', 0o444, built.file);
-            await writer.file(COMMIT_GRAPH_CHAIN, 0o444, encoder.encode(name + '\n'));
+            await writer.flush();
+            await installChain(context, name);
         }
     }
     for (const name of names)
@@ -227,8 +243,11 @@ export async function graphFiltersAssemble(context, request) {
             throw new PackFormatError('a commit has no changed-path filter');
         const filtered = withFilters(file, filters);
         written = graphName(filtered);
+        // The new layer whole, then the chain moved to it, then the old one goes:
+        // the chain never names a layer that is not all there.
         await writer.file(COMMIT_GRAPHS_DIR + '/graph-' + written + '.graph', 0o444, filtered);
-        await writer.file(COMMIT_GRAPH_CHAIN, 0o444, encoder.encode(written + '\n'));
+        await writer.flush();
+        await installChain(context, written);
         await writer.remove(COMMIT_GRAPHS_DIR + '/graph-' + request.layer + '.graph');
     }
     const names = await context.supervisor.readdir(join(context.dir, dir));
