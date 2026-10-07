@@ -66,8 +66,9 @@ export const NIMBUS_VERSION = '2.0.0';
 // option table is generated from the same release. The patch level matters:
 // React Router 8.4 declares `engines.node: ">=22.22.0"` and `react-router
 // dev` exits 1 below it.
-export const NODE_VERSIONS = { node: '22.22.3', v8: '12.4.254.21-node.56', modules: '127' };
-export const NODE_VERSION = `v${NODE_VERSIONS.node}`;
+const NODE_RELEASE = '22.22.3';
+export const NODE_VERSION = `v${NODE_RELEASE}`;
+export const NODE_VERSIONS = { node: NODE_RELEASE, v8: '12.4.254.21-node.56', modules: '127' };
 export const ESBUILD_VERSION = '0.24.2';
 //
 // sql.js (Emscripten SQLite) version, backing the node:sqlite shim. The

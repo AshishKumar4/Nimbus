@@ -21,7 +21,7 @@
  * Nor is code with a `return` at its top, which Node refuses to compile.
  */
 
-import { parse, type Node, type Options, type Program, type Statement } from 'acorn';
+import { parse, type ModuleDeclaration, type Node, type Options, type Program, type Statement } from 'acorn';
 
 import { applySourceEdits, type SourceEdit } from './javascript-ast.js';
 
@@ -116,8 +116,8 @@ class CompletionRewriter {
     return applySourceEdits(this.source, edits);
   }
 
-  /** A statement list, backwards: only up to its last value, unless a `break` can skip that. */
-  process(statements: readonly Statement[], depth: number): void {
+  /** A statement list, backwards: only up to its last value, unless a `break` can skip that. A script's has no module declarations. */
+  process(statements: readonly (Statement | ModuleDeclaration)[], depth: number): void {
     for (let i = statements.length - 1; i >= 0 && (this.breakable || !this.isSet); i--) {
       this.visit(statements[i], depth);
     }
@@ -127,7 +127,7 @@ class CompletionRewriter {
    * `wrap`: what assigning `undefined` before `node` wraps, `node` itself
    * or the labels in front of it (a `continue` must still name a loop).
    */
-  private visit(node: Statement, depth: number, wrap: Node = node): void {
+  private visit(node: Statement | ModuleDeclaration, depth: number, wrap: Node = node): void {
     switch (node.type) {
       case 'BlockStatement':
         this.process(node.body, depth + 1);
