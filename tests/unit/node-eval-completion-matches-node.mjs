@@ -32,7 +32,7 @@ const SAMPLES = [
   'do { try { 4 } catch { 5 } finally { 6; break } } while (true)',
   'with ({ a: 1 }) a', '1; with ({}) {}',
   '1, 2, 3', 'void 0', 'undefined', 'null', '[1, { a: "b" }]', 'new Map([[1, 2]])', '"a" + 1', '`t${1}`', 'Symbol("s")', '10n',
-  'a: b: for (;;) { 9; break a }', 'a: for (;;) { b: for (;;) { 8; continue a } }', 'if (1) l: { 4; break l; }',
+  'a: b: for (;;) { 9; break a }', 'a: for (let i = 0; i < 2; i++) { b: for (;;) { 8 + i; continue a } }', 'if (1) l: { 4; break l; }',
   '0; { }', '1; ;', 'debugger; 2', 'var r = 1; r += 1', '[1, 2].map((n) => n * 2)', 'x = 3\nx\n++x',
   'crypto.createHash("md5").update("").digest("hex")', 'typeof crypto.subtle', 'crypto === require("node:crypto")',
   'const __nimbus_print_result = 4; __nimbus_print_result + 1',
@@ -64,7 +64,8 @@ process.stdout.write(JSON.stringify(codes.map((code) => {
   }
 })));
 `;
-const host = (args, input) => spawnSync('node', args, { encoding: 'utf8', input, env: { PATH: process.env.PATH } });
+// Bounded: a sample that never ends fails here, not at the suite's timeout.
+const host = (args, input) => spawnSync('node', args, { encoding: 'utf8', input, timeout: 30_000, env: { PATH: process.env.PATH } });
 const runAll = (codes) => {
   const ran = host(['-e', RUNNER], JSON.stringify(codes));
   assert.equal(ran.status, 0, ran.stderr);

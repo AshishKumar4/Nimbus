@@ -14,6 +14,10 @@
 // A launch with preloads is staged its own module map: `node main.cjs` runs
 // first, then the same program with `-r`.
 //
+// The values printed are primitives: -p prints with the process's
+// console.log, which formats an object or a function as JSON or its source
+// (node-shims.ts __fmt), not as util.inspect does in Node.
+//
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
 
@@ -43,10 +47,10 @@ const FILES = {
 const COMMANDS = [
   'node -p 1+1',
   `node -p '"use strict"'`,
-  `node -p "[1, { a: 'b' }, 'x']"`,
+  `node -p "[1, { a: 'b' }, 'x'].length"`,
   `node -p 'var x = 5'`,
   `node -p 'x: while (true) { 7; break x }'`,
-  `node -p '(function () {})'`,
+  `node -p 'typeof (function () {})'`,
   `node -p 'setTimeout(() => console.log("t")); 5'`,
   `node -p 'process.on("exit", () => console.log("exit-handler")); 6'`,
   `node -p 'process.exitCode = 3; 4'`,
