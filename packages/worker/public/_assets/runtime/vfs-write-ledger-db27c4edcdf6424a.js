@@ -1332,8 +1332,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
       for (const entry of entries) {
         if (entry.seq !== 0) continue;
         if (current.numbering === null) {
-          current.numbering = { writer: current.writer, seq: 1, jid: entry.jid };
-          journal.number(current.numbering);
+          const numbering = { writer: current.writer, seq: 1, jid: entry.jid };
+          journal.number(numbering);
+          current.numbering = numbering;
         }
         entry.seq = current.numbering.seq + (entry.jid - current.numbering.jid);
       }
@@ -1380,6 +1381,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const errno = typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : "EIO";
         for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`);
         journal.dropThrough(entries[entries.length - 1].jid);
+        if (entries.some((entry) => entry.seq !== 0)) {
+          epoch = null;
+          for (const entry of queue) entry.seq = 0;
+        }
         return;
       }
       const firstSeq = entries[0].seq;

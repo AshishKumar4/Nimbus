@@ -593,6 +593,16 @@ export const ROUTED_LINK_TARGET_MAX = 4096;
 export const ROUTED_FILE_MAX = 4 * 1024 * 1024;
 
 /**
+ * The most bytes one data call (W7DataCall: a writeFile, appendFile or
+ * write at an offset) carries. Its bytes are held until the call is made,
+ * under credit its record reserves whole when it begins, as a routed
+ * file's are; a client splits a larger write into pieces of this size
+ * (process-fs-client's DATA_PIECE_BYTES, WAVE_BYTES). A larger call is
+ * refused (EINVAL) before any of its bytes are read.
+ */
+export const DATA_CALL_MAX = 4 * 1024 * 1024;
+
+/**
  * A wave's record that the namespace places on a mount (WaveRouter.apply),
  * each the single call a program would make there. Paths are where the
  * namespace's lookup placed them ('/'-rooted, the directory's links
@@ -8680,7 +8690,11 @@ export class SqliteVFS {
       parts: Uint8Array[];
       received: number;
       nextChunk: number;
+      /** Its whole size, reserved when it began: its chunks draw on it, and it is given back once the call is made. */
+      credit: { left: number; lease: CreditLease | null };
     } | null = null;
+    /** Reserved for data calls not yet made (callFile's credit): given back at each call, or when the wave ends. */
+    const callLeases = new Set<CreditLease>();
     const progress: WriteBatchStreamProgress = {
       committedGroupSequence: 0,
       committedPathCount: 0,
@@ -9097,7 +9111,7 @@ export class SqliteVFS {
 
     const retainChunk = async (byteLength: number, signal?: AbortSignal): Promise<CreditLease> => {
       // A mounted file's chunk: covered by what its record reserved when admitted.
-      const covered = routed.file?.credit;
+      const covered = routed.file?.credit ?? callFile?.credit;
       if (covered !== undefined) {
         covered.left -= byteLength;
         return { bytes: byteLength, release: () => {} };
@@ -9332,11 +9346,22 @@ export class SqliteVFS {
         if (record.type === 'file-begin' && record.inode.call !== undefined) {
           phase = 'validation';
           this.validateInodeContentShape(record.inode);
+          if (record.inode.size > DATA_CALL_MAX) {
+            throw vfsError('EINVAL', record.inode.path, `a data call carries at most ${DATA_CALL_MAX} bytes; this one is ${record.inode.size}`);
+          }
+          // What is ahead of it commits first, giving its credit back, so the
+          // reservation below never waits on credit this wave holds.
+          endLeading();
+          flushGroup();
+          flushDirectories();
+          const lease = record.inode.size === 0 ? null : await acquireCredit(record.inode.size, options.signal);
+          if (lease !== null) callLeases.add(lease);
           callFile = {
             streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
             ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
             ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
             parts: [], received: 0, nextChunk: 0,
+            credit: { left: record.inode.size, lease },
           };
           continue;
         }
@@ -9363,7 +9388,16 @@ export class SqliteVFS {
           if (file.received !== file.size) throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
           phase = 'publish';
           const bytes = concatBytes(file.parts);
-          queueCall(file.path, () => this.applyDataCall(file, bytes, cred), { bytes: bytes.byteLength, receipt: true });
+          file.parts = [];
+          // Its bytes stay charged until the call is made.
+          const lease = file.credit.lease;
+          queueCall(file.path, () => {
+            try {
+              return this.applyDataCall(file, bytes, cred);
+            } finally {
+              if (lease !== null && callLeases.delete(lease)) lease.release();
+            }
+          }, { bytes: bytes.byteLength, receipt: true });
           continue;
         }
         // A name a delegation's holder made is the caller's, as a create of
@@ -9630,6 +9664,9 @@ export class SqliteVFS {
       for (const lease of groupLeases) lease.release();
       for (const lease of activeFile?.heldLeases ?? []) lease.release();
       groupLeases = [];
+      // Data calls the wave did not make: what they held goes back.
+      for (const lease of callLeases) lease.release();
+      callLeases.clear();
       // A routed file the wave did not finish: what it held goes back.
       if (routed.file !== null) {
         for (const chunk of routed.file.held) chunk.release();
