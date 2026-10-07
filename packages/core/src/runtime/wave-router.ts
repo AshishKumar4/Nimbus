@@ -11,11 +11,10 @@
  * On a mount, a record is applied as an upsert is, by the operations a
  * program would use, each refusal before anything is lost:
  *   - a directory: mkdir -p, a directory already there kept;
- *   - a file: written where it can be written in place, to a staged name in
- *     its directory chunk by chunk as the wave delivers them (each chunk's
- *     credit released once written), then renamed over its name; on a
- *     backend that cannot write in place, taken whole up to
- *     HELD_FILE_BYTES, ENOTSUP past it;
+ *   - a file: written to a staged name in its directory chunk by chunk as
+ *     the wave delivers them (each chunk's credit released once written),
+ *     then renamed over its name; on a backend that cannot write a range,
+ *     taken whole up to HELD_FILE_BYTES, ENOTSUP past it;
  *   - a link: made at a staged name, then renamed over its name, so a
  *     backend that cannot make it refuses before the old entry goes;
  *   - a removal: rm -r, refused (EIO, naming what stayed) when it kept or
@@ -97,57 +96,83 @@ async function applyRecord(ns: CompositeVFS, cleanup: CompositeVFS, record: Rout
       return statOf(await ns.stat(record.path, { follow: false }));
     }
     case 'file':
-      await (ns.writesInPlace(record.path) ? spool(ns, cleanup, record) : holdWhole(ns, record));
+      await spool(ns, cleanup, record);
       return statOf(await ns.stat(record.path, { follow: false }));
   }
 }
 
-/** Write a file at a staged name chunk by chunk, each chunk's credit released once written, then rename it over its name. */
+/**
+ * Write a file at a staged name chunk by chunk, each chunk's credit
+ * released once written, then rename it over its name. A backend that
+ * cannot write a range (ENOTSUP at the first one) takes the file whole
+ * instead, up to HELD_FILE_BYTES.
+ */
 async function spool(ns: CompositeVFS, cleanup: CompositeVFS, record: Extract<RoutedWaveRecord, { type: 'file' }>): Promise<void> {
+  const chunks = record.chunks[Symbol.asyncIterator]();
+  const first = await chunks.next();
+  if (first.done) {
+    await ns.writeFile(record.path, new Uint8Array(0), { mode: record.mode });
+    return;
+  }
   const staged = stagedName(record.path);
-  let offset = 0;
   let made = false;
+  let pending: RoutedChunk | null = first.value;
   try {
     await ns.writeFile(staged, new Uint8Array(0), { mode: record.mode });
     made = true;
-    for await (const chunk of record.chunks) {
+    let offset = 0;
+    while (pending !== null) {
+      const chunk: RoutedChunk = pending;
       try {
         await ns.writeRange(staged, offset, chunk.data);
-        offset += chunk.data.byteLength;
-      } finally {
-        chunk.release();
+      } catch (error) {
+        if (offset !== 0 || (error as { code?: string }).code !== 'ENOTSUP') throw error;
+        // This backend takes a file whole: what has arrived, then the rest.
+        await cleanup.unlink(staged).catch(() => {});
+        made = false;
+        pending = null;
+        await holdWhole(ns, record, [chunk], chunks);
+        return;
       }
+      offset += chunk.data.byteLength;
+      chunk.release();
+      const next = await chunks.next();
+      pending = next.done ? null : next.value;
     }
     await ns.rename(staged, record.path);
   } catch (error) {
+    pending?.release();
     if (made) await cleanup.unlink(staged).catch(() => {});
     // What the wave hands over after the failure goes back to it as it comes.
-    await drain(record.chunks).catch(() => {});
+    await drainIterator(chunks).catch(() => {});
     throw error;
   }
 }
 
-/** Take a file whole, for a backend that cannot write in place, up to HELD_FILE_BYTES. */
-async function holdWhole(ns: CompositeVFS, record: Extract<RoutedWaveRecord, { type: 'file' }>): Promise<void> {
-  if (record.size > HELD_FILE_BYTES) {
-    await drain(record.chunks);
-    throw new VfsError('ENOTSUP',
-      `a wave's file goes to a mount that cannot write in place whole, up to ${HELD_FILE_BYTES} bytes; this one is ${record.size}`, record.path);
-  }
-  const held: RoutedChunk[] = [];
+/** Take a file whole (its chunks so far in `held`, the rest from `rest`), up to HELD_FILE_BYTES. */
+async function holdWhole(
+  ns: CompositeVFS,
+  record: Extract<RoutedWaveRecord, { type: 'file' }>,
+  held: RoutedChunk[],
+  rest: AsyncIterator<RoutedChunk>,
+): Promise<void> {
   try {
-    for await (const chunk of record.chunks) held.push(chunk);
+    if (record.size > HELD_FILE_BYTES) {
+      throw new VfsError('ENOTSUP',
+        `a wave's file goes to a mount that cannot write in place whole, up to ${HELD_FILE_BYTES} bytes; this one is ${record.size}`, record.path);
+    }
+    for (let next = await rest.next(); !next.done; next = await rest.next()) held.push(next.value);
     const bytes = new Uint8Array(record.size);
     let at = 0;
     for (const chunk of held) { bytes.set(chunk.data, at); at += chunk.data.byteLength; }
     await ns.writeFile(record.path, bytes, { mode: record.mode });
   } finally {
-    for (const chunk of held) chunk.release();
+    for (const chunk of held.splice(0)) chunk.release();
   }
 }
 
-async function drain(chunks: AsyncIterable<RoutedChunk>): Promise<void> {
-  for await (const chunk of chunks) chunk.release();
+async function drainIterator(chunks: AsyncIterator<RoutedChunk>): Promise<void> {
+  for (let next = await chunks.next(); !next.done; next = await chunks.next()) next.value.release();
 }
 
 /** A name beside `path` in its directory that no program names. */
