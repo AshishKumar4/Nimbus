@@ -53,7 +53,7 @@ const workloads = (repo) => {
     // A branch transition changes the README and preserves the rest of the
     // repository, so both backends do actual worktree/index work.
     checkout: {
-      prepare: 'git -C repo branch -f benchmark-base HEAD && git -C repo checkout -b benchmark-topic',
+      prepare: 'git -C repo branch benchmark-base && git -C repo checkout -b benchmark-topic',
       change: `${edit} && git -C repo add -A && git -C repo commit -q -m checkout-fixture`,
       run: 'git -C repo checkout benchmark-base',
       clean: 'git -C repo checkout benchmark-topic',
