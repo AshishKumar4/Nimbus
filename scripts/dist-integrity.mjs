@@ -74,12 +74,28 @@
  *   - every published package's prepublishOnly, as
  *     `bun ../../scripts/dist-integrity.mjs --publish`, which also refuses
  *     a package directory that differs from HEAD
+ *
+ * A FAILED BUILD IS NOT DRIFT
+ *   A package build starts by deleting its dist (clean-dist.mjs), so a step
+ *   that fails leaves the tree without it. Reported as drift, or committed
+ *   by whoever commits what the gate rebuilt, that deletion reached a
+ *   release branch twice (a worktree with no node_modules, whose global tsc
+ *   rejected --noCheck). So a build runs as a transaction: when a step
+ *   fails, every file under the output roots is put back as it was before
+ *   the build, and the gate throws BuildFailure (exit 2 on the CLI), never
+ *   a drift report (exit 1). And in a bun workspace it refuses to build at
+ *   all with any toolchain but the workspace's own: node_modules installed,
+ *   and the tsc each package resolves being the lockfile's.
  */
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readFileSync, readdirSync, writeFileSync } from 'node:fs';
-import { dirname, join } from 'node:path';
+import {
+  chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
+  rmSync, statSync, writeFileSync,
+} from 'node:fs';
+import { tmpdir } from 'node:os';
+import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
 import { filesUnder, trackedFileDigests } from './lib/fs-walk.mjs';
 
@@ -339,24 +355,210 @@ export function rebuildDrift({
 } = {}) {
   const before = snapshotBuildOutputs({ root, roots });
   log(`digested ${before.size} build outputs under ${roots.join(', ')}`);
-  runBuildFixpoint({ root, steps, log });
+  runBuildFixpoint({ root, steps, log, roots, before });
   return diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
 }
 
-export function runBuildFixpoint({ root = REPO_ROOT, steps = BUILD_FIXPOINT, log = silent } = {}) {
-  for (const step of steps) {
-    log(`${step.cwd} → ${step.script} (${step.why})`);
-    const result = spawnSync('bun', ['run', '--cwd', step.cwd, step.script], {
-      cwd: root,
-      encoding: 'utf8',
-    });
-    if (result.error) throw result.error;
-    if (result.status !== 0) {
-      process.stderr.write(result.stdout || '');
-      process.stderr.write(result.stderr || '');
-      throw new Error(`build step \`bun run --cwd ${step.cwd} ${step.script}\` exited ${result.status}`);
+/**
+ * The build could not run, or one of its steps failed. Never drift: the
+ * tree under the output roots is as it was before the build.
+ */
+export class BuildFailure extends Error {
+  /** @param {string} message */
+  constructor(message) {
+    super(message);
+    this.name = 'BuildFailure';
+  }
+}
+
+/**
+ * Run `steps` in order, as one transaction over `roots`: if a step fails,
+ * every file under `roots` is put back as `before` (the snapshot taken when
+ * the build began) had it, and BuildFailure is thrown. A failed build
+ * therefore never leaves a cleaned or half-written dist behind for anyone
+ * to read as drift, or to commit.
+ *
+ * @param {{ root?: string, steps?: Array<{ cwd: string, script: string, why: string }>, log?: (line: string) => void,
+ *   roots?: string[], before?: Map<string, string> }} [options]
+ */
+export function runBuildFixpoint({
+  root = REPO_ROOT, steps = BUILD_FIXPOINT, log = silent, roots = OUTPUT_ROOTS, before,
+} = {}) {
+  assertWorkspaceToolchain({ root, steps });
+  before ??= snapshotBuildOutputs({ root, roots });
+  const held = holdOutputs({ root, roots, before });
+  try {
+    for (const step of steps) {
+      log(`${step.cwd} → ${step.script} (${step.why})`);
+      const result = spawnSync('bun', ['run', '--cwd', step.cwd, step.script], {
+        cwd: root,
+        encoding: 'utf8',
+        env: { ...process.env, PATH: workspacePath(root, step.cwd) },
+      });
+      if (result.error || result.status !== 0) {
+        process.stderr.write(result.stdout || '');
+        process.stderr.write(result.stderr || '');
+        const how = result.error ? `could not start (${result.error.message})`
+          : result.status === null ? `was killed by ${result.signal}` : `exited ${result.status}`;
+        const { restored, unrestored } = restoreOutputs({ root, roots, before, held });
+        throw new BuildFailure(buildFailureReason(`\`bun run --cwd ${step.cwd} ${step.script}\` ${how}`, restored, unrestored));
+      }
+    }
+  } finally {
+    rmSync(held.dir, { recursive: true, force: true });
+  }
+}
+
+/**
+ * PATH for a step: the package's and the workspace's node_modules/.bin
+ * ahead of everything else, as `bun run` orders them, so no other tsc on
+ * the machine can stand in for the workspace's.
+ */
+function workspacePath(root, cwd) {
+  const bins = [join(root, cwd, 'node_modules', '.bin'), join(root, 'node_modules', '.bin')];
+  return [...bins, process.env.PATH ?? ''].join(delimiter);
+}
+
+/**
+ * In a bun workspace, refuse to build with anything but its own toolchain:
+ * node_modules must be installed, and every step's package that compiles
+ * with TypeScript must resolve a tsc inside the workspace that is the
+ * version bun.lock pins. A global tsc (one without --noCheck, say) or an
+ * install older than the lockfile otherwise fails mid-build, or builds
+ * different bytes. A tree that is not a workspace (a unit fixture) has
+ * nothing to check.
+ *
+ * @param {{ root?: string, steps?: Array<{ cwd: string }> }} [options]
+ */
+export function assertWorkspaceToolchain({ root = REPO_ROOT, steps = BUILD_FIXPOINT } = {}) {
+  let manifest;
+  try {
+    manifest = JSON.parse(readFileSync(join(root, 'package.json'), 'utf8'));
+  } catch {
+    return;
+  }
+  if (!manifest?.workspaces) return;
+  const install = 'run `bun install --frozen-lockfile` at the repo root, then build again';
+  if (!existsSync(join(root, 'node_modules'))) {
+    throw new BuildFailure(`refusing to build — ${root} has no node_modules, so its build would run whatever tsc is on PATH; ${install}`);
+  }
+  let pinned = null;
+  for (const cwd of new Set(steps.map((step) => step.cwd))) {
+    let pkg;
+    try {
+      pkg = JSON.parse(readFileSync(join(root, cwd, 'package.json'), 'utf8'));
+    } catch {
+      continue;
+    }
+    if (!pkg?.devDependencies?.typescript && !pkg?.dependencies?.typescript) continue;
+    pinned ??= lockedTypescript(root);
+    const bin = [join(root, cwd, 'node_modules', '.bin', 'tsc'), join(root, 'node_modules', '.bin', 'tsc')].find((p) => existsSync(p));
+    if (!bin) throw new BuildFailure(`refusing to build — ${cwd} compiles with tsc, and no tsc is installed in the workspace for it; ${install}`);
+    const binary = realpathSync(bin);
+    const inside = relative(realpathSync(root), binary);
+    const installed = JSON.parse(readFileSync(join(dirname(binary), '..', 'package.json'), 'utf8')).version;
+    if (inside.startsWith('..') || installed !== pinned) {
+      throw new BuildFailure(
+        `refusing to build — ${cwd}'s tsc is ${binary} (typescript ${installed}), but bun.lock pins typescript ${pinned}; ${install}`,
+      );
     }
   }
+}
+
+/** The typescript version bun.lock resolves for the workspace. */
+function lockedTypescript(root) {
+  let lock = '';
+  try {
+    lock = readFileSync(join(root, 'bun.lock'), 'utf8');
+  } catch {
+    // Reported below.
+  }
+  const match = /^ {4}"typescript": \["typescript@([^"]+)"/m.exec(lock);
+  if (!match) throw new BuildFailure(`refusing to build — ${join(root, 'bun.lock')} pins no typescript, so the workspace's tsc cannot be told from any other`);
+  return match[1];
+}
+
+/**
+ * What a failed build must be able to put back: a copy of every file under
+ * `roots` that git cannot give back as it is (one that differs from HEAD,
+ * or that HEAD does not have). Every other file is HEAD's, byte for byte.
+ */
+function holdOutputs({ root, roots, before }) {
+  const dir = mkdtempSync(join(tmpdir(), 'dist-integrity-held-'));
+  /** @type {Map<string, { copy: string, mode: number }>} */
+  const copies = new Map();
+  try {
+    const status = spawnSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...roots], {
+      cwd: root, encoding: 'buffer', maxBuffer: 1 << 28,
+    });
+    if (status.status !== 0) throw new BuildFailure(`refusing to build — git status failed in ${root}: ${status.stderr}`);
+    const entries = status.stdout.toString('utf8').split('\0');
+    for (let i = 0; i < entries.length; i++) {
+      const entry = entries[i];
+      if (!entry) continue;
+      // A rename or copy is followed by its source path, which is not a file here.
+      if (entry[0] === 'R' || entry[0] === 'C') i++;
+      const path = entry.slice(3);
+      if (!before.has(path)) continue;
+      const copy = join(dir, String(copies.size));
+      copyFileSync(join(root, path), copy, constants.COPYFILE_FICLONE);
+      copies.set(path, { copy, mode: statSync(join(root, path)).mode & 0o7777 });
+    }
+  } catch (error) {
+    rmSync(dir, { recursive: true, force: true });
+    throw error;
+  }
+  return { dir, copies };
+}
+
+/**
+ * Put every file under `roots` back as `before` had it: remove what the
+ * build added, and restore what it changed or removed, from the held copy
+ * or from HEAD. Returns what was put back and what could not be.
+ */
+function restoreOutputs({ root, roots, before, held }) {
+  const { changed, added, removed } = diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
+  for (const path of added) rmSync(join(root, path), { force: true });
+  const fromHead = [];
+  for (const path of [...changed, ...removed]) {
+    const kept = held.copies.get(path);
+    if (!kept) {
+      fromHead.push(path);
+      continue;
+    }
+    const target = join(root, path);
+    mkdirSync(dirname(target), { recursive: true });
+    copyFileSync(kept.copy, target);
+    chmodSync(target, kept.mode);
+  }
+  if (fromHead.length > 0) {
+    spawnSync('git', ['restore', '--source=HEAD', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+      cwd: root, input: fromHead.join('\0'), encoding: 'utf8',
+    });
+  }
+  const left = diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
+  return {
+    restored: [...changed, ...removed, ...added].sort(),
+    unrestored: [...left.changed, ...left.added, ...left.removed].sort(),
+  };
+}
+
+function buildFailureReason(step, restored, unrestored) {
+  const list = (paths) => `${paths.slice(0, 20).map((p) => `  ${p}`).join('\n')}${paths.length > 20 ? `\n  … and ${paths.length - 20} more` : ''}`;
+  if (unrestored.length > 0) {
+    return (
+      `BUILD FAILED — ${step}. This is a failed build, not drift.\n\n` +
+      `The tree could NOT be put back as it was before the build; these files still differ (do not commit them):\n${list(unrestored)}\n\n` +
+      'Fix the build (its output is above), then rebuild.'
+    );
+  }
+  return (
+    `BUILD FAILED — ${step}. This is a failed build, not drift: it says nothing about whether dist matches src.\n\n` +
+    (restored.length > 0
+      ? `The tree is as it was before the build: ${restored.length} file${restored.length === 1 ? '' : 's'} the failed build removed, rewrote or added ${restored.length === 1 ? 'was' : 'were'} put back:\n${list(restored)}\n\n`
+      : 'The failed build had changed no file.\n\n') +
+    'There is nothing to commit. Fix the build (its output is above) and run again.'
+  );
 }
 
 // ── Staged assets ────────────────────────────────────────────────────
@@ -516,6 +718,7 @@ export async function assertDistMatchesSource({
   root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent, useCache = true,
 } = {}) {
   const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
+  assertWorkspaceToolchain({ root, steps });
   // An output whose source is gone would ship, and load. The record cannot
   // vouch for a file no build writes, so the cached path checks first; a
   // rebuild clears every dist (its removals are drift) and checks after.
@@ -697,6 +900,8 @@ if (import.meta.main) {
     );
   } catch (error) {
     console.error(`\n${error.message}\n`);
-    process.exit(1);
+    // 2: the build did not run or did not finish (nothing to commit);
+    // 1: it ran, and the tree is not its fixpoint.
+    process.exit(error instanceof BuildFailure ? 2 : 1);
   }
 }

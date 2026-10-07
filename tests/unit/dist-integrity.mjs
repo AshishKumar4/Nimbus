@@ -19,15 +19,17 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import {
+  BuildFailure,
   assertDistMatchesSource,
   checkStagedAssets,
   rebuildDrift,
   runBuildFixpoint,
+  snapshotBuildOutputs,
 } from '../../scripts/dist-integrity.mjs';
 
 // ── [1] THE INVARIANT, over the real repo ────────────────────────────
@@ -257,6 +259,91 @@ async function refusal(root, what) {
   assert.ok(verified[0].includes(onDisk.slice(0, 16)),
     `the reported digest must be the file's own, got: ${verified[0]}`);
   console.log('  ok  [10] the verified digest is the staged file\'s own sha256');
+}
+
+// ── [11] A failed build is a build failure, never drift ─────────────
+// A package build starts by deleting its dist. In a worktree with no
+// node_modules a global tsc without --noCheck then failed, the deletion was
+// left behind, and a loop that commits what the gate rebuilt committed it,
+// twice, onto a release branch. Here the build removes dist, rewrites a
+// generated source and adds a file, then fails, over a tree that holds both
+// committed files and uncommitted ones (src changed and rebuilt, not yet
+// committed). The gate must throw BuildFailure, not a drift report, and
+// leave every file, and git's view of the tree, exactly as it found them.
+{
+  const { root, pkg } = await fixtureAtFixpoint();
+  const git = (...args) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: root, encoding: 'utf8' });
+  // A module whose dist stays as committed: put back from HEAD, not a copy.
+  writeFileSync(join(pkg, 'src', 'static.js'), 'export const STATIC = true;\n');
+  runBuildFixpoint({ root, steps: STEPS });
+  git('add', '-A');
+  git('commit', '-qm', 'at the fixpoint');
+  // Uncommitted but consistent: src changed, and the tree rebuilt to match.
+  writeFileSync(join(pkg, 'src', 'payload.js'), 'export const PAYLOAD = 2;\n');
+  runBuildFixpoint({ root, steps: STEPS });
+  writeFileSync(join(pkg, 'build.mjs'), `
+import { rmSync, writeFileSync } from 'node:fs';
+rmSync('dist', { recursive: true, force: true });
+writeFileSync('src/payload-artifact.generated.js', 'half-written');
+writeFileSync('src/scratch.js', 'left by the failed build');
+console.error('tsc: error TS5023: Unknown compiler option --noCheck.');
+process.exit(1);
+`);
+  const status = () => git('status', '--porcelain', '--untracked-files=all').stdout;
+  const bytesBefore = snapshotBuildOutputs({ root, roots: ROOTS });
+  const statusBefore = status();
+
+  let thrown;
+  try {
+    await assertDistMatchesSource({ root, roots: ROOTS, steps: STEPS });
+  } catch (error) {
+    thrown = error;
+  }
+  assert.ok(thrown instanceof BuildFailure, `a failed build must throw BuildFailure, got: ${thrown?.stack ?? 'no error'}`);
+  assert.match(thrown.message, /^BUILD FAILED — `bun run --cwd packages\/worker build` exited 1\. This is a failed build, not drift/);
+  assert.doesNotMatch(thrown.message, /did not match its source/, 'a failed build must not read as drift');
+  assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), bytesBefore, 'every file is as it was before the build');
+  assert.equal(readFileSync(join(pkg, 'dist', 'static.js'), 'utf8'), 'export const STATIC = true;\n', 'a committed dist file is back');
+  assert.match(thrown.message, /packages\/worker\/dist\/static\.js/, 'the report names what was put back');
+  assert.equal(status(), statusBefore, 'git sees the tree it saw before the build');
+
+  // rebuildDrift, which callers read drift from, throws too: there is no drift to return.
+  assert.throws(() => rebuildDrift({ root, roots: ROOTS, steps: STEPS }), BuildFailure);
+  assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), bytesBefore);
+  console.log('  ok  [11] a failed build throws BuildFailure and leaves every file as it was');
+}
+
+// ── [12] A workspace builds only with its own toolchain ──────────────
+// The same tree as a bun workspace: no node_modules is refused before
+// anything runs, and so is a tsc that is not the version bun.lock pins.
+{
+  const { root, pkg } = await fixtureAtFixpoint();
+  writeFileSync(join(root, 'package.json'), JSON.stringify({ name: 'fixture', private: true, workspaces: ['packages/*'] }));
+  writeFileSync(join(root, 'bun.lock'), '{\n  "packages": {\n    "typescript": ["typescript@5.9.3", "", {}, "sha512-x"],\n  }\n}\n');
+  const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify({ ...manifest, devDependencies: { typescript: '^5.7.0' } }));
+  const bytesBefore = snapshotBuildOutputs({ root, roots: ROOTS });
+  const refused = async () => {
+    try {
+      await assertDistMatchesSource({ root, roots: ROOTS, steps: STEPS });
+    } catch (error) {
+      assert.ok(error instanceof BuildFailure, String(error?.stack));
+      return error.message;
+    }
+    throw new assert.AssertionError({ message: 'the gate built without the workspace toolchain' });
+  };
+  assert.match(await refused(), /^refusing to build — .* has no node_modules/);
+
+  // An install whose tsc is not the pinned one: a stale install, or a global stand-in.
+  const ts = join(root, 'node_modules', 'typescript');
+  mkdirSync(join(ts, 'bin'), { recursive: true });
+  writeFileSync(join(ts, 'package.json'), JSON.stringify({ name: 'typescript', version: '5.4.5' }));
+  writeFileSync(join(ts, 'bin', 'tsc'), '#!/bin/sh\nexit 1\n');
+  mkdirSync(join(root, 'node_modules', '.bin'), { recursive: true });
+  symlinkSync('../typescript/bin/tsc', join(root, 'node_modules', '.bin', 'tsc'));
+  assert.match(await refused(), /tsc is .* \(typescript 5\.4\.5\), but bun\.lock pins typescript 5\.9\.3/);
+  assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), bytesBefore, 'a refused build touches nothing');
+  console.log('  ok  [12] a workspace without node_modules, or with a tsc other than the pinned one, is refused before building');
 }
 
 console.log('dist-integrity: all cases passed');
