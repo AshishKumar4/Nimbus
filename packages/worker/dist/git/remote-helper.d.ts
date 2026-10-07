@@ -19,7 +19,6 @@
  * itself, and git.wasm cannot demultiplex a sideband (start_async forks).
  */
 import type { RemoteEngine } from './engine.js';
-export type { RemoteAuth, RemoteRef, ListRefsRequest, ListRefsResult, FetchPackRequest, FetchPackResult, PushCommand, PushPackRequest, PushPackResult, RemoteEngine, } from './engine.js';
 /** What the helper asks of the repository it serves, through git itself. */
 export interface LocalGit {
     /** Of `oids`, those the repository has (git cat-file --batch-check). */

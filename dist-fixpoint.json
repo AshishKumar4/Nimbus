@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "ed125d3c1d086a0c3fcf513b278a281de12b3ee47c9629fb8a715177ff91df7f",
+  "fingerprint": "81bb33685fe545376c3efb024e512c164f927bc658aa25cb23d3628390842a17",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1937,8 +1937,8 @@
     "packages/worker/dist/git/promisor.d.ts": "ce8285d6deeaa764ff99621a044bde3daf136d39ac64709d7a3812210797e174",
     "packages/worker/dist/git/promisor.d.ts.map": "50db413eb04f5986084678d54377235e6f475341aae8b5bc173679deaf58be55",
     "packages/worker/dist/git/promisor.js": "a06e9fa3591ba95678fbc8b195c765b13d2dcfdcd464d6342e8ad2a74491d287",
-    "packages/worker/dist/git/remote-helper.d.ts": "885113dd5a5c283f74c1f92a98fe6ba721c63b5b8072bde15a3470eb5afae492",
-    "packages/worker/dist/git/remote-helper.d.ts.map": "482641dabca3072d0ef614a38b99afcdc31a4df994ada4cda1a43cc9aa52ec2b",
+    "packages/worker/dist/git/remote-helper.d.ts": "80f9f8188fe23c4b444418cae3c0a1ad340e5ae2a07a1a2058306b389e8fca4e",
+    "packages/worker/dist/git/remote-helper.d.ts.map": "44f55e6e4ee2b14a4b12185c31c7d03355f18573e6911e7da99836f48eeb3ad8",
     "packages/worker/dist/git/remote-helper.js": "e1bcdcabb7aaf988a9661bd001bbcfa4bf02e96d0d6490d3e99b951d3580275a",
     "packages/worker/dist/git/routing.d.ts": "defe439ec595d44f083a5d50e6d29836b91f8c1ae4a0cbba553df5296bf14229",
     "packages/worker/dist/git/routing.d.ts.map": "25cc85e386c5272f361a990f5ad97184307dd6615b1770f4b42d61b0848cbfe8",
@@ -2548,7 +2548,7 @@
     "packages/worker/src/git/pack/transport.ts": "de43e749596dba421dfba8aceced63e10df9719cc229eb87493c5f9d49355297",
     "packages/worker/src/git/pack/upload-pack.ts": "e473f6e01bf0711aecefd2b77094656950085d4bbdf065e7e56571d14b33e7cc",
     "packages/worker/src/git/promisor.ts": "9a09de70bae901debd7e172a2623045212c2026b4c2c853ebefa7cbebf284029",
-    "packages/worker/src/git/remote-helper.ts": "3946a225a5f2ce31d593f1efa4485b79b5c9e7a2cec27812c9b78fa7c20a9e5d",
+    "packages/worker/src/git/remote-helper.ts": "49ee203ba375af1bbee3e83d092933d2fb3fba9bf8019b24a0f50122bd24495c",
     "packages/worker/src/git/routing.ts": "a4048aa4df55a13d0fac253d36d7dcc4e76e932ac52306f3f0bad19c4978f6ee",
     "packages/worker/src/git/unified-diff.ts": "14b4be79ac63cf630284072bfa80a621bacc4c85f238aaf91bb1927b02a02b70",
     "packages/worker/src/git/wave-bench.ts": "d3284da036e27716491613b01578da25cfa0cd90abf25b6d04202544a4743be3",
