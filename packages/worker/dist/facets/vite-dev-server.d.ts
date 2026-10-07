@@ -409,6 +409,12 @@ export declare class ViteDevServer {
     private _handleRequestInner;
     private serveIndexHtml;
     private getBarrelModuleCacheInfo;
+    /**
+     * Whether a cached bundle answers this request. A bundle synthesized from
+     * some names (its inputHash set) answers only a barrel request for those
+     * names; any other request, a barrel's whose project scan left files
+     * unread among them, takes only a whole bundle.
+     */
     private cachedModuleMatchesBarrelInput;
     private serveModule;
     /**

@@ -678,10 +678,17 @@ export class Shell {
 
     // Ctrl+C (SIGINT) and Ctrl+\ (SIGQUIT) — the terminal's two signal keys.
     // Both go to the foreground command; with no foreground job, Ctrl+C
-    // cancels the line and Ctrl+\ is absorbed, as readline does.
+    // cancels the line and Ctrl+\ is absorbed, as readline does. A command
+    // that turned the signal keys off (termios ISIG) takes them as input,
+    // the line typed so far discarded, as a REPL's readline does.
     if (data === '\x03' || data === '\x1c') {
       const signal = data === '\x03' ? 'INT' : 'QUIT';
-      if (this.running && this.abortController) {
+      if (this.running && this.terminalStdin && !this.terminalStdin.signalKeys) {
+        this.terminal.write(signal === 'INT' ? '^C\r\n' : '^\\\r\n');
+        this.stdinLineBuffer = '';
+        this.stdinCursorPos = 0;
+        this.terminalStdin.feed(data);
+      } else if (this.running && this.abortController) {
         this.terminalStdin?.close();
         this.stdinLineBuffer = '';
         this.stdinCursorPos = 0;

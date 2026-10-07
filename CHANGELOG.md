@@ -27,6 +27,70 @@ published independently in the `@nimbus-sh` npm scope.
   and REPL/server control frames are bounded metadata rather than stored text.
 - Fixed: Node byte-mode readable streams expose Buffer chunks at their public
   edge, preserving Buffer methods and encoding-aware toString calls.
+- Fixed: `node` and `bun` with no script opened a REPL that evaluated
+  nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
+  now a program the runtime runs, as Node's is, and each line compiles
+  through the same runtime-code path as a program's `eval`: top-level
+  `let`/`const`/`class`/`function` persist across lines, top-level `await`
+  works, `_` and `_error` hold the last value and error, `import()`
+  resolves from the working directory, and an unhandled rejection or
+  timer error is printed without ending the session. Ctrl-C cancels a
+  pending block. `.editor`, `.load`, `.save`, completion and history are
+  not supported. `echo code | node` runs its input as a program, as Node
+  does.
+- A job started with `&` gets `/dev/null` as its default standard input
+  and does not own the terminal's modes, as in a shell without job
+  control; it can still open `/dev/tty` explicitly.
+- `git add -A` writes its objects in batches through the workspace's
+  write waves: at 96,000 files it took 18 s instead of 53 s, or 23 s
+  instead of 80 s with every file changed. A symlinked `.git/objects` is
+  written through, never replaced. `git init -b` refuses a name git
+  refuses, and short options can be grouped (`-qb main`).
+- A write wave never turns an existing symlink into a directory; a wave
+  that would is refused whole with ENOTDIR.
+- Faster installs and clones: a write wave whose files are all in memory is
+  encoded once and sent to the session in 1 MiB pieces, instead of being
+  pulled a few kilobytes at a time. Markflow's `npm install` went from about
+  65 s to 41-47 s (writes from about 1,000 to 1,600 files/s), and a vscode
+  clone from about 40 s to 28-30 s, with the session's memory unchanged. A
+  file larger than one wave still streams. Stall detection counts the bytes
+  a reader drains, so a slow reader is not taken for a lost call.
+- The VFS can read a chunk stored deflated. Nothing writes one yet; a later
+  release compacts cold chunks in the background. Shipping the reader first
+  means rolling back one release never meets data that release can't read.
+  An inflated chunk must match its SHA-256 before it is returned or cached,
+  or the read fails with EIO. `storeStats()` now reports the database size
+  through the same `databaseSize` the storage ledger charges.
+- Fixed: the Vite dev server's scan of the project for the names it imports
+  from a barrel package (one of over 1500 files) is bounded. It ran on every
+  request for a barrel and read every source file whole. It now reads at most
+  2048 files, none over 1 MiB, and 16 MiB in all, checking each file's size
+  before reading it. A scan that left files unread may miss a name one of them
+  imports, so the server says what it left unread and bundles that barrel
+  whole, as it bundles any package, rather than from an entry synthesized from
+  the names it found. A bundle synthesized earlier from other names is never
+  served in its place: a cached bundle synthesized from some names answers
+  only a barrel request for exactly those names. The installer scans the
+  project within the same budget and by the same rule, so for an unchanged
+  project both reach one decision and share one bundle row; before, an
+  over-budget project had the install write a synthesized row and the preview
+  a whole one, each rebuilding the barrel every time (install, serve, install,
+  serve: four bundles, now one).
+- Fixed: an install's background pre-bundle stops when its session is
+  destroyed. A client that destroys the session while pre-bundles are still
+  queued deletes the storage under them. Each remaining pre-bundle then walked
+  a store with no tables: its walk skipped every file it could not read, so it
+  either threw "no such table: vfs_inodes" or sent the bundler an empty slice,
+  which rolldown reported as 'Entry module "…" cannot be external'. On
+  2026-10-06 that was 470 logged failures (clsx, tailwind-merge, hono/* and
+  others), every one after its session had closed. The phase now stops, with
+  one line saying how many were not pre-bundled, once node_modules is
+  confirmed gone: not there (ENOENT) or its filesystem's store deleted
+  (SqliteVFS.storeDeleted). Any other failure to list it (a node_modules its
+  principal may search but not list) stops nothing. The slice walk passes over
+  only a file removed under it (ENOENT); any other read failure fails that
+  pre-bundle with its error. A slice without its entry fails, naming the
+  entry, before the bundler runs.
 - axios works in a node child, with its http adapter (its Node default)
   and its fetch adapter: the child's `process` is tagged as Node's
   (`[object process]`, the same `Symbol.toStringTag` descriptor), which is
