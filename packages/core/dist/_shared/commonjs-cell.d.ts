@@ -28,10 +28,10 @@ export interface WrappedCommonJsCell {
     hashbang: boolean;
 }
 /**
- * Wrap a CommonJS cell as a `{ cjs }` module whose export is Node's module
- * wrapper function, in the given scope (THE WRAPPER). A leading shebang
- * becomes a line comment of the same length (Node strips it too; `#!` is not
- * valid inside a function).
+ * Wrap a CommonJS cell as a `{ cjs }` module whose export, given the
+ * module's `Function`, is Node's module wrapper function, in the given scope
+ * (THE WRAPPER). A leading shebang becomes a line comment of the same length
+ * (Node strips it too; `#!` is not valid inside a function).
  */
 export declare function wrapCommonJsCell(cell: string, scope?: CommonJsCellScope): WrappedCommonJsCell;
 /**
@@ -116,41 +116,30 @@ export declare function runtimeCodeModuleName(key: string): string;
 /** A ledger entry as the supervisor receives it: shape-checked, or null. */
 export declare function parseRuntimeCodeEntry(value: unknown): RuntimeCodeEntry | null;
 /**
- * The `{ cjs }` module text for a Function-constructor call: it exports the
- * function V8 builds for `new <Kind>Function(...params, body)` — named
- * `anonymous`, its source `<head> anonymous(<params>\n) {\n<body>\n}`, the body
- * from line 3 — or, for arguments the constructor refuses
- * (runtimeFunctionSyntaxError), throws the SyntaxError it would. A
- * constructor's function closes over the global scope, where a CommonJS
- * module's body would see workerd's five CommonJS names
- * (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
+ * The `{ cjs }` module text for a Function-constructor call: it exports a
+ * factory of the code's origin (RUNTIME CODE), its import() and its
+ * `Function`, that builds the function V8 builds for `new
+ * <Kind>Function(...params, body)`. The function is named `anonymous`, its
+ * source is `<head> anonymous(<params>\n) {\n<body>\n}` (the body from line
+ * 3), and its import() calls are the origin's. For arguments the constructor
+ * refuses (runtimeFunctionSyntaxError), the factory throws the SyntaxError
+ * the constructor would. A constructor's function closes over the global
+ * scope, where a CommonJS module's body would see workerd's five CommonJS
+ * names (src/workerd/api/commonjs.h CommonJsModuleContext: require, module,
  * exports, __filename, __dirname), so an enclosing function rebinds those five
  * to the global object's.
  */
 export declare function runtimeFunctionModule(kind: RuntimeFunctionKind, params: readonly string[], body: string): string;
 /**
- * The `{ cjs }` module text for vm.runInThisContext's code: it exports a
- * function returning the value of the one expression the script is (after
- * its directive prologue, which the function keeps), in the global scope as
- * a constructor's function is (runtimeFunctionModule), which node-shims
- * calls with the global object as `this`, a script's own; or
- * it throws the SyntaxError V8 would, or, for a script of another shape,
+ * The `{ cjs }` module text for vm.runInThisContext's code: a factory of its
+ * origin, as a constructor's is (runtimeFunctionModule), of a function
+ * returning the value of the one expression the script is (after its
+ * directive prologue, which the function keeps), which node-shims calls
+ * with the global object as `this`, a script's own. For code V8 refuses the
+ * factory throws the SyntaxError V8 would, and for a script of another shape
  * the error the interpreter answers it with in the first launch.
  */
 export declare function runtimeExpressionModule(code: string): string;
-/**
- * Whether runtime code is staged as a `gen/` module for the next launch to
- * compile natively: all of it except a constructor's or a vm script's code
- * that calls import(). Node resolves such an import() against the module
- * that called the constructor (and refuses it in vm's code, which has no
- * importer), and that module is known only to the launch that builds the
- * function: compiled natively, workerd would resolve it against the shared
- * `gen/` module instead. So that code runs in the interpreter in every
- * launch, which takes the importer from the constructor call. A file
- * written at runtime is lowered with its own path as its imports' parent,
- * and code V8 refuses is staged as the SyntaxError it throws.
- */
-export declare function runtimeCodeCompilesNatively(entry: RuntimeCodeEntry): boolean;
 /** The main module's imports the runtime below reads through. */
 export declare const COMMONJS_CELL_IMPORTS: string;
 /**

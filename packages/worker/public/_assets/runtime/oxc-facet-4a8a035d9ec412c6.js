@@ -8665,19 +8665,22 @@ error: the Oxc transform crashed (${reason})`);
     return error instanceof Error && typeof Reflect.get(error, "idx") === "number";
   }
   function rewriteDynamicImports(code, parentUrl, moduleMetadata = false, routeImports = true) {
+    return rewrite(code, DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ", moduleMetadata, routeImports);
+  }
+  function rewrite(code, call, moduleMetadata, routeImports) {
     const metadata = moduleMetadata && /\bimport\s*(?:\.|\/[/*])/.test(code);
     const imports = routeImports && mayHaveDynamicImport(code);
     if (!imports && !metadata) return code;
     let lexed;
     try {
-      lexed = rewriteFromLexer(code, parentUrl, metadata, imports);
+      lexed = rewriteFromLexer(code, call, metadata, imports);
     } catch (error) {
       if (!(isLexerError(error) || error instanceof SyntaxError || error instanceof RangeError)) throw error;
       lexed = null;
     }
-    return lexed ?? rewriteWithGrammar(code, parentUrl, metadata, imports);
+    return lexed ?? rewriteWithGrammar(code, call, metadata, imports);
   }
-  function rewriteFromLexer(code, parentUrl, metadata, imports) {
+  function rewriteFromLexer(code, call, metadata, imports) {
     const hashbang = code.startsWith("#!") ? lineEnd(code, 0) : 0;
     const source = hashbang ? " ".repeat(hashbang) + code.slice(hashbang) : code;
     const lexed = lexImports(source);
@@ -8698,7 +8701,6 @@ error: the Oxc transform crashed (${reason})`);
       calls.push({ ss: at2, se: end, d: open, lexed: false });
     }
     calls.sort((a, b) => a.ss - b.ss);
-    const call = DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ";
     const edits = [];
     let validatedEnd = -1;
     for (const site of calls) {
@@ -8902,9 +8904,9 @@ error: the Oxc transform crashed (${reason})`);
       return node;
     }
   };
-  function rewriteWithGrammar(code, parentUrl, metadata, imports) {
+  function rewriteWithGrammar(code, call, metadata, imports) {
     const collected = {
-      call: DYNAMIC_IMPORT_HELPER + "(" + JSON.stringify(parentUrl) + ", ",
+      call,
       edits: [],
       metas: [],
       names: metadata ?   new Set() : null

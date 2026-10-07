@@ -6,7 +6,7 @@ export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
 export interface InterpreterHost {
-    /** `import(specifier, options)` from code whose module URL is `parentUrl`; undefined for code with no importer. */
+    /** `import(specifier, options)` from code whose module URL is `parentUrl`, for code compiled without an origin. */
     dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
     /**
      * LAUNCH_PRIMORDIALS of the primordials module the launch loaded at its
@@ -15,19 +15,25 @@ export interface InterpreterHost {
      */
     readonly primordials: object;
 }
+/**
+ * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
+ * import() calls and what its free `Function` reads. Code compiled without
+ * one imports through the host against its own module URL (none for a
+ * constructor's) and reads the global `Function`.
+ */
+export interface CodeOrigin {
+    import(specifier: unknown, options: unknown): Promise<unknown>;
+    readonly Function: unknown;
+}
 export interface Interpreter {
-    /**
-     * The function `new <kind>Function(...params, body)` builds. Its import()
-     * resolves against `importer`, the module that called the constructor, as
-     * Node resolves it; without one the code has no importer, as vm's has not.
-     */
-    compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, importer?: string): NativeFunction;
+    /** The function `new <kind>Function(...params, body)` builds, from `origin`. */
+    compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, origin?: CodeOrigin): NativeFunction;
     /**
      * The module cell for a file's text: Node's wrapper function of
      * (exports, require, module, __filename, __dirname). CommonJS text runs as
      * that function's body; an ES module as esbuild lowers it to one.
      */
-    compileModule(path: string, text: string): ModuleCell;
+    compileModule(path: string, text: string, origin?: CodeOrigin): ModuleCell;
     /**
      * A function returning the value of the script `code` when it is one
      * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -35,7 +41,7 @@ export interface Interpreter {
      * `this` at its top level). Code of any other shape is refused
      * (UnsupportedSyntax).
      */
-    compileExpression(code: string): NativeFunction;
+    compileExpression(code: string, origin?: CodeOrigin): NativeFunction;
     /** Run a script at global scope: its vars and functions become global object properties. */
     runScript(text: string): void;
 }

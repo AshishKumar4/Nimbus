@@ -1399,6 +1399,9 @@ export class Compiler {
         // The global object's undefined, NaN and Infinity are read-only and cannot be deleted.
         if (name === 'undefined')
             return () => undefined;
+        const bound = name === 'Function' ? this.unit.host.functionBinding : null;
+        if (bound !== null)
+            return () => bound.value;
         if (name === 'NaN')
             return () => NaN;
         if (name === 'Infinity')

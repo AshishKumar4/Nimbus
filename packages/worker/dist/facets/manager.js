@@ -16,7 +16,8 @@
  * registered in ProcessTable and PortRegistry until exit or kill.
  */
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
-import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeCodeCompilesNatively, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { COMMONJS_CELL_IMPORTS, COMMONJS_CELL_RUNTIME_SOURCE, commonJsCellModuleName, commonJsCellReadsBack, commonJsEntryModuleName, declaresWrapperBinding, RUNTIME_INTERPRETER_MODULE, RUNTIME_INTERPRETER_OPS_MODULE, RUNTIME_INTERPRETER_PRIMORDIALS_MODULE, runtimeCodeModuleName, runtimeExpressionModule, runtimeFunctionModule, wrapCommonJsCell, } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField } from '@nimbus-sh/core/runtime/process-table.js';
 import { exitCodeForSignal } from '@nimbus-sh/core/substrate/lifo/shell/signals.js';
@@ -70,7 +71,7 @@ import { persistDurableWorkerImage, purgeDurableWorkerImages, } from './durable-
 import { SQLITE_WASM_MODULE_NAME, } from '../runtime/opencode-facet-runner.js';
 import { parsePortFromArgv, resolveLongRunningPort } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import { DEFAULT_FACET_BUNDLE_PROFILE, } from '@nimbus-sh/core/runtime/bundle-profile.js';
-import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
+import { CF_COMPAT_DATE, DEFAULT_HOME, GUEST_COMPAT_FLAGS, VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES, BUNDLE_MAX_ENCODED_BYTES, PREFETCH_CACHE_MAX_BYTES, FS_LIST_PAGE_LIMIT, } from '@nimbus-sh/core/constants.js';
 import { LEDGER_ROW_BYTES } from '@nimbus-sh/core/runtime/storage-ledger.js';
 import { ONE_SHOT_STORE_MEMORY_BYTES, RESIDENT_CHUNK_BYTES } from '../vfs/facet-resident-limits.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -593,24 +594,39 @@ function interpreterModules(sources) {
     };
 }
 /**
+ * The URL an entry's import() resolves against and its `Function` carries:
+ * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
+ * `<cwd>/[stdin]`).
+ */
+export function entryImporterUrl(filename, cwd) {
+    const base = cwd.replace(/\/+$/, '') || '/';
+    const path = filename === undefined || filename === '<eval>'
+        ? `${base}/[eval]`
+        : filename === '[stdin]' ? `${base}/[stdin]` : filename;
+    return moduleImporterUrl(path);
+}
+/**
  * The entry code as a module of the map, named for the script it came from so
  * its stack frames carry that path; `-e` code is `[eval]`. The runtime may
  * have lowered it from ESM (runtime-registry.ts), which nothing here records,
- * so its scope is read off the code itself (declaresWrapperBinding).
+ * so its scope is read off the code itself (declaresWrapperBinding). Its
+ * `Function` carries `importer` (entryImporterUrl).
  */
-function entryModule(userCode, filename) {
+function entryModule(userCode, filename, importer) {
     const code = rewriteProvidedCommonJsModules(userCode);
     return {
         name: commonJsEntryModuleName(filename || '[eval]'),
         text: wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function').text,
+        importer,
     };
 }
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
- * names the entry's module, and so its stack frames.
+ * names the entry's module, and so its stack frames; with `cwd` it is the
+ * entry's importer (entryImporterUrl).
  */
-export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename) {
-    const entry = entryModule(userCode, filename);
+export async function generateEntrypointCode(userCode, vfsState, usesSqlite, sources, wasmImports = [], filename, cwd = DEFAULT_HOME) {
+    const entry = entryModule(userCode, filename, entryImporterUrl(filename, cwd));
     const bundleSource = await facetVfsBundleSourceFor(vfsState);
     return {
         code: `
@@ -797,7 +813,7 @@ ${RESIDENCY_MISS_REPORT}
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
-      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
+      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js", ${JSON.stringify(entry.importer)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
@@ -991,7 +1007,7 @@ function facetWasmImportsSource(wasmImports) {
         + `\nglobalThis.__nimbusPrecompiledWasmByDigest = new Map([${byDigest.join(', ')}]);`;
 }
 export async function generateLongRunningNodeCode(userCode, vfsState, opts, usesSqlite, sources, pacer) {
-    const entry = entryModule(userCode, opts.filename);
+    const entry = entryModule(userCode, opts.filename, entryImporterUrl(opts.filename, opts.cwd || DEFAULT_HOME));
     const safeArgs = JSON.stringify({
         argv: opts.argv || [],
         env: opts.env || {},
@@ -1300,7 +1316,7 @@ ${RESIDENCY_MISS_REPORT}
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
-      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
+      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js", ${JSON.stringify(entry.importer)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       if (attachedTty) {
@@ -4328,12 +4344,7 @@ export class FacetManager {
             return code;
         if (this.esbuild === null)
             throw new Error('entry dynamic import requires the transform service');
-        const base = cwd.replace(/\/+$/, '') || '/';
-        const path = filename === undefined || filename === '<eval>'
-            ? `${base}/[eval]`
-            : filename === '[stdin]' ? `${base}/[stdin]` : filename;
-        const parentUrl = 'file:///' + path.replace(/^\/+/, '');
-        return transformEntryScript(code, parentUrl, { host: this.esbuild, store: this._transformStore(), pacer });
+        return transformEntryScript(code, entryImporterUrl(filename, cwd), { host: this.esbuild, store: this._transformStore(), pacer });
     }
     /**
      * The store this session's launches keep their transform results in: the
@@ -4942,9 +4953,6 @@ export class FacetManager {
     async _stagedRuntimeCode(learning, pacer) {
         const modules = new Map();
         for (const [codeKey, entry] of learning.code) {
-            // Its import() needs the module that built it, which only its own launch knows: interpreted there.
-            if (!runtimeCodeCompilesNatively(entry))
-                continue;
             if (entry.kind === 'expression') {
                 modules.set(codeKey, runtimeExpressionModule(entry.code));
                 continue;
@@ -5979,7 +5987,7 @@ export class FacetManager {
                     // own assets, for the same reason.
                     const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
                     const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-                    const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename);
+                    const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME);
                     const codeModules = {};
                     for (const [name, text] of Object.entries(generatedWorker.codeModules))
                         codeModules[name] = { cjs: text };

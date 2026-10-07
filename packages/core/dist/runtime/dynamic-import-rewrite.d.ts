@@ -9,4 +9,11 @@ export declare function mayHaveDynamicImport(code: string): boolean;
  * cannot capture the loader's name.
  */
 export declare function rewriteDynamicImports(code: string, parentUrl: string, moduleMetadata?: boolean, routeImports?: boolean): string;
+/**
+ * Route the code's import() calls to the function `callee` names, called with
+ * the call's own arguments: code whose importer is decided when it runs, not
+ * when it is rewritten (a Function constructor's, staged once for every
+ * module that builds it).
+ */
+export declare function routeDynamicImportsTo(code: string, callee: string): string;
 //# sourceMappingURL=dynamic-import-rewrite.d.ts.map
