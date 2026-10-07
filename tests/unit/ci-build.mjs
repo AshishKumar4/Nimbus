@@ -23,6 +23,7 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { overlayCommit } from '../../scripts/ci/lib/armada.mjs';
+import { applyPatch } from '../../scripts/ci/remote-build.mjs';
 
 const BUILD = join(import.meta.dirname, '..', '..', 'scripts', 'ci', 'build.mjs');
 
@@ -56,12 +57,12 @@ const git = (cwd, ...args) => {
 const root = mkdtempSync(join(tmpdir(), 'ci-build-'));
 try {
   /** A checkout whose commit is the fixture with `files` over it, built clean first when `fixpoint`. */
-  const checkout = (name, files, { fixpoint = true } = {}) => {
+  const checkout = (name, files, { fixpoint = true, gate = GATE } = {}) => {
     const dir = join(root, name);
     mkdirSync(join(dir, 'pkg', 'src'), { recursive: true });
     mkdirSync(join(dir, 'pkg', 'dist'), { recursive: true });
     mkdirSync(join(dir, 'scripts'));
-    writeFileSync(join(dir, 'scripts', 'dist-integrity.mjs'), GATE);
+    writeFileSync(join(dir, 'scripts', 'dist-integrity.mjs'), gate);
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ scripts: { typecheck: 'node check.js' } }));
     writeFileSync(join(dir, 'check.js'), "if (require('fs').existsSync('pkg/src/ill-typed')) { console.log('pkg/src/ill-typed(1,1): error TS2322: nope'); process.exit(2); }\n");
     writeFileSync(join(dir, 'pkg', 'src', 'a.txt'), 'one');
@@ -151,6 +152,29 @@ try {
     assert.match(verdict.rows[0].output, /wrote outside its outputs[\s\S]*elsewhere\.txt/);
     assert.doesNotMatch(verdict.patch ?? '', /elsewhere/);
     console.log('  ok  a build that writes outside its outputs is red and names the file, which the patch leaves out');
+  }
+  {
+    // A build that moves an output: the patch, and the receipts, are a
+    // removal and an addition, and remote-build applies it to the commit.
+    const moving = `
+import { existsSync, renameSync } from 'node:fs';
+export const OUTPUT_ROOTS = ['pkg'];
+export const FIXPOINT_RECORD = 'record.json';
+if (import.meta.main && existsSync('pkg/dist/old.bin')) { renameSync('pkg/dist/old.bin', 'pkg/dist/new.bin'); process.exit(1); }
+`;
+    const dir = checkout('moved', { 'pkg/dist/old.bin': 'the same bytes, at a new path' }, { fixpoint: false, gate: moving });
+    const sha = git(dir, 'rev-parse', 'HEAD');
+    const verdict = build(dir);
+    assert.equal(verdict.status, 1);
+    assert.deepEqual(Object.keys(verdict.blobs).sort(), ['pkg/dist/new.bin', 'pkg/dist/old.bin']);
+    assert.equal(verdict.blobs['pkg/dist/old.bin'], null, 'the old path is a removal');
+    const clone = join(root, 'moved-clone');
+    git(root, 'clone', '-q', dir, clone);
+    writeFileSync(join(root, 'moved.patch'), verdict.patch);
+    assert.match(applyPatch(clone, sha, join(root, 'moved.patch'), verdict.blobs), /applied the dist patch \(2 files\)/);
+    assert.equal(readFileSync(join(clone, 'pkg/dist/new.bin'), 'utf8'), 'the same bytes, at a new path');
+    assert.equal(git(clone, 'status', '--porcelain', '--', 'pkg/dist/old.bin'), 'D pkg/dist/old.bin');
+    console.log('  ok  a moved output is a removal and an addition in the receipts, and remote-build applies its patch');
   }
   {
     const dir = checkout('dirty', {});
