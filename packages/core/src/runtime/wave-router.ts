@@ -156,17 +156,23 @@ async function applyRecord(
       if (call.call === 'mkdir') await ns.mkdir(call.path, { mode: call.mode });
       else if (call.call === 'unlink') await ns.unlink(call.path);
       else if (call.call === 'rmdir') await ns.rmdir(call.path);
+      // An open description's truncate, by its name: a mount numbers its files its own way.
+      else if (call.call === 'ftruncate') await ns.truncate(call.path, call.size);
       else await ns.symlink(call.target, call.path);
       return null;
     }
     case 'data-call': {
-      // A writeFile or appendFile: the namespace's call with the whole bytes.
+      // The namespace's call with the whole bytes; a description's write or
+      // append by its name, as a mount numbers its files its own way.
       await pinned();
-      if (record.call === 'appendFile') {
+      if (record.call === 'appendFile' || record.call === 'append') {
         const prior = await ns.stat(record.path);
         await pinned();
-        if (prior === null) await ns.writeFile(record.path, record.bytes, { mode: record.mode });
+        if (prior === null && record.call === 'appendFile') await ns.writeFile(record.path, record.bytes, { mode: record.mode });
+        else if (prior === null) throw new VfsError('ENOENT', 'the file an open description appends to is gone', record.path);
         else await ns.writeRange(record.path, prior.size, record.bytes);
+      } else if (record.call === 'write') {
+        await ns.writeRange(record.path, record.offset ?? 0, record.bytes);
       } else {
         await ns.writeFile(record.path, record.bytes, { mode: record.mode });
       }

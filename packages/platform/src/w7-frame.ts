@@ -93,6 +93,17 @@ export type W7Attrs =
 export type W7Call =
   | { call: 'writeFile'; path: string; mode: number; data: Uint8Array }
   | { call: 'appendFile'; path: string; mode: number; data: Uint8Array }
+  /**
+   * A write through an open description (pwrite(2)) at `offset`: of the
+   * file whose inode is `ino` when the process knows it (wherever that file
+   * is named now, and nowhere once no name has it), else of the file at
+   * `path`. Past its end, the gap reads as zeros.
+   */
+  | { call: 'write'; path: string; ino?: number; offset: number; data: Uint8Array }
+  /** A write through an O_APPEND description: at the file's end as it is when the write lands. */
+  | { call: 'append'; path: string; ino?: number; data: Uint8Array }
+  /** ftruncate(2) through an open description: the file `ino` names when given, else the one at `path`. */
+  | { call: 'ftruncate'; path: string; ino?: number; size: number }
   | { call: 'mkdir'; path: string; mode: number }
   | { call: 'unlink'; path: string }
   | { call: 'rmdir'; path: string }
@@ -196,6 +207,8 @@ interface FileBeginMetadata extends InodeMetadata {
   size: number;
   chunkCount: number;
   call?: W7DataCall;
+  /** A 'write' call's offset. */
+  offset?: number;
 }
 
 interface FileEndMetadata {
@@ -230,7 +243,7 @@ export interface W7DecodeOptions {
 
 type W7DirectoryInode = BatchInodeEntry & { kind: 'directory'; isDir: true };
 /** `call`: the file is a W7DataCall's bytes (its path, mode and size), not an upsert's inode. */
-type W7ContentInode = BatchInodeEntry & { kind: 'file' | 'symlink'; isDir: false; call?: W7DataCall };
+type W7ContentInode = BatchInodeEntry & { kind: 'file' | 'symlink'; isDir: false; call?: W7DataCall; offset?: number };
 
 export type W7DecodedRecord =
   | { type: 'delete'; path: string }
@@ -618,7 +631,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -746,6 +759,7 @@ async function* encodeFile(file: EncoderFile, state: EncoderState): AsyncGenerat
     size: file.inode.size,
     chunkCount: file.inode.chunkCount,
     ...(file.inode.call === undefined ? {} : { call: file.inode.call }),
+    ...(file.inode.offset === undefined ? {} : { offset: file.inode.offset }),
   }, state);
   let fileCheck = 0;
   let chunkId = 0;
@@ -926,14 +940,16 @@ function prepareOps(payload: BatchWritePayload, batchId: string): EncoderOp[] {
         return { kind: 'setattr', path: ownedPaths.claim(canonicalPath(op.path, 'setattr path')), attrs: parseAttrs(op.attrs as Record<string, unknown>, 'setattr') };
       case 'call': {
         const call = op.call;
-        if (call.call === 'writeFile' || call.call === 'appendFile') {
+        if ('data' in call) {
           const path = ownedPaths.claim(canonicalPath(call.path, `${call.call} path`));
           // A call's file stamps no time of its own: the session's operation does.
           const inode = normalizeInode({
             path, parentPath: parentPath(path), kind: 'file', isDir: false,
-            size: call.data.byteLength, mtime: 0, mode: u32(call.mode, `${call.call} mode`), chunkCount: w7ChunkCount(call.data.byteLength),
+            size: call.data.byteLength, mtime: 0, mode: 'mode' in call ? u32(call.mode, `${call.call} mode`) : 0, chunkCount: w7ChunkCount(call.data.byteLength),
+            ...('ino' in call && call.ino !== undefined ? { ino: inodeNumber(call.ino, `${call.call} ino`) } : {}),
           }) as W7ContentInode;
           inode.call = call.call;
+          if (call.call === 'write') inode.offset = safeInteger(call.offset, 'write offset');
           const chunks = w7Chunks(path, call.data);
           return { kind: 'file', file: { inode, contentId: `${batchId}:${fileIndex++}`, chunks, source: null } };
         }
@@ -982,7 +998,7 @@ function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
     bytes,
     'file-begin',
     ['path', 'kind', 'contentId', 'size', 'chunkCount', 'mtime', 'mode'],
-    v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call'],
+    v3 ? inodeOptional(v3) : [...inodeOptional(v3), 'call', 'offset'],
   );
   const base = parseInodeMetadata(value, 'file-begin');
   if (value.kind !== 'file' && value.kind !== 'symlink') {
@@ -998,11 +1014,21 @@ function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
   if (chunkCount !== expected) {
     throw new Error(`w7-frame: ${base.path}: expected ${expected} chunks, got ${chunkCount}`);
   }
-  if (value.call !== undefined && value.call !== 'writeFile' && value.call !== 'appendFile') {
-    throw new Error(`w7-frame: ${base.path}: unknown data call ${String(value.call)}`);
+  const call = value.call;
+  if (call !== undefined && call !== 'writeFile' && call !== 'appendFile' && call !== 'write' && call !== 'append') {
+    throw new Error(`w7-frame: ${base.path}: unknown data call ${String(call)}`);
   }
-  if (value.call !== undefined && value.kind !== 'file') throw new Error(`w7-frame: ${base.path}: a ${String(value.call)} writes a file`);
-  return { ...base, kind: value.kind, contentId, size, chunkCount, ...(value.call === undefined ? {} : { call: value.call }) };
+  if (call !== undefined && value.kind !== 'file') throw new Error(`w7-frame: ${base.path}: a ${String(call)} writes a file`);
+  // An offset is a write's, and only a description's writes name an inode.
+  if ((call === 'write') !== (value.offset !== undefined)) throw new Error(`w7-frame: ${base.path}: a write, and only a write, has an offset`);
+  if (call !== undefined && call !== 'write' && call !== 'append' && base.ino !== undefined) {
+    throw new Error(`w7-frame: ${base.path}: a ${call} names no inode`);
+  }
+  return {
+    ...base, kind: value.kind, contentId, size, chunkCount,
+    ...(call === undefined ? {} : { call }),
+    ...(value.offset === undefined ? {} : { offset: safeInteger(value.offset, 'write offset') }),
+  };
 }
 
 /** A path call's fields, exactly: its paths made canonical (and claimed) by `path`. */
@@ -1019,6 +1045,12 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     case 'symlink':
       if (keys !== 'call,path,target') break;
       return { call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES) };
+    case 'ftruncate':
+      if (keys !== 'call,ino,path,size' && keys !== 'call,path,size') break;
+      return {
+        call: 'ftruncate', path: path(value.path, 'ftruncate path'), size: safeInteger(value.size, 'ftruncate size'),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'ftruncate ino') }),
+      };
     default:
       throw new Error(`w7-frame: unknown call ${String(value.call)}`);
   }
@@ -1175,6 +1207,7 @@ function fileInode(metadata: FileBeginMetadata): W7ContentInode {
     chunkCount: metadata.chunkCount,
     ...(metadata.ino === undefined ? {} : { ino: metadata.ino }),
     ...(metadata.call === undefined ? {} : { call: metadata.call }),
+    ...(metadata.offset === undefined ? {} : { offset: metadata.offset }),
   };
 }
 
