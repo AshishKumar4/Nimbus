@@ -90,6 +90,33 @@ export type W7Call = {
     path: string;
     mode: number;
     data: Uint8Array;
+}
+/**
+ * A write through an open description (pwrite(2)) at `offset`: of the
+ * file whose inode is `ino` when the process knows it (wherever that file
+ * is named now, and nowhere once no name has it), else of the file at
+ * `path`. Past its end, the gap reads as zeros.
+ */
+ | {
+    call: 'write';
+    path: string;
+    ino?: number;
+    offset: number;
+    data: Uint8Array;
+}
+/** A write through an O_APPEND description: at the file's end as it is when the write lands. */
+ | {
+    call: 'append';
+    path: string;
+    ino?: number;
+    data: Uint8Array;
+}
+/** ftruncate(2) through an open description: the file `ino` names when given, else the one at `path`. */
+ | {
+    call: 'ftruncate';
+    path: string;
+    ino?: number;
+    size: number;
 } | {
     call: 'mkdir';
     path: string;
@@ -190,6 +217,7 @@ type W7ContentInode = BatchInodeEntry & {
     kind: 'file' | 'symlink';
     isDir: false;
     call?: W7DataCall;
+    offset?: number;
 };
 export type W7DecodedRecord = {
     type: 'delete';

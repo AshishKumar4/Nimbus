@@ -39,12 +39,14 @@ import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation, } from '@n
 import { enc, dec } from '../_shared/bytes.js';
 import { decodeWriteBatchStream, w7ChunkCount, w7Chunks, encodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
+import { WAVE_EPOCH_TTL_MS } from '@nimbus-sh/platform/lost-call.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
 import { posixAccess } from './posix-access.js';
 import { RecallRequired, withRecall } from './recall.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource } from './vfs.js';
+import { SYSCALL_VERDICTS } from './vfs-error.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
 import { inflateChunk } from './chunk-codec.js';
@@ -61,7 +63,7 @@ const STORE_TABLES = [
     'vfs_append_receipts_v2', 'vfs_append_writer_state_v2', 'vfs_append_module_state_v2',
     'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2', 'vfs_state', 'vfs_inodes', 'vfs_chunks',
     'vfs_contents', 'vfs_content_chunks', 'vfs_inode_history', 'vfs_tombstones', 'vfs_cold_trash',
-    'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs',
+    'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs', 'vfs_wave_cursors',
 ];
 /** The root directory has no row; this is what it is. */
 export const ROOT_DIRECTORY_MODE = 0o40755;
@@ -1204,6 +1206,15 @@ export class SqliteVFS {
             this.sql.exec('CREATE TABLE IF NOT EXISTS vfs_cold_trash (hash BLOB PRIMARY KEY) WITHOUT ROWID');
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_chunk ON vfs_inode_history(chunk_id) WHERE chunk_id IS NOT NULL');
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_content ON vfs_inode_history(content_id) WHERE content_id IS NOT NULL');
+            // Each sequenced writer's cursor (WaveSequence), and the refusal it has not had answered.
+            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_wave_cursors (
+        writer TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        refused_seq INTEGER,
+        refused_errno TEXT,
+        refused_message TEXT,
+        touched_at INTEGER NOT NULL
+      )`);
             this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_gc_queue (
         kind INTEGER NOT NULL,
         id INTEGER NOT NULL,
@@ -7623,7 +7634,7 @@ export class SqliteVFS {
                 const call = record.call;
                 if (call.call !== 'mkdir')
                     at.routes.clear();
-                const placed = await mountOf(call.call === 'mkdir' ? 'directory' : call.call === 'symlink' ? 'file' : 'delete', call.path);
+                const placed = await mountOf(call.call === 'mkdir' ? 'directory' : call.call === 'symlink' || call.call === 'ftruncate' ? 'file' : 'delete', call.path);
                 if (placed === null)
                     return false;
                 at.setPhase('publish');
@@ -7657,6 +7668,7 @@ export class SqliteVFS {
                     mode: record.inode.mode, size: record.inode.size, received: 0, nextChunk: 0, held: [], index: at.index,
                     credit: { left: record.inode.size, lease },
                     ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
+                    ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
                 };
                 return true;
             }
@@ -7694,7 +7706,7 @@ export class SqliteVFS {
                     reached();
                     const bytes = concatBytes(file.held.map((chunk) => chunk.data));
                     const stat = await router.apply(file.call !== undefined
-                        ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes }
+                        ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
                         : file.link
                             ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
                             : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
@@ -7716,6 +7728,97 @@ export class SqliteVFS {
         // The delegations its caller holds, read now, in the caller's turn: its records apply as them.
         const holds = options.mutationOwner !== undefined ? new Set([options.mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
         return this.spanning(() => this.consumeStream(stream, options, cred, origin, holds), options.mutationOwner);
+    }
+    /**
+     * A sequenced writer's state as its wave starts: its cursor, and the
+     * refusal it has not had answered (dropped once `ack` reaches it). A
+     * writer untouched for a wave epoch's lifetime is forgotten: its epoch
+     * admits nothing more. A wave that starts past the op after the cursor
+     * names ops the session never had: refused, ESTALE (they are lost).
+     */
+    openSequence(sequence) {
+        if (!Number.isSafeInteger(sequence.first) || sequence.first < 1 || !Number.isSafeInteger(sequence.ack) || sequence.ack < 0) {
+            throw vfsError('EINVAL', sequence.writer, 'a sequenced wave numbers its ops from 1');
+        }
+        const now = Date.now();
+        let state = { cursor: 0, refused: null };
+        this.transactionSync(() => {
+            this.sql.exec('DELETE FROM vfs_wave_cursors WHERE touched_at < ?', now - WAVE_EPOCH_TTL_MS);
+            const row = [...this.sql.exec('SELECT seq, refused_seq, refused_errno, refused_message FROM vfs_wave_cursors WHERE writer = ?', sequence.writer)][0];
+            if (row === undefined) {
+                this.sql.exec('INSERT INTO vfs_wave_cursors (writer, seq, touched_at) VALUES (?, 0, ?)', sequence.writer, now);
+                return;
+            }
+            const refusedSeq = row.refused_seq === null ? null : Number(row.refused_seq);
+            if (refusedSeq !== null && refusedSeq <= sequence.ack) {
+                this.sql.exec('UPDATE vfs_wave_cursors SET refused_seq = NULL, refused_errno = NULL, refused_message = NULL, touched_at = ? WHERE writer = ?', now, sequence.writer);
+                state = { cursor: Number(row.seq), refused: null };
+                return;
+            }
+            this.sql.exec('UPDATE vfs_wave_cursors SET touched_at = ? WHERE writer = ?', now, sequence.writer);
+            state = {
+                cursor: Number(row.seq),
+                refused: refusedSeq === null ? null : { seq: refusedSeq, errno: String(row.refused_errno), message: String(row.refused_message) },
+            };
+        });
+        if (sequence.first > state.cursor + 1) {
+            throw vfsError('ESTALE', sequence.writer, `ops ${state.cursor + 1} to ${sequence.first - 1} of this writer never reached the session`);
+        }
+        return state;
+    }
+    /**
+     * A process's data call, made as the call of that name: a writeFile, an
+     * appendFile (made where missing), or a write or append through an open
+     * description (describedFile). The published name's stat, or null for a
+     * description whose file no name has any more (the bytes go with it).
+     */
+    applyDataCall(file, bytes, cred) {
+        switch (file.call) {
+            case 'writeFile':
+                this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+                return this.stat(file.path, cred, true);
+            case 'appendFile': {
+                const prior = this.checkAccess(file.path, 0, cred, { allowMissingLeaf: true }).inode;
+                if (prior === undefined)
+                    this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+                else
+                    this.writeRange(file.path, prior.size, bytes, cred);
+                return this.stat(file.path, cred, true);
+            }
+            case 'write':
+            case 'append': {
+                const at = this.describedFile(file.path, file.ino, cred);
+                if (at === null)
+                    return null;
+                const offset = file.call === 'write' ? file.offset : this.stat(at, cred, true).size;
+                this.writeRange(at, offset, bytes, cred);
+                return this.stat(at, cred, true);
+            }
+        }
+    }
+    /**
+     * The file an open description writes: the one inode `ino` names, wherever
+     * it is named now, or null once no name has it; without `ino`, the file at
+     * `path`. Found by its name while that still names it; else by a scan for
+     * its number (a rename by another process under an open description).
+     */
+    describedFile(path, ino, cred) {
+        if (ino === undefined)
+            return path;
+        if (this.checkAccess(path, 0, cred, { allowMissingLeaf: true }).inode?.ino === ino)
+            return path;
+        const row = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', ino)][0];
+        return row === undefined ? null : String(row.path);
+    }
+    /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */
+    advanceSequence(writer, seq) {
+        this.sql.exec('UPDATE vfs_wave_cursors SET seq = ?, touched_at = ? WHERE writer = ?', seq, Date.now(), writer);
+    }
+    /** The op numbered `seq` was refused: the cursor passes it, and the refusal is kept until the writer has had it answered. */
+    refuseInSequence(writer, refused) {
+        this.transactionSync(() => {
+            this.sql.exec('UPDATE vfs_wave_cursors SET seq = ?, refused_seq = ?, refused_errno = ?, refused_message = ?, touched_at = ? WHERE writer = ?', refused.seq, refused.seq, refused.errno, refused.message, Date.now(), writer);
+        });
     }
     /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
     withHolds(holds, run) {
@@ -8085,7 +8188,49 @@ export class SqliteVFS {
                 flushGroup();
             return acquireCredit(byteLength, signal);
         };
+        // A sequenced writer's wave (WaveSequence): its ops are numbered from
+        // `first`, and one the writer's cursor has passed is answered, never
+        // applied again.
+        const sequence = options.sequence === undefined ? null : { spec: options.sequence, cursor: 0 };
+        let opIndex = -1;
+        /** The number of the op being applied: a refusal now is its answer. */
+        let applying = null;
+        /** A re-sent data call the cursor has passed: its chunks are drained, not applied. */
+        let skipping = null;
+        const advanced = (seq) => {
+            sequence.cursor = seq;
+            progress.sequence = { cursor: seq };
+            applying = null;
+        };
+        /** Commit `apply` as the op being applied: in a sequenced wave, in one transaction with its cursor's move. */
+        const committing = (apply) => {
+            if (sequence === null || applying === null)
+                return apply();
+            const seq = applying;
+            const value = this.publishedTransaction(() => {
+                const result = apply();
+                this.advanceSequence(sequence.spec.writer, seq);
+                return result;
+            }, (error) => error);
+            advanced(seq);
+            return value;
+        };
         try {
+            if (sequence !== null) {
+                const opened = this.openSequence(sequence.spec);
+                sequence.cursor = opened.cursor;
+                progress.sequence = { cursor: opened.cursor };
+                // A re-send of a wave whose op was refused: answered as it was, nothing after that op applied.
+                if (opened.refused !== null && opened.refused.seq >= sequence.spec.first) {
+                    progress.sequence.refused = opened.refused;
+                    stream.cancel().catch(() => { });
+                    return {
+                        ok: false,
+                        ...progress,
+                        error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: opened.refused.message, errno: opened.refused.errno },
+                    };
+                }
+            }
             const decoded = await decodeWriteBatchStream(stream, {
                 signal: options.signal,
                 retainChunk,
@@ -8115,6 +8260,30 @@ export class SqliteVFS {
                 }
                 if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end')
                     recordIndex++;
+                if (sequence !== null && record.type !== 'batch-end') {
+                    if (record.type === 'file-chunk' || record.type === 'file-end') {
+                        if (skipping !== null) {
+                            if (record.type === 'file-chunk')
+                                record.retention.release();
+                            else
+                                skipping = null;
+                            continue;
+                        }
+                    }
+                    else {
+                        // Numbered: a process's calls, renames, truncates and attribute changes; an upsert has no answer to keep.
+                        if (record.type === 'delete' || record.type === 'directory' || (record.type === 'file-begin' && record.inode.call === undefined)) {
+                            throw vfsError('EINVAL', record.type === 'delete' ? record.path : record.inode.path, 'a sequenced wave carries calls, renames, truncates and attribute changes, not upserts');
+                        }
+                        const seq = sequence.spec.first + ++opIndex;
+                        if (seq <= sequence.cursor) {
+                            if (record.type === 'file-begin')
+                                skipping = record.streamContentId;
+                            continue;
+                        }
+                        applying = seq;
+                    }
+                }
                 if (router !== null && await this.routeRecord(record, router, cred, {
                     get file() { return routed.file; },
                     set file(file) { routed.file = file; },
@@ -8145,6 +8314,12 @@ export class SqliteVFS {
                         progress.committedOps++;
                         if (receipt !== null)
                             progress.receipts.push(receipt);
+                        // On a mount: the cursor moves once the backend has it, in a transaction of its own.
+                        if (sequence !== null && applying !== null) {
+                            const seq = applying;
+                            this.transactionSync(() => this.advanceSequence(sequence.spec.writer, seq));
+                            advanced(seq);
+                        }
                     },
                 }))
                     continue;
@@ -8152,7 +8327,12 @@ export class SqliteVFS {
                 if (record.type === 'file-begin' && record.inode.call !== undefined) {
                     phase = 'validation';
                     this.validateInodeContentShape(record.inode);
-                    callFile = { streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size, parts: [], received: 0, nextChunk: 0 };
+                    callFile = {
+                        streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
+                        ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
+                        ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
+                        parts: [], received: 0, nextChunk: 0,
+                    };
                     continue;
                 }
                 if (callFile !== null && record.type === 'file-chunk') {
@@ -8184,23 +8364,13 @@ export class SqliteVFS {
                     flushDirectories();
                     options.admit?.();
                     const bytes = concatBytes(file.parts);
-                    const stat = this.withHolds(holds, () => asCaller(() => {
-                        if (file.call === 'appendFile') {
-                            const prior = this.checkAccess(file.path, 0, cred, { allowMissingLeaf: true }).inode;
-                            if (prior === undefined)
-                                this.writeFile(file.path, bytes, { mode: file.mode }, cred);
-                            else
-                                this.writeRange(file.path, prior.size, bytes, cred);
-                        }
-                        else {
-                            this.writeFile(file.path, bytes, { mode: file.mode }, cred);
-                        }
-                        return this.stat(file.path, cred, true);
-                    }));
-                    progress.receipts.push({
-                        path: file.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
-                        uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this._revision,
-                    });
+                    const stat = this.withHolds(holds, () => committing(() => asCaller(() => this.applyDataCall(file, bytes, cred))));
+                    if (stat !== null) {
+                        progress.receipts.push({
+                            path: file.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
+                            uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this._revision,
+                        });
+                    }
                     progress.committedGroupSequence++;
                     progress.committedPathCount++;
                     progress.committedOps++;
@@ -8390,7 +8560,7 @@ export class SqliteVFS {
                             flushGroup();
                             flushDirectories();
                             options.admit?.();
-                            asCaller(() => {
+                            committing(() => asCaller(() => {
                                 if (record.type === 'rename')
                                     this.rename(record.from, record.to, cred);
                                 else if (record.type === 'truncate')
@@ -8401,7 +8571,7 @@ export class SqliteVFS {
                                     this.chown(record.path, record.attrs.uid, record.attrs.gid, cred, true);
                                 else
                                     this.utimes(record.path, record.attrs.atime, record.attrs.mtime, cred, true);
-                            });
+                            }));
                             progress.committedGroupSequence++;
                             progress.committedPathCount += record.type === 'rename' ? 2 : 1;
                             progress.committedOps++;
@@ -8415,7 +8585,7 @@ export class SqliteVFS {
                             flushDirectories();
                             options.admit?.();
                             const call = record.call;
-                            asCaller(() => {
+                            committing(() => asCaller(() => {
                                 if (call.call === 'mkdir') {
                                     // mkdir(2): a name that is there, whatever it is, is EEXIST
                                     // (the engine's mkdir keeps an existing directory as made).
@@ -8428,9 +8598,14 @@ export class SqliteVFS {
                                     this.unlink(call.path, cred);
                                 else if (call.call === 'rmdir')
                                     this.rmdir(call.path, cred);
+                                else if (call.call === 'ftruncate') {
+                                    const at = this.describedFile(call.path, call.ino, cred);
+                                    if (at !== null)
+                                        this.truncate(at, call.size, cred);
+                                }
                                 else
                                     this.symlink(call.target, call.path, cred);
-                            });
+                            }));
                             progress.committedGroupSequence++;
                             progress.committedPathCount++;
                             progress.committedOps++;
@@ -8457,6 +8632,18 @@ export class SqliteVFS {
             }
         }
         catch (error) {
+            const errno = errnoOf(error);
+            // The op being applied was refused: its answer, kept for a re-send; nothing after it applies.
+            if (sequence !== null && applying !== null && errno !== undefined && SYSCALL_VERDICTS.has(errno)) {
+                const refused = { seq: applying, errno, message: this.errorMessage(error) };
+                try {
+                    this.refuseInSequence(sequence.spec.writer, refused);
+                    progress.sequence = { cursor: refused.seq, refused };
+                }
+                catch {
+                    // Not kept: the op is unanswered, and a re-send applies it again.
+                }
+            }
             return {
                 ok: false,
                 ...progress,
@@ -8464,7 +8651,7 @@ export class SqliteVFS {
                     code: 'ERR_WRITE_BATCH_STREAM',
                     phase,
                     message: this.errorMessage(error),
-                    ...(errnoOf(error) === undefined ? {} : { errno: errnoOf(error) }),
+                    ...(errno === undefined ? {} : { errno }),
                 },
             };
         }
@@ -8583,6 +8770,10 @@ export class SqliteVFS {
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction(callback) {
+        return this.publishedTransaction(callback, (error) => new Error('[sqlite-vfs] embedder transaction rolled back', { cause: error }));
+    }
+    /** withTransaction, its rollback reported as `rolledBack` makes it of the callback's error. */
+    publishedTransaction(callback, rolledBack) {
         if (this.transactionPublication !== null) {
             throw new Error('[sqlite-vfs] nested embedder transactions are not supported');
         }
@@ -8643,7 +8834,7 @@ export class SqliteVFS {
             catch (reloadError) {
                 throw new AggregateError([error, reloadError], '[sqlite-vfs] transaction rollback reload failed', { cause: error });
             }
-            throw new Error('[sqlite-vfs] embedder transaction rolled back', { cause: error });
+            throw rolledBack(error);
         }
         finally {
             this.transactionPublication = null;

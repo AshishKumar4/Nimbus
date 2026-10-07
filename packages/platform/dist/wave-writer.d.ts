@@ -70,6 +70,14 @@ export interface WaveFence {
     writer: string;
     wave: number;
     attempt: number;
+    /**
+     * A sequenced writer's wave (a process's filesystem client): the number of
+     * its first op, each op after it the next, and the highest cursor the
+     * writer has had answered. The session keeps the writer's cursor with its
+     * commits, so an op a re-send carries again is answered, not applied twice.
+     */
+    seq?: number;
+    ack?: number;
 }
 /** The supervisor surface a writer publishes through. */
 export interface WaveSupervisor {

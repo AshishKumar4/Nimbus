@@ -319,7 +319,9 @@ const NATIVE_OPS = {
             admit = admission.check;
             mountReach = admission.reach;
         }
-        return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach });
+        // A sequenced writer is its process's epoch: its cursor answers a re-sent op, never applies it twice.
+        const sequence = fence?.seq === undefined ? undefined : { writer: `${e.pid}:${fence.writer}`, first: fence.seq, ack: fence.ack ?? 0 };
+        return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach, sequence });
     },
     // A write-wave epoch for the live process that asks, on this instance:
     // the only writer identity a fenced writeBatchStream is admitted under.

@@ -350,6 +350,35 @@ export interface WriteBatchStreamProgress {
     chunks: number;
     /** Each published file and link, by the path the stream named, as stat will report it. */
     receipts: WriteStreamReceipt[];
+    /** A sequenced wave's answer (WriteStreamOptions.sequence). */
+    sequence?: WaveSequenceAnswer;
+}
+/**
+ * A sequenced writer's wave (a process's filesystem client): its ops are
+ * numbered `first`, `first + 1`, … in order, under `writer` (the pid and
+ * writer epoch the session admits the wave under). The session keeps, per
+ * writer, the highest number it has committed (its cursor), moved in the
+ * transaction that commits that op, so an op a re-sent wave carries again
+ * is answered, never applied twice. `ack`: the highest cursor the writer
+ * has had answered; the refusal stored for it is dropped.
+ */
+export interface WaveSequence {
+    writer: string;
+    first: number;
+    ack: number;
+}
+/**
+ * What a sequenced wave committed: every op up to `cursor`. `refused`: the
+ * op the session refused (its number, its errno); nothing after it in the
+ * wave was applied. The same answer comes back for a re-send of the wave.
+ */
+export interface WaveSequenceAnswer {
+    cursor: number;
+    refused?: {
+        seq: number;
+        errno: string;
+        message: string;
+    };
 }
 /** A streamed file's stat as published: what a producer's git index entry records. */
 export interface WriteStreamReceipt {
@@ -412,6 +441,7 @@ export type RoutedWaveRecord = {
     readonly path: string;
     readonly mode: number;
     readonly bytes: Uint8Array;
+    readonly offset?: number;
 };
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
@@ -475,6 +505,7 @@ export interface WriteStreamOptions {
     /** Right before each commit: the fenced wave is still admitted (SupervisorDeliveries.admitWave). */
     admit?: () => void;
     mountReach?: WaveMountReach;
+    sequence?: WaveSequence;
 }
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
@@ -2048,6 +2079,32 @@ export declare class SqliteVFS {
      */
     private routeRecord;
     private writeStream;
+    /**
+     * A sequenced writer's state as its wave starts: its cursor, and the
+     * refusal it has not had answered (dropped once `ack` reaches it). A
+     * writer untouched for a wave epoch's lifetime is forgotten: its epoch
+     * admits nothing more. A wave that starts past the op after the cursor
+     * names ops the session never had: refused, ESTALE (they are lost).
+     */
+    private openSequence;
+    /**
+     * A process's data call, made as the call of that name: a writeFile, an
+     * appendFile (made where missing), or a write or append through an open
+     * description (describedFile). The published name's stat, or null for a
+     * description whose file no name has any more (the bytes go with it).
+     */
+    private applyDataCall;
+    /**
+     * The file an open description writes: the one inode `ino` names, wherever
+     * it is named now, or null once no name has it; without `ino`, the file at
+     * `path`. Found by its name while that still names it; else by a scan for
+     * its number (a rename by another process under an open description).
+     */
+    private describedFile;
+    /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */
+    private advanceSequence;
+    /** The op numbered `seq` was refused: the cursor passes it, and the refusal is kept until the writer has had it answered. */
+    private refuseInSequence;
     /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
     private withHolds;
     private consumeStream;
@@ -2078,6 +2135,8 @@ export declare class SqliteVFS {
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction<T>(callback: () => T): T;
+    /** withTransaction, its rollback reported as `rolledBack` makes it of the callback's error. */
+    private publishedTransaction;
     /**
      * Deliver a mutation's events while the directories it removed are still
      * known by their modes (watchedName). Inside an embedder transaction the

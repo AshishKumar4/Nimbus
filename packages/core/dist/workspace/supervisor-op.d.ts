@@ -54,6 +54,9 @@ export interface SupervisorWaveFence {
     readonly wave: number;
     readonly attempt: number;
     readonly hostIncarnation: string;
+    /** A sequenced writer's wave: its first op's number, and the cursor it has had answered (WaveSequence). */
+    readonly seq?: number;
+    readonly ack?: number;
 }
 /**
  * `writeFileStat`'s answer: the write's revision, and the path's lstat after
