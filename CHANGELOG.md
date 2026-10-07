@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: a command's second run could fail before it started, where its
+  first had got further: what the first run executed and the launch lacked
+  is learned and rooted in the next launch's required closure, and on `nuxt
+  dev` that took the closure past the snapshot bound ("require closure for
+  …/@nuxt/cli/bin/nuxi.mjs exceeds the 18874368-byte snapshot bound"). Learned
+  modules that do not fit are now staged as optional, as far as the bound
+  allows.
 - Fixed: a module a launch's map had no room for (the bound evicts the
   largest guesses first) that the program then loaded through an `import()`
   could not read what it reads synchronously, nor compile its WebAssembly:

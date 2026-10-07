@@ -224,6 +224,13 @@ export interface RequiredModuleRoot {
    * loads by name, follow it.
    */
   config?: boolean;
+  /**
+   * A module an earlier run executed that the required closure could not
+   * hold with the rest (buildPrefetchBundle walks the learned roots again so
+   * when they take it past the bound): phase 2's first tier, staged within
+   * the bound and evictable, never the launch's failure.
+   */
+  optional?: boolean;
 }
 
 /** Resolve the complete dependency graph starting from entry code. */
@@ -596,11 +603,13 @@ export async function prefetchForRequire(
     // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
     for (const root of requiredRoots ?? []) {
       const path = stripLeadingSlashes(root.path);
-      if (root.config && root.text === undefined) {
-        configRoots.add(path);
+      if ((root.config || root.optional) && root.text === undefined) {
+        if (root.config) configRoots.add(path);
         defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
         continue;
       }
+      // Its text is staged as runtime code (manager.ts _stagedRuntimeCode); only a required root walks it.
+      if (root.optional) continue;
       if (root.text === undefined) await addFile(path);
       else await parseAndResolve(root.text, path.slice(0, path.lastIndexOf('/')));
       if (closureExceeded || declined) break;

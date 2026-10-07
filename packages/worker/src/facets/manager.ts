@@ -4156,9 +4156,19 @@ async function _buildPrefetchBundle(
   // only READ are observed reads below: data, never roots, whatever their
   // extension (Tailwind scans .js/.ts content files as text). The tool's
   // configs ride along, as optional roots (RequiredModuleRoot.config).
-  const requiredRoots = [...await toolConfigRoots(vfs, cwd, scriptPath), ...executedModules ?? []];
-  const prefetch = (await prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath, maxBundleBytes,
-    pacer?.spend.bind(pacer), undefined, requiredRoots.length > 0 ? requiredRoots : undefined));
+  const configRoots = await toolConfigRoots(vfs, cwd, scriptPath);
+  const walkRoots = (roots: RequiredModuleRoot[]) => prefetchForRequire(requireFsOverBridge(vfs), entryCode || '', cwd, scriptPath,
+    maxBundleBytes, pacer?.spend.bind(pacer), undefined, roots.length > 0 ? roots : undefined);
+  let prefetch = await walkRoots([...configRoots, ...executedModules ?? []]);
+  // But a launch they would take past the bound walks them again as optional
+  // roots (RequiredModuleRoot.optional): what fits is staged, and what does
+  // not loads late, as the run that learned them loaded it. They are what an
+  // earlier run got through without; they must not stop this one starting.
+  if ('kind' in prefetch && prefetch.kind === 'closure-exceeds-bound' && (executedModules?.length ?? 0) > 0) {
+    console.warn(`[facet-manager] the modules earlier runs executed take ${scriptPath ?? 'the entry code'}'s required closure past `
+      + `its ${maxBundleBytes}-byte bound; they are staged as optional roots, as far as the bound allows`);
+    prefetch = await walkRoots([...configRoots, ...executedModules!.map((root) => ({ ...root, optional: true }))]);
+  }
   if ('kind' in prefetch) {
     // A required closure larger than the bound can never launch as a
     // snapshot. Surface it as the process's own failure rather than a
