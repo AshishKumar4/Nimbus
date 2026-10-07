@@ -20,3 +20,26 @@ export function supervisorDouble(call, lacks = () => false) {
     },
   });
 }
+
+/**
+ * SupervisorRPC's two wave calls over `send(envelope)`, a session's
+ * supervisor-op handler: openWaveWriter answers the epoch's writer (its
+ * host's incarnation kept for the fence), and writeBatchStream carries its
+ * stream, fence and owner on the envelope, not in its arguments.
+ * @param {(envelope: Record<string, unknown>) => Promise<any>} send
+ */
+export function waveCalls(send) {
+  let incarnation;
+  return {
+    openWaveWriter: async () => {
+      const answer = await send({ op: 'openWaveWriter', args: [] });
+      incarnation = answer?.hostIncarnation;
+      return answer?.writer ?? null;
+    },
+    writeBatchStream: (stream, fence, owner) => send({
+      op: 'writeBatchStream', args: [], stream,
+      ...(fence && incarnation !== undefined ? { waveFence: { ...fence, hostIncarnation: incarnation } } : {}),
+      ...(owner ? { mutationOwner: owner } : {}),
+    }),
+  };
+}

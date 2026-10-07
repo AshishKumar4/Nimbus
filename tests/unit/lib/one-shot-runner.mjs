@@ -16,7 +16,7 @@ import { createFacetCtx, createFacetWorld } from '../facet-host-harness.mjs';
 import { writeModuleSet } from './module-map-bundle.mjs';
 import { processFiles } from './process-bridge.mjs';
 import { stagedAssets } from './staged-assets.mjs';
-import { supervisorDouble } from './supervisor-double.mjs';
+import { supervisorDouble, waveCalls } from './supervisor-double.mjs';
 
 /**
  * The Worker Loader as a one-shot exec uses it: each load writes the
@@ -58,11 +58,16 @@ export function adoptSessionSupervisor(host, onOutput) {
   const dec = new TextDecoder();
   adoptCtxExports({
     // The binding's factory is generic over its stub; this one answers every op.
-    SupervisorRPC: /** @type {any} */ (({ props }) => supervisorDouble(async (op, args) => {
-      if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
-      if (op === 'reportExit') return;
-      return host.supervisorOp({ op, args, pid: props?.pid });
-    })),
+    SupervisorRPC: /** @type {any} */ (({ props }) => {
+      // The process's waves, as SupervisorRPC sends them (waveCalls).
+      const waves = waveCalls((sent) => host.supervisorOp({ ...sent, pid: props?.pid }));
+      return supervisorDouble(async (op, args) => {
+        if (op === 'stdout' || op === 'stderr') { onOutput(dec.decode(/** @type {Uint8Array} */ (args[0]))); return; }
+        if (op === 'reportExit') return;
+        if (op === 'openWaveWriter' || op === 'writeBatchStream') return waves[op](...args);
+        return host.supervisorOp({ op, args, pid: props?.pid });
+      });
+    }),
   });
 }
 

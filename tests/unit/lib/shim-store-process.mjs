@@ -12,6 +12,7 @@ import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shi
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processBridge } from './process-bridge.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './shims-namespace.mjs';
+import { waveSupervisor } from './wave-supervisor.mjs';
 
 const USER = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 export const PROCESS_DIR = '/home/user/p';
@@ -66,6 +67,9 @@ export function shimStoreProcess({ seed, writer } = {}) {
       chown: (p, u, g, o) => bridge.chown(p, u, g, o),
     } : {}),
   };
+
+  // Its process's waves reach these calls (lib/wave-supervisor.mjs).
+  waveSupervisor(supervisor);
 
   // The supervisor stamps a facet's bundle with the cursor it was read at,
   // and the launcher seeds globalThis.__nimbusVfsCursor from it

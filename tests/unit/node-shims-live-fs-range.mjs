@@ -14,6 +14,7 @@ import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { getSymlinkRegistry } from '../../packages/core/src/vfs/symlink-registry.ts';
 import { chunkBytesWritten, createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -67,6 +68,8 @@ const supervisor = {
   ),
   fsTruncate: (p, s) => bridge.truncate(p, s),
 };
+// Its process's waves reach these calls (lib/wave-supervisor.mjs).
+waveSupervisor(supervisor);
 
 const code = SHIMS_STORE_PRELUDE + generateShimsCode();
 const factory = new Function(

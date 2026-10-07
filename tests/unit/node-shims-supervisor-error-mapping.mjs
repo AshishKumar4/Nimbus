@@ -19,6 +19,7 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { processBridge } from './lib/process-bridge.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace, listAuthority } from './lib/shims-namespace.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 // A supervisor whose calls fail exactly the way a real one does: the error
 // arrives having crossed the RPC hop.
@@ -39,6 +40,8 @@ function facetWithFailure(failure) {
     fsWriteRange: crossed,
     fsTruncate: crossed,
   };
+  // Its process's waves reach these calls (lib/wave-supervisor.mjs).
+  waveSupervisor(supervisor);
   return new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     '"use strict";' + VFS_WRITE_LEDGER_SOURCE + '\n' + generateShimsCode() +
@@ -106,6 +109,8 @@ for (const [code, errno] of [['ENOENT', -2], ['EACCES', -13], ['ENOTDIR', -20]])
     fsReadRange: crossing((p, offset, length) => bridge.readRange(p, offset, length)),
     fsAcquire: crossing((epoch, cursor, options) => bridge.acquire(epoch, cursor, options)),
   };
+  // Its process's waves reach these calls (lib/wave-supervisor.mjs).
+  waveSupervisor(supervisor);
   listAuthority(rawVfs);
   globalThis.__nimbusVfsCursor = { epoch: rawVfs.epoch, rev: rawVfs.revision() };
   declareNamespace({ metadata: { 'home/user': { type: 'directory', size: 0, mode: 0o40755, uid: 1000, gid: 1000 } } });

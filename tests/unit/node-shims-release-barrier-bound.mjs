@@ -21,6 +21,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -51,6 +52,8 @@ const supervisor = {
   fsReadRange: slow((p, o, l) => bridge.readRange(p, o, l)),
   fsAcquire: slow((epoch, cursor) => bridge.acquire(epoch, cursor)),
 };
+// Its process's waves reach these calls (lib/wave-supervisor.mjs).
+waveSupervisor(supervisor);
 globalThis.__nimbusRawClearTimeout = globalThis.clearTimeout;
 globalThis.__nimbusProcessExitPromise = new Promise(() => {});
 

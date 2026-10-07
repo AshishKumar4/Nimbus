@@ -4,6 +4,7 @@ import assert from 'node:assert/strict';
 import { VFS_WRITE_LEDGER_SOURCE } from '../../packages/core/src/_shared/vfs-write-ledger.ts';
 import { generateShimsCode } from '../../packages/worker/src/runtime/node-shims.ts';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 function createShim({
   cred = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 },
@@ -76,6 +77,8 @@ function callbackResult(invoke) {
     },
     access: async () => {},
   };
+  // Its process's waves reach these calls (lib/wave-supervisor.mjs).
+  waveSupervisor(supervisor);
   const shim = createShim({ supervisor });
 
   await callbackResult((done) => shim.fs.chown('/home/user/file', 7, 8, done));

@@ -59,6 +59,9 @@ function __nimbusProcessFs() {
  */
 function __nimbusSubmitVfs(op, acknowledged = false) {
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+  // The program's own change, named as it made it: what a run that waits for
+  // stdin cannot do twice (the runner's stop-replay, where it has one).
+  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(op.type === "call" ? op.call.call : op.type);
   const answer = __nimbusProcessFs().submit(op, { acknowledged });
   globalThis.__nimbusPendingOps++;
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };
@@ -69,6 +72,7 @@ function __nimbusSubmitVfs(op, acknowledged = false) {
 /** A mutation no call record carries, made by \`run\` in its place in the client's log (ProcessFsClient.call). */
 function __nimbusVfsCall(name, path, run) {
   if (typeof globalThis.__nimbusPendingOps !== "number") globalThis.__nimbusPendingOps = 0;
+  if (typeof __nimbusStopReplay !== "undefined") __nimbusStopReplay.effect(name);
   const answer = __nimbusProcessFs().call(name, __nimbusVfsPathKey(path), run);
   globalThis.__nimbusPendingOps++;
   const settled = () => { globalThis.__nimbusPendingOps--; globalThis.__nimbusHandleReleased?.(); };

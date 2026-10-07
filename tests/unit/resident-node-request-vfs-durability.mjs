@@ -169,7 +169,6 @@ function makeShimFsFacet(supervisor, bundle = {}) {
   flushVfsWrite: __nimbusFlushVfsWrite,
   drainVfsWrites: __nimbusDrainVfsWrites,
   persistVfsWrite: __nimbusPersistVfsWrite,
-  moduleIncarnation: __nimbusVfsModuleIncarnation,
 };`,
   );
   // Staged content comes with its records, as every launch stages it

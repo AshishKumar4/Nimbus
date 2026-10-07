@@ -19,6 +19,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './lib/shims-namespace.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const CHUNK = 65536; // READ_STREAM_CHUNK_BYTES
 
@@ -55,6 +56,8 @@ const supervisor = {
   writeFile: (path, content) => bridge.writeFile(path, content),
   mkdir: (path) => bridge.mkdir(path, { recursive: true }),
 };
+// Its process's waves reach these calls (lib/wave-supervisor.mjs).
+waveSupervisor(supervisor);
 
 const factory = new Function(
   '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',

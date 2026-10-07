@@ -16,6 +16,7 @@ import { processBridge } from './lib/process-bridge.mjs';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { SHIMS_STORE_PRELUDE, listAuthority } from './lib/shims-namespace.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -65,6 +66,8 @@ const supervisor = {
   mkdir: (path, options) => bridge.mkdir(path, options),
   writeFile: (path, content) => bridge.writeFile(path, typeof content === 'string' ? enc.encode(content) : content),
 };
+// Its process's waves reach these calls (lib/wave-supervisor.mjs).
+waveSupervisor(supervisor);
 
 listAuthority(rawVfs);
 // A device, as the session lists one from /dev: a file's kind, S_IFCHR in its mode.
