@@ -19,7 +19,7 @@
  * itself, and git.wasm cannot demultiplex a sideband (start_async forks).
  */
 
-import type { RemoteAuth, RemoteRef, PushCommand, RemoteEngine } from './engine.js';
+import type { RemoteAuth, ListRefsResult, FetchPackResult, PushCommand, PushPackResult, RemoteEngine } from './engine.js';
 
 // Keep the helper's public type surface while the engine owns one contract.
 export type {
