@@ -24,10 +24,13 @@
  * formatter for every value. In workerd, platform.slots is
  * createWorkerdSlots (WORKERD_SLOTS_SOURCE); where Node runs this host (its
  * parity test), Node's own binding. Named limits (fine-print capabilities):
- * a proxy among a slot's values is handed over as a stand-in over its
- * target and handler, not the proxy itself; and reading a slot reads the
- * promise's, iterator's or collection's own toStringTag (and prototype
- * chain) once more than Node.
+ * a proxy among a slot's values is a stand-in over its target and handler,
+ * which no program code is ever handed: shown without showProxy, its
+ * target's custom inspect is not called (Node calls it with the proxy as
+ * this), and a proxy inside it is shown by its innermost target, its traps
+ * not run; and a holder whose own Symbol.toStringTag is an accessor, or with
+ * a proxy on its prototype chain, shows its slot as unknown, since reading
+ * it would run that code once more than Node.
  *
  * `platform`: { util (the platform's node:util), slots, Buffer, url ({ URL,
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
@@ -53,9 +56,11 @@ export declare const NODE_INSPECT_HOST_SOURCE: string;
  * `[Map Entries] {`).
  *
  * A proxy among a slot's values is read the same way, its target and
- * handler a level deeper, and handed over as a stand-in over them
- * (`new Proxy(target, handler)`), which inspect.js formats as it would the
- * proxy, traps and all; it is not the same object (named limit).
+ * handler a level deeper, and handed over as a stand-in over its target
+ * with none of the program's traps, which getProxyDetails unwraps whenever
+ * inspect.js meets it, so no program code is handed one. A holder workerd
+ * could not format without running program code (formatsInertly) is not
+ * read: its slot shows as unknown.
  */
 export declare const WORKERD_SLOTS_SOURCE: string;
 //# sourceMappingURL=node-inspect-host.d.ts.map

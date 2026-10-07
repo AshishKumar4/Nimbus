@@ -24,10 +24,13 @@
  * formatter for every value. In workerd, platform.slots is
  * createWorkerdSlots (WORKERD_SLOTS_SOURCE); where Node runs this host (its
  * parity test), Node's own binding. Named limits (fine-print capabilities):
- * a proxy among a slot's values is handed over as a stand-in over its
- * target and handler, not the proxy itself; and reading a slot reads the
- * promise's, iterator's or collection's own toStringTag (and prototype
- * chain) once more than Node.
+ * a proxy among a slot's values is a stand-in over its target and handler,
+ * which no program code is ever handed: shown without showProxy, its
+ * target's custom inspect is not called (Node calls it with the proxy as
+ * this), and a proxy inside it is shown by its innermost target, its traps
+ * not run; and a holder whose own Symbol.toStringTag is an accessor, or with
+ * a proxy on its prototype chain, shows its slot as unknown, since reading
+ * it would run that code once more than Node.
  *
  * `platform`: { util (the platform's node:util), slots, Buffer, url ({ URL,
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
@@ -262,9 +265,11 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
  * `[Map Entries] {`).
  *
  * A proxy among a slot's values is read the same way, its target and
- * handler a level deeper, and handed over as a stand-in over them
- * (`new Proxy(target, handler)`), which inspect.js formats as it would the
- * proxy, traps and all; it is not the same object (named limit).
+ * handler a level deeper, and handed over as a stand-in over its target
+ * with none of the program's traps, which getProxyDetails unwraps whenever
+ * inspect.js meets it, so no program code is handed one. A holder workerd
+ * could not format without running program code (formatsInertly) is not
+ * read: its slot shows as unknown.
  */
 export const WORKERD_SLOTS_SOURCE = String.raw `function createWorkerdSlots(util) {
   "use strict";
@@ -274,6 +279,8 @@ export const WORKERD_SLOTS_SOURCE = String.raw `function createWorkerdSlots(util
   const PROXY = "Proxy [Array]";
   const REVOKED = "<Revoked Proxy>";
   const arrayPrototype = Array.prototype;
+  const customInspect = Symbol.for("nodejs.util.inspect.custom");
+  const isProxy = util.types.isProxy;
   const escapes = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "'": "'", "\\": "\\" };
   // The primitive workerd's formatPrimitive handed stylize as 'text', or null for any other mark.
   function primitiveOf(text, style) {
@@ -387,18 +394,91 @@ export const WORKERD_SLOTS_SOURCE = String.raw `function createWorkerdSlots(util
       if (depth === 64) throw unreadable("a proxy 64 deep");
     }
   }
+  // Stand-ins: a proxy among a slot's values, rebuilt over its target with a
+  // handler of none of a program's traps, and the [target, handler] it
+  // stands for (null, revoked). inspect.js never formats one as an object:
+  // it asks getProxyDetails first, which unwraps it (below).
+  const standIns = new WeakMap();
+  // A target shown without its custom inspect (withoutCustomInspect).
+  const views = new WeakSet();
   function standIn(node) {
     if (node.revoked) {
       const revocable = Proxy.revocable({}, {});
       revocable.revoke();
+      standIns.set(revocable.proxy, null);
       return revocable.proxy;
     }
-    return node.parts === undefined ? node.value : new Proxy(standIn(node.parts[0]), standIn(node.parts[1]));
+    if (node.parts === undefined) return node.value;
+    const parts = [standIn(node.parts[0]), standIn(node.parts[1])];
+    const proxy = new Proxy(parts[0], {});
+    standIns.set(proxy, parts);
+    return proxy;
   }
+  // What inspect.js formats for a proxy, showProxy off: its innermost target
+  // (no stand-in is formatted as an object, nor any proxy trap run), or a
+  // revoked proxy, which throws there as in Node.
+  function innermostTarget(target) {
+    while (standIns.get(target)) target = standIns.get(target)[0];
+    return target;
+  }
+  // Whether inspect.js would find a custom inspect on 'object', read without
+  // running a program's code; a proxy on the way may hold one.
+  function reachesCustomInspect(object) {
+    for (let at = object; at !== null; at = Object.getPrototypeOf(at)) {
+      if (isProxy(at)) return true;
+      const own = Object.getOwnPropertyDescriptor(at, customInspect);
+      if (own !== undefined) return own.get !== undefined || typeof own.value === "function";
+    }
+    return false;
+  }
+  // 'target' as inspect.js formats it without its custom inspect, which it
+  // would call with a stand-in as this: every other read is the target's, a
+  // getter's this the target, over a shadow no invariant ties to it.
+  function withoutCustomInspect(target) {
+    const shadow = Array.isArray(target) ? [] : Object.create(null);
+    const view = new Proxy(shadow, {
+      get: (_, key) => (key === customInspect ? undefined : Reflect.get(target, key, target)),
+      has: (_, key) => key !== customInspect && Reflect.has(target, key),
+      ownKeys: () => Reflect.ownKeys(target),
+      getPrototypeOf: () => Reflect.getPrototypeOf(target),
+      getOwnPropertyDescriptor(_, key) {
+        const own = Reflect.getOwnPropertyDescriptor(target, key);
+        if (own === undefined || (Array.isArray(shadow) && key === "length")) return own;
+        const get = own.get;
+        return { ...own, configurable: true, ...(get ? { get: function () { return Reflect.apply(get, target, []); } } : {}) };
+      },
+    });
+    views.add(view);
+    return view;
+  }
+  // Whether workerd formats 'holder' with none of a program's code run: no
+  // proxy on its prototype chain (its constructor name is read there), and
+  // no accessor for its Symbol.toStringTag, read as workerd reads it.
+  function formatsInertly(holder) {
+    let tag = false;
+    for (let at = holder; at !== null; at = Object.getPrototypeOf(at)) {
+      if (isProxy(at)) return false;
+      const own = tag ? undefined : Object.getOwnPropertyDescriptor(at, Symbol.toStringTag);
+      if (own === undefined) continue;
+      if (own.get !== undefined || own.set !== undefined) return false;
+      tag = true;
+    }
+    return true;
+  }
+  // What a slot whose holder cannot be read inertly shows (formatsInertly).
+  function unknown(text) {
+    return Object.freeze(Object.create(null, {
+      [customInspect]: { value: (depth, options) => options.stylize(text, "special") },
+      [Symbol.toStringTag]: { value: text },
+    }));
+  }
+  const ITEMS_UNKNOWN = unknown("<items unknown>");
+  const UNKNOWN = unknown("<unknown>");
   function unreadable(what) {
     return new Error("util.inspect: workerd's inspect did not hand over " + what + " in a V8 slot");
   }
   function getPromiseDetails(promise) {
+    if (!formatsInertly(promise)) return [kFulfilled, UNKNOWN];
     const first = capture(promise, {}, 1);
     if (first.events.length > 0 && first.events[0].mark === "<pending>") return [kPending];
     const rejected = first.events.some((event) => event.mark === "<rejected>");
@@ -407,13 +487,23 @@ export const WORKERD_SLOTS_SOURCE = String.raw `function createWorkerdSlots(util
     return [rejected ? kRejected : kFulfilled, result];
   }
   function getProxyDetails(proxy, showProxy) {
-    const first = capture(proxy, {}, 0);
-    // Revoked itself: its one mark (a revoked target's is the first of two parts').
-    if (first.events.length === 1 && first.events[0].mark === REVOKED) return showProxy ? [null, null] : null;
-    const parts = slotValues((depth) => (depth === 0 ? first : capture(proxy, { depth }, 0)).events, 2);
-    return showProxy ? parts : parts[0];
+    if (views.has(proxy)) return undefined;
+    let parts = standIns.get(proxy);
+    if (parts === undefined) {
+      const first = capture(proxy, {}, 0);
+      // Revoked itself: its one mark (a revoked target's is the first of two parts').
+      if (first.events.length === 1 && first.events[0].mark === REVOKED) parts = null;
+      else parts = slotValues((depth) => (depth === 0 ? first : capture(proxy, { depth }, 0)).events, 2);
+    }
+    if (parts === null) return showProxy ? [null, null] : null;
+    if (showProxy) return parts;
+    // inspect.js calls the target's custom inspect with the proxy as this: a
+    // program's own proxy is that; a stand-in must never be.
+    const target = innermostTarget(parts[0]);
+    return standIns.has(proxy) && !standIns.has(target) && reachesCustomInspect(target) ? withoutCustomInspect(target) : target;
   }
   function previewEntries(value, isKeyValue) {
+    if (!formatsInertly(value)) return isKeyValue === undefined ? [ITEMS_UNKNOWN] : [[ITEMS_UNKNOWN], false];
     // A weak collection's entries are what showHidden shows. The value's own
     // properties follow its entries: counted off by a read showing none.
     const options = { showHidden: isKeyValue === undefined };
