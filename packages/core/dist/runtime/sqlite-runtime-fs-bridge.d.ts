@@ -120,7 +120,7 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
-    }): void;
+    } & RuntimeMutationOwner): void;
     unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): void;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): void;

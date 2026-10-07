@@ -571,7 +571,7 @@ export class SqliteRuntimeFsBridge {
     }
     mkdir(path, options = {}) {
         return called({ syscall: 'mkdir', path }, () => {
-            const located = this.locateMutation(path, false, 'mkdir');
+            const located = this.locateMutation(path, false, 'mkdir', options.mutationOwner);
             if (located.mount) {
                 located.mount.mkdir(located.path, { recursive: !!options.recursive, mode: options.mode });
                 return;
@@ -587,7 +587,7 @@ export class SqliteRuntimeFsBridge {
                     return;
                 throw fsError('EEXIST', 'mkdir', path);
             }
-            this.vfs.mkdir(p, { recursive: !!options.recursive, mode: options.mode });
+            this.owned(options.mutationOwner).mkdir(p, { recursive: !!options.recursive, mode: options.mode });
         });
     }
     unlink(path, options = {}) {

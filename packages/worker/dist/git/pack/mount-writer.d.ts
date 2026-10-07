@@ -6,7 +6,8 @@
  * that goes in the wave as on the session's own filesystem, and a larger
  * one is written as any program writes a large file: through the session's
  * file API (open, write in pieces, close), under the clone's lease, once
- * what the waves hold before it is published, so it lands in git's order.
+ * what the waves hold before it is published, so it lands in git's order;
+ * its directory is made first, as `mkdir -p` would.
  * The index, which git writes whole to index.lock and renames over
  * .git/index, is written the same way. Its stat is the receipt a wave would
  * have answered.
@@ -27,6 +28,9 @@ export interface FileStat {
 }
 /** The session's file API, as the clone's supervisor binding offers it (its lease presented). */
 export interface FileApi {
+    mkdir(path: string, options: {
+        recursive: true;
+    }): Promise<void>;
     fsOpen(path: string, flags: {
         write: true;
         create: true;

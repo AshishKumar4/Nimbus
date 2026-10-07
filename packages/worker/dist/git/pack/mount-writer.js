@@ -16,6 +16,7 @@ export function mountWriter(writer, api, dir, onReceipts) {
             // What the waves hold before it (its directory among them) lands first.
             await writer.flush();
             const at = root + '/' + path;
+            await api.mkdir(at.slice(0, at.lastIndexOf('/')), { recursive: true });
             // git writes its index whole to index.lock, then renames it over the index.
             const written = path === '.git/index' ? at + '.lock' : at;
             const handle = await api.fsOpen(written, { write: true, create: true, truncate: true, mode });

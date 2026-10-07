@@ -318,7 +318,7 @@ export interface RuntimeFsBridge {
     mkdir(path: RuntimeFsPath, options?: {
         recursive?: boolean;
         mode?: number;
-    }): Awaitable<void>;
+    } & RuntimeMutationOwner): Awaitable<void>;
     unlink(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     rmdir(path: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;
     rename(from: RuntimeFsPath, to: RuntimeFsPath, options?: RuntimeMutationOwner): Awaitable<void>;

@@ -807,7 +807,10 @@ class AwaitingProcessBridge {
         return this.either([path], () => this.bridge.readdir(path, options), async () => (await this.namespace.readdir((await this.path(path, options?.followSymlinks !== false)))).map((entry) => ({ name: entry.name, type: entry.type })));
     }
     mkdir(path, options) {
-        return this.either([path], () => this.bridge.mkdir(path, options), async () => this.namespace.mkdir((await this.path(path)), options));
+        return this.either([path], () => this.bridge.mkdir(path, options), async () => this.owned(options).mkdir((await this.path(path)), {
+            ...(options?.recursive === undefined ? {} : { recursive: options.recursive }),
+            ...(options?.mode === undefined ? {} : { mode: options.mode }),
+        }));
     }
     /** The namespace presenting `options`' exclusive-mutation lease to its guard, for a mutation that carries one. */
     owned(options) {
