@@ -1422,6 +1422,10 @@ async function __nimbusFlushRuntime() {
     if (__learning.status === "rejected") await __nimbusReportLearningFailure(rt.supervisor, __learning.reason);
     const __vfsFailure = __vfsOutcomes.find((outcome) => outcome.status === "rejected");
     if (__vfsFailure) throw __vfsFailure.reason;
+    // A change the program was told succeeded that the session refused or
+    // never answered: this boundary (a response, the exit) reports it.
+    const __fsFailures = globalThis.__nimbusProcessFs ? globalThis.__nimbusProcessFs.takeFailures() : [];
+    if (__fsFailures.length > 0) throw __nimbusProcessFsModule.failuresError(__fsFailures);
   });
   rt.pendingDrainChain = __pendingDrain.catch(() => {});
   await __pendingDrain;
