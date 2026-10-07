@@ -9,7 +9,14 @@ import { writeFileSync } from 'node:fs';
 import { createRequire } from 'node:module';
 
 const require = createRequire(import.meta.url);
-const { getCLIOptionsInfo } = require('internal/options');
+/**
+ * Node's own option table: a module of Node's internals, there only under
+ * --expose-internals, so it is named at run time, not resolved as a package.
+ * @typedef {{ options: Map<string, { type: number }>, aliases: Map<string, string[]> }} CLIOptionsInfo
+ */
+const INTERNAL_OPTIONS = 'internal/options';
+/** @type {{ getCLIOptionsInfo(): CLIOptionsInfo }} */
+const { getCLIOptionsInfo } = require(INTERNAL_OPTIONS);
 const { options, aliases } = getCLIOptionsInfo();
 // node_options.h OptionType: kInteger 3, kUInteger 4, kString 5, kHostPort 6, kStringList 7 take a value.
 const VALUE_TYPES = new Set([3, 4, 5, 6, 7]);
