@@ -34,7 +34,10 @@ const DIR = '/home/user/got';
 const COLD_BOUND_MS = 120_000;
 const WARM_BOUND_MS = 30_000;
 const DEADLINE_FAILURE = /assembling the filesystem bundle/;
-const NODE_E = 'node -e "console.log(\'NAME=\' + require(\'./package.json\').name)"';
+// The exit status as a user reads it: echoed by the same shell right after.
+const NODE_E = 'node -e "console.log(\'NAME=\' + require(\'./package.json\').name)"; echo __NODE_EXIT__$?';
+/** The node -e exit status the shell echoed, or null. */
+const nodeExit = (output) => output.match(/__NODE_EXIT__(\d+)/)?.[1] ?? null;
 
 function withDeadline(promise, ms, label) {
   return Promise.race([
@@ -79,7 +82,7 @@ try {
     const cold = await run(t, NODE_E, COLD_BOUND_MS);
     a.check('cold node -e prints the package name', cold.ok && /NAME=got/.test(cold.output),
       cold.error ?? cold.output.slice(-400));
-    a.check('cold node -e exits 0', /code=0/.test(cold.output),
+    a.check('cold node -e exits 0', nodeExit(cold.output) === '0',
       cold.output.slice(-300));
     a.check('cold node -e hits no bundle deadline', !DEADLINE_FAILURE.test(cold.output),
       cold.output.slice(-400));
@@ -90,6 +93,8 @@ try {
     const warm = await run(t, NODE_E, WARM_BOUND_MS);
     a.check('warm node -e prints the package name', warm.ok && /NAME=got/.test(warm.output),
       warm.error ?? warm.output.slice(-400));
+    a.check('warm node -e exits 0', nodeExit(warm.output) === '0',
+      warm.output.slice(-300));
     a.check('warm node -e hits no bundle deadline', !DEADLINE_FAILURE.test(warm.output),
       warm.output.slice(-400));
     a.check(`warm node -e returns within ${WARM_BOUND_MS} ms`, warm.ok && warm.elapsed < WARM_BOUND_MS,

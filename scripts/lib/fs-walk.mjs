@@ -3,16 +3,22 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync, statSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** @param {string | Uint8Array} bytes */
 export const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /**
- * path → sha256 of every file under `roots` (relative to `root`) that git
- * would carry: tracked plus untracked-and-not-ignored. A tracked file that is
- * not on disk is left out: absence is a state for the caller to see.
+ * path → digest of every file under `roots` (relative to `root`) that git
+ * would carry: tracked plus untracked-and-not-ignored. A regular file's
+ * digest is the sha256 of its bytes. A symlink's is
+ * `link:<its target>:<sha256 of the file it resolves to>` (`none` when it
+ * resolves to no regular file): its target as git records it, so a symlink
+ * and the file it points at never compare equal, and the bytes a build
+ * reads through it, so new bytes behind an unchanged link are a change. A
+ * tracked file that is not on disk is left out: absence is a state for the
+ * caller to see.
  *
  * @returns {Map<string, string>}
  */
@@ -28,15 +34,23 @@ export function trackedFileDigests(root, roots) {
   const digests = new Map();
   for (const rel of listed.stdout.toString('utf8').split('\0')) {
     if (!rel) continue;
-    let bytes;
+    const path = join(root, rel);
     try {
-      bytes = readFileSync(join(root, rel));
+      digests.set(rel, lstatSync(path).isSymbolicLink() ? `link:${readlinkSync(path)}:${resolvedDigest(path)}` : sha256Hex(readFileSync(path)));
     } catch {
       continue;
     }
-    digests.set(rel, sha256Hex(bytes));
   }
   return digests;
+}
+
+/** sha256 of the regular file `link` resolves to, or `none`. */
+function resolvedDigest(link) {
+  try {
+    return statSync(link).isFile() ? sha256Hex(readFileSync(link)) : 'none';
+  } catch {
+    return 'none';
+  }
 }
 
 /** Every file under `dir`, as paths relative to it; none when `dir` is absent. */

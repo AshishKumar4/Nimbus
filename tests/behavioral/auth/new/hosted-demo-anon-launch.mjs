@@ -37,7 +37,7 @@
 //   routes nothing but the core Nimbus surface — so this chain cannot
 //   complete there, and this probe is on `_probe-target-skips.mjs` for
 //   that reason, stated there in full. Run it against a hosted-demo
-//   deployment (`nimbus-staging`, `bun run staging:test`).
+//   deployment (`nimbus-staging`: `bun run staging:deploy` runs it there, HOSTED_DEMO_CHECKS).
 //
 //   Because a skipped probe is exactly how the affordance hid in the
 //   first place, the landing-page half is ALSO asserted in the unit
@@ -120,7 +120,7 @@ if (tryRes.status !== 303) {
   const sum = a.summary();
   console.log(`\n  ${BASE} did not answer ${anon.href} with a session redirect.`);
   console.log('  If this target is apps/probe, it has no demo D1 or rate limiter and cannot');
-  console.log('  serve /try — run this against a hosted-demo deployment (bun run staging:test).');
+  console.log('  serve /try — run this against a hosted-demo deployment (bun run staging:deploy runs it on nimbus-staging).');
   process.exit(1);
 }
 

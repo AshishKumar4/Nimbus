@@ -38,6 +38,20 @@ const a = makeAsserter(label);
 console.log(`${label} — local`);
 
 const sid = 'nimble-otter-4271';
+
+/**
+ * fetch a `*.localhost` URL on loopback, as Chrome does: RFC 6761 makes
+ * .localhost loopback, but the runner's own resolver need not know it (a CI
+ * container's does not). The request carries the URL's Host, so the router
+ * sees what Chrome sends.
+ */
+function fetchLocal(url, init = {}) {
+  const target = new URL(url);
+  if (!target.hostname.endsWith('.localhost') && target.hostname !== 'localhost') return fetch(url, init);
+  const headers = new Headers(init.headers);
+  headers.set('host', target.host);
+  return fetch(`${target.protocol}//127.0.0.1:${target.port}${target.pathname}${target.search}`, { ...init, headers });
+}
 const shellHtml = readFileSync(new URL('../../../../packages/worker/public/s/index.html', import.meta.url), 'utf8');
 const paneTag = shellHtml.match(/<iframe id="preview-frame"[^>]*><\/iframe>/)?.[0];
 if (!paneTag) throw new Error('the shell has no #preview-frame iframe');
@@ -165,7 +179,7 @@ async function paneOutcome(shellOrigin, guestPort, { isolated = true, allow = tr
     else await new Promise((resolve) => setTimeout(resolve, 100));
   }
   await page.close();
-  const guest = await fetch(child);
+  const guest = await fetchLocal(child);
   await guest.body?.cancel();
   const plan = isolation.planPreviewPane(
     documentPolicyOf(guest.headers),
@@ -256,7 +270,7 @@ try {
       }, { ttlMs: 60_000 });
       return `http://3002--${sid}.nimbus.localhost:${enforceServer.port}/?nimbus_token=${encodeURIComponent(token)}`;
     };
-    const exchange = await fetch(await tokenUrl(), { redirect: 'manual' });
+    const exchange = await fetchLocal(await tokenUrl(), { redirect: 'manual' });
     a.check(
       'the preview door’s token exchange is a 302 carrying CORP cross-origin',
       exchange.status === 302 && exchange.headers.get('cross-origin-resource-policy') === 'cross-origin',

@@ -21,28 +21,16 @@
 // tests/behavioral/wasm/pthread-parity.mjs.
 
 import assert from 'node:assert/strict';
-import { writeFileSync, rmSync } from 'node:fs';
-import os from 'node:os';
 import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
+import { loadWasiPreamble } from './lib/wasi-authority.mjs';
 
 const EAGAIN = 6;
 const EINVAL = 28;
 const ETIMEDOUT = 73;
 const ESUCCESS = 0;
 
-const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}
-export { __wasiThreadsCreate, __wasiMakeImports, __wasiInitFS, __WasiExit };`;
-const preamblePath = path.join(os.tmpdir(), `wasi-threads-preamble-${process.pid}.mjs`);
-writeFileSync(preamblePath, preambleSrc);
-let P;
-try {
-  P = await import(pathToFileURL(preamblePath).href);
-} finally {
-  rmSync(preamblePath, { force: true });
-}
+const P = await loadWasiPreamble();
 
 let failures = 0;
 const check = (name, fn) => {

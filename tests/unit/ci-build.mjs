@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { chmodSync, mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
-import { join } from 'node:path';
+import { dirname, join } from 'node:path';
 
 import { armadaClient, overlayCommit } from '../../scripts/ci/lib/armada.mjs';
 import { applyPatch } from '../../scripts/ci/remote-build.mjs';
@@ -69,7 +69,10 @@ try {
     git(dir, 'init', '-q');
     // Twice, as a lane would: the first builds dist, the second records it.
     if (fixpoint) for (let i = 0; i < 2; i++) run(dir, 'bun', ['scripts/dist-integrity.mjs']);
-    for (const [path, text] of Object.entries(files)) writeFileSync(join(dir, path), text);
+    for (const [path, text] of Object.entries(files)) {
+      mkdirSync(dirname(join(dir, path)), { recursive: true });
+      writeFileSync(join(dir, path), text);
+    }
     git(dir, 'add', '-A');
     git(dir, 'commit', '-qm', name);
     return dir;
@@ -152,6 +155,40 @@ try {
     assert.match(verdict.rows[0].output, /wrote outside its outputs[\s\S]*elsewhere\.txt/);
     assert.doesNotMatch(verdict.patch ?? '', /elsewhere/);
     console.log('  ok  a build that writes outside its outputs is red and names the file, which the patch leaves out');
+  }
+  {
+    // A build whose plan reaches its fixpoint only on a second rebuild (it
+    // compiles dist from a generated source before regenerating it), as
+    // dist-integrity's did when the worker bundle regenerated core's
+    // sources. One build.mjs run must still hand back a patch the gate
+    // accepts: the record the last pass writes included.
+    const twoStep = `
+import { existsSync, readFileSync, writeFileSync } from 'node:fs';
+export const OUTPUT_ROOTS = ['pkg'];
+export const FIXPOINT_RECORD = 'record.json';
+if (import.meta.main) {
+  const read = (path) => (existsSync(path) ? readFileSync(path, 'utf8') : null);
+  const before = [read('pkg/gen/b.txt'), read('pkg/dist/c.txt')];
+  writeFileSync('pkg/dist/c.txt', (read('pkg/gen/b.txt') ?? '').toUpperCase());
+  writeFileSync('pkg/gen/b.txt', read('pkg/src/a.txt') + '!');
+  if (before[0] !== read('pkg/gen/b.txt') || before[1] !== read('pkg/dist/c.txt')) { console.error('refusing to deploy: rebuilding rewrote dist'); process.exit(1); }
+  const record = 'fixpoint of ' + read('pkg/dist/c.txt');
+  if (read('record.json') !== record) writeFileSync('record.json', record);
+  console.log('dist-integrity OK');
+}
+`;
+    const dir = checkout('two-step', { 'pkg/src/a.txt': 'one', 'pkg/gen/b.txt': 'stale', 'pkg/dist/c.txt': 'STALE' }, { fixpoint: false, gate: twoStep });
+    const verdict = build(dir);
+    assert.equal(verdict.status, 1);
+    assert.equal(rows(verdict)['dist-fixpoint'], 1, 'a patch to commit');
+    assert.match(verdict.rows[0].output, /reached its fixpoint only on rebuild 2: dist-integrity's BUILD_FIXPOINT should reach it in one/);
+    assert.match(verdict.patch, /^diff --git a\/record\.json/m, 'the patch carries the record the last pass wrote');
+    const clone = patched(dir, verdict.patch);
+    assert.equal(readFileSync(join(clone, 'pkg/dist/c.txt'), 'utf8'), 'ONE!');
+    const again = build(clone);
+    assert.equal(again.status, 0, `one run's patch leaves a commit the gate accepts:\n${again.rows[0]?.output}`);
+    assert.equal(again.patch, null);
+    console.log('  ok  a plan that needs two rebuilds: one run still returns the patch and the record the gate accepts, and names the plan\'s bug');
   }
   {
     // A build that moves an output: the patch, and the receipts, are a

@@ -13,7 +13,6 @@
 // shipped source over a real SQLite.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
@@ -25,20 +24,6 @@ import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 
 const dec = new TextDecoder();
 
-function sqlShim() {
-  const db = new Database(':memory:');
-  return {
-    exec(query, ...params) {
-      if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
-        db.query(query).run(...params);
-        return [];
-      }
-      return db.query(query).all(...params);
-    },
-    get databaseSize() { return 0; },
-  };
-}
-
 function loadStore() {
   const factory = new Function(
     FACET_RESIDENT_STORE_SOURCE
@@ -46,7 +31,7 @@ function loadStore() {
       + ' __residentKeys, __residentGet, __residentProvenance, __residentSetPlan };',
   );
   const store = factory();
-  store.__residentBind({ storage: { sql: sqlShim() } });
+  store.__residentBind({ storage: { sql: createSqliteVfsTestHarness().sql } });
   store.__residentSetPlan(Array.from({ length: 8 }, (_, i) => `app/f${i}.txt`));
   return store;
 }

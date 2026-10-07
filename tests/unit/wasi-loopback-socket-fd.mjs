@@ -17,28 +17,15 @@
 // same observation.
 
 import assert from 'node:assert/strict';
-import { writeFileSync, rmSync } from 'node:fs';
-import os from 'node:os';
-import path from 'node:path';
-import { pathToFileURL } from 'node:url';
 
-import { WASI_INSTANCE_PREAMBLE_SRC } from '../../packages/core/src/runtime/wasi-instance.ts';
 import { installVirtualSocketKernel } from '../../packages/core/src/runtime/virtual-socket-kernel.ts';
 import { makeImportsWithoutJSPI } from './lib/wasi-imports.mjs';
-import { makeSession } from './lib/wasi-authority.mjs';
+import { loadWasiPreamble, makeSession } from './lib/wasi-authority.mjs';
 
 const ESUCCESS = 0, ENOSYS = 52, ESPIPE = 70;
 const FT_SOCKET_STREAM = 6;
 
-const preambleSrc = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, fdTable };`;
-const preamblePath = path.join(os.tmpdir(), `wasi-loopback-fd-${process.pid}.mjs`);
-writeFileSync(preamblePath, preambleSrc);
-let P;
-try {
-  P = await import(pathToFileURL(preamblePath).href);
-} finally {
-  rmSync(preamblePath, { force: true });
-}
+const P = await loadWasiPreamble();
 
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();

@@ -27,7 +27,9 @@ import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
-const argv = process.argv.slice(2);
+// --anonymous: a hosted demo's checks, which take no token (remote-probes --target hosted:…).
+const anonymous = process.argv.includes('--anonymous');
+const argv = process.argv.slice(2).filter((arg) => arg !== '--anonymous');
 const FLAGS = ['--out', '--base', '--only', '--skip', '--part', '--jobs', '--start-by'];
 const flags = {};
 for (let i = 0; i < argv.length; i += 2) {
@@ -93,7 +95,7 @@ function run(command, args, env) {
 if (flags['start-by'] !== undefined && Date.now() > Number(flags['start-by'])) {
   notGraded(`this task started at ${new Date().toISOString()}, after ${new Date(Number(flags['start-by'])).toISOString()}: the token could expire before its limit`);
 }
-if (!token) notGraded('NIMBUS_PROBE_TOKEN is not set: mint one for the target and this run');
+if (!token && !anonymous) notGraded('NIMBUS_PROBE_TOKEN is not set: mint one for the target and this run');
 try {
   await fetch(flags.base, { signal: AbortSignal.timeout(30_000) });
 } catch (error) {

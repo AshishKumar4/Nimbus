@@ -246,16 +246,39 @@ case 'kill': {
 
   const before = await settled();
   const controller = new AbortController();
-  let ticks = 0;
-  const ticker = setInterval(() => { ticks++; }, 50);
-  const started = Date.now();
-  const pending = ws.exec('python3 -c "while True: pass"', { signal: controller.signal });
-  setTimeout(() => controller.abort(), 500);
-  const r = await within(pending, 15_000, 'the aborted python3');
-  clearInterval(ticker);
+  // The program marks, in the workspace's filesystem, that its loop is next
+  // (it creates /home/user/spinning):
+  // the file is written through the host before the loop begins (a guest's
+  // stdout is not, while it never yields). The abort comes from this event
+  // loop 300 ms after the host sees it. That it comes at all proves the loop
+  // runs while the program spins, and the mark proves the program was in its
+  // loop (not compiling, not starting) when it came. A count of ticks over a
+  // fixed window measured the machine instead: a container whose CPU the
+  // hypervisor took for a quarter second (CI shards with steal up to all of
+  // their busy time) lost ticks while nothing held the loop.
+  const user = ws.vfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
+  let spinningAt = null;
+  let abortedAt = null;
+  const watcher = setInterval(() => {
+    if (spinningAt === null) {
+      if (user.exists('home/user/spinning')) spinningAt = Date.now();
+    } else if (Date.now() - spinningAt >= 300) {
+      clearInterval(watcher);
+      abortedAt = Date.now();
+      controller.abort();
+    }
+  }, 10);
+  // One-shot (-c): a script file would run as a resident program, which this host has no substrate for.
+  const pending = ws.exec('python3 -c "open(\'/home/user/spinning\', \'w\').close(); exec(\'while True: pass\')"', { signal: controller.signal });
+  let r;
+  try {
+    r = await within(pending, 15_000, 'the aborted python3');
+  } finally {
+    clearInterval(watcher);
+  }
+  assert.ok(abortedAt !== null, `(3) the host's event loop ran while the program spun, and aborted it: ${spinningAt === null ? 'the program never marked its loop' : 'the abort never fired'} (exit ${r.exitCode}: ${r.stderr})`);
   assert.equal(r.exitCode, 130, `(3) the aborted program answers 130: ${r.stderr}`);
-  assert.ok(Date.now() - started < 10_000, '(3) promptly');
-  assert.ok(ticks >= 5, `(3) the host's event loop ran while the program spun (${ticks} ticks)`);
+  assert.ok(Date.now() - abortedAt < 10_000, '(3) promptly');
   await assertEnded('(3) the aborted python3', before);
   assert.equal((await ws.exec('python3 -c "print(1)"')).stdout, '1\n', '(3) the workspace runs the next program');
 
