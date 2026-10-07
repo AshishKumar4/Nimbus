@@ -19,7 +19,7 @@ import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { visiblePlacements } from '../../packages/worker/src/npm/placement.ts';
+import { visiblePlacements } from '../../packages/core/src/_shared/npm-placement.ts';
 import { resolveVersion, satisfiesRange } from '../../packages/core/src/_shared/npm-semver.ts';
 import { kernelInstaller, makeFanoutEnv, cacheRowForPackage } from './npm-fanout-test-env.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
