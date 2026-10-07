@@ -167,6 +167,36 @@ const learned = [{ path: `${NM}/one/index.js` }, { path: `${NM}/two/index.js` }]
   assert.equal(state.bundle[`${NM}/a/index.ts`], undefined, 'the other root was pruned');
 }
 
+// Through a dependency of its own, too: B stages C, and C reaches the S that
+// A staged (B → C → S), or through two of its own (B → C → D → S). B's group
+// holds S however far down its closure the shared module sits.
+for (const chain of [['c'], ['c', 'd']]) {
+  const lowering = new EsbuildService(undefined, {
+    transformHost: async (requests) => requests.map(({ code }) => ({ code: code + '\n//' + '~'.repeat(code.length >> 1), map: '', warnings: [] })),
+  });
+  const hops = Object.fromEntries(chain.map((name, i) => [
+    `${NM}/b/${name}.ts`,
+    `import "${i + 1 < chain.length ? `./${chain[i + 1]}.ts` : '../shared/s.ts'}";\nexport const ${name}: number = 1;\n`,
+  ]));
+  const overlapping = {
+    ...files,
+    [`${NM}/a/index.ts`]: `import "../shared/s.ts";\nexport const a: string = "${'a'.repeat(20_000)}";\n`,
+    [`${NM}/b/index.ts`]: `import "./${chain[0]}.ts";\nexport const b: number = 1;\n`,
+    ...hops,
+    [`${NM}/shared/s.ts`]: `export const s: string = "${'s'.repeat(20_000)}";\n`,
+  };
+  const state = await buildPrefetchBundle(launchFs(overlapping).fs, {
+    scriptPath: `${APP}/entry.js`, cwd: '/' + APP, entryCode: overlapping[`${APP}/entry.js`], esbuild: lowering,
+    executedModules: [{ path: `${NM}/a/index.ts` }, { path: `${NM}/b/index.ts` }],
+    observedReads: new Set([`${NM}/b/index.ts`]), maxBundleBytes: 50_000,
+  });
+  const via = ['b', ...chain, 's'].join(' → ');
+  assert.equal(typeof state.bundle[`${NM}/b/index.ts`], 'string', `${via}: the observed root survives the pruning`);
+  for (const name of chain) assert.equal(typeof state.bundle[`${NM}/b/${name}.ts`], 'string', `${via}: with ${name}`);
+  assert.equal(typeof state.bundle[`${NM}/shared/s.ts`], 'string', `${via}: and with the S its closure reaches`);
+  assert.equal(state.bundle[`${NM}/a/index.ts`], undefined, `${via}: the other root was pruned`);
+}
+
 // A closure past the bound by itself still fails, by name.
 await assert.rejects(build([], 10), (error) => error instanceof ClosureBoundExceededError);
 
