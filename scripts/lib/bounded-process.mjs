@@ -192,7 +192,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
       resolve({ ok: false, stdout: stdout.text(), stderr: stderr.text(), reason: `spawn failed: ${command} not found in PATH`, code: null, signal: null, outputTruncated: false });
     }
     // NIMBUS_TEST_CGROUP names a cgroup v2 directory this runner may create
-    // groups in; the CI containers delegate one (apps/ci-runner). Each case
+    // groups in; a CI container can delegate one (.armada.json's env). Each case
     // gets its own group there and joins it before exec, so nothing it starts
     // is ever outside it. Its CPU and peak memory are read from that group,
     // and cgroup.kill ends every descendant, setsid and reparented ones too.

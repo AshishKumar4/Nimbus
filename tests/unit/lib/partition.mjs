@@ -1,6 +1,6 @@
-// How the unit suite is cut into parts that finish together. run-all's
-// `--shard I/N` runs one part, and the CI plan (scripts/armada/unit.mjs)
-// prints them all, so both cut the same way.
+// How the unit suite is cut into parts that finish together: the CI plan
+// (scripts/ci/unit.mjs) prints them, and run-all orders each part's pool by
+// the same expected costs.
 
 /**
  * A file's cost from its timings `{ wallMs, cpuMs }`. A job slot is taken to

@@ -316,7 +316,7 @@ Useful commands:
 |---|---|
 | Typecheck | `bun run typecheck` |
 | Build packages | `bun run --cwd packages/worker build` |
-| Unit suite: the gate | `bun scripts/ci-run.mjs <commit>` |
+| Unit suite: the gate | `bun scripts/ci/remote-unit.mjs [<commit>]` (CI, below) |
 | Unit suite, fast tier, locally | `bun tests/unit/run-all.mjs --tier fast` |
 | Unit suite, everything, locally | `bun tests/unit/run-all.mjs` |
 | One unit file | `bun tests/unit/<file>.mjs` |
@@ -342,50 +342,55 @@ design and the demo's TTL reaps it, so the ledger marks it `reap: 'ttl'` and
 `run-all` reports it as TTL-reaped rather than leaked.
 `NIMBUS_PROBE_KEEP_SESSIONS=1` keeps sessions for forensics.
 
-### The unit suite
+### CI
 
-**The full-suite gate is `bun scripts/ci-run.mjs <commit>`.** It runs every
-`tests/unit` file of that commit on Cloudflare Containers
-(`apps/ci-runner`, Worker `nimbus-ci-runner`). The suite is split into
-shards, each a dedicated 4-vCPU, 12 GiB container running 4 files at a
-time. Shards are balanced longest-first by each file's measured time, and
-no other lane's load reaches them. It prints:
+All CI runs on armada (Cloudflare Containers), not on the workstation. Run
+each command in the lane's worktree. CI tests a commit, not the working
+tree: commit first.
 
-- every failing file with its output tail, and the path of its whole output;
-- the slowest files;
-- wall time, CPU and cost.
+| Task | Command |
+|---|---|
+| Unit suite | `bun scripts/ci/remote-unit.mjs [<commit>] [--tier fast\|slow\|all] [--only a.mjs,b.mjs]` |
+| Typecheck and dist fixpoint | `bun scripts/ci/remote-build.mjs [<commit>] [--no-cache]` |
+| Probes against a deployed target | `bun scripts/ci/remote-probes.mjs --target staging\|throwaway:<name> [--only a,b] [--parts N]` |
+| Deploy a throwaway, then probe it | `bun scripts/ci/remote-probes.mjs --deploy <name> [--only a,b]` |
 
-It exits 0 on pass and 1 when a test failed. Exit 2 means the run could not
-grade the commit (upload, install, or a container lost twice, each retried
-once), which is never a test verdict: run it again.
+Every command exits 0 when all rows are green, and 1 for a red row or a
+patch to commit. Exit 2 means the run did not grade the commit: run it
+again.
 
-Measured 2026-10-06, 803-804 files:
-
-- about 8–10 minutes on 5–6 shards (6.4 on 16);
-- 61–91 test CPU-minutes;
-- $0.14–0.21 a run;
-- zero failures in 399 executions of the files that drive a local workerd,
-  across 18 full runs. On the workstation, 8 of those files run three times
-  each that day failed 10 of 24 executions.
-
-- It tests the commit, never the working tree: commit first. Nothing is
-  pushed. `git archive` of the commit goes to R2, keyed by tree, so a rerun
-  does not upload again.
-- A commit from before sharded runs (older `main`) runs under the CI image's
-  runner, and the verdict says so. `bun scripts/ci-run.mjs main --only
-  <file>` is how to show a failure is not yours.
-- Flags:
-  - `--tier fast|slow|all`, `--only a,b`, `--shards N`, `--jobs J`;
-  - `--timeout MS`: 900 s per file by default, because a container vCPU is
-    about 1.5x slower than a workstation core;
-  - `--status <run>` follows a run started elsewhere;
-  - interrupting the command cancels the run.
-- Every file's verdict, wall time, CPU, peak memory and the commands it ran
-  are saved to `~/.local/state/nimbus/ci-runs/<run>.json`. A failing file's
-  whole output goes to `<run>/<file>.out`; `--logs` saves the shard logs.
-- The token is `~/.config/nimbus/ci-token`, or `NIMBUS_CI_TOKEN`.
-- Secrets the suite needs are Workers secrets named `SUITE_ENV_<NAME>` on
-  `nimbus-ci-runner`, never in the image. The suite needs none today.
+- `remote-unit` runs `armada run` on the commit. The commit's
+  `.armada.json` and `scripts/ci/unit.mjs` cut the suite into parts of
+  about 5 minutes, and 4-vCPU containers run them. `--tier` and `--only`
+  narrow the run (they go to the plan after `--`); a narrowed run is not
+  recorded as the commit's verdict. armada prints each part as it ends,
+  then the verdict, and keeps a report in `~/.local/state/armada/runs/`.
+  A failing file's row holds its whole output.
+- `remote-build` runs the dist fixpoint, then the typecheck, and prints the
+  errors of a red row. When dist is not the fixpoint, it applies the patch
+  to the worktree. Each patched file must be the blob the container built.
+  Review the patch, commit it, then run `remote-unit`.
+- `remote-probes` mints the target's probe token on this machine. The token
+  lives for one task's limit plus 15 minutes, and goes only into that
+  job's environment. A task that starts too late for the token is not
+  graded. No output contains the token. The suite runs in 4 parts of 4
+  probes at a time, with Chromium, and checks the session ledger.
+- `--deploy` builds the bundle in a container (the dist gate, then
+  `wrangler deploy --dry-run`) and uploads it from this machine with your
+  wrangler login. The upload is not a build. No Cloudflare credential goes
+  to a container. Tear down with
+  `bun tests/behavioral/_throwaway-target.mjs down --name <name>`, which
+  builds nothing.
+- The container commands are `scripts/ci/{unit,build,bundle,probes}.mjs`.
+  Any runner can run them in a clean checkout after `bun install
+  --frozen-lockfile`. The environment is `.armada.json` and
+  `scripts/ci/recipe/`; the probe environment adds Chromium.
+  `scripts/ci/lib/armada.mjs` is the only file that knows armada.
+- The armada client is pinned to one commit (`ARMADA_CLIENT` in
+  `scripts/ci/lib/armada.mjs`): a clean checkout at
+  `/mnt/local/nimbus/armada-client`, or at `ARMADA_DIR`. A run on any other
+  client is refused, with the command that makes one. The connection is
+  `~/.config/armada/connection.json`, or `ARMADA_URL` and `ARMADA_TOKEN`.
 
 **Tiers.** A file's leading comment block may carry one marker:
 
@@ -400,18 +405,11 @@ local check before CI: 755 files, none of which starts a workerd, in about
 2.5 minutes at `--jobs 8`. `--list` prints the selection. A malformed marker
 stops the runner with exit 2, naming the file.
 
-A fast-tier file that measured slow in a CI run is named under the verdict.
-Its marker belongs in the commit that made it slow.
+A marker belongs in the commit that made the file slow.
 
-**The local full suite** (`bun tests/unit/run-all.mjs`, under
-`/mnt/scratch/nimbus/run-bounded` and the release-suite lock) still works,
-and is the fallback when CI is down. On the shared workstation it takes 8–40
-minutes at `--jobs 8` and longer serially, and its workerd tests fail under
-foreign load.
-
-The runner itself: `bun apps/ci-runner/scripts/deploy.mjs` (docker
-required) stages the image, deploys, waits for the image rollout, and keeps
-the token. A shard refuses a container still on the previous image.
+`bun tests/unit/run-all.mjs` runs files on this machine, under
+`/mnt/scratch/nimbus/run-bounded`. Use it for one file or a few while you
+debug. The full suite runs on CI.
 
 ### Probe targets
 
@@ -555,43 +553,13 @@ Agent-specific probes:
 | Dry-run production deploy | `bun run --cwd apps/hosted-demo wrangler deploy -e production --dry-run --outdir /tmp/wrangler-build` |
 | Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
 | Check dist matches src | `bun scripts/dist-integrity.mjs` |
-| Typecheck and dist fixpoint, remotely | `bun scripts/ci/remote-build.mjs [<commit>] [--no-cache]` |
-| Behavioral probes, from containers | `bun scripts/ci/remote-probes.mjs --target staging\|throwaway:<name> [--only a,b] [--parts N]` |
-| Deploy a commit to a throwaway, then probe it | `bun scripts/ci/remote-probes.mjs --deploy <name> [--only a,b]` |
+| Typecheck and dist fixpoint, on CI | `bun scripts/ci/remote-build.mjs [<commit>]` (Tests § CI) |
 
 The root `predev` script regenerates worker bundles.
 
 **Lanes do not build on the workstation.** No typecheck, tsc, bundling or
-`dist-integrity` run there. `bun scripts/ci/remote-build.mjs` does both on
-armada for a commit (default HEAD; commit first), from the lane's worktree.
-It prints each row (`dist-fixpoint`, `typecheck`), with the errors of a red
-one. When HEAD's dist is not the fixpoint, it applies the patch that makes
-it so (the rebuilt outputs and `dist-fixpoint.json`) to the worktree. Review
-the patch, commit it, then run `ci-run` on that commit. Exit 0 means clean;
-1 means a patch to commit or a red row; 2 means not graded, so run it again.
-The container step is `scripts/ci/build.mjs --out <file>`, which any runner
-can run in a clean checkout after `bun install --frozen-lockfile`. Verdicts
-and patches are kept in `~/.local/state/nimbus/remote-builds/`. A full
-rebuild takes about 35 s there, plus about 25 s for the typecheck.
-
-The behavioral suite runs from containers too, with Chromium.
-`remote-probes.mjs` mints the target's probe token here. Its lifetime is
-bounded by the job's timeout, since armada keeps a job's environment. It
-maps `scripts/ci/probes.mjs` over parts of the suite (4 x 4 by default, the
-16 at once the suite has always run), and prints every red row. The ledger
-is checked per part, and no token is in any output. `--deploy <name>`
-first deploys the worktree's HEAD to that throwaway: CI runs the dist
-gate and wrangler's bundle (`scripts/ci/bundle.mjs`), and this machine
-only uploads the bundle as built (`_throwaway-target.mjs up --bundle`),
-with its own wrangler login, checked by deployment id. No Cloudflare
-credential goes to a container. `down` stays local; it builds nothing.
-
-All of it reaches armada through `scripts/ci/lib/armada.mjs`. Its client
-is pinned exactly: a clean checkout of the commit named there
-(`ARMADA_CLIENT`) at `/mnt/local/nimbus/armada-client`, or `ARMADA_DIR`.
-Upstream armada lacks the packing fix (17db0d5) that a commit off the
-environment's own history needs, so a run on any other client is refused,
-saying how to make the checkout.
+`dist-integrity` runs there: `remote-build` and `remote-probes --deploy` do
+that work on CI (Tests § CI).
 
 Every deploy path (`predeploy`, `deploy:production`, the throwaway and
 staging targets) runs `scripts/dist-integrity.mjs` instead of a build. It

@@ -149,7 +149,7 @@ async function deploy(name) {
 let mapped;
 try {
   mapped = await mapOnArmada({
-    repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/armada/chromium.sh',
+    repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/ci/recipe/chromium.sh',
     items, env: { NIMBUS_PROBE_TOKEN: token }, label: `remote-probes ${sha.slice(0, 12)} ${throwaway ?? 'staging'}`, timeout: TASK_TIMEOUT_S,
     command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}', '--start-by', String(startBy)],
   });

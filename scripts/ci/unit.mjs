@@ -1,7 +1,7 @@
 #!/usr/bin/env bun
 // The unit suite on armada (https://github.com/AshishKumar4/armada).
 // `armada run <commit>` reads the commit's .armada.json, starts containers
-// from the environment scripts/armada/setup.sh and install.sh prepare, runs
+// from the environment scripts/ci/recipe/setup.sh and install.sh prepare, runs
 // `plan` once, then `task` once for each part the plan prints. Each
 // standard-4 container pulls part after part from one queue, longest first.
 //
@@ -33,7 +33,7 @@ import { costMs, expectedCosts, partition } from '../../tests/unit/lib/partition
 const RUN_ALL = fileURLToPath(new URL('../../tests/unit/run-all.mjs', import.meta.url));
 /** Files at a time: a standard-4 container's vCPUs. */
 const JOBS = 4;
-/** Parts while nothing is measured: as many as apps/ci-runner gave its first run. */
+/** Parts while nothing is measured: as many as the first full runs measured well with (16). */
 const FIRST_PARTS = 16;
 /**
  * A file's limit: three times run-all's local five minutes. A container's

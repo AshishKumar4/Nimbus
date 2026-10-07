@@ -41,18 +41,14 @@
 //   unknown name, a marker without a reason or a second marker is a usage
 //   error (exit 2) naming the file, whatever is selected.
 //
-// Sharding (the CI runner, apps/ci-runner, runs one shard per container):
-//   --shard I/N        run the I-th (1-based) of N disjoint parts of the
-//                      selection, balanced longest-first by expected time.
-//   --timings PATH     JSON `{ files: { "<name>.mjs": { wallMs, cpuMs } } }`
-//                      the balance reads. A job slot is taken to be one CPU,
-//                      so a pooled file costs the larger of its wall and CPU
-//                      time (one running four threads holds four slots'
-//                      worth); a file in the serial phase has every CPU and
-//                      costs its wall time. A file the timings lack costs the
-//                      median.
-//   Every shard computes the same partition from the same inputs, so
-//   `--shard 3/20 --timings t.json` reproduces CI shard 3 locally.
+// Order:
+//   --timings PATH     JSON `{ files: { "<name>.mjs": { wallMs, cpuMs } } }`:
+//                      the pool takes files longest-first by expected cost
+//                      (tests/unit/lib/partition.mjs), as each CI part does
+//                      (scripts/ci/unit.mjs). A job slot is taken to be one
+//                      CPU, so a pooled file costs the larger of its wall and
+//                      CPU time; a file in the serial phase costs its wall
+//                      time. A file the timings lack costs the median.
 //
 // Reports:
 //   --list             print the selection (name, tier, serial) and exit.
@@ -73,7 +69,7 @@
 //   Output is capped at 1 MiB per file; exceeding it fails and kills the tree.
 
 import { runBoundedProcess, DEFAULT_TEST_TIMEOUT_MS } from '../../scripts/lib/bounded-process.mjs';
-import { expectedCosts, partition } from './lib/partition.mjs';
+import { expectedCosts } from './lib/partition.mjs';
 import { mkdirSync, mkdtempSync, readdirSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { availableParallelism, tmpdir } from 'node:os';
 import { join, basename, dirname } from 'node:path';
@@ -203,9 +199,8 @@ const runsAlone = (name) => isSerialMarked(name) || tiers.get(name).tier === 'qu
 const tiered = selected.filter((name) => TIER === 'all'
   || (TIER === 'fast') === (tiers.get(name).tier === 'fast'));
 
-// ── Shards ───────────────────────────────────────────────────────────
+// ── Timings ──────────────────────────────────────────────────────────
 
-const SHARD = flagValue('--shard', 'NIMBUS_UNIT_SHARD') || undefined;
 const TIMINGS = flagValue('--timings', 'NIMBUS_UNIT_TIMINGS') || undefined;
 
 let known = null;
@@ -218,19 +213,7 @@ if (TIMINGS !== undefined) {
 /** Expected cost from --timings (tests/unit/lib/partition.mjs). */
 const expectedOf = known && expectedCosts(tiered, known, runsAlone);
 
-let shard = null;
-let targets = tiered;
-if (SHARD !== undefined) {
-  const match = /^(\d+)\/(\d+)$/.exec(SHARD);
-  const [index, count] = match ? [Number(match[1]), Number(match[2])] : [0, 0];
-  if (!(count >= 1 && index >= 1 && index <= count)) {
-    console.error(`FATAL: --shard must be I/N with 1 <= I <= N, got ${JSON.stringify(SHARD)}`);
-    process.exit(2);
-  }
-  const part = partition(tiered, count, { expectedMs: expectedOf ?? (() => 1000), runsAlone, jobs: JOBS })[index - 1];
-  targets = tiered.filter((name) => part.names.includes(name));
-  shard = { index, count, expectedMs: part.expectedMs, universe: tiered };
-}
+const targets = tiered;
 
 const serialFiles = JOBS > 1 ? targets.filter(runsAlone) : [];
 const pooledFiles = JOBS > 1 ? targets.filter((name) => !serialFiles.includes(name)) : targets;
@@ -244,9 +227,7 @@ console.log(
   `unit/run-all — ${targets.length} file${targets.length === 1 ? '' : 's'} discovered`
   + ` (jobs ${JOBS}${serialFiles.length > 0 ? `, ${serialFiles.length} run alone` : ''})`,
 );
-if (TIER !== 'all' || shard) {
-  console.log(`unit/run-all — tier ${TIER}${shard ? `, shard ${shard.index}/${shard.count} of ${shard.universe.length} (expected ${(shard.expectedMs / 1000).toFixed(0)}s)` : ''}`);
-}
+if (TIER !== 'all') console.log(`unit/run-all — tier ${TIER}`);
 console.log(process.env.NIMBUS_TEST_PID_ISOLATION === '1'
   ? 'unit/run-all — isolation: per-case cgroup + PID namespace'
   : process.env.NIMBUS_TEST_CGROUP
@@ -356,7 +337,7 @@ if (JSON_PATH !== undefined) {
   writeFileSync(JSON_PATH, `${JSON.stringify({
     version: 1, tier: TIER, jobs: JOBS, timeoutMs: TIMEOUT_MS,
     isolation: process.env.NIMBUS_TEST_PID_ISOLATION === '1' ? 'systemd' : process.env.NIMBUS_TEST_CGROUP ? 'cgroup' : 'portable',
-    shard, elapsedMs: Date.now() - t0, pass, fail,
+    elapsedMs: Date.now() - t0, pass, fail,
     files: results.map(({ elapsed, ...r }) => r),
   }, null, 1)}\n`);
 }

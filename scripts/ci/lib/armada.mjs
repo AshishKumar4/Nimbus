@@ -21,7 +21,7 @@ const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..'
 // ARMADA_CLIENT is the latest commit proven on top of it. Only the client
 // differs: it talks to the same deployed armada.
 const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
-const ARMADA_CLIENT = '1a91f1bf5897cc4fb47cc04437973f73ef2e7195';
+export const ARMADA_CLIENT = '1a91f1bf5897cc4fb47cc04437973f73ef2e7195';
 
 /**
  * A file laid over a commit's tree: a path whose bytes and executable bit
@@ -30,7 +30,7 @@ const ARMADA_CLIENT = '1a91f1bf5897cc4fb47cc04437973f73ef2e7195';
  */
 
 /** The armada recipe every task needs, whatever the lane's commit has. */
-export const RECIPE = ['.armada.json', 'scripts/armada/setup.sh', 'scripts/armada/install.sh'];
+export const RECIPE = ['.armada.json', 'scripts/ci/recipe/setup.sh', 'scripts/ci/recipe/install.sh'];
 
 const git = (cwd, args, options = {}) => {
   const done = spawnSync('git', args, { cwd, encoding: 'utf8', maxBuffer: 1 << 30, ...options });
@@ -95,14 +95,23 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
  * @param {{ repo: string, sha: string, files: string[], setup?: string, items: unknown[], command: string[], env?: Record<string, string>,
  *   label: string, pool?: number, timeout?: number, log?: (line: string) => void }} options
  */
-export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
-  const armadaDir = process.env.ARMADA_DIR || ARMADA_DIR;
-  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: armadaDir, encoding: 'utf8' });
-  const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: armadaDir, encoding: 'utf8' });
+/**
+ * The pinned armada client's directory, or a throw saying how to make it:
+ * a clean checkout of exactly ARMADA_CLIENT, at ARMADA_DIR.
+ */
+export function armadaClient() {
+  const dir = process.env.ARMADA_DIR || ARMADA_DIR;
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: dir, encoding: 'utf8' });
+  const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: dir, encoding: 'utf8' });
   if (head.status !== 0 || head.stdout.trim() !== ARMADA_CLIENT || dirty.status !== 0 || dirty.stdout !== '') {
-    throw new Error(`the armada client must be a clean checkout of ${ARMADA_CLIENT} at ${armadaDir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
-      + `Make one: git -C <PreparedSkunk's armada clone> worktree add --detach ${armadaDir} ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
+    throw new Error(`the armada client must be a clean checkout of ${ARMADA_CLIENT} at ${dir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
+      + `Make one: git -C <an armada clone> worktree add --detach ${dir} ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
   }
+  return dir;
+}
+
+export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
+  const armadaDir = armadaClient();
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
   /** @type {OverlayFile[]} */

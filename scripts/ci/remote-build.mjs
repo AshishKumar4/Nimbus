@@ -9,7 +9,7 @@
 // Run it in the lane's worktree. <commit> defaults to HEAD; what is built is
 // the commit, never the working tree, so commit first. The container gets a
 // throwaway commit object on no branch: <commit>'s tree with this checkout's
-// armada recipe (.armada.json, scripts/armada/) and scripts/ci/build.mjs laid
+// armada recipe (.armada.json, scripts/ci/recipe/) and scripts/ci/build.mjs laid
 // over it, so a lane branched before those existed builds the same way.
 //
 // The patch is applied only when <commit> is the worktree's HEAD and every
@@ -133,7 +133,7 @@ function applyPatch(repo, sha, patch, blobs) {
     const applied = git(repo, ['write-tree'], { env: indexed('applied') });
     const differ = mismatch(applied);
     if (differ.length > 0) throw new Error(`the applied files differ from what the build left: ${differ.join(', ')}`);
-    return `remote-build: applied the dist patch (${touched.length} files) to ${repo}, each file the blob the build left. Review it and commit it, then run ci-run on that commit.`;
+    return `remote-build: applied the dist patch (${touched.length} files) to ${repo}, each file the blob the build left. Review it and commit it, then run scripts/ci/remote-unit.mjs on that commit.`;
   } finally {
     rmSync(scratch, { recursive: true, force: true });
   }
