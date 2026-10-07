@@ -47,6 +47,8 @@ export interface WranglerConfig {
   durable_objects?: { bindings?: { name: string; class_name: string; script_name?: string }[] };
   /** DO migrations — informational; we don't apply them (facets auto-create SQLite). */
   migrations?: any[];
+  /** Environment blocks: the deploy-isolation gate reads them; `nimbus wrangler dev` serves the top level. */
+  env?: Record<string, WranglerConfig>;
 }
 
 /**
