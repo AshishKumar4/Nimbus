@@ -197,4 +197,20 @@ const start = async () => ({ class: {} });
   assert.equal(kv.get(FACET_NAME_HIGH_WATER_KEY), 6);
 }
 
+// ── 10. Names are not rationed ──────────────────────────────────────────────
+// Cloudflare bounds facets kept, not names used: one object created 70,000
+// names, deleting each after use, and none failed (2026-10-07). An object
+// whose storage holds an earlier release's count of names at 65,536 still
+// leases a new one, and those rows are left as they are.
+
+{
+  const kv = new Map([['fabric_facet_name_high_water', 65_536], ['fabric_facet_slot_high_water', 65_536]]);
+  const host = createHost({ kv });
+  const lease = await facetPool(host.ctx).acquire('head-65537', start);
+  await lease.retire();
+  assert.equal(host.facetStorage.get('head-65537'), 'wiped');
+  assert.deepEqual([...kv], [['fabric_facet_name_high_water', 65_536], ['fabric_facet_slot_high_water', 65_536]],
+    'the earlier rows are not read into a refusal, and not rewritten');
+}
+
 console.log('ok - fabric-facet-pool (retire reclaims, throw-safe, detach keeps, loud leak, id budget)');
