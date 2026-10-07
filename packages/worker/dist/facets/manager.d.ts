@@ -199,9 +199,10 @@ export declare function facetWasmImports(named: readonly {
 }[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
-    /** Node's options before the program, and the program's conditions (core runtime/node-cli.ts). */
+    /** Node's options before the program, the program's conditions and `-e`'s code (core runtime/node-cli.ts). */
     execArgv?: string[];
     conditions?: string[];
+    eval?: string;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -889,6 +890,8 @@ export interface ResidentSpawnOptions {
     execArgv?: string[];
     /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
     conditions?: string[];
+    /** `-e`'s code (`process._eval`). */
+    eval?: string;
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -1463,6 +1466,8 @@ export declare class FacetManager {
         execArgv?: string[];
         /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
         conditions?: string[];
+        /** `-e`'s code (`process._eval`). */
+        eval?: string;
     }): Promise<FacetExecResult>;
     /**
      * A process stopped at a synchronous read of stdin that needs input not

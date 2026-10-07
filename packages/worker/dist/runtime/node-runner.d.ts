@@ -103,6 +103,8 @@ export interface RunFreshOpts {
     execArgv?: string[];
     /** The program's own conditions (RuntimeRunOpts.conditions). */
     conditions?: string[];
+    /** `-e`'s code (RuntimeRunOpts.eval). */
+    eval?: string;
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
 export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;

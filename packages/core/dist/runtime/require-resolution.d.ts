@@ -10,6 +10,7 @@
  * (worker facets/data-plan.ts, which only names files).
  */
 import type { Awaitable, RuntimeFsBridge, RuntimeVfsStat } from './os-contracts.js';
+import { type ResolvablePackageJson } from '../_shared/exports-resolver.js';
 /**
  * The filesystem questions resolution needs; held-cell reuse can additionally
  * check current read authority without rereading bytes. A missing path is
@@ -37,6 +38,14 @@ export interface BridgeRequireFs extends RequireFs {
     lstat(path: string): Promise<RuntimeVfsStat | null>;
     readBytes(path: string): Promise<Uint8Array | null>;
 }
+/**
+ * The entry `require` takes of `pkg` for `subpath`, under the program's
+ * conditions: its `exports` under require's conditions, else (a map with an
+ * entry only under `import`) under import's, else its legacy `main` for the
+ * root. The one reading of a package's entry: the runtime's resolution and
+ * the launch's speculative root selection both take it.
+ */
+export declare function requirePackageEntry(pkg: ResolvablePackageJson, subpath: string, conditions: readonly string[]): string | null;
 export declare function requireFsOverBridge(bridge: RuntimeFsBridge): BridgeRequireFs;
 /**
  * Sink for package.json files consulted during LOAD_AS_DIRECTORY

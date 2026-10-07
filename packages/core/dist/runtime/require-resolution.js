@@ -23,6 +23,19 @@ function requireConditions(conditions) {
 function importConditions(conditions) {
     return conditions.length === 0 ? DEFAULT_ESM_CONDITIONS : [...DEFAULT_ESM_CONDITIONS, ...conditions];
 }
+/**
+ * The entry `require` takes of `pkg` for `subpath`, under the program's
+ * conditions: its `exports` under require's conditions, else (a map with an
+ * entry only under `import`) under import's, else its legacy `main` for the
+ * root. The one reading of a package's entry: the runtime's resolution and
+ * the launch's speculative root selection both take it.
+ */
+export function requirePackageEntry(pkg, subpath, conditions) {
+    const entry = sharedResolvePackageEntry(pkg, subpath, requireConditions(conditions));
+    if (entry != null || pkg.exports == null)
+        return entry;
+    return sharedResolvePackageEntry(pkg, subpath, importConditions(conditions));
+}
 export function requireFsOverBridge(bridge) {
     const decoder = new TextDecoder();
     const absent = (read) => (async () => {
@@ -185,10 +198,7 @@ async function resolvePkgSubpathEx(vfs, pkgDir, subpath, sink, progress, conditi
     }
     // The runtime resolver reads this package.json unconditionally to walk
     // exports/main; record it so its content ships in the bundle.
-    let entry = sharedResolvePackageEntry(pkg, subpath, requireConditions(conditions));
-    if (entry == null && pkg.exports != null) {
-        entry = sharedResolvePackageEntry(pkg, subpath, importConditions(conditions));
-    }
+    const entry = requirePackageEntry(pkg, subpath, conditions);
     if (entry != null) {
         const resolved = (await resolveFile(vfs, pkgDir + '/' + entry.replace(/^\.\//, ''), sink, progress));
         if (resolved)
