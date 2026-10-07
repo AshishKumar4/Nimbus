@@ -2729,8 +2729,12 @@ export async function runGitCommand(
                 dir: target,
                 pieceCommits: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_COMMITS) || undefined,
                 pieceBudgetMs: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_BUDGET_MS) || undefined,
-              }, network).catch((error) => {
-                // Nothing waits for it: the reason goes to the session's log.
+              }, network).then((outcome) => {
+                // Nothing waits for it: why it left the chain as it is goes to the session's log.
+                if (outcome.skipped === 'locked' || outcome.skipped === 'moved') {
+                  console.warn('[git] commit-graph after clone', JSON.stringify({ dir: target, skipped: outcome.skipped }));
+                }
+              }, (error) => {
                 console.warn('[git] commit-graph after clone', JSON.stringify({ dir: target, error: String(error?.message ?? error) }));
               }));
             }

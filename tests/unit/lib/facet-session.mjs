@@ -106,6 +106,10 @@ export async function createFacetSession(work, { realGit = false, asUser = false
       },
       // unlink carries no lease: the session's supervisor op has none for it either (supervisor-op.ts).
       async unlink(path) { return refused(async () => bridge.unlink(path)); },
+      async fsOpen(path, flags) { return refused(async () => bridge.open(path, flags)); },
+      async fsWrite(handle, offset, bytes) { return refused(async () => bridge.write(handle, offset, bytes)); },
+      async fsClose(handle) { return bridge.close(handle); },
+      async chmod(path, mode) { return refused(async () => bridge.chmod(path, mode)); },
       async writeBatchStream(stream) {
         if (++requests.waves === requests.failWaveAt) {
           await stream.cancel();

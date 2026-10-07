@@ -128,6 +128,8 @@ export interface GitSupervisorRpcCounters {
   /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
   fsWriteRange: number;
   rename: number;
+  /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
+  lock: number;
   writeBatchStream: number;
   readlink: number;
   symlink: number;
@@ -251,6 +253,7 @@ const EMPTY_SUPERVISOR_RPC_COUNTERS: GitSupervisorRpcCounters = {
   fsReadRange: 0,
   fsWriteRange: 0,
   rename: 0,
+  lock: 0,
   writeBatchStream: 0,
   readlink: 0,
   symlink: 0,
@@ -294,6 +297,7 @@ function parseSupervisorRpcCounters(value: unknown): GitSupervisorRpcCounters {
     fsReadRange: nonNegativeCounter(counters.fsReadRange),
     fsWriteRange: nonNegativeCounter(counters.fsWriteRange),
     rename: nonNegativeCounter(counters.rename),
+    lock: nonNegativeCounter(counters.lock),
     writeBatchStream: nonNegativeCounter(counters.writeBatchStream),
     readlink: nonNegativeCounter(counters.readlink),
     symlink: nonNegativeCounter(counters.symlink),
@@ -935,8 +939,14 @@ const GRAPH_FILTERS_PIECE_COMMITS = 20_000;
 
 /** How a clone's changed-path filters pass went. */
 export interface GraphFiltersOutcome {
-  /** The new layer's name, or null when there was nothing to do or the chain moved on. */
+  /** The new layer's name, or null when the chain was left as it is. */
   layer: string | null;
+  /**
+   * Why the chain was left as it is: there is no graph, it is not one
+   * unfiltered base layer, another writer holds its lock, or it changed
+   * under the pass.
+   */
+  skipped?: 'no-graph' | 'not-a-base' | 'locked' | 'moved';
   commits: number;
   pieces: number;
   /** Trees read from the packs, and their bytes. */
@@ -974,8 +984,8 @@ async function driveGraphFilters(
   const started = Date.now();
   const step = async <T>(graphFilters: GraphFiltersStep): Promise<T> => await call(graphFilters) as T;
   const outcome: GraphFiltersOutcome = { layer: null, commits: 0, pieces: 0, trees: 0, treeBytes: 0, elapsed: 0 };
-  const plan = await step<{ layer: string; commits: number } | null>({ step: 'plan' });
-  if (plan === null) return { ...outcome, elapsed: Date.now() - started };
+  const plan = await step<{ layer: string; commits: number } | { skipped: NonNullable<GraphFiltersOutcome['skipped']> }>({ step: 'plan' });
+  if ('skipped' in plan) return { ...outcome, skipped: plan.skipped, elapsed: Date.now() - started };
   outcome.commits = plan.commits;
   const files: { name: string; bytes: number }[] = [];
   const size = positiveSafeInteger(opts.pieceCommits, GRAPH_FILTERS_PIECE_COMMITS, 'graph filter piece commits');
@@ -997,8 +1007,8 @@ async function driveGraphFilters(
     await step({ step: 'discard', layer: plan.layer }).catch(() => null);
     throw error;
   }
-  const assembled = await step<{ layer: string | null }>({ step: 'assemble', layer: plan.layer, files });
-  return { ...outcome, layer: assembled.layer, elapsed: Date.now() - started };
+  const assembled = await step<{ layer: string | null; skipped?: GraphFiltersOutcome['skipped'] }>({ step: 'assemble', layer: plan.layer, files });
+  return { ...outcome, layer: assembled.layer, ...(assembled.skipped ? { skipped: assembled.skipped } : {}), elapsed: Date.now() - started };
 }
 
 /**
@@ -1601,7 +1611,7 @@ function metadataFromSupervisorStat(st) {
 function createSupervisorRpcCounters() {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
-    fsReadRange: 0, fsWriteRange: 0, rename: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
+    fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
     legacySymlinkSubtree: 0, stdout: 0,
   };
 }
@@ -1687,6 +1697,12 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       fsTruncate: (path, size) => mutation('fsWriteRange', () => supervisor.fsTruncate(path, size)),
       fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(path, offset, length)),
       rename: (from, to) => mutation('rename', () => supervisor.rename(from, to)),
+      // A commit-graph chain's lock (graph-filters.ts): created exclusively, written, made read-only, removed.
+      fsOpen: (path, flags) => mutation('lock', () => supervisor.fsOpen(path, flags)),
+      fsWrite: (handle, offset, bytes) => mutation('lock', () => supervisor.fsWrite(handle, offset, bytes)),
+      fsClose: (handle) => counted('lock', () => supervisor.fsClose(handle)),
+      chmod: (path, mode) => mutation('lock', () => supervisor.chmod(path, mode)),
+      unlink: (path) => mutation('lock', () => supervisor.unlink(path)),
       async readdir(path) {
         stats.supervisorRpc.readdir++;
         try {

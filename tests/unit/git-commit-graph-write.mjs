@@ -132,6 +132,33 @@ try {
     console.log(`  ok  a ${N}-commit history: a graph of ${built.file.byteLength} bytes; a missing parent: none`);
   }
 
+  // Corrected dates past 2^32: git keeps its parents' maximum in a uint32_t
+  // (compute_reachable_generation_numbers), so a child takes the low 32 bits
+  // of a parent's, compared and kept in parent order. Merges of a parent
+  // dated 5,000,000,000 and one dated 3,000,000,000, both ways round, and a
+  // child of each: host git's graph, byte for byte.
+  {
+    const far = path.join(root, 'far');
+    git(root, ['init', '-q', '-b', 'main', far]);
+    const at = (date) => ({ GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@b', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@b', GIT_AUTHOR_DATE: `@${date} +0000`, GIT_COMMITTER_DATE: `@${date} +0000` });
+    const commit = (date, parents, message) => execFileSync('git', ['commit-tree', tree, ...parents.flatMap((p) => ['-p', p]), '-m', message], {
+      cwd: far, env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', ...at(date) },
+    }).toString().trim();
+    const tree = execFileSync('git', ['mktree'], { cwd: far, input: '' }).toString().trim();
+    const base = commit(1000, [], 'root');
+    const big = commit(5_000_000_000, [base], 'past 2^32');
+    const mid = commit(3_000_000_000, [base], 'under 2^32');
+    const one = commit(2000, [big, mid], 'big first');
+    const two = commit(2000, [mid, big], 'mid first');
+    const tip = commit(10, [one, two], 'both');
+    git(far, ['update-ref', 'refs/heads/main', tip]);
+    git(far, ['repack', '-adq']);
+    const farObjects = objectsOf(far);
+    const farGraph = writeCommitGraph(graphCommits(farObjects.map(({ oid, data }) => commitRecord(oid, data))));
+    assert.equal(diffGraphs(referenceGraph(far, { changedPaths: false }), farGraph), null, 'past 2^32, host git\'s graph, byte for byte');
+    console.log('  ok  corrected dates past 2^32: host git\'s graph, byte for byte');
+  }
+
   // git's parse_commit_date, at its edges.
   const oid = new Uint8Array(20);
   const tree = 'tree ' + 'ab'.repeat(20) + '\n';
