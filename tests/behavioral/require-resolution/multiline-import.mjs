@@ -174,11 +174,13 @@ await t.run('cd /home/user/wild-chalk', 5_000);
   const installed = /added \d+ packages|up to date/i.test(r.output) && !/npm ERR!/i.test(r.output);
   A.check('Check 5a: npm install chalk@5 succeeded', installed, tail(r.output));
 }
-await t.writeFile('/home/user/wild-chalk/use.js',
+// The project is "type": "module": its CommonJS consumer is a .cjs, which
+// requires chalk@5's ES module as Node 22 does.
+await t.writeFile('/home/user/wild-chalk/use.cjs',
   "const chalk = require('chalk'); console.log('CHALK_OK=' + (typeof chalk.green === 'function' || typeof chalk.default?.green === 'function'));");
 
 {
-  const r = await t.run('node use.js', 60_000);
+  const r = await t.run('node use.cjs', 60_000);
   const ok = /CHALK_OK=true/.test(r.output);
   const errClass = /Cannot find module ['"]\.\/utilities\.js['"]/.test(r.output)
     ? 'utilities.js still missing (this wave\'s root cause unfixed)'
