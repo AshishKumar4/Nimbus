@@ -254,14 +254,16 @@ export const DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
 export const DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
 
 /**
- * What a one-shot process (no store of its own) that ended before its
- * changes were all answered (it died, or was killed) says in its output:
- * every change ahead of an output it released is in the session
- * (ProcessFsClient.effect), and what it logged after its last one may not
- * be, at most the decided backlog.
+ * What a one-shot process (no store of its own) that ended abnormally (it
+ * died, or was killed) says in its output, whatever it did: every change
+ * ahead of an output it released is in the session (ProcessFsClient.effect),
+ * but what it acknowledged since it last yielded to its event loop never left
+ * its isolate (up to the synchronous cap), and what it sent after its last
+ * output may not have been answered (up to the decided backlog). The session
+ * cannot count the first: it never saw them.
  */
-export const UNSETTLED_END_NOTE = `[nimbus] the process ended before its changes were all in the session: `
-  + `any it made after its last output may be lost (at most ${DECIDED_BACKLOG_OPS} changes, ${DECIDED_BACKLOG_BYTES / (1024 * 1024)} MiB)`;
+export const UNSETTLED_END_NOTE = `[nimbus] the process ended abnormally: an unknown number of its writes since it last yielded `
+  + `(up to the ${PROCESS_FS_HEAP_SYNC_CAP_BYTES / (1024 * 1024)} MiB synchronous cap), and up to ${DECIDED_BACKLOG_OPS} not yet answered after its last output, may be lost`;
 
 /** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */
 export function unsettledEnd(error: unknown): Error & { unsettled: true } {

@@ -176,29 +176,28 @@ const echoFn = async (request) => Response.json(await request.json());
   assert.match(source, /__nimbusFacetError/, 'fn failures wrap into a 500 payload');
 }
 
-// ── A failed run of a process that sent changes says what it may have lost ──
-// (unsettledEnd.) A one-shot facet holds changes the session has not
-// answered; one that dies or is killed loses them, at most the decided
-// backlog, and its error says so. Red before: the error said nothing of it.
+// ── A failed run of a process that writes says what it may have lost ──
+// (unsettledEnd.) A one-shot facet acknowledges writes before the session
+// answers them, and ones made since it last yielded never left it; one that
+// dies or is killed loses them, and its error says so every time: the
+// session cannot know whether there were any. Red before: the error said
+// nothing of it.
 {
   const { adoptCtxExports } = await import('../../packages/fabric/src/composition.ts');
-  const { openSupervisorDeliveries } = await import('../../packages/core/src/workspace/supervisor-delivery.ts');
   const { UNSETTLED_END_NOTE, unsettledNoteOf } = await import('../../packages/core/src/_shared/process-fs-client.ts');
-  const writerCtx = { ...ctx, id: { toString: () => 'unsettled-test-do' } };
   adoptCtxExports({ SupervisorRPC: ({ props }) => ({ props }) });
-  const dying = makeLoader({ fetchImpl: async () => { throw Object.assign(new Error('Worker exceeded memory limit.'), { code: 'EOOM' }); } });
-  const pool = new IsolatePool(dying.env, writerCtx, { network: ISOLATE_NETWORK, supervisorPid: 77, timeoutMs: 0 });
+  const dying = () => makeLoader({ fetchImpl: async () => { throw new Error('Worker exceeded memory limit.'); } });
   const request = () => new Request('https://facet.internal/run', { method: 'POST', body: '{}' });
-  // It sent nothing: its error is the run's own.
-  const quiet = await pool.submitRequest(echoFn, request()).catch((error) => error);
-  assert.equal(quiet.message.includes(UNSETTLED_END_NOTE), false);
-  assert.equal(unsettledNoteOf(quiet), '');
-  // It opened a wave epoch (it sent changes): its error says what may be lost.
-  openSupervisorDeliveries(writerCtx).openWaveWriter(77, 60_000);
-  const loud = await pool.submitRequest(echoFn, request()).catch((error) => error);
+  // A process that writes: its error says what may be lost.
+  const writer = new IsolatePool(dying().env, { ...ctx, id: { toString: () => 'unsettled-test-do' } }, { network: ISOLATE_NETWORK, supervisorPid: 77, timeoutMs: 0 });
+  const loud = await writer.submitRequest(echoFn, request()).catch((error) => error);
   assert.match(loud.message, /Worker exceeded memory limit/);
   assert.ok(loud.message.includes(UNSETTLED_END_NOTE), loud.message);
   assert.equal(unsettledNoteOf(loud), `${UNSETTLED_END_NOTE}\n`);
+  // A pool bound to no process writes nothing: its error is the run's own.
+  const pure = new IsolatePool(dying().env, ctx, { network: ISOLATE_NETWORK, omitSupervisor: true, timeoutMs: 0 });
+  const quiet = await pure.submitRequest(echoFn, request()).catch((error) => error);
+  assert.equal(quiet.message.includes(UNSETTLED_END_NOTE), false);
 }
 
 console.log('isolate-pool-submit-request: all checks passed');

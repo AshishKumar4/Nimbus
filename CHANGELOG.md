@@ -5,6 +5,29 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: what a process's writes survive. A resident (node, python,
+  ruby or opencode in a SQLite-backed facet) logs every change in its own
+  store before the program is told it succeeded. When the process is
+  killed or runs out of memory, the session drains that log, and only then
+  reports its exit status: 5,000 of 5,000 files after an OOM or a `kill -9`.
+  One limit remains: a resident that dies of CPU or memory partway through
+  one unbroken synchronous stretch loses what that stretch logged (958 of
+  5,000 in a live CPU-death run). No output ever gets ahead of it.
+  A one-shot (node, python, ruby or a WASI program run once) releases no
+  output, exit status or outbound message until every change it made
+  before it is in the session. A one-shot that ends abnormally (out of
+  memory or CPU, or killed) can lose an unknown number of writes it
+  acknowledged since it last yielded, up to 64 MiB of synchronous writes,
+  plus up to 2,032 changes not yet answered. It always exits non-zero and
+  says so in its output, naming any subtree it held. The session cannot
+  count those writes, because they never left the process.
+- Fixed: a WASI program run with `./prog.wasm`, and ruby, ran without its
+  credential, so every file call was a round trip to the session. A C
+  program writing 10,000 files now takes 14.7 s, where before it stopped at
+  the 30 s limit with about 3,000 written.
+- Fixed: a resident that died on its own after it started (out of memory
+  or CPU) stayed listed as running, and its writes were never recovered.
+
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles

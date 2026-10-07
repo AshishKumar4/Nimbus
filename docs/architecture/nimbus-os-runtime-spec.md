@@ -836,10 +836,11 @@ what a death can cost.
   One limit is measured. The facet's SQLite commits only when its isolate
   yields to the event loop. If the isolate dies of CPU or memory partway
   through one unbroken synchronous stretch, the rows that stretch logged
-  are rolled back. That is at most the backlog bound: 958 of 5,000 were
-  lost in a live CPU-death run. The platform's output gate holds every
-  message the facet sends until its rows commit, so no effect is ever seen
-  ahead of a lost change.
+  are rolled back. A live CPU-death run lost 958 of 5,000. That stretch
+  holds whatever the program acknowledged since it last yielded, up to the
+  synchronous cap (`PROCESS_FS_SYNC_CAP_BYTES`, 256 MiB). The platform's
+  output gate holds every message the facet sends until its rows commit,
+  so no effect is ever seen ahead of a lost change.
 - **One-shots lose at most a bounded tail, and say so.** This covers node,
   python, ruby and WASI programs run once in a Dynamic Worker, which has no
   store of its own. Nothing the process emits is released before every change
@@ -849,13 +850,23 @@ what a death can cost.
   - an outbound request, WebSocket frame or child spawn.
 
   The gate is `ProcessFsClient.effect()`. Bytes written to a raw TCP
-  socket (`node:net`/`node:tls`) are not gated yet. If the process dies or is killed,
-  it loses at most the changes it made after its last released effect, up to
-  the backlog bound. Nothing it released ever claims a change that was lost.
-  When a one-shot that had sent changes ends abnormally, its output says so,
-  naming the bound (`UNSETTLED_END_NOTE`), and its exit status is non-zero.
-  The one case that goes unsaid is a process that dies within one round trip
-  of its very first change, before its write epoch reaches the session.
+  socket (`node:net`/`node:tls`) are not gated yet. If the process dies or
+  is killed, two things can be lost:
+  - Every write it acknowledged since it last yielded to its event loop.
+    The client sends only when the program yields, so a loop of
+    `writeFileSync` that dies before it yields sent none of them. This is
+    bounded only by the synchronous cap
+    (`PROCESS_FS_HEAP_SYNC_CAP_BYTES`, 64 MiB). Node's synchronous semantics
+    rule out a cap on the number of operations.
+  - The sent changes not yet answered, up to `DECIDED_BACKLOG_OPS` (2,032).
+
+  Nothing it released ever claims a change that was lost. The session
+  cannot count the first kind, because those writes never left the isolate.
+  So every abnormal end of a one-shot is reported every time, whatever the
+  session saw. Its exit status is non-zero, and its output carries
+  `UNSETTLED_END_NOTE`: an unknown number of its writes since it last
+  yielded, up to the cap, may be lost. Every subtree it held is named as
+  well (`delegationOrphaned`).
 
 ### Performance Rules
 

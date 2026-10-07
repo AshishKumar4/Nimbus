@@ -29,7 +29,7 @@ import { loaderOutbound, requireNetwork, type WorkspaceNetwork } from '@nimbus-s
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
-import { openSupervisorDeliveries, supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
+import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { unsettledEnd } from '@nimbus-sh/core/_shared/process-fs-client.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
@@ -1096,14 +1096,13 @@ export class IsolatePool {
   }
 
   /**
-   * A run that failed (its facet died, was killed or timed out) is a
-   * one-shot process ended before its changes were all answered, when the
-   * process it writes as had sent any (SupervisorDeliveries.wroteWaves): its
-   * error says what may be lost (unsettledEnd).
+   * A run that failed (its facet died, was killed or timed out) of a process
+   * that writes (bound to a pid) ended abnormally: its error says what may be
+   * lost (unsettledEnd), every time; whether it acknowledged writes it never
+   * sent, the session cannot know.
    */
   #ended(error: unknown): unknown {
-    if (this.writerPid === undefined || !openSupervisorDeliveries(this.ctx).wroteWaves(this.writerPid)) return error;
-    return unsettledEnd(error);
+    return this.writerPid === undefined ? error : unsettledEnd(error);
   }
 
   /**
