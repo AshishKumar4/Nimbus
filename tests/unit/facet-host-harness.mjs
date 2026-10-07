@@ -242,8 +242,6 @@ export const PROCESS_HOST_MODES = ['facet', 'peer'];
 export function createProcessHost(mode, world, disk, {
   env, coordDoId = 'coord-do-id', colocated = false, peerWithoutFacets = false, deliveries = false,
 } = {}) {
-  const calls = [];
-  const stubs = [];
   const hostEnv = env ?? {
     LOADER: world.loader,
     ASSETS: missingAssets,
@@ -255,6 +253,31 @@ export function createProcessHost(mode, world, disk, {
     host.hostIncarnation = hostIncarnation;
     return host;
   }
+  const { ns, peers, calls, stubs } = createPeerNamespace(world, hostEnv, { colocated, peerWithoutFacets });
+  const host = processHostFor(
+    coordinator,
+    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
+    () => disk,
+  );
+  host.peers = peers;
+  host.namesResolved = calls;
+  host.stubs = stubs;
+  host.hostIncarnation = hostIncarnation;
+  return host;
+}
+
+/**
+ * A fake `NIMBUS_SESSION` namespace whose sibling sessions host processes
+ * through the REAL `_rpc*` host legs, over `world`'s facets. `peers` maps each
+ * sibling's name to its state; `peer.die(error)` severs its held host leg
+ * exactly as a Durable Object reset severs an inbound call.
+ *
+ * `colocated: true` makes every peer report the COORDINATOR's isolate;
+ * `peerWithoutFacets: true` gives each peer no `ctx.facets`.
+ */
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false } = {}) {
+  const calls = [];
+  const stubs = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
   // does; a second stub for the same name must see the same hosted records.
   const peers = new Map();
@@ -327,16 +350,7 @@ export function createProcessHost(mode, world, disk, {
       };
     },
   };
-  const host = processHostFor(
-    coordinator,
-    { NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' },
-    () => disk,
-  );
-  host.peers = peers;
-  host.namesResolved = calls;
-  host.stubs = stubs;
-  host.hostIncarnation = hostIncarnation;
-  return host;
+  return { ns, peers, calls, stubs };
 }
 
 /**
