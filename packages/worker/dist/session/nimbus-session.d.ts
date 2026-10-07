@@ -655,6 +655,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     } | null;
     _diagSampleMemory(): void;
     ensureSqliteFs(): SqliteVFS;
+    /** The recovery of clones an earlier generation ran, discovered as this one began (git/clone-job.ts). */
+    private cloneRecovery;
     /** Track when we last persisted to avoid redundant writes. */
     _w5LastPersistAt: number;
     /** Track ring size at last persist; skip write if unchanged. */

@@ -63,7 +63,6 @@ function parseWaveDiagnostic(value) {
     return parsed;
 }
 const CLONE_PHASE_TIMEOUT_MS = 240_000;
-const CLONE_ABORT_TIMEOUT_MS = 30_000;
 const DEFAULT_CLONE_BUDGET_MS = 30 * 60_000;
 const DEFAULT_OPERATION_TIMEOUT_MS = 300_000;
 const EMPTY_SUPERVISOR_RPC_COUNTERS = {
@@ -159,7 +158,6 @@ function parsePhaseDiagnostic(value, fallback, result) {
         diagnostic.phase === 'clone-batch' ||
         diagnostic.phase === 'clone-history' ||
         diagnostic.phase === 'clone-finish' ||
-        diagnostic.phase === 'clone-abort' ||
         diagnostic.phase === 'operation'
         ? diagnostic.phase
         : fallback.phase;
@@ -497,9 +495,10 @@ local = false) {
  */
 const CLONE_HISTORY_CONCURRENCY = 1;
 /**
- * A full clone's history (git/pack/history.ts): commits, then trees, then
- * blobs. Returns the commits' records for the commit-graph, or null when
- * one did not parse (no graph).
+ * A clone's history (git/pack/history.ts): commits, then trees, then blobs;
+ * all of it, or (`facetOpts.depth`) a shallow clone's commits. Returns the
+ * commits' records for the commit-graph, or null when one did not parse (no
+ * graph).
  */
 async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
     const base = { ...facetOpts, ...identity, capabilities: fast.capabilities };
@@ -544,7 +543,7 @@ async function runCloneHistory(facetOpts, identity, fast, run, tagsFound) {
         }
         return lists;
     };
-    const roots = await piece('commits', 'commits', { head: fast.commit });
+    const roots = await piece('commits', 'commits', { head: fast.commit, ...(facetOpts.depth !== undefined ? { depth: facetOpts.depth } : {}) });
     const blobLists = [];
     const commitsPerChunk = positiveSafeInteger(facetOpts.historyCommitsPerChunk, COMMITS_PER_CHUNK, 'history commits per chunk');
     const concurrency = positiveSafeInteger(facetOpts.historyConcurrency, CLONE_HISTORY_CONCURRENCY, 'history concurrency');
@@ -695,7 +694,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
             };
         }
-        const { mutationOwner, rotateMutationOwner, ...facetOpts } = opts;
+        const { mutationOwner, rotateMutationOwner, onCloneCheckoutPhase, ...facetOpts } = opts;
         const ctxExports = getCtxExports();
         // One run for every binding this operation mints, a fence's included.
         const writerId = crypto.randomUUID();
@@ -750,7 +749,7 @@ export async function execGitNetwork(ctx, env, opts, /**
             worker = loadedWorker;
             entrypoint = loadedWorker.getEntrypoint();
             if (opts.op === 'clone') {
-                const jobId = crypto.randomUUID();
+                const jobId = opts.cloneJobId ?? crypto.randomUUID();
                 const optionsHash = await hashCloneOptions(opts);
                 const phases = [];
                 const supervisorRpc = { ...EMPTY_SUPERVISOR_RPC_COUNTERS };
@@ -800,6 +799,10 @@ export async function execGitNetwork(ctx, env, opts, /**
                     if (!opts.quiet)
                         await writeClonePhaseProgress(supervisorBinding, prepare.diagnostic);
                     const prepared = prepare.result.prepared;
+                    // A partial clone's objects are in once its filtered pack is: its
+                    // batches are git's lazy fetch of what the checkout writes.
+                    if (facetOpts.filter !== undefined && prepared.fast !== undefined)
+                        await onCloneCheckoutPhase?.();
                     const run = {
                         facets,
                         outerDeadline,
@@ -815,15 +818,26 @@ export async function execGitNetwork(ctx, env, opts, /**
                     if (prepared.stream !== undefined) {
                         // A server without wants by id sent one pack: finish decoding it, then plan the checkout from it.
                         fast = await runCloneSnapshot(facetOpts, identity, prepared.stream, run, tagsFound);
+                        // The one pack is stored: what comes next only checks it out.
+                        await onCloneCheckoutPhase?.();
                     }
                     if (fast === undefined)
                         throw new GitClonePhaseError('clone-prepare', 'clone-prepare returned no plan', prepare.diagnostic);
                     const shares = await runCloneBatches(facetOpts, identity, fast, run, prepared.stream !== undefined);
                     const full = facetOpts.depth === undefined;
                     let graph = null;
-                    if (full && prepared.fast !== undefined && fast.commit !== null) {
-                        graph = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
+                    // Commits past the worktree's have blobs it did not fetch: a full
+                    // clone's history, and a --depth N clone's (N > 1) unless partial.
+                    const older = full || (facetOpts.depth > 1 && facetOpts.filter === undefined);
+                    if (older && prepared.fast !== undefined && fast.commit !== null) {
+                        const records = await runCloneHistory(facetOpts, identity, fast, run, tagsFound);
+                        // The commit-graph is a full clone's: git writes none in a shallow repository.
+                        if (full)
+                            graph = records;
                     }
+                    // A clone that is not partial has every object once its batches (and history) are in.
+                    if (prepared.fast !== undefined && facetOpts.filter === undefined)
+                        await onCloneCheckoutPhase?.();
                     const tags = tagsHeld(prepared.fast?.tags ?? prepared.stream?.tags ?? [], tagsFound);
                     await runCloneFinish(facetOpts, identity, shares, full, fast.cacheTreeBytes, tags, graph, run);
                     return {
@@ -853,32 +867,11 @@ export async function execGitNetwork(ctx, env, opts, /**
                     if (!phases.some(phase => phase.invocationId === phaseError.diagnostic.invocationId)) {
                         phases.push(phaseError.diagnostic);
                     }
-                    let cleanupError;
-                    const preMutationPrepareFailure = phaseError.phase === 'clone-prepare' &&
-                        phaseError.mutated === false;
-                    if (!preMutationPrepareFailure) {
-                        try {
-                            // A piece of this clone may still be running: its writes lose
-                            // their authority before the abort removes what it wrote.
-                            facets.fence?.();
-                            const abort = await invokeFacet(facets.entrypoint, 'clone-abort', crypto.randomUUID(), { ...facetOpts, jobId, optionsHash }, Date.now() + CLONE_ABORT_TIMEOUT_MS, CLONE_ABORT_TIMEOUT_MS);
-                            phases.push(abort.diagnostic);
-                            accountResult(abort.result);
-                            if (!opts.quiet)
-                                await writeClonePhaseProgress(supervisorBinding, abort.diagnostic);
-                            if (abort.result.success !== true) {
-                                cleanupError = typeof abort.result.error === 'string'
-                                    ? abort.result.error
-                                    : 'clone-abort failed';
-                            }
-                        }
-                        catch (abortError) {
-                            if (abortError instanceof GitClonePhaseError) {
-                                phases.push(abortError.diagnostic);
-                            }
-                            cleanupError = phaseErrorMessage(abortError);
-                        }
-                    }
+                    // What the clone wrote is its caller's to clean up (git/clone-job.ts),
+                    // once no piece of it can write: a prepare that failed before it wrote leaves nothing.
+                    const cleanup = !(phaseError.phase === 'clone-prepare' && phaseError.mutated === false);
+                    if (cleanup)
+                        facets.fence?.();
                     return {
                         success: false,
                         error: phaseError.message,
@@ -889,7 +882,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                         budget: phaseError instanceof GitCloneBudgetExceededError
                             ? phaseError.budget
                             : undefined,
-                        cleanupError,
+                        cleanup,
                         elapsed: Date.now() - start,
                         filesWritten,
                         bytesWritten,
@@ -1091,24 +1084,9 @@ function cloneJobMarkerPath(dir) {
   return normalizePath(dir) + '/.git/' + CLONE_JOB_MARKER;
 }
 
-/** The marker a clone's phases write first: it names the job that owns .git. */
+/** The marker a clone's phases write first: it names the job that owns .git (git/clone-job.ts reads it). */
 function cloneJobMarker(opts) {
   return JSON.stringify({ version: 1, jobId: opts.jobId, optionsHash: opts.optionsHash });
-}
-
-/** Whether .git carries this job's marker (an abort deletes only its own clone). */
-async function ownsCloneJob(fs, opts) {
-  let raw;
-  try {
-    raw = await fs.promises.readFile(cloneJobMarkerPath(opts.dir), { encoding: 'utf8' });
-  } catch (error) {
-    if (error && (error.code === 'ENOENT' || error.code === 'ENOTDIR')) return false;
-    throw error;
-  }
-  let marker;
-  try { marker = JSON.parse(raw); }
-  catch { return false; }
-  return !!marker && marker.jobId === opts.jobId && marker.optionsHash === opts.optionsHash;
 }
 
 function disposeRpcResult(value) {
@@ -1977,8 +1955,7 @@ export default {
     const phase = opts.phase === 'clone-prepare' ||
         opts.phase === 'clone-batch' ||
         opts.phase === 'clone-history' ||
-        opts.phase === 'clone-finish' ||
-        opts.phase === 'clone-abort'
+        opts.phase === 'clone-finish'
       ? opts.phase
       : 'operation';
     const invocationId = typeof opts.invocationId === 'string'
@@ -2138,6 +2115,7 @@ export default {
               kind: history.kind,
               piece: history.piece,
               head: history.head,
+              depth: history.depth,
               source: history.source,
               capabilities: opts.capabilities,
               budgetUnits: opts.historyBudgetUnits,
@@ -2222,9 +2200,6 @@ export default {
           }
         }
         if (opts.exclusiveDestination === true) authoritativeRoot = exclusiveRoot;
-      } else if (phase === 'clone-abort') {
-        requireProtocolString(opts.jobId, 'job id', 128);
-        requireProtocolString(opts.optionsHash, 'options hash', 128);
       } else if (opts.op === 'clone') {
         throw protocolError('clone requires its phases (prepare, batch, history, finish)');
       }
@@ -2285,32 +2260,6 @@ export default {
         }, advertisement);
         prepared = started.stream ? { stream: started.stream } : { fast: started };
         return respond(true, { prepared, metadataOverlay: overlayStats() });
-      } else if (phase === 'clone-abort') {
-        if (!await ownsCloneJob(fs, opts)) {
-          return respond(true, {
-            refused: 'not-owner',
-            metadataOverlay: overlayStats(),
-          });
-        }
-        mutated = true;
-        // File by file, then the directories: one recursive delete of a full
-        // clone's .git (vscode: ~300 packs, idx and staged files) passes a
-        // write group's row limit, and the clone would stay marked.
-        const gitdir = normalizePath(opts.dir) + '/.git';
-        const directories = [];
-        const walk = async (dir) => {
-          directories.push(dir);
-          for (const name of await fs.promises.readdir(dir)) {
-            const path = dir + '/' + name;
-            const stat = await fs.promises.lstat(path);
-            if (stat.isDirectory()) await walk(path);
-            else if (name !== CLONE_JOB_MARKER) await fs.promises.unlink(path);
-          }
-        };
-        await walk(gitdir);
-        await flushWave();
-        for (const dir of directories.reverse()) await fs.promises.rmdir(dir, { recursive: true });
-        await flushWave();
       } else if (opts.op === 'graph-filters') {
         // A full clone's changed-path filters (git/pack/graph-filters.ts):
         // reads the repository's packs, writes its commit-graph only.

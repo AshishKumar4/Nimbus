@@ -97,6 +97,14 @@ export interface GitNetworkOpts {
     timeout?: number;
     /** Clone-only: caller holds an exclusive mutation lease for dir. */
     exclusiveDestination?: boolean;
+    /**
+     * Clone-only, the DO's: the job's id (its record's, git/clone-job.ts, and
+     * the marker's the clone writes first), and what the clone tells the
+     * record when every object it fetches is in (its phase becomes
+     * 'checkout': a failure after leaves the repository, as git's does).
+     */
+    cloneJobId?: string;
+    onCloneCheckoutPhase?: () => Promise<void>;
     /** Clone-only: normalized root covered by the exclusive mutation lease. */
     exclusiveMutationRoot?: string;
     /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
@@ -155,7 +163,7 @@ export interface GitMetadataOverlayStats {
     maxEntries: number;
     maxAccountedBytes: number;
 }
-export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish' | 'clone-abort';
+export type GitCloneInvocationPhase = 'clone-prepare' | 'clone-batch' | 'clone-history' | 'clone-finish';
 export interface GitNetworkPhaseDiagnostic {
     phase: GitCloneInvocationPhase | 'operation';
     invocationId: string;
@@ -189,7 +197,8 @@ export interface GitNetworkResult {
     errorPhase?: GitCloneInvocationPhase | 'operation';
     errorCode?: GitNetworkErrorCode;
     budget?: GitCloneBudgetDiagnostic;
-    cleanupError?: string;
+    /** A clone that failed after it wrote: its caller cleans up (git/clone-job.ts). */
+    cleanup?: boolean;
     /** fetch-objects: objects the promisor pack holds. */
     fetchedObjects?: number;
     /** For graph-filters: the step's answer. */

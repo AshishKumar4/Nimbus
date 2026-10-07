@@ -74,6 +74,7 @@ import { encodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 // S10: heap probe + W5 OOM-ring persistence extracted.
 import * as _diag from './diag.js';
 import { ServedReads } from '../facets/read-profile.js';
+import { CloneRecovery } from '../git/clone-job.js';
 /** The ops whose non-null answer is a file's content served to a process. */
 const SERVED_READ_OPS = new Set(['readFile', 'readFileBytes', 'fsReadRange', 'fsReadRangeUncached']);
 // Re-exports preserved for callers that import from nimbus-session
@@ -463,6 +464,11 @@ export class NimbusSession extends CloudflareDurableObject {
                     (await ctx.storage.get(SESSION_DESTROYED_KEY)) !== undefined;
             }
             catch { /* storage unavailable — treat as live */ }
+            // Clones an earlier generation ran were cut short: their records are
+            // listed now, and their destinations reserved before the filesystem
+            // serves a write (ensureSqliteFs), or every write held if they could not be.
+            this.cloneRecovery = new CloneRecovery(ctx.storage, generation(ctx));
+            await this.cloneRecovery.discover();
         });
         // W1: the log-janitor alarm is armed on log ACTIVITY (see
         // hibernation.ts ensureLogJanitor), NOT here. Arming it in the
@@ -1024,9 +1030,17 @@ export class NimbusSession extends CloudflareDurableObject {
             this._w5RehydrateRingFromStorage().catch((e) => {
                 console.warn('[nimbus/W5] ring rehydrate failed:', e?.message);
             });
+            // Clones an earlier generation left were cut short: their destinations
+            // are reserved before anything can write there, and cleaned up
+            // (git/clone-job.ts) in the background, a slice at a time. Records not
+            // listed (yet) hold every write instead: none is served on a guess.
+            (this.cloneRecovery ??= new CloneRecovery(this.ctx.storage, generation(this.ctx)))
+                .start(this.sqliteFs, (task) => this.ctx.waitUntil(task));
         }
         return this.sqliteFs;
     }
+    /** The recovery of clones an earlier generation ran, discovered as this one began (git/clone-job.ts). */
+    cloneRecovery = null;
     // ── W5 Lever 5: ring buffer persistence on DO storage ─────────────────
     // Storage key W5_RING_STORAGE_KEY lives in ./keys.ts (S5).
     // Bounded ≤20 KB by oom-discriminator.ts; one async put per
