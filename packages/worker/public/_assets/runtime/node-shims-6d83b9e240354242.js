@@ -5616,6 +5616,14 @@ const __NimbusRelayedWebSocket = (() => {
           (result) => result,
         );
         if (opened.refused) {
+          if (this.readyState !== CONNECTING) {
+            // Closed while it handshook (an aborted request): its body is not
+            // wanted, and nothing of it may hold the process; close() reports the close.
+            if (opened.refused.body !== null) {
+              __nimbusUseRpcResultUnref(supervisor.wsClose(opened.refused.body), () => undefined).catch(() => {});
+            }
+            return;
+          }
           this[__NIMBUS_WS_HANDSHAKE] = __nimbusRefusal(supervisor, opened.refused);
           throw new Error("websocket relay: " + this.url + " did not upgrade (HTTP " + opened.refused.status + ")");
         }
@@ -11733,7 +11741,8 @@ Object.defineProperty(builtins, "https", {
       queueMicrotask(() => {
         if (aborted) this.emit("abort");
         if (error) this.emit("error", error);
-        this._emitClose();
+        // Node's request closes when its socket has, a turn later than its error.
+        setTimeout(() => this._emitClose(), 0);
       });
     }
 
