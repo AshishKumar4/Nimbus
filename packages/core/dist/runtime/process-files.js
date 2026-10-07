@@ -250,6 +250,14 @@ export class ProcessFiles {
         this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
         this.vfs.mount('/proc', this.proc);
         this.vfs.mount('/dev', new DevVFS());
+        // A wave's records the namespace answers itself (a mount, a directory
+        // above one, or a name whose parent resolves into one) are applied by
+        // its own operations, whoever streams the wave: a process's binding, or
+        // a command holding the engine.
+        engine.setWaveRouter({
+            composes: (path) => this.vfs.composes(path),
+            apply: (record, cred) => applyRoutedRecord(this.vfs.as(immutableCredential(cred)), record),
+        });
     }
     /**
      * An import page (N16); with `lazy` (N17) the chunks it lacks stay pending
@@ -1033,6 +1041,32 @@ export async function engineKey(view, engine, path) {
         if ((await view.stat(real, { follow: false }))?.dev !== engine.deviceId)
             return null;
         return normalizeVfsPath(below === '' ? real : `${real}/${below}`);
+    }
+}
+/**
+ * A wave's record on the namespace, by the operation a program would use:
+ * a directory is made with its parents, as the wave's directories are, and
+ * one already there is kept; a file is written whole (its mode, less the
+ * umask, when it creates it); a link replaces what is at its name; a
+ * removal takes the subtree, and a name already gone is not an error.
+ */
+async function applyRoutedRecord(namespace, record) {
+    switch (record.type) {
+        case 'directory':
+            await namespace.mkdir(record.path, { recursive: true, mode: record.mode });
+            return;
+        case 'file':
+            await namespace.writeFile(record.path, record.bytes, { mode: record.mode });
+            return;
+        case 'symlink':
+            if ((await namespace.stat(record.path, { follow: false })) !== null)
+                await namespace.unlink(record.path);
+            await namespace.symlink(record.target, record.path);
+            return;
+        case 'delete':
+            if ((await namespace.stat(record.path, { follow: false })) !== null)
+                await namespace.removeRecursive(record.path);
+            return;
     }
 }
 /** POSIX access(2) modes. */

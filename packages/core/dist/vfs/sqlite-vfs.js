@@ -7309,6 +7309,111 @@ export class SqliteVFS {
      * (ContentCutter holds at most one chunk of carry), so a streamed file is
      * stored exactly as the same bytes written any other way.
      */
+    waveRouter = null;
+    /** The namespace that routes a wave's records it answers itself (ProcessFiles installs its CompositeVFS). */
+    setWaveRouter(router) {
+        this.waveRouter = router;
+    }
+    /**
+     * Whether the namespace answers the record at `named` (a storage key, as
+     * the wave named it) itself: the name lies on a mount or under a directory
+     * the namespace composes, or its parent resolves (links followed) to one.
+     * A name that does not resolve yet (its parent made later in the wave) is
+     * this filesystem's: the record is refused or placed here as before.
+     */
+    routedElsewhere(router, named, cred) {
+        if (router.composes('/' + named))
+            return true;
+        let placed;
+        try {
+            placed = this.createdPath(this.storageKey(named, cred), cred);
+        }
+        catch {
+            return false;
+        }
+        const logical = this.logicalPath(placed, cred);
+        return logical !== null && logical !== named && router.composes('/' + logical);
+    }
+    /**
+     * Apply `record` through `router` when the namespace answers it, in its
+     * place in the wave: what the wave wrote here before it commits first
+     * (`settleBefore`), then the namespace's own operation, with its own
+     * refusals (EROFS on a read-only mount, EACCES, ENOENT, EXDEV); a file's
+     * bytes are gathered whole, as a mount takes them. True when routed.
+     */
+    async routeRecord(record, router, cred, at) {
+        switch (record.type) {
+            case 'delete': {
+                if (!this.routedElsewhere(router, record.path, cred))
+                    return false;
+                at.setPhase('publish');
+                at.settleBefore();
+                await router.apply({ type: 'delete', path: '/' + record.path }, cred);
+                at.committed();
+                return true;
+            }
+            case 'directory': {
+                if (!this.routedElsewhere(router, record.inode.path, cred))
+                    return false;
+                at.setPhase('publish');
+                at.settleBefore();
+                await router.apply({ type: 'directory', path: '/' + record.inode.path, mode: record.inode.mode }, cred);
+                at.committed();
+                return true;
+            }
+            case 'file-begin': {
+                if (!this.routedElsewhere(router, record.inode.path, cred))
+                    return false;
+                at.setPhase('validation');
+                this.validateInodeContentShape(record.inode);
+                at.setPhase('publish');
+                at.settleBefore();
+                at.file = { streamContentId: record.streamContentId, named: record.inode.path, inode: record.inode, parts: [], received: 0, nextChunk: 0 };
+                return true;
+            }
+            case 'file-chunk': {
+                const file = at.file;
+                if (file === null)
+                    return false;
+                at.setPhase('validation');
+                if (record.streamContentId !== file.streamContentId || record.path !== file.named) {
+                    throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
+                }
+                if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
+                    throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
+                }
+                file.nextChunk++;
+                file.received += record.data.byteLength;
+                // Copied out, and its credit given back: the mount takes the file whole.
+                file.parts.push(record.data.slice());
+                record.retention.release();
+                return true;
+            }
+            case 'file-end': {
+                const file = at.file;
+                if (file === null)
+                    return false;
+                at.setPhase('validation');
+                if (record.streamContentId !== file.streamContentId) {
+                    throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
+                }
+                if (file.received !== file.inode.size) {
+                    throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
+                }
+                at.file = null;
+                at.setPhase('publish');
+                const bytes = concatBytes(file.parts);
+                const path = '/' + file.named;
+                await router.apply(file.inode.kind === 'symlink'
+                    ? { type: 'symlink', path, target: new TextDecoder().decode(bytes) }
+                    : { type: 'file', path, mode: file.inode.mode, bytes }, cred);
+                at.committed();
+                return true;
+            }
+            default:
+                return false;
+        }
+    }
     writeStream(stream, options = {}, cred, origin = null) {
         return this.spanning(() => this.consumeStream(stream, options, cred, origin), options.mutationOwner);
     }
@@ -7334,6 +7439,9 @@ export class SqliteVFS {
             receipts: [],
         };
         let phase = 'decode';
+        const router = this.waveRouter;
+        /** A file the namespace answers, its bytes gathered until file-end. */
+        let routedFile = null;
         // The pending publish group. Everything reset by a flush lives here.
         let group = this.newPlan();
         let groupLeases = [];
@@ -7609,6 +7717,23 @@ export class SqliteVFS {
                     throw new Error('w7-frame: stream ended without batch-end');
                 }
                 const record = next.value;
+                if (router !== null && await this.routeRecord(record, router, cred, {
+                    get file() { return routedFile; },
+                    set file(file) { routedFile = file; },
+                    // Whatever the wave wrote here before the record commits first.
+                    settleBefore: () => {
+                        endLeading();
+                        flushDirectories();
+                        flushGroup();
+                        options.admit?.();
+                    },
+                    setPhase: (next) => { phase = next; },
+                    committed: () => {
+                        progress.committedGroupSequence++;
+                        progress.committedPathCount++;
+                    },
+                }))
+                    continue;
                 switch (record.type) {
                     case 'delete': {
                         phase = 'publish';

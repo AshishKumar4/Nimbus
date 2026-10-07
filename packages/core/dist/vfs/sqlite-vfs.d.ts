@@ -301,6 +301,40 @@ export interface WriteStreamReceipt {
     gid: number;
     dev: number;
 }
+/**
+ * A wave's record that lands on a mount, or under a directory the namespace
+ * composes, rather than in this filesystem (WaveRouter.apply). Paths are the
+ * namespace's ('/'-rooted), as the wave named them.
+ */
+export type RoutedWaveRecord = {
+    readonly type: 'delete';
+    readonly path: string;
+} | {
+    readonly type: 'directory';
+    readonly path: string;
+    readonly mode: number;
+} | {
+    readonly type: 'file';
+    readonly path: string;
+    readonly mode: number;
+    readonly bytes: Uint8Array;
+} | {
+    readonly type: 'symlink';
+    readonly path: string;
+    readonly target: string;
+};
+/**
+ * The namespace above this filesystem, for the records of a wave it answers
+ * itself: a mount, or a directory above one (SqliteVFS.setWaveRouter). Every
+ * caller of writeStream, through a process's binding or holding the engine,
+ * routes through it, so no record lands here hidden under a mount.
+ */
+export interface WaveRouter {
+    /** Whether the namespace answers `path` ('/'-rooted) itself, not this filesystem alone (CompositeVFS.composes). */
+    composes(path: string): boolean;
+    /** Apply `record` there as `cred` would by the namespace's own operation; a refusal throws its errno. */
+    apply(record: RoutedWaveRecord, cred: VfsCred): Promise<void>;
+}
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
 export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
     ok: true;
@@ -1752,6 +1786,25 @@ export declare class SqliteVFS {
      * (ContentCutter holds at most one chunk of carry), so a streamed file is
      * stored exactly as the same bytes written any other way.
      */
+    private waveRouter;
+    /** The namespace that routes a wave's records it answers itself (ProcessFiles installs its CompositeVFS). */
+    setWaveRouter(router: WaveRouter | null): void;
+    /**
+     * Whether the namespace answers the record at `named` (a storage key, as
+     * the wave named it) itself: the name lies on a mount or under a directory
+     * the namespace composes, or its parent resolves (links followed) to one.
+     * A name that does not resolve yet (its parent made later in the wave) is
+     * this filesystem's: the record is refused or placed here as before.
+     */
+    private routedElsewhere;
+    /**
+     * Apply `record` through `router` when the namespace answers it, in its
+     * place in the wave: what the wave wrote here before it commits first
+     * (`settleBefore`), then the namespace's own operation, with its own
+     * refusals (EROFS on a read-only mount, EACCES, ENOENT, EXDEV); a file's
+     * bytes are gathered whole, as a mount takes them. True when routed.
+     */
+    private routeRecord;
     private writeStream;
     private consumeStream;
     private _writeBatchWithRetry;
