@@ -17,7 +17,6 @@
 // would let the reconcile pass with the revision comparison deleted.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 import { existsSync, readFileSync } from 'node:fs';
 import { join, resolve } from 'node:path';
 
@@ -32,21 +31,6 @@ import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 const ROOT = resolve(import.meta.dirname, '../..');
 const dec = new TextDecoder();
 
-/** workerd's `ctx.storage.sql`: exec(query, ...params) → synchronous cursor. */
-function sqlShim() {
-  const db = new Database(':memory:');
-  return {
-    exec(query, ...params) {
-      if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE)/i.test(query)) {
-        db.query(query).run(...params);
-        return [];
-      }
-      return db.query(query).all(...params);
-    },
-    get databaseSize() { return 0; },
-  };
-}
-
 /** A fresh module scope holding the shipped store source, over its own SQLite. */
 function loadStore() {
   const factory = new Function(
@@ -57,7 +41,7 @@ function loadStore() {
       + ' bundle: __nimbusResidentBundle };',
   );
   const store = factory();
-  store.__residentBind({ storage: { sql: sqlShim() } });
+  store.__residentBind({ storage: { sql: createSqliteVfsTestHarness().sql } });
   // The launch's data plan names every file here: this test is about how the
   // store keeps what it holds, not about what it is asked to hold.
   store.__residentSetPlan(Array.from({ length: FILES }, (_, i) => `app/d${Math.floor(i / 100)}/f${i}.dat`));
@@ -367,7 +351,7 @@ if (fixturePath) {
     const store = new Function(FACET_RESIDENT_STORE_SOURCE + '\nreturn { __residentBind, __residentAdmit, __residentAdoptModuleBundle,'
       + ' __residentSynchronizeFromSupervisor, __residentCursor, __residentGet, __residentSetPlan, __residentStamp,'
       + ' __residentSetStorage, bundle: __nimbusResidentBundle };')();
-    store.__residentBind({ storage: { sql: sqlShim() } });
+    store.__residentBind({ storage: { sql: createSqliteVfsTestHarness().sql } });
     // No plan and no push roots: a repair refetches only what it dropped.
     store.__residentSetPlan([]);
     store.__residentAdoptModuleBundle({}, { epoch: vfs.epoch, rev: vfs.revision() });

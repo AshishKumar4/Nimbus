@@ -50,7 +50,7 @@
 //   up      [--no-build] [--rotate-secrets]
 //   test    [--ttl-ms <ms>] [...run-all.mjs flags]
 //   status
-//   token   [--ttl-ms <ms>]
+//   token   [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //
 // STATE
@@ -72,6 +72,7 @@ import { assertDeployIsolated, describeTarget } from '../../scripts/deploy-isola
 import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
 import {
   MACHINE_STATE_DIR,
+  PROBE_TARGET_VARS,
   ROOT,
   activeVersionId,
   assertCredentialHeld,
@@ -110,13 +111,11 @@ const TARGETS = {
     dir: join(ROOT, 'apps', 'probe'),
     configPath: 'apps/probe/wrangler.jsonc',
     envName: null,
-    // NIMBUS_DEBUG rides the deploy override for the same reason --name
-    // does: apps/probe has no env blocks, and the var must reach THIS
-    // worker — the one the suite drives — while nimbus-probe keeps its
-    // production gating. It opens the diag write surfaces
-    // (/api/_diag/cache/reset and friends) the cache-observability
-    // probes need.
-    deployArgs: ['--name', 'nimbus-probe-staging', '--var', 'NIMBUS_DEBUG:1'],
+    // The suite's vars ride the deploy override for the same reason --name
+    // does: apps/probe has no env blocks, and they must reach THIS worker —
+    // the one the suite drives — while nimbus-probe keeps its production
+    // gating (PROBE_TARGET_VARS).
+    deployArgs: ['--name', 'nimbus-probe-staging', ...PROBE_TARGET_VARS],
   },
 };
 
@@ -242,7 +241,9 @@ function status() {
 }
 
 async function token() {
-  process.stdout.write(await mintProbeToken(requireState().probe.secret, ttlMs()));
+  const state = requireState();
+  const jwt = await mintProbeToken(state.probe.secret, ttlMs());
+  process.stdout.write(flags.json ? `${JSON.stringify({ base: state.probe.base, token: jwt })}\n` : jwt);
 }
 
 async function session() {
