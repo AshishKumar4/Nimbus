@@ -65,6 +65,7 @@ import * as __real_path from 'node:path';
 import * as __real_http from 'node:http';
 import * as __real_https from 'node:https';
 import * as __real_net from 'node:net';
+import * as __real_util from 'node:util';
 import { handleAsNodeRequest as __nimbusHandleAsNodeRequest } from 'cloudflare:node';
 `.trim();
 }

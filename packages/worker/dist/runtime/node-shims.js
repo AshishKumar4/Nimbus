@@ -123,45 +123,6 @@ if (__nimbusReplay && typeof __real_net !== "undefined") {
     } });
   }
 }
-// ═══════════════════════════════════════════════════════════════════════
-// ──  Format helper ──────────────────────────────────────────────────
-// ═══════════════════════════════════════════════════════════════════════
-function __isErrorValue(v) {
-  return v instanceof Error || Object.prototype.toString.call(v) === "[object Error]";
-}
-// Node's util.inspect(err); JSON.stringify drops non-enumerable name/message/stack.
-function __fmtError(e, seen) {
-  if (seen.has(e)) return "[Circular *]";
-  seen.add(e);
-  let text;
-  try { text = typeof e.stack === "string" && e.stack ? e.stack : Error.prototype.toString.call(e); }
-  catch { text = String(e); }
-  const fields = [];
-  for (const key of Object.keys(e)) {
-    if (key === "cause") continue;
-    let value;
-    try { value = e[key]; } catch { continue; }
-    fields.push(key + ": " + __fmtField(value, seen));
-  }
-  if (Object.prototype.hasOwnProperty.call(e, "cause")) fields.push("[cause]: " + __fmtField(e.cause, seen));
-  if (fields.length === 0) return text;
-  return text + " {\\n" + fields.map((f) => "  " + f.split("\\n").join("\\n  ")).join(",\\n") + "\\n}";
-}
-function __fmtField(v, seen) {
-  if (typeof v === "string") return JSON.stringify(v);
-  if (v !== null && typeof v === "object" && __isErrorValue(v)) return __fmtError(v, seen);
-  return __fmt(v);
-}
-function __fmt(v) {
-  if (v === null) return "null";
-  if (v === undefined) return "undefined";
-  if (typeof v === "object") {
-    if (__isErrorValue(v)) return __fmtError(v, new Set());
-    try { return JSON.stringify(v); } catch { return String(v); }
-  }
-  return String(v);
-}
-
 function __nimbusDisposeRpcResult(value) {
   if ((typeof value !== "object" && typeof value !== "function") || value === null) return;
   const dispose = value[Symbol.dispose];
@@ -6056,36 +6017,17 @@ ${UNDICI_SHIM_CODE}
 // ═══════════════════════════════════════════════════════════════════════
 // ──  util module ────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
+// util.inspect, format and formatWithOptions are workerd's node:util, a port
+// of Node's lib/internal/util/inspect.js: what a program prints of a value,
+// through util or console, is what Node prints
+// (console-format-matches-node-workerd). consola's FancyReporter calls
+// formatWithOptions directly (nuxi init).
+const __realUtil = typeof __real_util !== "undefined"
+  ? (__real_util.default ?? __real_util) : globalThis.process.getBuiltinModule("util");
 const __utilMod = {
-  inspect: (o, opts) => {
-    if (o !== null && typeof o === "object" && __isErrorValue(o)) return __fmtError(o, new Set());
-    try { return JSON.stringify(o, null, 2); } catch { return String(o); }
-  },
-  format: (...args) => {
-    if (args.length === 0) return "";
-    const [fmt, ...a] = args;
-    if (typeof fmt !== "string") return args.map(__fmt).join(" ");
-    let i = 0;
-    return fmt.replace(/%[sdifjoO%]/g, (m) => {
-      if (m === "%%") return "%";
-      if (i >= a.length) return m;
-      const v = a[i++];
-      if (m === "%s") return String(v);
-      if (m === "%d" || m === "%i" || m === "%f") return Number(v).toString();
-      if (m === "%j") { try { return JSON.stringify(v); } catch { return "[Circular]"; } }
-      if (m === "%o" || m === "%O") return __utilMod.inspect(v);
-      return String(v);
-    }) + (i < a.length ? " " + a.slice(i).map(__fmt).join(" ") : "");
-  },
-  // util.formatWithOptions(inspectOptions, format[, ...args]) — identical
-  // to format() but takes inspect options as the first argument. consola's
-  // FancyReporter calls this directly (FancyReporter.formatArgs); its
-  // absence crashed every consola-based CLI under Nimbus with
-  // "(0 , import_node_util.formatWithOptions) is not a function" (nuxi init,
-  // at its first consola.error after "Welcome to Nuxt!"). This shim's
-  // inspect() ignores color/depth options, so dropping them and delegating
-  // to format() is behaviourally exact for what the shim can render.
-  formatWithOptions: (_inspectOptions, ...a) => __utilMod.format(...a),
+  inspect: __realUtil.inspect,
+  format: __realUtil.format,
+  formatWithOptions: __realUtil.formatWithOptions,
   promisify: (fn) => (...a) => new Promise((res, rej) => fn(...a, (e, r) => e ? rej(e) : res(r))),
   callbackify: (fn) => (...a) => { const cb = a.pop(); fn(...a).then(r => cb(null, r), e => cb(e)); },
   // X.5-Q: util.types polyfill expansion. The pre-X.5-Q 3-method shape
@@ -7060,9 +7002,9 @@ const __assertMod = Object.assign(
   (v, m) => { if (!v) { const e = new Error(m || "AssertionError"); e.code = "ERR_ASSERTION"; throw e; } },
   {
     ok: (v, m) => { if (!v) { const e = new Error(m || "The expression evaluated to a falsy value"); e.code = "ERR_ASSERTION"; throw e; } },
-    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __fmt(a) + " != " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __fmt(a) + " == " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
-    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __fmt(a) + " !== " + __fmt(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    equal: (a, b, m) => { if (a != b) { const e = new Error(m || __utilMod.inspect(a) + " != " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    notEqual: (a, b, m) => { if (a == b) { const e = new Error(m || __utilMod.inspect(a) + " == " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
+    strictEqual: (a, b, m) => { if (a !== b) { const e = new Error(m || __utilMod.inspect(a) + " !== " + __utilMod.inspect(b)); e.code = "ERR_ASSERTION"; throw e; } },
     notStrictEqual: (a, b, m) => { if (a === b) { const e = new Error(m || "Values are strictly equal"); e.code = "ERR_ASSERTION"; throw e; } },
     deepEqual: (a, b, m) => { if (JSON.stringify(a) !== JSON.stringify(b)) { const e = new Error(m || "deepEqual failed"); e.code = "ERR_ASSERTION"; throw e; } },
     deepStrictEqual: (a, b, m) => __assertMod.deepEqual(a, b, m),
@@ -8025,58 +7967,188 @@ const __childProcessMod = (() => {
 })();
 
 // ═══════════════════════════════════════════════════════════════════════
-// ──  console shim ───────────────────────────────────────────────────
+// ──  console ────────────────────────────────────────────────────────
 // ═══════════════════════════════════════════════════════════════════════
-// The Console constructor workerd's node:console does not implement (it throws
-// "The Console method is not implemented"). OpenTUI's console capture
-// (setupConsoleCapture) constructs \`new Console({ stdout, stderr, ... })\` to
-// redirect console output into a captured stream; without a working
-// constructor the TUI renderer setup throws and the program exits before its
-// first frame. This shim writes to the supplied streams via util.format /
-// inspect — the Node Console contract OpenTUI relies on.
-class __NimbusConsole {
-  constructor(options, stderrArg) {
-    let out, err, inspectOptions;
-    if (options && typeof options === "object" && !options.write) {
-      out = options.stdout; err = options.stderr || options.stdout; inspectOptions = options.inspectOptions;
-    } else {
-      out = options; err = stderrArg || options;
-    }
-    const fmt = (a) => a.map((x) => typeof x === "string" ? x : __utilMod.inspect(x, inspectOptions)).join(" ");
-    const write = (stream, s) => { try { if (stream && typeof stream.write === "function") stream.write(s); } catch {} };
-    this.log = (...a) => write(out, fmt(a) + "\\n");
-    this.info = (...a) => write(out, fmt(a) + "\\n");
-    this.debug = (...a) => write(out, fmt(a) + "\\n");
-    this.dir = (o, opts) => write(out, __utilMod.inspect(o, opts || inspectOptions) + "\\n");
-    this.error = (...a) => write(err, fmt(a) + "\\n");
-    this.warn = (...a) => write(err, fmt(a) + "\\n");
-    this.trace = (...a) => write(err, "Trace: " + fmt(a) + "\\n");
-    this.assert = (c, ...a) => { if (!c) write(err, "Assertion failed: " + fmt(a) + "\\n"); };
-    this.table = (d) => write(out, __utilMod.inspect(d, inspectOptions) + "\\n");
-    this.group = (...a) => { if (a.length) write(out, fmt(a) + "\\n"); };
-    this.groupCollapsed = this.group;
-    this.time = () => {}; this.timeEnd = () => {}; this.timeLog = () => {}; this.timeStamp = () => {};
-    this.clear = () => {}; this.count = () => {}; this.countReset = () => {}; this.groupEnd = () => {};
-    this.Console = __NimbusConsole;
-  }
+// Node's Console (lib/internal/console/constructor.js), the one console:
+// each method formats its arguments with util.formatWithOptions, in colour
+// for a stream that is a terminal with colours (Node's shouldColorize),
+// indents the line by its group and writes it through the stream's own
+// write. The process's console is one over process.stdout and
+// process.stderr, so what it prints is theirs: captured, streamed live,
+// nothing once the program stopped. workerd's node:console has no Console
+// constructor ("The Console method is not implemented"), which OpenTUI's
+// console capture calls over streams of its own.
+function __nimbusShouldColorize(stream) {
+  const force = __processMod.env.FORCE_COLOR;
+  // Node's getColorDepth for FORCE_COLOR: '', '1', 'true', '2' and '3' have colours.
+  if (force !== undefined) return ["", "1", "true", "2", "3"].includes(force);
+  return Boolean(stream && stream.isTTY) && (typeof stream.getColorDepth === "function" ? stream.getColorDepth() > 2 : true);
 }
-// The captured form (a program whose output is a pipe, a file, a shell
-// line's result): nothing after process.exit(), as the live form and the
-// process streams (stopped programs write nothing).
-const __consoleMod = {
-  log: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  error: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
-  warn: (...a) => { if (!__nimbusProgramStopped) stderr += __utilMod.format(...a) + "\\n"; },
-  info: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  debug: (...a) => { if (!__nimbusProgramStopped) stdout += __utilMod.format(...a) + "\\n"; },
-  dir: (o, opts) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(o, opts) + "\\n"; },
-  trace: (...a) => { if (!__nimbusProgramStopped) stderr += "Trace: " + __utilMod.format(...a) + "\\n"; },
-  assert: (c, ...a) => { if (!c && !__nimbusProgramStopped) stderr += "Assertion failed: " + __utilMod.format(...a) + "\\n"; },
-  time: () => {}, timeEnd: () => {}, timeLog: () => {}, clear: () => {},
-  count: () => {}, countReset: () => {}, group: () => {}, groupEnd: () => {},
-  table: (d) => { if (!__nimbusProgramStopped) stdout += __utilMod.inspect(d) + "\\n"; },
-  Console: __NimbusConsole,
-};
+// Node's formatTime (lib/internal/util/debuglog.js), for console.time.
+function __nimbusFormatTime(ms) {
+  let hours = 0;
+  let minutes = 0;
+  let seconds = 0;
+  if (ms >= 1000) {
+    if (ms >= 60000) {
+      if (ms >= 3600000) {
+        hours = Math.floor(ms / 3600000);
+        ms = ms % 3600000;
+      }
+      minutes = Math.floor(ms / 60000);
+      ms = ms % 60000;
+    }
+    seconds = ms / 1000;
+  }
+  if (hours !== 0 || minutes !== 0) {
+    const [whole, fraction] = seconds.toFixed(3).split(".");
+    const pad = (n) => String(n).padStart(2, "0");
+    const res = hours !== 0 ? hours + ":" + pad(minutes) : minutes;
+    return res + ":" + pad(whole) + "." + fraction + " (" + (hours !== 0 ? "h:m" : "") + "m:ss.mmm)";
+  }
+  if (seconds !== 0) return seconds.toFixed(3) + "s";
+  return Number(ms.toFixed(3)) + "ms";
+}
+class __NimbusConsole {
+  #stdout;
+  #stderr;
+  #ignoreErrors;
+  #colorMode;
+  #inspectOptions;
+  #groupIndentation;
+  #groupIndent = "";
+  #counts = new Map();
+  #timers = new Map();
+  constructor(options, stderr, ignoreErrors) {
+    if (!options || typeof options.write === "function") options = { stdout: options, stderr, ignoreErrors };
+    const { stdout: out, stderr: err = out, ignoreErrors: ignore = true, colorMode = "auto", inspectOptions, groupIndentation = 2 } = options;
+    for (const [name, stream] of [["stdout", out], ["stderr", err]]) {
+      if (!stream || typeof stream.write !== "function") {
+        const e = new TypeError("The \\"" + name + "\\" argument must be an instance of a writable stream.");
+        e.code = "ERR_CONSOLE_WRITABLE_STREAM";
+        throw e;
+      }
+    }
+    this.#stdout = () => out;
+    this.#stderr = () => err;
+    this.#ignoreErrors = ignore;
+    this.#colorMode = colorMode;
+    this.#inspectOptions = inspectOptions;
+    this.#groupIndentation = groupIndentation;
+    // Node binds every method to its console, so a method taken off it works.
+    for (const key of Object.getOwnPropertyNames(__NimbusConsole.prototype)) {
+      if (key !== "constructor" && typeof this[key] === "function") this[key] = this[key].bind(this);
+    }
+  }
+  // The process's console: over whatever process.stdout and process.stderr are when it writes.
+  static forProcess(stdout, stderr) {
+    const console = new __NimbusConsole({ write() {} });
+    console.#stdout = stdout;
+    console.#stderr = stderr;
+    return console;
+  }
+  #optionsFor(stream) {
+    const color = this.#colorMode === "auto" ? __nimbusShouldColorize(stream) : this.#colorMode;
+    const options = this.#inspectOptions;
+    if (options) return options.colors === undefined ? { ...options, colors: color } : options;
+    return color ? { colors: true } : {};
+  }
+  #format(stream, args) {
+    return __utilMod.formatWithOptions(this.#optionsFor(stream), ...args);
+  }
+  #write(stream, string) {
+    const indent = this.#groupIndent;
+    if (indent.length !== 0) {
+      if (string.includes("\\n")) string = string.replace(/\\n/g, "\\n" + indent);
+      string = indent + string;
+    }
+    try {
+      stream.write(string + "\\n");
+    } catch (e) {
+      if (!this.#ignoreErrors) throw e;
+    }
+  }
+  log(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  info(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  debug(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  dirxml(...args) { const out = this.#stdout(); this.#write(out, this.#format(out, args)); }
+  warn(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
+  error(...args) { const err = this.#stderr(); this.#write(err, this.#format(err, args)); }
+  dir(object, options) {
+    const out = this.#stdout();
+    this.#write(out, __utilMod.inspect(object, { customInspect: false, ...this.#optionsFor(out), ...options }));
+  }
+  trace(...args) {
+    const err = { name: "Trace", message: this.#format(this.#stderr(), args) };
+    Error.captureStackTrace(err, __NimbusConsole.prototype.trace);
+    this.error(err.stack);
+  }
+  assert(expression, ...args) {
+    if (expression) return;
+    args[0] = "Assertion failed" + (args.length === 0 ? "" : ": " + args[0]);
+    Reflect.apply(this.warn, this, args);
+  }
+  clear() {
+    const out = this.#stdout();
+    if (!out.isTTY || __processMod.env.TERM === "dumb") return;
+    if (typeof out.cursorTo === "function") out.cursorTo(0, 0);
+    if (typeof out.clearScreenDown === "function") out.clearScreenDown();
+  }
+  count(label = "default") {
+    label = String(label);
+    const count = (this.#counts.get(label) ?? 0) + 1;
+    this.#counts.set(label, count);
+    this.log(label + ": " + count);
+  }
+  countReset(label = "default") {
+    label = String(label);
+    if (!this.#counts.has(label)) {
+      globalThis.process.emitWarning("Count for '" + label + "' does not exist");
+      return;
+    }
+    this.#counts.delete(label);
+  }
+  group(...data) {
+    if (data.length > 0) Reflect.apply(this.log, this, data);
+    this.#groupIndent += " ".repeat(this.#groupIndentation);
+  }
+  groupCollapsed(...data) { Reflect.apply(this.group, this, data); }
+  groupEnd() {
+    this.#groupIndent = this.#groupIndent.slice(0, this.#groupIndent.length - this.#groupIndentation);
+  }
+  time(label = "default") {
+    label = String(label);
+    if (this.#timers.has(label)) {
+      globalThis.process.emitWarning("Label '" + label + "' already exists for console.time()");
+      return;
+    }
+    this.#timers.set(label, performance.now());
+  }
+  timeEnd(label = "default") {
+    label = String(label);
+    if (this.#timeLog("timeEnd", label, [])) this.#timers.delete(label);
+  }
+  timeLog(label = "default", ...data) {
+    this.#timeLog("timeLog", String(label), data);
+  }
+  #timeLog(name, label, data) {
+    const start = this.#timers.get(label);
+    if (start === undefined) {
+      globalThis.process.emitWarning("No such label '" + label + "' for console." + name + "()");
+      return false;
+    }
+    Reflect.apply(this.log, this, ["%s: %s", label, __nimbusFormatTime(performance.now() - start), ...data]);
+    return true;
+  }
+  table(data) {
+    Reflect.apply(this.log, this, [data]);
+  }
+  timeStamp() {}
+  profile() {}
+  profileEnd() {}
+}
+const __consoleMod = __NimbusConsole.forProcess(() => __processMod.stdout, () => __processMod.stderr);
+__consoleMod.Console = __NimbusConsole;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  process shim ───────────────────────────────────────────────────
