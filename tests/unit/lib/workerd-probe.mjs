@@ -86,7 +86,7 @@ function stageRuntime(name, work) {
   return { name, version, entry, puts };
 }
 
-async function putObjects(puts, persist, work) {
+async function putObjects(puts, persist, work, wrangler) {
   // One at a time: each is a wrangler process with its own workerd over the
   // same local store, and two at once crash it.
   const queue = [...puts];
@@ -98,7 +98,7 @@ async function putObjects(puts, persist, work) {
         const args = ['r2', 'object', 'put', `${BUCKET}/${key}`, '--file', file, '--local', '--persist-to', persist];
         if (contentType) args.push('--content-type', contentType);
         // wrangler writes its own files (an update check) under TMPDIR: the harness's, which stop() removes.
-        const child = spawn(WRANGLER, args, { cwd: PROBE_APP, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TMPDIR: work } });
+        const child = spawn(wrangler, args, { cwd: PROBE_APP, stdio: ['ignore', 'ignore', 'pipe'], env: { ...process.env, TMPDIR: work } });
         let err = '';
         child.stderr.on('data', (d) => { err += d; });
         child.on('close', (code) => (code === 0 ? done() : fail(new Error(`r2 put ${key}: ${err.slice(-600)}`))));
@@ -109,21 +109,33 @@ async function putObjects(puts, persist, work) {
 }
 
 /**
+ * End a wrangler dev process and its whole group: wrangler spawns workerd
+ * and an esbuild service beneath it, and they outlive it. One left behind
+ * holds the stderr this process reads, so this process never exits
+ * (measured: an esbuild service, reparented to init, 3 of 48 copies of a
+ * test at eight at once, each after its first wrangler lost its bind).
+ * @param {import('node:child_process').ChildProcess} child
+ */
+async function endGroup(child) {
+  if (child.exitCode === null && child.signalCode === null) {
+    try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
+    await new Promise((done) => { child.once('close', done); setTimeout(done, 5000); });
+  }
+  try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
+}
+
+/**
  * Boot apps/probe on workerd with `runtimes` installable, and `vars` over
- * its config vars (`wrangler dev --var`).
+ * its config vars (`wrangler dev --var`). `wrangler` is the binary to run
+ * (this lib's own test passes a stand-in).
  * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number }>}
  */
-export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {} } = {}) {
+export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, wrangler = WRANGLER } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
   const persist = join(work, 'state');
   let child = null;
   const stop = async () => {
-    if (child && child.exitCode === null) {
-      // wrangler spawns workerd beneath it: end the whole group.
-      try { process.kill(-child.pid, 'SIGTERM'); } catch { /* gone */ }
-      await new Promise((done) => { child.once('close', done); setTimeout(done, 5000); });
-      try { process.kill(-child.pid, 'SIGKILL'); } catch { /* gone */ }
-    }
+    if (child) await endGroup(child);
     rmSync(work, { recursive: true, force: true });
   };
   try {
@@ -135,7 +147,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
     // The worker reads the catalog its NIMBUS_RUNTIME_CATALOG_SHA256 var
     // names, by that digest: this one, staged under it and passed below.
     const catalogSha256 = createHash('sha256').update(readFileSync(catalogPath)).digest('hex');
-    await putObjects([...staged.flatMap((s) => s.puts), { key: `catalog/sha256/${catalogSha256}.json`, file: catalogPath, contentType: 'application/json' }], persist, work);
+    await putObjects([...staged.flatMap((s) => s.puts), { key: `catalog/sha256/${catalogSha256}.json`, file: catalogPath, contentType: 'application/json' }], persist, work, wrangler);
 
     const secret = randomBytes(24).toString('hex');
     const deadline = Date.now() + bootTimeoutMs;
@@ -149,7 +161,7 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       const port = await freePort();
       console.log('workerd-probe: starting wrangler dev');
       log = '';
-      child = spawn(WRANGLER, [
+      child = spawn(wrangler, [
         'dev', '--local', '--ip', '127.0.0.1', '--port', String(port), '--persist-to', persist,
         '--show-interactive-dev-session=false', '--var', `JWT_SECRET:${secret}`,
         '--var', `NIMBUS_RUNTIME_CATALOG_SHA256:${catalogSha256}`,
@@ -172,7 +184,10 @@ export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180
       child.stderr.on('data', watchReload);
       for (;;) {
         if (child.exitCode !== null) {
-          if (attempt < 3 && /Address already in use/.test(log)) break;
+          if (attempt < 3 && /Address already in use/.test(log)) {
+            await endGroup(child);
+            break;
+          }
           throw new Error(`wrangler dev exited ${child.exitCode}:\n${log.slice(-2000)}`);
         }
         const ready = /Ready on (http:\/\/127\.0\.0\.1:\d+)/.exec(log);
