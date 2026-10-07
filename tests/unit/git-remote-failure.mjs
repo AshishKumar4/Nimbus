@@ -13,6 +13,8 @@
 //     terminal ("terminal prompts disabled"); with credentials offered,
 //     "fatal: Authentication failed for '<url>/'".
 //   - The URL as git shows it: a slash at its end, its credentials taken out.
+//   - A remote that is not configured: git's "does not appear to be a git
+//     repository" (fetch and push 128, pull 1).
 // And remoteFailureText's lines, on their own, for each kind.
 
 import assert from 'node:assert/strict';
@@ -124,6 +126,18 @@ try {
       assert.deepEqual([o.code, fatal(o.stderr, transport)], [h.code, fatal(h.stderr, transport).replace(url, anonymizeUrl(url))], `${name}: ${args[0]} (git's: ${h.stderr}; ours: ${o.stderr})`);
     }
     console.log(`  ok  ${name}: clone, fetch, pull and push exit as git does, with git's message`);
+  }
+
+  // A remote that is not configured.
+  {
+    const hostRepo = join(work, 'host-repo-1');
+    for (const args of [['fetch', 'nosuch'], ['pull', 'nosuch', 'main'], ['push', 'nosuch', 'main']]) {
+      const h = await realGit(hostRepo, args);
+      const o = await session.git('/home/user/repo-1', args);
+      assert.deepEqual([o.code, o.stderr.split('\n').filter((line) => !line.startsWith('Fetching') && !line.startsWith('Pulling') && !line.startsWith('Pushing')).join('\n').trim()],
+        [h.code, h.stderr.trim()], `${args[0]} of a remote not configured (git's: ${h.stderr}; ours: ${o.stderr})`);
+    }
+    console.log('  ok  a remote not configured: git\'s "does not appear to be a git repository", exit as git');
   }
 } finally {
   server.close();

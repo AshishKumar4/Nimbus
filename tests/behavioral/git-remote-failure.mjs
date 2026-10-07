@@ -45,13 +45,16 @@ try {
   a.check('exits 128', missing.code === 128, missing.out.slice(-400));
   a.check('with git\'s prompt failure', missing.out.includes("fatal: could not read Username for 'https://github.com': terminal prompts disabled"), missing.out.slice(-400));
 
-  await step('a repository whose origin does not resolve', 'mkdir -p /home/user/lr && cd /home/user/lr && git init -q && echo a > a && git add a && git -c user.name=a -c user.email=a@b commit -q -m one && git remote add origin https://example.invalid/r.git');
+  const made = await step('a repository whose origin does not resolve', 'mkdir -p /home/user/lr && cd /home/user/lr && git init -q && git config user.name a && git config user.email a@b && echo a > a && git add a && git commit -q -m one && git remote add origin https://example.invalid/r.git');
+  a.check('the repository is made', made.code === 0, made.out.slice(-400));
   const fetched = await step('fetch from it', 'git fetch');
   a.check('fetch exits 128 with "unable to access"', fetched.code === 128 && fetched.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), fetched.out.slice(-400));
-  const pulled = await step('pull from it', 'git -c user.name=a -c user.email=a@b pull origin main');
+  const pulled = await step('pull from it', 'git pull origin main');
   a.check('pull exits 1 with "unable to access"', pulled.code === 1 && pulled.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), pulled.out.slice(-400));
   const pushed = await step('push to it', 'git push origin main');
   a.check('push exits 128 with "unable to access"', pushed.code === 128 && pushed.out.includes("fatal: unable to access 'https://example.invalid/r.git/': "), pushed.out.slice(-400));
+  const nosuch = await step('fetch of a remote not configured', 'git fetch nosuch');
+  a.check('exits 128 with "does not appear to be a git repository"', nosuch.code === 128 && nosuch.out.includes("fatal: 'nosuch' does not appear to be a git repository"), nosuch.out.slice(-400));
 } finally {
   await t.close().catch(() => {});
   await deleteSession(sid, 'git-remote-failure').catch(() => {});
