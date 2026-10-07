@@ -69,6 +69,7 @@ const facets = {
     return {
       startProcess: (args) => program.startProcess(args),
       handleHttpRequest: (request) => program.handleHttpRequest(request),
+      held: () => program.held(),
       numberings: async () => (await reader()).numberings(),
       number: async (numbering) => (await reader()).number(numbering),
       readAfter: async (after, maxBytes) => (await reader()).readAfter(after, maxBytes),
@@ -139,6 +140,40 @@ assert.equal(facetStores.has(row.facet), false, 'the drained store was kept');
 
 console.log('  [1] killed: its exit is told once its log is drained, and its book row and store go');
 
+// ── A booted resident dies on its own (out of memory): drained, then its exit ──
+// Its class holds held() open while its isolate lives; the rejection is the
+// process lost. Red before: nothing heard a booted resident's death, so it
+// stayed "running" and its log was never drained.
+kernel.mkdir('home/user/app/out3', { recursive: true, mode: 0o755 });
+kernel.chown('home/user/app/out3', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+const oom = await manager.spawnNode("require('http').createServer(() => {}).listen(8082);", {
+  filename: '/home/user/app/oom.js', cwd: '/home/user/app', command: 'node oom.js',
+  argv: ['/home/user/app/oom.js'], invokerPid: invoker.pid,
+});
+await settle(() => booked().some((entry) => entry.pid === oom.pid));
+const oomRow = booked().find((entry) => entry.pid === oom.pid);
+const oomClient = processFsClient({
+  session: { openWriter: () => never, writeBatchStream: () => never },
+  journal: sqlJournal(facetSql(oomRow.facet)),
+  retry: { backoffMs: [1], stallMs: 60_000, answerDeadlineMs: 60_000 },
+});
+for (let i = 0; i < 200; i++) {
+  oomClient.submit({ type: 'call', call: { call: 'writeFile', path: `home/user/app/out3/h${i}`, mode: 0o644, data: enc.encode(`${i}`) } }, { acknowledged: true });
+}
+const out3 = () => kernel.readdir('home/user/app/out3').length;
+const out3AtExit = new Map();
+const realExit = processes.exit.bind(processes);
+processes.exit = (pid, code) => { if (pid === oom.pid && !out3AtExit.has(pid)) out3AtExit.set(pid, out3()); return realExit(pid, code); };
+world.die(oomRow.facet);
+await settle(() => processes.get(oom.pid)?.state !== 'running');
+processes.exit = realExit;
+assert.equal(processes.get(oom.pid)?.state, 'exited', 'a resident that died stayed running');
+assert.equal(processes.get(oom.pid)?.exitCode, 1);
+assert.equal(out3AtExit.get(oom.pid), 200, `its exit was told with ${out3AtExit.get(oom.pid)} of the 200 files it was told landed`);
+await settle(() => !booked().some((entry) => entry.pid === oom.pid));
+assert.equal(booked().some((entry) => entry.pid === oom.pid), false);
+console.log('  [2] died on its own after its boot: drained, then its exit told (1)');
+
 // ── An instance reset with a resident's log undrained: drained at the next start ──
 // The old instance never released its facet (it was reset); the new one
 // drains the log from the store the book names before anything runs, and no
@@ -175,7 +210,7 @@ await runColdStart(ctx2);
 assert.equal(kernel.readdir('home/user/app/out2').length, 100, 'the next start did not drain the log a reset left');
 assert.equal(booked().some((entry) => entry.pid === lost.pid), false, 'the drained log stayed booked');
 assert.equal(facetStores.has(lostRow.facet), false, 'the drained store was kept');
-console.log('  [2] reset with a log undrained: the next start drains it, books it off and drops its store');
+console.log('  [3] reset with a log undrained: the next start drains it, books it off and drops its store');
 
 console.log('resident-journal-exit-order: ok');
 process.exit(0);

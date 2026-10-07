@@ -111,6 +111,8 @@ export async function createLoadedWorkerEntrypoint(
 /** The subset of a facet stub a resident process exposes to whoever opened it. */
 interface ResidentFacetStub {
   startProcess(args?: unknown): Promise<unknown>;
+  /** Pending for as long as the process's isolate lives (a journaling resident's class: ProcessHostParams.journal). */
+  held(): Promise<never>;
   handleHttpRequest(request: Request): Promise<Response>;
   /**
    * A facet stub is a Durable Object stub, so it fetches. That is the one path
@@ -588,11 +590,22 @@ function spawnResident(
   // A caller reads whichever of `started` and the lifecycle it needs, so keep
   // the runtime from reporting the other as an unhandled rejection.
   started.catch(() => {});
+  // A facet's isolate dies on its own (out of memory, out of CPU) and this
+  // object goes on (measured: the journal probe, 2026-10-07). A journaling
+  // resident's class holds held() open while its isolate lives: its
+  // rejection, unless this release ended it, is the process lost. Any
+  // other class's death is not seen here.
+  const lost: Promise<never> = params.journal ? started.then(() => facet.held()).then(
+    () => { throw new Error(`Nimbus: resident process ${params.pid}'s held() returned`); },
+    (error: unknown) => {
+      if (released) return new Promise<never>(() => {});
+      throw new Error(`Nimbus: resident process ${params.pid} died: ${error instanceof Error ? error.message : String(error)}`);
+    },
+  ) : new Promise<never>(() => {});
+  lost.catch(() => {});
   return {
     started,
-    // A facet cannot die without taking its Durable Object — and this object —
-    // with it, so there is no independent death to report.
-    lost: new Promise<never>(() => {}),
+    lost,
     handleHttpRequest: (request: Request) => facet.handleHttpRequest(request),
     handleWebSocketRequest: (request: Request) => facet.fetch(request),
     release,

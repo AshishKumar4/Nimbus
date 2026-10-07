@@ -42,6 +42,7 @@
  */
 
 import { exitCodeForAbortSignal } from '../substrate/lifo/shell/signals.js';
+import { unsettledNoteOf } from '../_shared/process-fs-client.js';
 import type { WorkspaceNetwork } from '../_shared/workspace-network.js';
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import { resolveVfsPath } from '../vfs/path.js';
@@ -453,7 +454,11 @@ export function makeCPythonRunnerFactory(deps: {
         });
       } catch (e: unknown) {
         // Killed: the program ends as an interrupted one does.
-        if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
+        if (ctx.signal.aborted) {
+          // What it may have lost is said however it ended (unsettledEnd).
+          ctx.stderr.write(unsettledNoteOf(e));
+          return exitCodeForAbortSignal(ctx.signal);
+        }
         ctx.stderr.write(`${binName}: ${errorMessage(e)}\n`);
         return 1;
       } finally {

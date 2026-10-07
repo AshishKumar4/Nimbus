@@ -272,6 +272,11 @@ export function buildRubySocketProcessWorker(preamble: string): string {
     // Its write log is kept in its own store (process-fs-journal.ts).
     '    globalThis.__nimbusFsJournalSql = ctx.storage.sql;',
     '  }',
+    // Pending while this isolate lives: the coordinator learns of its death
+    // (out of memory, out of CPU) by this call's rejection.
+    '  held() {',
+    '    return new Promise(() => {});',
+    '  }',
     '  async startProcess(args) {',
     '    __nimbusAdoptRubySupervisor(this.env);',
     '    return __nimbusStartRubyProcess(args || {});',

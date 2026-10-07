@@ -8676,8 +8676,9 @@ function __makeProcessStdin() {
         }
         const trace = (e && e.stack) || (e && e.message) || String(e);
         stderr += trace + "\\n";
-        try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(trace + "\\n")), () => undefined).catch(() => {}); } catch {}
-        try { __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined).catch(() => {}); } catch {}
+        __nimbusReleaseStderr(trace + "\\n");
+        const exitGate = __nimbusOutputGate();
+        try { Promise.resolve(exitGate).then(() => __nimbusUseRpcResult(__supervisor.reportExit(1, trace + "\\n"), () => undefined)).catch(() => {}); } catch {}
         try { r.end(); } catch {}
       });
       __nimbusLiveStdinPump = pump;
@@ -8817,6 +8818,24 @@ function __makeProcessOutputStream(streamName) {
   Object.defineProperty(stream, "rows", { enumerable: true, get() { return __nimbusTtyRows; } });
   __nimbusTerminalOutputStreams.push(stream);
   return stream;
+}
+
+// The gate an output or exit leaving the process is released at, taken when
+// it is made (ProcessFsClient.effect): null when nothing it logged waits.
+function __nimbusOutputGate() {
+  const client = globalThis.__nimbusProcessFs;
+  return client ? client.effect() : null;
+}
+
+// Send a line to the session's stderr for this process, at its gate.
+function __nimbusReleaseStderr(line) {
+  if (!__supervisor || typeof __supervisor.stderr !== "function") return;
+  const send = () => __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined);
+  const gate = __nimbusOutputGate();
+  let task;
+  try { task = gate === null ? send() : gate.then(send); } catch { return; }
+  task = Promise.resolve(task).catch(() => {});
+  if (Array.isArray(__pendingIO)) __pendingIO.push(task);
 }
 
 function __nimbusReportProcessExit(code, reason) {
@@ -9003,9 +9022,7 @@ function __nimbusFailUnhandledAsync(error, kind) {
     : "Uncaught exception: ";
   const line = label + __nimbusRuntimeErrorTrace(error) + "\\n";
   stderr += line;
-  if (__supervisor && typeof __supervisor.stderr === "function") {
-    try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined).catch(() => {}); } catch {}
-  }
+  __nimbusReleaseStderr(line);
   __nimbusReportProcessExit(1, line);
 }
 

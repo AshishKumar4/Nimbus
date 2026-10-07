@@ -172,6 +172,34 @@ function mortalPort(s, live = Infinity) {
   assert.equal(cursors(PID), 0, 'its cursors outlived its drain');
 }
 
+// ── The effect gate: a durable log releases effects at once; a heap log, once answered ──
+// (ProcessFsClient.effect.) Red before: there was no gate, and a one-shot's
+// output left ahead of changes it could still lose.
+{
+  const s = session();
+  const gate = Promise.withResolvers();
+  s.fault = async (deliver) => { await gate.promise; return deliver(); };
+  const durable = processFsClient({ session: s.port, journal: sqlJournal(facetSql()), retry: RETRY });
+  durable.submit(writeFile('home/user/out/g0', 'a'), { acknowledged: true });
+  assert.equal(durable.effect(), null, 'a resident waited at an effect for what its store keeps');
+  const heap = processFsClient({ session: s.port, retry: RETRY });
+  assert.equal(heap.effect(), null, 'nothing logged: nothing to wait for');
+  heap.submit(writeFile('home/user/out/g1', 'b'), { acknowledged: true });
+  const released = heap.effect();
+  assert.ok(released instanceof Promise);
+  let done = false;
+  released.then(() => { done = true; });
+  // Logged after the effect: not waited for.
+  await new Promise((resolve) => setTimeout(resolve, 20));
+  assert.equal(done, false, 'the effect was released before the change ahead of it was answered');
+  gate.resolve();
+  s.fault = null;
+  await released;
+  assert.equal(s.text('home/user/out/g1'), 'b');
+  await durable.settle();
+  await heap.settle();
+}
+
 // ── A refusal is the change's answer: reported, and the drain goes on ──
 {
   const s = session();

@@ -813,6 +813,43 @@ Python, Ruby, and WASI still need direct long-lived bridge integration.
 - `fsync` and process exit are durability boundaries.
 - Hibernation may close runtime caches, but it must not lose committed writes.
 
+### Durability Of A Process's Writes
+
+A process's filesystem client (`_shared/process-fs-client.ts`) tells the
+program a change succeeded once the change is logged, before the session has
+answered it. The client may run ahead of the session by at most
+`DECIDED_BACKLOG_OPS` (2,032) changes or `DECIDED_BACKLOG_BYTES` (16 MiB).
+Beyond that, a write waits. Processes come in two kinds, and they differ in
+what a death can cost.
+
+- **Residents lose nothing.** This covers node, python, ruby and opencode
+  processes in a SQLite-backed facet. The client logs every change in the
+  facet's own store before the program is told it succeeded
+  (`process-fs-journal.ts`). The session books the facet when it opens
+  (`nimbus_process_journals`). When the process is released (it exited, was
+  killed, or ran out of memory or CPU), the session drains whatever the log
+  still holds. It numbers each change exactly as the process did, so a change
+  that already landed is answered and is not applied twice. Only after the
+  drain is the store deleted and the exit status reported. A log that a reset
+  left behind is drained at the next start, before anything runs. A log that
+  cannot be read is reported by name and kept. It is never dropped silently.
+- **One-shots lose at most a bounded tail, and say so.** This covers node,
+  python, ruby and WASI programs run once in a Dynamic Worker, which has no
+  store of its own. Nothing the process emits is released before every change
+  it logged ahead of that emission has been answered:
+  - stdout and stderr;
+  - its exit status;
+  - an outbound request, WebSocket frame or child spawn.
+
+  The gate is `ProcessFsClient.effect()`. Bytes written to a raw TCP
+  socket (`node:net`/`node:tls`) are not gated yet. If the process dies or is killed,
+  it loses at most the changes it made after its last released effect, up to
+  the backlog bound. Nothing it released ever claims a change that was lost.
+  When a one-shot that had sent changes ends abnormally, its output says so,
+  naming the bound (`UNSETTLED_END_NOTE`), and its exit status is non-zero.
+  The one case that goes unsaid is a process that dies within one round trip
+  of its very first change, before its write epoch reaches the session.
+
 ### Performance Rules
 
 The live bridge must be fast enough for Durable Object constraints:

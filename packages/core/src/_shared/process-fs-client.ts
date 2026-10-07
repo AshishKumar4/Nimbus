@@ -169,6 +169,17 @@ export interface ProcessFsClient {
   submit(op: ProcessFsOp, options?: { acknowledged?: boolean }): Promise<ProcessFsAnswer>;
   /** Resolves once every op logged so far is answered (not those logged after: a writing process is never idle). */
   flush(): Promise<void>;
+  /**
+   * The gate an effect leaving the process (its output, its exit, a message
+   * out) is released at, taken when the effect is made. A process whose log
+   * is durable (its facet's store: a resident) loses nothing it logged, so
+   * its effects wait for nothing: null. Any other (a one-shot) releases an
+   * effect only once every op logged ahead of it is answered (flush), so a
+   * crash loses at most what it logged after its last released effect
+   * (DECIDED_BACKLOG_OPS), and no effect is ever seen ahead of a change that
+   * was lost.
+   */
+  effect(): Promise<void> | null;
   /** The end of the run: everything answered; throws naming every failure not yet taken. */
   settle(): Promise<void>;
   /** The failures not yet reported, taken (the next effect reports them). */
@@ -241,6 +252,28 @@ export const PROCESS_FS_HEAP_WINDOW_BYTES = 2 * WAVE_BYTES;
  */
 export const DECIDED_BACKLOG_OPS = 2 * WAVE_PATHS;
 export const DECIDED_BACKLOG_BYTES = 2 * WAVE_BYTES;
+
+/**
+ * What a one-shot process (no store of its own) that ended before its
+ * changes were all answered (it died, or was killed) says in its output:
+ * every change ahead of an output it released is in the session
+ * (ProcessFsClient.effect), and what it logged after its last one may not
+ * be, at most the decided backlog.
+ */
+export const UNSETTLED_END_NOTE = `[nimbus] the process ended before its changes were all in the session: `
+  + `any it made after its last output may be lost (at most ${DECIDED_BACKLOG_OPS} changes, ${DECIDED_BACKLOG_BYTES / (1024 * 1024)} MiB)`;
+
+/** `error`, said with UNSETTLED_END_NOTE: a one-shot's run that ended with changes it may have lost. */
+export function unsettledEnd(error: unknown): Error & { unsettled: true } {
+  const message = error instanceof Error ? error.message : String(error);
+  const code: unknown = typeof error === 'object' && error !== null ? Reflect.get(error, 'code') : undefined;
+  return Object.assign(new Error(`${message}\n${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true as const, ...(code === undefined ? {} : { code }) });
+}
+
+/** The note an ended run's error carries (unsettledEnd), as a line, or ''. */
+export function unsettledNoteOf(error: unknown): string {
+  return typeof error === 'object' && error !== null && Reflect.get(error, 'unsettled') === true ? `${UNSETTLED_END_NOTE}\n` : '';
+}
 
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
@@ -919,6 +952,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const flushed = new Promise<void>((resolve) => { marks.push({ mark, resolve }); });
       schedule();
       return flushed;
+    },
+    effect() {
+      if (journal.durable) return null;
+      options.drain?.();
+      return answered >= logged ? null : client.flush();
     },
     async settle() {
       settling = true;

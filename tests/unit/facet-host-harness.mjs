@@ -66,18 +66,37 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     return instance;
   };
 
+  /** facetName → its isolate's death, which a runtime resident's held() call hears. */
+  const deaths = new Map();
+  const deathOf = (name) => {
+    let death = deaths.get(name);
+    if (!death) {
+      let reject;
+      death = { promise: new Promise((_, r) => { reject = r; }), reject };
+      death.promise.catch(() => {});
+      deaths.set(name, death);
+    }
+    return death;
+  };
+  const die = (name, error) => {
+    deaths.get(name)?.reject(error);
+    deaths.delete(name);
+  };
+
   const facets = {
     get(name, start) {
       return {
         async startProcess(args) { return (await ensure(name, start)).startProcess(args); },
         async handleHttpRequest(request) { return (await ensure(name, start)).handleHttpRequest(request); },
+        // A runtime resident's class holds this open while its isolate lives.
+        held() { return deathOf(name).promise; },
       };
     },
     // abort ends the process; the store stays. delete is the only call that
     // drops a facet's SQLite — mirroring workerd's split, which is what the
     // durable release relies on.
-    abort(name) { live.delete(name); },
-    delete(name) { live.delete(name); resetProcessFacetStorage(name); },
+    abort(name, reason) { live.delete(name); die(name, reason ?? new Error('aborted')); },
+    delete(name) { live.delete(name); die(name, new Error('deleted')); resetProcessFacetStorage(name); },
   };
 
   return {
@@ -89,6 +108,8 @@ export function createFacetWorld(evaluate, { resolveConfig = true } = {}) {
     liveFacets: () => [...live.keys()],
     /** Drop a running facet the way a platform reset would, without releasing it. */
     lose: (name) => live.delete(name),
+    /** The facet's isolate dies on its own (out of memory, out of CPU): its held() call rejects with `error`. */
+    die: (name, error = new Error('Worker exceeded memory limit.')) => { live.delete(name); die(name, error); },
   };
 }
 
