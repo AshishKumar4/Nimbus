@@ -2,6 +2,7 @@ import { installAuthorityFilesystem, WASI_ACCEPTED_PATH_PREFIX, WASI_LISTEN_PATH
 import { answeringSupervisor, supervisorFilesystem } from '@nimbus-sh/core/runtime/vfs-supervisor.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '@nimbus-sh/core/constants.js';
 import { residentFilesystem, } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
+import { sqlJournal } from '@nimbus-sh/core/_shared/process-fs-journal.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 // errno constants
 const __WASI_ESUCCESS = 0;
@@ -188,7 +189,14 @@ function __wasiStartResident(sup, cred) {
             recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
         },
     };
-    return residentFilesystem(authority, booting, { session, isHomeRoot: isHomeDirectory });
+    // A resident's facet keeps the log of what it sends in its own store
+    // (process-fs-journal.ts), drained by the session once the process is gone.
+    const journalSql = Reflect.get(globalThis, '__nimbusFsJournalSql');
+    return residentFilesystem(authority, booting, {
+        session,
+        isHomeRoot: isHomeDirectory,
+        ...(journalSql === undefined ? {} : { journal: sqlJournal(journalSql) }),
+    });
 }
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
 function isHomeDirectory(key) {

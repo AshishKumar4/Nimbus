@@ -65,6 +65,8 @@ export interface HolderOptions {
     readonly grantAfter?: number;
     /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
     readonly grantInos?: number;
+    /** Where the client logs what it sends until the session answers: the process's own store, where it has one (process-fs-journal.ts). */
+    readonly journal?: ProcessFsJournal;
 }
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {

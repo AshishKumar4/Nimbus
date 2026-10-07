@@ -184,7 +184,19 @@ export declare class Processes {
  * the same SQLite. The name is aborted first: a get with a new class of a
  * facet still running (a previous incarnation's) would reset this object.
  */
-export declare function facetJournal(ctx: DurableObjectState, env: ResidentFacetEnv, name: string): ProcessFsJournalSource;
+export declare function facetJournal(ctx: DurableObjectState, env: JournalReaderEnv, name: string): ProcessFsJournalSource;
+/** What facetJournal loads its reader with: the Worker Loader's unkeyed load. */
+export interface JournalReaderEnv {
+    LOADER?: {
+        load(code: {
+            compatibilityDate: string;
+            mainModule: string;
+            modules: Record<string, string>;
+        }): {
+            getDurableObjectClass(name: string): unknown;
+        };
+    };
+}
 /**
  * The WorkerCode the loader callback returns for one resident boot: the
  * module map from {@link residentLoaderConfig} (or the staged assembler),

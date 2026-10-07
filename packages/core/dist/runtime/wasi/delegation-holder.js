@@ -96,6 +96,7 @@ export function delegationHolder(options) {
         ...(options.isHomeRoot === undefined ? {} : { isHomeRoot: options.isHomeRoot }),
         ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
         ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
+        ...(options.journal === undefined ? {} : { journal: options.journal }),
         released: dropDecisions,
         drain,
     });

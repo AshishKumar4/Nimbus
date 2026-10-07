@@ -35,7 +35,7 @@
  *     absent: the adapter lists the directory and walks again.
  */
 import type { RuntimeFsBridge, RuntimeFsPath, RuntimeVfsDirEntry, RuntimeVfsStat } from '../os-contracts.js';
-import type { ProcessFsSession } from '../../_shared/process-fs-client.js';
+import type { ProcessFsJournal, ProcessFsSession } from '../../_shared/process-fs-client.js';
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
     type: 'file' | 'directory' | 'symlink';
@@ -169,6 +169,8 @@ export interface ResidentDelegation {
     /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
     readonly grantInos?: number;
     readonly isHomeRoot?: (key: string) => boolean;
+    /** The process's own store's write log (HolderOptions.journal). */
+    readonly journal?: ProcessFsJournal;
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;
 //# sourceMappingURL=resident-filesystem.d.ts.map
