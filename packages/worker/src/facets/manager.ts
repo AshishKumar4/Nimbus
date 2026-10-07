@@ -1485,6 +1485,10 @@ ${VFS_CURSOR_SEED_SOURCE}
     __residentSetStorage(__startArgs && __startArgs.storage, __supervisor);
     __nsSetCred(cred);
     __residentSetPlan(__startArgs && __startArgs.dataPlan);
+    // What an import() of a module only an import() reaches reads
+    // synchronously, fetched when that import() runs (node-shims.ts
+    // __nimbusStageImport; the planner's lazyReadsByTarget).
+    globalThis.__nimbusLazyReads = new Map(Object.entries((__startArgs && __startArgs.lazyReads) || {}));
     // The shared read profile's files this launch staged; each is struck off
     // when read, and what is left at exit is reported unread (read-profile.ts).
     globalThis.__nimbusProfileStaged = new Set((__startArgs && __startArgs.profileStaged) || []);
@@ -1899,6 +1903,16 @@ interface FacetVfsState {
   truncated: boolean;
   /** Diagnostics: how the build's transforms were answered. */
   transforms?: BundleCellTransformStats;
+  /**
+   * Modules the program reaches only through an \`import()\` (phase 2 of the
+   * closure walk), which no static walk from the entry or a staged package
+   * entry reaches: they evaluate only if that call runs. Their synchronous
+   * reads are not planned at boot; the \`import()\` that evaluates them
+   * fetches them first (lazyReadsByTarget).
+   */
+  lazyModules?: readonly string[];
+  /** Each lazy module's lazy importers (PrefetchResult.edges, reversed, within lazyModules). */
+  lazyImporters?: Readonly<Record<string, readonly string[]>>;
   /** Telemetry: served from the prefetch-bundle cache (no VFS walk). */
   cacheHit?: boolean;
   /**
@@ -3464,6 +3478,40 @@ export async function addBinTargetSiblings(
 const RELATIVE_WASM_LITERAL_RE = /["'`]((?:\.{1,2}\/)*[\w@.-]+(?:\/[\w@.-]+)*\.wasm)["'`]/g;
 
 /**
+ * The table an \`import()\` reads its target's lazy synchronous reads from
+ * (FacetVfsState.lazyModules): for each lazy module that an \`import()\` may
+ * target, the synchronous reads (static-fs-refs' exact, sync) of every lazy
+ * module evaluating it evaluates, itself included, by its lazy importers.
+ * \`syncReadsOf\` holds each lazy module that reads; the table is keyed by
+ * each of its lazy ancestors. Vite 8's \`import("lightningcss")\` resolves to
+ * lightningcss-wasm's wasm-node.mjs, which reads lightningcss_node.wasm
+ * (15.8 MB) at module top level: an entry under that target, fetched when the
+ * import() runs (a dev server with css.transformer 'lightningcss', a build's
+ * CSS minify), never at a launch that does not import it.
+ */
+export function lazyReadsByTarget(
+  syncReadsOf: ReadonlyMap<string, readonly string[]>,
+  lazyImporters: Readonly<Record<string, readonly string[]>>,
+): Record<string, string[]> {
+  const table: Record<string, Set<string>> = {};
+  for (const [module, reads] of syncReadsOf) {
+    const seen = new Set<string>([module]);
+    const queue = [module];
+    while (queue.length > 0) {
+      const at = queue.shift()!;
+      const entry = table[at] ??= new Set();
+      for (const read of reads) entry.add(read);
+      for (const importer of lazyImporters[at] ?? []) {
+        if (seen.has(importer)) continue;
+        seen.add(importer);
+        queue.push(importer);
+      }
+    }
+  }
+  return Object.fromEntries(Object.entries(table).map(([target, reads]) => [target, [...reads]]));
+}
+
+/**
  * The wasm images a program's closure holds, by path and content digest.
  *
  * Three sources, one record: a `.wasm` cell the walk already staged (digested
@@ -4363,8 +4411,18 @@ async function _buildPrefetchBundle(
   const fileCount = Object.keys(bundle).length;
   const bundleSideModulesRequired = size.bytes > BUNDLE_MAX_ENCODED_BYTES;
 
-  // Suppress lint: `greedy.added` is observed only via diagnostics.
-  void greedy;
+  // What only an import() reaches: phase 2's modules, less any a staged
+  // package entry's static walk reaches (a synchronous require of that entry
+  // evaluates them too). Each with the lazy modules that import it.
+  const reachedStatically = new Set<string>();
+  for (const group of greedy.groups) for (const member of group.members) reachedStatically.add(member);
+  const lazyModules = [...prefetch.speculative].filter((path) => bundle[path] !== undefined && !reachedStatically.has(path));
+  const lazySet = new Set(lazyModules);
+  const lazyImporters: Record<string, string[]> = {};
+  for (const [from, children] of prefetch.edges ?? []) {
+    if (!lazySet.has(from)) continue;
+    for (const child of children) if (lazySet.has(child)) (lazyImporters[child] ??= []).push(from);
+  }
 
   const wasmImages = (await collectClosureWasmImages(vfs, bundle, binSiblingAdd.wasmPaths));
 
@@ -4376,6 +4434,7 @@ async function _buildPrefetchBundle(
     reachableCount: fileCount,
     truncated,
     ...(transforms ? { transforms } : {}),
+    ...(lazyModules.length > 0 ? { lazyModules, lazyImporters } : {}),
     bundleSideModulesRequired,
     ...(wasmImages.length > 0 ? { wasmImages } : {}),
   };
@@ -5366,8 +5425,8 @@ export class FacetManager {
     pacer: TurnBudget,
     /** The program's path, which its listing walks mounts for (nameLaunch). */
     program?: string,
-  ): Promise<{ paths: string[]; storageBytes: number }> {
-    if (!this.vfs || !this.filesystem) return { paths: [], storageBytes: 0 };
+  ): Promise<{ paths: string[]; storageBytes: number; lazyReads: Record<string, string[]> }> {
+    if (!this.vfs || !this.filesystem) return { paths: [], storageBytes: 0, lazyReads: {} };
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
     const started = Date.now();
     const trace = (what: string) => {
@@ -5375,8 +5434,20 @@ export class FacetManager {
       this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] data plan: ${what} at ${Date.now() - started} ms\n`);
     };
     trace('static references');
-    const refs = await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer);
-    trace(`${refs.length} modules name paths; learned reads`);
+    // A lazy module's synchronous reads (FacetVfsState.lazyModules) are no
+    // boot data: they move to the table the import() that evaluates it
+    // fetches from (lazyReadsByTarget).
+    const lazy = new Set(vfsState.lazyModules ?? []);
+    const syncReadsOf = new Map<string, string[]>();
+    const refs: StaticFsRefs[] = [];
+    await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer, (path, moduleRefs) => {
+      const reads = lazy.has(path) ? moduleRefs.exact.filter((ref) => ref.sync).map((ref) => stripLeadingSlashes(ref.path)) : [];
+      if (reads.length === 0) { refs.push(moduleRefs); return; }
+      syncReadsOf.set(path, reads);
+      refs.push({ ...moduleRefs, exact: moduleRefs.exact.filter((ref) => !ref.sync) });
+    });
+    const lazyReads = lazyReadsByTarget(syncReadsOf, vfsState.lazyImporters ?? {});
+    trace(`${refs.length} modules name paths (${syncReadsOf.size} lazy ones' synchronous reads deferred to their import()); learned reads`);
     // Where this process's listing walks mounts, the plan's below and its own
     // at boot: what its launch names.
     this.filesystem.nameLaunch?.(entry, () => launchNames(cwd, program, entry.argv, vfsState.bundlePaths ?? [], refs));
@@ -5417,7 +5488,7 @@ export class FacetManager {
     // costed when the map was built (its cells are released once serialized).
     const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle);
     const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
-    return { paths: plan.paths, storageBytes };
+    return { paths: plan.paths, storageBytes, lazyReads };
   }
 
   /**
@@ -5525,6 +5596,8 @@ export class FacetManager {
     vfs: LaunchFs,
     paths: readonly string[],
     pacer: TurnBudget,
+    /** Called with each module that names paths, and what it names. */
+    each?: (path: string, refs: StaticFsRefs) => void,
   ): Promise<StaticFsRefs[]> {
     const out: StaticFsRefs[] = [];
     for (const path of paths) {
@@ -5549,6 +5622,7 @@ export class FacetManager {
       }
       if (refs.exact.length + refs.listed.length + refs.patterns.length + refs.cwdRelative.length + refs.resolves.length > 0) {
         out.push(refs);
+        each?.(path, refs);
       }
     }
     return out;
@@ -7778,7 +7852,7 @@ export class FacetManager {
         + `transforms ${JSON.stringify(vfsState.transforms ?? null)} (${pacer.chunks} turns so far)\n`);
     }
     const planStart = Date.now();
-    const { paths: dataPlan, storageBytes } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
+    const { paths: dataPlan, storageBytes, lazyReads } = await this._planResidentData(entry, vfsState, cwd, opts.env?.HOME, pacer, opts.filename);
     if (this.debugEnabled) {
       this.processes.appendOutput(entry.pid, 'stderr',
         `[nimbus-debug] data plan: ${dataPlan.length} paths in ${Date.now() - planStart} ms (${pacer.chunks} turns so far)\n`);
@@ -7913,6 +7987,7 @@ export class FacetManager {
         startContract: opts.attachedTty ? 'lifetime' : 'boot',
         startArgs: {
           pid: entry.pid, vfsCursor, dataPlan,
+          ...(Object.keys(lazyReads).length > 0 ? { lazyReads } : {}),
           ...(profileOffer !== undefined && profileOffer.staged.length > 0 ? { profileStaged: profileOffer.staged.map((e) => e.path) } : {}),
           ...(this.debugEnabled ? { diag: true } : {}),
           ...(stdinWriter ? { stdinWriter: true, stopNonce } : {}),

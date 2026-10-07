@@ -150,6 +150,13 @@ export interface PrefetchResult {
   entryPaths?: ReadonlySet<string>;
   /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
   deferred?: DeferredImport[];
+  /**
+   * What each staged module loads: its static dependencies, and in phase 2
+   * the \`import()\` targets it defers, each by the file it resolved to. The
+   * planner reads ancestry from it (which modules an \`import()\` of a
+   * target evaluates).
+   */
+  edges?: ReadonlyMap<string, readonly string[]>;
 }
 
 /** An `import()` a module defers, and how many its module defers (phase 2's order). */
@@ -159,6 +166,8 @@ export interface DeferredImport {
   alternatives: number;
   /** The file, when the walk resolved it already (a tool config and what it names). */
   path?: string;
+  /** The module that defers it (PrefetchResult.edges). */
+  from?: string;
 }
 
 /**
@@ -312,11 +321,11 @@ export async function prefetchForRequire(
   // that defers hundreds (Shiki's grammar table, one `import()` per language)
   // loads the few its input names. Walking a table first spent the bound on
   // grammars the program never loads, and cut the deferral it does.
-  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string }>>();
-  function defer({ specifier, fromDir, alternatives, path }: DeferredImport): void {
+  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string; from?: string }>>();
+  function defer({ specifier, fromDir, alternatives, path, from }: DeferredImport): void {
     let queue = deferredDynamic.get(alternatives);
     if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
-    queue.push(path === undefined ? { specifier, fromDir } : { specifier, fromDir, path });
+    queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(from !== undefined ? { from } : {}) });
   }
   function nextDeferred(): DeferredImport | undefined {
     let fewest = Infinity;
@@ -430,11 +439,19 @@ export async function prefetchForRequire(
     // walk everything else as CJS/ESM.
     if (!vfsPath.endsWith('.json')) {
       const fromDir = vfsPath.includes('/') ? vfsPath.substring(0, vfsPath.lastIndexOf('/')) : '.';
-      (await parseAndResolve(content, fromDir, entry));
+      (await parseAndResolve(content, fromDir, entry, vfsPath));
     }
   }
 
-  async function parseAndResolve(code: string, fromDir: string, entry = false): Promise<void> {
+  const edges = new Map<string, string[]>();
+  function edge(from: string | undefined, to: string): void {
+    if (from === undefined || from === to) return;
+    let children = edges.get(from);
+    if (children === undefined) edges.set(from, children = []);
+    if (!children.includes(to)) children.push(to);
+  }
+
+  async function parseAndResolve(code: string, fromDir: string, entry = false, fromFile?: string): Promise<void> {
     if (declined || closureExceeded) return;
     if (progress) await progress(code.length);
     // esbuild-ast-rewrite (P3 decision: Option D): strip `//` and
@@ -491,7 +508,10 @@ export async function prefetchForRequire(
         if (isFacetProvided(specifier)) continue;
         if (closureExceeded || declined) break;
         const staged = await resolveStaticDependency(specifier, fromDir);
-        if (staged) (await addFile(staged.resolved));
+        if (staged) {
+          edge(fromFile, staged.resolved);
+          await addFile(staged.resolved);
+        }
         followUp(specifier, staged);
       }
     }
@@ -505,9 +525,12 @@ export async function prefetchForRequire(
       if (!entry) { deferrals.add(specifier); continue; }
       const resolved = (await resolveDynamicImport(specifier, fromDir));
       if (closureExceeded) break;
-      if (resolved) (await addFile(resolved));
+      if (resolved) {
+        edge(fromFile, resolved);
+        await addFile(resolved);
+      }
     }
-    for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size });
+    for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size, ...(fromFile !== undefined ? { from: fromFile } : {}) });
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
@@ -603,11 +626,12 @@ export async function prefetchForRequire(
     for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
       const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
       if (!resolved) continue;
+      edge(next.from, resolved);
       await addFile(resolved);
       if (configRoots.has(resolved) && typeof bundle[resolved] === 'string') await deferConfigNames(resolved);
     }
 
-    return { bundle, speculative, entryPaths };
+    return { bundle, speculative, entryPaths, edges };
   }
   try { return await walk(); }
   catch (error) {

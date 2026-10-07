@@ -5,6 +5,11 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Changed: a long-running launch no longer stages, at boot, what modules it
+  reaches only through an `import()` read synchronously; that `import()`
+  fetches them before the module evaluates. A Vite 8 dev server's boot drops
+  the 15.8 MB `lightningcss_node.wasm` it reads only when it transforms CSS
+  with lightningcss.
 - Fixed: a process whose file store was at its storage budget could be
   refused files it read many at once, though the session granted all the room
   they asked for: each grant served one fill of the batch, and a fill gave up
