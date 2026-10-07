@@ -758,8 +758,8 @@ ${RESIDENCY_MISS_REPORT}
 
     // Override console AND process.stdout/stderr for live SUPERVISOR streaming
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
-      __consoleMod.error = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
+      __consoleMod.log = (...a) => { if (__nimbusProgramStopped) return; __processMod.stdout.write(__utilMod.format(...a) + "\\n"); };
+      __consoleMod.error = (...a) => { if (__nimbusProgramStopped) return; __processMod.stderr.write(__utilMod.format(...a) + "\\n"); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
@@ -1243,8 +1243,8 @@ ${ENTRYPOINT_EVENT_LOOP}
 ${RESIDENCY_MISS_REPORT}
 
     if (__supervisor && !captureOutput) {
-      __consoleMod.log = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stdout += s; __queueRpcWrite("stdout", __nimbusOutEnc.encode(s)); };
-      __consoleMod.error = (...a) => { if (__nimbusProgramStopped) return; const s = __utilMod.format(...a) + "\\n"; stderr += s; __queueRpcWrite("stderr", __nimbusOutEnc.encode(s)); };
+      __consoleMod.log = (...a) => { if (__nimbusProgramStopped) return; __processMod.stdout.write(__utilMod.format(...a) + "\\n"); };
+      __consoleMod.error = (...a) => { if (__nimbusProgramStopped) return; __processMod.stderr.write(__utilMod.format(...a) + "\\n"); };
       __consoleMod.warn = __consoleMod.error;
       __consoleMod.info = __consoleMod.log;
       __consoleMod.debug = __consoleMod.log;
