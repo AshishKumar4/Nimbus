@@ -374,6 +374,8 @@ export interface WaveRouter {
     resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
     /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
     placement(path: string): string | null;
+    /** The namespace's mount-table generation (CompositeVFS.mountGeneration): a placement made under another may be stale. */
+    mounts(): number;
     /**
      * Whether resolved namespace path `path` is a directory the namespace
      * composes (one above a mount point): a removal of it is EBUSY and a file
@@ -842,6 +844,8 @@ export declare class SqliteVFS {
      */
     private lastResolution;
     private resolutionEpoch;
+    /** A wave's watch for its own commit's publication (consumeStream's ownFiles): called once, at it. */
+    private publishWatch;
     private readonly sharedDirectories;
     /** Host-only, engine-local delegation; roots themselves retain ordinary POSIX semantics. */
     registerSharedDirectory(path: string): () => void;
