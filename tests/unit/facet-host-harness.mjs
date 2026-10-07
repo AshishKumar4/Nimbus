@@ -305,6 +305,11 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       // Durable Object reset severs an inbound call.
       peer.death = new Promise((_, reject) => { peer.die = reject; });
       peer.death.catch(() => {});
+      // `reset(error)` is the reset Cloudflare was measured doing (2026-10-07):
+      // the held leg stays open, and every later call to the peer fails with
+      // `error`.
+      peer.resetBy = null;
+      peer.reset = (error) => { peer.resetBy = error; };
       peers.set(name, peer);
     }
     return peer;
@@ -324,6 +329,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // The upgrade leg is a service-binding fetch on the peer — route it
         // to the same real handler the production entrypoint calls.
         async fetch(request) {
+          if (peer.resetBy) throw peer.resetBy;
           const headers = request.headers;
           return routeHostedWebSocket(
             peer,
@@ -337,6 +343,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
         // supervisorOp first, exactly as the shipped host does.
         supervisorOp(envelope) {
           const { op, args } = envelope;
+          if (peer.resetBy && op !== 'hostProcess') return Promise.reject(peer.resetBy);
           switch (op) {
             case 'processHostProbe': return Promise.resolve({ isolateToken: peer.isolateToken });
             case 'hostProcess': return Promise.race([_rpcHostProcess(peer, args[0], args[1]), peer.death]);

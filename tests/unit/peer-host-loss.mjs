@@ -6,7 +6,9 @@
 // reset after about a second of CPU, the session got "Durable Object reset
 // because its code was updated." from its RPC, and then kept the server
 // listed as running. Every later request waited 30 s and failed with "peer
-// hosts no process", and nothing restarted it. A facet-hosted process that
+// hosts no process", and nothing restarted it. The held host leg stayed
+// open through that reset; only calls to the sibling failed. Both are
+// covered: `reset` is what Cloudflare did, `die` severs the held leg. A facet-hosted process that
 // ends is reported, its port says so, and its restart policy applies; a
 // peer-hosted one must be the same.
 
@@ -77,7 +79,11 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
   await waitFor(() => processes.get(pid)?.state === 'running' && host.portRegistry.get(20900)?.pid === pid, 5_000, 'the server running on 20900');
   assert.equal(await (await route(host, 20900)).text(), 'served', 'the peer-hosted server serves');
 
-  peerOf(peers, pid).die(new Error(RESET));
+  // The next request finds the sibling reset: it fails, naming why, and the process is over.
+  peerOf(peers, pid).reset(new Error(RESET));
+  const first = await route(host, 20900);
+  assert.equal(first.status, 502);
+  assert.match(await first.text(), /its host was reset by the platform/);
   await waitFor(() => processes.get(pid)?.state === 'exited', 2_000, 'the process to end when its host is reset');
   assert.equal(processes.get(pid).exitCode, 137, 'it ends as a killed process does');
   const exit = exits.find((e) => e.pid === pid);
@@ -119,8 +125,9 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
   await waitFor(() => host.portRegistry.get(20901)?.pid === restarted.pid, 5_000, 'the restart to take its port');
   assert.equal(await (await route(host, 20901)).text(), 'served', 'the restart serves the port');
 
-  // Its host is reset again before it has run 120 s: its budget is spent.
-  peerOf(peers, restarted.pid).die(new Error(RESET));
+  // Its host is reset again before it has run 120 s, and a request finds it: its budget is spent.
+  peerOf(peers, restarted.pid).reset(new Error(RESET));
+  await route(host, 20901);
   await waitFor(() => processes.get(restarted.pid)?.state === 'exited', 2_000, 'the restart to end');
   await waitFor(
     () => notices.some((line) => /the platform reset the host of "node crashy\.js" again before it had run 120 s since its restart, so it is left stopped/.test(line)),

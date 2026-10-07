@@ -404,22 +404,25 @@ class PeerProcessHost implements ProcessHost {
       startArgs: params.startArgs,
     });
     hostLeg.catch(() => {});
-    // The held leg failing is the platform resetting the peer under the
-    // process (a coordinator's own release settles it cleanly): the process
-    // is over, and every leg says so by that name.
+    // The platform resetting the peer under the process ends the process, and
+    // every leg says so by one name. It shows two ways: the held leg fails
+    // (a coordinator's own release settles it cleanly), or, as measured on
+    // Cloudflare (2026-10-07), the held leg stays open and the next call to
+    // the peer fails, after about 10 s, with the reset's own words.
     let gone: ProcessHostLost | null = null;
-    const hostGone = hostLeg.then(() => undefined, (error: unknown) => {
-      gone ??= new ProcessHostLost(error);
-      throw gone;
-    });
-    hostGone.catch(() => {});
-    /** A leg to the peer failing because the peer was reset is the same loss. */
-    const lostOr = (error: unknown): unknown => {
-      if (gone !== null) return gone;
-      if (!peerWasReset(error)) return error;
-      gone = new ProcessHostLost(error);
+    let markLost: (lost: ProcessHostLost) => void = () => {};
+    const hostLost = new Promise<never>((_, reject) => { markLost = reject; });
+    hostLost.catch(() => {});
+    const loseHost = (error: unknown): ProcessHostLost => {
+      if (gone === null) {
+        gone = new ProcessHostLost(error);
+        markLost(gone);
+      }
       return gone;
     };
+    hostLeg.then(() => undefined, loseHost);
+    /** A call to the peer that failed because the peer was reset is the loss; any other failure is its own. */
+    const lostOr = (error: unknown): unknown => gone ?? (peerWasReset(error) ? loseHost(error) : error);
     // The peer starts the runner as part of hosting it; this reads back that
     // one boot payload without re-running anything, so `started` means exactly
     // what it means on a facet. Racing the host leg is what turns a peer that
@@ -427,7 +430,7 @@ class PeerProcessHost implements ProcessHost {
     // peer that would have answered is the thing that is gone.
     const booted = placement.stub._rpcAwaitHostedBoot(params.workerKey).then((r) => r.payload, (error: unknown) => { throw lostOr(error); });
     booted.catch(() => {});
-    const started = Promise.race([booted, hostGone.then(() => booted)]);
+    const started = Promise.race([booted, hostLost]);
     started.catch(() => {});
     // Do not return a handle for a process that was never opened. Opening a
     // facet of one's own DO either throws or does not, before any handle
@@ -452,17 +455,14 @@ class PeerProcessHost implements ProcessHost {
     // when it goes fails then, not when the platform's own answer arrives.
     const routed = (leg: () => Promise<Response>): Promise<Response> => {
       if (gone !== null) return Promise.reject(gone);
-      return Promise.race([
-        leg().catch((error: unknown) => { throw lostOr(error); }),
-        hostGone.then(() => new Promise<never>(() => {})),
-      ]);
+      return Promise.race([leg().catch((error: unknown) => { throw lostOr(error); }), hostLost]);
     };
     return {
       started,
-      // The held leg IS the process's residency here. It settles cleanly when
-      // the coordinator releases; anything else is the host going away under a
-      // process that was up, and the fabric ends the process on it.
-      lost: hostGone.then(() => new Promise<never>(() => {})),
+      // The held leg IS the process's residency here, and it settles cleanly
+      // when the coordinator releases. The host going away under a process
+      // that was up rejects this, and the fabric ends the process on it.
+      lost: hostLost,
       handleHttpRequest: (request: Request) =>
         routed(() => routeThroughPeer(placement.stub, params.workerKey, request)),
       handleWebSocketRequest: (request: Request) =>
