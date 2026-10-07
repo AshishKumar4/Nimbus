@@ -73,6 +73,7 @@ const EMPTY_SUPERVISOR_RPC_COUNTERS = {
     fsReadRange: 0,
     fsWriteRange: 0,
     rename: 0,
+    lock: 0,
     writeBatchStream: 0,
     readlink: 0,
     symlink: 0,
@@ -112,6 +113,7 @@ function parseSupervisorRpcCounters(value) {
         fsReadRange: nonNegativeCounter(counters.fsReadRange),
         fsWriteRange: nonNegativeCounter(counters.fsWriteRange),
         rename: nonNegativeCounter(counters.rename),
+        lock: nonNegativeCounter(counters.lock),
         writeBatchStream: nonNegativeCounter(counters.writeBatchStream),
         readlink: nonNegativeCounter(counters.readlink),
         symlink: nonNegativeCounter(counters.symlink),
@@ -636,8 +638,8 @@ async function driveGraphFilters(call, opts) {
     const step = async (graphFilters) => await call(graphFilters);
     const outcome = { layer: null, commits: 0, pieces: 0, trees: 0, treeBytes: 0, elapsed: 0 };
     const plan = await step({ step: 'plan' });
-    if (plan === null)
-        return { ...outcome, elapsed: Date.now() - started };
+    if ('skipped' in plan)
+        return { ...outcome, skipped: plan.skipped, elapsed: Date.now() - started };
     outcome.commits = plan.commits;
     const files = [];
     const size = positiveSafeInteger(opts.pieceCommits, GRAPH_FILTERS_PIECE_COMMITS, 'graph filter piece commits');
@@ -663,7 +665,7 @@ async function driveGraphFilters(call, opts) {
         throw error;
     }
     const assembled = await step({ step: 'assemble', layer: plan.layer, files });
-    return { ...outcome, layer: assembled.layer, elapsed: Date.now() - started };
+    return { ...outcome, layer: assembled.layer, ...(assembled.skipped ? { skipped: assembled.skipped } : {}), elapsed: Date.now() - started };
 }
 /**
  * Run a git network op inside a facet. Returns when complete or timed out.
@@ -1238,7 +1240,7 @@ function metadataFromSupervisorStat(st) {
 function createSupervisorRpcCounters() {
   return {
     stat: 0, lstat: 0, readdir: 0, readFile: 0,
-    fsReadRange: 0, fsWriteRange: 0, rename: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
+    fsReadRange: 0, fsWriteRange: 0, rename: 0, lock: 0, writeBatchStream: 0, readlink: 0, symlink: 0,
     legacySymlinkSubtree: 0, stdout: 0,
   };
 }
@@ -1324,6 +1326,12 @@ function gitPackContext(supervisor, stats, opts, root, deadline, log, worktreeRo
       fsTruncate: (path, size) => mutation('fsWriteRange', () => supervisor.fsTruncate(path, size)),
       fsReadRange: (path, offset, length) => counted('fsReadRange', () => supervisor.fsReadRangeUncached(path, offset, length)),
       rename: (from, to) => mutation('rename', () => supervisor.rename(from, to)),
+      // A commit-graph chain's lock (graph-filters.ts): created exclusively, written, made read-only, removed.
+      fsOpen: (path, flags) => mutation('lock', () => supervisor.fsOpen(path, flags)),
+      fsWrite: (handle, offset, bytes) => mutation('lock', () => supervisor.fsWrite(handle, offset, bytes)),
+      fsClose: (handle) => counted('lock', () => supervisor.fsClose(handle)),
+      chmod: (path, mode) => mutation('lock', () => supervisor.chmod(path, mode)),
+      unlink: (path) => mutation('lock', () => supervisor.unlink(path)),
       async readdir(path) {
         stats.supervisorRpc.readdir++;
         try {

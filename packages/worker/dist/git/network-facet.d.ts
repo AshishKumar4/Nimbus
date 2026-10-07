@@ -136,6 +136,8 @@ export interface GitSupervisorRpcCounters {
     /** Pack appends (and a thin pack's count rewrite): one per <=448 KiB piece. */
     fsWriteRange: number;
     rename: number;
+    /** A commit-graph chain's lock: its create, write, close, chmod and removal. */
+    lock: number;
     writeBatchStream: number;
     readlink: number;
     symlink: number;
@@ -198,8 +200,14 @@ export interface GitCloneBudgetDiagnostic {
 }
 /** How a clone's changed-path filters pass went. */
 export interface GraphFiltersOutcome {
-    /** The new layer's name, or null when there was nothing to do or the chain moved on. */
+    /** The new layer's name, or null when the chain was left as it is. */
     layer: string | null;
+    /**
+     * Why the chain was left as it is: there is no graph, it is not one
+     * unfiltered base layer, another writer holds its lock, or it changed
+     * under the pass.
+     */
+    skipped?: 'no-graph' | 'not-a-base' | 'locked' | 'moved';
     commits: number;
     pieces: number;
     /** Trees read from the packs, and their bytes. */

@@ -32,6 +32,7 @@ export interface StoredObject extends ResolvedObject {
 export declare class PackObjectStore {
     private readonly fs;
     private readonly gitdir;
+    /** The packs in search order; replaced, never changed in place (promote). */
     private packs;
     private readonly cache;
     private readonly pages;
@@ -49,9 +50,13 @@ export declare class PackObjectStore {
     /**
      * The pack holding `oid`, searched most recently used first, as git's
      * packed_git_mru: neighbouring objects (a history's trees, a checkout's
-     * blobs) are mostly in one pack, and a clone has scores of packs.
+     * blobs) are mostly in one pack, and a clone has scores of packs. Each
+     * search walks the order as it was when it began (the list is never
+     * changed in place: concurrent searches each promote by replacing it).
      */
     private locate;
+    /** `pack` first in the order, the rest as they were; a list refreshed since orders itself. */
+    private promote;
     /** Binary search of one idx's fanout bucket, a page at a time; null when absent. */
     private find;
     /** `length` bytes at `at` of `path`, from whole cached pages (a range spans at most two). */

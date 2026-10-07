@@ -90,20 +90,54 @@ export type TreeReader = (oid: Uint8Array) => Promise<Uint8Array>;
  * each entry below it. Null once there are more than `limit`.
  */
 export declare function changedPaths(read: TreeReader, from: Uint8Array | null, to: Uint8Array, limit?: number): Promise<Uint8Array[] | null>;
-/** A graph file's chunks, in its own order. */
+/** One chunk of a graph file: its id, and where it is. */
+export interface ChunkPlace {
+    id: string;
+    offset: number;
+    size: number;
+}
+/**
+ * A graph file's table of contents from its first `8 + 12 * (chunks + 1)`
+ * bytes (GRAPH_TOC_BYTES of its header byte 6), checked against the file's
+ * size: each chunk in order, inside the file, before its trailing hash.
+ */
+export declare function graphToc(head: Uint8Array, fileSize: number): ChunkPlace[];
+/** The bytes a graph file's header and table of contents take, for `chunks` chunks. */
+export declare function graphTocBytes(chunks: number): number;
+/** A graph file's chunks, in its own order (the file whole). */
 export declare function graphChunks(file: Uint8Array): [string, Uint8Array][];
+/** Whether a layer is a base without changed-path filters (no BIDX, BDAT or BASE chunk): what a filters pass adds to. */
+export declare function isUnfilteredBase(places: readonly ChunkPlace[]): boolean;
 /** One layer's commits as the filters pass reads them: each one's root tree, first parent and date. */
 export interface LayerCommits {
     count: number;
     tree(position: number): Uint8Array;
     /** Its first parent's position, or -1 for a root. */
     firstParent(position: number): number;
-    date(position: number): bigint;
+    /** Its committer date: 34 bits, exact as a number. */
+    date(position: number): number;
 }
-/** A base layer's commits (no BASE chunk: every parent is in it). */
-export declare function layerCommits(file: Uint8Array): LayerCommits;
-/** `file`, a graph without changed-path chunks, with `filters` (one per commit, in graph order) added. */
-export declare function withFilters(file: Uint8Array, filters: readonly Uint8Array[]): Uint8Array;
+/** A base layer's commits, from its CDAT chunk (no BASE chunk: every parent is in it). */
+export declare function layerCommits(data: Uint8Array): LayerCommits;
+/** BDAT's header: hash version, hashes, bits per entry. */
+export declare function bloomDataHeader(): Uint8Array;
+/** A chunk whose bytes arrive in parts: `size` of them, in order. */
+export interface StreamedChunk {
+    id: string;
+    size: number;
+    parts: AsyncIterable<Uint8Array> | Iterable<Uint8Array>;
+}
+/** The size of the file chunkFileStream writes for these chunks. */
+export declare function chunkFileSize(chunks: readonly {
+    id: string;
+    size: number;
+}[]): number;
+/**
+ * The bytes chunkFile writes, as they are made: never the file whole. The
+ * layer's name (its trailing hash) goes to `named` before the last bytes are.
+ * A chunk whose parts come to more or less than its size throws.
+ */
+export declare function chunkFileStream(chunks: readonly StreamedChunk[], named: (name: string) => void): AsyncGenerator<Uint8Array>;
 /** A layer's name: its trailing hash, in hex. */
 export declare function graphName(file: Uint8Array): string;
 //# sourceMappingURL=commit-graph.d.ts.map

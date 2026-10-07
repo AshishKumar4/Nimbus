@@ -237,9 +237,12 @@ function findOid(oids, count, key, at) {
 }
 /**
  * Each commit's topological level and corrected commit date, as git's
- * compute_generation_from_max takes them from its parents': a commit after
- * every one of its parents (an iterative walk: a history is deeper than a
- * stack).
+ * compute_reachable_generation_numbers and compute_generation_from_max take
+ * them from its parents': a commit after every one of its parents (an
+ * iterative walk: a history is deeper than a stack). git keeps the parents'
+ * maximum in a uint32_t: each parent's generation is compared with it as a
+ * 64-bit value and stored in it truncated, in parent order, so a corrected
+ * date past 2^32 carries only its low 32 bits to its children.
  */
 function generations(graph) {
     const levels = new Uint32Array(graph.count);
@@ -268,8 +271,9 @@ function generations(graph) {
             let maxGen = 0n;
             for (let p = graph.parentStart[c]; p < graph.parentStart[c + 1]; p++) {
                 maxLevel = Math.max(maxLevel, levels[graph.parents[p]]);
-                if (corrected[graph.parents[p]] > maxGen)
-                    maxGen = corrected[graph.parents[p]];
+                const parentGen = corrected[graph.parents[p]];
+                if (parentGen > maxGen)
+                    maxGen = parentGen & 0xffffffffn;
             }
             levels[c] = Math.min(maxLevel, GENERATION_NUMBER_V1_MAX - 1) + 1;
             const date = graph.dates[c];
@@ -524,49 +528,67 @@ function equalOid(a, b) {
             return false;
     return true;
 }
-/** A graph file's chunks, in its own order. */
-export function graphChunks(file) {
-    const view = new DataView(file.buffer, file.byteOffset, file.byteLength);
-    if (file.byteLength < 8 + 12 + OID_BYTES || view.getUint32(0) !== 0x43475048 /* CGPH */)
+/**
+ * A graph file's table of contents from its first `8 + 12 * (chunks + 1)`
+ * bytes (GRAPH_TOC_BYTES of its header byte 6), checked against the file's
+ * size: each chunk in order, inside the file, before its trailing hash.
+ */
+export function graphToc(head, fileSize) {
+    const view = new DataView(head.buffer, head.byteOffset, head.byteLength);
+    if (head.byteLength < 8 || view.getUint32(0) !== 0x43475048 /* CGPH */ || head[4] !== 1 || head[5] !== 1)
         throw new PackFormatError('not a commit-graph');
-    const count = file[6];
-    const chunks = [];
+    const count = head[6];
+    if (head.byteLength < graphTocBytes(count))
+        throw new PackFormatError('a commit-graph table of contents is truncated');
+    const places = [];
     for (let i = 0; i < count; i++) {
         const at = 8 + i * 12;
-        const id = String.fromCharCode(file[at], file[at + 1], file[at + 2], file[at + 3]);
-        const start = Number(view.getBigUint64(at + 4));
+        const offset = Number(view.getBigUint64(at + 4));
         const end = Number(view.getBigUint64(at + 16));
-        if (start > end || end > file.byteLength - OID_BYTES)
+        if (offset < graphTocBytes(count) || offset > end || end > fileSize - OID_BYTES)
             throw new PackFormatError('a commit-graph chunk runs past the file');
-        chunks.push([id, file.subarray(start, end)]);
+        places.push({ id: String.fromCharCode(head[at], head[at + 1], head[at + 2], head[at + 3]), offset, size: end - offset });
     }
-    return chunks;
+    if (Number(view.getBigUint64(8 + count * 12 + 4)) !== fileSize - OID_BYTES)
+        throw new PackFormatError('a commit-graph does not end where its table says');
+    return places;
 }
-/** A base layer's commits (no BASE chunk: every parent is in it). */
-export function layerCommits(file) {
-    const chunks = new Map(graphChunks(file));
-    const data = chunks.get('CDAT');
-    const oids = chunks.get('OIDL');
-    if (data === undefined || oids === undefined || chunks.has('BASE'))
-        throw new PackFormatError('not a base commit-graph layer');
+/** The bytes a graph file's header and table of contents take, for `chunks` chunks. */
+export function graphTocBytes(chunks) {
+    return 8 + (chunks + 1) * 12;
+}
+/** A graph file's chunks, in its own order (the file whole). */
+export function graphChunks(file) {
+    return graphToc(file, file.byteLength).map(({ id, offset, size }) => [id, file.subarray(offset, offset + size)]);
+}
+/** Whether a layer is a base without changed-path filters (no BIDX, BDAT or BASE chunk): what a filters pass adds to. */
+export function isUnfilteredBase(places) {
+    return places.some(({ id }) => id === 'CDAT') && !places.some(({ id }) => id === 'BIDX' || id === 'BDAT' || id === 'BASE');
+}
+/** A base layer's commits, from its CDAT chunk (no BASE chunk: every parent is in it). */
+export function layerCommits(data) {
     const stride = OID_BYTES + 16;
+    if (data.byteLength % stride !== 0)
+        throw new PackFormatError('a commit-graph CDAT chunk is not whole records');
     const view = new DataView(data.buffer, data.byteOffset, data.byteLength);
     return {
-        count: oids.byteLength / OID_BYTES,
+        count: data.byteLength / stride,
         tree: (c) => data.subarray(c * stride, c * stride + OID_BYTES),
         firstParent: (c) => {
             const parent = view.getUint32(c * stride + OID_BYTES);
             return parent === GRAPH_PARENT_NONE ? -1 : parent;
         },
-        date: (c) => (BigInt(view.getUint32(c * stride + OID_BYTES + 8) & 3) << 32n) | BigInt(view.getUint32(c * stride + OID_BYTES + 12)),
+        date: (c) => (view.getUint32(c * stride + OID_BYTES + 8) & 3) * 0x100000000 + view.getUint32(c * stride + OID_BYTES + 12),
     };
 }
-/** `file`, a graph without changed-path chunks, with `filters` (one per commit, in graph order) added. */
-export function withFilters(file, filters) {
-    const chunks = graphChunks(file);
-    if (chunks.some(([id]) => id === 'BIDX' || id === 'BDAT' || id === 'BASE'))
-        throw new PackFormatError('the layer is not a base without filters');
-    return chunkFile([...chunks, ...filterChunks(filters, chunks.find(([id]) => id === 'OIDL')[1].byteLength / OID_BYTES)]);
+/** BDAT's header: hash version, hashes, bits per entry. */
+export function bloomDataHeader() {
+    const header = new Uint8Array(BLOOM_HEADER_BYTES);
+    const view = new DataView(header.buffer);
+    view.setUint32(0, BLOOM_HASH_VERSION);
+    view.setUint32(4, BLOOM_HASHES);
+    view.setUint32(8, BLOOM_BITS_PER_ENTRY);
+    return header;
 }
 /** BIDX and BDAT for `filters`, one per commit. */
 function filterChunks(filters, count) {
@@ -577,10 +599,7 @@ function filterChunks(filters, count) {
     let size = 0;
     filters.forEach((filter, i) => indexView.setUint32(i * 4, (size += filter.byteLength)));
     const bloom = new Uint8Array(BLOOM_HEADER_BYTES + size);
-    const bloomView = new DataView(bloom.buffer);
-    bloomView.setUint32(0, BLOOM_HASH_VERSION);
-    bloomView.setUint32(4, BLOOM_HASHES);
-    bloomView.setUint32(8, BLOOM_BITS_PER_ENTRY);
+    bloom.set(bloomDataHeader());
     let at = BLOOM_HEADER_BYTES;
     for (const filter of filters) {
         bloom.set(filter, at);
@@ -588,26 +607,69 @@ function filterChunks(filters, count) {
     }
     return [['BIDX', index], ['BDAT', bloom]];
 }
+/** git's chunk-format.c header and table of contents for chunks of these ids and sizes. */
+function chunkHeader(chunks) {
+    const header = new Uint8Array(8 + (chunks.length + 1) * 12);
+    const view = new DataView(header.buffer);
+    header.set([0x43, 0x47, 0x50, 0x48 /* CGPH */, 1, 1, chunks.length, 0]);
+    let offset = header.byteLength;
+    chunks.forEach(({ id, size }, i) => {
+        for (let k = 0; k < 4; k++)
+            header[8 + i * 12 + k] = id.charCodeAt(k);
+        view.setBigUint64(8 + i * 12 + 4, BigInt(offset));
+        offset += size;
+    });
+    view.setBigUint64(8 + chunks.length * 12 + 4, BigInt(offset));
+    return header;
+}
 /** git's chunk-format.c: header, table of contents, chunks, SHA-1 trailer. */
 function chunkFile(chunks) {
-    const tableBytes = (chunks.length + 1) * 12;
-    let size = 8 + tableBytes;
+    const header = chunkHeader(chunks.map(([id, bytes]) => ({ id, size: bytes.byteLength })));
+    let size = header.byteLength;
     for (const [, bytes] of chunks)
         size += bytes.byteLength;
     const out = new Uint8Array(size + OID_BYTES);
-    const view = new DataView(out.buffer);
-    out.set([0x43, 0x47, 0x50, 0x48 /* CGPH */, 1, 1, chunks.length, 0]);
-    let offset = 8 + tableBytes;
-    chunks.forEach(([id, bytes], i) => {
-        for (let k = 0; k < 4; k++)
-            out[8 + i * 12 + k] = id.charCodeAt(k);
-        view.setBigUint64(8 + i * 12 + 4, BigInt(offset));
+    out.set(header);
+    let offset = header.byteLength;
+    for (const [, bytes] of chunks) {
         out.set(bytes, offset);
         offset += bytes.byteLength;
-    });
-    view.setBigUint64(8 + chunks.length * 12 + 4, BigInt(offset));
+    }
     out.set(createHash('sha1').update(out.subarray(0, size)).digest(), size);
     return out;
+}
+/** The size of the file chunkFileStream writes for these chunks. */
+export function chunkFileSize(chunks) {
+    let size = chunkHeader(chunks).byteLength + OID_BYTES;
+    for (const chunk of chunks)
+        size += chunk.size;
+    return size;
+}
+/**
+ * The bytes chunkFile writes, as they are made: never the file whole. The
+ * layer's name (its trailing hash) goes to `named` before the last bytes are.
+ * A chunk whose parts come to more or less than its size throws.
+ */
+export async function* chunkFileStream(chunks, named) {
+    const hash = createHash('sha1');
+    const header = chunkHeader(chunks);
+    hash.update(header);
+    yield header;
+    for (const chunk of chunks) {
+        let written = 0;
+        for await (const part of chunk.parts) {
+            written += part.byteLength;
+            if (written > chunk.size)
+                throw new PackFormatError(`chunk ${chunk.id} runs past its ${chunk.size} bytes`);
+            hash.update(part);
+            yield part;
+        }
+        if (written !== chunk.size)
+            throw new PackFormatError(`chunk ${chunk.id} has ${written} of its ${chunk.size} bytes`);
+    }
+    const digest = new Uint8Array(hash.digest());
+    named(hex(digest));
+    yield digest;
 }
 /** A layer's name: its trailing hash, in hex. */
 export function graphName(file) {
