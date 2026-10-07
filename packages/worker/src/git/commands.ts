@@ -3147,8 +3147,8 @@ export async function runGitCommand(
         const value = subArgs[subArgs.indexOf(key || '') + 1];
         if (key && value) {
           const [section, ...rest] = key.split('.');
+          // Set: git says nothing.
           await git.setConfig({ fs, dir, path: key, value });
-          ctx.stdout.write(`${key}=${value}\n`);
         } else if (key) {
           // A key not set is git's exit 1, and nothing printed.
           let val: unknown;

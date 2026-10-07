@@ -8,8 +8,8 @@
 //     it), and a later -c of the same key wins;
 //   - a key -c cannot parse is git's error, then "fatal: unable to parse
 //     command-line config", 128;
-//   - `git config --get <key>` and `git config <key>` of a key not set
-//     print nothing and exit 1;
+//   - `git config <key> <value>` prints nothing; `git config --get <key>`
+//     and `git config <key>` of a key not set print nothing and exit 1;
 //   - `git fetch <name>` in a repository on master with no remotes at all
 //     is git's "does not appear to be a git repository", 128, the network
 //     not tried.
@@ -98,6 +98,11 @@ try {
   await both('nothing of it written', host, ours, ['config', '--get', 'user.name'], { stdout: true });
   await both('-c of a subsection, case kept', host, ours, ['-c', 'remote.Up.url=x', 'config', '--get', 'remote.Up.url'], { stdout: true });
   console.log('  ok  -c user.name and user.email: the commit\'s identities, the last -c winning; nothing written');
+
+  // config <key> <value>: set, nothing printed; read back.
+  await both('config set', host, ours, ['config', 'set.me', 'v'], { stdout: true });
+  await both('config --get of what was set', host, ours, ['config', '--get', 'set.me'], { stdout: true });
+  console.log('  ok  config <key> <value>: nothing printed; read back by --get');
 
   // config --get, and config <key>, of a key not set.
   await both('config --get missing', host, ours, ['config', '--get', 'no.such'], { stdout: true });
