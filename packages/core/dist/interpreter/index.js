@@ -29,7 +29,7 @@ import { ROOT_ENV, frameTemplate, installHost, isObject, makeFunction } from './
 import { analyzeCommonJs, analyzeFunction, analyzeProgram, releaseScopes } from './scope.js';
 import { ownFunctionExpression, ownProgram } from './tree.js';
 import { own } from './parser-realm.js';
-import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, charCodeAt, isWhitespaceCode, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
+import { Error, LAUNCH_PRIMORDIALS, SafeMap, SyntaxError, arrayIsArray, charCodeAt, isWhitespaceCode, objectKeys, reflectGet, someItem, stringLastIndexOf, stringOf, stringSlice, withElement, } from './intrinsics.js';
 import { UnsupportedSyntax } from './unsupported.js';
 export { INTERPRETER_UNSUPPORTED, UnsupportedSyntax } from './unsupported.js';
 export { replLineBody } from './repl-line.js';
@@ -91,6 +91,92 @@ function leadingSlashes(path) {
     while (i < path.length && charCodeAt(path, i) === 0x2f)
         i++;
     return i;
+}
+/** A string literal, or a template with no substitutions: the specifier a request spells. */
+function spelledString(node) {
+    if (typeof node !== 'object' || node === null)
+        return undefined;
+    const type = reflectGet(node, 'type');
+    if (type === 'Literal') {
+        const value = reflectGet(node, 'value');
+        return typeof value === 'string' ? value : undefined;
+    }
+    if (type !== 'TemplateLiteral')
+        return undefined;
+    const expressions = reflectGet(node, 'expressions');
+    const quasis = reflectGet(node, 'quasis');
+    if (!arrayIsArray(expressions) || expressions.length !== 0 || !arrayIsArray(quasis) || quasis.length !== 1)
+        return undefined;
+    const value = reflectGet(quasis[0], 'value');
+    const cooked = typeof value === 'object' && value !== null ? reflectGet(value, 'cooked') : undefined;
+    return typeof cooked === 'string' ? cooked : undefined;
+}
+/**
+ * The modules a file's text asks for, as this parser reads it: import and
+ * export-from sources, `import()` of a string, and `require()` of a string
+ * (any call of a `require` binding, the module's own or one createRequire
+ * made). A specifier spelled with escapes or in a template is read as the
+ * language reads it; one in a comment or a string is not a request. Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
+ * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ */
+export function moduleRequests(path, text) {
+    if (UNPARSED_EXTENSIONS[extensionOf(path)])
+        return [];
+    let program;
+    try {
+        program = parseQuick(text, MODULE_OPTIONS);
+    }
+    catch {
+        try {
+            program = parseQuick(text, COMMONJS_OPTIONS);
+        }
+        catch {
+            return [];
+        }
+    }
+    const requests = [];
+    const add = (specifier, kind) => {
+        if (specifier !== undefined)
+            requests[requests.length] = { specifier, kind };
+    };
+    const pending = [program];
+    while (pending.length > 0) {
+        const node = pending[pending.length - 1];
+        pending.length -= 1;
+        if (typeof node !== 'object' || node === null)
+            continue;
+        if (arrayIsArray(node)) {
+            for (let i = 0; i < node.length; i++)
+                pending[pending.length] = node[i];
+            continue;
+        }
+        const type = reflectGet(node, 'type');
+        if (typeof type !== 'string')
+            continue;
+        if (type === 'ImportDeclaration' || type === 'ExportAllDeclaration' || type === 'ExportNamedDeclaration' || type === 'ImportExpression') {
+            add(spelledString(reflectGet(node, 'source')), 'import');
+        }
+        else if (type === 'CallExpression') {
+            const callee = reflectGet(node, 'callee');
+            const args = reflectGet(node, 'arguments');
+            if (typeof callee === 'object' && callee !== null && reflectGet(callee, 'type') === 'Identifier'
+                && reflectGet(callee, 'name') === 'require' && arrayIsArray(args) && args.length > 0) {
+                add(spelledString(args[0]), 'require');
+            }
+        }
+        const keys = objectKeys(node);
+        for (let i = 0; i < keys.length; i++) {
+            const key = keys[i];
+            if (key === 'type' || key === 'start' || key === 'end' || key === 'loc' || key === 'range')
+                continue;
+            // A literal's or template element's value is data; elsewhere `value` holds a node (a property's).
+            if ((key === 'value' || key === 'regex') && (type === 'Literal' || type === 'TemplateElement'))
+                continue;
+            pending[pending.length] = reflectGet(node, key);
+        }
+    }
+    return requests;
 }
 /** Whether a module's top level has import or export declarations. */
 function hasModuleSyntax(program) {

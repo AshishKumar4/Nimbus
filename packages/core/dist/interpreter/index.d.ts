@@ -35,5 +35,20 @@ export interface Interpreter {
     /** Run a script at global scope: its vars and functions become global object properties. */
     runScript(text: string): void;
 }
+/** One module a module's text asks for: by `import` (static, export-from or import()) or by `require`. */
+export interface ModuleRequest {
+    readonly specifier: string;
+    readonly kind: 'import' | 'require';
+}
+/**
+ * The modules a file's text asks for, as this parser reads it: import and
+ * export-from sources, `import()` of a string, and `require()` of a string
+ * (any call of a `require` binding, the module's own or one createRequire
+ * made). A specifier spelled with escapes or in a template is read as the
+ * language reads it; one in a comment or a string is not a request. Text the
+ * parser cannot read (TypeScript, JSX, a syntax error) asks for nothing.
+ * The import() prefetch (node-shims.ts) finds what to fetch with it.
+ */
+export declare function moduleRequests(path: string, text: string): ModuleRequest[];
 export declare function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter;
 //# sourceMappingURL=index.d.ts.map

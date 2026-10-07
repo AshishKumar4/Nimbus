@@ -15106,7 +15106,10 @@ const __BroadcastChannel = (() => {
   }
   return BroadcastChannel;
 })();
-if (typeof globalThis.BroadcastChannel !== "function") globalThis.BroadcastChannel = __BroadcastChannel;
+// The global is worker_threads' own, as in Node, and this process's: a facet
+// that runs process after process keeps its globals, and a constructor left
+// by an earlier one would join channels this process can never reach.
+Object.defineProperty(globalThis, "BroadcastChannel", { value: __BroadcastChannel, writable: true, configurable: true, enumerable: false });
 const __workerThreadsUntransferable = new WeakSet();
 const __workerThreadsUncloneable = new WeakSet();
 builtins.worker_threads = {
@@ -16590,16 +16593,60 @@ function __esmLoad(resolution) {
 // store holds its closure and its data plan; anything else on disk is named
 // by the namespace but not held, and the synchronous load that import()
 // ends in (__esmLoad, __loadModule, resolution's package.json reads) cannot
-// fetch it. import() is asynchronous, so it fetches first, through the
-// store's own fill: the package.json files resolution reads, then the
-// target and every module it imports that the launch's map does not carry,
-// breadth first, each round one batch. Vite's runtime-bundled config
-// (node_modules/.vite-temp, a fresh name each run) and its SSR runner's
-// externalised imports reach installed packages this way. Bounded: past
-// the bound, the load goes on and a file still missing fails as it did.
+// fetch it. import() is asynchronous, so it fetches first: the files its
+// resolution reads, then the target and every module it requests that the
+// launch's map does not carry, breadth first, each round one batch. Vite's
+// runtime-bundled config (node_modules/.vite-temp, a fresh name each run)
+// and its SSR runner's externalised imports reach installed packages this
+// way. Bounded: past the bound, the load goes on and a file still missing
+// fails as it did.
 const __IMPORT_STAGE_FILES = 4096;
 const __IMPORT_STAGE_BYTES = 64 * 1024 * 1024;
-const __IMPORT_SPECIFIER_RE = /\bfrom\s*(["'])([^"'\n]+)\1|\bimport\s*(?:\(\s*)?(["'])([^"'\n]+)\3|\brequire\s*\(\s*(["'])([^"'\n]+)\5\s*\)/g;
+// Rounds of fault-in one resolution step may take before it stands as it is.
+const __IMPORT_HYDRATE_ROUNDS = 32;
+
+// Run a synchronous step (resolutions) until it stops missing. Its reads of
+// files that exist but are not held are faulted in (the residency ledger,
+// fs above); once the fills land it runs again and finds them. So the files
+// fetched are exactly the ones the canonical resolvers read, through links:
+// the package.json of a bare name's package, of a relative or file: URL
+// target's scope (its module type), nothing guessed. Those misses are the
+// prefetch's own, never the program's: whatever of them is still in the
+// ledger afterwards is dropped, so none stands in the exit report.
+async function __nimbusHydrated(step) {
+  const settle = globalThis.__nimbusVfsResidencySettle;
+  const ours = new Set();
+  try {
+    for (let round = 1; ; round++) {
+      const before = new Set(globalThis.__nimbusVfsResidencyMisses || []);
+      let value;
+      let error;
+      let threw = false;
+      try { value = step(); } catch (e) { error = e; threw = true; }
+      let missed = false;
+      for (const k of globalThis.__nimbusVfsResidencyMisses || []) if (!before.has(k)) { ours.add(k); missed = true; }
+      if (!missed || round >= __IMPORT_HYDRATE_ROUNDS || typeof settle !== "function") {
+        if (threw) throw error;
+        return value;
+      }
+      await settle();
+    }
+  } finally {
+    const ledger = globalThis.__nimbusVfsResidencyMisses;
+    if (ledger) for (const k of ours) ledger.delete(k);
+  }
+}
+
+// What a module's text requests (import and export-from sources, import()
+// and require() of a string), as the runtime-code interpreter's parser reads
+// it (core/interpreter moduleRequests): a request in a comment is none, one
+// in a template or with escapes is read as the language reads it.
+function __nimbusModuleRequests(path, text) {
+  if (typeof __nimbusRegistryRequire !== "function") return [];
+  try { return __nimbusRegistryRequire("./nimbus/interpreter.js").moduleRequests(path, text); }
+  catch { return []; }
+}
+
 function __nimbusImportStager() {
   if (typeof __residentFetchFiles !== "function" || typeof __residentCursor !== "function" || typeof __nsRowAt !== "function") return null;
   const supervisor = typeof __supervisor !== "undefined" ? __supervisor : null;
@@ -16608,6 +16655,7 @@ function __nimbusImportStager() {
   let bytes = 0;
   const strip = (path) => String(path).replace(/^\/+/, "");
   const held = (k) => k in __vfsBundle || (__vfsWrites && k in __vfsWrites);
+  const mapped = (k) => typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k);
   // The file the namespace names at k, following links: its key and stat, or null.
   const named = (k) => {
     for (let hops = 0; hops < 16; hops++) {
@@ -16638,66 +16686,37 @@ function __nimbusImportStager() {
       try { await __residentFetchFiles(supervisor, want); } catch {}
     }
   };
-  // The package.json files a bare specifier's resolution from dir can read.
-  const manifests = (specifier, dir) => {
-    if (/^(?:\.|\/|[a-z][a-z0-9+.-]*:)/i.test(specifier)) return [];
-    const parts = specifier.split("/");
-    const name = specifier.startsWith("@") ? parts.slice(0, 2).join("/") : parts[0];
-    if (!name || Object.prototype.hasOwnProperty.call(builtins, name)) return [];
-    const out = [];
-    let at = strip(dir);
-    for (;;) {
-      if (!at.endsWith("/node_modules") && !at.includes("/node_modules/" + name)) out.push((at ? at + "/" : "") + "node_modules/" + name + "/package.json");
-      if (at === "") break;
-      at = at.includes("/") ? at.slice(0, at.lastIndexOf("/")) : "";
-    }
-    return out;
-  };
-  // What a module imports: every specifier its text spells (over-approximate:
-  // a match in a comment fetches a file that is then never loaded).
-  const imports = (text) => {
-    const out = [];
-    for (const m of text.matchAll(__IMPORT_SPECIFIER_RE)) out.push(m[2] ?? m[4] ?? m[6]);
-    return out;
-  };
-  const resolve = (specifier, importer) => {
-    const found = [];
+  // Where a request from importer leads, as the loader resolves it: Node's
+  // ESM resolver for an import, its CommonJS one for a require.
+  const resolve = (request, importer) => {
     try {
-      const r = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
-      if (r && r.path) found.push(strip(r.path));
-    } catch {}
-    try {
-      const dir = importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "";
-      const r = __resolveFrom(specifier, dir);
-      if (r) found.push(strip(r));
-    } catch {}
-    return found;
+      if (request.kind === "import") {
+        const r = __esmResolver.resolveSync(request.specifier, builtins.url.pathToFileURL("/" + importer).href);
+        return r && r.path ? strip(r.path) : null;
+      }
+      const r = __resolveFrom(request.specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
+      return r ? strip(r) : null;
+    } catch { return null; }
   };
   return {
-    // The package.json files resolving specifier from parentUrl reads.
-    async resolution(specifier, parentUrl) {
-      let dir = "";
-      try { dir = strip(__pathMod.dirname(builtins.url.fileURLToPath(parentUrl))); } catch {}
-      await fetch(manifests(String(specifier), dir));
-    },
-    // The target and what it imports, as far as the launch's map does not reach.
+    // The target and what it requests, as far as the launch's map does not reach.
     async closure(root) {
       const visited = new Set();
       let frontier = [strip(root)];
       while (frontier.length > 0 && files < __IMPORT_STAGE_FILES) {
-        const round = frontier.filter((k) => !visited.has(k) && !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
+        const round = frontier.filter((k) => !visited.has(k) && !mapped(k));
         for (const k of round) visited.add(k);
         await fetch(round);
         const wanted = [];
         for (const k of round) {
-          if (!/\.(?:[cm]?js|jsx|ts|tsx|mts|cts)$/.test(k) || !held(k)) continue;
+          if (!/\.[cm]?js$/.test(k) || !held(k)) continue;
           const text = __readFileOr(k, null);
           if (typeof text !== "string") continue;
-          for (const specifier of imports(text)) wanted.push([specifier, k]);
+          for (const request of __nimbusModuleRequests(k, text)) wanted.push([request, k]);
         }
-        await fetch(wanted.flatMap(([specifier, k]) => manifests(specifier, k.includes("/") ? k.slice(0, k.lastIndexOf("/")) : "")));
+        const found = await __nimbusHydrated(() => wanted.map(([request, k]) => resolve(request, k)));
         const next = new Set();
-        for (const [specifier, k] of wanted) for (const path of resolve(specifier, k)) if (!visited.has(path)) next.add(path);
+        for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
         frontier = [...next];
       }
     },
@@ -16706,9 +16725,9 @@ function __nimbusImportStager() {
 async function __nimbusStageImport(specifier, parentUrl) {
   const stager = __nimbusImportStager();
   if (stager === null) return __esmResolver.resolveSync(specifier, parentUrl);
-  await stager.resolution(specifier, parentUrl);
-  const resolution = __esmResolver.resolveSync(specifier, parentUrl);
-  if (resolution.path) await stager.closure(resolution.path);
+  const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl));
+  // A module this process has loaded already brought what it requests.
+  if (resolution.path && !__esmNamespaces.has(resolution.url)) await stager.closure(resolution.path);
   return resolution;
 }
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
@@ -16727,7 +16746,9 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
         }
       }
     }
-    const resolution = await __nimbusStageImport(text, parentUrl);
+    // Counted as the program's own work: a floating import(...).then(...) keeps
+    // the process while it fetches, as Node's loader keeps it while it reads.
+    const resolution = await __nimbusTrackOp(__nimbusStageImport(text, parentUrl));
     __esmResolver.validateAttributes(resolution.url, resolution.format, attributes);
     return __esmLoad(resolution);
   });
