@@ -31,7 +31,8 @@ const MAY_EXPORT_VARIABLE = /\bexport\s+(?:declare\s+)?(?:const|let|var)\b/;
  * @returns {Array<{ file: string, line: number, names: string[] }>}
  */
 export function multiDeclaratorExports({ root }) {
-  const listed = spawnSync('git', ['ls-files', '-z', '--', 'packages/*/src'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 });
+  // `:(glob)`: `*` stays within a directory and `**` crosses them. A bare `packages/*/src` names no file under src.
+  const listed = spawnSync('git', ['ls-files', '-z', '--', ':(glob)packages/*/src/**'], { cwd: root, encoding: 'utf8', maxBuffer: 1 << 28 });
   if (listed.status !== 0) throw new Error(`git ls-files failed in ${root}: ${listed.stderr.trim()}`);
   const files = listed.stdout.split('\0').filter((file) => SOURCE.test(file) && !file.endsWith('.d.ts'));
   let ts = null;

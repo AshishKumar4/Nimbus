@@ -52,5 +52,19 @@ try {
 }
 
 assert.deepEqual(multiDeclaratorExports({ root: REPO }), [], 'the published packages declare one name per exported variable statement');
+// Not vacuously: the scan reaches the file this rule was written for.
+{
+  const scratch = mkdtempSync(join(tmpdir(), 'export-declarators-repo-'));
+  try {
+    const path = 'packages/core/src/runtime/process-files.ts';
+    mkdirSync(dirname(join(scratch, path)), { recursive: true });
+    writeFileSync(join(scratch, path), 'export const F_OK = 0, X_OK = 1;\n');
+    spawnSync('git', ['init', '-q'], { cwd: scratch });
+    spawnSync('git', ['add', '-A'], { cwd: scratch });
+    assert.deepEqual(multiDeclaratorExports({ root: scratch }).map((entry) => entry.file), [path]);
+  } finally {
+    rmSync(scratch, { recursive: true, force: true });
+  }
+}
 console.log('  ok  the repository\'s published packages hold none');
 console.log('export-declarators OK');
