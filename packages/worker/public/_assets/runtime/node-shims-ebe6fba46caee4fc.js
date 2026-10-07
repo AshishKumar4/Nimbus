@@ -16939,6 +16939,42 @@ function __stagedBinding(id) {
   return registry instanceof Map ? registry.get(id) : undefined;
 }
 
+/**
+ * Every binding Nimbus stages, carried or not: a launch registers only those
+ * its closure names (staged-bindings.ts stagedBindingsRequiredBy).
+ */
+const __NIMBUS_STAGED_BINDINGS = [{"name":"rolldown","owner":"rolldown","version":"1.2.11","requiredAs":["@rolldown/binding-wasm32-wasi"]},{"name":"satteri","owner":"satteri","version":"0.10.5","requiredAs":["@bruits/satteri-wasm32-wasi"]},{"name":"astro-compiler","owner":"@astrojs/compiler-binding","version":"0.5.1","requiredAs":["@astrojs/compiler-binding-wasm32-wasi"]}];
+const __stagedBindingsNamed = new Set();
+
+/**
+ * A require of a staged binding's package (its wasm32-wasi build, or a
+ * platform shard named like it) or of its owner's native `.node`, when the
+ * launch carries no binding for it: none of those loads in a Worker, and a
+ * napi-rs loader tries them all, swallows the wasi failures, and reports the
+ * missing native file. Refused by name instead, and said once on stderr:
+ * which binding, the version Nimbus stages, and why this launch lacks it.
+ * Null when the id is none of those, or the binding is carried (the loader's
+ * own fallbacks then reach it).
+ */
+function __stagedBindingNotCarried(id, fromDir) {
+  for (const binding of __NIMBUS_STAGED_BINDINGS) {
+    const shard = binding.requiredAs.some((wasi) => id === wasi || id.startsWith(wasi.replace(/wasm32-wasi$/, "")));
+    const native = id.endsWith(".node") && ("/" + fromDir + "/").includes("/node_modules/" + binding.owner + "/");
+    if (!shard && !native) continue;
+    if (binding.requiredAs.some((wasi) => __stagedBinding(wasi))) return null;
+    const message = "Nimbus runs " + binding.owner + "'s N-API binding from a staged " + binding.version + " build, and this launch"
+      + " does not carry it: no module the launch staged names " + binding.requiredAs[0] + " (the package was loaded by a name"
+      + " its code computes), so " + id + " was asked for instead, and no native build loads in a Worker. The next launch of"
+      + " this command, which learns the modules this one loaded, carries it.";
+    if (!__stagedBindingsNamed.has(binding.name)) {
+      __stagedBindingsNamed.add(binding.name);
+      try { builtins.process.stderr.write("Nimbus: " + message + "\n"); } catch {}
+    }
+    return Object.assign(new Error(message), { code: "ERR_NIMBUS_BINDING_NOT_CARRIED" });
+  }
+  return null;
+}
+
 function __loadStagedBinding(entry, fromDir) {
   if (entry.exports !== undefined) return entry.exports;
   // The binding is built from one upstream version. The package requiring it
@@ -16980,6 +17016,8 @@ function __requireFrom(id, fromDir) {
   }
   const staged = __stagedBinding(id);
   if (staged) return __loadStagedBinding(staged, fromDir);
+  const notCarried = __stagedBindingNotCarried(id, fromDir);
+  if (notCarried) throw notCarried;
 
   const resolved = __resolveFrom(id, fromDir);
   if (!resolved) throw new Error("Cannot find module '" + id + "' (from " + fromDir + ")");
