@@ -51,6 +51,16 @@ function seed(name) {
   return disk;
 }
 
+/**
+ * The repository in both, its index refreshed by a status in each: a mirror
+ * carries the disk's stat data, which ours does not match until refreshed.
+ */
+async function pairOf(name) {
+  const p = new Pair(name, seed(name));
+  await p.run(['status', '--porcelain'], { stdout: true });
+  return p;
+}
+
 /** The same sparse-checkout file and configuration, as git lists them. */
 function sameFiles(p, step) {
   const ours = p.copy();
@@ -66,7 +76,7 @@ function sameFiles(p, step) {
 try {
   {
     // A repository that is not sparse, made sparse, widened, and listed.
-    const p = new Pair('cone', seed('cone'));
+    const p = await pairOf('cone');
     for (const args of [['sparse-checkout', 'list'], ['sparse-checkout', 'add', 'a'], ['sparse-checkout', 'reapply']]) await p.run(args);
     await p.run(['sparse-checkout', 'set', 'a']);
     p.same('set a');
@@ -86,7 +96,7 @@ try {
 
   {
     // What set leaves outside the cone.
-    const p = new Pair('left', seed('left'));
+    const p = await pairOf('left');
     await p.run(['sparse-checkout', 'set', 'a', 'b', 'c']);
     p.write('b/y.txt', 'changed\n');
     p.write('b/d/untracked.txt', 'mine\n');
@@ -113,7 +123,7 @@ try {
 
   {
     // reapply after an edit by hand; disable; init.
-    const p = new Pair('edit', seed('edit'));
+    const p = await pairOf('edit');
     await p.run(['sparse-checkout', 'set', 'a']);
     p.write('.git/info/sparse-checkout', '/*\n!/*/\n/c/\n');
     await p.run(['sparse-checkout', 'reapply']);
@@ -123,7 +133,7 @@ try {
     p.same('disable');
     sameFiles(p, 'disable');
     await p.run(['sparse-checkout', 'list']);
-    const q = new Pair('init', seed('init'));
+    const q = await pairOf('init');
     await q.run(['sparse-checkout', 'init']);
     q.same('init');
     sameFiles(q, 'init');
@@ -132,7 +142,7 @@ try {
 
   {
     // Refused as git refuses them.
-    const p = new Pair('refused', seed('refused'));
+    const p = await pairOf('refused');
     await p.run(['sparse-checkout', 'set', 'a']);
     for (const args of [
       ['sparse-checkout', 'set', '/a'], ['sparse-checkout', 'set', 'a*'], ['sparse-checkout', 'set', '!a'], ['sparse-checkout', 'set', 'top.txt'],
@@ -149,7 +159,7 @@ try {
 
   {
     // From a subdirectory: an absolute path inside the repository is its directory; one outside is refused.
-    const p = new Pair('absolute', seed('absolute'));
+    const p = await pairOf('absolute');
     await p.run(['sparse-checkout', 'set', 'a', 'b']);
     // Each cone keeps b/, the directory they run in.
     await p.run(['sparse-checkout', 'set', '{root}/b/d'], { sub: 'b' });
@@ -168,7 +178,7 @@ try {
 
   {
     // Two sets at once: `set a` reaches its patterns' publication, `set b` starts then; host git, one after the other.
-    const p = new Pair('concurrent', seed('concurrent'));
+    const p = await pairOf('concurrent');
     sh(p.disk, ['sparse-checkout', 'set', 'a'], ['sparse-checkout', 'set', 'b']);
     let second = null;
     const first = nimbusGit(p.virtual, ['sparse-checkout', 'set', 'a'], {
@@ -188,7 +198,7 @@ try {
 
   {
     // Not supported here: non-cone mode and a sparse index, refused before anything changes.
-    const p = new Pair('unsupported', seed('unsupported'));
+    const p = await pairOf('unsupported');
     for (const [args, message] of [
       [['sparse-checkout', 'set', '--no-cone', 'a'], 'fatal: a sparse checkout without cone mode is not supported\n'],
       [['sparse-checkout', 'set', '--sparse-index', 'a'], 'fatal: a sparse index (--sparse-index) is not supported here\n'],
