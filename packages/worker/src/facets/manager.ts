@@ -4274,6 +4274,13 @@ async function _buildPrefetchBundle(
   //    static require closure, which is correctness-critical.
   const independentBeforeGroups = new Set(Object.keys(bundle));
   const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer, conditions }));
+  // Each landed learned root's closure (PrefetchResult.units) is one group
+  // beside the greedy pass's, kept or evicted whole: a dependency evicted on
+  // its own leaves a root in the map that cannot load.
+  const learnedGroups: OptionalModuleGroup[] = (prefetch.units ?? []).map((unit) => ({ root: unit.root, members: new Set(unit.members) }));
+  const learnedMembers = new Set<string>();
+  for (const group of learnedGroups) for (const member of group.members) learnedMembers.add(member);
+  const groups: OptionalModuleGroup[] = [...greedy.groups, ...learnedGroups];
   await paceAfterPass();
   // What the passes so far staged to run. Every pass below stages files to
   // be read, and so do the observed reads above.
@@ -4473,19 +4480,21 @@ async function _buildPrefetchBundle(
     const tierOf = (path: string): number =>
       closurePaths.has(path) ? 3 : observedPaths.has(path) ? 2 : learnedPaths.has(path) ? 1 : 0;
     const members = new Set<string>();
-    for (const group of greedy.groups) for (const path of group.members) members.add(path);
-    const independent = new Set(Object.keys(bundle).filter(path => !members.has(path) || independentBeforeGroups.has(path)));
-    const keptGroups = new Set(greedy.groups);
+    for (const group of groups) for (const path of group.members) members.add(path);
+    // A learned closure was staged before the greedy pass and is a group all the same.
+    const independent = new Set(Object.keys(bundle).filter(path =>
+      !members.has(path) || (independentBeforeGroups.has(path) && !learnedMembers.has(path))));
+    const keptGroups = new Set(groups);
     const weight = (path: string) => rawBytes.get(path) ?? 0;
     const unitBytes = new Map<string, number>();
-    for (const group of greedy.groups) {
+    for (const group of groups) {
       let total = 0;
       for (const member of group.members) if (!independent.has(member)) total += weight(member);
       unitBytes.set(group.root, total);
       if (pacer) await pacer.spend(group.members.size * 256);
     }
     const lastAdmittedFirst = (tier: Set<string>): string[] => [...tier].reverse().filter(path => independent.has(path));
-    const enrichment = [...independent, ...greedy.groups.map(group => group.root)]
+    const enrichment = [...independent, ...groups.map(group => group.root)]
       .filter(path => tierOf(path) === 0)
       .sort((a, b) => {
         const loadable = (_isLoadableModuleCell(a) ? 1 : 0) - (_isLoadableModuleCell(b) ? 1 : 0);
@@ -4546,7 +4555,7 @@ async function _buildPrefetchBundle(
   // package entry's static walk reaches (a synchronous require of that entry
   // evaluates them too). Each with the lazy modules that import it.
   const reachedStatically = new Set<string>();
-  for (const group of greedy.groups) for (const member of group.members) reachedStatically.add(member);
+  for (const group of groups) for (const member of group.members) reachedStatically.add(member);
   const lazyModules = [...prefetch.speculative].filter((path) => bundle[path] !== undefined && !reachedStatically.has(path));
   const lazySet = new Set(lazyModules);
   const lazyImporters: Record<string, string[]> = {};
