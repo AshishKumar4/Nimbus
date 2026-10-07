@@ -3,13 +3,16 @@
  * NimbusSandbox — the live terminal on the docs home and quickstart page.
  *
  * Live mode requires `PUBLIC_NIMBUS_ANON_ATTACH_URL` at build time, pointing
- * at the anonymous ephemeral-session endpoint. Two accepted shapes:
+ * at the anonymous ephemeral-session endpoint. Accepted shapes:
  *
  *   - `wss://…` / `ws://…` — a WebSocket URL the terminal attaches to
  *     directly. Each connection is one ephemeral session.
- *   - `https://…` / `http://…` — an HTTP endpoint; the terminal POSTs to it
+ *   - `https://…` / `http://…`, or a path such as `/api/demo/anon-session`
+ *     resolved against the page — an HTTP endpoint; the terminal POSTs to it
  *     and expects `{ "wsUrl": string }` back (absolute, or a path resolved
- *     against the endpoint's origin).
+ *     against the endpoint's origin). The hosted demo serves these docs
+ *     itself and builds them with the path, so one docs build serves every
+ *     origin it is deployed at.
  *
  * The terminal auto-connects when it scrolls into view (IntersectionObserver,
  * so only engaged viewers spend one of the capacity-limited anonymous
@@ -353,7 +356,8 @@ const appUrl = Astro.site ? new URL(Astro.site).origin : 'https://nimbus-os.dev'
 		const message = el.querySelector<HTMLElement>('[data-role="message"]')!;
 		const retryBtn = el.querySelector<HTMLButtonElement>('[data-role="retry"]')!;
 		const badge = el.querySelector<HTMLElement>('[data-role="badge"]')!;
-		const attachUrl = el.dataset.attachUrl!;
+		// A path is the page's own origin's endpoint.
+		const attachUrl = new URL(el.dataset.attachUrl!, location.href).href;
 
 		function setState(state: 'connecting' | 'running' | 'live' | 'ended' | 'error', label: string) {
 			badge.hidden = false;

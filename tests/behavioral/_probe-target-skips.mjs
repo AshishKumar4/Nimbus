@@ -1,6 +1,6 @@
 // _probe-target-skips.mjs — probes the runner must not run against a
 // bearer-token probe target, and why. One list, read by everything that
-// drives the suite at a probe target: `_staging-target.mjs test` and
+// drives the suite at a probe target: scripts/ci/remote-probes.mjs and
 // `.github/workflows/behavioral.yml`.
 //
 // Print it for a shell: `bun tests/behavioral/_probe-target-skips.mjs`
@@ -19,7 +19,8 @@ export const PROBE_TARGET_SKIPS = [
   // (`demo_sessions`) and its `ANON_RATE_LIMITER` binding; `apps/probe`
   // declares neither and routes nothing but the core Nimbus surface, so
   // the chain cannot complete there for the target's shape. Run it
-  // against a hosted-demo deployment: `bun run staging:test`.
+  // against a hosted-demo deployment: HOSTED_DEMO_CHECKS, below, which
+  // `bun run staging:deploy` runs against nimbus-staging.
   //
   // This one is skipped for a capability that was ALREADY invisible once
   // — unreachable on production for weeks because nothing asserted the
@@ -34,6 +35,25 @@ export const PROBE_TARGET_SKIPS = [
   // serves path-form previews only. The promotion runs it on production, and
   // coi-isolated-preview covers the same isolation in the path form here.
   'preview/new/coi-host-preview-live',
+  // The docs' live terminal and the /try terminal in a browser: the probe
+  // target serves neither. Run against every hosted demo (HOSTED_DEMO_CHECKS).
+  'docs/new/hosted-docs-terminal',
+  'auth/new/hosted-demo-try-terminal',
 ];
+
+/**
+ * The checks a hosted demo gets as a visitor reaches it, anonymously:
+ * release.mjs runs them against staging's demo, and promote.mjs against
+ * production (remote-probes --target hosted:<origin>). The OAuth probes need
+ * an interactive login and are not among them.
+ */
+export const HOSTED_DEMO_CHECKS = [
+  'auth/new/hosted-demo-anon-launch',
+  'auth/new/hosted-demo-try-terminal',
+  'docs/new/hosted-docs-terminal',
+];
+
+/** What production alone can serve (host-form previews need its zone route): promote.mjs adds these. */
+export const PRODUCTION_ONLY_CHECKS = ['preview/new/coi-host-preview-live'];
 
 if (import.meta.main) process.stdout.write(PROBE_TARGET_SKIPS.join(','));

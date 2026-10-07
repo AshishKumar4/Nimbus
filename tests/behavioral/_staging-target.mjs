@@ -8,7 +8,8 @@
 //   repeatedly, against a deployment shaped like the one users hit.
 //
 // WHAT IT DEPLOYS
-//   Two Workers, from one `dist`, in one command — because production is
+//   Two Workers, from one release CI built (scripts/ci/lib/release.mjs),
+//   in one command — because production is
 //   two things and staging is only useful if it covers both:
 //
 //     nimbus-staging        apps/hosted-demo, env.staging. The product
@@ -43,13 +44,15 @@
 //
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>       # account pin, required
-//   bun run staging:deploy                       # build + deploy + verify
-//   bun run staging:test                         # full suite against staging
+//   bun run staging:deploy                       # CI builds, this machine uploads + verifies
+//   bun run staging:test                         # full suite against staging, from CI's containers
 //
 // COMMANDS
-//   up      [--no-build] [--rotate-secrets]
-//   test    [--ttl-ms <ms>] [...run-all.mjs flags]
-//   status
+//   up      --release <dir> [--rotate-secrets] [--receipt <file>]   a release CI
+//           built for HEAD (scripts/ci/release.mjs staging makes one and runs
+//           this); --receipt writes the version ids this upload verified. Holds
+//           the staging lease (scripts/ci/lib/lease.mjs) while it writes.
+//   status  [--json]   → what each Worker serves now
 //   token   [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--ttl-ms <ms>]   → JSON {base, sessionId, token}
 //
@@ -63,31 +66,36 @@
 //   suite was mid-run. `up` now refuses to replace the secret of a
 //   Worker that already exists unless `--rotate-secrets` says to.
 
+import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
-import { PROBE_TARGET_SKIPS } from './_probe-target-skips.mjs';
-import { assertDeployIsolated, describeTarget } from '../../scripts/deploy-isolation.mjs';
-import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
-import {
+import { assertInstalled } from '../../scripts/ci/lib/installed.mjs';
+
+const ROOT = join(import.meta.dirname, '..', '..');
+
+// Checked before the deploy path is imported: it parses wrangler configs
+// through packages/worker, which only an install provides.
+assertInstalled(ROOT, '_staging-target.mjs');
+const {
   MACHINE_STATE_DIR,
   PROBE_TARGET_VARS,
-  ROOT,
   activeVersionId,
   assertCredentialHeld,
   createSession,
   deployAndVerify,
   parseFlags,
-  putSecret,
+  withSecretsFile,
   randomSecret,
   readState,
   requireAccountPin,
   waitForTarget,
   workersDevSubdomain,
-  wrangle,
   writeState,
-} from './_deploy-target.mjs';
+} = await import('./_deploy-target.mjs');
+const { assertDeployIsolated, describeTarget } = await import('../../scripts/deploy-isolation.mjs');
+const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
+const { holdLease } = await import('../../scripts/ci/lib/lease.mjs');
 
 const STATE_PATH = join(MACHINE_STATE_DIR, 'staging-target.json');
 
@@ -126,7 +134,7 @@ const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseFlags(rest);
 
-const COMMANDS = { up, test, status, token, session };
+const COMMANDS = { up, status, token, session };
 const run = COMMANDS[command];
 if (!run) {
   console.error(`usage: bun tests/behavioral/_staging-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
@@ -138,6 +146,10 @@ await run();
 
 async function up() {
   const account = requireAccountPin();
+  // Staging is leased while anything writes it (scripts/ci/lib/lease.mjs):
+  // taken here, or handed down by release.mjs, which holds it through its
+  // matrix. Read the state only once it is held.
+  const leaseFd = holdLease('staging', { what: { worktree: ROOT, command: 'up' }, log });
   const state = flags['rotate-secrets'] ? {} : (readState(STATE_PATH) ?? {});
 
   if (flags['rotate-secrets']) {
@@ -171,24 +183,23 @@ async function up() {
     });
   }
 
-  if (flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
+  // A release CI built for this commit, the dist gate and the demo's assets
+  // included (scripts/ci/release.mjs staging, scripts/ci/lib/release.mjs):
+  // this machine only uploads it, and checks every byte against CI's.
+  if (!flags.release) throw new Error('staging deploys a release CI built for this commit: run `bun scripts/ci/release.mjs staging`');
+  const probeConfig = uploadConfig(flags.release, 'apps/probe', { root: ROOT, log });
+  const demoConfig = uploadConfig(flags.release, `apps/hosted-demo:${TARGETS.demo.envName}`, { root: ROOT, log });
 
-  // The probe target first, and not only because it is cheaper: its
-  // deploy prints the account's workers.dev subdomain, which is what the
-  // demo's docs bundle needs baked in as NIMBUS_DOCS_ORIGIN before it can
-  // be built. One pass, no guessing at hostnames.
-  const probe = await deployTarget(TARGETS.probe, { account, state });
+  const probe = await deployTarget(TARGETS.probe, { account, state, config: probeConfig, leaseFd });
   const subdomain = workersDevSubdomain(probe.base);
   if (!subdomain) throw new Error(`could not read the workers.dev subdomain from ${probe.base}`);
-
-  const demoOrigin = `https://${TARGETS.demo.name}.${subdomain}.workers.dev`;
-  log(`building hosted-demo assets for ${demoOrigin}`);
-  wrangle('bun', ['run', '--cwd', 'apps/hosted-demo', 'build:assets'], {
-    cwd: ROOT,
-    account,
-    env: { NIMBUS_DOCS_ORIGIN: demoOrigin },
-  });
-  const demo = await deployTarget(TARGETS.demo, { account, state });
+  const demo = await deployTarget(TARGETS.demo, { account, state, config: demoConfig, leaseFd });
+  // This upload's own receipt: the version ids wrangler returned to it, and
+  // verified served, for a caller to bracket its checks against (never the
+  // shared state, which the next upload rewrites).
+  if (flags.receipt) {
+    writeFileSync(flags.receipt, `${JSON.stringify({ [TARGETS.probe.name]: probe.versionId, [TARGETS.demo.name]: demo.versionId })}\n`);
+  }
 
   writeState(STATE_PATH, { ...state, subdomain, updatedAt: new Date().toISOString() });
 
@@ -205,39 +216,19 @@ async function up() {
   ].join('\n'));
 }
 
-/**
- * Run the whole behavioral suite against staging. Extra argv goes to the
- * runner, so `staging:test --no-retry` is CI-strict mode.
- */
-async function test() {
-  const state = requireState();
-  const jwt = await mintProbeToken(state.probe.secret, ttlMs());
-  const passthrough = withoutFlag(rest, '--ttl-ms');
-
-  log(`running the behavioral suite against ${state.probe.base}`);
-  log(`skipping: ${PROBE_TARGET_SKIPS.join(', ')}`);
-  const result = spawnSync('bun', ['tests/behavioral/run-all.mjs', ...passthrough], {
-    cwd: ROOT,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      BASE: state.probe.base,
-      NIMBUS_PROBE_TOKEN: jwt,
-      NIMBUS_PROBE_SKIP: process.env.NIMBUS_PROBE_SKIP || PROBE_TARGET_SKIPS.join(','),
-    },
-  });
-  if (result.error) throw result.error;
-  process.exit(result.status ?? 1);
-}
-
+/** What each Worker serves now. --json: { "<worker>": { live, base } }. */
 function status() {
   const account = requireAccountPin();
   const state = readState(STATE_PATH);
-  for (const target of Object.values(TARGETS)) {
-    const version = activeVersionId(target.name, { cwd: target.dir, account });
-    const base = state?.[keyOf(target)]?.base ?? '(not deployed from this machine)';
-    process.stdout.write(`${target.name}\t${version ?? '(absent)'}\t${base}\n`);
+  const rows = Object.fromEntries(Object.values(TARGETS).map((target) => [target.name, {
+    live: activeVersionId(target.name, { cwd: target.dir, account }),
+    base: state?.[keyOf(target)]?.base ?? null,
+  }]));
+  if (flags.json) {
+    process.stdout.write(`${JSON.stringify(rows)}\n`);
+    return;
   }
+  for (const [name, row] of Object.entries(rows)) process.stdout.write(`${name}\t${row.live ?? '(absent)'}\t${row.base ?? '(not deployed from this machine)'}\n`);
 }
 
 async function token() {
@@ -260,26 +251,27 @@ async function session() {
  * signing secret is created on first deploy and reused afterwards, so
  * tokens minted earlier keep working across redeploys.
  */
-async function deployTarget(target, { account, state }) {
+async function deployTarget(target, { account, state, config, leaseFd }) {
   const key = keyOf(target);
   const secret = state[key]?.secret ?? randomSecret();
   const isNewSecret = !state[key]?.secret;
 
-  log(`deploying ${target.configPath}${target.envName ? ` (env.${target.envName})` : ''} as ${target.name}`);
-  const { base, versionId } = deployAndVerify({
+  log(`deploying ${target.configPath}${target.envName ? ` (env.${target.envName})` : ''} as ${target.name}${isNewSecret ? ', with a new JWT_SECRET' : ''}`);
+  // A new secret travels with the upload, so the upload is one version and
+  // the receipt is the version that serves (withSecretsFile).
+  const deploy = (secretsArgs) => deployAndVerify({
     cwd: target.dir,
     account,
     name: target.name,
     envName: target.envName,
-    args: target.deployArgs,
+    args: ['--config', config, ...secretsArgs, ...target.deployArgs],
+    leaseFd,
   });
+  const { base, versionId } = isNewSecret
+    ? withSecretsFile({ JWT_SECRET: secret }, (path) => deploy(['--secrets-file', path]))
+    : deploy([]);
   if (!base) throw new Error(`deploy of ${target.name} printed no workers.dev URL`);
   log(`${target.name} → version ${versionId} live at ${base}`);
-
-  if (isNewSecret) {
-    log(`setting JWT_SECRET on ${target.name}`);
-    putSecret({ cwd: target.dir, account, name: target.name, key: 'JWT_SECRET', value: secret });
-  }
   state[key] = { name: target.name, base, secret };
   writeState(STATE_PATH, state);
   return { base, versionId };
@@ -303,11 +295,6 @@ function ttlMs() {
   return flags['ttl-ms'] ? Number(flags['ttl-ms']) : DEFAULT_TTL_MS;
 }
 
-/** Drop `--flag value` from argv so the rest can be handed to the runner. */
-function withoutFlag(argv, flag) {
-  const at = argv.indexOf(flag);
-  return at === -1 ? argv : [...argv.slice(0, at), ...argv.slice(at + 2)];
-}
 
 function log(message) {
   console.error(`[staging] ${message}`);
