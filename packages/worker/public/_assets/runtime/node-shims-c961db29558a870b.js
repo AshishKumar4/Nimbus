@@ -10859,7 +10859,7 @@ const __processMod = {
     throw new __ProcessExit(exitCode);
   },
   platform: "linux", arch: "x64",
-  version: "v22.19.0", versions: {"node":"22.19.0","v8":"12.4.254.21","modules":"127"},
+  version: "v22.22.3", versions: {"node":"22.22.3","v8":"12.4.254.21-node.56","modules":"127"},
   features: Object.freeze({
     inspector: false,
     debug: false,
@@ -12583,6 +12583,84 @@ builtins.v8 = {
   deserialize: (b) => JSON.parse(__BufferMod.from(b).toString()),
   writeHeapSnapshot: () => "",
 };
+// node:worker_threads BroadcastChannel, which workerd lacks. A process has one
+// thread, so a message reaches the other open channels of its name in this
+// process, as in Node: never the poster, after the poster's microtasks, each
+// as a MessageEvent of its own structured clone. An open channel keeps the
+// process alive until it is closed or unref'd, as its handle does in Node.
+const __BroadcastChannel = (() => {
+  const open = new Map();
+  const state = new WeakMap();
+  const missing = (name) => {
+    const error = new TypeError('The "' + name + '" argument must be specified');
+    error.code = "ERR_MISSING_ARGS";
+    return error;
+  };
+  const own = (channel) => {
+    const s = state.get(channel);
+    if (s === undefined) {
+      const error = new TypeError('Value of "this" must be of type BroadcastChannel');
+      error.code = "ERR_INVALID_THIS";
+      throw error;
+    }
+    return s;
+  };
+  const deliver = (channel, data) => {
+    if (state.get(channel).open) channel.dispatchEvent(new MessageEvent("message", { data: structuredClone(data) }));
+  };
+  class BroadcastChannel extends EventTarget {
+    constructor(name) {
+      if (arguments.length === 0) throw missing("name");
+      super();
+      const s = { name: String(name), open: true, hold: null, handlers: { message: null, messageerror: null } };
+      state.set(this, s);
+      for (const type of ["message", "messageerror"]) {
+        this.addEventListener(type, (event) => {
+          if (typeof s.handlers[type] === "function") s.handlers[type].call(this, event);
+        });
+      }
+      if (!open.has(s.name)) open.set(s.name, new Set());
+      open.get(s.name).add(this);
+      s.hold = __nimbusHoldSocket();
+    }
+    get name() { return own(this).name; }
+    get onmessage() { return own(this).handlers.message; }
+    set onmessage(handler) { own(this).handlers.message = typeof handler === "function" ? handler : null; }
+    get onmessageerror() { return own(this).handlers.messageerror; }
+    set onmessageerror(handler) { own(this).handlers.messageerror = typeof handler === "function" ? handler : null; }
+    postMessage(message) {
+      const s = own(this);
+      if (arguments.length === 0) throw missing("message");
+      if (!s.open) throw new DOMException("BroadcastChannel is closed.", "InvalidStateError");
+      const data = structuredClone(message);
+      const schedule = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
+      for (const peer of open.get(s.name) || []) {
+        if (peer !== this) schedule(() => deliver(peer, data), 0);
+      }
+    }
+    close() {
+      const s = own(this);
+      if (!s.open) return;
+      s.open = false;
+      s.hold(false);
+      const peers = open.get(s.name);
+      peers.delete(this);
+      if (peers.size === 0) open.delete(s.name);
+    }
+    ref() {
+      const s = own(this);
+      if (s.open) s.hold(true);
+      return this;
+    }
+    unref() {
+      const s = own(this);
+      if (s.open) s.hold(false);
+      return this;
+    }
+  }
+  return BroadcastChannel;
+})();
+if (typeof globalThis.BroadcastChannel !== "function") globalThis.BroadcastChannel = __BroadcastChannel;
 const __workerThreadsUntransferable = new WeakSet();
 const __workerThreadsUncloneable = new WeakSet();
 builtins.worker_threads = {
@@ -12598,7 +12676,7 @@ builtins.worker_threads = {
   },
   MessageChannel: globalThis.MessageChannel,
   MessagePort: globalThis.MessagePort,
-  BroadcastChannel: globalThis.BroadcastChannel,
+  BroadcastChannel: __BroadcastChannel,
   receiveMessageOnPort: () => undefined,
   markAsUntransferable(value) {
     if (value && (typeof value === "object" || typeof value === "function")) {
