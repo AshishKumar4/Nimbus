@@ -207,15 +207,28 @@ assert.match(existing.error, /already exists and is not an empty directory/);
 assert.equal(existing.cleanup, false, 'a prepare that failed before it wrote leaves nothing to clean up');
 assert.deepEqual(calls.slice(callsBeforeExisting).map(({ body }) => body.phase), ['clone-prepare']);
 
+// The clone's whole budget runs out during its prepare. The prepare answers
+// only once the clone has returned, so its answer always lands late.
+// The budget is wide enough that the prepare is always sent: at 5 ms, with
+// 16 busy loops on 8 CPUs, it ran out before the prepare in 2 of 40 runs,
+// the abort was the only call, and a count of 2 failed with nothing leaked.
+const TIMED_OUT_BUDGET_MS = 1000;
 let lateResponseDisposed = 0;
+const disposable = () => {
+  const response = Response.json({ success: true });
+  Object.defineProperty(response, Symbol.dispose, {
+    value() { lateResponseDisposed++; },
+  });
+  return response;
+};
+const lateCalls = [];
+let answerPrepare;
 const lateEntrypoint = {
-  async fetch() {
-    await new Promise(resolve => setTimeout(resolve, 25));
-    const response = Response.json({ success: true });
-    Object.defineProperty(response, Symbol.dispose, {
-      value() { lateResponseDisposed++; },
-    });
-    return response;
+  fetch(request) {
+    const phase = new URL(request.url).pathname.split('/')[2];
+    lateCalls.push(phase);
+    if (phase === 'clone-prepare') return new Promise(resolve => { answerPrepare = () => resolve(disposable()); });
+    return Promise.resolve(disposable());
   },
 };
 const timedOut = await execGitNetwork(
@@ -227,7 +240,7 @@ const timedOut = await execGitNetwork(
     depth: 1,
     dir: '/timeout',
     url: 'https://example.invalid/repo.git',
-    timeout: 5,
+    timeout: TIMED_OUT_BUDGET_MS,
     exclusiveDestination: true,
     exclusiveMutationRoot: 'timeout',
     mutationOwner: 'owner',
@@ -241,13 +254,16 @@ assert.deepEqual(timedOutBudget, {
   phase: 'clone-prepare',
   batchesCompleted: 0,
   filesWritten: 0,
-  limitMs: 5,
+  limitMs: TIMED_OUT_BUDGET_MS,
 });
 assert.ok(timedOutElapsed >= timedOut.budget.limitMs);
 assert.match(timedOut.error, /clone budget exhausted after 0 batches \/ 0 files/);
-await new Promise(resolve => setTimeout(resolve, 30));
-assert.equal(lateResponseDisposed, 1,
-  'timed-out prepare leaked its RPC stub (no facet cleans up: the DO does)');
+assert.deepEqual(lateCalls, ['clone-prepare'], 'the prepare was sent and timed out; no facet cleans up: the DO does');
+// The prepare's answer lands now; the caller disposes it in the
+// continuation it attached when it called, which has run by the next turn.
+answerPrepare();
+await new Promise(resolve => setImmediate(resolve));
+assert.equal(lateResponseDisposed, 1, 'timed-out prepare leaked its RPC stub');
 
 const originalNow = Date.now;
 let artificialNow = 0;
