@@ -67,12 +67,10 @@ export declare function hasUnscopedAwait(source: string): boolean;
 /**
  * Walk `source`'s tokens tracking brace, paren and bracket depth, without
  * building an AST (a multi-MiB bundle chunk must fit a 48 MiB heap). `visit`
- * sees each token with whether it sits at top level and the module syntax
+ * sees every token with whether it sits at top level and the module syntax
  * it opens: for a top-level `import` or `export` keyword, the declaration
  * (not `import(`), and for an `import` anywhere, `import.meta`; never for a
- * member named so (after `.` or `?.`). The token after an `import` keyword
- * is read to decide that and not visited. `visit` returns true to stop the
- * walk.
+ * member named so (after `.` or `?.`). `visit` returns true to stop the walk.
  *
  * Returns true when `visit` stopped it, false at the end of the source, and
  * null when the source does not tokenize.
