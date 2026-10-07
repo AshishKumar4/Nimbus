@@ -15607,7 +15607,7 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
   const pending = /* @__PURE__ */ new Map();
   const inputBytes = /* @__PURE__ */ new Map();
   const importsOf2 = /* @__PURE__ */ new Map();
-  const importOrder2 = /* @__PURE__ */ new Map();
+  const graph = /* @__PURE__ */ new Map();
   const importedBy = (importer, id2, record2) => {
     if (importer === void 0) return;
     const list2 = importsOf2.get(importer) ?? [];
@@ -15615,7 +15615,8 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     importsOf2.set(importer, list2);
   };
   const importsInOrder = (importer) => {
-    const order = importOrder2.get(importer) ?? [];
+    const info = graph.get(importer);
+    const order = info ? [...info.importedIds, ...info.dynamicallyImportedIds] : [];
     const at = (id2) => {
       const i2 = order.indexOf(id2);
       return i2 < 0 ? order.length : i2;
@@ -15658,29 +15659,10 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
     unresolved.push({ importer, source, kind, text, pluginName });
     return { id: source, external: true };
   };
-  const cssOrder = /* @__PURE__ */ new Map();
   const vfs = {
     name: plugin.name,
-    generateBundle(_options, bundle2) {
-      for (const id2 of inputBytes.keys()) {
-        const info = this.getModuleInfo(id2);
-        importOrder2.set(id2, [...info?.importedIds ?? [], ...info?.dynamicallyImportedIds ?? []]);
-      }
-      for (const out of Object.values(bundle2)) {
-        if (out.type !== "chunk" || !out.facadeModuleId) continue;
-        const order = [];
-        const seen = /* @__PURE__ */ new Set();
-        const visit = (id2) => {
-          if (seen.has(id2)) return;
-          seen.add(id2);
-          const info = this.getModuleInfo(id2);
-          for (const child2 of info?.importedIds ?? []) visit(child2);
-          if (css.has(id2)) order.push(id2);
-          for (const child2 of info?.dynamicallyImportedIds ?? []) visit(child2);
-        };
-        visit(out.facadeModuleId);
-        cssOrder.set(out.fileName, order);
-      }
+    moduleParsed(info) {
+      graph.set(info.id, { importedIds: [...info.importedIds], dynamicallyImportedIds: [...info.dynamicallyImportedIds] });
     },
     async resolveId(source, importer, extra) {
       if (source.startsWith("\0")) return null;
@@ -15784,6 +15766,22 @@ async function build(api, options, plugin, { raised, unresolved, loaded }) {
       codeSplitting: false
     });
     if (unresolved.length) throw new UnresolvedImports();
+    const cssOrder = /* @__PURE__ */ new Map();
+    for (const out of output) {
+      if (out.type !== "chunk" || !out.facadeModuleId) continue;
+      const order = [];
+      const seen = /* @__PURE__ */ new Set();
+      const visit = (id2) => {
+        if (seen.has(id2)) return;
+        seen.add(id2);
+        const info = graph.get(id2);
+        for (const child2 of info?.importedIds ?? []) visit(child2);
+        if (css.has(id2)) order.push(id2);
+        for (const child2 of info?.dynamicallyImportedIds ?? []) visit(child2);
+      };
+      visit(out.facadeModuleId);
+      cssOrder.set(out.fileName, order);
+    }
     const outdir = options.outfile ? options.outfile.slice(0, options.outfile.lastIndexOf("/")) || "/" : options.outdir ?? "/dist";
     const at = (fileName) => `${outdir.replace(/\/+$/, "")}/${fileName}`;
     const encoder = new TextEncoder();

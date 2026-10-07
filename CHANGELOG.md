@@ -26,6 +26,40 @@ published independently in the `@nimbus-sh` npm scope.
 - A binary WebSocket frame reached a node child empty: the supervisor's
   relayed socket read workerd's default Blob as bytes. It reads
   ArrayBuffers now.
+- Fixed: a build facet no longer fills with the builds it has run until its
+  isolate is reset. rolldown (1.2.11 and 1.2.12, native and wasm alike) never
+  frees a build whose plugin has an output hook or `buildStart`: for those
+  hooks it caches the build's normalized options, a wrapper of a native
+  object, on the build's plugin context data, and something the native object
+  holds strongly reaches that data back, a cycle through the binding that no
+  collector frees. Nimbus's build plugin had one (`generateBundle`, for each
+  module's import order), so every pre-bundle's slice and every build's module
+  sources and plugin stayed in the facet's isolate. Measured on Markflow's
+  install: the facet's V8 heap and external memory grew from 18 to 415 MiB
+  over 136 pre-bundles, and on throwaways six concurrent Markflow sessions had
+  1 to 7 facet resets per 12 ("Durable Object's isolate exceeded its memory
+  limit and was reset"), each on a small pre-bundle after 20 to 40 others. The
+  import order now comes from `moduleParsed`; the same pre-bundles hold 65 to
+  76 MiB between calls, flat. Every facet ran in an isolate of its own, one
+  Durable Object each, one call at a time; the builds of different sessions
+  never met in one.
+- The build facet asks to be retired once its binding passes 40 MiB, not
+  64: a call peaks at the binding it starts on plus what it grows it by
+  (up to 41 MiB, measured) plus its slice and the isolate's JavaScript.
+- Fixed: a pre-bundle whose build facet is reset under it runs once more on
+  a fresh facet (logged), as it is pure; a second reset fails it with
+  `BuildFacetResetError`, naming the package and the reason.
+- Fixed: a Vite dev server that cannot bundle a package for the preview
+  serves a module that tells the page why. It served a stub whose only
+  export was a throwing default, so an importer of a named export failed to
+  link ("The requested module '.../@modules/tailwind-merge' does not
+  provide an export named 'twMerge'", Markflow on staging) and the real
+  cause never showed. The module served now declares every name the
+  package's entry exports (following its `export *`, or CommonJS's) and the
+  project imports from it, and throws the cause as it evaluates: a build
+  facet reset twice, a bundle error, or a slice past its cap. The barrel
+  paths that could not bundle serve the same form.
+
 - A workspace's network can go through its host's egress
   (`NimbusWorkspaceOptions.egress`; for the session Durable Object a
   `NIMBUS_EGRESS` service binding, or `workspaceEgress()` overridden to mint

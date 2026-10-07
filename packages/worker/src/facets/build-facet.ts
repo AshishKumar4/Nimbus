@@ -26,10 +26,15 @@ const ROLLDOWN = stagedBinding('rolldown');
  * a call. It starts at 5.4 MiB and grows to the largest graph built, and never
  * shrinks; pre-bundles measured 17.6 MiB after react-dom/client, 27.9 after
  * framer-motion, 53.8 after recharts and 60.5 after @mui/material (slices of
- * up to 23 MiB). A binding past this leaves the next call's slice too little
- * of the isolate's 128 MiB, so the next call starts a fresh isolate.
+ * up to 23 MiB). A call peaks at the binding it starts on, plus what it grows
+ * the binding by, plus its slice, plus the isolate's JavaScript: Markflow's
+ * install, deployed, grew the binding by up to 41 MiB in one pre-bundle
+ * (rehype-highlight, 27 -> 68 MiB; react-day-picker, 14 -> 51 MiB with a
+ * 17.6 MiB slice), and the facet's JavaScript holds 12-18 MiB between calls
+ * (V8, the staged runtime). A call starting at 64 MiB could pass the
+ * isolate's 128 MiB; at 40 MiB the worst measured is about 112 MiB.
  */
-const BUILD_BINDING_HIGH_WATER_BYTES = 64 * 1024 * 1024;
+const BUILD_BINDING_HIGH_WATER_BYTES = 40 * 1024 * 1024;
 
 /**
  * Everything of the build facet's module but its staged parts: the napi-rs
@@ -359,26 +364,48 @@ function retireGeneration(ctx: DurableObjectState, facet: SharedFacet): void {
   retireFacet(ctx, facet);
 }
 
+/** A pre-bundle whose build facet was reset under it twice: the call and its one retry. */
+export class BuildFacetResetError extends Error {
+  constructor(readonly specifier: string, readonly reason: string) {
+    super(`Nimbus's build facet was reset twice while pre-bundling ${specifier} (${reason})`);
+    this.name = 'BuildFacetResetError';
+  }
+}
+
+const messageOf = (error: unknown) => (error instanceof Error ? error.message : String(error));
+
 /**
  * Pre-bundles one npm specifier from its slice in the Durable Object's build
  * facet (core runtime/prebundle-slice.ts on rolldown): the slice crosses
  * once, with the call, and the bundle comes back. A failed pre-bundle is a
  * result (`ok: false`), as is one whose binding died under it, which also
- * retires that generation; a call that throws drops the stub, as a build's
- * does.
+ * retires that generation.
+ *
+ * A call that throws (the facet's isolate reset under it: past its memory,
+ * or its host gone) drops the stub, and the pre-bundle, which is pure, runs
+ * once more on a fresh facet, logged. A second throw is a
+ * BuildFacetResetError naming the package and why; a facet that never
+ * loaded is the load's own error, not retried.
  */
 export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (spec: PrebundleSpec) => Promise<PrebundleResult> {
-  return async (spec) => {
+  /** One call: its answer, or what it threw (`reset`: the call itself, on a loaded facet). */
+  const once = async (spec: PrebundleSpec): Promise<PrebundleResult> => {
     const facet = sharedBuildFacet(ctx, env);
     const endCall = await beginCall(ctx, facet);
     let result: PrebundleResult & Crashed;
     try {
-      result = await (await facet.stub).prebundle(spec);
+      const stub = await facet.stub;
+      try {
+        result = await stub.prebundle(spec);
+      } catch (error) {
+        forgetBuildFacet(ctx, facet);
+        if (!facet.crashed) throw Object.assign(new Error(messageOf(error)), { reset: true });
+        const message = messageOf(error);
+        result = { specifier: spec.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };
+      }
     } catch (error) {
       forgetBuildFacet(ctx, facet);
-      if (!facet.crashed) throw error;
-      const message = error instanceof Error ? error.message : String(error);
-      result = { specifier: spec.specifier, ok: false, esmCode: '', errorText: `Nimbus's bundler crashed: ${message}`, elapsed: 0, warnings: [], crashed: { stackExhausted: false, message } };
+      throw error;
     } finally {
       endCall();
     }
@@ -389,6 +416,22 @@ export function buildFacetPrebundler(ctx: DurableObjectState, env: unknown): (sp
       console.warn(`[build-facet] rolldown's binding died pre-bundling ${spec.specifier} (${crashed.message})`);
     }
     return answer;
+  };
+  const wasReset = (error: unknown) => Reflect.get(Object(error), 'reset') === true;
+  return async (spec) => {
+    try {
+      return await once(spec);
+    } catch (error) {
+      if (!wasReset(error)) throw error;
+      console.warn(`[build-facet] the build facet was reset pre-bundling ${spec.specifier} (${messageOf(error)}); pre-bundling it once more on a fresh one`);
+    }
+    try {
+      return await once(spec);
+    } catch (error) {
+      if (!wasReset(error)) throw error;
+      console.warn(`[build-facet] the build facet was reset again pre-bundling ${spec.specifier} (${messageOf(error)}); giving up`);
+      throw new BuildFacetResetError(spec.specifier, messageOf(error));
+    }
   };
 }
 
