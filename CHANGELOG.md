@@ -5,6 +5,13 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `nuxt dev` failed its first run with "Cannot find native binding":
+  Nuxt reaches Vite, and Vite rolldown, through an `import()` whose specifier
+  is a variable, so the launch never carried rolldown's staged wasm binding,
+  and a binding cannot be added after launch. A launched bin now also carries
+  the staged bindings its own declared dependencies install (resolved as Node
+  resolves them, at the binding's exact version). A carried binding is
+  registered, never instantiated, until a program requires it.
 - Fixed: a program that compiled a WebAssembly module from bytes built in
   memory, rather than read from a file, was refused, and a caller that caught
   the refusal carried on without it, silently, on every launch (one of 286

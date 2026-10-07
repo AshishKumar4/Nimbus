@@ -136,6 +136,9 @@ import {
   stagedBinding,
   stagedBindingsFacetImport,
   stagedBindingsRequiredBy,
+  stagedBindingsDeclaredBy,
+  STAGED_BINDINGS,
+  type DeclaredBindingFs,
 } from '../runtime/staged-bindings.js';
 import {
   encodeCommonJsPack,
@@ -206,6 +209,16 @@ const launchAdapters = new WeakMap<LaunchFs, BridgeRequireFs>();
 /** The exact type of `entry` in `dir` on a launch's fs, lstat'ing it where its listing could not type it. */
 function launchEntryType(vfs: LaunchFs, dir: string, entry: RuntimeVfsDirEntry): Promise<KnownDirentType | null> {
   return direntTypeOf(entry, () => vfs.stat(`${dir}/${entry.name}`, { followSymlinks: false }));
+}
+/** The declared-dependency walk's questions (stagedBindingsDeclaredBy), on a launch's fs. */
+function declaredBindingFs(fs: LaunchFs): DeclaredBindingFs {
+  const files = filesOf(fs);
+  const decoder = new TextDecoder();
+  return {
+    readText: async (path) => { const bytes = await files.readBytes(path); return bytes === null ? null : decoder.decode(bytes); },
+    exists: async (path) => await files.exists(path),
+    realpath: async (path) => { try { return await fs.realpath(path); } catch { return null; } },
+  };
 }
 function filesOf(fs: LaunchFs): BridgeRequireFs {
   let files = launchAdapters.get(fs);
@@ -5740,7 +5753,19 @@ export class FacetManager {
     // The only consumers of the raw cells past serialization are these two
     // answers, so they come first; the serialization then consumes the cells.
     vfsState.usesNodeSqlite = bundleUsesNodeSqlite(spec.entryCode, vfsState.bundle);
-    vfsState.stagedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
+    // What the closure names, and what the launched bin's own dependency tree
+    // installs: a binding is compiled with the launch or not at all, and a
+    // program can reach its owner by a specifier no walk follows.
+    const declaredWalk = { probes: 0 };
+    const declaredBindings = await stagedBindingsDeclaredBy(declaredBindingFs(vfs), spec.scriptPath, undefined, declaredWalk);
+    const namedBindings = stagedBindingsRequiredBy(Object.entries(vfsState.bundle));
+    const requiredBindings = new Set([...namedBindings, ...declaredBindings]);
+    vfsState.stagedBindings = STAGED_BINDINGS.filter((b) => requiredBindings.has(b.name)).map((b) => b.name);
+    if (this.debugEnabled) {
+      this.processes.appendOutput(entry.pid, 'stderr', `[nimbus-debug] staged bindings: [${vfsState.stagedBindings.join(', ')}]`
+        + ` (named by the closure: [${namedBindings.join(', ')}]; declared by the bin's dependencies: [${declaredBindings.join(', ')}],`
+        + ` ${declaredWalk.probes} filesystem questions)\n`);
+    }
     // Wasm a package inlines as base64 in its own source (Vite's copy of
     // es-module-lexer) never passes through the filesystem, so the closure
     // walk's by-path records cannot name it; it is staged here instead.
