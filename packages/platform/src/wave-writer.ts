@@ -261,7 +261,8 @@ function parseReceipts(result: unknown): WaveFileReceipt[] {
  */
 function ownedBytes(bytes: Uint8Array): Uint8Array {
   if (bytes.byteOffset === 0 && bytes.byteLength === bytes.buffer.byteLength) return bytes;
-  return bytes.slice();
+  // A copy: a Node Buffer's slice() is another view of the same memory.
+  return new Uint8Array(bytes);
 }
 
 export class WaveWriter<Meta = undefined> {
@@ -322,15 +323,16 @@ export class WaveWriter<Meta = undefined> {
   }
 
   /**
-   * A regular file. The writer takes `bytes`; a view sharing its buffer is
-   * copied. `meta` rides with the record, back to the caller as it is cut.
+   * A regular file, with its permission bits as given (`mode & 0o7777`). The
+   * writer takes `bytes`; a view sharing its buffer is copied. `meta` rides
+   * with the record, back to the caller as it is cut.
    */
   file(path: string, mode: number, bytes: Uint8Array, meta?: Meta): Promise<void> {
     return this.exclusive(async () => {
       const key = this.key(path);
       this.assertOwnerHealthy(meta);
       await this.admit(key, bytes.byteLength, true);
-      this.buffer(key, { kind: 'file', mode: mode & 0o111 ? 0o755 : 0o644, bytes: ownedBytes(bytes), meta });
+      this.buffer(key, { kind: 'file', mode: mode & 0o7777, bytes: ownedBytes(bytes), meta });
       await this.cutIfFull();
     });
   }
@@ -364,7 +366,7 @@ export class WaveWriter<Meta = undefined> {
       const key = this.key(path);
       this.assertOwnerHealthy(meta);
       if (this.hasBuffered()) await this.cut();
-      this.buffer(key, { kind: 'stream', mode: mode & 0o111 ? 0o755 : 0o644, size, source: chunks, meta });
+      this.buffer(key, { kind: 'stream', mode: mode & 0o7777, size, source: chunks, meta });
       await this.cut();
       if (this.inFlight) await this.inFlight;
     });

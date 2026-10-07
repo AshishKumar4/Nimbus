@@ -165,6 +165,31 @@ function session({ failWave = null, receipts = false, latencyMs = 0 } = {}) {
   assert.equal(target.files.get('r/b').bytes.toString(), 'AAAA');
 }
 
+// ── A Buffer view is copied too (Buffer#slice is another view) ────────
+{
+  const target = session();
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r' });
+  const big = Buffer.alloc(16384, 66);
+  await writer.file('c', 0o644, big.subarray(0, 11));
+  const held = writer.buffered('r/c');
+  assert.equal(held.byteLength, 11);
+  assert.equal(held.buffer.byteLength, 11, `a buffered Buffer view holds its ${held.buffer.byteLength}-byte parent (a deflate result's 16 KiB)`);
+  await writer.flush();
+  assert.equal(target.files.get('r/c').bytes.toString(), 'BBBBBBBBBBB');
+}
+
+// ── A file's mode is kept as given (git's loose objects are 0444) ─────
+{
+  const target = session();
+  const writer = createWaveWriter({ supervisor: target.supervisor, root: 'r', base: 'r' });
+  for (const [name, mode] of [['ro', 0o444], ['rw', 0o644], ['x', 0o755], ['grp', 0o664], ['typed', 0o100755]]) {
+    await writer.file(name, mode, new Uint8Array(1));
+  }
+  await writer.flush();
+  assert.deepEqual(['ro', 'rw', 'x', 'grp', 'typed'].map((name) => target.files.get(`r/${name}`).inode.mode),
+    [0o444, 0o644, 0o755, 0o664, 0o755], 'permission bits as given, the type bits not');
+}
+
 // ── A failed wave is the last one sent; everything after rejects ──────
 {
   const target = session({ failWave: 2 });
