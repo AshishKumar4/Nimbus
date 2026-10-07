@@ -200,8 +200,9 @@ export declare class WaveWriter<Meta = undefined> {
     /** Run `mutate` once every mutation called before it has finished. */
     private exclusive;
     /**
-     * A regular file. The writer takes `bytes`; a view sharing its buffer is
-     * copied. `meta` rides with the record, back to the caller as it is cut.
+     * A regular file, with its permission bits as given (`mode & 0o7777`). The
+     * writer takes `bytes`; a view sharing its buffer is copied. `meta` rides
+     * with the record, back to the caller as it is cut.
      */
     file(path: string, mode: number, bytes: Uint8Array, meta?: Meta): Promise<void>;
     /** A symbolic link to `target`. */

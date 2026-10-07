@@ -35,6 +35,12 @@ export interface CommandInputStream {
 }
 export interface TerminalInputStream extends CommandInputStream {
   rawMode: boolean;
+  /**
+   * termios ISIG: when true, Ctrl+C and Ctrl+\ signal the foreground
+   * command; when false, they are its input (0x03, 0x1c), as a
+   * program that reads them as keys asks for (a REPL's readline).
+   */
+  signalKeys: boolean;
 }
 
 /**
