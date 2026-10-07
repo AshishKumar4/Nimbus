@@ -19,7 +19,9 @@
 // (an entry, an import(), a require() of it): "in ES module scope", the
 // package.json that made a .js a module, or top-level await's ambiguity.
 // The runtime said "require_is_not_defined_in_ES_module_scope is not
-// defined", a name it made up.
+// defined", a name it made up. An entry's first frame is compared here; a
+// module the entry loads names its own frame in the guest's registry, which
+// es-module-scope-errors-workerd runs.
 //
 // One fixture tree, on disk for real node and in the session's filesystem for
 // `node` through the runtime handler (the shell's command) and a one-shot
@@ -89,9 +91,8 @@ const files = {
   'caught.mjs': 'try { exports.x = 1; } catch (e) { globalThis.caught = [e.name, e.message]; }\nexport {};\n',
   'later.mjs': "process.on('uncaughtException', (e) => { console.log(JSON.stringify(['later', e.name, e.message])); });\nsetTimeout(() => { __dirname; }, 0);\nexport {};\n",
   'scope-errors.cjs': `const report = [];
-const frameFile = (e) => /([^/\\s:()]+):\\d+:\\d+\\)?$/.exec(e.stack.split('\\n').find((l) => l.startsWith('    at ')) ?? '')?.[1] ?? null;
-try { require('./require-in-esm.mjs'); } catch (e) { report.push(['require', e.name, e.message, e.code ?? null, frameFile(e)]); }
-import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name, e.message, e.code ?? null, frameFile(e)]); })
+try { require('./require-in-esm.mjs'); } catch (e) { report.push(['require', e.name, e.message, e.code ?? null]); }
+import('./typed/module-exports.js').catch((e) => { report.push(['import', e.name, e.message, e.code ?? null]); })
   .then(() => import('./tla-require.mjs')).catch((e) => { report.push(['tla', e.name, e.message, e.code ?? null]); })
   .then(() => import('./caught.mjs')).then(() => { report.push(['caught', ...globalThis.caught]); console.log(JSON.stringify(report)); });
 `,
@@ -219,9 +220,9 @@ for (let i = 0; i < RUNS.length; i++) {
     assert.notEqual(exitCode, 0, `${label} fails, as in node: ${stdout}${out}`);
     const error = uncaught(stderr + out + stdout);
     assert.equal(error.block, expected[i].block, `${label} throws what node throws: ${stderr}${out}`);
-    // The frame the error names first is the module's that threw, as node's
-    // is (\`-e\` code is no file: node names it [eval1]).
-    if (!argsOf(run)[0].startsWith('-') && expected[i].block.startsWith('ReferenceError')) {
+    // The frame the error names first is the entry's, where the entry threw,
+    // as node's is (\`-e\` code is no file: node names it [eval1]).
+    if (expected[i].frame === argsOf(run)[0].split('/').at(-1)) {
       assert.equal(error.frame, expected[i].frame, `${label}: the first frame is the module's: ${stderr}${out}`);
     }
     continue;
