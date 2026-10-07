@@ -755,8 +755,10 @@ function lockRefusal(root, waitMs) {
   }
 }
 
-// ── [22] RED: a gate killed mid-build leaves no lock, and its build step none ─
-// Its step outlives it, as an orphan; the lock goes with the gate.
+// ── [22] RED: a gate killed mid-build holds the lock until its build step ends ─
+// The step outlives the gate, as an orphan, and can still write: the lock is
+// the step's too (it inherits the descriptor), so no other gate snapshots a
+// half-built tree; once the step ends, the lock is free, with nothing to break.
 // The killed gate's held copies stay, as a dead gate's do, in this case's own tmpdir.
 {
   await withPrivateTmp(async () => {
@@ -769,12 +771,13 @@ function lockRefusal(root, waitMs) {
     const orphan = Number(readFileSync(join(root, 'started'), 'utf8'));
     try {
       assert.ok(existsSync(`/proc/${orphan}`), 'the killed gate\'s build step is still running');
-      assert.equal(lockRefusal(root, 5_000), null, 'the next gate takes the lock at once: nothing to break, and the orphaned step does not hold it');
+      assert.match(lockRefusal(root, 1_000) ?? '', /has held the checkout lock .* for longer than/, 'while the orphaned step can write, no other gate gets the lock');
     } finally {
       writeFileSync(join(root, 'go'), '');
     }
+    assert.equal(lockRefusal(root, 30_000), null, 'once the step has ended, the next gate takes the lock: nothing to break');
   });
-  console.log('  ok  [22] a gate killed mid-build releases the lock; the build step it left running does not hold it');
+  console.log('  ok  [22] a gate killed mid-build holds the lock through its orphaned build step, and releases it when that step ends');
 }
 
 // ── [23] RED: a gate in another PID namespace is waited for, not broken ─
@@ -848,6 +851,20 @@ process.exit(1);
     assert.deepEqual(seen.manifest.entries['packages/worker/dist/held-a.js'], { mode: 0o640 });
   });
   console.log('  ok  [25] before the first step, the held copies carry dirty symlinks as links, and a manifest of every mode and link');
+}
+
+// ── [26] RED: a lock whose holder cannot be described is released, as a BuildFailure ─
+// The lock file is /dev/full here, so writing the holder's description fails.
+{
+  const { root } = await fixtureAtFixpoint();
+  const gitDir = spawnSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+  const lock = join(gitDir, 'nimbus-dist-integrity.lock');
+  rmSync(lock, { force: true });
+  symlinkSync('/dev/full', lock);
+  assert.match(lockRefusal(root, 500) ?? 'taken', /could not describe the holder/, 'the failure is a BuildFailure that says what failed');
+  rmSync(lock);
+  assert.equal(lockRefusal(root, 500), null, 'and this process can take the lock again');
+  console.log('  ok  [26] a lock whose holder cannot be described is released, and the gate refuses as a failed build');
 }
 
 console.log('dist-integrity: all cases passed');

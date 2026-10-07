@@ -103,7 +103,7 @@ import { createHash } from 'node:crypto';
 import { existsSync, readFileSync, readdirSync, realpathSync, writeFileSync } from 'node:fs';
 import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
-import { holdsCheckoutLock, withCheckoutLock } from './lib/checkout-lock.mjs';
+import { checkoutLockFd, holdsCheckoutLock, withCheckoutLock } from './lib/checkout-lock.mjs';
 import { filesUnder, trackedFileDigests } from './lib/fs-walk.mjs';
 import { BuildFailure, diffSnapshots, transaction } from './lib/output-transaction.mjs';
 
@@ -389,6 +389,9 @@ function runSteps({ root, steps, log, roots, before }) {
         cwd: root,
         encoding: 'utf8',
         env: { ...process.env, PATH: workspacePath(root, step.cwd) },
+        // The checkout lock, held by the step too: a step left running by a
+        // gate that was killed still holds it (scripts/lib/checkout-lock.mjs).
+        stdio: ['ignore', 'pipe', 'pipe', checkoutLockFd(root)],
       });
       if (result.error || result.status !== 0) {
         process.stderr.write(result.stdout || '');

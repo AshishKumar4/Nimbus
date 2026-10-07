@@ -12,8 +12,13 @@
 //
 // flock(1) takes the lock on this process's descriptor, passed as its fd 3:
 // the lock then belongs to the description both share, and stays with this
-// process when flock exits. Node opens files close-on-exec, so no build
-// step this process starts inherits the descriptor, or the lock.
+// process when flock exits. A lock that ended with this process would free
+// the checkout while a build step it started (an orphan, once this process
+// is killed) still writes. So every build step is handed the descriptor
+// too (checkoutLockFd, passed as the step's fd 3, which its own children
+// inherit): the lock lives until the last process that can write has
+// ended. Nothing else this process starts gets it (Node and Bun open files
+// close-on-exec).
 import { AsyncLocalStorage } from 'node:async_hooks';
 import { spawnSync } from 'node:child_process';
 import { closeSync, ftruncateSync, openSync, readFileSync, writeSync } from 'node:fs';
@@ -26,8 +31,8 @@ const CHECKOUT_LOCK_WAIT_MS = 30 * 60_000;
 /** flock(1)'s exit status when the lock is taken (-n) or the wait ran out (-w). */
 const TAKEN = 75;
 const lockScope = new AsyncLocalStorage();
-/** The lock files this process holds. */
-const heldHere = new Set();
+/** The lock files this process holds, and the descriptor holding each. */
+const heldHere = new Map();
 
 /** The checkout's lock file: in its own git dir, so each worktree has its own. */
 export function checkoutLockFile(root) {
@@ -41,6 +46,18 @@ export function checkoutLockFile(root) {
 /** Whether the current task holds `root`'s checkout lock. */
 export function holdsCheckoutLock(root) {
   return lockScope.getStore()?.has(checkoutLockFile(root)) ?? false;
+}
+
+/**
+ * The descriptor holding `root`'s checkout lock, for a build step to
+ * inherit (as its fd 3): the lock then outlives this process for as long as
+ * the step, or anything the step started, runs. Only within the task that
+ * holds the lock.
+ */
+export function checkoutLockFd(root) {
+  const file = checkoutLockFile(root);
+  if (!lockScope.getStore()?.has(file)) throw new Error(`checkoutLockFd: this task does not hold the checkout lock on ${root}`);
+  return /** @type {number} */ (heldHere.get(file));
 }
 
 /**
@@ -63,7 +80,7 @@ export function withCheckoutLock(root, fn, { log = () => {}, waitMs = CHECKOUT_L
     throw new BuildFailure(`refusing to build — this process already holds the checkout lock on ${root} in another task; one gate at a time`);
   }
   const fd = acquire(file, root, log, waitMs);
-  heldHere.add(file);
+  heldHere.set(file, fd);
   const release = () => {
     heldHere.delete(file);
     closeSync(fd);
@@ -119,7 +136,13 @@ function acquire(file, root, log, waitMs) {
     closeSync(fd);
     throw new BuildFailure(`refusing to build — could not take the checkout lock ${file}: ${taken.error?.message ?? (taken.stderr.trim() || `flock exited ${taken.status}`)}`);
   }
-  ftruncateSync(fd, 0);
-  writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), root, since: new Date().toISOString() }));
+  try {
+    ftruncateSync(fd, 0);
+    writeSync(fd, JSON.stringify({ pid: process.pid, host: hostname(), root, since: new Date().toISOString() }));
+  } catch (error) {
+    // Closed, the descriptor releases the lock it just took.
+    closeSync(fd);
+    throw new BuildFailure(`refusing to build — could not describe the holder in the checkout lock ${file}: ${error.message}`);
+  }
   return fd;
 }
