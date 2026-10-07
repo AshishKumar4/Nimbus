@@ -58,7 +58,7 @@ import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
 import { NODE_INSPECT_HOST_SOURCE } from './node-inspect-host.js';
-import { EAST_ASIAN_WIDE_RANGES, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
+import { EAST_ASIAN_WIDE_RANGES, NODE_BUILTIN_OBJECTS, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
 const UNDICI_SHIM_CODE = generateUndiciShimCode();
@@ -6054,6 +6054,7 @@ function __nimbusNodeInspect() {
     url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
     process: __processMod,
     builtinModules: __NodeModule.builtinModules,
+    builtinObjects: ${JSON.stringify(NODE_BUILTIN_OBJECTS)},
     eastAsianWide(code) {
       let low = 0;
       let high = wide.length / 2 - 1;
@@ -8076,11 +8077,103 @@ const __childProcessMod = (() => {
 // nothing once the program stopped. workerd's node:console has no Console
 // constructor ("The Console method is not implemented"), which OpenTUI's
 // console capture calls over streams of its own.
+// Node's colour policy (lib/internal/tty.js getColorDepth and hasColors,
+// lib/internal/util/colors.js shouldColorize, v22.22.3), for its platform
+// (Nimbus is linux): FORCE_COLOR first, then NODE_DISABLE_COLORS, NO_COLOR and
+// TERM=dumb, then the CI and terminal variables. Each stream decides for
+// itself: a terminal's getColorDepth reads the env it is given.
+const __NIMBUS_TERM_ENVS = {
+  eterm: 4, cons25: 4, console: 4, cygwin: 4, dtterm: 4, gnome: 4, hurd: 4, jfbterm: 4, konsole: 4, kterm: 4,
+  mlterm: 4, mosh: 24, putty: 4, st: 4, "rxvt-unicode-24bit": 24, terminator: 24, "xterm-kitty": 24,
+};
+const __NIMBUS_CI_ENVS = [["APPVEYOR", 8], ["BUILDKITE", 8], ["CIRCLECI", 24], ["DRONE", 8], ["GITEA_ACTIONS", 24], ["GITHUB_ACTIONS", 24], ["GITLAB_CI", 8], ["TRAVIS", 8]];
+const __NIMBUS_TERM_ENVS_REG_EXP = [/ansi/, /color/, /linux/, /direct/, /^con[0-9]*x[0-9]/, /^rxvt/, /^screen/, /^xterm/, /^vt100/, /^vt220/];
+let __nimbusColorWarned = false;
+function __nimbusWarnOnDeactivatedColors(env) {
+  if (__nimbusColorWarned) return;
+  let name = "";
+  if (env.NODE_DISABLE_COLORS !== undefined) name = "NODE_DISABLE_COLORS";
+  if (env.NO_COLOR !== undefined) {
+    if (name !== "") name += "' and '";
+    name += "NO_COLOR";
+  }
+  if (name !== "") {
+    globalThis.process.emitWarning("The '" + name + "' env is ignored due to the 'FORCE_COLOR' env being set.", "Warning");
+    __nimbusColorWarned = true;
+  }
+}
+function __nimbusColorDepth(env = globalThis.process.env) {
+  const hasOwn = (name) => Object.prototype.hasOwnProperty.call(env, name);
+  if (env.FORCE_COLOR !== undefined) {
+    switch (env.FORCE_COLOR) {
+      case "":
+      case "1":
+      case "true":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 4;
+      case "2":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 8;
+      case "3":
+        __nimbusWarnOnDeactivatedColors(env);
+        return 24;
+      default:
+        return 1;
+    }
+  }
+  if (env.NODE_DISABLE_COLORS !== undefined || env.NO_COLOR !== undefined || env.TERM === "dumb") return 1;
+  if (env.TMUX) return 24;
+  if (hasOwn("TF_BUILD") && hasOwn("AGENT_NAME")) return 4;
+  if (hasOwn("CI")) {
+    for (const [name, colors] of __NIMBUS_CI_ENVS) if (hasOwn(name)) return colors;
+    if (env.CI_NAME === "codeship") return 8;
+    return 1;
+  }
+  if ("TEAMCITY_VERSION" in env) return /^(9\\.(0*[1-9]\\d*)\\.|\\d{2,}\\.)/.exec(env.TEAMCITY_VERSION) !== null ? 4 : 1;
+  switch (env.TERM_PROGRAM) {
+    case "iTerm.app":
+      if (!env.TERM_PROGRAM_VERSION || /^[0-2]\\./.exec(env.TERM_PROGRAM_VERSION) !== null) return 8;
+      return 24;
+    case "HyperTerm":
+    case "MacTerm":
+      return 24;
+    case "Apple_Terminal":
+      return 8;
+  }
+  if (env.COLORTERM === "truecolor" || env.COLORTERM === "24bit") return 24;
+  if (env.TERM) {
+    if (/truecolor/.exec(env.TERM) !== null) return 24;
+    if (/^xterm-256/.exec(env.TERM) !== null) return 8;
+    const termEnv = env.TERM.toLowerCase();
+    if (__NIMBUS_TERM_ENVS[termEnv]) return __NIMBUS_TERM_ENVS[termEnv];
+    if (__NIMBUS_TERM_ENVS_REG_EXP.some((term) => term.exec(termEnv) !== null)) return 4;
+  }
+  if (env.COLORTERM) return 4;
+  return 1;
+}
+function __nimbusHasColors(count, env) {
+  if (env === undefined && (count === undefined || (typeof count === "object" && count !== null))) {
+    env = count;
+    count = 16;
+  } else if (typeof count !== "number") {
+    throw Object.assign(new TypeError("The \\"count\\" argument must be of type number." + __nimbusReceived(count)), { code: "ERR_INVALID_ARG_TYPE" });
+  } else if (!Number.isInteger(count) || count < 2 || count > Number.MAX_SAFE_INTEGER) {
+    const range = Number.isInteger(count) ? ">= 2 && <= 9007199254740991" : "an integer";
+    throw Object.assign(new RangeError("The value of \\"count\\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count)), { code: "ERR_OUT_OF_RANGE" });
+  }
+  return count <= 2 ** __nimbusColorDepth(env);
+}
+function __nimbusReceived(value) {
+  if (value === null || value === undefined) return " Received " + value;
+  if (typeof value === "function") return " Received function " + value.name;
+  if (typeof value === "object") return value.constructor?.name ? " Received an instance of " + value.constructor.name : " Received " + __utilMod.inspect(value, { depth: -1 });
+  let shown = __utilMod.inspect(value, { colors: false });
+  if (shown.length > 28) shown = shown.slice(0, 25) + "...";
+  return " Received type " + typeof value + " (" + shown + ")";
+}
 function __nimbusShouldColorize(stream) {
-  const force = __processMod.env.FORCE_COLOR;
-  // Node's getColorDepth for FORCE_COLOR: '', '1', 'true', '2' and '3' have colours.
-  if (force !== undefined) return ["", "1", "true", "2", "3"].includes(force);
-  return Boolean(stream && stream.isTTY) && (typeof stream.getColorDepth === "function" ? stream.getColorDepth() > 2 : true);
+  if (__processMod.env.FORCE_COLOR !== undefined) return __nimbusColorDepth() > 2;
+  return Boolean(stream?.isTTY) && (typeof stream.getColorDepth === "function" ? stream.getColorDepth() > 2 : true);
 }
 // Node's formatTime (lib/internal/util/debuglog.js), for console.time.
 function __nimbusFormatTime(ms) {
@@ -8943,8 +9036,9 @@ function __makeProcessOutputStream(streamName) {
       if (typeof cb === "function") queueMicrotask(cb);
       return true;
     },
-    getColorDepth: () => __nimbusAttachedTty ? 24 : 1,
-    hasColors: () => __nimbusAttachedTty,
+    // A terminal's colours are Node's policy; a pipe's, none.
+    getColorDepth: (env) => __nimbusAttachedTty ? __nimbusColorDepth(env) : 1,
+    hasColors: (count, env) => __nimbusAttachedTty ? __nimbusHasColors(count, env) : false,
     clearLine(dir, cb) { return __nimbusClearLine(stream, dir, cb); },
     clearScreenDown(cb) { return __nimbusClearScreenDown(stream, cb); },
     cursorTo(x, y, cb) { return __nimbusCursorTo(stream, x, y, cb); },
@@ -9350,8 +9444,8 @@ builtins.tty = {
     constructor() { super(); this.isTTY = __nimbusAttachedTty; }
     get columns() { return __nimbusTtyColumns; }
     get rows() { return __nimbusTtyRows; }
-    getColorDepth() { return __nimbusAttachedTty ? 24 : 1; }
-    hasColors() { return __nimbusAttachedTty; }
+    getColorDepth(env) { return __nimbusColorDepth(env); }
+    hasColors(count, env) { return __nimbusHasColors(count, env); }
     clearLine(dir, cb) { return __nimbusClearLine(this, dir, cb); }
     clearScreenDown(cb) { return __nimbusClearScreenDown(this, cb); }
     cursorTo(x, y, cb) { return __nimbusCursorTo(this, x, y, cb); }

@@ -12,21 +12,23 @@
  * and isError; lib/internal/errors.js isStackOverflowError and the message
  * of ERR_INVALID_ARG_TYPE; lib/internal/validators.js validateObject and
  * validateString; src/node_i18n.cc GetStringWidth. Of the util binding, the
- * property and constructor-name readers are JavaScript. What only V8's
- * internals read (a promise's state, a proxy's target, an iterator's or a
- * weak collection's entries), and the properties of a workerd API object
- * with no inspect method of its own (its prototype's kResourceTypeInspect,
- * workerd jsg/resource.h), are formatted by the platform's own inspect,
- * workerd's port of Node's, which reads them: inspect.js reaches every
- * object through getProxyDetails first and formats what that answers in the
- * value's place, through its inspect hook. So what such a value holds is
- * printed as workerd prints it (a symbol key bare, `Symbol(k)` for Node's
- * `[Symbol(k)]`), and with customInspect false it is printed with none of
- * those internals: a promise `<pending>`, an iterator's entries empty, a
- * proxy through its traps, where Node reads V8 there too.
+ * property and constructor-name readers are JavaScript, and every brand
+ * check is intrinsic (util.types), never the prototype chain.
+ *
+ * THE BINDING. A promise's state and result, a proxy's target and handler,
+ * a Map or Set iterator's and a weak collection's entries are V8 slots no
+ * user-land JavaScript can read. Only for those slots, the binding renders
+ * the slot's content with the platform's inspect (workerd's port of Node's,
+ * which reads them), under the options the slot is formatted with, and
+ * hands inspect.js a value that prints as that text where Node's binding
+ * result goes. Nothing else ever goes through the platform's inspect.
+ * Named limits: what such a slot holds is printed by workerd's port (it
+ * prints a symbol key bare, `Symbol(k)` for Node's `[Symbol(k)]`); and
+ * `util.format('%s', proxy)` reads the proxy's toString as a built-in's.
  *
  * `platform`: { util (the platform's node:util), Buffer, url ({ URL,
- * pathToFileURL }), process, builtinModules, eastAsianWide(code),
+ * pathToFileURL }), process, builtinModules, builtinObjects (Node's
+ * NODE_BUILTIN_OBJECTS), eastAsianWide(code),
  * primordialsOf(primordials, globalThis), inspectOf(exports, require, module,
  * process, internalBinding, primordials) }, the last two running the
  * upstream sources.
