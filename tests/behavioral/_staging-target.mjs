@@ -45,12 +45,11 @@
 // USAGE
 //   export CLOUDFLARE_ACCOUNT_ID=<account>       # account pin, required
 //   bun run staging:deploy                       # CI builds, this machine uploads + verifies
-//   bun run staging:test                         # full suite against staging
+//   bun run staging:test                         # full suite against staging, from CI's containers
 //
 // COMMANDS
 //   up      --release <dir> [--rotate-secrets]   a release CI built for HEAD
 //           (scripts/ci/release.mjs staging makes one and runs this)
-//   test    [--ttl-ms <ms>] [...run-all.mjs flags]
 //   status
 //   token   [--ttl-ms <ms>] [--json]   → the token, or JSON {base, token}
 //   session [--ttl-ms <ms>]   → JSON {base, sessionId, token}
@@ -66,16 +65,18 @@
 //   Worker that already exists unless `--rotate-secrets` says to.
 
 import { join } from 'node:path';
-import { spawnSync } from 'node:child_process';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
-import { PROBE_TARGET_SKIPS } from './_probe-target-skips.mjs';
-import { assertDeployIsolated, describeTarget } from '../../scripts/deploy-isolation.mjs';
-import { uploadConfig } from '../../scripts/ci/lib/release.mjs';
-import {
+import { assertInstalled } from '../../scripts/ci/lib/installed.mjs';
+
+const ROOT = join(import.meta.dirname, '..', '..');
+
+// Checked before the deploy path is imported: it parses wrangler configs
+// through packages/worker, which only an install provides.
+assertInstalled(ROOT, '_staging-target.mjs');
+const {
   MACHINE_STATE_DIR,
   PROBE_TARGET_VARS,
-  ROOT,
   activeVersionId,
   assertCredentialHeld,
   createSession,
@@ -88,7 +89,9 @@ import {
   waitForTarget,
   workersDevSubdomain,
   writeState,
-} from './_deploy-target.mjs';
+} = await import('./_deploy-target.mjs');
+const { assertDeployIsolated, describeTarget } = await import('../../scripts/deploy-isolation.mjs');
+const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 
 const STATE_PATH = join(MACHINE_STATE_DIR, 'staging-target.json');
 
@@ -127,7 +130,7 @@ const DEFAULT_TTL_MS = 3 * 60 * 60 * 1000;
 const [command, ...rest] = process.argv.slice(2);
 const flags = parseFlags(rest);
 
-const COMMANDS = { up, test, status, token, session };
+const COMMANDS = { up, status, token, session };
 const run = COMMANDS[command];
 if (!run) {
   console.error(`usage: bun tests/behavioral/_staging-target.mjs <${Object.keys(COMMANDS).join('|')}> [flags]`);
@@ -197,31 +200,6 @@ async function up() {
     `export NIMBUS_PROBE_TOKEN=${jwt}`,
     '',
   ].join('\n'));
-}
-
-/**
- * Run the whole behavioral suite against staging. Extra argv goes to the
- * runner, so `staging:test --no-retry` is CI-strict mode.
- */
-async function test() {
-  const state = requireState();
-  const jwt = await mintProbeToken(state.probe.secret, ttlMs());
-  const passthrough = withoutFlag(rest, '--ttl-ms');
-
-  log(`running the behavioral suite against ${state.probe.base}`);
-  log(`skipping: ${PROBE_TARGET_SKIPS.join(', ')}`);
-  const result = spawnSync('bun', ['tests/behavioral/run-all.mjs', ...passthrough], {
-    cwd: ROOT,
-    stdio: 'inherit',
-    env: {
-      ...process.env,
-      BASE: state.probe.base,
-      NIMBUS_PROBE_TOKEN: jwt,
-      NIMBUS_PROBE_SKIP: process.env.NIMBUS_PROBE_SKIP || PROBE_TARGET_SKIPS.join(','),
-    },
-  });
-  if (result.error) throw result.error;
-  process.exit(result.status ?? 1);
 }
 
 function status() {
@@ -297,11 +275,6 @@ function ttlMs() {
   return flags['ttl-ms'] ? Number(flags['ttl-ms']) : DEFAULT_TTL_MS;
 }
 
-/** Drop `--flag value` from argv so the rest can be handed to the runner. */
-function withoutFlag(argv, flag) {
-  const at = argv.indexOf(flag);
-  return at === -1 ? argv : [...argv.slice(0, at), ...argv.slice(at + 2)];
-}
 
 function log(message) {
   console.error(`[staging] ${message}`);

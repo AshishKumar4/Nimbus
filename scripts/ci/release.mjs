@@ -27,7 +27,7 @@ import { spawnSync } from 'node:child_process';
 import { writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 import { HOSTED_DEMO_CHECKS } from '../../tests/behavioral/_probe-target-skips.mjs';
-import { fetchRelease } from './lib/release.mjs';
+import { assertInstalled } from './lib/installed.mjs';
 
 /** Write-heavy probes repeated beside the suite: their failure mode is intermittent. */
 const REPEATED = ['python/flask-markupsafe-fallback', 'python/numpy-flask-startup-modules', 'node/entry-pending-work'];
@@ -60,6 +60,9 @@ if (resolved.status !== 0) notGraded(`no commit ${positional[1] ?? 'HEAD'}`);
 const sha = resolved.stdout.trim();
 if (git(repo, ['rev-parse', 'HEAD']).stdout.trim() !== sha) notGraded(`${sha.slice(0, 12)} is not this worktree's HEAD: the upload reads the checkout`);
 if (!process.env.CLOUDFLARE_ACCOUNT_ID) notGraded('CLOUDFLARE_ACCOUNT_ID is not set: the deploy pins the account');
+assertInstalled(repo, 'release');
+// Imported once the install is known to be here: the upload path parses wrangler configs through it.
+const { fetchRelease } = await import('./lib/release.mjs');
 
 let dir;
 let release;

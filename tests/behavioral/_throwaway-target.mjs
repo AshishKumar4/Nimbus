@@ -76,12 +76,15 @@ import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
-import { assertDeployIsolated } from '../../scripts/deploy-isolation.mjs';
-import { uploadConfig } from '../../scripts/ci/lib/release.mjs';
-import { assertDistMatchesSource } from '../../scripts/dist-integrity.mjs';
-import {
+import { assertInstalled } from '../../scripts/ci/lib/installed.mjs';
+
+const ROOT = join(import.meta.dirname, '..', '..');
+
+// Checked before the deploy path is imported: it parses wrangler configs
+// through packages/worker, which only an install provides.
+assertInstalled(ROOT, '_throwaway-target.mjs');
+const {
   PROBE_TARGET_VARS,
-  ROOT,
   WRANGLER,
   apiToken,
   assertCredentialHeld,
@@ -94,7 +97,9 @@ import {
   waitForTarget,
   wrangle,
   writeState,
-} from './_deploy-target.mjs';
+} = await import('./_deploy-target.mjs');
+const { assertDeployIsolated } = await import('../../scripts/deploy-isolation.mjs');
+const { uploadConfig } = await import('../../scripts/ci/lib/release.mjs');
 
 const PROBE_APP = join(ROOT, 'apps', 'probe');
 const STATE_DIR = join(ROOT, '.wrangler', 'throwaway-targets');
@@ -184,8 +189,17 @@ async function up() {
 
   // --bundle: a release CI built for this commit, the dist gate included
   // (scripts/ci/lib/release.mjs); this machine only uploads it.
+  // Without one, `wrangler preview` bundles here, after the gate builds:
+  // only a CI runner (GitHub's behavioral job) may do that. On the
+  // workstation it is remote-probes --deploy.
   const bundle = flags.bundle ? uploadConfig(flags.bundle, 'apps/probe', { root: ROOT, preview: true, log }) : null;
-  if (!bundle && flags.build !== false) await assertDistMatchesSource({ root: ROOT, log });
+  if (!bundle && process.env.GITHUB_ACTIONS !== 'true') {
+    throw new Error('up without --bundle builds and bundles on this machine, which builds nothing: run `bun scripts/ci/remote-probes.mjs --deploy <name>`, which bundles on CI and uploads from here');
+  }
+  if (!bundle && flags.build !== false) {
+    const { assertDistMatchesSource } = await import('../../scripts/dist-integrity.mjs');
+    await assertDistMatchesSource({ root: ROOT, log });
+  }
 
   await ensurePreviewParent({ account, token });
 

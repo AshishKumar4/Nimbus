@@ -1,6 +1,6 @@
 // _probe-target-skips.mjs — probes the runner must not run against a
 // bearer-token probe target, and why. One list, read by everything that
-// drives the suite at a probe target: `_staging-target.mjs test` and
+// drives the suite at a probe target: scripts/ci/remote-probes.mjs and
 // `.github/workflows/behavioral.yml`.
 //
 // Print it for a shell: `bun tests/behavioral/_probe-target-skips.mjs`
@@ -19,7 +19,8 @@ export const PROBE_TARGET_SKIPS = [
   // (`demo_sessions`) and its `ANON_RATE_LIMITER` binding; `apps/probe`
   // declares neither and routes nothing but the core Nimbus surface, so
   // the chain cannot complete there for the target's shape. Run it
-  // against a hosted-demo deployment: `bun run staging:test`.
+  // against a hosted-demo deployment: HOSTED_DEMO_CHECKS, below, which
+  // `bun run staging:deploy` runs against nimbus-staging.
   //
   // This one is skipped for a capability that was ALREADY invisible once
   // — unreachable on production for weeks because nothing asserted the

@@ -45,7 +45,7 @@ import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
-import { fetchRelease } from './lib/release.mjs';
+import { assertInstalled } from './lib/installed.mjs';
 
 /** A task's limit on armada, and so the job's: every part runs at once. */
 const TASK_TIMEOUT_S = 30 * 60;
@@ -103,6 +103,8 @@ if (flags.deploy) {
   }
 }
 
+// Minting and deploying run the target scripts, which parse wrangler configs.
+if (!hosted) assertInstalled(repo, 'remote-probes');
 // A hosted demo is probed as its visitors use it, anonymously: no token, and
 // no probe-target skips.
 const skip = flags.skip ?? (hosted ? '' : PROBE_TARGET_SKIPS.join(','));
@@ -134,6 +136,7 @@ console.error(`remote-probes: ${items.length} tasks against ${base}, probes of $
  */
 async function deploy(name) {
   if (git(repo, ['rev-parse', 'HEAD']) !== sha) throw new Error(`--deploy deploys this worktree's HEAD, and ${sha.slice(0, 12)} is not it`);
+  const { fetchRelease } = await import('./lib/release.mjs');
   const { dir } = await fetchRelease({ repo, sha, targets: ['apps/probe'] });
   // Its exports (a token among them) are not wanted: probes get their own, below.
   const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', name, '--bundle', dir], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
