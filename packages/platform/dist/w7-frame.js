@@ -763,9 +763,6 @@ function parseFileBegin(bytes, v3) {
     // An offset is a write's, and only a description's writes name an inode.
     if ((call === 'write') !== (value.offset !== undefined))
         throw new Error(`w7-frame: ${base.path}: a write, and only a write, has an offset`);
-    if (call !== undefined && call !== 'write' && call !== 'append' && base.ino !== undefined) {
-        throw new Error(`w7-frame: ${base.path}: a ${call} names no inode`);
-    }
     return {
         ...base, kind: value.kind, contentId, size, chunkCount,
         ...(call === undefined ? {} : { call }),
@@ -777,18 +774,24 @@ function parsePathCall(value, path) {
     const keys = Object.keys(value).sort().join(',');
     switch (value.call) {
         case 'mkdir':
-            if (keys !== 'call,mode,path')
+            if (keys !== 'call,mode,path' && keys !== 'call,ino,mode,path')
                 break;
-            return { call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode') };
+            return {
+                call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode'),
+                ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'mkdir ino') }),
+            };
         case 'unlink':
         case 'rmdir':
             if (keys !== 'call,path')
                 break;
             return { call: value.call, path: path(value.path, `${value.call} path`) };
         case 'symlink':
-            if (keys !== 'call,path,target')
+            if (keys !== 'call,path,target' && keys !== 'call,ino,path,target')
                 break;
-            return { call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES) };
+            return {
+                call: 'symlink', path: path(value.path, 'symlink path'), target: boundedString(value.target, 'symlink target', MAX_PATH_BYTES),
+                ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'symlink ino') }),
+            };
         case 'ftruncate':
             if (keys !== 'call,ino,path,size' && keys !== 'call,path,size')
                 break;

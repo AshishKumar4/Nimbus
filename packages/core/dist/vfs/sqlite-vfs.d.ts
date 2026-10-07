@@ -1277,7 +1277,8 @@ export declare class SqliteVFS {
     /**
      * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
      * be numbered here. Only the holder of a delegation numbers its own
-     * entries, from its lease's reserved range, and a number already used by
+     * entries, from a range one of its leases reserved (the one its call is
+     * made under, or any its process holds), and a number already used by
      * another name is refused (there are no hard links).
      */
     private askedIno;
@@ -1309,6 +1310,7 @@ export declare class SqliteVFS {
     mutationRefusal(path: string, cred: VfsCred): MutationRefusal | null;
     private refusalAt;
     private assertMutationsAllowed;
+    /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
     private mkdir;
     private _mkdirSingle;
     /**
@@ -1317,6 +1319,7 @@ export declare class SqliteVFS {
      * the caller may write.
      */
     private fileWriteInode;
+    /** `ino`: the number a delegation's holder gave the file it made (askedIno), kept when this makes it. */
     private writeFile;
     private symlink;
     private readlink;

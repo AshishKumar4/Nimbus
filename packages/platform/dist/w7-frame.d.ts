@@ -80,15 +80,23 @@ export type W7Attrs = {
  * nothing makes a missing parent. The program-order counterpart of the
  * syscall, where `file` and `directory` are a checkout's upserts.
  */
-export type W7Call = {
+export type W7Call = 
+/**
+ * `ino`, on a call that makes a name (writeFile, appendFile, mkdir,
+ * symlink): the number a delegation's holder gave the name it made, from
+ * its grant's range, kept when the call makes it (W7 v4 `ino`).
+ */
+{
     call: 'writeFile';
     path: string;
     mode: number;
+    ino?: number;
     data: Uint8Array;
 } | {
     call: 'appendFile';
     path: string;
     mode: number;
+    ino?: number;
     data: Uint8Array;
 }
 /**
@@ -121,6 +129,7 @@ export type W7Call = {
     call: 'mkdir';
     path: string;
     mode: number;
+    ino?: number;
 } | {
     call: 'unlink';
     path: string;
@@ -131,6 +140,7 @@ export type W7Call = {
     call: 'symlink';
     path: string;
     target: string;
+    ino?: number;
 };
 /** A call whose bytes travel as a file's chunks. */
 export type W7DataCall = Extract<W7Call, {

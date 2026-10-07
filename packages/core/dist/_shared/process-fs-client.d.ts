@@ -26,8 +26,22 @@
  * An op whose fate the session cannot answer (its writer epoch gone, a
  * failure that is no verdict) is one too, and the ops after it are sent
  * under a new epoch.
+ *
+ * Grants (delegations): once a subtree has had GRANT_AFTER mutations, the
+ * client takes it (the deepest directory holding them, never the root, a
+ * home directory itself or a store the session refuses), and the runtime
+ * decides the mutations there itself (holder(), number()): the program is
+ * answered at once and the op is logged acknowledged. Nothing of the
+ * process's is in flight while a grant is taken: a wave the session began
+ * before the subtree was the process's would recall it from the process
+ * itself. A recall is answered by sending the log (every op, in order) and
+ * then saying so; a grant unused for its idle period is given back, and
+ * every one at settle(). A process's calls hold all its delegations
+ * (ProcessFiles' process view), so its waves name none. A subtree the
+ * session refused is not asked for again.
  */
 import { type W7Attrs, type W7Call } from '@nimbus-sh/platform/w7-frame.js';
+import type { ExclusiveMutationGrant, RecallKind } from '../runtime/os-contracts.js';
 import { type WaveFence, type WaveTimers } from '@nimbus-sh/platform/wave-writer.js';
 import type { WriteStreamReceipt } from '../vfs/sqlite-vfs.js';
 /** One mutation, as the session applies it: a call, or a rename, truncate or attribute change. */
@@ -53,6 +67,27 @@ export interface ProcessFsSession {
     openWriter(): Promise<string | null>;
     /** One attempt of one wave (SupervisorRPC.writeBatchStream). */
     writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
+    /** Delegations; absent, the process holds none and the session decides every op. */
+    readonly grants?: ProcessFsGrantSession;
+}
+/** The session's delegation calls (fsAcquireExclusiveMutation with `delegate`, fsAwaitRecall, fsRecalled, fsReleaseExclusiveMutation). */
+export interface ProcessFsGrantSession {
+    acquire(path: string, delegate: {
+        reads: boolean;
+        inos: number;
+        bytes: number;
+    }): Promise<ExclusiveMutationGrant>;
+    release(owner: string): Promise<void>;
+    awaitRecall(owner: string, waitMs: number): Promise<RecallKind | null>;
+    recalled(owner: string, kind: RecallKind): Promise<void>;
+}
+/** A subtree the process holds: what its runtime decides there is the session's answer. */
+export interface ProcessFsGrant {
+    /** Its root, a storage key. */
+    readonly root: string;
+    readonly owner: string;
+    /** The umask the session applies to the process's creates. */
+    readonly umask: number;
 }
 /** The session's stat of a file a data call published (its receipt, less the path). */
 export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
@@ -91,6 +126,25 @@ export interface ProcessFsClientOptions {
         stallMs: number;
         answerDeadlineMs: number;
     };
+    /** Mutations in a subtree before the client takes it (GRANT_AFTER). */
+    readonly grantAfter?: number;
+    /** A grant unused this long is given back (GRANT_IDLE_MS). */
+    readonly grantIdleMs?: number;
+    /** How long one recall poll waits before asking again. */
+    readonly recallPollMs?: number;
+    /** Every key that is a home directory itself: never taken. */
+    readonly isHomeRoot?: (key: string) => boolean;
+    /**
+     * Told when a grant ends or is shared (recalled, idle, settled), its log
+     * sent: what the runtime decided under `root` is the session's to answer
+     * now.
+     */
+    readonly released?: (root: string) => void;
+    /**
+     * Called first by every flush (a recall's too): the runtime logs what it
+     * still holds unlogged (a file's latest bytes), so the flush sends it.
+     */
+    readonly drain?: () => void;
 }
 export interface ProcessFsClient {
     /**
@@ -112,6 +166,22 @@ export interface ProcessFsClient {
     takeFailures(): ProcessFsFailure[];
     /** Bytes logged and not yet answered. */
     readonly pendingBytes: number;
+    /**
+     * The grant a mutation at `key` is decided under now (held, not shared),
+     * or undefined: the session decides it. Counts the mutation toward taking
+     * the subtree.
+     */
+    holder(key: string): ProcessFsGrant | undefined;
+    /** A number for a name made under `grant` (from its reserved range), or undefined once the range is spent. */
+    number(grant: ProcessFsGrant): number | undefined;
+    /** Draw `bytes` of the storage `grant` reserved; false when it has too few left (the session decides). */
+    draw(grant: ProcessFsGrant, bytes: number): boolean;
+    /** The grant holding `key` (held, not shared), without counting a mutation. */
+    held(key: string): ProcessFsGrant | undefined;
+    /** Whether `key` is in a subtree the process holds or shares: what is decided there is not known elsewhere yet. */
+    holds(key: string): boolean;
+    /** Whether any op is logged and not yet answered. */
+    pending(): boolean;
     stats(): ProcessFsStats;
 }
 export interface ProcessFsStats {
@@ -122,8 +192,19 @@ export interface ProcessFsStats {
     refused: number;
     lost: number;
     maxWaveOps: number;
+    grants: number;
+    grantsRefused: number;
+    recalls: number;
+    released: number;
+    widened: number;
 }
 /** A synchronous loop's bytes held at once, at most (ProcessFsClientOptions.syncCapBytes). */
 export declare const PROCESS_FS_SYNC_CAP_BYTES: number;
+/** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
+export declare const MAX_DELEGATIONS_PER_PROCESS = 8;
+/** Mutations in a subtree before the client takes it. */
+export declare const GRANT_AFTER = 8;
+/** A grant unused this long is given back. */
+export declare const GRANT_IDLE_MS = 2000;
 export declare function processFsClient(options: ProcessFsClientOptions): ProcessFsClient;
 //# sourceMappingURL=process-fs-client.d.ts.map

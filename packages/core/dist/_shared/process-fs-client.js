@@ -26,6 +26,19 @@
  * An op whose fate the session cannot answer (its writer epoch gone, a
  * failure that is no verdict) is one too, and the ops after it are sent
  * under a new epoch.
+ *
+ * Grants (delegations): once a subtree has had GRANT_AFTER mutations, the
+ * client takes it (the deepest directory holding them, never the root, a
+ * home directory itself or a store the session refuses), and the runtime
+ * decides the mutations there itself (holder(), number()): the program is
+ * answered at once and the op is logged acknowledged. Nothing of the
+ * process's is in flight while a grant is taken: a wave the session began
+ * before the subtree was the process's would recall it from the process
+ * itself. A recall is answered by sending the log (every op, in order) and
+ * then saying so; a grant unused for its idle period is given back, and
+ * every one at settle(). A process's calls hold all its delegations
+ * (ProcessFiles' process view), so its waves name none. A subtree the
+ * session refused is not asked for again.
  */
 import { encodeWriteBatch } from '@nimbus-sh/platform/w7-frame.js';
 import { WAVE_BYTES, WAVE_PATHS, WAVE_PATH_BYTES, sendWaveAttempts, waveAttemptsOf } from '@nimbus-sh/platform/wave-writer.js';
@@ -35,6 +48,33 @@ import { SYSCALL_VERDICTS } from '../vfs/vfs-error.js';
 export const PROCESS_FS_SYNC_CAP_BYTES = 64 * 1024 * 1024;
 /** A data call's bytes per op: a larger one is sent as its first piece, then writes at offsets. */
 const DATA_PIECE_BYTES = WAVE_BYTES;
+/** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
+export const MAX_DELEGATIONS_PER_PROCESS = 8;
+/** Mutations in a subtree before the client takes it. */
+export const GRANT_AFTER = 8;
+/** A grant unused this long is given back. */
+export const GRANT_IDLE_MS = 2_000;
+/** Inode numbers a first grant of a subtree reserves; each renewal doubles it. */
+const GRANT_INOS = 4096;
+/** Storage bytes a grant reserves for what is decided under it. */
+const GRANT_BYTES = 64 * 1024 * 1024;
+/** How long one recall poll waits before asking again. */
+const RECALL_POLL_MS = 20_000;
+function parentKey(key) {
+    const at = key.lastIndexOf('/');
+    return at < 0 ? '' : key.slice(0, at);
+}
+function within(key, root) {
+    return root === '' || key === root || key.startsWith(`${root}/`);
+}
+function commonAncestor(left, right) {
+    const a = left.split('/');
+    const b = right.split('/');
+    const out = [];
+    for (let index = 0; index < Math.min(a.length, b.length) && a[index] === b[index]; index++)
+        out.push(a[index]);
+    return out.join('/');
+}
 const GLOBAL_TIMERS = {
     setTimeout: (callback, ms) => setTimeout(callback, ms),
     clearTimeout: (timer) => clearTimeout(timer),
@@ -102,7 +142,25 @@ export function processFsClient(options) {
     let wave = 0;
     const failures = [];
     let idle = null;
-    const counters = { ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0 };
+    const counters = {
+        ops: 0, waves: 0, resends: 0, epochs: 0, refused: 0, lost: 0, maxWaveOps: 0,
+        grants: 0, grantsRefused: 0, recalls: 0, released: 0, widened: 0,
+    };
+    const grantAfter = options.grantAfter ?? GRANT_AFTER;
+    const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
+    const recallPollMs = options.recallPollMs ?? RECALL_POLL_MS;
+    const grants = [];
+    /** Mutations per candidate subtree not yet held; subtrees the session refused, and the range each was last given. */
+    const mutations = new Map();
+    const refusedRoots = new Set();
+    const rangeOf = new Map();
+    /** A grant being taken (no other is asked for meanwhile), and whether waves wait for it (while it is asked for). */
+    let claiming = null;
+    let paused = false;
+    /** The wave in flight, settled once its answer is applied. */
+    let sending = null;
+    let idleTimer = null;
+    let settling = false;
     const settled = (entry) => {
         pendingBytes -= entry.bytes;
         if (entry.acknowledged)
@@ -255,7 +313,7 @@ export function processFsClient(options) {
     };
     const pump = () => {
         scheduled = false;
-        if (inFlight !== null)
+        if (inFlight !== null || paused)
             return;
         if (queue.length === 0) {
             idle?.resolve();
@@ -264,18 +322,223 @@ export function processFsClient(options) {
         }
         const entries = cut();
         inFlight = entries;
-        void send(entries).finally(() => {
+        sending = send(entries).finally(() => {
             inFlight = null;
+            sending = null;
             pump();
         });
     };
     const schedule = () => {
-        if (scheduled || inFlight !== null)
+        if (scheduled || inFlight !== null || paused)
             return;
         scheduled = true;
         queueMicrotask(pump);
     };
+    /** Resolves once no wave is in flight (none starts while `paused`). */
+    const quiet = async () => {
+        while (sending !== null)
+            await sending;
+    };
+    const live = () => grants.filter((grant) => !grant.ended);
+    const allowedRoot = (root) => root !== '' && !(options.isHomeRoot?.(root) ?? false);
+    /** Give `grant` back: its log sent first (the caller flushed), then released. */
+    const end = async (grant) => {
+        if (grant.ended)
+            return;
+        grant.ended = true;
+        const at = grants.indexOf(grant);
+        if (at >= 0)
+            grants.splice(at, 1);
+        counters.released++;
+        options.released?.(grant.root);
+        try {
+            charge('fsReleaseExclusiveMutation');
+            await session.grants?.release(grant.owner);
+        }
+        catch {
+            // Already ended by the session (revoked, or the process is ending).
+        }
+    };
+    /** A grant's recalls, for as long as it lasts: send the log, then do what was asked. */
+    const answerRecalls = async (grant) => {
+        const port = session.grants;
+        while (!grant.ended) {
+            let kind;
+            try {
+                charge('fsAwaitRecall');
+                kind = await port.awaitRecall(grant.owner, recallPollMs);
+            }
+            catch {
+                // ESTALE: the session ended it (revoked for an unanswered recall, or the process is ending).
+                if (!grant.ended) {
+                    grant.ended = true;
+                    const at = grants.indexOf(grant);
+                    if (at >= 0)
+                        grants.splice(at, 1);
+                    options.released?.(grant.root);
+                }
+                return;
+            }
+            if (kind === null || grant.ended)
+                continue;
+            counters.recalls++;
+            await client.flush();
+            if (kind === 'share') {
+                grant.shared = true;
+                options.released?.(grant.root);
+            }
+            try {
+                charge('fsRecalled');
+                await port.recalled(grant.owner, kind);
+            }
+            catch {
+                // Ended meanwhile.
+            }
+            if (kind === 'revoke') {
+                grant.ended = true;
+                const at = grants.indexOf(grant);
+                if (at >= 0)
+                    grants.splice(at, 1);
+                options.released?.(grant.root);
+                return;
+            }
+        }
+    };
+    /** Give back every grant unused for the idle period; armed while any is held. */
+    const armIdle = () => {
+        if (idleTimer !== null || live().length === 0)
+            return;
+        idleTimer = timers.setTimeout(() => {
+            idleTimer = null;
+            const idle = live().filter((grant) => now() - grant.lastUsed >= grantIdleMs);
+            if (idle.length === 0 || settling) {
+                armIdle();
+                return;
+            }
+            void client.flush().then(async () => {
+                for (const grant of idle)
+                    if (now() - grant.lastUsed >= grantIdleMs)
+                        await end(grant);
+                armIdle();
+            });
+        }, grantIdleMs);
+    };
+    /**
+     * Take `root`: once nothing of the process's is in flight, ask the
+     * session for it, numbering from a range twice the last one it gave this
+     * subtree. Past MAX_DELEGATIONS_PER_PROCESS, the nearest grant and this
+     * subtree become their common ancestor (when that may be taken).
+     */
+    const claim = (root) => {
+        const port = session.grants;
+        if (port === undefined || claiming !== null || settling)
+            return;
+        claiming = (async () => {
+            let target = root;
+            const held = live();
+            if (held.length >= MAX_DELEGATIONS_PER_PROCESS) {
+                let best = '';
+                for (const grant of held) {
+                    const shared = commonAncestor(grant.root, root);
+                    if (shared.length > best.length)
+                        best = shared;
+                }
+                if (!allowedRoot(best))
+                    return;
+                target = best;
+            }
+            // What the process holds under the new root is given back first: a lease never overlaps another of its own.
+            const covered = live().filter((grant) => within(grant.root, target));
+            if (covered.length > 0) {
+                await client.flush();
+                for (const grant of covered)
+                    await end(grant);
+                counters.widened++;
+            }
+            paused = true;
+            await quiet();
+            const inos = (rangeOf.get(target) ?? GRANT_INOS / 2) * 2;
+            let granted;
+            try {
+                charge('fsAcquireExclusiveMutation');
+                granted = await port.acquire('/' + target, { reads: true, inos, bytes: GRANT_BYTES });
+            }
+            catch {
+                // EBUSY (another's lease), EPERM (the session's own), ENOSPC: the session decides there.
+                refusedRoots.add(target);
+                counters.grantsRefused++;
+                return;
+            }
+            rangeOf.set(target, inos);
+            const grant = {
+                root: granted.root,
+                owner: granted.owner,
+                umask: granted.umask ?? 0o022,
+                nextIno: granted.inos?.first ?? 0,
+                endIno: granted.inos?.end ?? 0,
+                inos,
+                bytesLeft: granted.bytes ?? 0,
+                shared: false,
+                ended: false,
+                lastUsed: now(),
+            };
+            grants.push(grant);
+            counters.grants++;
+            void answerRecalls(grant);
+            armIdle();
+        })().finally(() => {
+            claiming = null;
+            paused = false;
+            for (const key of [...mutations.keys()])
+                if (within(key, root) || within(root, key))
+                    mutations.delete(key);
+            schedule();
+        });
+    };
+    const heldGrant = (key) => grants.find((grant) => !grant.ended && !grant.shared && within(key, grant.root));
     const client = {
+        holder(key) {
+            const held = heldGrant(key);
+            if (held !== undefined) {
+                held.lastUsed = now();
+                return held;
+            }
+            if (session.grants === undefined || settling)
+                return undefined;
+            // Shared, or another's: the session decides; a subtree it refused is not asked for again.
+            if (grants.some((grant) => !grant.ended && within(key, grant.root)))
+                return undefined;
+            const root = parentKey(key);
+            if (!allowedRoot(root) || [...refusedRoots].some((refused) => within(root, refused)))
+                return undefined;
+            const seen = (mutations.get(root) ?? 0) + 1;
+            mutations.set(root, seen);
+            if (seen >= grantAfter)
+                claim(root);
+            return undefined;
+        },
+        number(grant) {
+            const held = grant;
+            if (held.ended || held.nextIno >= held.endIno)
+                return undefined;
+            return held.nextIno++;
+        },
+        draw(grant, bytes) {
+            const held = grant;
+            if (held.ended || held.bytesLeft < bytes)
+                return false;
+            held.bytesLeft -= bytes;
+            return true;
+        },
+        held(key) {
+            return heldGrant(key);
+        },
+        holds(key) {
+            return grants.some((grant) => !grant.ended && within(key, grant.root));
+        },
+        pending() {
+            return queue.length > 0 || inFlight !== null;
+        },
         submit(op, submitOptions) {
             const acknowledged = submitOptions?.acknowledged === true;
             const named = pathsOf(op);
@@ -303,6 +566,7 @@ export function processFsClient(options) {
             return answer;
         },
         flush() {
+            options.drain?.();
             if (queue.length === 0 && inFlight === null)
                 return Promise.resolve();
             if (idle === null) {
@@ -314,7 +578,21 @@ export function processFsClient(options) {
             return idle.promise;
         },
         async settle() {
-            await client.flush();
+            settling = true;
+            if (claiming !== null)
+                await claiming;
+            try {
+                await client.flush();
+            }
+            finally {
+                if (idleTimer !== null) {
+                    timers.clearTimeout(idleTimer);
+                    idleTimer = null;
+                }
+                for (const grant of live())
+                    await end(grant);
+                settling = false;
+            }
             const taken = client.takeFailures();
             if (taken.length > 0) {
                 throw Object.assign(new Error(`${taken.length} filesystem change${taken.length === 1 ? '' : 's'} this process made did not reach the session:\n`

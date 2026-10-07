@@ -175,16 +175,20 @@ function __wasiStartResident(sup, cred) {
     };
     // The process holds the subtrees it writes (delegation-holder.ts): its
     // creates, writes, mkdirs, unlinks and renames there are decided here and
-    // sent as one ordered wave under the delegation's lease.
+    // logged into its filesystem client, which sends them as numbered waves.
     const waves = sup;
-    const holderSession = {
-        acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-        release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
-        awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-        recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
-        sendWave: (stream, owner) => waves.writeBatchStream(stream, undefined, owner),
+    const session = {
+        // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
+        openWriter: () => waves.openWaveWriter(),
+        writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
+        grants: {
+            acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+            release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+            awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+            recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+        },
     };
-    return residentFilesystem(authority, booting, { session: holderSession, isHomeRoot: isHomeDirectory });
+    return residentFilesystem(authority, booting, { session, isHomeRoot: isHomeDirectory });
 }
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */
 function isHomeDirectory(key) {

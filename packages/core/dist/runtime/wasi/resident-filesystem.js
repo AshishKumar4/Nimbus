@@ -143,6 +143,7 @@ export function residentFilesystem(session, resident, delegation) {
                 children: (key) => resident.children(key),
             },
             isHomeRoot: delegation.isHomeRoot,
+            ...(delegation.grantAfter === undefined ? {} : { grantAfter: delegation.grantAfter }),
             // What it sent changed the session: the store catches up before it answers next.
             sent: () => { owed = true; },
         });

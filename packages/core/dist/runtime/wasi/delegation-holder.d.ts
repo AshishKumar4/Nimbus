@@ -2,18 +2,19 @@
  * A WASI process as a delegation's holder (spike/delegation/MEMO.md, P4a):
  * inside the subtrees it holds, the process decides its creates, writes,
  * mkdirs, unlinks, renames and attribute changes itself, against what its
- * resident store knows and what it decided, with no round trip, and sends
- * them later as one ordered log (a W7 v4 wave under the delegation's lease):
+ * resident store knows and what it decided, with no round trip, and logs
+ * them as calls into the process's filesystem client (process-fs-client.ts,
+ * P4b), which takes the subtrees, numbers the log and sends it, in order:
  * at each point where what it wrote could be observed (a socket send, an
- * fsync, the end of its run) and when the session recalls the subtree.
+ * fsync, the end of its run) and when the session recalls a subtree.
  *
  * What it decides is the session's answer, kept exactly:
- *   - A subtree is held only where the process mutates: the deepest existing
- *     directory holding the name it changes, at most MAX_DELEGATIONS_PER_PROCESS
- *     of them; past that, two are widened to their common ancestor. Never the
+ *   - A subtree is held once the process has mutated in it often enough to
+ *     be worth it (the client's policy): the deepest existing directory
+ *     holding the name it changes, a bounded number of them. Never the
  *     whole filesystem, a home directory itself, or the session's stores
- *     (the session refuses those), and never a subtree with a default ACL in
- *     it (its inheritance is the session's to apply): there, the process
+ *     (the session refuses those), and never a subtree with a default ACL
+ *     in it (its inheritance is the session's to apply): there, the process
  *     writes through as before.
  *   - Refusals are the walk's own (resolve), and the cases decided here are
  *     the plain ones: a create where the parent is a writable directory, a
@@ -25,38 +26,18 @@
  *     keeps that number in the session; it is owned as the session makes a
  *     holder's names (the process's, a setgid directory's group), its mode
  *     the asked mode less the umask.
- *   - The log keeps program order for whatever prefix of it lands: a file
- *     made here is logged where it is made (empty), and its bytes where it
- *     was last written, under the name it had then.
+ *   - The log keeps program order: each decision is logged as it is made,
+ *     and a file's bytes, which change write by write, are logged whole (its
+ *     latest) before the next decision is, or at the flush.
  *
  * A recall is answered by a loop per grant on the host side of the process:
  * a guest that waits in a syscall lets it run; one computing does not
  * (the documented limit, answered by the session's recall timeout).
  */
-import type { ExclusiveMutationGrant, RecallKind, RuntimeFileHandle, RuntimeVfsDirEntry } from '../os-contracts.js';
+import type { RuntimeFileHandle, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
-import { type W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-/** The most subtrees one process holds at once; past it, two are widened to their common ancestor. */
-export declare const MAX_DELEGATIONS_PER_PROCESS = 8;
-/** What the holder asks of the session. */
-export interface HolderSession {
-    /** Take the subtree at `path` as a delegation (fsAcquireExclusiveMutation with `delegate`). */
-    acquire(path: string, delegate: {
-        reads: boolean;
-        inos: number;
-        bytes: number;
-    }): Promise<ExclusiveMutationGrant>;
-    release(owner: string): Promise<void>;
-    awaitRecall(owner: string, waitMs: number): Promise<RecallKind | null>;
-    recalled(owner: string, kind: RecallKind): Promise<void>;
-    /** Send one wave under `owner`'s lease; `ok` false with the session's refusal. */
-    sendWave(stream: ReadableStream<Uint8Array>, owner: string): Promise<{
-        ok: boolean;
-        error?: {
-            message: string;
-        };
-    }>;
-}
+import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
+import { type ProcessFsClient, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 /** What the holder reads of the process's resident store (its own decisions aside). */
 export interface HolderStore {
     readonly device: number;
@@ -71,7 +52,8 @@ export interface HolderStore {
     children(key: string): RuntimeVfsDirEntry[] | undefined;
 }
 export interface HolderOptions {
-    readonly session: HolderSession;
+    /** The session the process's filesystem client sends to and takes its grants from. */
+    readonly session: ProcessFsSession;
     readonly store: HolderStore;
     /** Every engine key that is a home directory (`home/<name>`): never held itself. */
     readonly isHomeRoot?: (key: string) => boolean;
@@ -79,9 +61,13 @@ export interface HolderOptions {
     readonly sent?: () => void;
     /** The clock files are stamped with. */
     readonly now?: () => number;
+    /** Mutations in a subtree before it is taken (the client's GRANT_AFTER). */
+    readonly grantAfter?: number;
 }
 /** The decisions the process made in a held subtree, not yet sent. */
 export interface DelegationHolder {
+    /** The process's filesystem client: what the holder decided is logged into it. */
+    readonly client: ProcessFsClient;
     /** What the process decided is at `key`: an entry, null (removed), or undefined (nothing decided). */
     entry(key: string): ResidentEntry | null | undefined;
     /** The names in `key`, as `base` lists them with what the process decided there. */
@@ -103,7 +89,7 @@ export interface DelegationHolder {
         truncate?: boolean;
         exclusive?: boolean;
         mode?: number;
-    }): RuntimeFileHandle | undefined | Promise<RuntimeFileHandle | undefined>;
+    }): RuntimeFileHandle | undefined;
     read(handleId: number, offset: number | null, length: number): Uint8Array;
     write(handleId: number, offset: number | null, bytes: Uint8Array): number;
     seek(handleId: number, offset: number, whence: 'set' | 'current' | 'end'): number;
@@ -115,13 +101,13 @@ export interface DelegationHolder {
     /** Another descriptor of the same open file (its position shared). */
     dup(handleId: number): RuntimeFileHandle;
     /** Decide a mkdir at `key`: true when decided here (and done), false when the session is to. */
-    mkdir(key: string, path: string, mode: number): boolean | Promise<boolean>;
+    mkdir(key: string, path: string, mode: number): boolean;
     /** Decide an unlink of `key` (a file or link): true when decided here. */
-    unlink(key: string, path: string): boolean | Promise<boolean>;
+    unlink(key: string, path: string): boolean;
     /** Decide a rename of `from` to `to` (both resolved): true when decided here. */
-    rename(from: string, to: string, path: string): boolean | Promise<boolean>;
+    rename(from: string, to: string, path: string): boolean;
     /** Decide an attribute change of `key`: true when decided here. */
-    setattr(key: string, attrs: W7Attrs): boolean | Promise<boolean>;
+    setattr(key: string, attrs: W7Attrs): boolean;
     /** Whether a mutation at `key` would be decided here (a held subtree holds it). */
     holds(key: string): boolean;
     /** Whether anything decided here is not sent yet. */
