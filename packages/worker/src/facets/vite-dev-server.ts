@@ -479,7 +479,7 @@ function moduleExportNames(vfs: CredentialedVfs, entry: string): Set<string> {
   const seen = new Set<string>();
   const resolveRelative = (from: string, specifier: string): string | null => {
     const dir = from.slice(0, from.lastIndexOf('/'));
-    const base = normalizePath(dir + '/' + specifier);
+    const base = normalizeVfsPath(dir + '/' + specifier);
     for (const suffix of ['', '.js', '.mjs', '.cjs', '/index.js', '/index.mjs']) {
       try {
         if (vfs.exists(base + suffix) && !vfs.isDirectory(base + suffix)) return base + suffix;
@@ -553,8 +553,6 @@ const RESERVED_ES_KEYWORDS = new Set([
  * basePath must be the dev server's mount point without trailing slash
  * (e.g. "/preview"). If basePath is "/" or empty, output is origin-rooted.
  */
-const normalizePath = normalizeVfsPath;
-
 function resolveAliasSpecifier(specifier: string, aliases: Record<string, string>, basePath: string): string | null {
   // Sort by alias length descending for longest-match-first
   const sorted = Object.entries(aliases).sort((a, b) => b[0].length - a[0].length);
@@ -562,7 +560,7 @@ function resolveAliasSpecifier(specifier: string, aliases: Record<string, string
     // Match exact alias or alias followed by /
     if (specifier === alias || specifier.startsWith(alias + '/')) {
       const rest = specifier.slice(alias.length); // e.g. "/components/Foo" or ""
-      const resolvedTarget = normalizePath(target);
+      const resolvedTarget = normalizeVfsPath(target);
       // Normalize basePath: strip trailing slash so we always emit exactly one
       // slash between base and target. Handle root ("/" or "") specially.
       const base = basePath === '/' || basePath === '' ? '' : basePath.replace(/\/+$/, '');
@@ -1462,7 +1460,7 @@ export class ViteDevServer {
 
   constructor(opts: ViteDevServerOptions) {
     this.vfs = opts.vfs.as(opts.cred);
-    this.configDir = opts.configDir ? opts.configDir.replace(/^\/+|\/+$/g, '') : null;
+    this.configDir = opts.configDir ? normalizeVfsPath(opts.configDir) : null;
     this.onConfigChange = opts.onConfigChange ?? null;
     this.viteEsbuild = opts.viteEsbuild ?? viteEsbuildSettings(null);
     this.vfsEvents = opts.vfs.events;
@@ -1470,13 +1468,7 @@ export class ViteDevServer {
     this.injectBasename = opts.injectBasename !== false;
     this.logPid = (opts.pid != null) ? opts.pid : null;
     this.logSink = opts.processes || null;
-    // Normalize root: resolve ./, collapse //, strip leading/trailing slashes
-    this.root = opts.root
-      .replace(/\/\.\//g, '/')     // /./ → /
-      .replace(/\/\.$/,  '')       // trailing /.
-      .replace(/\/+/g,   '/')      // collapse //
-      .replace(/^\/+/,   '')       // leading /
-      .replace(/\/+$/,   '');      // trailing /
+    this.root = normalizeVfsPath(opts.root);
     this.onHmrMessage = opts.onHmrMessage;
     this.port = opts.port || 5173;
     this.basePath = (opts.basePath || '/preview').replace(/\/+$/, '');
@@ -2660,7 +2652,7 @@ export class ViteDevServer {
         const entry = resolvePackageEntry(pkg, subpath ? './' + subpath : '.');
         if (entry) {
           // Normalize to collapse any ../ segments from relative entry paths.
-          const resolved = this.tryResolveFile(normalizePath(nmDir + '/' + entry.replace(/^\.\//, '')));
+          const resolved = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + entry.replace(/^\.\//, '')));
           if (resolved) return resolved;
         }
       }
@@ -2680,7 +2672,7 @@ export class ViteDevServer {
       //    `dist/es2015/constants.js` before VFS lookup.
       if (subpath) {
         // (a) + (b) combined — tryResolveFile handles both
-        const direct = this.tryResolveFile(normalizePath(nmDir + '/' + subpath));
+        const direct = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + subpath));
         if (direct) return direct;
 
         // (c) nested package.json
@@ -2693,7 +2685,7 @@ export class ViteDevServer {
             // package.json redirects to a sibling directory (common pattern
             // for legacy packages shipping both es5 and es2015 builds).
             const resolved = this.tryResolveFile(
-              normalizePath(nmDir + '/' + subpath + '/' + entry.replace(/^\.\//, ''))
+              normalizeVfsPath(nmDir + '/' + subpath + '/' + entry.replace(/^\.\//, ''))
             );
             if (resolved) return resolved;
           } catch { /* malformed */ }
@@ -2704,7 +2696,7 @@ export class ViteDevServer {
       if (!subpath && pkg) {
         const entry = pkg.module || pkg.main;
         if (entry) {
-          const resolved = this.tryResolveFile(normalizePath(nmDir + '/' + entry.replace(/^\.\//, '')));
+          const resolved = this.tryResolveFile(normalizeVfsPath(nmDir + '/' + entry.replace(/^\.\//, '')));
           if (resolved) return resolved;
         }
       }
@@ -2720,7 +2712,7 @@ export class ViteDevServer {
     // Defense in depth: normalize input even if callers already did. The VFS
     // treats `..` as a literal path component (no traversal resolution at
     // lookup time), so any un-normalized `../` in the path will miss.
-    const norm = normalizePath(base);
+    const norm = normalizeVfsPath(base);
     // Covers .cjs and .mts/.cts too — legacy packages use .cjs,
     // some modern packages use .mts for their ESM build.
     const exts = ['', '.js', '.mjs', '.cjs', '.ts', '.tsx', '.jsx', '.mts', '.cts', '.json'];
