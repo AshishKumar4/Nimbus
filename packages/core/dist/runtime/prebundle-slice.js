@@ -159,6 +159,12 @@ export async function prebundleSlice(spec, build) {
             return { contents: loader === 'binary' ? bytes : new TextDecoder().decode(bytes), loader, resolveDir };
         },
     };
+    // An entry the slice lacks would resolve as external, and the bundler say
+    // only "cannot be external": the slice was walked from a store that had
+    // lost the package (its session's storage gone, the package removed).
+    if (!(await resolver.resolveFile(spec.entryPath))) {
+        return failed(`its entry module ${norm(spec.entryPath)} is not in its slice (${files.size} files): the package's files were not there to walk`);
+    }
     const outcome = await build({ entryPoints: [norm(spec.entryPath)], ...prebundleBuildOptions(spec.define) }, plugin);
     if (outcome.failure)
         return failed(outcome.errors[0]?.text || outcome.failure);

@@ -1111,6 +1111,15 @@ export declare class SqliteVFS {
     /** One chunk's bytes, through the LRU when `cached`. */
     private readChunk;
     /**
+     * The one read of a stored chunk: the bytes of a row whose state holds
+     * them (chunkHeld), from its `hash`, `size`, `data` and `state`. A
+     * deflated row's bytes are checked against its name before anything
+     * returns, caches, exports or tiers them (raw deflate carries no check of
+     * its own): EIO for `what` when they do not inflate to its size, or do
+     * not hash to its name.
+     */
+    private heldChunkBytes;
+    /**
      * The content key of an inode's bytes: sha256 of them up to CHUNK_SIZE,
      * else the digest of the manifest's ordered chunk hashes. An in-place edit
      * clears a manifest's digest; it is recomputed here and stored unless
@@ -1674,6 +1683,15 @@ export declare class SqliteVFS {
     private normalizeBatchInode;
     private authorizeBatch;
     /**
+     * Of the places `directories` are written at, the first that holds a
+     * symbolic link `deletes` (the same batch's removals, at their places) do
+     * not remove; null when there is none. A directory record never replaces a
+     * link: a producer that means to (git's checkout, over a link in a leading
+     * path) removes it first, in the same batch. `priors`: what stands at the
+     * places, where the caller has read it.
+     */
+    private linkReplacedByDirectory;
+    /**
      * Atomic bulk write: ALL inodes + chunks in ONE transactionSync().
      *
      * The complete mutation is preflighted against the Stage 2 transaction
@@ -1995,6 +2013,13 @@ export declare class SqliteVFS {
         used: number;
         available: number;
     };
+    /**
+     * Whether this filesystem's store has been deleted under it: its tables
+     * gone from the database (the Durable Object's storage deleted, as a
+     * session's destroy does). Read from the database itself, where this
+     * instance's caches would still answer lookups.
+     */
+    storeDeleted(): boolean;
     getStats(): {
         files: number;
         directories: number;

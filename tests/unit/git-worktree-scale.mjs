@@ -7,12 +7,15 @@
 // edits, status, diff, add -A, commit, a branch switch and back, reset and
 // reset --hard. Each command's output agrees with real git's on the same
 // repository, and for each the JS heap it retains is sampled (collected,
-// then measured) on every 4096th filesystem call and at its end: the peak at
-// LARGE files may exceed SMALL's by little more than the index's growth.
+// then measured) on every 4096th filesystem call, as it writes the index
+// (when a command that stages holds all it staged) and at its end: the peak
+// at LARGE files may exceed SMALL's by little more than the index's growth.
 // Clean, `status` reads no file; after edits, only the same-size ones.
 // Then every file changes, and status, diff, add -A and commit run over
 // all of them: each change may cost 256 bytes of heap, nothing more (as
-// objects, a diff's queue held ~700 a change: 71 MiB at Linux's size).
+// objects, a diff's queue held ~700 a change: 71 MiB at Linux's size; add
+// -A's staged entries ~900, 80 MiB). Last, the index goes and add -A stages
+// every file as new, as after a `git init` in a populated directory.
 // NIMBUS_GIT_SCALE_LARGE=96000 runs it at Linux's size. The default, 12,000
 // (4x SMALL, enough that per-file growth would show), keeps it inside the
 // full suite's 300 s per file under load: at 30,000 it took 203 s alone, at
@@ -137,8 +140,8 @@ async function run(count) {
   let peak = 0;
   let reads = 0;
   // What is retained, not what is garbage yet to be collected: the garbage's peak is the collector's schedule.
-  const sample = () => {
-    if (++calls % 4096 !== 0) return;
+  const sample = (always = false) => {
+    if (++calls % 4096 !== 0 && !always) return;
     Bun.gc(true);
     peak = Math.max(peak, process.memoryUsage().heapUsed);
   };
@@ -148,7 +151,7 @@ async function run(count) {
       const value = Reflect.get(target, key, target);
       if (typeof value !== 'function') return value;
       return (...args) => {
-        sample();
+        sample(key === 'writeFile' && typeof args[0] === 'string' && args[0].endsWith('/.git/index'));
         if (/^read(File|Range)(Uncached)?$/.test(String(key)) && typeof args[0] === 'string'
           && args[0].startsWith(`${virtual}/`) && !args[0].includes('/.git/') && !args[0].endsWith('/.gitignore')) reads++;
         return value.apply(target, args);
@@ -254,6 +257,14 @@ async function run(count) {
   realGit(disk, 'commit', '-q', '-m', 'everything');
   await git('commit', '-q', '-m', 'everything');
   await both('rev-parse', 'HEAD');
+  await both('status', '--porcelain');
+
+  // Every file new: no index.
+  rmSync(join(disk, '.git/index'));
+  user.unlink(`${virtual.slice(1)}/.git/index`);
+  realGit(disk, 'add', '-A');
+  await git('add', '-A');
+  await both('ls-files', '-s');
   await both('status', '--porcelain');
   return { count, indexBytes, costs, everyFile };
 }

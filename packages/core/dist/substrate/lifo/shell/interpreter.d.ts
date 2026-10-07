@@ -92,8 +92,15 @@ type ExecutionIo = {
      * to a field a nested execute reassigns.
      */
     writeToTerminal?: (text: string) => void;
+    /** The controlling terminal: fd 0 by default, and what `/dev/tty` opens. */
     terminalStdin?: TerminalInputStream;
     terminalFds?: TerminalFdState;
+    /**
+     * A job started with `&`, and what it runs: it still has the controlling
+     * terminal (an explicit `/dev/tty` opens it) but is not its foreground
+     * job, so it does not read it by default or own its modes.
+     */
+    background?: boolean;
     scriptMode?: boolean;
     signal?: AbortSignal;
     registerProcess?: boolean;

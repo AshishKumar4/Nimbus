@@ -12,6 +12,7 @@ import { prewarmBuildFacet } from '../facets/build-facet.js';
 import { runFresh } from '../runtime/node-runner.js';
 import { runBunScript, BUN_VERSION } from '../runtime/bun-runner.js';
 import { buildRuntimeHandler, resolveRuntimeScriptPath } from '@nimbus-sh/core/runtime/runtime-registry.js';
+import { jsReplProgram } from '@nimbus-sh/core/runtime/js-repl.js';
 import { resolveContext } from '@nimbus-sh/core/substrate/lifo/commands/registry.js';
 import { normalizeVfsPath, resolveVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { NimbusWrangler } from '../wrangler/nimbus-wrangler.js';
@@ -339,10 +340,10 @@ export async function registerHostedCommands(self, workspace) {
         run: (code, opts) => runFresh(facetMgr, code, opts),
         supportsBinSpawn: true,
         routesServers: true,
-        nodeCommandLine: true,
+        repl: jsReplProgram(`Welcome to Node.js ${NODE_VERSION}.\nType ".help" for more information.\n`),
     };
     {
-        const oneShotNode = buildRuntimeHandler(nodeSpec, {
+        const nodeCommand = buildRuntimeHandler(nodeSpec, {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
@@ -352,15 +353,7 @@ export async function registerHostedCommands(self, workspace) {
             },
             registry,
         });
-        // REPL Stream A: no-args invocation → drop into REPL session.
-        registry.register('node', async function nodeReplOrOneShot(ctx) {
-            const argv = ctx.args || [];
-            if (argv.length === 0 && terminal) {
-                const { runNodeRepl } = await import('../runtime/node-repl.js');
-                return await runNodeRepl({ facetMgr, terminal: terminal });
-            }
-            return await oneShotNode(ctx);
-        });
+        registry.register('node', nodeCommand);
     }
     // ── bun command (runtime registry refactor: refactored to use runtime-registry) ──
     //
@@ -402,6 +395,7 @@ export async function registerHostedCommands(self, workspace) {
         run: (code, opts) => runBunScript(facetMgr, code, opts),
         supportsBinSpawn: true,
         routesServers: true,
+        repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
         subcommands: {
             // bun install / i / add → npm install (same VFS, same R2 caches).
             install: async (ctx, reg) => {
@@ -496,7 +490,7 @@ export async function registerHostedCommands(self, workspace) {
         },
     };
     {
-        const oneShotBun = buildRuntimeHandler(bunSpec, {
+        const bunCommand = buildRuntimeHandler(bunSpec, {
             getEsbuild: () => {
                 if (!self.esbuildService) {
                     self.ensureSqliteFs();
@@ -506,15 +500,7 @@ export async function registerHostedCommands(self, workspace) {
             },
             registry,
         });
-        // REPL Stream A: no-args invocation → drop into REPL session.
-        registry.register('bun', async function bunReplOrOneShot(ctx) {
-            const argv = ctx.args || [];
-            if (argv.length === 0 && terminal) {
-                const { runBunRepl } = await import('../runtime/bun-repl.js');
-                return await runBunRepl({ facetMgr, terminal: terminal });
-            }
-            return await oneShotBun(ctx);
-        });
+        registry.register('bun', bunCommand);
     }
     // ── wasm-runner: native WebAssembly, on this session's facet host ──
     //

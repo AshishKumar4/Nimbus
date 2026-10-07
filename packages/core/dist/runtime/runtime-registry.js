@@ -42,7 +42,6 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
-import { parseNodeCommandLine } from './node-cli.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
  * The first one wins (Node's rule); the filesystem root is not a package.
@@ -64,39 +63,6 @@ const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/in
  * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
  * rather than trying to read the directory as source.
  */
-/**
- * Another runtime's command line, as the registry has always read it:
- * flags up to the program (a bare `-` is the program, read from stdin), the
- * first `-e`/`--eval` taking its code; `-v`/`--version` and `-h`/`--help`
- * among them.
- */
-function genericCommandLine(name, args) {
-    let span = 0;
-    let evalCode;
-    let evalFlag = false;
-    while (span < args.length && args[span].startsWith('-') && args[span] !== '-') {
-        const flag = args[span++];
-        if (flag === '-e' || flag === '--eval') {
-            if (!evalFlag)
-                evalCode = args[span];
-            evalFlag = true;
-            if (span < args.length)
-                span++;
-        }
-    }
-    const flags = args.slice(0, span);
-    if (evalFlag && !evalCode)
-        return { error: `${name}: -e requires an argument\n`, exitCode: 1 };
-    return {
-        execArgv: [],
-        programIndex: span,
-        conditions: [],
-        ...(evalCode !== undefined ? { eval: evalCode } : {}),
-        print: false,
-        version: flags.includes('-v') || flags.includes('--version'),
-        help: flags.includes('--help') || flags.includes('-h'),
-    };
-}
 export async function resolveRuntimeScriptPath(fs, cwd, target, opts) {
     const base = normalizeVfsPath(cwd || '/home/user');
     let resolved;
@@ -208,77 +174,111 @@ export function buildRuntimeHandler(spec, ctx0) {
             : pipedStdin.file
                 ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
                 : { stdin: pipedStdin };
-        // ── Flag-span computation (primitive #1) ──
-        //
-        // Real-Node only treats args UP TO the first non-flag token as
-        // CLI flags. Pre-refactor, version/help/eval scanned the entire
-        // args array, breaking `node /path/to/tsc --version` (the user's
-        // --version was misinterpreted as a node flag).
-        // The command line: Node's own reading of it (node-cli.ts) for node, the
-        // one parser its options, execArgv, conditions and program come from;
-        // for the other runtimes, flags up to the program, `-e` taking its code.
-        const line = spec.nodeCommandLine ? parseNodeCommandLine(args, ctx.env?.NODE_OPTIONS ?? '') : genericCommandLine(name, args);
-        if ('error' in line) {
-            ctx.stderr.write(line.error);
-            return line.exitCode;
-        }
-        const flagSpan = line.programIndex;
-        // What a node run takes of its command line (RuntimeRunOpts.execArgv, .conditions, .eval).
-        const nodeRun = spec.nodeCommandLine
-            ? { execArgv: line.execArgv, conditions: line.conditions, ...(line.eval !== undefined ? { eval: line.eval } : {}) }
-            : {};
-        // A node program's argv is its own: Node's options are execArgv. Another runtime's carries its flags.
-        const leadingFlags = spec.nodeCommandLine ? [] : args.slice(0, flagSpan);
-        // ── --version ──
-        if (line.version) {
-            ctx.stdout.write(spec.version + '\n');
-            return 0;
-        }
-        // ── --help ──
-        if (line.help) {
-            ctx.stdout.write(spec.helpText);
-            if (!spec.helpText.endsWith('\n'))
-                ctx.stdout.write('\n');
-            return 0;
-        }
-        // ── -p / --print: Node prints the eval's result; not here ──
-        if (line.print) {
-            ctx.stderr.write(`${name}: -p/--print is not supported; use -e with console.log(...)\n`);
-            return 1;
-        }
-        // ── -e / --eval ──
-        if (line.eval !== undefined) {
-            const code = line.eval;
-            const programArgs = args.slice(flagSpan);
-            const launchesServer = await launches(code, null, ctx.cwd || '/home/user', programArgs);
+        /**
+         * Run `code` as this invocation's program, whichever way the arguments
+         * named it (-e, the REPL, stdin, a file): what the program is (its argv,
+         * file, command line, stdin) with what every mode shares, and its output
+         * written through. `reserved` is false where the runner keeps no process
+         * a bin wrapper reserved (wasm-runner's).
+         */
+        const runProgram = async (code, program) => {
             const result = await spec.run(code, {
                 cred: ctx.cred,
                 invokerPid: ctx.pid,
                 signal: ctx.signal,
-                argv: programArgs,
+                argv: program.argv,
                 env: ctx.env,
                 cwd: ctx.cwd,
-                filename: '<eval>',
-                dirname: ctx.cwd || '/home/user',
-                command: binSpawn?.command || `${name} -e ...`,
-                ...nodeRun,
-                ...programStdin,
-                ...reservedProcess,
+                filename: program.filename,
+                dirname: program.dirname,
+                command: program.command,
+                ...program.stdin,
+                ...(program.reserved === false ? {} : reservedProcess),
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
-                ...(launchesServer ? { launchesServer: true } : {}),
+                ...(program.launchesServer ? { launchesServer: true } : {}),
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
             if (result.stderr)
                 ctx.stderr.write(result.stderr);
             return result.exitCode;
+        };
+        // ── Flag-span computation (primitive #1) ──
+        //
+        // Real-Node only treats args UP TO the first non-flag token as
+        // CLI flags. Pre-refactor, version/help/eval scanned the entire
+        // args array, breaking `node /path/to/tsc --version` (the user's
+        // --version was misinterpreted as a node flag).
+        let flagSpan = 0;
+        // A bare `-` is not a flag: it is the program itself, read from stdin
+        // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
+        while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
+            flagSpan++;
+            const prev = args[flagSpan - 1];
+            // -e / --eval consumes one value; advance past it.
+            if ((prev === '-e' || prev === '--eval') && flagSpan < args.length) {
+                flagSpan++;
+            }
+        }
+        const flagSlice = args.slice(0, flagSpan);
+        // ── --version ──
+        if (flagSlice.includes('-v') || flagSlice.includes('--version')) {
+            ctx.stdout.write(spec.version + '\n');
+            return 0;
+        }
+        // ── --help ──
+        if (flagSlice.includes('--help') || flagSlice.includes('-h')) {
+            ctx.stdout.write(spec.helpText);
+            if (!spec.helpText.endsWith('\n'))
+                ctx.stdout.write('\n');
+            return 0;
+        }
+        // ── -e / --eval ──
+        const evalIdx = flagSlice.indexOf('-e') !== -1
+            ? flagSlice.indexOf('-e')
+            : flagSlice.indexOf('--eval');
+        if (evalIdx !== -1) {
+            const code = args[evalIdx + 1];
+            if (!code) {
+                ctx.stderr.write(`${name}: -e requires an argument\n`);
+                return 1;
+            }
+            return runProgram(code, {
+                argv: args.slice(evalIdx + 2),
+                filename: '<eval>',
+                dirname: ctx.cwd || '/home/user',
+                command: binSpawn?.command || `${name} -e ...`,
+                stdin: programStdin,
+                launchesServer: await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2)),
+            });
         }
         // ── script path (or .wasm path for bypassesScriptRead) ──
         const scriptIdx = flagSpan;
-        const scriptPath = args[scriptIdx];
+        // No script: the REPL at a terminal, otherwise the program is stdin, as
+        // Node decides between them by whether stdin is a TTY.
+        const terminalInput = ctx.terminalStdin !== undefined && (ctx.stdin === undefined || ctx.stdin === ctx.terminalStdin) && ctx.isFdTerminal?.(0) !== false;
+        if (args[scriptIdx] === undefined && spec.repl !== undefined && terminalInput && ctx.terminalStdin) {
+            // The REPL takes Ctrl-C as input, as Node's readline does: the
+            // terminal's signal keys are off while it runs (termios ISIG).
+            const terminal = ctx.terminalStdin;
+            terminal.signalKeys = false;
+            try {
+                return await runProgram(spec.repl, {
+                    argv: args.slice(0, scriptIdx),
+                    filename: '<repl>',
+                    dirname: ctx.cwd || '/home/user',
+                    command: binSpawn?.command || name,
+                    stdin: { stdin: terminal },
+                });
+            }
+            finally {
+                terminal.signalKeys = true;
+            }
+        }
+        const scriptPath = args[scriptIdx] ?? (spec.repl !== undefined && ctx.stdin !== undefined ? '-' : undefined);
         if (!scriptPath) {
-            ctx.stderr.write(`${name}: REPL not supported. Use ${name} -e "code" or ${name} script.js\n`);
+            ctx.stderr.write(`${name}: no program. Use ${name} -e "code" or ${name} script.js\n`);
             return 1;
         }
         // ── `-`: the program is stdin ──
@@ -289,28 +289,13 @@ export function buildRuntimeHandler(spec, ctx0) {
         // program's own stdin is what is left after the read: nothing.
         if (scriptPath === '-') {
             const code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
-            const launchesServer = await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]);
-            const result = await spec.run(code, {
-                cred: ctx.cred,
-                invokerPid: ctx.pid,
-                signal: ctx.signal,
-                argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
-                env: ctx.env,
-                cwd: ctx.cwd,
+            return runProgram(code, {
+                argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -`,
-                ...nodeRun,
-                ...reservedProcess,
-                ...(captureOutput ? { captureOutput: true } : {}),
-                ...(bundleProfile ? { bundleProfile } : {}),
-                ...(launchesServer ? { launchesServer: true } : {}),
+                launchesServer: await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
             });
-            if (result.stdout)
-                ctx.stdout.write(result.stdout);
-            if (result.stderr)
-                ctx.stderr.write(result.stderr);
-            return result.exitCode;
         }
         // ── bypassesScriptRead branch (wasm-runner) ──
         //
@@ -325,24 +310,13 @@ export function buildRuntimeHandler(spec, ctx0) {
                 : '/';
             // `args.slice(scriptIdx + 1)` are the runner's user args (e.g.
             // [exportName, intArg1, intArg2, ...] for wasm-runner).
-            const result = await spec.run('', {
-                cred: ctx.cred,
-                invokerPid: ctx.pid,
-                signal: ctx.signal,
+            return runProgram('', {
                 argv: args.slice(scriptIdx + 1),
-                env: ctx.env,
-                cwd: ctx.cwd,
                 filename,
                 dirname,
                 command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-                ...(captureOutput ? { captureOutput: true } : {}),
-                ...(bundleProfile ? { bundleProfile } : {}),
+                reserved: false,
             });
-            if (result.stdout)
-                ctx.stdout.write(result.stdout);
-            if (result.stderr)
-                ctx.stderr.write(result.stderr);
-            return result.exitCode;
         }
         // Resolve against cwd: `.` → the package entry, then extension probing.
         const resolvedPath = (await resolveRuntimeScriptPath(fs, ctx.cwd || '/home/user', scriptPath, {
@@ -444,30 +418,15 @@ export function buildRuntimeHandler(spec, ctx0) {
         const dirname = filename.includes('/')
             ? filename.substring(0, filename.lastIndexOf('/'))
             : '/';
-        // Judged on the code as it will run, after any TypeScript/ESM transform.
-        const launchesServer = await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]);
-        const result = await spec.run(code, {
-            cred: ctx.cred,
-            invokerPid: ctx.pid,
-            signal: ctx.signal,
-            argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
-            env: ctx.env,
-            cwd: ctx.cwd,
+        return runProgram(code, {
+            argv: [...args.slice(0, scriptIdx), filename, ...args.slice(scriptIdx + 1)],
             filename,
             dirname,
             command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-            ...nodeRun,
-            ...programStdin,
-            ...reservedProcess,
-            ...(captureOutput ? { captureOutput: true } : {}),
-            ...(bundleProfile ? { bundleProfile } : {}),
-            ...(launchesServer ? { launchesServer: true } : {}),
+            stdin: programStdin,
+            // Judged on the code as it will run, after any TypeScript/ESM transform.
+            launchesServer: await launches(code, resolvedPath, dirname, [filename, ...args.slice(scriptIdx + 1)]),
         });
-        if (result.stdout)
-            ctx.stdout.write(result.stdout);
-        if (result.stderr)
-            ctx.stderr.write(result.stderr);
-        return result.exitCode;
     }
     return async function runtimeHandler(ctx) {
         const args = ctx.args || [];
