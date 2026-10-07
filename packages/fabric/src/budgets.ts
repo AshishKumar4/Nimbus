@@ -959,26 +959,35 @@ function facetNameLedger(ctx: FacetNameLedgerStorage): FacetNameLedger {
   return ledger;
 }
 
+/** What one charge leaves: the counts, and the explicit name it minted, if it minted one. */
+interface FacetNameCharge {
+  counts: FacetNameCounts;
+  minted?: string;
+}
+
 /**
- * Append one charge to the ledger and persist the counts it leaves. A failed
- * write keeps the charge in memory, and the next charge's write carries it:
- * the durable count may lag, never lead.
+ * Append one charge to the ledger and persist what it changed: the counts,
+ * then the minted name's row, in that order, and nothing after a write that
+ * failed. A row never outlives its count, so a lost write charges a name
+ * again (an overcount) rather than never; a failed write keeps the charge in
+ * memory, and the next charge's write carries it.
  */
 function appendCharge(
   ctx: FacetNameLedgerStorage,
   ledger: FacetNameLedger,
-  charge: (counts: FacetNameCounts) => Promise<FacetNameCounts>,
+  charge: (counts: FacetNameCounts) => Promise<FacetNameCharge>,
 ): Promise<FacetNameCounts> {
   ledger.chain = ledger.chain.then(async (counts) => {
     const after = await charge(counts);
-    if (after.names !== counts.names || after.slots !== counts.slots) {
+    if (after.counts.names !== counts.names || after.counts.slots !== counts.slots) {
       try {
-        await ctx.storage.put(FACET_NAME_HIGH_WATER_KEY, after.names);
-        await ctx.storage.put(FACET_SLOT_HIGH_WATER_KEY, after.slots);
+        await ctx.storage.put(FACET_NAME_HIGH_WATER_KEY, after.counts.names);
+        await ctx.storage.put(FACET_SLOT_HIGH_WATER_KEY, after.counts.slots);
+        if (after.minted !== undefined) await ctx.storage.put(mintedNameKey(after.minted), true);
       } catch { /* the next charge writes both counts again */ }
     }
-    ledger.names = after.names;
-    return after;
+    ledger.names = after.counts.names;
+    return after.counts;
   });
   return ledger.chain;
 }
@@ -989,33 +998,40 @@ function appendCharge(
  * slot high-water is a name never minted before.
  */
 export function chargeFacetSlot(ctx: FacetNameLedgerStorage, slot: number): void {
-  void appendCharge(ctx, facetNameLedger(ctx), async (counts) => (slot < counts.slots
-    ? counts
-    : { names: counts.names + slot + 1 - counts.slots, slots: slot + 1 }));
+  void appendCharge(ctx, facetNameLedger(ctx), async (counts) => ({
+    counts: slot < counts.slots ? counts : { names: counts.names + slot + 1 - counts.slots, slots: slot + 1 },
+  }));
 }
 
 /**
  * Charge an explicit facet name before its facet is created: its first use
  * ever consumes one lifetime ID, and any later use, in this incarnation or
- * another, costs nothing. A first use at the wall is refused, so nothing is
- * created. Resolves with the count after the charge.
+ * another, costs nothing, so a caller may charge a name on every use.
+ * `refuseAtWall` refuses a first use at the wall, before anything is
+ * charged or created; without it the platform's own failure at creation
+ * is what stops it, named by the ledger (withFacetBudgetNamed). Resolves
+ * with the count after the charge.
  */
-export async function chargeFacetName(ctx: FacetNameLedgerStorage, name: string): Promise<number> {
+export async function chargeFacetName(
+  ctx: FacetNameLedgerStorage,
+  name: string,
+  { refuseAtWall }: { refuseAtWall: boolean },
+): Promise<number> {
   const ledger = facetNameLedger(ctx);
   let refused = false;
   const counts = await appendCharge(ctx, ledger, async (before) => {
-    if (ledger.minted.has(name)) return before;
+    if (ledger.minted.has(name)) return { counts: before };
     const marked = await Promise.resolve(ctx.storage.get(mintedNameKey(name))).then((value) => value === true, () => false);
     if (marked) {
       ledger.minted.add(name);
-      return before;
+      return { counts: before };
     }
-    if (before.names >= FACET_ID_LIFETIME_BUDGET) {
+    if (refuseAtWall && before.names >= FACET_ID_LIFETIME_BUDGET) {
       refused = true;
-      return before;
+      return { counts: before };
     }
     ledger.minted.add(name);
-    return { names: before.names + 1, slots: before.slots };
+    return { counts: { names: before.names + 1, slots: before.slots }, minted: name };
   });
   if (refused) {
     throw withFacetBudgetNamed(
@@ -1023,8 +1039,6 @@ export async function chargeFacetName(ctx: FacetNameLedgerStorage, name: string)
       new Error(`facet '${name}' refused before creation: no lifetime ids remain`),
     );
   }
-  // After the count it adds to, so a lost write charges the name again rather than never.
-  await Promise.resolve(ctx.storage.put(mintedNameKey(name), true)).catch(() => {});
   return counts.names;
 }
 

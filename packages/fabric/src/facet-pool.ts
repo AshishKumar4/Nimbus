@@ -103,7 +103,7 @@ export class FacetPool {
     if (!facets || typeof facets.get !== 'function') {
       throw new Error('fabric: ctx.facets is unavailable in this Durable Object; facets cannot be leased');
     }
-    await chargeFacetName(this.ctx, name);
+    await chargeFacetName(this.ctx, name, { refuseAtWall: true });
     const stub = facets.get(name, start) as S;
     let settled = false;
     let keepStorage = false;

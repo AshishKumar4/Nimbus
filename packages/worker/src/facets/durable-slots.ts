@@ -43,14 +43,13 @@ export function durableFacetName(slot: number): string {
  * transaction, so a concurrent spawn cannot split the claim, and a re-read
  * after a reset — or after eviction — answers the same name.
  *
- * A fresh name is charged to the lifetime facet-ID ledger, which every
- * facet name on this DO shares, and is refused there at the wall.
+ * The name is charged to the lifetime facet-ID ledger, which every facet
+ * name on this DO shares.
  */
 export async function acquireDurableFacetSlot(
   ctx: DurableObjectState,
   owner: string,
 ): Promise<string> {
-  let minted = false;
   const slot = await ctx.storage.transaction(async (txn) => {
     const held = await txn.get(ownerKey(owner));
     if (typeof held === 'number') return held;
@@ -67,11 +66,15 @@ export async function acquireDurableFacetSlot(
     const slot = typeof next === 'number' ? next : 0;
     await txn.put(NEXT_KEY, slot + 1);
     await txn.put(ownerKey(owner), slot);
-    minted = true;
     return slot;
   });
+  // Charged on every acquire, not only the one that minted it: a reset
+  // between the claim above and its charge would otherwise leave the name
+  // uncounted for good. A name the ledger already counted costs nothing. Not
+  // refused at the wall: the launch that called this has claimed its process,
+  // and the platform's failure to create the facet is named by the ledger.
   const name = durableFacetName(slot);
-  if (minted) await chargeFacetName(ctx, name);
+  await chargeFacetName(ctx, name, { refuseAtWall: false });
   return name;
 }
 
