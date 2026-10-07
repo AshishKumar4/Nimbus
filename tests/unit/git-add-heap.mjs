@@ -12,7 +12,10 @@
 // call. Two sizes, every file new (no index, as after `git init` in a full
 // directory) and then every file changed; the growth between them, less the
 // two indexes' own growth (the one read, the one written), is what each file
-// costs. It may be 256 bytes; the staged result agrees with real git's.
+// costs. It may be 256 bytes; the staged result agrees with real git's. And
+// at the small size the peak beyond the indexes may be 8 MiB: what does not
+// grow with the files (the waves its objects go in, two at most) stays
+// small (each object of a wave once held deflate's 16 KiB buffer: 22 MiB).
 // NIMBUS_GIT_ADD_HEAP_LARGE=96000 measures it at Linux's size.
 
 import assert from 'node:assert/strict';
@@ -30,6 +33,7 @@ import { runGitCommand } from '../../packages/worker/src/git/commands.ts';
 
 const SIZES = [2_000, Number(process.env.NIMBUS_GIT_ADD_HEAP_LARGE) || 10_000];
 const PER_FILE = 256;
+const FIXED = 8 * 1024 * 1024;
 
 const scratch = mkdtempSync(join(tmpdir(), 'nimbus-git-add-heap-'));
 process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
@@ -167,5 +171,7 @@ for (const kind of ['fresh', 'changed']) {
   console.log(`  add -A, every file ${kind === 'fresh' ? 'new' : 'changed'}: peak +${(a.peak / MB).toFixed(1)} MiB at ${small.count}, `
     + `+${(b.peak / MB).toFixed(1)} MiB at ${large.count} (${b.ms} ms); indexes ${(b.written / MB).toFixed(1)} MiB; ${perFile.toFixed(0)} bytes a file beyond them`);
   assert.ok(perFile <= PER_FILE, `add -A, every file ${kind}: ${perFile.toFixed(0)} bytes a file beyond the indexes (allowed ${PER_FILE})`);
+  const fixed = a.peak - a.read - a.written;
+  assert.ok(fixed <= FIXED, `add -A, every file ${kind}: ${(fixed / MB).toFixed(1)} MiB beyond the indexes at ${small.count} files (allowed ${FIXED / MB})`);
 }
 console.log(`git-add-heap: add -A holds at most ${PER_FILE} bytes a staged file beyond the index, every file new or changed; staged as real git`);

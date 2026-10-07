@@ -3,13 +3,19 @@
  * its object store, its worktree, its exclude rules and its index file.
  *
  * Objects go through cf-git (loose objects) and the ranged pack store the
- * repository's filesystem carries; the worktree through the command's view
- * of the namespace. Configuration is cf-git's reading of .git/config, and
- * for core.excludesFile the global files git reads as well.
+ * repository's filesystem carries, and a command that writes many (add's
+ * blobs) writes them in the shared wave writer's waves, straight into the
+ * engine (objectWriter); the worktree through the command's view of the
+ * namespace. Configuration is cf-git's reading of .git/config, and for
+ * core.excludesFile the global files git reads as well.
  */
 
+import { deflateSync } from 'node:zlib';
+
+import type { WriteBatchStreamResult } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
+import { createWaveWriter } from '@nimbus-sh/platform/wave-writer.js';
 
 import type { ProjectFs } from '../../runtime/project-fs.js';
 import type { GitPacksSeam } from '../pack/store.js';
@@ -31,6 +37,25 @@ export interface GitFs {
   packs: GitPacksSeam;
   promises: Record<string, unknown> & { readFile(path: string, options?: unknown): Promise<Uint8Array | string> };
 }
+
+/**
+ * The engine, as the command's principal: where a repository on it takes
+ * objects in waves. `key` is a path's engine key (no leading slash), null on
+ * a mount, which the engine's waves cannot reach.
+ */
+export interface ObjectEngine {
+  key(path: string): Promise<string | null>;
+  writeStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
+}
+
+/** Objects written by one command, in waves: each `write`'s object is there once `flush` has settled. */
+export interface ObjectWriter {
+  write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
+  flush(): Promise<void>;
+}
+
+/** git's core.looseCompression when unset: Z_BEST_SPEED. */
+const LOOSE_COMPRESSION = 1;
 
 /** ENOENT or ENOTDIR: the path is not there, which is an answer; anything else is a failure. */
 function isAbsent(error: unknown): boolean {
@@ -73,6 +98,7 @@ export class WorktreeRepo {
     readonly gitdir: string,
     private readonly env: Record<string, string>,
     readonly counters: WalkCounters = newCounters(),
+    private readonly engine: ObjectEngine | null = null,
   ) {
     const at = (path: string) => (path ? `${root}/${path}` : root);
     this.fs = {
@@ -121,6 +147,40 @@ export class WorktreeRepo {
         return await git.writeObject({ fs: gitFs, dir: root, type, object: data, format: 'content' });
       },
       prefetch: async (oids) => await gitFs.packs.prefetch(gitdir, oids),
+    };
+  }
+
+  /**
+   * A writer for the many objects one command writes (add's blobs): each is
+   * hashed and, when the repository lacks it, deflated (git's loose
+   * compression) and written as its loose object in the shared wave
+   * writer's waves, straight into the engine: no write, existence check or
+   * directory walk an object (as cf-git's took: 17 lookups and a write a
+   * file, half of add -A's time at Linux's size). `flush` publishes what is
+   * buffered: call it before writing what names the objects (the index). A
+   * repository on a mount, which the waves cannot reach, has each object
+   * written alone (store.write).
+   */
+  async objectWriter(): Promise<ObjectWriter> {
+    const key = this.engine === null ? null : await this.engine.key(this.gitdir);
+    if (this.engine === null || key === null) return { write: (type, data) => this.store.write(type, data), flush: async () => {} };
+    const engine = this.engine;
+    const waves = createWaveWriter({ supervisor: { writeBatchStream: (stream) => engine.writeStream(stream) }, root: key, mtimeMs: Date.now() });
+    return {
+      write: async (type, data) => {
+        const oid = objectId(type, data);
+        if (await this.store.has(oid)) return oid;
+        const header = new TextEncoder().encode(`${type} ${data.length}\0`);
+        const raw = new Uint8Array(header.length + data.length);
+        raw.set(header);
+        raw.set(data, header.length);
+        // Copied out: deflateSync's result is a view of a 16 KiB buffer (measured, Bun and Node), and a
+        // wave holds a thousand of them. Read-only, as git leaves a loose object.
+        const loose = new Uint8Array(deflateSync(raw, { level: LOOSE_COMPRESSION }));
+        await waves.file(`${key}/objects/${oid.slice(0, 2)}/${oid.slice(2)}`, 0o444, loose);
+        return oid;
+      },
+      flush: () => waves.flush(),
     };
   }
 

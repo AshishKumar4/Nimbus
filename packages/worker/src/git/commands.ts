@@ -42,7 +42,7 @@ import { CheckoutRefused, UnmergedIndex, switchTrees, type CheckoutWriter } from
 import { DirCache, NewEntries, comparePaths, type IndexEdit, type NewEntry } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList, type PairSide } from './worktree/pairs.js';
-import { WorktreeRepo, configBool } from './worktree/repo.js';
+import { WorktreeRepo, configBool, type ObjectEngine, type ObjectWriter } from './worktree/repo.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
 import {
@@ -629,6 +629,9 @@ async function writeBinary(stream: OutputStream, bin: string): Promise<void> {
 /** What one command's worktree work cost, by its filesystem (one per command): NIMBUS_GIT_COUNTERS=1 prints it. */
 const commandCounters = new WeakMap<GitFs, WalkCounters>();
 
+/** The engine one command's repositories write their objects' waves into, by its filesystem (one per command). */
+const commandEngines = new WeakMap<GitFs, ObjectEngine>();
+
 /** The repository at `root` as the worktree commands read it: its index, worktree and objects (through `fs`'s pack store). */
 function worktreeRepo(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, gitdir: string, root: string): WorktreeRepo {
   let counters = commandCounters.get(fs);
@@ -638,7 +641,7 @@ function worktreeRepo(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, gitdir: s
     if (ctx.env.NIMBUS_GIT_COUNTERS === 'why') counters.why = [];
     commandCounters.set(fs, counters);
   }
-  return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env, counters);
+  return new WorktreeRepo(vfs, git, fs, root, gitdir, ctx.env, counters, commandEngines.get(fs) ?? null);
 }
 
 /**
@@ -647,7 +650,7 @@ function worktreeRepo(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, gitdir: s
  * nested repository is its HEAD commit, a gitlink. Null when there is nothing
  * there to add.
  */
-async function indexEntryFor(wrepo: WorktreeRepo, git: CfGit, dc: DirCache, path: string): Promise<NewEntry | null> {
+async function indexEntryFor(wrepo: WorktreeRepo, git: CfGit, dc: DirCache, path: string, objects: ObjectWriter): Promise<NewEntry | null> {
   const tree = await wrepo.worktree();
   const st = await wrepo.fs.lstat(path);
   if (st === null || st.type === 'other') return null;
@@ -655,7 +658,7 @@ async function indexEntryFor(wrepo: WorktreeRepo, git: CfGit, dc: DirCache, path
     const oid = await git.resolveRef({ fs: wrepo.gitFs, gitdir: `${wrepo.root}/${path}/.git`, ref: 'HEAD' });
     return { path, mode: 0o160000, oid, stat: st };
   }
-  const oid = await wrepo.store.write('blob', await worktreeBlob(tree, path, st.type));
+  const oid = await objects.write('blob', await worktreeBlob(tree, path, st.type));
   const at = dc.find(path);
   return { path, mode: modeFromStat(st, at >= 0 ? dc.mode(at) : undefined, tree.filemode), oid, stat: st };
 }
@@ -671,17 +674,20 @@ async function stageTracked(ctx: Ctx, wrepo: WorktreeRepo, git: CfGit): Promise<
   for (const line of scan.errors.tracked) await ctx.stderr.write(`${line}\n`);
   const removed = new Set<number>();
   const added = new NewEntries();
+  const objects = await wrepo.objectWriter();
   for (const [i, dirty] of scan.dirty) {
-    const entry = dirty.change === 'D' ? null : await indexEntryFor(wrepo, git, dc, dc.path(i));
+    const entry = dirty.change === 'D' ? null : await indexEntryFor(wrepo, git, dc, dc.path(i), objects);
     if (entry) added.add(entry);
     else removed.add(i);
   }
   // An unmerged path is resolved as add -u resolves it: with what the worktree holds, or by its removal.
   for (const { path, lo, hi, stat } of scan.unmerged) {
-    const entry = stat === null || stat.type === 'directory' ? null : await indexEntryFor(wrepo, git, dc, path);
+    const entry = stat === null || stat.type === 'directory' ? null : await indexEntryFor(wrepo, git, dc, path, objects);
     if (entry) added.add(entry);
     else for (let k = lo; k < hi; k++) removed.add(k);
   }
+  // The blobs are there before the index that names them.
+  await objects.flush();
   if (removed.size || added.count || dc.refreshed) await wrepo.writeIndex(dc, { removed, added });
 }
 
@@ -1030,6 +1036,8 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
     const removed = new Set<number>();
     // Each new entry is held as its bytes as soon as it is made (a file of Linux's 96,000 changed: 10 MiB, not 80).
     const added = new NewEntries();
+    // The blobs it writes go in waves, published before the index that names them.
+    const objects = await wrepo.objectWriter();
     const tree = await wrepo.worktree();
     // Tracked paths first, in index order, then the new ones, as git's add_files_to_cache and add_files go.
     for (const { at: i, end, action, stat: st, unmerged } of trackedChanges(scan, all)) {
@@ -1048,7 +1056,7 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
         if (show && !same) out += `add '${path}'\n`;
         continue;
       }
-      const entry = await indexEntryFor(wrepo, git, dc, path);
+      const entry = await indexEntryFor(wrepo, git, dc, path, objects);
       if (show && (unmerged || !(entry && entry.oid === dc.oid(i) && entry.mode === dc.mode(i)))) out += `add '${path}'\n`;
       if (entry) added.add(entry);
       else for (let k = i; k < end; k++) removed.add(k);
@@ -1059,7 +1067,7 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
       let entry: NewEntry | null = null;
       if (repository || !dryRun) {
         try {
-          entry = await indexEntryFor(wrepo, git, dc, repository ? path.slice(0, -1) : path);
+          entry = await indexEntryFor(wrepo, git, dc, repository ? path.slice(0, -1) : path, objects);
         } catch (error) {
           if (!repository || !isNotFound(error)) throw error;
           // A nested repository with no commit has nothing to add as a gitlink: nothing is staged.
@@ -1089,6 +1097,7 @@ async function addCommand(ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args:
       if (entry && !dryRun) added.add(entry);
     }
     if (show) await writeBinary(ctx.stdout, binaryPath(out));
+    await objects.flush();
     // Its stat refreshes ride in the one index write that stages (git add writes once).
     if (!dryRun && (removed.size || added.count || dc.refreshed)) await wrepo.writeIndex(dc, { removed, added });
     return ignored.length ? 1 : 0;
@@ -2577,6 +2586,11 @@ export async function runGitCommand(
     };
     const fs = createGitFs(repoVfs, null, promisor);
     commandFs = fs;
+    // The engine, as this command's principal: a repository on it takes its objects in waves (WorktreeRepo.objectWriter).
+    commandEngines.set(fs, {
+      key: async (path) => await engineKey(ctx.vfs, vfs, path),
+      writeStream: (stream) => vfs.as(ctx.cred).writeStream(stream),
+    });
     // The network commands write through the engine's streamed batches, at
     // the repository's engine key; a mounted repository has none.
     const onEngine = async (target: string): Promise<string | null> => {
