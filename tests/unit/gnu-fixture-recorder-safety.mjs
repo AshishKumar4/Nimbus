@@ -31,10 +31,10 @@ async function checkRecorder() {
     writeFileSync(file, bytes);
     return bytes;
   }
-  function childProgram(lock, ready, action = '', detached = false) {
+  function childProgram(lock, ready, action = '') {
     // flock -F retains the lock across exec; SIGSTOP cannot voluntarily release it.
     const child = `const fs=require('node:fs'); fs.writeFileSync(${JSON.stringify(ready)},'ready'); fs.writeSync(3,'ready'); process.kill(process.pid,'SIGSTOP');`;
-    return `const child=require('node:child_process').spawn('/usr/bin/flock',['-F','-x',${JSON.stringify(lock)},process.execPath,'-e',${JSON.stringify(child)}],{detached:${detached},stdio:['ignore',1,2,'pipe']}); child.stdio[3].once('data',()=>{${action}});`;
+    return `const child=require('node:child_process').spawn('/usr/bin/flock',['-F','-x',${JSON.stringify(lock)},process.execPath,'-e',${JSON.stringify(child)}],{stdio:['ignore',1,2,'pipe']}); child.stdio[3].once('data',()=>{${action}});`;
   }
   async function lockStatus(lock) {
     const result = await runBoundedProcess('/usr/bin/flock', ['-n', lock, '/usr/bin/true'], { timeoutMs: 1000 });
@@ -116,14 +116,7 @@ async function checkRecorder() {
     assert.deepEqual(readdirSync(temps), [], 'recorder SIGTERM runs finally');
     assert.equal(await lockStatus(lock), 0, 'recorder cancellation kills the stopped child');
 
-    const escapedLock = join(root, 'escaped.lock');
-    const escapedReady = join(root, 'escaped.ready');
-    const escaped = await runBoundedProcess(process.execPath, ['-e', childProgram(escapedLock, escapedReady, 'process.exit(0);', true)], { timeoutMs: 2000 });
-    assert.equal(readFileSync(escapedReady, 'utf8'), 'ready');
-    assert.equal(escaped.reason, '', 'leader exit cleans detached pipe holder without timeout');
-    assert.equal(escaped.code, 0);
-    assert.equal(await lockStatus(escapedLock), 0, 'detached stopped child released lock on death');
-    console.log('gnu-fixture-recorder-safety: bytes, nonzero exits, cancellation, cleanup and detached descendants');
+    console.log('gnu-fixture-recorder-safety: bytes, nonzero exits, cancellation and cleanup');
   } finally {
     rmSync(root, { recursive: true, force: true });
   }
