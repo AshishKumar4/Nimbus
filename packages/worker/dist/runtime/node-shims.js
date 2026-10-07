@@ -57,7 +57,7 @@ import { FACET_PROVIDED_PACKAGES, FS_READ_BATCH_PATH_LIMIT, FS_READ_BATCH_REQUES
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
-import { createNodeInspect } from './node-inspect-host.js';
+import { NODE_INSPECT_HOST_SOURCE } from './node-inspect-host.js';
 import { EAST_ASIAN_WIDE_RANGES, NODE_INSPECT_SOURCE, NODE_PRIMORDIALS_SOURCE } from './node-inspect-source.js';
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -6048,7 +6048,7 @@ function __nimbusNodeInspect() {
     const [first, last = first] = range.split("-");
     return [parseInt(first, 16), parseInt(last, 16)];
   });
-  __nimbusNodeInspectExports = (${createNodeInspect.toString()})({
+  __nimbusNodeInspectExports = (${NODE_INSPECT_HOST_SOURCE})({
     util: __realUtil,
     Buffer: __BufferMod,
     url: { pathToFileURL: __urlMod.pathToFileURL, URL: __urlMod.URL },
@@ -6355,7 +6355,9 @@ const __utilMod = {
 // these strings; the constructor now agrees with it.
 (() => {
   const _Orig = globalThis.URL;
-  class _Shim extends _Orig {
+  const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
+  // Named URL, as Node's class is: its name is what inspect and errors print.
+  class URL extends _Orig {
     constructor(input, base) {
       if (arguments.length >= 2 && base == null && typeof input === "string") {
         try { super(input); return; }
@@ -6373,17 +6375,62 @@ const __utilMod = {
       }
       super(input, base);
     }
-  }
-  for (const k of Object.getOwnPropertyNames(_Orig)) {
-    if (typeof _Orig[k] === "function" && !(k in _Shim)) {
-      try { _Shim[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // context, which workerd's URL has none of.
+    [inspectCustom](depth, opts) {
+      if (typeof depth === "number" && depth < 0) return this;
+      let constructor = URL;
+      for (let proto = this; proto; proto = Object.getPrototypeOf(proto)) {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, "constructor");
+        if (descriptor !== undefined && typeof descriptor.value === "function" && descriptor.value.name !== "") {
+          constructor = descriptor.value;
+          break;
+        }
+      }
+      const obj = { __proto__: { constructor } };
+      obj.href = this.href;
+      obj.origin = this.origin;
+      obj.protocol = this.protocol;
+      obj.username = this.username;
+      obj.password = this.password;
+      obj.host = this.host;
+      obj.hostname = this.hostname;
+      obj.port = this.port;
+      obj.pathname = this.pathname;
+      obj.search = this.search;
+      obj.searchParams = this.searchParams;
+      obj.hash = this.hash;
+      return constructor.name + " " + __utilMod.inspect(obj, opts);
     }
   }
-  // NOTE: cannot reassign _Shim.prototype = _Orig.prototype — workerd treats
+  for (const k of Object.getOwnPropertyNames(_Orig)) {
+    if (typeof _Orig[k] === "function" && !(k in URL)) {
+      try { URL[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    }
+  }
+  // NOTE: cannot reassign URL.prototype = _Orig.prototype — workerd treats
   // class.prototype as read-only. Inheritance via "extends _Orig" is enough:
-  // _Shim instances are instanceof _Orig, and _Shim.prototype's __proto__ is
+  // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
-  globalThis.URL = _Shim;
+  globalThis.URL = URL;
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
+    value: function (recurseTimes, ctx) {
+      if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
+      const separator = ", ";
+      const innerOpts = { ...ctx };
+      if (recurseTimes !== null) innerOpts.depth = recurseTimes - 1;
+      const innerInspect = (v) => __utilMod.inspect(v, innerOpts);
+      const output = [];
+      for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
+      let length = -separator.length;
+      for (let i = 0; i < output.length; i++) length += output[i].replace(/\\u001b\\[\\d\\d?m/g, "").length + separator.length;
+      if (length > ctx.breakLength) return this.constructor.name + " {\n  " + output.join(",\n  ") + " }";
+      if (output.length) return this.constructor.name + " { " + output.join(separator) + " }";
+      return this.constructor.name + " {}";
+    },
+    writable: true, configurable: true,
+  });
 })();
 // The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
 // module are workerd's own node:url (see core/_shared/real-node-imports.ts).

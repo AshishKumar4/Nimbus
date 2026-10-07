@@ -7571,263 +7571,253 @@ function __nimbusNodeInspect() {
     return [parseInt(first, 16), parseInt(last, 16)];
   });
   __nimbusNodeInspectExports = (function createNodeInspect(platform) {
-    const { util: platformUtil, Buffer, url, process, builtinModules } = platform;
-    const types = platformUtil.types;
-    const primordials = {};
-    platform.primordialsOf(primordials, globalThis);
-    const customInspectSymbol = Symbol.for('nodejs.util.inspect.custom');
-    let lazyInspect;
-    // lib/internal/errors.js: the errors inspect.js and its validators raise.
-    function nodeError(Base, code, message) {
-        const error = new Base(message);
-        Object.defineProperty(error, 'code', { value: code, enumerable: true, writable: true, configurable: true });
-        Object.defineProperty(error, 'toString', {
-            value() { return `${this.name} [${code}]: ${this.message}`; }, writable: true, configurable: true,
-        });
-        return error;
-    }
-    function determineSpecificType(value) {
-        if (value === null)
-            return 'null';
-        if (value === undefined)
-            return 'undefined';
-        switch (typeof value) {
-            case 'bigint': return `type bigint (${value}n)`;
-            case 'number':
-                if (value === 0)
-                    return 1 / value === -Infinity ? 'type number (-0)' : 'type number (0)';
-                if (value !== value)
-                    return 'type number (NaN)';
-                if (value === Infinity)
-                    return 'type number (Infinity)';
-                if (value === -Infinity)
-                    return 'type number (-Infinity)';
-                return `type number (${value})`;
-            case 'boolean': return value ? 'type boolean (true)' : 'type boolean (false)';
-            case 'symbol': return `type symbol (${String(value)})`;
-            case 'function': return `function ${value.name}`;
-            case 'object': {
-                const constructor = Reflect.get(value, 'constructor');
-                if (constructor && (typeof constructor === 'object' || typeof constructor === 'function') && 'name' in constructor) {
-                    return `an instance of ${String(constructor.name)}`;
-                }
-                return `${lazyInspect.inspect(value, { depth: -1 })}`;
-            }
-            case 'string': {
-                const text = value.length > 28 ? `${value.slice(0, 25)}...` : value;
-                if (text.indexOf("'") === -1)
-                    return `type string ('${text}')`;
-                return `type string (${JSON.stringify(text)})`;
-            }
-            default: {
-                let inspected = lazyInspect.inspect(value, { colors: false });
-                if (inspected.length > 28)
-                    inspected = `${inspected.slice(0, 25)}...`;
-                return `type ${typeof value} (${inspected})`;
-            }
-        }
-    }
-    // ERR_INVALID_ARG_TYPE for the one type each validator here expects.
-    function invalidArgType(name, type, actual) {
-        const kind = name.includes('.') ? 'property' : 'argument';
-        return nodeError(TypeError, 'ERR_INVALID_ARG_TYPE', `The "${name}" ${kind} must be of type ${type}. Received ${determineSpecificType(actual)}`);
-    }
-    let maxStackErrorName;
-    let maxStackErrorMessage;
-    function isStackOverflowError(err) {
-        if (maxStackErrorMessage === undefined) {
-            const overflowStack = () => overflowStack();
-            try {
-                overflowStack();
-            }
-            catch (e) {
-                maxStackErrorMessage = e.message;
-                maxStackErrorName = e.name;
-            }
-        }
-        return !!err && err.name === maxStackErrorName && err.message === maxStackErrorMessage;
-    }
-    const assert = Object.assign((value, message) => {
-        if (!value) {
-            throw nodeError(Error, 'ERR_INTERNAL_ASSERTION', message ?? 'This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n');
-        }
-    }, { fail: (message) => assert(false, message) });
-    // lib/internal/validators.js
-    const kValidateObjectNone = 0;
-    const kValidateObjectAllowNullable = 1 << 0;
-    const kValidateObjectAllowArray = 1 << 1;
-    const kValidateObjectAllowFunction = 1 << 2;
-    function validateObject(value, name, options = kValidateObjectNone) {
-        if (options === kValidateObjectNone) {
-            if (value === null || Array.isArray(value) || typeof value !== 'object')
-                throw invalidArgType(name, 'object', value);
-            return;
-        }
-        if ((kValidateObjectAllowNullable & options) === 0 && value === null)
-            throw invalidArgType(name, 'object', value);
-        if ((kValidateObjectAllowArray & options) === 0 && Array.isArray(value))
-            throw invalidArgType(name, 'object', value);
-        const throwOnFunction = (kValidateObjectAllowFunction & options) === 0;
-        if (typeof value !== 'object' && (throwOnFunction || typeof value !== 'function'))
-            throw invalidArgType(name, 'object', value);
-    }
-    function validateString(value, name) {
-        if (typeof value !== 'string')
-            throw invalidArgType(name, 'string', value);
-    }
-    // lib/internal/util.js
-    const colorRegExp = /\u001b\[\d\d?m/g;
-    const internalUtil = {
-        customInspectSymbol,
-        isError: (e) => types.isNativeError(e) || e instanceof Error,
-        join(output, separator) {
-            let str = '';
-            if (output.length !== 0) {
-                const lastIndex = output.length - 1;
-                for (let i = 0; i < lastIndex; i++) {
-                    str += output[i];
-                    str += separator;
-                }
-                str += output[lastIndex];
-            }
-            return str;
-        },
-        removeColors: (str) => str.replace(colorRegExp, ''),
-    };
-    // The util binding. getProxyDetails answers, for a value only V8's
-    // internals can read, a stand-in whose inspect hook the platform formats
-    // the value for; the calls through the exports below say whether hooks run.
-    let customInspectOn = true;
-    // A workerd API object (URL, Headers, Request, a stream) is read through
-    // its prototype's kResourceTypeInspect symbol (workerd jsg/resource.h),
-    // which only the platform's inspect reads; known per prototype.
-    const resourceTypes = new WeakMap();
-    function isResourceType(value) {
-        for (let proto = Object.getPrototypeOf(value); proto !== null && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
-            let resource = resourceTypes.get(proto);
-            if (resource === undefined) {
-                resource = Object.getOwnPropertySymbols(proto).some((symbol) => symbol.description === 'kResourceTypeInspect');
-                resourceTypes.set(proto, resource);
-            }
-            if (resource)
-                return true;
-        }
-        return false;
-    }
-    const needsInternals = (value) => types.isPromise(value) || types.isProxy(value) || types.isMapIterator(value)
-        || types.isSetIterator(value) || types.isWeakMap(value) || types.isWeakSet(value)
-        || (value !== null && typeof value === 'object' && isResourceType(value));
-    const formattedByPlatform = (value) => Object.create(null, {
-        [customInspectSymbol]: {
-            value(depth, options) {
-                return platformUtil.inspect(value, { ...options, depth });
-            },
-        },
+  "use strict";
+  const platformUtil = platform.util;
+  const types = platformUtil.types;
+  const primordials = {};
+  platform.primordialsOf(primordials, globalThis);
+  const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
+  let lazyInspect;
+
+  // lib/internal/errors.js: the errors inspect.js and its validators raise.
+  function nodeError(Base, code, message) {
+    const error = new Base(message);
+    Object.defineProperty(error, "code", { value: code, enumerable: true, writable: true, configurable: true });
+    Object.defineProperty(error, "toString", {
+      value() { return this.name + " [" + code + "]: " + this.message; }, writable: true, configurable: true,
     });
-    // V8's names (Object::GetConstructorName) for objects inspect.js finds no named constructor for.
-    const builtinNames = [
-        ['isMap', 'Map'], ['isSet', 'Set'], ['isWeakMap', 'WeakMap'], ['isWeakSet', 'WeakSet'], ['isDate', 'Date'],
-        ['isRegExp', 'RegExp'], ['isPromise', 'Promise'], ['isNativeError', 'Error'], ['isArrayBuffer', 'ArrayBuffer'],
-        ['isSharedArrayBuffer', 'SharedArrayBuffer'], ['isDataView', 'DataView'], ['isNumberObject', 'Number'],
-        ['isStringObject', 'String'], ['isBooleanObject', 'Boolean'], ['isBigIntObject', 'BigInt'], ['isSymbolObject', 'Symbol'],
-    ];
-    const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
-    const isArrayIndex = (key) => /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
-    const utilBinding = {
-        constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, kPending: 0, kRejected: 2 },
-        getOwnNonIndexProperties(object, filter) {
-            const keys = [];
-            for (const key of Reflect.ownKeys(object)) {
-                if (typeof key === 'string' && isArrayIndex(key))
-                    continue;
-                if (filter === 2 && !Object.prototype.propertyIsEnumerable.call(object, key))
-                    continue;
-                keys.push(key);
-            }
-            return keys;
-        },
-        getProxyDetails(value, showProxy) {
-            if (!customInspectOn || (showProxy && types.isProxy(value)) || !needsInternals(value))
-                return undefined;
-            return formattedByPlatform(value);
-        },
-        getPromiseDetails: () => [0, undefined],
-        previewEntries: (_value, isKeyValue) => (isKeyValue ? [[], false] : []),
-        getConstructorName(value) {
-            if (Array.isArray(value))
-                return 'Array';
-            if (types.isTypedArray(value))
-                return String(Reflect.apply(typedArrayTag, value, []));
-            for (const [test, name] of builtinNames)
-                if (types[test](value))
-                    return name;
-            return typeof value === 'function' ? 'Function' : 'Object';
-        },
-        getExternalValue: () => 0n,
-    };
-    // src/node_i18n.cc GetStringWidth, as Node built with ICU counts columns:
-    // an East Asian Wide or Fullwidth character two, a default-emoji-
-    // presentation character two, a control, format character, enclosing or
-    // nonspacing mark or emoji modifier none (SOFT HYPHEN one), any other one.
-    const zeroWidth = /^(?!\u00AD)[\p{Cc}\p{Cf}\p{Me}\p{Mn}\p{Emoji_Modifier}]$/u;
-    const emojiPresentation = /^\p{Emoji_Presentation}$/u;
-    const icuBinding = {
-        getStringWidth(str) {
-            let width = 0;
-            for (const char of str) {
-                if (platform.eastAsianWide(char.codePointAt(0)) || emojiPresentation.test(char))
-                    width += 2;
-                else if (!zeroWidth.test(char))
-                    width += 1;
-            }
-            return width;
-        },
-    };
-    const modules = {
-        'internal/util': internalUtil,
-        'internal/errors': { isStackOverflowError },
-        'internal/util/types': types,
-        'internal/assert': assert,
-        // Node's own modules, whose frames read `node:<id>` (colored grey).
-        'internal/bootstrap/realm': { BuiltinModule: { exists: (id) => id.startsWith('internal/') || builtinModules.includes(id) } },
-        'internal/validators': { validateObject, validateString, kValidateObjectAllowArray },
-        'internal/url': url,
-        buffer: { Buffer },
-    };
-    const bindings = { util: utilBinding, config: { hasIntl: true }, icu: icuBinding };
-    const module = { exports: {} };
-    platform.inspectOf(module.exports, (id) => modules[id], module, process, (name) => bindings[name], primordials);
-    const nodeInspect = module.exports;
-    lazyInspect = nodeInspect;
-    // A call through these runs the hooks as its options say (getProxyDetails).
-    const customInspectOf = (options) => (options !== null && typeof options === 'object' && 'customInspect' in options
-        ? options.customInspect !== false
-        : nodeInspect.inspectDefaultOptions.customInspect !== false);
-    function withCustomInspect(on, run) {
-        const previous = customInspectOn;
-        customInspectOn = on;
-        try {
-            return run();
-        }
-        finally {
-            customInspectOn = previous;
-        }
+    return error;
+  }
+  function determineSpecificType(value) {
+    if (value === null) return "null";
+    if (value === undefined) return "undefined";
+    switch (typeof value) {
+      case "bigint": return "type bigint (" + value + "n)";
+      case "number":
+        if (value === 0) return 1 / value === -Infinity ? "type number (-0)" : "type number (0)";
+        if (value !== value) return "type number (NaN)";
+        if (value === Infinity) return "type number (Infinity)";
+        if (value === -Infinity) return "type number (-Infinity)";
+        return "type number (" + value + ")";
+      case "boolean": return value ? "type boolean (true)" : "type boolean (false)";
+      case "symbol": return "type symbol (" + String(value) + ")";
+      case "function": return "function " + value.name;
+      case "object":
+        if (value.constructor && "name" in value.constructor) return "an instance of " + value.constructor.name;
+        return lazyInspect.inspect(value, { depth: -1 });
+      case "string": {
+        const text = value.length > 28 ? value.slice(0, 25) + "..." : value;
+        if (text.indexOf("'") === -1) return "type string ('" + text + "')";
+        return "type string (" + JSON.stringify(text) + ")";
+      }
+      default: {
+        let inspected = lazyInspect.inspect(value, { colors: false });
+        if (inspected.length > 28) inspected = inspected.slice(0, 25) + "...";
+        return "type " + typeof value + " (" + inspected + ")";
+      }
     }
-    const nodeInspectFunction = nodeInspect.inspect;
-    const publicInspect = function inspect(value, options) {
-        return withCustomInspect(customInspectOf(options), () => Reflect.apply(nodeInspectFunction, this, [...arguments]));
-    };
-    for (const key of Reflect.ownKeys(nodeInspectFunction)) {
-        if (key !== 'prototype' && key !== 'length' && key !== 'name') {
-            Object.defineProperty(publicInspect, key, Object.getOwnPropertyDescriptor(nodeInspectFunction, key));
-        }
+  }
+  // ERR_INVALID_ARG_TYPE for the one type each validator here expects.
+  function invalidArgType(name, type, actual) {
+    const kind = name.includes(".") ? "property" : "argument";
+    return nodeError(TypeError, "ERR_INVALID_ARG_TYPE",
+      "The \"" + name + "\" " + kind + " must be of type " + type + ". Received " + determineSpecificType(actual));
+  }
+  let maxStackErrorName;
+  let maxStackErrorMessage;
+  function isStackOverflowError(err) {
+    if (maxStackErrorMessage === undefined) {
+      try {
+        function overflowStack() { overflowStack(); }
+        overflowStack();
+      } catch (e) {
+        maxStackErrorMessage = e.message;
+        maxStackErrorName = e.name;
+      }
     }
-    return {
-        ...nodeInspect,
-        inspect: publicInspect,
-        format: (...args) => withCustomInspect(customInspectOf(undefined), () => nodeInspect.format(...args)),
-        formatWithOptions: (options, ...args) => withCustomInspect(customInspectOf(options), () => nodeInspect.formatWithOptions(options, ...args)),
-    };
+    return !!err && err.name === maxStackErrorName && err.message === maxStackErrorMessage;
+  }
+  function assert(value, message) {
+    if (!value) {
+      throw nodeError(Error, "ERR_INTERNAL_ASSERTION", message ?? "This is caused by either a bug in Node.js or incorrect usage of Node.js internals.\nPlease open an issue with this stack trace at https://github.com/nodejs/node/issues\n");
+    }
+  }
+  assert.fail = (message) => assert(false, message);
+
+  // lib/internal/validators.js
+  const kValidateObjectNone = 0;
+  const kValidateObjectAllowNullable = 1 << 0;
+  const kValidateObjectAllowArray = 1 << 1;
+  const kValidateObjectAllowFunction = 1 << 2;
+  function validateObject(value, name, options = kValidateObjectNone) {
+    if (options === kValidateObjectNone) {
+      if (value === null || Array.isArray(value) || typeof value !== "object") throw invalidArgType(name, "object", value);
+      return;
+    }
+    if ((kValidateObjectAllowNullable & options) === 0 && value === null) throw invalidArgType(name, "object", value);
+    if ((kValidateObjectAllowArray & options) === 0 && Array.isArray(value)) throw invalidArgType(name, "object", value);
+    const throwOnFunction = (kValidateObjectAllowFunction & options) === 0;
+    if (typeof value !== "object" && (throwOnFunction || typeof value !== "function")) throw invalidArgType(name, "object", value);
+  }
+  function validateString(value, name) {
+    if (typeof value !== "string") throw invalidArgType(name, "string", value);
+  }
+
+  // lib/internal/util.js
+  const colorRegExp = /\u001b\[\d\d?m/g;
+  const internalUtil = {
+    customInspectSymbol,
+    isError: (e) => types.isNativeError(e) || e instanceof Error,
+    join(output, separator) {
+      let str = "";
+      if (output.length !== 0) {
+        const lastIndex = output.length - 1;
+        for (let i = 0; i < lastIndex; i++) {
+          str += output[i];
+          str += separator;
+        }
+        str += output[lastIndex];
+      }
+      return str;
+    },
+    removeColors: (str) => String.prototype.replace.call(str, colorRegExp, ""),
+  };
+
+  // The util binding. getProxyDetails answers, for a value only V8's
+  // internals or workerd read, a stand-in whose inspect hook the platform
+  // formats it for; a call through the exports below says whether hooks run.
+  let customInspectOn = true;
+  const resourceTypes = new WeakMap();
+  function isResourceType(value) {
+    for (let proto = Object.getPrototypeOf(value); proto !== null && proto !== Object.prototype; proto = Object.getPrototypeOf(proto)) {
+      let resource = resourceTypes.get(proto);
+      if (resource === undefined) {
+        resource = Object.getOwnPropertySymbols(proto).some((symbol) => symbol.description === "kResourceTypeInspect");
+        resourceTypes.set(proto, resource);
+      }
+      if (resource) return true;
+    }
+    return false;
+  }
+  function needsPlatform(value) {
+    if (types.isPromise(value) || types.isProxy(value) || types.isMapIterator(value) || types.isSetIterator(value)
+      || types.isWeakMap(value) || types.isWeakSet(value)) return true;
+    // A workerd object that brings its own inspect method is formatted by it, as Node does.
+    return value !== null && typeof value === "object" && typeof value[customInspectSymbol] !== "function" && isResourceType(value);
+  }
+  function formattedByPlatform(value) {
+    return Object.create(null, {
+      [customInspectSymbol]: {
+        value(depth, options) {
+          let text = platformUtil.inspect(value, { ...options, depth });
+          if (!types.isProxy(value)) return text;
+          // workerd marks each proxy it looks through (Proxy(<target>)); Node
+          // 22 prints the target as it is.
+          const open = options.stylize("Proxy(", "special");
+          const close = options.stylize(")", "special");
+          while (text.startsWith(open) && text.endsWith(close)) text = text.slice(open.length, text.length - close.length);
+          return text;
+        },
+      },
+    });
+  }
+  // V8's names (Object::GetConstructorName) for objects inspect.js finds no named constructor for.
+  const builtinNames = [
+    ["isMap", "Map"], ["isSet", "Set"], ["isWeakMap", "WeakMap"], ["isWeakSet", "WeakSet"], ["isDate", "Date"],
+    ["isRegExp", "RegExp"], ["isPromise", "Promise"], ["isNativeError", "Error"], ["isArrayBuffer", "ArrayBuffer"],
+    ["isSharedArrayBuffer", "SharedArrayBuffer"], ["isDataView", "DataView"], ["isNumberObject", "Number"],
+    ["isStringObject", "String"], ["isBooleanObject", "Boolean"], ["isBigIntObject", "BigInt"], ["isSymbolObject", "Symbol"],
+  ];
+  const typedArrayTag = Object.getOwnPropertyDescriptor(Object.getPrototypeOf(Uint8Array.prototype), Symbol.toStringTag).get;
+  const isArrayIndex = (key) => /^(?:0|[1-9][0-9]*)$/.test(key) && Number(key) < 4294967295;
+  const utilBinding = {
+    constants: { ALL_PROPERTIES: 0, ONLY_ENUMERABLE: 2, kPending: 0, kRejected: 2 },
+    getOwnNonIndexProperties(object, filter) {
+      const keys = [];
+      for (const key of Reflect.ownKeys(object)) {
+        if (typeof key === "string" && isArrayIndex(key)) continue;
+        if (filter === 2 && !Object.prototype.propertyIsEnumerable.call(object, key)) continue;
+        keys.push(key);
+      }
+      return keys;
+    },
+    getProxyDetails(value, showProxy) {
+      if (!customInspectOn || (showProxy && types.isProxy(value)) || !needsPlatform(value)) return undefined;
+      return formattedByPlatform(value);
+    },
+    getPromiseDetails: () => [0, undefined],
+    previewEntries: (value, isKeyValue) => (isKeyValue ? [[], false] : []),
+    getConstructorName(value) {
+      if (Array.isArray(value)) return "Array";
+      if (types.isTypedArray(value)) return String(Reflect.apply(typedArrayTag, value, []));
+      for (const [test, name] of builtinNames) if (types[test](value)) return name;
+      return typeof value === "function" ? "Function" : "Object";
+    },
+    getExternalValue: () => 0n,
+  };
+
+  // src/node_i18n.cc GetStringWidth, as Node built with ICU counts columns:
+  // an East Asian Wide or Fullwidth character two, a default-emoji-
+  // presentation character two, a control, format character, enclosing or
+  // nonspacing mark or emoji modifier none (SOFT HYPHEN one), any other one.
+  const zeroWidth = /^(?!\u00AD)[\p{Cc}\p{Cf}\p{Me}\p{Mn}\p{Emoji_Modifier}]$/u;
+  const emojiPresentation = /^\p{Emoji_Presentation}$/u;
+  const icuBinding = {
+    getStringWidth(str) {
+      let width = 0;
+      for (const char of str) {
+        if (platform.eastAsianWide(char.codePointAt(0)) || emojiPresentation.test(char)) width += 2;
+        else if (!zeroWidth.test(char)) width += 1;
+      }
+      return width;
+    },
+  };
+
+  const modules = {
+    "internal/util": internalUtil,
+    "internal/errors": { isStackOverflowError },
+    "internal/util/types": types,
+    "internal/assert": assert,
+    // Node's own modules, whose frames read node:<id> (colored grey).
+    "internal/bootstrap/realm": { BuiltinModule: { exists: (id) => id.startsWith("internal/") || platform.builtinModules.includes(id) } },
+    "internal/validators": { validateObject, validateString, kValidateObjectAllowArray },
+    "internal/url": platform.url,
+    buffer: { Buffer: platform.Buffer },
+  };
+  const bindings = { util: utilBinding, config: { hasIntl: true }, icu: icuBinding };
+  const module = { exports: {} };
+  platform.inspectOf(module.exports, (id) => modules[id], module, platform.process, (name) => bindings[name], primordials);
+  const nodeInspect = module.exports;
+  lazyInspect = nodeInspect;
+
+  // A call through these runs the hooks as its options say (getProxyDetails).
+  const customInspectOf = (options) => (options !== null && typeof options === "object" && "customInspect" in options
+    ? options.customInspect !== false
+    : nodeInspect.inspectDefaultOptions.customInspect !== false);
+  function withCustomInspect(on, run) {
+    const previous = customInspectOn;
+    customInspectOn = on;
+    try {
+      return run();
+    } finally {
+      customInspectOn = previous;
+    }
+  }
+  const nodeInspectFunction = nodeInspect.inspect;
+  const inspect = function inspect(value, options) {
+    return withCustomInspect(customInspectOf(options), () => Reflect.apply(nodeInspectFunction, this, [...arguments]));
+  };
+  for (const key of Reflect.ownKeys(nodeInspectFunction)) {
+    if (key !== "prototype" && key !== "length" && key !== "name") {
+      Object.defineProperty(inspect, key, Object.getOwnPropertyDescriptor(nodeInspectFunction, key));
+    }
+  }
+  return {
+    ...nodeInspect,
+    inspect,
+    format: (...args) => withCustomInspect(customInspectOf(undefined), () => nodeInspect.format(...args)),
+    formatWithOptions: (options, ...args) => withCustomInspect(customInspectOf(options), () => nodeInspect.formatWithOptions(options, ...args)),
+  };
 })({
     util: __realUtil,
     Buffer: __BufferMod,
@@ -11653,7 +11643,9 @@ const __utilMod = {
 // these strings; the constructor now agrees with it.
 (() => {
   const _Orig = globalThis.URL;
-  class _Shim extends _Orig {
+  const inspectCustom = Symbol.for("nodejs.util.inspect.custom");
+  // Named URL, as Node's class is: its name is what inspect and errors print.
+  class URL extends _Orig {
     constructor(input, base) {
       if (arguments.length >= 2 && base == null && typeof input === "string") {
         try { super(input); return; }
@@ -11671,17 +11663,64 @@ const __utilMod = {
       }
       super(input, base);
     }
-  }
-  for (const k of Object.getOwnPropertyNames(_Orig)) {
-    if (typeof _Orig[k] === "function" && !(k in _Shim)) {
-      try { _Shim[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    // Node's (lib/internal/url.js, v22.22.3), but for showHidden's internal
+    // context, which workerd's URL has none of.
+    [inspectCustom](depth, opts) {
+      if (typeof depth === "number" && depth < 0) return this;
+      let constructor = URL;
+      for (let proto = this; proto; proto = Object.getPrototypeOf(proto)) {
+        const descriptor = Object.getOwnPropertyDescriptor(proto, "constructor");
+        if (descriptor !== undefined && typeof descriptor.value === "function" && descriptor.value.name !== "") {
+          constructor = descriptor.value;
+          break;
+        }
+      }
+      const obj = { __proto__: { constructor } };
+      obj.href = this.href;
+      obj.origin = this.origin;
+      obj.protocol = this.protocol;
+      obj.username = this.username;
+      obj.password = this.password;
+      obj.host = this.host;
+      obj.hostname = this.hostname;
+      obj.port = this.port;
+      obj.pathname = this.pathname;
+      obj.search = this.search;
+      obj.searchParams = this.searchParams;
+      obj.hash = this.hash;
+      return constructor.name + " " + __utilMod.inspect(obj, opts);
     }
   }
-  // NOTE: cannot reassign _Shim.prototype = _Orig.prototype — workerd treats
+  for (const k of Object.getOwnPropertyNames(_Orig)) {
+    if (typeof _Orig[k] === "function" && !(k in URL)) {
+      try { URL[k] = _Orig[k].bind(_Orig); } catch (_e) {}
+    }
+  }
+  // NOTE: cannot reassign URL.prototype = _Orig.prototype — workerd treats
   // class.prototype as read-only. Inheritance via "extends _Orig" is enough:
-  // _Shim instances are instanceof _Orig, and _Shim.prototype's __proto__ is
+  // URL instances are instanceof _Orig, and URL.prototype's __proto__ is
   // _Orig.prototype (so all native URL methods are reachable via the chain).
-  globalThis.URL = _Shim;
+  globalThis.URL = URL;
+  // URLSearchParams prints as Node's does (lib/internal/url.js, v22.22.3).
+  Object.defineProperty(globalThis.URLSearchParams.prototype, inspectCustom, {
+    value: function (recurseTimes, ctx) {
+      if (typeof recurseTimes === "number" && recurseTimes < 0) return ctx.stylize("[Object]", "special");
+      const separator = ", ";
+      const innerOpts = { ...ctx };
+      if (recurseTimes !== null) innerOpts.depth = recurseTimes - 1;
+      const innerInspect = (v) => __utilMod.inspect(v, innerOpts);
+      const output = [];
+      for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
+      let length = -separator.length;
+      for (let i = 0; i < output.length; i++) length += output[i].replace(/\u001b\[\d\d?m/g, "").length + separator.length;
+      if (length > ctx.breakLength) return this.constructor.name + " {
+  " + output.join(",
+  ") + " }";
+      if (output.length) return this.constructor.name + " { " + output.join(separator) + " }";
+      return this.constructor.name + " {}";
+    },
+    writable: true, configurable: true,
+  });
 })();
 // The legacy API (parse/format/resolve/resolveObject/Url) and the rest of the
 // module are workerd's own node:url (see core/_shared/real-node-imports.ts).
