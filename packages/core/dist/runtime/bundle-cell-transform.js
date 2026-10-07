@@ -23,7 +23,7 @@ import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
-import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast.js';
+import { hasTopLevelModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
  * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
@@ -82,9 +82,10 @@ export function looksLikeEsm(path, src) {
         return false;
     if (vfsPathExtension(path) !== '')
         return true;
-    // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse tells them apart.
+    // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse
+    // tells them apart: one keeping no tree, as a bin can be a multi-MiB bundle.
     try {
-        parseJavaScriptModule(src);
+        parseStatements(src, MODULE_PARSE_OPTIONS, {});
         return true;
     }
     catch {
