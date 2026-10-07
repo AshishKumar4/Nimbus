@@ -186,7 +186,7 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
       stdout: { write(s) { stdout += s; } },
       stderr: { write(s) { stderr += s; } },
       vfs: files.view({ pid: 7, cred: CRED_SESSION_USER }),
-    }, vfs, doCtx, doEnv);
+    }, vfs, doCtx, doEnv, undefined, files);
     return { code, stdout: stdout.replace(/\x1b\[[0-9;]*m/g, ''), stderr };
   }
 

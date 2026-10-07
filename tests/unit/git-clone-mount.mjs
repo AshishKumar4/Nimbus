@@ -87,6 +87,28 @@ try {
       assert.equal(session.kernel.exists('mnt/data/work/' + name), false, `${name}: nothing of it on the session's own filesystem`);
       console.log(`  ok  clone ${args.join(' ')} onto a mount: host git's worktree, index, refs; fsck clean; a 6 MiB file included`);
     }
+
+    // A clone that fails while it checks out: its destination on the mount goes, as git's
+    // remove_junk takes it (through the namespace, under the clone's lease), and its record.
+    const realFetch = globalThis.fetch;
+    let posts = 0;
+    globalThis.fetch = async (input, init) => {
+      if (init?.method === 'POST' && ++posts > 3) return new Response('refused', { status: 403 });
+      return realFetch(input, init);
+    };
+    let failed;
+    try {
+      failed = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', '/mnt/data/work/failed'], {
+        NIMBUS_GIT_BLOBS_PER_BATCH: '1', NIMBUS_GIT_BATCH_CONCURRENCY: '1', NIMBUS_GIT_CLONE_CLEANUP_SLICE: '3',
+      });
+    } finally {
+      globalThis.fetch = realFetch;
+    }
+    assert.notEqual(failed.code, 0, 'the clone fails');
+    assert.doesNotMatch(failed.stderr, /could not remove the failed clone/, failed.stderr.slice(-400));
+    assert.equal(mountEngine.as(CRED_KERNEL).exists('work/failed'), false, 'its destination on the mount is gone');
+    assert.equal((await session.doCtx.storage.list({ prefix: 'git-clone-job:' })).size, 0, 'and its record');
+    console.log('  ok  a clone onto a mount that fails: its destination there removed, through the namespace');
   } finally {
     server.stop();
   }

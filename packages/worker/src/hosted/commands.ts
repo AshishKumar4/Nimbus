@@ -125,7 +125,7 @@ registry.register('chsh', makeChshCommand({
 // first `git` invocation so it stays out of the cold script-eval graph.
 registry.register('git', async (ctx: any) => {
   const { runGitCommand } = await import('../git/commands.js');
-  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network);
+  return runGitCommand(ctx, sqliteFs, self.ctx, self.env, workspace.network, self.getFilesystemAuthority());
 });
 
 // ── runtime package manager: `nimbus install` package manager + runner registry.

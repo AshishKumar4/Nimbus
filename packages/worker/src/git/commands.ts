@@ -16,7 +16,7 @@ import { engineKey, type ProcessView } from '@nimbus-sh/core/runtime/process-fil
 import { projectFs, type ProjectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER, type GitNetworkResult } from './network-facet.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
-import { cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob, type CloneJobRecord } from './clone-job.js';
+import { bridgeCleanupFs, cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob, type CleanupBridge, type CloneJobRecord } from './clone-job.js';
 import { packsSeam, type GitPacksSeam, type PromisorFetch } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
@@ -2534,6 +2534,8 @@ export async function runGitCommand(
   doEnv?: any,
   /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
   network: WorkspaceNetwork = ISOLATE_NETWORK,
+  /** The session's filesystem authority: a host bridge on the namespace, for the cleanup of a clone on a mount. */
+  filesystem?: { openHost(cred: VfsCred): { fs: CleanupBridge; dispose(): Promise<void> } },
 ): Promise<number> {
   let globals: ParsedGitGlobals;
   try {
@@ -2778,14 +2780,19 @@ export async function runGitCommand(
             }
             // As git's remove_junk: in the DO, under the clone's lease (its
             // current owner: the facets were fenced), as the clone's credential.
+            // On a mount, through the namespace (a host bridge presenting the lease).
+            const host = place.mount ? filesystem?.openHost(ctx.cred) : undefined;
             try {
-              const cleaned = await cleanUpClone(vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
+              if (place.mount && host === undefined) throw new Error('no namespace to clean it up through');
+              const cleaned = await cleanUpClone(host ? bridgeCleanupFs(host.fs, mutationOwner) : vfs.as(ctx.cred, { mutationOwner }), doCtx.storage, job, {
                 sliceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_CLEANUP_SLICE) || undefined,
               });
               if (cleaned.outcome === 'kept-repo') ctx.stderr.write(JUNK_LEAVE_REPO_WARNING);
             } catch (error) {
               // The record stays: the session finishes the cleanup when it next starts.
               ctx.stderr.write(`[git] could not remove the failed clone at '${dest}': ${String((error as Error)?.message ?? error)}\n`);
+            } finally {
+              await host?.dispose();
             }
             return false;
           } finally {
@@ -2799,9 +2806,10 @@ export async function runGitCommand(
           // The destination is absent or an empty directory, proven under the
           // lease before the record is written: a cleanup removes only what
           // the clone made. git's refusal otherwise.
-          const user = vfs.as(ctx.cred);
-          const rootExisted = user.exists(target);
-          if (rootExisted && (user.lstat(target).type !== 'directory' || user.readdir(target).length > 0)) {
+          // Asked of the namespace, as the command sees it: a mount's destination is the mount's.
+          const existing = await ctx.vfs.stat(target, { follow: false });
+          const rootExisted = existing !== null;
+          if (existing !== null && (existing.type !== 'directory' || (await ctx.vfs.readdir(target)).length > 0)) {
             await ctx.stderr.write(`fatal: destination path '${destArg || dest.slice(dest.lastIndexOf('/') + 1)}' already exists and is not an empty directory.\n`);
             return 128;
           }
@@ -2817,6 +2825,8 @@ export async function runGitCommand(
             phase: 'transport',
             generation: generation(doCtx),
             startedAt: Date.now(),
+            root: mutationLease.root,
+            ...(place.mount ? { mount: true } : {}),
           };
           try {
             await writeCloneJob(doCtx.storage, job);
