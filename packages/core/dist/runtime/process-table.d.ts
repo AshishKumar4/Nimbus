@@ -35,17 +35,22 @@ export interface ProcessEntry {
     /** Output is owned by the command that launched it, until its launch returns. */
     foreground?: boolean;
     /**
-     * The process this one restarts, when it is one: a resident the session
-     * started again under a new pid because the session object itself
-     * restarted while it ran (`cause: 'session-restart'`). Absent otherwise.
+     * The process this one restarts, when it is one: a resident started again
+     * under a new pid because the session object itself restarted while it
+     * ran, or because it exited with a non-zero code under restart
+     * 'on-failure'. Absent otherwise.
      */
     restartedFrom?: ProcessRestart;
 }
 /** Which process a restart replaced, and why it was restarted. */
-export interface ProcessRestart {
+export type ProcessRestart = {
     pid: number;
     cause: 'session-restart';
-}
+} | {
+    pid: number;
+    cause: 'exited';
+    exitCode: number;
+};
 export interface ProcessTableSpawnOptions {
     cred?: VfsCred;
     parentPid?: number;

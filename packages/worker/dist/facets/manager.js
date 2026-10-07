@@ -47,7 +47,7 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { TurnBudget, PacedWork, turnChunkMaxBytes, withResolvers } from '@nimbus-sh/fabric/turn-budget.js';
 import { onColdStart } from '@nimbus-sh/fabric/generation.js';
 import { isDynamicWorkerDeadlock, suspendLaunchAdmission } from '@nimbus-sh/fabric/budgets.js';
-import { FencedWork, FENCED_WORK_KEY_PREFIX, } from '@nimbus-sh/fabric/fenced-work.js';
+import { FencedWork, FENCED_WORK_KEY_PREFIX, RESIDENT_PROVEN_MS, } from '@nimbus-sh/fabric/fenced-work.js';
 import { rewriteProvidedCommonJsModules } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { bundleTypescriptLoader, esbuildDiagnosticShim, isBundleModuleCandidate, isTypescriptDeclarationFile, looksLikeEsm, needsBundleCellTransform, transformBundleCells, transformEntryScript, } from '@nimbus-sh/core/runtime/bundle-cell-transform.js';
 import { TransformStore } from './transform-store.js';
@@ -4010,18 +4010,23 @@ function residentLaunchDoing(record) {
     return record.phase === 'running' ? 'running' : 'starting';
 }
 /**
- * Why a resident the session restarted is not restarted again. One that was
- * running when the session restarted had been restarted already, and had not
- * run RESIDENT_PROVEN_MS: a new process whose isolate has used about a second
- * of CPU makes Cloudflare restart the session (spike/isolate-move), and
- * restarting it again would only repeat that.
+ * Why a resident is not restarted again: its budget is spent, and it has not
+ * run RESIDENT_PROVEN_MS since it was last restarted (fenced-work.ts). One
+ * the session lost while running had been restarted already: a new process
+ * whose isolate has used about a second of CPU makes Cloudflare restart the
+ * session (spike/isolate-move), and restarting it again would only repeat
+ * that. One that exited again is in a crash loop.
  */
-function residentAbandonedNotice(record, now) {
-    if (record.phase === 'running' && record.runningSince !== undefined) {
-        const seconds = Math.max(0, Math.round((now - record.runningSince) / 1000));
-        return `\x1b[2m[nimbus: the session restarted again ${seconds} s after restarting "${record.command}", so it is left stopped: `
-            + 'Cloudflare restarts a session when a newly started process has used about a second of CPU, and restarting '
-            + `it would do that again; start it again with: ${record.command}]\x1b[0m\r\n`;
+function residentAbandonedNotice(record, cause) {
+    const proven = `${RESIDENT_PROVEN_MS / 1000} s`;
+    if (cause.kind === 'exited') {
+        return `\x1b[2m[nimbus: "${record.command}" exited with code ${cause.code} again before it had run ${proven} `
+            + `since its restart, so it is left stopped; start it again with: ${record.command}]\x1b[0m\r\n`;
+    }
+    if (record.phase === 'running') {
+        return `\x1b[2m[nimbus: the session restarted again before "${record.command}" had run ${proven} since its restart, `
+            + 'so it is left stopped: Cloudflare restarts a session when a newly started process has used about a second '
+            + `of CPU, and restarting it would do that again; start it again with: ${record.command}]\x1b[0m\r\n`;
     }
     return '\x1b[2m[nimbus: the session restarted again while '
         + `"${record.command}" was ${residentLaunchDoing(record)} — leaving it stopped]\x1b[0m\r\n`;
@@ -4170,6 +4175,8 @@ export class FacetManager {
     ensureInflight = new Map();
     /** Per-pid chain of journal-row amendments; see `_amendRow`. */
     rowAmendments = new Map();
+    /** Each running resident's uptime proof timer (_proveByUptime). */
+    uptimeProofs = new Map();
     /**
      * pid → the derived owner it duplicates: the second live instance of an
      * identity. Not journalled (nothing re-drives it), so this is the only
@@ -4207,16 +4214,17 @@ export class FacetManager {
         this.launchJournal = new FencedWork(ctx.storage, {
             generationBase: () => this.processes.pidBase,
             waitUntil: (promise) => this.ctx.waitUntil(promise),
-            redrive: (record, attempt) => this._redrive(record, attempt),
+            redrive: (record, attempt, cause) => this._redrive(record, attempt, cause),
             onRedrive: (record) => {
                 // A line in the Worker's logs as well: the platform logs nothing for the restart itself.
                 console.warn(`[facet-manager] the session restarted while pid ${record.pid} ("${record.command}") was ${residentLaunchDoing(record)}; restarting it`);
                 this.hooks.notify?.('\x1b[2m[nimbus: the session restarted while '
                     + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`);
             },
-            onAbandoned: (record) => {
-                console.warn(`[facet-manager] the session restarted again while pid ${record.pid} ("${record.command}") was ${residentLaunchDoing(record)}; left stopped`);
-                this.hooks.notify?.(residentAbandonedNotice(record, Date.now()));
+            onAbandoned: (record, cause) => {
+                const notice = residentAbandonedNotice(record, cause);
+                console.warn(`[facet-manager] pid ${record.pid} left stopped: ${notice.replace(/\x1b\[[0-9;]*m|\r?\n/g, '')}`);
+                this.hooks.notify?.(notice);
             },
             onRedriveFailed: (record, e) => {
                 console.warn(`[facet-manager] resident pid ${record.pid} ("${record.command}") not re-driven: ${errorMessage(e)}`);
@@ -4270,7 +4278,33 @@ export class FacetManager {
      * from the row, after a backoff, while the row is still in storage so a
      * reset inside the backoff window recovers it like any other resident.
      */
+    /**
+     * The evidence a resident ran (fenced-work.ts RESIDENT_PROVEN_MS): this
+     * instance's timer, from the boot. If the process is still running with
+     * its row when it fires, the row's re-drive budget is whole again. A timer
+     * of an instance that died never fires, so time while the session was
+     * down never counts. Resolves when the row is amended, or at once when
+     * there is nothing to prove.
+     */
+    _proveByUptime(pid) {
+        this._dropUptimeProof(pid);
+        this.uptimeProofs.set(pid, setTimeout(() => {
+            this.uptimeProofs.delete(pid);
+            if (this.processes.get(pid)?.state !== 'running' || !this.launchJournal.has(pid))
+                return Promise.resolve(undefined);
+            return this._amendRow(pid, (row) => (row.attempt === 0 ? row : { ...row, attempt: 0 }));
+        }, RESIDENT_PROVEN_MS));
+    }
+    /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
+    _dropUptimeProof(pid) {
+        const proof = this.uptimeProofs.get(pid);
+        if (proof === undefined)
+            return;
+        clearTimeout(proof);
+        this.uptimeProofs.delete(pid);
+    }
     async _onResidentTerminal(pid) {
+        this._dropUptimeProof(pid);
         await this.rowAmendments.get(pid);
         this.ephemeralPids.delete(pid);
         await this._releaseResidentClaim(pid);
@@ -4292,7 +4326,7 @@ export class FacetManager {
         // backoff; a row that is gone is owed nothing.
         if (!(await this.launchJournal.rows()).has(key))
             return;
-        await this.launchJournal.drive(key, row, { lostToReset: false });
+        await this.launchJournal.drive(key, row, { kind: 'exited', code: entry.exitCode ?? 1 });
     }
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
     async _claimResident(record) {
@@ -6736,7 +6770,7 @@ export class FacetManager {
      * launch's are re-resolved by the embedder through
      * `hooks.resolveWorkerLaunch`.
      */
-    async _redrive(record, attempt) {
+    async _redrive(record, attempt, cause) {
         const { recipe } = record;
         if (record.cred === undefined) {
             // Reported through onRedriveFailed, and the row is superseded.
@@ -6745,7 +6779,12 @@ export class FacetManager {
         const identity = {
             cred: record.cred,
             ...(record.execId === undefined ? {} : { execId: record.execId }),
-            restart: { from: { pid: record.pid, cause: 'session-restart' }, doing: residentLaunchDoing(record) },
+            restart: {
+                from: cause.kind === 'exited'
+                    ? { pid: record.pid, cause: 'exited', exitCode: cause.code }
+                    : { pid: record.pid, cause: 'session-restart' },
+                doing: residentLaunchDoing(record),
+            },
         };
         switch (recipe.kind) {
             case 'node': return this._spawnResident(recipe.code, recipe.opts, attempt, identity);
@@ -6788,16 +6827,18 @@ export class FacetManager {
      * The process-table entry of a resident launch: a child of its invoker,
      * under its credential, as exec's. A re-drive has no invoker (the journal
      * never holds one): it runs as the row says, records the process it
-     * restarts, and says so as its first line of output. The terminal the
-     * session's restart disconnected is not where the user looks for it.
+     * restarts and why, and says so as its first line of output. The terminal
+     * a session's restart disconnected is not where the user looks for it.
      */
     _spawnLaunchEntry(command, argv, cwd, invokerPid, redriven) {
         if (redriven === undefined)
             return this.processes.spawn(command, argv, cwd, { parentPid: invokerPid });
         const { restart, ...identity } = redriven;
         const entry = this.processes.spawn(command, argv, cwd, { ...identity, restartedFrom: restart.from });
-        this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: the session restarted while "${command}" was ${restart.doing}, so this process restarted; `
-            + `it was pid ${restart.from.pid}]\n`);
+        const why = restart.from.cause === 'exited'
+            ? `"${command}" exited with code ${restart.from.exitCode}, so it was restarted (restart on-failure)`
+            : `the session restarted while "${command}" was ${restart.doing}, so this process restarted`;
+        this.processes.appendOutput(entry.pid, 'stderr', `[nimbus: ${why}; it was pid ${restart.from.pid}]\n`);
         return entry;
     }
     /**
@@ -6998,14 +7039,15 @@ export class FacetManager {
         finally {
             pacer.settle();
         }
-        // Booted and running: the resident's budget is whole again once it has
-        // run RESIDENT_PROVEN_MS from now (fenced-work.ts). If the process already
-        // ended inside the launch body's own settlement, the terminal hook has
-        // released the row — do not write it back. Amended, not rewritten from
-        // `record`: a port the program bound during its boot has already been
-        // stamped onto the row, and the settle must not lose it.
+        // Booted and running: its budget is whole again once it has run
+        // RESIDENT_PROVEN_MS in this instance (_proveByUptime). If the process
+        // already ended inside the launch body's own settlement, the terminal hook
+        // has released the row — do not write it back. Amended, not rewritten
+        // from `record`: a port the program bound during its boot has already
+        // been stamped onto the row, and the settle must not lose it.
         if (this.launchJournal.has(entry.pid)) {
-            await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running', runningSince: Date.now() }));
+            await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running' }));
+            this._proveByUptime(entry.pid);
         }
     }
     async _residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv) {
@@ -7509,8 +7551,9 @@ export class FacetManager {
             this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
             const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
             if (record && this.launchJournal.has(entry.pid)) {
-                // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS (fenced-work.ts).
-                await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running', runningSince: Date.now() }));
+                // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS here (_proveByUptime).
+                await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running' }));
+                this._proveByUptime(entry.pid);
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {
                 if (opts.durable && !opts.resident) {
@@ -7978,7 +8021,7 @@ export class FacetManager {
         setTimeout(() => markBound(true), DURABLE_ENSURE_BOOT_BUDGET_MS);
         const failed = await Promise.race([
             // A previous instance's row: the session restarted under it.
-            this.launchJournal.drive(rowKey, record, { lostToReset: true }),
+            this.launchJournal.drive(rowKey, record, { kind: 'session-restart' }),
             boundHit,
         ]);
         if (failed)

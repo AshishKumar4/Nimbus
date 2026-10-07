@@ -37,6 +37,13 @@
  * breaks.
  */
 export declare const FENCED_WORK_KEY_PREFIX = "resident-launch:";
+/** Why a row is re-driven: its session restarted, or its process exited with `code`. */
+export type RedriveCause = {
+    kind: 'session-restart';
+} | {
+    kind: 'exited';
+    code: number;
+};
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
 export declare const FENCED_WORK_MAX_ATTEMPT = 1;
 /**
@@ -44,8 +51,14 @@ export declare const FENCED_WORK_MAX_ATTEMPT = 1;
  * process whose new isolate has used about a second of CPU makes the
  * platform restart its session (spike/isolate-move), and its re-drive is a
  * new process in a new isolate that does it again: a budget refilled at boot
- * re-drove such a process, and restarted its session, forever. One that has
- * run this long has proved the reset was not its own.
+ * re-drove such a process, and restarted its session, forever.
+ *
+ * The rule: a resident's row returns to attempt 0 only when the process has
+ * stayed up this long in one instance of its session, which that instance's
+ * own timer counts from the boot. That is the evidence it ran without
+ * restarting the session under it. Time while the session is down is never
+ * counted, since no timer of a dead instance fires, and a restart storm
+ * spends the budget however long the outages between restarts were.
  */
 export declare const RESIDENT_PROVEN_MS = 120000;
 /**
@@ -74,11 +87,6 @@ export interface FencedWorkRecord {
     /** Where the resident was when its instance died: still being built, or
      *  booted and running. */
     phase: 'starting' | 'running';
-    /**
-     * When the resident booted, in this row's run (Date.now()). One that has
-     * run RESIDENT_PROVEN_MS re-drives with a fresh attempt budget.
-     */
-    runningSince?: number;
 }
 /**
  * The slice of Durable Object storage the journal writes through. Exactly a
@@ -119,11 +127,11 @@ export interface FencedWorkHost<R extends FencedWorkRecord> {
      * carries it into the launch it starts. The result is discarded: a re-drive
      * owns its own process, and nobody is waiting on the pid it allocates.
      */
-    redrive(record: R, attempt: number): Promise<unknown>;
+    redrive(record: R, attempt: number, cause: RedriveCause): Promise<unknown>;
     /** A re-drive is being started for this record. */
     onRedrive?(record: R): void;
     /** The record's re-drive budget is spent; the resident stays stopped. */
-    onAbandoned?(record: R): void;
+    onAbandoned?(record: R, cause: RedriveCause): void;
     /** The re-drive itself failed. */
     onRedriveFailed?(record: R, error: unknown): void;
 }
@@ -191,15 +199,14 @@ export declare class FencedWork<R extends FencedWorkRecord> {
      * Re-drive one journal row — the awaited sibling of recovery's un-awaited
      * re-drives, for a caller that must know whether the launch actually came
      * back. Single-flight per row: a request-driven drive and recovery's own
-     * never boot the same launch twice. `lostToReset` marks a row a previous
-     * instance left (not a crash this instance restarts), whose drive is
-     * announced through onRedrive, once, by the call that starts it. Resolves
+     * never boot the same launch twice. `cause` says why the row is driven: a
+     * session restart (a row a previous instance left), whose drive is
+     * announced through onRedrive, once, by the call that starts it, or the
+     * process's own non-zero exit, which its restart policy re-drives. Resolves
      * true only when the re-drive itself FAILED and the failure was reported;
      * a settled drive supersedes the row the same way recovery's does.
      */
-    drive(key: string, record: R, { lostToReset }: {
-        lostToReset: boolean;
-    }): Promise<boolean>;
+    drive(key: string, record: R, cause: RedriveCause): Promise<boolean>;
     /**
      * Re-drive the launches a previous instance was building when it was reset.
      *
@@ -211,8 +218,7 @@ export declare class FencedWork<R extends FencedWorkRecord> {
      *
      * Runs once per instance — re-calls in the same instance are no-ops — and
      * re-drives every row whose pid is `> 0` and at or below `generationBase()`
-     * with fewer than FENCED_WORK_MAX_ATTEMPT attempts spent (spentAttempts);
-     * the rest are abandoned. What the
+     * with `attempt < FENCED_WORK_MAX_ATTEMPT`; the rest are abandoned. What the
      * re-drive resolver receives is the journalled record and nothing else: a
      * host keeps env and secrets out of it, so the resolver's embedder
      * re-resolves them rather than reading them back.

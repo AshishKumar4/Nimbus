@@ -44,14 +44,16 @@ export const FENCED_WORK_MAX_ATTEMPT = 1;
  * process whose new isolate has used about a second of CPU makes the
  * platform restart its session (spike/isolate-move), and its re-drive is a
  * new process in a new isolate that does it again: a budget refilled at boot
- * re-drove such a process, and restarted its session, forever. One that has
- * run this long has proved the reset was not its own.
+ * re-drove such a process, and restarted its session, forever.
+ *
+ * The rule: a resident's row returns to attempt 0 only when the process has
+ * stayed up this long in one instance of its session, which that instance's
+ * own timer counts from the boot. That is the evidence it ran without
+ * restarting the session under it. Time while the session is down is never
+ * counted, since no timer of a dead instance fires, and a restart storm
+ * spends the budget however long the outages between restarts were.
  */
 export const RESIDENT_PROVEN_MS = 120_000;
-/** The re-drive attempts `record` has spent: none once it has run RESIDENT_PROVEN_MS. */
-function spentAttempts(record, now) {
-    return record.runningSince !== undefined && now - record.runningSince >= RESIDENT_PROVEN_MS ? 0 : record.attempt;
-}
 /**
  * The resident-launch journal of one Durable Object instance.
  *
@@ -150,27 +152,27 @@ export class FencedWork {
      * Re-drive one journal row — the awaited sibling of recovery's un-awaited
      * re-drives, for a caller that must know whether the launch actually came
      * back. Single-flight per row: a request-driven drive and recovery's own
-     * never boot the same launch twice. `lostToReset` marks a row a previous
-     * instance left (not a crash this instance restarts), whose drive is
-     * announced through onRedrive, once, by the call that starts it. Resolves
+     * never boot the same launch twice. `cause` says why the row is driven: a
+     * session restart (a row a previous instance left), whose drive is
+     * announced through onRedrive, once, by the call that starts it, or the
+     * process's own non-zero exit, which its restart policy re-drives. Resolves
      * true only when the re-drive itself FAILED and the failure was reported;
      * a settled drive supersedes the row the same way recovery's does.
      */
-    drive(key, record, { lostToReset }) {
+    drive(key, record, cause) {
         let inflight = this.drives.get(key);
         if (inflight === undefined) {
             inflight = (async () => {
-                const spent = spentAttempts(record, Date.now());
-                if (spent >= FENCED_WORK_MAX_ATTEMPT) {
-                    this.host.onAbandoned?.(record);
+                if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
+                    this.host.onAbandoned?.(record, cause);
                     await this.supersede(key);
                     return true;
                 }
-                if (lostToReset)
+                if (cause.kind === 'session-restart')
                     this.host.onRedrive?.(record);
                 let failed = false;
                 try {
-                    await this.host.redrive(record, spent + 1);
+                    await this.host.redrive(record, record.attempt + 1, cause);
                 }
                 catch (e) {
                     this.host.onRedriveFailed?.(record, e);
@@ -200,8 +202,7 @@ export class FencedWork {
      *
      * Runs once per instance — re-calls in the same instance are no-ops — and
      * re-drives every row whose pid is `> 0` and at or below `generationBase()`
-     * with fewer than FENCED_WORK_MAX_ATTEMPT attempts spent (spentAttempts);
-     * the rest are abandoned. What the
+     * with `attempt < FENCED_WORK_MAX_ATTEMPT`; the rest are abandoned. What the
      * re-drive resolver receives is the journalled record and nothing else: a
      * host keeps env and secrets out of it, so the resolver's embedder
      * re-resolves them rather than reading them back.
@@ -221,8 +222,7 @@ export class FencedWork {
             // `session/rpc.ts` uses to attribute a prior generation's pid.
             if (!(record.pid > 0 && record.pid <= base))
                 continue;
-            const spent = spentAttempts(record, Date.now());
-            (spent >= FENCED_WORK_MAX_ATTEMPT ? abandoned : redriven).push([key, { ...record, attempt: spent }]);
+            (record.attempt >= FENCED_WORK_MAX_ATTEMPT ? abandoned : redriven).push([key, record]);
         }
         // The attempt is SPENT in storage, synced, before any re-drive starts.
         // Deleting the row here instead would open a loss window: writes flush in
@@ -236,15 +236,12 @@ export class FencedWork {
         for (const [key] of abandoned)
             await this.storage.delete(key);
         for (const [key, record] of redriven) {
-            // The spent attempt stands for this run: its boot time is the old run's, not a proof.
-            const spentRow = { ...record, attempt: record.attempt + 1 };
-            delete spentRow.runningSince;
-            await this.storage.put(key, spentRow);
+            await this.storage.put(key, { ...record, attempt: record.attempt + 1 });
         }
         if (abandoned.length > 0 || redriven.length > 0)
             await this.storage.sync();
         for (const [, record] of abandoned)
-            this.host.onAbandoned?.(record);
+            this.host.onAbandoned?.(record, { kind: 'session-restart' });
         for (const [key, record] of redriven) {
             // Not awaited: this call is running inside the alarm that granted the
             // turn, and the launch it starts asks for turns of its own through that
@@ -252,7 +249,7 @@ export class FencedWork {
             // be scheduled until this one returns. `drive` single-flights it: a
             // request that arrives mid-launch waits on this same drive rather than
             // booting a second process.
-            this.host.waitUntil(this.drive(key, record, { lostToReset: true }));
+            this.host.waitUntil(this.drive(key, record, { kind: 'session-restart' }));
         }
     }
     /**

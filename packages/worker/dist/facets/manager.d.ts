@@ -1154,6 +1154,8 @@ export declare class FacetManager {
     private ensureInflight;
     /** Per-pid chain of journal-row amendments; see `_amendRow`. */
     private rowAmendments;
+    /** Each running resident's uptime proof timer (_proveByUptime). */
+    private uptimeProofs;
     /**
      * pid → the derived owner it duplicates: the second live instance of an
      * identity. Not journalled (nothing re-drives it), so this is the only
@@ -1175,6 +1177,17 @@ export declare class FacetManager {
      * from the row, after a backoff, while the row is still in storage so a
      * reset inside the backoff window recovers it like any other resident.
      */
+    /**
+     * The evidence a resident ran (fenced-work.ts RESIDENT_PROVEN_MS): this
+     * instance's timer, from the boot. If the process is still running with
+     * its row when it fires, the row's re-drive budget is whole again. A timer
+     * of an instance that died never fires, so time while the session was
+     * down never counts. Resolves when the row is amended, or at once when
+     * there is nothing to prove.
+     */
+    private _proveByUptime;
+    /** Stop `pid`'s uptime proof: the process ended, or its proof restarts. */
+    private _dropUptimeProof;
     private _onResidentTerminal;
     /** Claim identity AND write its recovery row in one serializable storage transaction. */
     private _claimResident;
@@ -1734,8 +1747,8 @@ export declare class FacetManager {
      * The process-table entry of a resident launch: a child of its invoker,
      * under its credential, as exec's. A re-drive has no invoker (the journal
      * never holds one): it runs as the row says, records the process it
-     * restarts, and says so as its first line of output. The terminal the
-     * session's restart disconnected is not where the user looks for it.
+     * restarts and why, and says so as its first line of output. The terminal
+     * a session's restart disconnected is not where the user looks for it.
      */
     private _spawnLaunchEntry;
     /**
