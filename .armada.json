@@ -13,7 +13,8 @@
     "USER": "ci",
     "LOGNAME": "ci",
     "SHELL": "/bin/bash",
-    "NIMBUS_TEST_MEMORY_MAX": "4G"
+    "NIMBUS_TEST_MEMORY_MAX": "4G",
+    "NIMBUS_TEST_CGROUP": "/sys/fs/cgroup/armada/task"
   },
   "plan": { "command": ["bun", "scripts/ci/unit.mjs", "plan", "--target", "{target}", "--timings", "{timings}"] },
   "task": { "command": ["bun", "scripts/ci/unit.mjs", "task", "{item}", "--timings", "{timings}", "--out", "{out}"] }
