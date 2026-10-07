@@ -297,15 +297,20 @@ async function list() {
   // under the deleted Preview's id, after the API has forgotten both
   // (spike/preview-stale), and nothing can delete it. It holds the secret
   // `down` discarded, so it mints nothing; listed so it is never mistaken
-  // for a live target. One whose hostname has gone (404) is dropped.
+  // for a live target. One whose hostname answers 404 is dropped; one that
+  // cannot be reached is kept, as unknown.
   const live = new Set((listed.result ?? []).map((p) => p.name));
   const still = [];
   for (const entry of readDeleted()) {
     if (live.has(entry.preview)) continue;
-    const status = await fetch(entry.base, { redirect: 'manual', signal: AbortSignal.timeout(15_000) }).then((r) => r.status, () => 404);
-    if (status === 404) continue;
+    const answer = await fetch(entry.base, { redirect: 'manual', signal: AbortSignal.timeout(15_000) })
+      .then((r) => ({ status: r.status }), (error) => ({ error: error?.message ?? String(error) }));
+    // Only a real 404 means the hostname has gone: a failed fetch says nothing, and keeps the record.
+    if (answer.status === 404) continue;
     still.push(entry);
-    process.stdout.write(`${entry.preview}\t${entry.base}\tdeleted ${entry.deletedAt}\tSTILL SERVED by the edge (${status}): a deployment of this deleted Preview (last id ${entry.id ?? '?'}); nothing can delete it, and its secret is gone\n`);
+    process.stdout.write(answer.error
+      ? `${entry.preview}\t${entry.base}\tdeleted ${entry.deletedAt}\tunknown (fetch failed: ${answer.error})\n`
+      : `${entry.preview}\t${entry.base}\tdeleted ${entry.deletedAt}\tSTILL SERVED by the edge (${answer.status}): a deployment of this deleted Preview (last id ${entry.id ?? '?'}); nothing can delete it, and its secret is gone\n`);
   }
   writeDeleted(still);
 }
