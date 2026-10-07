@@ -18,6 +18,7 @@ import {
   type ToolSet,
 } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
+import { isValidSessionId } from '../_shared/session-id.js';
 import {
   base64Url,
   base64UrlDecode,
@@ -187,7 +188,7 @@ export async function parseAgentOAuthStateParam(
   const payload = await decodeState(state, secret);
   if (!payload || payload.v !== 1) return null;
   if (!Number.isSafeInteger(payload.exp) || payload.exp <= now) return null;
-  if (!isSessionId(payload.sessionId)) return null;
+  if (!isValidSessionId(payload.sessionId)) return null;
   if (!isNimbusTenantSegment(payload.tenantSegment)) return null;
   if (!isNonce(payload.nonce)) return null;
   return payload;
@@ -245,7 +246,7 @@ async function oauthStart(self: Host, request: Request, url: URL): Promise<Respo
   const basePath = request.headers.get(BASE_PATH_HEADER) || '';
   const sessionId = basePath.startsWith('/s/') ? basePath.slice(3) : '';
   const tenantSegment = request.headers.get(TENANT_HEADER) || 'legacy:public:_';
-  if (!isSessionId(sessionId) || !isNimbusTenantSegment(tenantSegment)) {
+  if (!isValidSessionId(sessionId) || !isNimbusTenantSegment(tenantSegment)) {
     return json({ error: 'invalid session route', code: 'E_AGENT_SESSION' }, 400);
   }
 
@@ -1030,7 +1031,7 @@ async function loadStateCookie(self: Host, request: Request): Promise<OAuthState
   if (!value) return null;
   const state = await unsealCookie<OAuthStateCookie>(self, value, STATE_COOKIE_PURPOSE).catch(() => null);
   if (!state || state.v !== 1 || !isNonce(state.nonce)) return null;
-  if (!isSessionId(state.sessionId) || !isNimbusTenantSegment(state.tenantSegment)) return null;
+  if (!isValidSessionId(state.sessionId) || !isNimbusTenantSegment(state.tenantSegment)) return null;
   if (!state.codeVerifier || !state.redirectUri) return null;
   return state;
 }
@@ -1165,7 +1166,7 @@ function oauthResultHtml(
   sessionId?: string,
   headers?: HeadersInit,
 ): Response {
-  const sessionPath = sessionId && isSessionId(sessionId) ? `/s/${sessionId}/?agent=1` : '/';
+  const sessionPath = sessionId && isValidSessionId(sessionId) ? `/s/${sessionId}/?agent=1` : '/';
   const result: AgentOAuthResultMessage = { type: AGENT_OAUTH_RESULT_CHANNEL, ok };
   const safeMessage = escapeHtml(message);
   const safePath = escapeHtml(sessionPath);
@@ -1235,19 +1236,6 @@ function trimTrailingSlash(value: string): string {
   let end = value.length;
   while (end > 0 && value[end - 1] === '/') end--;
   return value.slice(0, end);
-}
-
-function isSessionId(value: string): boolean {
-  if (value.length < 1 || value.length > 128) return false;
-  for (let i = 0; i < value.length; i++) {
-    const ch = value.charCodeAt(i);
-    const ok =
-      (ch >= 48 && ch <= 57) ||
-      (ch >= 97 && ch <= 122) ||
-      ch === 45;
-    if (!ok) return false;
-  }
-  return true;
 }
 
 function isNonce(value: string): boolean {
