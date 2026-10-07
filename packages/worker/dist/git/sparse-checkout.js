@@ -100,19 +100,66 @@ function normalizePath(path) {
     return lead + out.join('/');
 }
 /**
+ * prefix_path: `path` as the repository names it, given from the directory
+ * `prefix` below the top `root`: a relative one joined to the prefix, an
+ * absolute one inside the top made relative to it (abspath_part_inside_repo:
+ * by name, or else by each leading part's real path); null when it is
+ * outside the repository. A leading part missing below another missing one
+ * is git's "Invalid path" refusal, as its realpath answers it.
+ */
+async function prefixPath(prefix, root, path, realpath) {
+    if (!path.startsWith('/'))
+        return normalizePath(prefix + path);
+    const absolute = normalizePath(path);
+    if (absolute === null)
+        return null;
+    const top = root.replace(/\/+$/, '');
+    if (absolute === top)
+        return '';
+    if (absolute.startsWith(top + '/'))
+        return absolute.slice(top.length + 1);
+    // strbuf_realpath(die_on_error): every part resolved, the last of `level` alone allowed to be missing.
+    const resolve = async (level) => {
+        const parts = level.split('/').filter((part) => part !== '');
+        let resolved = '';
+        for (const [i, part] of parts.entries()) {
+            const candidate = `${resolved}/${part}`;
+            const real = await realpath(candidate);
+            if (real !== null)
+                resolved = real === '/' ? '' : real;
+            else if (i === parts.length - 1)
+                resolved = candidate;
+            else
+                throw new Fatal(`fatal: Invalid path '${candidate}': No such file or directory\n`);
+        }
+        return resolved || '/';
+    };
+    // Each '/'-ended leading part, then the whole path: the one whose real path is the top.
+    const parts = absolute.split('/').filter((part) => part !== '');
+    for (let i = 1; i <= parts.length; i++) {
+        if (await resolve('/' + parts.slice(0, i).join('/')) === top)
+            return parts.slice(i).join('/');
+    }
+    return null;
+}
+/**
  * sanitize_paths in cone mode: each directory given below the command's
  * directory, then (but with --skip-checks) refused when it is a pattern or a
  * file the index holds.
  */
-function sanitize(dirs, prefix, root, skipChecks, dc) {
-    const out = dirs.map((dir) => {
-        if (!prefix)
-            return dir;
-        const joined = normalizePath(dir.startsWith('/') ? dir : prefix + dir);
-        if (joined === null)
+async function sanitize(ctx, dirs, skipChecks, dc) {
+    const { prefix, root } = ctx;
+    const out = [];
+    for (const dir of dirs) {
+        if (!prefix) {
+            out.push(dir);
+            continue;
+        }
+        const inside = await prefixPath(prefix, root, dir, ctx.realpath);
+        if (inside === null)
             throw new Fatal(`fatal: '${dir}' is outside repository at '${root}'\n`);
-        return joined;
-    });
+        out.push(inside);
+    }
     if (skipChecks)
         return out;
     for (const dir of out) {
@@ -261,8 +308,9 @@ async function cleanSparseDirectories(ctx, sparse) {
 }
 /**
  * update_working_directory: `sparse` applied to the index and worktree,
- * under the index lock, unless the index is unborn; then, for a cone, the
- * directories it left emptied of anything tracked cleaned up.
+ * unless the index is unborn; then, for a cone, the directories it left
+ * emptied of anything tracked cleaned up. Under the index lock the
+ * subcommand holds (sparseCheckout).
  */
 async function updateWorkingDirectory(ctx, sparse, cone) {
     const { wrepo, root, writer } = ctx;
@@ -300,8 +348,23 @@ async function recordedDirectories(wrepo) {
 function byBytes(a, b) {
     return compareBytes(encoder.encode(a), encoder.encode(b));
 }
-/** `git sparse-checkout <subcommand> [<options>]`. */
+/** The subcommands that change the sparse checkout: each holds the repository's lock throughout. */
+const CHANGES = new Set(['set', 'add', 'reapply', 'disable', 'init']);
+/**
+ * `git sparse-checkout <subcommand> [<options>]`. One that changes the
+ * sparse checkout holds the repository's index lock from its first read of
+ * the configuration to the publication of its patterns, as git holds
+ * info/sparse-checkout.lock across write_patterns_and_update: two run at
+ * once, the second sees the first's whole result, never its patterns over
+ * the other's worktree.
+ */
 export async function sparseCheckout(ctx, args) {
+    const sub = args[0];
+    return sub !== undefined && CHANGES.has(sub)
+        ? await ctx.wrepo.withIndexLock(() => runSubcommand(ctx, args))
+        : await runSubcommand(ctx, args);
+}
+async function runSubcommand(ctx, args) {
     const [sub, ...rest] = args;
     const { wrepo } = ctx;
     const unknown = async (option) => {
@@ -347,7 +410,7 @@ export async function sparseCheckout(ctx, args) {
                 else {
                     await updateModes(wrepo, tristate(rest, '--cone', '--no-cone'), tristate(rest, '--sparse-index', '--no-sparse-index'));
                 }
-                const given = coneDirectories(sanitize(dirs, ctx.prefix, ctx.root, flags.has('--skip-checks'), await wrepo.readIndex()));
+                const given = coneDirectories(await sanitize(ctx, dirs, flags.has('--skip-checks'), await wrepo.readIndex()));
                 return await writePatternsAndUpdate(ctx, sub === 'add' ? [...await recordedDirectories(wrepo), ...given] : given);
             }
             case 'reapply': {

@@ -22,9 +22,18 @@ export interface SparseCheckoutContext {
     /** The command's directory below the top, '' or ending in '/' (git's prefix). */
     prefix: string;
     writer: CheckoutWriter;
+    /** A path's real path in the namespace (every link resolved), null when it is not there. */
+    realpath(path: string): Promise<string | null>;
     stdout(text: string): Promise<void>;
     stderr(text: string): Promise<void>;
 }
-/** `git sparse-checkout <subcommand> [<options>]`. */
+/**
+ * `git sparse-checkout <subcommand> [<options>]`. One that changes the
+ * sparse checkout holds the repository's index lock from its first read of
+ * the configuration to the publication of its patterns, as git holds
+ * info/sparse-checkout.lock across write_patterns_and_update: two run at
+ * once, the second sees the first's whole result, never its patterns over
+ * the other's worktree.
+ */
 export declare function sparseCheckout(ctx: SparseCheckoutContext, args: readonly string[]): Promise<number>;
 //# sourceMappingURL=sparse-checkout.d.ts.map
