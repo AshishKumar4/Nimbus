@@ -46,7 +46,7 @@ import type {
 import { fsError, modeAllows, walkBeneath } from '../beneath-walk.js';
 import { WASI_RESIDENT_FILE_CAP_BYTES } from '../../constants.js';
 import { delegationHolder, type DelegationHolder } from './delegation-holder.js';
-import type { ProcessFsJournal, ProcessFsSession } from '../../_shared/process-fs-client.js';
+import type { ProcessFsJournal, ProcessFsSession, ProcessFsStats } from '../../_shared/process-fs-client.js';
 
 /** A name as the store holds it: its lstat, and a symlink's text. */
 export interface ResidentEntry {
@@ -169,6 +169,8 @@ export interface ResidentFilesystemStats {
   /** File bytes pinned for descriptors now, and how many buffers hold them. */
   pinnedBytes: number;
   pins: number;
+  /** Its filesystem client's waves, grants and recalls, when it holds delegations. */
+  client?: ProcessFsStats;
 }
 
 /** A held write goes to the session in pieces of this size: each fits one call. */
@@ -659,6 +661,7 @@ export function residentFilesystem(session: RuntimeFsBridge, resident: ResidentN
     delegated: { ...counts.delegated },
     pins: pins.size,
     pinnedBytes: [...pins.values()].reduce((total, pin) => total + pin.bytes.byteLength, 0),
+    ...(holder === null ? {} : { client: holder.client.stats() }),
   });
 
   fs.stat = (path, options = {}) => answer<RuntimeVfsStat | null>('stat', () => {

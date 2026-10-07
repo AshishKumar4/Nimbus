@@ -60,6 +60,7 @@ import { withMemoryLimit, DEFAULT_WASM_PROCESS_LIMIT_BYTES } from './wasm-memory
 import { wasmInterface } from './wasm-binary.js';
 import { errorText } from '../_shared/error-text.js';
 import { unsettledNoteOf } from '../_shared/process-fs-client.js';
+import type { ResidentFilesystemStats } from './wasi/resident-filesystem.js';
 import { exists } from '../vfs/vfs.js';
 
 // ── facet-side globals injected by the WASI preamble ─────────────────
@@ -75,6 +76,7 @@ import { exists } from '../vfs/vfs.js';
 declare const __wasiMakeImports: (opts: WasiMakeImportsOptions) => WasiInstanceBundle;
 declare const __wasiInitFS: (opts: WasiInitOptions) => void;
 declare const __wasiAdoptSupervisor: (sup: unknown) => void;
+declare const __wasiFsStats: (() => ResidentFilesystemStats | null) | undefined;
 /** The green-thread scheduler — see runtime/wasi-threads.ts. */
 interface WasiThreadScheduler {
   hostImports: () => Record<string, WebAssembly.ModuleImports>;
@@ -350,6 +352,7 @@ export function makeWasmRunner(deps: {
       stderr?: string;
       exitCode?: number;
       error?: string;
+      fsStats?: ResidentFilesystemStats | null;
       fsDiff?: {
         filesWritten: Record<string, string>;
         filesDeleted: string[];
@@ -582,6 +585,8 @@ export function makeWasmRunner(deps: {
           exitCode: r.exitCode,
           exports: Object.keys(inst.exports),
           error: r.error,
+          // Its filesystem calls and who answered them (ResidentFilesystemStats).
+          fsStats: typeof __wasiFsStats === 'function' ? __wasiFsStats() : null,
         };
       }
 
@@ -759,6 +764,7 @@ export function makeWasmRunner(deps: {
           `wasm-runner: wasi trap: ${outcome.error}\n`;
       }
       exitCode = outcome.exitCode ?? (outcome.ok ? 0 : 1);
+      if (opts.env?.NIMBUS_WASI_FS_STATS === '1') stderr += `[wasi-fs] wasm ${JSON.stringify(outcome.fsStats ?? null)}\n`;
     } else if (!outcome.ok) {
       // Direct-mode failure or pre-instantiate dispatch failure — shell
       // sees rc=1 + stderr.
