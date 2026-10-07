@@ -4,6 +4,7 @@
 // backend-neutral (scripts/ci/build.mjs, scripts/ci/probes.mjs); only this
 // file knows armada.
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { mkdtempSync, readFileSync, rmSync, statSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
@@ -11,13 +12,16 @@ import { fileURLToPath } from 'node:url';
 
 const SELF_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
 
-// PreparedSkunk's armada clone: upstream (/mnt/local/armada) packs a commit
+// The armada client, pinned: exactly ARMADA_CLIENT, a clean checkout of it
+// at ARMADA_DIR (a detached worktree of PreparedSkunk's armada clone, its
+// node_modules from `bun install --frozen-lockfile --production`), or the
+// run is refused. Upstream (/mnt/local/armada, eeef535) packs a commit
 // without the trees the environment's ancestors share with it, which no
-// environment holds ("fatal: unable to read tree"); ARMADA_PACK_FIX fixes
-// it, and an ARMADA_DIR without it is refused. Only the client differs: it
-// talks to the same deployed armada.
-const ARMADA_DIR = '/mnt/local/nimbus/wt/armada-contrib';
-const ARMADA_PACK_FIX = '17db0d5';
+// environment holds ("fatal: unable to read tree"); 17db0d5 fixes it, and
+// ARMADA_CLIENT is the latest commit proven on top of it. Only the client
+// differs: it talks to the same deployed armada.
+const ARMADA_DIR = '/mnt/local/nimbus/armada-client';
+const ARMADA_CLIENT = '1a91f1bf5897cc4fb47cc04437973f73ef2e7195';
 
 /** The armada recipe every task needs, whatever the lane's commit has. */
 export const RECIPE = ['.armada.json', 'scripts/armada/setup.sh', 'scripts/armada/install.sh'];
@@ -71,16 +75,23 @@ export function overlayCommit(repo, sha, files, from = SELF_ROOT) {
  * `env` joins the recipe's for this job only: armada
  * keeps a job's spec while the job lives, so a credential put here must be
  * one minted for this run and short-lived. Interrupting the process cancels
- * the job. Resolves to each outcome in item order and each task's {out}
- * text (null when it wrote none); throws when the job could not be started.
+ * the job. The commit made for it is held by a ref of its own
+ * (refs/nimbus-ci/) until the job is done, so no prune can take it while
+ * armada packs it. Resolves to that commit, each outcome in item order and
+ * each task's {out} text (null when it wrote none); throws when the job
+ * could not be started.
  *
  * @param {{ repo: string, sha: string, files: string[], setup?: string, items: unknown[], command: string[], env?: Record<string, string>,
  *   label: string, pool?: number, timeout?: number, log?: (line: string) => void }} options
  */
 export async function mapOnArmada({ repo, sha, files, setup, items, command, env = {}, label, pool = items.length, timeout = 3600, log = (line) => console.error(line) }) {
   const armadaDir = process.env.ARMADA_DIR || ARMADA_DIR;
-  const fixed = spawnSync('git', ['merge-base', '--is-ancestor', ARMADA_PACK_FIX, 'HEAD'], { cwd: armadaDir, encoding: 'utf8' });
-  if (fixed.status !== 0) throw new Error(`the armada in ${armadaDir} lacks its packing fix ${ARMADA_PACK_FIX}${fixed.stderr ? `: ${fixed.stderr.trim()}` : ''}`);
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: armadaDir, encoding: 'utf8' });
+  const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: armadaDir, encoding: 'utf8' });
+  if (head.status !== 0 || head.stdout.trim() !== ARMADA_CLIENT || dirty.status !== 0 || dirty.stdout !== '') {
+    throw new Error(`the armada client must be a clean checkout of ${ARMADA_CLIENT} at ${armadaDir}; it is ${head.status === 0 ? head.stdout.trim() : 'not a checkout'}${dirty.stdout ? ', with local changes' : ''}. `
+      + `Make one: git -C <PreparedSkunk's armada clone> worktree add --detach ${armadaDir} ${ARMADA_CLIENT}, then bun install --frozen-lockfile --production in it`);
+  }
   const { connect } = await import(join(armadaDir, 'src', 'sdk.ts'));
   const { onCommit } = await import(join(armadaDir, 'src', 'ci.ts'));
   const overlay = [...RECIPE, ...files];
@@ -95,8 +106,22 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
       { path: joined, bytes: text });
   }
   const commit = overlayCommit(repo, sha, overlay);
-  log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${overlay.map((file) => (typeof file === 'string' ? file : file.path)).join(', ')})`);
-  const armada = connect();
+  const ref = `refs/nimbus-ci/${randomUUID()}`;
+  git(repo, ['update-ref', ref, commit]);
+  // An interrupt exits from the cancel handler, past the finally below.
+  const dropRef = () => spawnSync('git', ['update-ref', '-d', ref], { cwd: repo });
+  process.once('exit', dropRef);
+  try {
+    log(`armada: ${sha.slice(0, 12)} as ${commit.slice(0, 12)} (its tree plus ${overlay.map((file) => (typeof file === 'string' ? file : file.path)).join(', ')})`);
+    return { commit, ...await runJob({ armada: connect(), onCommit, repo, commit, items, command, env, label, pool, timeout, log }) };
+  } finally {
+    process.off('exit', dropRef);
+    dropRef();
+  }
+}
+
+/** The job itself: started, followed, cancelled with this process, and read back. */
+async function runJob({ armada, onCommit, repo, commit, items, command, env, label, pool, timeout, log }) {
   // armada resolves the commit in the working directory's repository.
   const cwd = process.cwd();
   process.chdir(repo);
