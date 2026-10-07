@@ -54,11 +54,12 @@ export function wsHeaders() {
  * the connection dropped. An `init-session` after the socket opened, on a
  * higher generation, means a fresh isolate: the session was reset or
  * evicted. The ring is per isolate, so another session sharing it can add
- * lines. Resolves to text, never throws; bounded at 10 s.
+ * lines. `headers` are the socket's own credentials. Resolves to text,
+ * never throws; bounded at 10 s.
  */
-async function sessionRecord(sid, openedAt, base) {
+async function sessionRecord(sid, openedAt, base, headers) {
   try {
-    const r = await fetch(`${base}/s/${encodeURIComponent(sid)}/api/_diag/memory`, { headers: requestHeaders(), signal: AbortSignal.timeout(10_000) });
+    const r = await fetch(`${base}/s/${encodeURIComponent(sid)}/api/_diag/memory`, { headers, signal: AbortSignal.timeout(10_000) });
     if (!r.ok) return `the session's record: unavailable (/api/_diag/memory answered ${r.status})`;
     const diag = await r.json();
     const time = (at) => new Date(at).toISOString().slice(11, 23);
@@ -344,8 +345,8 @@ export class Terminal {
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
-    /** What the session recorded about an abnormal close (sessionRecord), once read. */
-    this.closeRecord = null;
+    this.closeCode = null;
+    this.openedAt = null;
     this.closing = false;
   }
 
@@ -354,16 +355,14 @@ export class Terminal {
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
-    this.closeRecord = null;
+    this.closeCode = null;
     this.closing = false;
-    let openedAt = Date.now();
-    this.ws.on('open', () => { this.connected = true; openedAt = Date.now(); });
+    this.openedAt = Date.now();
+    this.ws.on('open', () => { this.connected = true; this.openedAt = Date.now(); });
     this.ws.on('close', (code, reason) => {
       this.closed = true;
+      this.closeCode = code;
       this.closeDetail = describeSocketClose(code, reason);
-      // A close this side did not ask for classifies itself: the session's
-      // own record of what happened to it since the socket opened.
-      if (!this.closing && code !== 1000) this.closeRecord = sessionRecord(this.sid, openedAt, this.wsBase.replace(/^ws/, 'http'));
     });
     this.ws.on('message', (data) => {
       try {
@@ -405,7 +404,12 @@ export class Terminal {
           else if (this.closed) {
             cleanup();
             const elapsed = Date.now() - t0;
-            Promise.resolve(this.closeRecord).then((record) => reject(new Error(`Terminal closed while waiting for ${label} after ${elapsed}ms `
+            // A close this side did not ask for classifies itself: the
+            // session's own record of what happened to it since the socket opened.
+            const record = !this.closing && this.closeCode !== 1000
+              ? sessionRecord(this.sid, this.openedAt, this.wsBase.replace(/^ws/, 'http'), this.wsOptions?.headers ?? requestHeaders())
+              : null;
+            Promise.resolve(record).then((record) => reject(new Error(`Terminal closed while waiting for ${label} after ${elapsed}ms `
               + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}${record ? `\n${record}` : ''}`)));
           }
         } catch (error) { cleanup(); reject(error); }
