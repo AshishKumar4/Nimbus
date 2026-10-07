@@ -177,10 +177,10 @@ async function cut(ops, keep) {
   const epoch = deliveries.openWaveWriter(9, 60_000);
   const ops = [append('home/user/via', 'v'), append('shared/mounted', 'm')];
   const fence = (attempt, seq, ack) => ({ writer: epoch, wave: 1, attempt, hostIncarnation: deliveries.incarnation, seq, ack });
-  const once = await op({ op: 'writeBatchStream', args: [], pid: 9, cred: CRED_SESSION_USER, stream: encodeWriteBatchStream({ inodes: [], chunks: [], ops }), waveFence: fence(1, 1, 0) });
+  const once = await op({ op: 'writeBatchStream', args: [], pid: 9, stream: encodeWriteBatchStream({ inodes: [], chunks: [], ops }), waveFence: fence(1, 1, 0) });
   assert.equal(once.ok, true, JSON.stringify(once.error));
   assert.deepEqual(once.sequence, { cursor: 2 });
-  const twice = await op({ op: 'writeBatchStream', args: [], pid: 9, cred: CRED_SESSION_USER, stream: encodeWriteBatchStream({ inodes: [], chunks: [], ops }), waveFence: fence(2, 1, 0) });
+  const twice = await op({ op: 'writeBatchStream', args: [], pid: 9, stream: encodeWriteBatchStream({ inodes: [], chunks: [], ops }), waveFence: fence(2, 1, 0) });
   assert.equal(twice.ok, true, JSON.stringify(twice.error));
   assert.equal(s.text('home/user/via'), 'v');
   assert.equal(dec.decode(s.shared.readFile('/mounted')), 'm', 'a re-sent append on a mount appended twice');
