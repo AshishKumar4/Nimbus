@@ -64,6 +64,7 @@ import {
   type BatchInodeEntry,
   type BatchWritePayload,
   type VfsInodeKind,
+  type W7DataCall,
   type W7DecodedRecord,
 } from '@nimbus-sh/platform/w7-frame.js';
 import {
@@ -489,6 +490,12 @@ export interface WriteBatchStreamProgress {
   /** 1-based sequence of the last durable publish group; zero means none. */
   committedGroupSequence: number;
   committedPathCount: number;
+  /**
+   * The wave's operations committed, in order: each removal, directory,
+   * file, rename, truncate, attribute change and call counts one. On a
+   * refusal, the refused operation is the one at this index.
+   */
+  committedOps: number;
   inodes: number;
   chunks: number;
   /** Each published file and link, by the path the stream named, as stat will report it. */
@@ -506,6 +513,8 @@ export interface WriteStreamReceipt {
   uid: number;
   gid: number;
   dev: number;
+  /** The session's revision once a call's file landed: what its writeFile answers. */
+  revision?: number;
 }
 
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
@@ -518,6 +527,8 @@ export type WriteBatchStreamResult =
         code: 'ERR_WRITE_BATCH_STREAM';
         phase: WriteBatchStreamFailurePhase;
         message: string;
+        /** The refusal's errno (EACCES, EEXIST, …) when the filesystem refused; absent otherwise. */
+        errno?: string;
       };
     });
 
@@ -1279,6 +1290,7 @@ function recordPaths(record: W7DecodedRecord): string[] {
     case 'delete': case 'truncate': case 'setattr': return [record.path];
     case 'directory': case 'file-begin': return [record.inode.path];
     case 'rename': return [record.from, record.to];
+    case 'call': return [record.call.path];
     default: return [];
   }
 }
@@ -8695,9 +8707,21 @@ export class SqliteVFS {
       /** A staged file's prior, read when it was authorised at file-begin. */
       prior: KnownPrior | null;
     } | null;
+    /** A call's file (W7DataCall), its bytes gathered until its end. */
+    let callFile: {
+      streamContentId: string;
+      path: string;
+      call: W7DataCall;
+      mode: number;
+      size: number;
+      parts: Uint8Array[];
+      received: number;
+      nextChunk: number;
+    } | null = null;
     const progress: WriteBatchStreamProgress = {
       committedGroupSequence: 0,
       committedPathCount: 0,
+      committedOps: 0,
       inodes: 0,
       chunks: 0,
       receipts: [],
@@ -8801,6 +8825,7 @@ export class SqliteVFS {
         }
         progress.committedGroupSequence++;
         progress.committedPathCount += paths;
+        progress.committedOps += paths;
         progress.inodes += result.inodes;
         progress.chunks += publishedChunks;
         for (const entry of plan.inodes) {
@@ -8833,6 +8858,7 @@ export class SqliteVFS {
       ));
       progress.committedGroupSequence++;
       progress.committedPathCount += inodes.length;
+      progress.committedOps += inodes.length;
       progress.inodes += result.inodes;
     };
 
@@ -8847,6 +8873,7 @@ export class SqliteVFS {
       });
       progress.committedGroupSequence++;
       progress.committedPathCount += affected;
+      progress.committedOps++;
     };
 
     // The wave's leading removals and directories (an encoder sends them
@@ -8987,6 +9014,59 @@ export class SqliteVFS {
         // its group's commit would otherwise be refused.
         if (this.exclusiveMutationLeases.size > 0) {
           for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, options.mutationOwner);
+        }
+        // A call's bytes are gathered whole, and the call made at its end.
+        if (record.type === 'file-begin' && record.inode.call !== undefined) {
+          phase = 'validation';
+          this.validateInodeContentShape(record.inode);
+          callFile = { streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size, parts: [], received: 0, nextChunk: 0 };
+          continue;
+        }
+        if (callFile !== null && record.type === 'file-chunk') {
+          phase = 'validation';
+          if (record.streamContentId !== callFile.streamContentId || record.path !== callFile.path) {
+            throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
+          }
+          if (record.chunkId !== callFile.nextChunk || callFile.received + record.data.byteLength > callFile.size) {
+            throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
+          }
+          callFile.nextChunk++;
+          callFile.received += record.data.byteLength;
+          // Copied out, and the chunk's credit given back.
+          callFile.parts.push(record.data.slice());
+          record.retention.release();
+          continue;
+        }
+        if (callFile !== null && record.type === 'file-end') {
+          phase = 'validation';
+          const file = callFile;
+          callFile = null;
+          if (record.streamContentId !== file.streamContentId) throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
+          if (file.received !== file.size) throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
+          phase = 'publish';
+          endLeading();
+          flushGroup();
+          flushDirectories();
+          options.admit?.();
+          const bytes = concatBytes(file.parts);
+          const stat = this.withHolds(holds, () => asCaller(() => {
+            if (file.call === 'appendFile') {
+              const prior = this.checkAccess(file.path, 0, cred, { allowMissingLeaf: true }).inode;
+              if (prior === undefined) this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+              else this.writeRange(file.path, prior.size, bytes, cred);
+            } else {
+              this.writeFile(file.path, bytes, { mode: file.mode }, cred);
+            }
+            return this.stat(file.path, cred, true);
+          }));
+          progress.receipts.push({
+            path: file.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
+            uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this._revision,
+          });
+          progress.committedGroupSequence++;
+          progress.committedPathCount++;
+          progress.committedOps++;
+          continue;
         }
         // A name a delegation's holder made is the caller's, as a create of
         // its own would make it (creationAttrs): its owner, and a setgid
@@ -9165,6 +9245,26 @@ export class SqliteVFS {
               });
               progress.committedGroupSequence++;
               progress.committedPathCount += record.type === 'rename' ? 2 : 1;
+              progress.committedOps++;
+              break;
+            }
+            case 'call': {
+              // A call observes everything the stream wrote before it.
+              phase = 'publish';
+              endLeading();
+              flushGroup();
+              flushDirectories();
+              options.admit?.();
+              const call = record.call;
+              asCaller(() => {
+                if (call.call === 'mkdir') this.mkdir(call.path, { mode: call.mode }, cred);
+                else if (call.call === 'unlink') this.unlink(call.path, cred);
+                else if (call.call === 'rmdir') this.rmdir(call.path, cred);
+                else this.symlink(call.target, call.path, cred);
+              });
+              progress.committedGroupSequence++;
+              progress.committedPathCount++;
+              progress.committedOps++;
               break;
             }
             case 'batch-end':
@@ -9193,6 +9293,7 @@ export class SqliteVFS {
           code: 'ERR_WRITE_BATCH_STREAM',
           phase,
           message: this.errorMessage(error),
+          ...(errnoOf(error) === undefined ? {} : { errno: errnoOf(error) }),
         },
       };
     } finally {
@@ -11247,6 +11348,12 @@ function subtreeWhere(
     ? { sql: `${column} > ?`, params: [after] }
     : { sql: `${column} > ? AND ${column} < ?`, params: [after, below] };
   return options.withRoot ? { sql: `(${column} = ? OR (${under.sql}))`, params: [root, ...under.params] } : under;
+}
+
+/** An error's errno (an `E…` code), if it carries one. */
+function errnoOf(error: unknown): string | undefined {
+  const code = typeof error === 'object' && error !== null ? (error as { code?: unknown }).code : undefined;
+  return typeof code === 'string' && /^E[A-Z0-9]+$/.test(code) ? code : undefined;
 }
 
 /**
