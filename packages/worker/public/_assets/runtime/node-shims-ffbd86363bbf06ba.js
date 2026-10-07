@@ -10879,7 +10879,7 @@ const __processMod = {
     throw new __ProcessExit(exitCode);
   },
   platform: "linux", arch: "x64",
-  version: "v22.19.0", versions: {"node":"22.19.0","v8":"12.4.254.21","modules":"127"},
+  version: "v22.22.3", versions: {"node":"22.22.3","v8":"12.4.254.21-node.56","modules":"127"},
   features: Object.freeze({
     inspector: false,
     debug: false,
@@ -14103,6 +14103,29 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
     return __esmLoad(resolution);
   });
 };
+
+// The command line's preloads, before the program, as Node runs them
+// (pre_execution.js loadPreloadModules, then run_main.js
+// runEntryPointWithESMLoader): `-r` modules required from the working
+// directory in order, then `--import` ones imported from it, each awaited.
+async function __nimbusPreload() {
+  const fromDir = String(cwd || "/home/user").replace(/^\/+/, "");
+  for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir);
+  const imports = __nimbusNodeCommandLine?.import ?? [];
+  if (imports.length === 0) return;
+  const parentUrl = builtins.url.pathToFileURL("/" + fromDir + "/").href;
+  for (const specifier of imports) await globalThis.__nimbusDynamicImport(parentUrl, String(specifier));
+}
+
+// `node -p`: its code returns the eval's completion value (core
+// runtime/node-eval.ts), printed when the process exits by the console.log the
+// code left in place (Node's runScriptInContext). Otherwise the entry's own result.
+function __nimbusEntryOutcome(result) {
+  if (__nimbusNodeCommandLine?.print !== true) return result;
+  const log = __consoleMod.log;
+  __processMod.on("exit", () => { log(result); });
+  return undefined;
+}
 
 // Node's import.meta.resolve, synchronous as in Node: the URL a specifier
 // names, even for a file or directory that will not load.

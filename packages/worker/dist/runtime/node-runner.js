@@ -69,7 +69,7 @@ export async function runFresh(facetMgr, code, opts) {
     // their PID accounting assumes a single foreground exec.
     const wantsLongRunning = opts.forceLongRunning ||
         // Node's options are its execArgv now, not its argv (node-cli.ts).
-        isLongRunningInvocation([...(opts.execArgv ?? []), ...args]) ||
+        isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
         (!opts.skipSpawn && opts.launchesServer === true);
     if (!wantsLongRunning) {
         // Short path: fresh-isolate-per-call via facetMgr.exec.
@@ -126,9 +126,7 @@ export async function runFresh(facetMgr, code, opts) {
             callerPid: opts.callerPid,
             invokerPid: opts.invokerPid,
             bundleProfile: opts.bundleProfile,
-            ...(opts.execArgv ? { execArgv: opts.execArgv } : {}),
-            ...(opts.conditions ? { conditions: opts.conditions } : {}),
-            ...(opts.eval !== undefined ? { eval: opts.eval } : {}),
+            ...(opts.node ? { node: opts.node } : {}),
         });
     }
     catch (e) {

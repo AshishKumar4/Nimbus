@@ -512,6 +512,20 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
         // this same visited set and byte budget before any optional enrichment.
         // A tool config is not one (RequiredModuleRoot.config): phase 2's first.
         for (const root of requiredRoots ?? []) {
+            if ('preload' in root) {
+                if (isFacetProvided(root.specifier))
+                    continue;
+                const resolved = root.preload === 'require'
+                    ? (await resolveStaticDependency(root.specifier, cwdStripped))?.resolved
+                    : await resolveDynamicImport(root.specifier, cwdStripped);
+                // Run before the entry, it is as much an entry: its own import()s are required too.
+                // One that does not resolve fails in the process, as Node's does.
+                if (resolved)
+                    await addFile(resolved, policy === undefined);
+                if (closureExceeded || declined)
+                    break;
+                continue;
+            }
             const path = stripLeadingSlashes(root.path);
             if (root.config && root.text === undefined) {
                 configRoots.add(path);

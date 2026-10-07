@@ -10,9 +10,9 @@
  * ROLLDOWN_FACET_BUILD_ID is a content-hash prefix, ROLLDOWN_FACET_SHA256 the
  * digest every fetch is verified against.
  *
- * Size: 602.67 KiB
+ * Size: 602.57 KiB
  */
 
-export const ROLLDOWN_FACET_ASSET_PATH: string = "/_assets/runtime/rolldown-facet-35a5ed94fc11f883.js";
-export const ROLLDOWN_FACET_BUILD_ID: string = "35a5ed94fc11f883";
-export const ROLLDOWN_FACET_SHA256: string = "35a5ed94fc11f8833b9e986321e037b04052e978ea5b5ed8f53d102bc33086ed";
+export const ROLLDOWN_FACET_ASSET_PATH: string = "/_assets/runtime/rolldown-facet-16f06cb171834c71.js";
+export const ROLLDOWN_FACET_BUILD_ID: string = "16f06cb171834c71";
+export const ROLLDOWN_FACET_SHA256: string = "16f06cb171834c71243e10eb00e7eccc3c3b3452230bc1af34190c1dc58e14ab";

@@ -104,12 +104,22 @@ export interface RequiredModuleRoot {
     config?: boolean;
 }
 /**
+ * A module the command line preloads (`node -r`, `--import`), as it named
+ * it: resolved from the working directory as the process resolves it there
+ * (a require, or an import()), and walked as a required root before the
+ * entry runs it.
+ */
+export interface PreloadModuleRoot {
+    preload: 'require' | 'import';
+    specifier: string;
+}
+/**
  * Resolve the complete dependency graph starting from entry code.
  * `conditions`: the program's own (`node --conditions`), beside Node's, for
  * `require` and `import` alike, as the process resolves under them.
  */
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot>, conditions?: readonly string[]): Promise<PrefetchOutcome>;
-export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot>, conditions?: readonly string[]): Promise<DependencyClosureOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile?: string, maxBundleBytes?: number, progress?: WalkProgress, policy?: undefined, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<PrefetchOutcome>;
+export declare function prefetchForRequire(vfs: RequireFs, entryCode: string, cwd: string, entryFile: string | undefined, maxBundleBytes: number | undefined, progress: WalkProgress | undefined, policy: DependencyClosurePolicy, requiredRoots?: Iterable<RequiredModuleRoot | PreloadModuleRoot>, conditions?: readonly string[]): Promise<DependencyClosureOutcome>;
 /**
  * The file a deferral a dependency closure reported (PrefetchResult.deferred)
  * loads, or null; resolved as the walk resolves its own, staging nothing:
