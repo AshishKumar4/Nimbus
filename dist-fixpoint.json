@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "5901ab4438dce5adb8112b7c0a43ebeaaf70b7330e6697b0fb8e08cca47f02d6",
+  "fingerprint": "360e14e54febcb2370167338db4b9095fa8e257d3fc6cf083dd8b67904a20997",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1864,7 +1864,7 @@
     "packages/worker/dist/git-bundle.generated.js": "bcd2c33577fcc47426a2fb4eeee342b0a5faaa00bd42eed4543bf5d1fb1ddd32",
     "packages/worker/dist/git/commands.d.ts": "e03d2721623f44d56f3907980cec1ecb17e86f6b994345fd84b1379a904d48eb",
     "packages/worker/dist/git/commands.d.ts.map": "510177b52cb04f60bbf6216acb98068cb825e89880267a21d3c5c1abc38d8bc4",
-    "packages/worker/dist/git/commands.js": "78d86a769ea0abfdc983da1814e2d513bde2fd4bb7f5edfce748d7bf2e07f0e8",
+    "packages/worker/dist/git/commands.js": "4294e8b8ce0a5173891d01d635b2faa8bb30d106c102bb8ccd1645aefe8b3f0f",
     "packages/worker/dist/git/network-facet.d.ts": "c7b6fcf360c1d3b6ce0d1892a7a31a5c046bbb1066866f55593411145a57036f",
     "packages/worker/dist/git/network-facet.d.ts.map": "d5031e34a28ce816c96d7ddf50a478880e14b21d097587a7f56c35d4ef282980",
     "packages/worker/dist/git/network-facet.js": "64faafea8c27394ebc7344681ed8b99325cd7a9a55b1928b9d5e389f77de82cc",
@@ -2503,7 +2503,7 @@
     "packages/worker/src/facets/wasm-swap-registry.ts": "28babe15f4a0aeb0682c0947d8e7fdce9834384967e7ef98fab984b808879906",
     "packages/worker/src/facets/ws-terminal.ts": "3a04326928698a0a6d5978ac64aecf059d785a3b390ae73e2cb1e83156c0c6b3",
     "packages/worker/src/git-bundle.generated.ts": "e3d64e53e093c870822cd3f72c5f59155f62b378f0acd08503164e6a23cf4000",
-    "packages/worker/src/git/commands.ts": "57a4b17e67a4b11147974a9c418d00a2c98e623d1e38a940f3506ec2d02217dd",
+    "packages/worker/src/git/commands.ts": "ce051e9f8159a7baf97c57e7be6e4c1ef184c62a66e6bc091f9c68985b96c07f",
     "packages/worker/src/git/network-facet.ts": "129f4144213c609e4f84c0405912dd536bfc00fb97c238089f13b81bca72c40f",
     "packages/worker/src/git/pack/byte-lru.ts": "8c11a8c87f9d9d060d32e6df3d068727a093fa32acbb9735a7c2af6abbee83f3",
     "packages/worker/src/git/pack/clone.ts": "8bea6d21d1815eaae0c449fab5364767b0c2de1ebfe80d7da44748ada98ba9d1",
