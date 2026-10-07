@@ -61,11 +61,15 @@ export async function residentGuest({ refuse = () => false } = {}) {
         throw acrossRpc(Object.assign(new Error('ENOSPC: no space left on device, write'), { code: 'ENOSPC' }));
       }
       try {
+        if (globalThis.__guestTrace) globalThis.__guestTrace.push(op);
         const value = await dispatch({ op, args, pid });
         const opened = /** @type {{ path?: string, id?: number } | undefined} */ (op === 'fsOpen' ? value : undefined);
         if (opened && refuse(String(opened.path))) refusedHandles.add(opened.id);
         return value;
-      } catch (error) { throw acrossRpc(error); }
+      } catch (error) {
+        if (globalThis.__guestTrace) globalThis.__guestTrace.push(`${op}!${error?.code ?? error?.message}`);
+        throw acrossRpc(error);
+      }
     };
   }
   // What session/rpc.ts answers itself rather than through the op table.
