@@ -21,7 +21,7 @@ const git = (args, input) => {
 };
 const repoOf = (url) => url.replace(/^nimbus::/, '');
 
-/** @type {import('../../../packages/worker/src/git/remote-helper.ts').RemoteEngine} */
+/** @type {import('../../../packages/worker/src/git/engine.ts').RemoteEngine} */
 const engine = {
   async listRefs({ url }) {
     const refs = [];

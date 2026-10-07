@@ -21,12 +21,6 @@
 
 import type { RemoteAuth, ListRefsResult, FetchPackResult, PushCommand, PushPackResult, RemoteEngine } from './engine.js';
 
-// Keep the helper's public type surface while the engine owns one contract.
-export type {
-  RemoteAuth, RemoteRef, ListRefsRequest, ListRefsResult,
-  FetchPackRequest, FetchPackResult, PushCommand, PushPackRequest, PushPackResult,
-  RemoteEngine,
-} from './engine.js';
 
 /** What the helper asks of the repository it serves, through git itself. */
 export interface LocalGit {
