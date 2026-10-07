@@ -67,7 +67,7 @@ try {
   hostGit(work, ['clone', '-q', '--depth', '1', 'file://' + join(served, 'repo.git'), host]);
   try {
     const rows = [];
-    for (const where of ['sqlite', 'mount']) {
+    for (const where of ['mount', 'sqlite']) {
       const harness = createSqliteVfsTestHarness();
       // Its own filesystem identity: a device the session's engine is not (engineKey tells them apart by it).
       const engine = new SqliteVFS(harness.sql, harness.ctx, 'mounted-data');
