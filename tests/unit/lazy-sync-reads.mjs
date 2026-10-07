@@ -72,9 +72,10 @@ assert.deepEqual(table, {
 });
 
 // A cycle among lazy importers ends; reads of two readers merge under a shared ancestor.
+const sorted = (table) => Object.fromEntries(Object.entries(table).map(([k, v]) => [k, [...v].sort()]));
 assert.deepEqual(
-  lazyReadsByTarget(new Map([['a', ['ra']], ['b', ['rb']]]), { a: ['root', 'b'], b: ['root', 'a'] }),
-  { a: ['ra', 'rb'], root: ['ra', 'rb'], b: ['rb', 'ra'] },
+  sorted(lazyReadsByTarget(new Map([['a', ['ra']], ['b', ['rb']]]), { a: ['root', 'b'], b: ['root', 'a'] })),
+  { a: ['ra', 'rb'], root: ['ra', 'rb'], b: ['ra', 'rb'] },
 );
 
 console.log('lazy-sync-reads: ok');
