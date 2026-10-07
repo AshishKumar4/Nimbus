@@ -37,6 +37,10 @@ export interface WorkerCode {
     compatibilityDate: string;
     compatibilityFlags?: string[];
     allowExperimental?: boolean;
+    limits?: {
+        cpuMs?: number;
+        subRequests?: number;
+    };
     mainModule: string;
     modules: Record<string, ModuleContent>;
     env?: Record<string, unknown>;

@@ -61,6 +61,7 @@ import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { getCtxExports, hostRoute } from '@nimbus-sh/fabric/composition.js';
 import { supervisorBindingProps, supervisorLoaderKey } from '@nimbus-sh/fabric/supervisor-props.js';
 import { deleteFacetStorage } from '@nimbus-sh/fabric/workerd-facet-host.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { buildFsSnapshot, generateFsShimModuleCode, generateFsPromisesShimModuleCode, generateSyntheticModuleCode, } from './real-vite-fs-shim.js';
 import { HmrBridge, generateWsShimModuleCode, generateChokidarShimModuleCode, } from './real-vite-hmr.js';
 import { stripLeadingSlashes } from '@nimbus-sh/core/vfs/path.js';
@@ -750,7 +751,7 @@ export class CirrusReal {
         const stableLoaderId = supervisorLoaderKey(`${ctx.id.toString()}:cirrus-real-vite:${REAL_VITE_VERSION}:${pid}${this.network.id ? `:${this.network.id}` : ''}`, supervisorProps);
         const facetName = 'cirrus-real-vite';
         try {
-            const worker = this.env.LOADER.get(stableLoaderId, async () => ({
+            const worker = this.env.LOADER.get(stableLoaderId, async () => applyFacetLimits('process', {
                 compatibilityDate: CF_COMPAT_DATE,
                 compatibilityFlags: REAL_VITE_COMPAT_FLAGS,
                 mainModule: 'main.js',
@@ -809,7 +810,7 @@ export class CirrusReal {
             // env-var check (the flag is invisible from JS at runtime).
             let CirrusRealViteClass = null;
             try {
-                CirrusRealViteClass = worker.getDurableObjectClass?.('CirrusRealVite');
+                CirrusRealViteClass = worker.getDurableObjectClass?.('CirrusRealVite', { limits: facetLimits('process') });
             }
             catch (cls) {
                 // Caller-side throw means the method exists but the class

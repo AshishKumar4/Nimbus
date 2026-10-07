@@ -29,6 +29,7 @@ import { supervisorEntrypoint, supervisorEntrypointName, stagedBootAssembler } f
 import { hostNamespaceBinding, hostOpDispatch } from './host-dispatch.js';
 import { innerDoIdFromName } from './inner-do-env.js';
 import { assertModuleMapWithinCodeLimit } from './budgets.js';
+import { applyFacetLimits } from './facet-limits.js';
 /**
  * `ctx.exports` — workerd's loopback bag, which the installed
  * @cloudflare/workers-types does not put on `ExecutionContext`. Probed rather
@@ -336,7 +337,7 @@ function _resolveStubInCurrentContext(outerLoader, key) {
     const code = _loadedCodesGet(key);
     if (!code)
         return null;
-    return outerLoader.get(key, async () => code);
+    return outerLoader.get(key, async () => applyFacetLimits('worker', code));
 }
 /** Hop 1: env.LOADER.{load,get} forwarded to the outer loader. */
 export class NimbusLoaderRPC extends WorkerEntrypoint {
@@ -371,7 +372,7 @@ export class NimbusLoaderRPC extends WorkerEntrypoint {
         // Validate by loading once in THIS context (fails fast on bad code).
         // The stub is discarded; downstream calls re-load fresh in their
         // own context.
-        outerLoader.load(code);
+        outerLoader.load(applyFacetLimits('worker', code));
         const key = _genStubId();
         _loadedCodesPut(key, code);
         const ctxExports = shimCtxExports(this.ctx);
@@ -480,8 +481,8 @@ export class NimbusLoadedEntrypoint extends WorkerEntrypoint {
                 assertModuleMapWithinCodeLimit(assembled.modules ?? {});
                 const supervisorBinding = await this._supervisorBinding(props);
                 if (!supervisorBinding)
-                    return assembled;
-                return { ...assembled, env: { SUPERVISOR: supervisorBinding } };
+                    return applyFacetLimits('process', assembled);
+                return applyFacetLimits('process', { ...assembled, env: { SUPERVISOR: supervisorBinding } });
             });
         }
         else {

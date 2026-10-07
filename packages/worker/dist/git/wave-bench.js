@@ -13,6 +13,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import * as workers from 'cloudflare:workers';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
+import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
@@ -169,13 +170,13 @@ export async function runWaveBench(ctx, env, options, session) {
             let worker;
             let entrypoint;
             try {
-                worker = env.LOADER.load({
+                worker = env.LOADER.load(applyFacetLimits('git', {
                     compatibilityDate: CF_COMPAT_DATE,
                     compatibilityFlags: [...GUEST_COMPAT_FLAGS],
                     mainModule: 'w7-bench-producer.js',
                     modules: { 'w7-bench-producer.js': PRODUCER_SOURCE },
                     env: { SUPERVISOR: supervisor },
-                });
+                }));
                 entrypoint = worker.getEntrypoint('Producer');
                 const result = await entrypoint.run({
                     root: options.root,

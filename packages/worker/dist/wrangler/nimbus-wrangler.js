@@ -14,6 +14,8 @@
  * Cloudflare Workers runtime, not a simulation.
  */
 import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
 import { CF_COMPAT_DATE } from '@nimbus-sh/core/constants.js';
 import { registerInnerDoClass, clearInnerDoClasses, abortInnerDoFacets } from '@nimbus-sh/fabric/inner-do-registry.js';
@@ -22,6 +24,7 @@ import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
+import { parseWranglerJsonc } from './wrangler-config.js';
 // ── Proxy helpers ──────────────────────────────────────────────────────
 /**
  * Rewrite a Location header emitted by the inner Worker so that, when
@@ -208,50 +211,10 @@ export class NimbusWrangler {
         for (const p of jsonPaths) {
             if (this.vfs.exists(p)) {
                 try {
-                    let text = this.vfs.readFileString(p);
-                    // Strip JSONC comments while preserving content inside strings.
-                    // Walk character by character, skip // and /* */ outside of quotes.
-                    let cleaned = '';
-                    let i = 0;
-                    let inString = false;
-                    while (i < text.length) {
-                        if (inString) {
-                            if (text[i] === '\\') {
-                                cleaned += text[i] + (text[i + 1] || '');
-                                i += 2;
-                                continue;
-                            }
-                            if (text[i] === '"')
-                                inString = false;
-                            cleaned += text[i];
-                            i++;
-                        }
-                        else {
-                            if (text[i] === '"') {
-                                inString = true;
-                                cleaned += text[i];
-                                i++;
-                            }
-                            else if (text[i] === '/' && text[i + 1] === '/') {
-                                while (i < text.length && text[i] !== '\n')
-                                    i++;
-                            }
-                            else if (text[i] === '/' && text[i + 1] === '*') {
-                                i += 2;
-                                while (i < text.length - 1 && !(text[i] === '*' && text[i + 1] === '/'))
-                                    i++;
-                                i += 2;
-                            }
-                            else {
-                                cleaned += text[i];
-                                i++;
-                            }
-                        }
-                    }
-                    return JSON.parse(cleaned);
+                    return parseWranglerJsonc(this.vfs.readFileString(p));
                 }
                 catch (e) {
-                    this.onLog(`\x1b[33mWarning: could not parse ${p}: ${e?.message}\x1b[0m\n`);
+                    this.onLog(`\x1b[33mWarning: could not parse ${p}: ${errorText(e)}\x1b[0m\n`);
                 }
             }
         }
@@ -263,7 +226,7 @@ export class NimbusWrangler {
                 return this.parseMinimalToml(text);
             }
             catch (e) {
-                this.onLog(`\x1b[33mWarning: could not parse ${tomlPath}: ${e?.message}\x1b[0m\n`);
+                this.onLog(`\x1b[33mWarning: could not parse ${tomlPath}: ${errorText(e)}\x1b[0m\n`);
             }
         }
         return null;
@@ -426,14 +389,14 @@ export class NimbusWrangler {
             // (inner-do-env.ts): the bundle's first import replaces it in the env
             // every handler, entrypoint and object of the isolate sees.
             const { mainModule, modules, classesEntrypoint } = innerWorkerModules(bundledCode, doBindings.map((b) => b.name));
-            const worker = this.loaderEnv.LOADER.load({
+            const worker = this.loaderEnv.LOADER.load(applyFacetLimits('worker', {
                 compatibilityDate: wrangCompatDate,
                 compatibilityFlags: wrangCompatFlags,
                 mainModule,
                 modules,
                 env: this.buildInnerEnv(),
                 ...loaderOutbound(this.network),
-            });
+            }));
             if (classesEntrypoint !== null && !(await this.registerDoClasses(worker, classesEntrypoint, doBindings)))
                 return false;
             this.workerStub = worker.getEntrypoint();

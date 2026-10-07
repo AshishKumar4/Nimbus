@@ -21,6 +21,10 @@
  * writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
  * ```
  */
+/**
+ * Options for {@link buildNimbusWranglerConfig}.
+ */
+import { MAX_FACET_CPU_MS } from './facet-limits.generated.js';
 export function defineNimbusConfig(config) {
     return config;
 }
@@ -69,6 +73,10 @@ export function buildNimbusWranglerConfig(opts) {
         throw new Error('@nimbus-sh/config: `name` is required');
     }
     const compatDate = opts.compatibilityDate ?? '2026-09-26';
+    const cpuMs = opts.cpuMs ?? MAX_FACET_CPU_MS;
+    if (!Number.isInteger(cpuMs) || cpuMs < MAX_FACET_CPU_MS) {
+        throw new Error(`@nimbus-sh/config: hosting Worker limits.cpu_ms=${cpuMs} is below facet policy maximum cpuMs=${MAX_FACET_CPU_MS}`);
+    }
     const prefix = opts.r2BucketPrefix ?? opts.name;
     const runtimeCache = opts.runtimeCache ?? 'shared';
     const runtimeCacheMode = typeof runtimeCache === 'string' ? runtimeCache : runtimeCache.mode;
@@ -84,7 +92,7 @@ export function buildNimbusWranglerConfig(opts) {
         compatibility_date: compatDate,
         compatibility_flags: REQUIRED_FLAGS.filter(([, onByDate]) => compatDate < onByDate).map(([flag]) => flag),
         // Shell commands run in the session DO; the platform's 30 s default kills long ones.
-        limits: { cpu_ms: 300_000 },
+        limits: { cpu_ms: cpuMs },
         assets: {
             directory: 'node_modules/@nimbus-sh/worker/public',
             binding: 'ASSETS',

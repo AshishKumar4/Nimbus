@@ -1,5 +1,6 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { ROLLDOWN_FACET_ASSET_PATH, ROLLDOWN_FACET_BUILD_ID, ROLLDOWN_FACET_SHA256 } from '../rolldown-facet-artifact.generated.js';
 import { fetchStagedText, stagedAsset } from '../runtime/staged-source.js';
@@ -182,8 +183,8 @@ async function buildFacet(ctx, env, id) {
     const assets = Reflect.get(Object(env), 'ASSETS');
     if (!assets || typeof assets.fetch !== 'function')
         throw new Error('Nimbus: env.ASSETS unavailable for the build facet');
-    const worker = await loader.get(id, async () => buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets })));
-    const facetClass = worker.getDurableObjectClass('BuildFacet');
+    const worker = await loader.get(id, async () => applyFacetLimits('build', buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets }))));
+    const facetClass = worker.getDurableObjectClass('BuildFacet', { limits: facetLimits('build') });
     return ctx.facets.get(id, async () => ({ class: facetClass }));
 }
 /**

@@ -21,9 +21,6 @@
  * writeFileSync('wrangler.jsonc', JSON.stringify(config, null, 2));
  * ```
  */
-/**
- * Options for {@link buildNimbusWranglerConfig}.
- */
 export type NimbusRuntimeName = 'node' | 'bun' | 'npm' | 'git' | 'python' | 'ruby' | 'clang' | 'shell' | (string & {});
 export interface NimbusSandboxProfile {
     root?: string;
@@ -59,6 +56,8 @@ export declare function defineNimbusConfig<T extends NimbusConfig>(config: T): T
 export interface BuildWranglerOptions {
     /** Worker name. Becomes the deployed-Worker name and the prefix for derived R2 buckets. */
     name: string;
+    /** Hosting Worker CPU budget. Must accommodate every fabric facet kind. */
+    cpuMs?: number;
     /**
      * Compatibility date. Default `2026-09-26`. A date keeps every other
      * behavior it selects; the config names each flag Nimbus needs that the

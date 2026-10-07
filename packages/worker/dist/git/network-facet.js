@@ -27,6 +27,7 @@
 import { loaderOutbound } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { getCtxExports } from '@nimbus-sh/fabric/composition.js';
 import { beginLoaderFetch } from '@nimbus-sh/fabric/budgets.js';
+import { applyFacetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { supervisorBindingProps } from '@nimbus-sh/fabric/supervisor-props.js';
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '@nimbus-sh/platform/limits.js';
@@ -669,7 +670,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 // The git server is reached through the workspace's egress, when it has one.
                 ...loaderOutbound(network),
             });
-            const loadedWorker = env.LOADER.load(facetCode(supervisorBinding));
+            const loadedWorker = env.LOADER.load(applyFacetLimits('git', facetCode(supervisorBinding)));
             worker = loadedWorker;
             entrypoint = loadedWorker.getEntrypoint();
             if (opts.op === 'clone') {
@@ -692,7 +693,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                     fence: rotateMutationOwner === undefined ? null : () => {
                         const binding = bindingFor(rotateMutationOwner());
                         const endLoad = beginLoaderFetch(ctx, `git-network:${crypto.randomUUID()}`);
-                        const loaded = env.LOADER.load(facetCode(binding));
+                        const loaded = env.LOADER.load(applyFacetLimits('git', facetCode(binding)));
                         const fresh = loaded.getEntrypoint();
                         fencedLoads.push({ binding, worker: loaded, entrypoint: fresh, endFetch: endLoad });
                         facets.entrypoint = fresh;

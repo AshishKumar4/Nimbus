@@ -1,4 +1,5 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { EsbuildService, generateEsbuildFacetRuntimeSource, generateTransformFacetRuntimeSource, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { ESBUILD_NAME_GLOBAL_SHIM } from '@nimbus-sh/core/_shared/esbuild-facet-shim.js';
@@ -120,9 +121,9 @@ async function esbuildFacet(ctx, env) {
             fetchEsbuildCliRunner(assetsEnv),
             fetchOxcFacetRuntime(assetsEnv),
         ]);
-        return esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRuntime);
+        return applyFacetLimits('esbuild', esbuildFacetWorkerCode(wasm, jsFnBody, cliRunner, transformRuntime));
     });
-    const facetClass = worker.getDurableObjectClass('EsbuildFacet');
+    const facetClass = worker.getDurableObjectClass('EsbuildFacet', { limits: facetLimits('esbuild') });
     return ctx.facets.get(ESBUILD_FACET_WORKER_ID, async () => ({ class: facetClass }));
 }
 /**

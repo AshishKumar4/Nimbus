@@ -2,6 +2,7 @@ import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js
 import { generateTransformFacetRuntimeSource, transformSlices, } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import { OXC_WASM_BUILD_ID } from '../oxc-wasm-artifact.generated.js';
@@ -83,9 +84,9 @@ async function oxcFacet(ctx, env) {
     const worker = await loader.get(OXC_FACET_WORKER_ID, async () => {
         const assetsEnv = { ASSETS: assets };
         const [wasm, runtime] = await Promise.all([fetchOxcWasmBytes(assetsEnv), fetchOxcFacetRuntime(assetsEnv)]);
-        return oxcFacetWorkerCode(wasm, runtime);
+        return applyFacetLimits('transform', oxcFacetWorkerCode(wasm, runtime));
     });
-    const facetClass = worker.getDurableObjectClass('OxcFacet');
+    const facetClass = worker.getDurableObjectClass('OxcFacet', { limits: facetLimits('transform') });
     return ctx.facets.get(OXC_FACET_WORKER_ID, async () => ({ class: facetClass }));
 }
 /**
