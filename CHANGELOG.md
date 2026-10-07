@@ -39,8 +39,8 @@ published independently in the `@nimbus-sh` npm scope.
   reads requests and each resolved as the loader will evaluate it (a static
   import under `require`'s conditions, `import()` under `import`'s), outside
   the launch's map, breadth first. The bound, 4096 files and 64 MiB of raw
-  bytes, is charged as each fetch is issued and before its bytes are read,
-  manifests included; past it nothing more is fetched and the `import()`
+  bytes, is charged as each fetch is issued and as each range of it is
+  read, manifests included; past it nothing more is fetched and the `import()`
   fails with `ERR_NIMBUS_PREFETCH_BOUND` rather than load on part of its
   closure. Its reads are its own: a file the program itself failed to
   read stays in the program's exit report. A floating `import(...).then(...)`
