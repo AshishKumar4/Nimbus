@@ -222,6 +222,7 @@ export class NimbusWorkspace {
             if (options.facets) {
                 registerWasmRuntimes({
                     facets: options.facets,
+                    sql: options.sql,
                     vfs,
                     filesystem,
                     registry,
@@ -620,8 +621,15 @@ function registerWasmRuntimes(deps) {
             .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
             .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
-        [GIT_RUNNER]: lazy(async () => (await import('../runtime/git-runner.js'))
-            .makeGitRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem })),
+        [GIT_RUNNER]: lazy(async () => {
+            const [{ makeGitRunnerFactory }, { sqliteGitFsmonitorState }] = await Promise.all([
+                import('../runtime/git-runner.js'), import('../runtime/git-fsmonitor.js'),
+            ]);
+            return makeGitRunnerFactory({
+                facets: deps.facets, filesystem: deps.filesystem,
+                fsmonitorState: sqliteGitFsmonitorState(deps.sql, deps.filesystem.namespace),
+            });
+        }),
     };
     for (const [key, factory] of Object.entries(runners)) {
         deps.runtimes.registerRunner(key, factory);

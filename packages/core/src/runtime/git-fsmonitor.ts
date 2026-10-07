@@ -94,7 +94,9 @@ export function makeGitFsmonitor(state?: GitFsmonitorState): {
       const work = (async () => {
       if (prior) await prior.catch(() => {});
       const cursor = /^(0|[1-9]\d*)$/.test(token) && Number.isSafeInteger(Number(token)) ? Number(token) : -1;
-      let history = trusted.get(key) ?? (state ? restore(await state.load(key)) : undefined);
+      // Durable state is authoritative: another helper/host may have issued
+      // this token since our in-memory cache was last touched.
+      let history = state ? restore(await state.load(key)) : trusted.get(key);
       if (history) trusted.set(key, history);
       const before = history ? serialize(history) : null;
       const issued = cursor >= 0 ? history?.tokens.get(cursor) : undefined;

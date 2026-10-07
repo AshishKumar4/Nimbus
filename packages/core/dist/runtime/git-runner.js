@@ -39,7 +39,7 @@ const GIT_SYSTEM_CONFIG = 'share/git/gitconfig';
  */
 const PASSED_ENV = /^(GIT_|HOME$|USER$|LOGNAME$|TZ$|LANG$|LC_|EMAIL$|NO_COLOR$)/;
 export function makeGitRunnerFactory(deps) {
-    const fsmonitor = makeGitFsmonitor();
+    const fsmonitor = makeGitFsmonitor(deps.fsmonitorState);
     return function gitRunnerFactory(manifest, installRoot, binName, binKind) {
         if (binKind === 'fsmonitor')
             return async (ctx) => {
@@ -48,7 +48,11 @@ export function makeGitRunnerFactory(deps) {
                     return 2;
                 }
                 try {
-                    const bytes = await fsmonitor.query({ fs: ctx.vfs.process, cwd: ctx.cwd, cred: ctx.cred, token: ctx.args[1] });
+                    const mounts = deps.filesystem.mounts?.(ctx.cred);
+                    const bytes = await fsmonitor.query({
+                        fs: ctx.vfs.process, cwd: ctx.cwd, cred: ctx.cred, token: ctx.args[1],
+                        mounts: mounts ? mounts.filter((mount) => mount.mountPoint !== '/' || mount.type !== 'nimbus-sqlite').map((mount) => mount.mountPoint) : null,
+                    });
                     await writeOut(ctx.stdout, bytes);
                     return 0;
                 }

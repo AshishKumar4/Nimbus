@@ -28,9 +28,11 @@ import type { RuntimeManifest } from './runtime-manifest.js';
 import type { Command } from '../substrate/lifo/commands/types.js';
 import type { FacetHost } from './facet-host.js';
 import { type NimbusFilesystemAuthority } from './os-contracts.js';
+import { type GitFsmonitorState } from './git-fsmonitor.js';
 export declare function makeGitRunnerFactory(deps: {
     facets: FacetHost;
     filesystem: NimbusFilesystemAuthority;
+    fsmonitorState?: GitFsmonitorState;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;
 export declare const GIT_RUNNER_PREAMBLE: string;
 //# sourceMappingURL=git-runner.d.ts.map
