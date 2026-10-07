@@ -50,6 +50,7 @@
 import { readFileSync, readdirSync } from 'node:fs';
 import { join, dirname } from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { parse, printParseErrorCode } from 'jsonc-parser';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
@@ -276,41 +277,14 @@ export function missingCapabilities(block) {
     .map((r) => `${r.binding} is absent — breaks ${r.breaks}`);
 }
 
+/** A wrangler config as wrangler reads it: jsonc-parser, trailing commas allowed, refused at its first error. */
 export function loadConfig(relPath, root = REPO_ROOT) {
-  // Bun parses JSONC natively; the repo's tooling is Bun throughout.
-  return JSON.parse(stripJsonc(readFileSync(join(root, relPath), 'utf8')));
-}
-
-/** Minimal JSONC → JSON so this module also runs under plain node. */
-function stripJsonc(text) {
-  let out = '';
-  let inString = false;
-  let inLine = false;
-  let inBlock = false;
-  for (let i = 0; i < text.length; i++) {
-    const c = text[i];
-    const next = text[i + 1];
-    if (inLine) {
-      if (c === '\n') { inLine = false; out += c; }
-      continue;
-    }
-    if (inBlock) {
-      if (c === '*' && next === '/') { inBlock = false; i++; }
-      continue;
-    }
-    if (inString) {
-      out += c;
-      if (c === '\\') { out += next ?? ''; i++; continue; }
-      if (c === '"') inString = false;
-      continue;
-    }
-    if (c === '"') { inString = true; out += c; continue; }
-    if (c === '/' && next === '/') { inLine = true; i++; continue; }
-    if (c === '/' && next === '*') { inBlock = true; i++; continue; }
-    out += c;
+  const errors = [];
+  const config = parse(readFileSync(join(root, relPath), 'utf8'), errors, { allowTrailingComma: true });
+  if (errors.length > 0) {
+    throw new SyntaxError(`${relPath}: ${printParseErrorCode(errors[0].error)} at offset ${errors[0].offset}`);
   }
-  // Trailing commas are legal in JSONC, not in JSON.
-  return out.replace(/,(\s*[}\]])/g, '$1');
+  return config;
 }
 
 /**

@@ -15,6 +15,7 @@
  */
 
 import { loaderOutbound, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { EsbuildService } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import type { VfsEvent, VfsEventEmitter } from '@nimbus-sh/core/vfs/events.js';
@@ -26,51 +27,9 @@ import { KvEmulator } from '../bindings/kv.js';
 import { D1Emulator } from '../bindings/d1.js';
 import { R2Emulator } from '../bindings/r2.js';
 import { hostRoute } from '@nimbus-sh/fabric/composition.js';
+import { parseWranglerJsonc, type WranglerConfig } from './wrangler-config.js';
 
 // ── Types ───────────────────────────────────────────────────────────────
-
-/**
- * Subset of wrangler.jsonc we actually understand. Unknown top-level
- * fields are ignored; known fields in WRANGLER_UNSUPPORTED_CONFIG_FIELDS
- * (in nimbus-session.ts) are warned about at call time.
- */
-interface WranglerConfig {
-  name?: string;
-  main?: string;
-  compatibility_date?: string;
-  compatibility_flags?: string[];
-  kv_namespaces?: { binding: string; id?: string; preview_id?: string }[];
-  d1_databases?: {
-    binding: string;
-    database_id?: string;
-    database_name?: string;
-    migrations_dir?: string;
-    preview_database_id?: string;
-  }[];
-  r2_buckets?: {
-    binding: string;
-    bucket_name?: string;
-    preview_bucket_name?: string;
-    jurisdiction?: string;
-  }[];
-  /** Inline env-vars (strings) delivered to the inner worker as env.<KEY>. */
-  vars?: Record<string, string>;
-  /**
-   * Service bindings. In the outer session the `service` field names
-   * another deployed Worker; here we honor it only if the outer env
-   * happens to have a field by the same name (i.e. wrangler dev --local
-   * with a companion worker). Otherwise we warn and leave undefined.
-   */
-  services?: { binding: string; service: string; entrypoint?: string }[];
-  /** Static assets directory + binding name. */
-  assets?: { directory?: string; binding?: string; [k: string]: any };
-  /** Worker Loader bindings. */
-  worker_loaders?: { binding: string }[];
-  /** Durable Object bindings. */
-  durable_objects?: { bindings?: { name: string; class_name: string; script_name?: string }[] };
-  /** DO migrations — informational; we don't apply them (facets auto-create SQLite). */
-  migrations?: any[];
-}
 
 export interface NimbusWranglerOptions {
   /** The workspace's network: the worker under development goes out through its egress. */
@@ -286,27 +245,9 @@ export class NimbusWrangler {
     for (const p of jsonPaths) {
       if (this.vfs.exists(p)) {
         try {
-          let text = this.vfs.readFileString(p);
-          // Strip JSONC comments while preserving content inside strings.
-          // Walk character by character, skip // and /* */ outside of quotes.
-          let cleaned = '';
-          let i = 0;
-          let inString = false;
-          while (i < text.length) {
-            if (inString) {
-              if (text[i] === '\\') { cleaned += text[i] + (text[i + 1] || ''); i += 2; continue; }
-              if (text[i] === '"') inString = false;
-              cleaned += text[i]; i++;
-            } else {
-              if (text[i] === '"') { inString = true; cleaned += text[i]; i++; }
-              else if (text[i] === '/' && text[i + 1] === '/') { while (i < text.length && text[i] !== '\n') i++; }
-              else if (text[i] === '/' && text[i + 1] === '*') { i += 2; while (i < text.length - 1 && !(text[i] === '*' && text[i + 1] === '/')) i++; i += 2; }
-              else { cleaned += text[i]; i++; }
-            }
-          }
-          return JSON.parse(cleaned);
-        } catch (e: any) {
-          this.onLog(`\x1b[33mWarning: could not parse ${p}: ${e?.message}\x1b[0m\n`);
+          return parseWranglerJsonc(this.vfs.readFileString(p));
+        } catch (e) {
+          this.onLog(`\x1b[33mWarning: could not parse ${p}: ${errorText(e)}\x1b[0m\n`);
         }
       }
     }
@@ -317,8 +258,8 @@ export class NimbusWrangler {
       try {
         const text = this.vfs.readFileString(tomlPath);
         return this.parseMinimalToml(text);
-      } catch (e: any) {
-        this.onLog(`\x1b[33mWarning: could not parse ${tomlPath}: ${e?.message}\x1b[0m\n`);
+      } catch (e) {
+        this.onLog(`\x1b[33mWarning: could not parse ${tomlPath}: ${errorText(e)}\x1b[0m\n`);
       }
     }
 
