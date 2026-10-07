@@ -59,7 +59,8 @@ import {
   type ResidentNamespace,
 } from '@nimbus-sh/core/runtime/wasi/resident-filesystem.js';
 import type { RuntimeFsBridge, RuntimeVfsDirEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
-import type { HolderSession } from '@nimbus-sh/core/runtime/wasi/delegation-holder.js';
+import type { ProcessFsSession } from '@nimbus-sh/core/_shared/process-fs-client.js';
+import type { WaveFence } from '@nimbus-sh/platform/wave-writer.js';
 import { WASI_RESIDENT_STORE_BYTES } from '@nimbus-sh/platform/limits.js';
 
 // The resident store (worker vfs/facet-resident-store.ts FACET_RESIDENT_STORE_SOURCE),
@@ -248,21 +249,26 @@ function __wasiStartResident(sup: WasiSupervisorStub, cred: WasiCred): ResidentF
   };
   // The process holds the subtrees it writes (delegation-holder.ts): its
   // creates, writes, mkdirs, unlinks and renames there are decided here and
-  // sent as one ordered wave under the delegation's lease.
+  // logged into its filesystem client, which sends them as numbered waves.
   const waves = sup as unknown as WaveSender;
-  const holderSession: HolderSession = {
-    acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
-    release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
-    awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
-    recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
-    sendWave: (stream, owner) => waves.writeBatchStream(stream, undefined, owner),
+  const session: ProcessFsSession = {
+    // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
+    openWriter: () => waves.openWaveWriter(),
+    writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
+    grants: {
+      acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => { await authority.releaseExclusiveMutation(owner); },
+      awaitRecall: async (owner, waitMs) => await authority.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => { await authority.recalled(owner, kind); },
+    },
   };
-  return residentFilesystem(authority, booting, { session: holderSession, isHomeRoot: isHomeDirectory });
+  return residentFilesystem(authority, booting, { session, isHomeRoot: isHomeDirectory });
 }
 
-/** A wave sent under a named lease (SupervisorRPC.writeBatchStream's third argument). */
+/** The stub's wave calls (SupervisorRPC.openWaveWriter, writeBatchStream). */
 interface WaveSender {
-  writeBatchStream(stream: ReadableStream<Uint8Array>, fence: undefined, owner: string): Promise<{ ok: boolean; error?: { message: string } }>;
+  openWaveWriter(): Promise<string | null>;
+  writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
 }
 
 /** Whether `key` is a home directory itself (`home/<name>`): never held, so the editor and shell there recall nothing. */

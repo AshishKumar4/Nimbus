@@ -3,8 +3,9 @@
  * A WASI process as a delegation's holder (P4a), through the resident
  * filesystem over a real session (SqliteVFS, ProcessFiles, its bridge):
  *   - a run that makes a directory and files in its project decides them
- *     locally (no round trip each), and the session has them, numbered as
- *     the process saw them, once the log is sent;
+ *     locally (no round trip each) once it holds the subtree, and the
+ *     session has them, numbered as the process saw them, once its
+ *     filesystem client has sent the log;
  *   - another caller's read waits for the holder to send (share), its write
  *     for the holder to send and give the subtree up (revoke), and the
  *     holder writes through after;
@@ -16,7 +17,7 @@ import assert from 'node:assert/strict';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { residentFilesystem } from '../../packages/core/src/runtime/wasi/resident-filesystem.ts';
-import { MAX_DELEGATIONS_PER_PROCESS } from '../../packages/core/src/runtime/wasi/delegation-holder.ts';
+import { MAX_DELEGATIONS_PER_PROCESS } from '../../packages/core/src/_shared/process-fs-client.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { withRecall } from '../../packages/core/src/vfs/recall.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
@@ -69,19 +70,25 @@ function session() {
     release: () => {},
   };
   const waves = [];
-  const holderSession = {
-    acquire: async (path, delegate) => bridge.acquireExclusiveMutation(path, { delegate }),
-    release: async (owner) => { bridge.releaseExclusiveMutation(owner); },
-    awaitRecall: (owner, waitMs) => bridge.awaitRecall(owner, waitMs),
-    recalled: async (owner, kind) => { bridge.recalled(owner, kind); },
-    sendWave: async (stream, owner) => {
-      const result = await bridge.writeStream(stream, { mutationOwner: owner });
+  // In process: nothing between the client and the session loses a call, so it fences nothing.
+  const processSession = {
+    openWriter: async () => null,
+    writeBatchStream: async (stream, _fence, owner) => {
+      const result = await bridge.writeStream(stream, owner === undefined ? {} : { mutationOwner: owner });
       waves.push(result);
       return result;
     },
+    grants: {
+      acquire: async (path, delegate) => bridge.acquireExclusiveMutation(path, { delegate }),
+      release: async (owner) => { bridge.releaseExclusiveMutation(owner); },
+      awaitRecall: (owner, waitMs) => bridge.awaitRecall(owner, waitMs),
+      recalled: async (owner, kind) => { bridge.recalled(owner, kind); },
+    },
   };
+  // A subtree is taken at its first mutation here, as P4a did.
   const fs = residentFilesystem(bridge, store, {
-    session: holderSession,
+    session: processSession,
+    grantAfter: 1,
     isHomeRoot: (key) => key.startsWith('home/') && !key.slice(5).includes('/'),
   });
   return { engine, kernel, filesystem, fs, waves };
@@ -105,11 +112,10 @@ async function create(fs, path, text) {
   const stats = s.fs.stats();
   assert.equal(stats.delegated.open ?? 0, 0, `the creates went to the session: ${JSON.stringify(stats.delegated)}`);
   assert.equal(stats.delegated.write ?? 0, 0);
-  assert.equal(s.waves.length, 0, 'the log was sent before anything observed it');
-  // Observed: sent, once, in one wave.
+  // Observed: everything sent, each wave taken.
   await s.fs.flush();
-  assert.equal(s.waves.length, 1);
-  assert.equal(s.waves[0].ok, true, JSON.stringify(s.waves[0].error));
+  assert.ok(s.waves.length > 0);
+  for (const wave of s.waves) assert.equal(wave.ok, true, JSON.stringify(wave.error));
   // The run ends: what it held is given back, and anyone reads it as decided.
   await s.fs.settle();
   assert.equal(s.filesystem.delegations.size, 0, 'the run ended holding a subtree');

@@ -132,6 +132,11 @@ export interface ProcessFsClientOptions {
    * now.
    */
   readonly released?: (root: string) => void;
+  /**
+   * Called first by every flush (a recall's too): the runtime logs what it
+   * still holds unlogged (a file's latest bytes), so the flush sends it.
+   */
+  readonly drain?: () => void;
 }
 
 export interface ProcessFsClient {
@@ -162,8 +167,12 @@ export interface ProcessFsClient {
   number(grant: ProcessFsGrant): number | undefined;
   /** Draw `bytes` of the storage `grant` reserved; false when it has too few left (the session decides). */
   draw(grant: ProcessFsGrant, bytes: number): boolean;
+  /** The grant holding `key` (held, not shared), without counting a mutation. */
+  held(key: string): ProcessFsGrant | undefined;
   /** Whether `key` is in a subtree the process holds or shares: what is decided there is not known elsewhere yet. */
   holds(key: string): boolean;
+  /** Whether any op is logged and not yet answered. */
+  pending(): boolean;
   stats(): ProcessFsStats;
 }
 
@@ -674,8 +683,14 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       held.bytesLeft -= bytes;
       return true;
     },
+    held(key) {
+      return heldGrant(key);
+    },
     holds(key) {
       return grants.some((grant) => !grant.ended && within(key, grant.root));
+    },
+    pending() {
+      return queue.length > 0 || inFlight !== null;
     },
     submit(op, submitOptions) {
       const acknowledged = submitOptions?.acknowledged === true;
@@ -700,6 +715,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return answer;
     },
     flush() {
+      options.drain?.();
       if (queue.length === 0 && inFlight === null) return Promise.resolve();
       if (idle === null) {
         let resolve!: () => void;
