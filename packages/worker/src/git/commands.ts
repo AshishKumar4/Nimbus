@@ -43,6 +43,7 @@ import { DirCache, NewEntries, comparePaths, type IndexEdit, type NewEntry } fro
 import { isValidRefName } from './worktree/refname.js';
 import { PairList, type PairSide } from './worktree/pairs.js';
 import { WorktreeRepo, configBool, type ObjectEngine, type ObjectWriter } from './worktree/repo.js';
+import type { SparseMatcher } from './pack/sparse.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex, type StatusChange } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
 import {
@@ -704,24 +705,35 @@ type GitFs = ReturnType<typeof createGitFs>;
  * reset, a merge), fetch what a partial clone lacks in two requests, as git
  * prefetches a checkout's blobs: the commits' root trees with their subtrees
  * (a tree:<depth> clone has neither), then every blob of those trees the
- * repository does not hold. Nothing is walked outside a partial clone.
+ * repository does not hold. In a sparse checkout (`sparse`), only the blobs
+ * the cone writes: git prefetches the entries it updates, never a
+ * skip-worktree one. Nothing is walked outside a partial clone.
  */
-async function prefetchCommits(git: CfGit, fs: GitFs, gitdir: string, commits: readonly string[], partial: (gitdir: string) => Promise<boolean>): Promise<void> {
+async function prefetchCommits(
+  git: CfGit, fs: GitFs, gitdir: string, commits: readonly string[], partial: (gitdir: string) => Promise<boolean>,
+  sparse: SparseMatcher | null = null,
+): Promise<void> {
   if (commits.length === 0 || !await partial(gitdir)) return;
   const cache = {};
   const roots: string[] = [];
   for (const oid of commits) roots.push((await git.readCommit({ fs, gitdir, oid, cache })).commit.tree);
   await fs.packs.prefetch(gitdir, roots);
   const blobs = new Set<string>();
-  const pending = [...roots];
+  const pending = roots.map((oid) => ({ oid, prefix: '' }));
   const seen = new Set<string>();
   while (pending.length > 0) {
-    const tree = pending.pop()!;
-    if (seen.has(tree)) continue;
-    seen.add(tree);
+    const { oid: tree, prefix } = pending.pop()!;
+    // A tree seen at one path is seen at another only outside a sparse checkout: its cone is by path.
+    const key = sparse === null ? tree : prefix + '\0' + tree;
+    if (seen.has(key)) continue;
+    seen.add(key);
     for (const entry of (await git.readTree({ fs, gitdir, oid: tree, cache })).tree) {
-      if (entry.type === 'tree') pending.push(entry.oid);
-      else if (entry.type === 'blob') blobs.add(entry.oid);
+      const path = prefix + entry.path;
+      if (entry.type === 'tree') {
+        if (sparse === null || sparse.directory(path)) pending.push({ oid: entry.oid, prefix: path + '/' });
+      } else if (entry.type === 'blob' && (sparse === null || sparse.includes(path))) {
+        blobs.add(entry.oid);
+      }
     }
   }
   await fs.packs.prefetch(gitdir, blobs);
@@ -2414,7 +2426,8 @@ const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>
 /** `git reset`: --soft moves HEAD, --mixed (the default) the index with it, --hard the worktree too; paths reset index entries. */
 async function resetCommand(
   ctx: Ctx, git: CfGit, vfs: ProjectFs, fs: GitFs, args: readonly string[],
-  prefetch: (gitdir: string, commits: string[]) => Promise<void>,
+  /** Fetch what a partial clone lacks of `commits`, as the worktree at `worktree` (null: bare) checks it out. */
+  prefetch: (gitdir: string, worktree: string | null, commits: string[]) => Promise<void>,
 ): Promise<number> {
   let mode = 'mixed' as 'soft' | 'mixed' | 'hard';
   let quiet = false;
@@ -2474,7 +2487,7 @@ async function resetCommand(
   }
   // The index and worktree become the target's (a forced checkout, type changes included) before the branch moves.
   if (mode === 'hard') {
-    await prefetch(repo.gitdir, [oid]);
+    await prefetch(repo.gitdir, repo.worktree ?? null, [oid]);
     await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
   }
   else if (mode === 'mixed') {
@@ -2855,7 +2868,10 @@ export async function runGitCommand(
         if (create) await git.branch({ fs, dir, ref });
         try {
           const target = await resolveRevision(git, fs, `${dir}/.git`, ref, {});
-          if (target !== null) await prefetchCommits(git, fs, `${dir}/.git`, [target], partial);
+          if (target !== null) {
+            const sparse = await worktreeRepo(ctx, git, repoVfs, fs, `${dir}/.git`, dir).sparseMatcher();
+            await prefetchCommits(git, fs, `${dir}/.git`, [target], partial, sparse);
+          }
           await switchBranch(ctx, git, repoVfs, fs, dir, ref);
         } catch (e) {
           return await refusal(ctx, e);
@@ -3001,7 +3017,8 @@ export async function runGitCommand(
       }
 
       case 'reset':
-        return await resetCommand(ctx, git, repoVfs, fs, subArgs, (gitdir, commits) => prefetchCommits(git, fs, gitdir, commits, partial));
+        return await resetCommand(ctx, git, repoVfs, fs, subArgs, async (gitdir, worktree, commits) =>
+          await prefetchCommits(git, fs, gitdir, commits, partial, worktree === null ? null : await worktreeRepo(ctx, git, repoVfs, fs, gitdir, worktree).sparseMatcher()));
 
       case 'tag':
         return await tagCommand(ctx, git, fs, repoVfs, subArgs);

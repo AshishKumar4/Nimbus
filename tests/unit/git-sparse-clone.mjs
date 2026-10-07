@@ -16,6 +16,7 @@
 //   - an edit inside the cone, add -A and commit: the tree host git writes.
 
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, lstatSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -45,6 +46,10 @@ function worktreeOf(dir) {
   walk('');
   return out;
 }
+/** The objects a partial clone lacks, as host git lists them (never fetching: no promisor remote it can reach). */
+const missing = (dir) => spawnSync('git', ['-c', 'remote.origin.promisor=false', 'rev-list', '--objects', '--missing=print', '--all'], {
+  cwd: dir, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1', GIT_NO_LAZY_FETCH: '1' },
+}).stdout.split('\n').filter((line) => line.startsWith('?')).sort();
 /** `ls-files --debug`'s blocks for skip-worktree entries (flags 40004000): their stat, all zero in git's. */
 const skipBlocks = (dir) => hostGit(dir, ['ls-files', '--debug']).split(/\n(?=\S)/).filter((block) => /flags: 40004000/.test(block)).join('\n');
 const sameRepo = (ours, host, label, { configUrl }) => {
@@ -91,16 +96,18 @@ try {
   hostGit(join(served, 'fast.git'), ['config', 'uploadpack.allowAnySHA1InWant', 'true']);
   hostGit(work, ['clone', '-q', '--bare', source, join(served, 'stream.git')]);
   const server = startGitHttpServer(served);
+  // Without filter or wants by id (http-backend's defaults): the streamed clone.
+  const plainServer = startGitHttpServer(served, { plain: true });
   try {
     // A depth-2 clone has the first commit to check out: the streamed one holds its blobs, the partial
     // one fetches what it needs; the fast one at depth 1.
     const cases = [
-      { name: 'fast', repo: 'fast.git', args: ['--depth', '1'], checkout: false },
-      { name: 'stream', repo: 'stream.git', args: ['--depth', '2'], checkout: true },
-      { name: 'partial', repo: 'fast.git', args: ['--depth', '2', '--filter=blob:none'], checkout: true },
+      { name: 'fast', at: server, repo: 'fast.git', args: ['--depth', '1'], checkout: false },
+      { name: 'stream', at: plainServer, repo: 'stream.git', args: ['--depth', '2'], checkout: true },
+      { name: 'partial', at: server, repo: 'fast.git', args: ['--depth', '2', '--filter=blob:none'], checkout: true },
     ];
-    for (const { name, repo, args, checkout } of cases) {
-      const url = server.url + '/' + repo;
+    for (const { name, at, repo, args, checkout } of cases) {
+      const url = at.url + '/' + repo;
       const host = join(work, 'host-' + name);
       // Host git from the same repository, by file:// (the http server is this process's: a
       // synchronous host git over it would wait on itself).
@@ -116,8 +123,10 @@ try {
       assert.equal(status.stdout, '', `${name}: our status is clean`);
       if (name === 'partial') {
         assert.deepEqual(session.sessionObjects('home/user/' + name).objects, hostObjects(host), 'partial: the objects host git holds');
+        assert.deepEqual(missing(ours), missing(host), 'partial: the objects host git lacks');
       } else {
-        hostGit(ours, ['fsck', '--full', '--no-dangling']);
+        const fsck = spawnSync('git', ['fsck', '--full', '--no-dangling'], { cwd: ours, encoding: 'utf8', env: { ...process.env, GIT_CONFIG_GLOBAL: '/dev/null', GIT_CONFIG_NOSYSTEM: '1' } });
+        assert.equal(fsck.status, 0, `${name}: git fsck --full: ${fsck.stdout}${fsck.stderr}`);
         assert.deepEqual(session.sessionObjects('home/user/' + name).objects, hostObjects(host), `${name}: every object host git holds`);
       }
       console.log(`  ok  clone --sparse (${name}): host git's worktree, index, sparse files and config; status clean`);
@@ -135,9 +144,8 @@ try {
       }
       if (checkout && name === 'partial') {
         assert.ok(requests.fetchObjects - fetchesBefore <= 2, 'partial: the checkouts fetch only what the cone writes');
-        const missingOurs = hostGit(session.materialize('home/user/' + name, join(work, 'ours-partial-missing')), ['rev-list', '--objects', '--missing=print', '--all']).split('\n').filter((line) => line.startsWith('?')).sort();
-        const missingHost = hostGit(host, ['rev-list', '--objects', '--missing=print', '--all']).split('\n').filter((line) => line.startsWith('?')).sort();
-        assert.deepEqual(missingOurs, missingHost, 'partial: after the checkouts, the same objects missing as host git');
+        assert.deepEqual(missing(session.materialize('home/user/' + name, join(work, 'ours-partial-missing'))), missing(host),
+          `partial: after the checkouts, the same objects missing as host git (${requests.fetchObjects - fetchesBefore} fetches)`);
       }
       if (checkout) console.log(`  ok  checkout in the sparse clone (${name}): host git's index and worktree, outside the cone unwritten`);
 
@@ -158,6 +166,7 @@ try {
     }
   } finally {
     server.stop();
+    plainServer.stop();
   }
   console.log('git-sparse-clone: ok');
 } finally {
