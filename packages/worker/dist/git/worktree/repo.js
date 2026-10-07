@@ -37,16 +37,20 @@ function isAbsent(error) {
     return isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR')
         || (typeof error === 'object' && error !== null && 'code' in error && (error.code === 'ENOENT' || error.code === 'ENOTDIR'));
 }
-/** git_config_bool's spellings. */
+/**
+ * git_config_bool's spellings, of a value as cf-git reads it: a key with no
+ * `=` is 'true' there (git's true), and an explicit empty value is ''
+ * (git's false).
+ */
 export function configBool(value) {
     if (typeof value === 'boolean')
         return value;
     if (typeof value !== 'string')
         return undefined;
     const text = value.toLowerCase();
-    if (['true', 'yes', 'on', '1', ''].includes(text))
+    if (['true', 'yes', 'on', '1'].includes(text))
         return true;
-    if (['false', 'no', 'off', '0'].includes(text))
+    if (['false', 'no', 'off', '0', ''].includes(text))
         return false;
     return undefined;
 }
@@ -329,7 +333,8 @@ export class WorktreeRepo {
      * path_found's remembered directory for a `path` the worktree lacks: the
      * top-most of its directories the worktree lacks, with its slash, or
      * `path/` when it has them all. The directories `path` shares with the one
-     * missing before (`known`) are there and not looked at again.
+     * missing before (`known`) are there and not looked at again. A directory
+     * is there as lstat("dir/") finds it: a link to one is.
      */
     async missingDirectory(path, known) {
         let at = 0;
@@ -341,8 +346,19 @@ export class WorktreeRepo {
             if (slash < 0)
                 return `${path}/`;
             at = slash + 1;
-            if ((await this.fs.lstat(path.slice(0, slash)))?.type !== 'directory')
+            if (!await this.isDirectory(path.slice(0, slash)))
                 return path.slice(0, at);
+        }
+    }
+    /** Whether the worktree's `path` is a directory, a link to one followed. */
+    async isDirectory(path) {
+        try {
+            return (await this.vfs.stat(`${this.root}/${path}`)).type === 'directory';
+        }
+        catch (error) {
+            if (isAbsent(error) || isVfsError(error, 'ELOOP'))
+                return false;
+            throw error;
         }
     }
     /** HEAD's tree, the empty tree while HEAD names no commit. */
