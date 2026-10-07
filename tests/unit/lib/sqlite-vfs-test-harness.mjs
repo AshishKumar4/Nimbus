@@ -54,6 +54,10 @@ export function createSqliteVfsTestHarness(db = new Database(':memory:')) {
       }
       return prepared.all(...params);
     },
+    /** The database's size in bytes, as workerd's SqlStorage reports it (not a statement). */
+    get databaseSize() {
+      return Number(db.query('SELECT page_count * page_size AS n FROM pragma_page_count(), pragma_page_size()').get().n);
+    },
   };
 
   const storage = {

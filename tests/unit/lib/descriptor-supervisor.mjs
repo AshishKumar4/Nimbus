@@ -73,3 +73,76 @@ export function descriptorSupervisor(supervisor) {
     async access(value) { if (!await stat(value)) throw error('ENOENT'); },
   });
 }
+
+const encoder = new TextEncoder();
+
+/**
+ * A session's supervisor over an in-memory file store (path → bytes,
+ * `seed` as text), with the descriptor contract added: every op the WASI
+ * fs path calls, each recorded in `log` as [op, ...args]. Reads past the
+ * end answer empty, rename moves the file, and stat answers the session
+ * user's 0644 for a stored file.
+ *
+ * @param {Record<string, string>} [seed]
+ */
+export function memorySupervisor(seed = {}) {
+  const store = new Map(Object.entries(seed).map(([p, v]) => [p, encoder.encode(v)]));
+  /** @type {unknown[][]} */
+  const log = [];
+  return descriptorSupervisor({
+    store, log,
+    async fsReadRange(p, offset, length) {
+      log.push(['fsReadRange', p, offset, length]);
+      const bytes = store.get(p);
+      if (bytes === undefined) return null;
+      if (offset >= bytes.length) return new Uint8Array(0);
+      return bytes.slice(offset, Math.min(bytes.length, offset + length));
+    },
+    async writeFile(p, content) {
+      log.push(['writeFile', p]);
+      store.set(p, typeof content === 'string' ? encoder.encode(content) : new Uint8Array(content));
+    },
+    async fsWriteRange(p, offset, bytes) {
+      log.push(['fsWriteRange', p, offset, bytes.length]);
+      const cur = store.get(p) ?? new Uint8Array(0);
+      const next = new Uint8Array(Math.max(cur.length, offset + bytes.length));
+      next.set(cur, 0);
+      next.set(new Uint8Array(bytes), offset);
+      store.set(p, next);
+      return bytes.length;
+    },
+    async fsTruncate(p, size) {
+      log.push(['fsTruncate', p, size]);
+      const cur = store.get(p) ?? new Uint8Array(0);
+      const next = new Uint8Array(size);
+      next.set(cur.subarray(0, Math.min(cur.length, size)), 0);
+      store.set(p, next);
+    },
+    async mkdir(p) { log.push(['mkdir', p]); },
+    async rmdir(p) { log.push(['rmdir', p]); },
+    async unlink(p) { log.push(['unlink', p]); store.delete(p); },
+    async rename(from, to) {
+      log.push(['rename', from, to]);
+      if (store.has(from)) { store.set(to, store.get(from)); store.delete(from); }
+    },
+    async symlink(target, p) { log.push(['symlink', target, p]); },
+    async chmod(p, mode) { log.push(['chmod', p, mode]); },
+    async utimes(p) { log.push(['utimes', p]); },
+    async stat(p) {
+      log.push(['stat', p]);
+      const bytes = store.get(p);
+      return bytes ? { type: 'file', size: bytes.length, mtime: Date.now(), mode: 0o644, uid: 1000, gid: 1000 } : null;
+    },
+    async readdir(p) {
+      log.push(['readdir', p]);
+      const prefix = p === '' ? '' : `${p}/`;
+      const names = new Set();
+      for (const key of store.keys()) {
+        if (!key.startsWith(prefix)) continue;
+        const rest = key.substring(prefix.length);
+        if (rest && !rest.includes('/')) names.add(rest);
+      }
+      return [...names].map((name) => ({ name, type: 'file' }));
+    },
+  });
+}

@@ -41,12 +41,14 @@ let preamble = null;
 
 /**
  * The preamble is module-shaped (top-level await for cloudflare:sockets), so
- * it is evaluated once as an ES module from a temp file. One module means one
- * descriptor table, exactly as one facet has; `__wasiInitFS` resets it.
+ * it is evaluated once as an ES module from a temp file, as a facet evaluates
+ * it. One module means one descriptor table, exactly as one facet has;
+ * `__wasiInitFS` resets it. Every test that drives the preamble takes it from
+ * here, with whichever of these it needs.
  */
 export async function loadWasiPreamble() {
   if (preamble) return preamble;
-  const src = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiRunStartAsync, fdTable };`;
+  const src = `${WASI_INSTANCE_PREAMBLE_SRC}\nexport { __wasiInitFS, __wasiMakeImports, __wasiAdoptSupervisor, __wasiRunStartAsync, __wasiThreadsCreate, __WasiExit, fdTable };`;
   const file = path.join(os.tmpdir(), `wasi-authority-${process.pid}-${Math.random().toString(16).slice(2)}.mjs`);
   writeFileSync(file, src);
   try {
