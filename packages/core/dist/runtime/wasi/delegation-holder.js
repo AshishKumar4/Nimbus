@@ -61,8 +61,12 @@ export function delegationHolder(options) {
     let nextHandle = FIRST_LOCAL_HANDLE;
     /** Files written since their bytes were last logged, in the order last written. */
     const dirty = new Set();
+    /** Whether anything was logged since the store was last told the session changed (sent). */
+    let unsent = false;
     /** Log each file's latest bytes, in the order last written, under the name it has now. */
     const drain = () => {
+        if (dirty.size > 0)
+            unsent = true;
         for (const file of [...dirty]) {
             dirty.delete(file);
             // A copy: the file's buffer keeps changing as the process writes. A
@@ -91,13 +95,22 @@ export function delegationHolder(options) {
         now,
         ...(options.isHomeRoot === undefined ? {} : { isHomeRoot: options.isHomeRoot }),
         ...(options.grantAfter === undefined ? {} : { grantAfter: options.grantAfter }),
+        ...(options.grantInos === undefined ? {} : { grantInos: options.grantInos }),
         released: dropDecisions,
         drain,
     });
     /** Log a decision, after the bytes written before it. */
     const log = (op) => {
         drain();
+        unsent = true;
         client.submit(op, { acknowledged: true });
+    };
+    /** The store owes a barrier only once something this process decided reached the session. */
+    const sentSome = () => {
+        if (!unsent)
+            return;
+        unsent = false;
+        options.sent?.();
     };
     const entryOf = (key) => {
         const own = decided.get(key);
@@ -146,12 +159,18 @@ export function delegationHolder(options) {
             throw fsError('EBADF', 'fd', String(handleId));
         return handle;
     };
+    /**
+     * Room for `length` bytes of `file`: drawn from the storage its subtree's
+     * grant reserved while one holds it. A file whose grant is being given back
+     * (renewed, idle) or is gone grows as any write does: the session judges
+     * its bytes when they reach it (a refusal then is the flush's error).
+     */
     const room = (file, length) => {
         if (length <= file.bytes.byteLength)
             return true;
         const grant = client.held(file.key);
         const size = Math.max(length, file.bytes.byteLength * 2, 4096);
-        if (grant === undefined || !client.draw(grant, size - file.bytes.byteLength))
+        if (grant !== undefined && !client.draw(grant, size - file.bytes.byteLength))
             return false;
         const next = new Uint8Array(size);
         next.set(file.bytes.subarray(0, file.length));
@@ -432,13 +451,13 @@ export function delegationHolder(options) {
         pending: () => dirty.size > 0 || client.pending(),
         flush: async () => {
             await client.flush();
-            options.sent?.();
+            sentSome();
             failed();
         },
         settle: async () => {
             drain();
             await client.settle();
-            options.sent?.();
+            sentSome();
         },
         stats: () => {
             const stats = client.stats();

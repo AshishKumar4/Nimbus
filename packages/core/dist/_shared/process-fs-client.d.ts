@@ -137,6 +137,8 @@ export interface ProcessFsClientOptions {
     readonly grantAfter?: number;
     /** A grant unused this long is given back (GRANT_IDLE_MS). */
     readonly grantIdleMs?: number;
+    /** Inode numbers a first grant of a subtree reserves (GRANT_INOS); each renewal doubles it. */
+    readonly grantInos?: number;
     /** How long one recall poll waits before asking again. */
     readonly recallPollMs?: number;
     /** Every key that is a home directory itself: never taken. */
@@ -229,6 +231,7 @@ export interface ProcessFsStats {
     recalls: number;
     released: number;
     widened: number;
+    renewed: number;
 }
 /** A synchronous loop's bytes held at once, at most (ProcessFsClientOptions.syncCapBytes). */
 export declare const PROCESS_FS_SYNC_CAP_BYTES: number;

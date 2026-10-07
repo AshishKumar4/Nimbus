@@ -166,6 +166,8 @@ export interface ResidentDelegation {
     readonly session: ProcessFsSession;
     /** Mutations in a subtree before it is taken (the client's GRANT_AFTER). */
     readonly grantAfter?: number;
+    /** Inode numbers a first grant reserves (the client's GRANT_INOS). */
+    readonly grantInos?: number;
     readonly isHomeRoot?: (key: string) => boolean;
 }
 export declare function residentFilesystem(session: RuntimeFsBridge, resident: ResidentNamespace, delegation?: ResidentDelegation): ResidentFilesystem;

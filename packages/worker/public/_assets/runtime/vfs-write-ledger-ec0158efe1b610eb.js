@@ -1063,7 +1063,8 @@ var __nimbusProcessFsModule = (() => {
       grantsRefused: 0,
       recalls: 0,
       released: 0,
-      widened: 0
+      widened: 0,
+      renewed: 0
     };
     const grantAfter = options.grantAfter ?? GRANT_AFTER;
     const grantIdleMs = options.grantIdleMs ?? GRANT_IDLE_MS;
@@ -1254,6 +1255,11 @@ var __nimbusProcessFsModule = (() => {
     };
     const live = () => grants.filter((grant) => !grant.ended);
     const allowedRoot = (root) => root !== "" && !(options.isHomeRoot?.(root) ?? false);
+    const close = async (grant) => {
+      grant.closing = true;
+      await client.flush();
+      await end(grant);
+    };
     const end = async (grant) => {
       if (grant.ended) return;
       grant.ended = true;
@@ -1308,15 +1314,12 @@ var __nimbusProcessFsModule = (() => {
       if (idleTimer !== null || live().length === 0) return;
       idleTimer = timers.setTimeout(() => {
         idleTimer = null;
-        const idle = live().filter((grant) => now() - grant.lastUsed >= grantIdleMs);
+        const idle = live().filter((grant) => !grant.closing && now() - grant.lastUsed >= grantIdleMs);
         if (idle.length === 0 || settling) {
           armIdle();
           return;
         }
-        void client.flush().then(async () => {
-          for (const grant of idle) if (now() - grant.lastUsed >= grantIdleMs) await end(grant);
-          armIdle();
-        });
+        void Promise.all(idle.map(close)).then(armIdle);
       }, grantIdleMs);
     };
     const claim = (root) => {
@@ -1336,14 +1339,14 @@ var __nimbusProcessFsModule = (() => {
         }
         const covered = live().filter((grant2) => within(grant2.root, target));
         if (covered.length > 0) {
-          await client.flush();
-          for (const grant2 of covered) await end(grant2);
-          counters.widened++;
+          await Promise.all(covered.map(close));
+          if (covered.some((grant2) => grant2.root !== target)) counters.widened++;
+          else counters.renewed++;
         }
         await client.flush();
         paused = true;
         await quiet();
-        const inos = (rangeOf.get(target) ?? GRANT_INOS / 2) * 2;
+        const inos = rangeOf.has(target) ? rangeOf.get(target) * 2 : options.grantInos ?? GRANT_INOS;
         let granted;
         try {
           charge("fsAcquireExclusiveMutation");
@@ -1363,6 +1366,7 @@ var __nimbusProcessFsModule = (() => {
           inos,
           bytesLeft: granted.bytes ?? 0,
           shared: false,
+          closing: false,
           ended: false,
           lastUsed: now()
         };
@@ -1377,7 +1381,7 @@ var __nimbusProcessFsModule = (() => {
         schedule();
       });
     };
-    const heldGrant = (key) => grants.find((grant) => !grant.ended && !grant.shared && within(key, grant.root));
+    const heldGrant = (key) => grants.find((grant) => !grant.ended && !grant.closing && !grant.shared && within(key, grant.root));
     const client = {
       holder(key) {
         const held = heldGrant(key);
@@ -1400,7 +1404,8 @@ var __nimbusProcessFsModule = (() => {
       },
       number(grant) {
         const held = grant;
-        if (held.ended || held.nextIno >= held.endIno) return void 0;
+        if (held.ended || held.closing || held.nextIno >= held.endIno) return void 0;
+        if (held.endIno - held.nextIno <= held.inos / 4) queueMicrotask(() => claim(held.root));
         return held.nextIno++;
       },
       draw(grant, bytes) {
@@ -1480,7 +1485,7 @@ var __nimbusProcessFsModule = (() => {
             timers.clearTimeout(idleTimer);
             idleTimer = null;
           }
-          for (const grant of live()) await end(grant);
+          for (const grant of live()) await close(grant);
           settling = false;
         }
         const taken = client.takeFailures();
