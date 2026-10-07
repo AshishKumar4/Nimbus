@@ -98,7 +98,7 @@ async function observe(code, lowered) {
 const loaderOf = (name) => (/\.tsx$/.test(name) ? 'tsx' : /\.[mc]?ts$/.test(name) ? 'ts' : /\.jsx$/.test(name) ? 'jsx' : 'js');
 const outcomes = {
   async cell(engine, name, source) {
-    const cell = prepareBundleCell(`app/${name}`, source, null);
+    const cell = prepareBundleCell(`app/${name}`, source, null, 'node');
     if (!('request' in cell)) return null;
     let outcome;
     try {
@@ -198,7 +198,7 @@ console.log(`  ok  ${CASES.length} modules x ${Object.keys(outcomes).length} tra
     'minified-switch.mjs': `import{t as e}from"t";export function m(r){return ${terms(2500, (i) => `r===${i}?e("k${i}")`).join(':')}:void 0}export const s=${terms(1500, (i) => `"${i.toString(36)}"`).join('+')};`,
   };
   const settle = async (engine, name, source) => {
-    const cell = prepareBundleCell(`app/${name}`, source, null);
+    const cell = prepareBundleCell(`app/${name}`, source, null, 'node');
     let outcome;
     try {
       outcome = await runTransformRequest(engine, cell.request.code, cell.request.options, rewriteDynamicImports, lowerAsyncModule);

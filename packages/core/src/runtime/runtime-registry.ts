@@ -46,7 +46,7 @@ import { parseFacetBundleProfile, type FacetBundleProfile } from './bundle-profi
 import type { Command, CommandContext } from '../substrate/lifo/commands/types.js';
 import type { ResolveContext } from '../substrate/lifo/commands/registry.js';
 import { errorText } from '../_shared/error-text.js';
-import { isEsModuleFile, isEsModuleInput } from './module-format.js';
+import { isEsModuleFile, isEsModuleInput, type ModuleScope } from './module-format.js';
 import { packageScopeType } from './require-resolution.js';
 import { exists, isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES, type ServerLaunchHost } from './server-launch.js';
@@ -78,6 +78,8 @@ export interface RuntimeRunOpts {
    * explained as Node's loader explains it.
    */
   esModule?: boolean;
+  /** Whose scope its ES modules run in (RuntimeSpec.moduleScope): absent, Node's. */
+  moduleScope?: ModuleScope;
   /** Primitive #1/G4 hooks. node-runner consumes these; other
    *  runtimes ignore them safely. */
   skipSpawn?: boolean;
@@ -247,6 +249,11 @@ export interface RuntimeSpec {
    * script and stdin not a terminal, the program is stdin (`echo code | node`).
    */
   repl?: string;
+  /**
+   * Whose scope the runtime runs an ES module in (module-format.ts
+   * ModuleScope), the entry's and every module it loads: absent, Node's.
+   */
+  moduleScope?: ModuleScope;
 }
 
 /**
@@ -336,6 +343,7 @@ export function buildRuntimeHandler(
       ...(binSpawn.stdinWriter === true ? { stdinWriter: true } : {}),
     } : {};
     const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
+    const moduleScope = spec.moduleScope ?? 'node';
     // How the analyses of a program's code read its modules: the command's
     // own view of the filesystem.
     const programHost: ServerLaunchHost = {
@@ -404,7 +412,9 @@ export function buildRuntimeHandler(
         ...(captureOutput ? { captureOutput: true } : {}),
         ...(bundleProfile ? { bundleProfile } : {}),
         ...(program.launchesServer ? { launchesServer: true } : {}),
-        ...(program.esModule ? { esModule: true } : {}),
+        // Evaluated as Node's loader runs an ES module, in Node's scope.
+        ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
+        moduleScope,
       });
       if (result.stdout) ctx.stdout.write(result.stdout);
       if (result.stderr) ctx.stderr.write(result.stderr);
@@ -447,9 +457,9 @@ export function buildRuntimeHandler(
     async function lowerToCommonJs(code: string, loader: 'js' | 'jsx' | 'ts' | 'tsx', url: string, what: string, esm: boolean): Promise<string | null> {
       try {
         const eb = await getEsbuild();
-        // An ES module keeps its scope (module-format.ts): strict, no CommonJS wrapper name.
+        // An ES module keeps Node's scope (module-format.ts ModuleScope): strict, no CommonJS wrapper name.
         return (await eb.transform(code, {
-          loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { esModuleScope: true } : {}),
+          loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm && moduleScope === 'node' ? { esModuleScope: true } : {}),
         })).code;
       } catch (e) {
         ctx.stderr.write(`${name}: transform error for ${what}: ${errorText(e)}\n`);

@@ -43,6 +43,7 @@
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
 import type { StdinBytes } from '../facets/manager.js';
 
 /**
@@ -108,6 +109,8 @@ export interface RunFreshOpts {
   launchesServer?: boolean;
   /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
   esModule?: boolean;
+  /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+  moduleScope?: ModuleScope;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -179,6 +182,7 @@ export async function runFresh(
       filename: opts.filename,
       dirname: opts.dirname,
       ...(opts.esModule ? { esModule: true } : {}),
+      ...(opts.moduleScope ? { moduleScope: opts.moduleScope } : {}),
       command,
       port,
       attachedTty: opts.attachedTty,

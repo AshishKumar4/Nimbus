@@ -174,7 +174,7 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   const warn = console.warn;
   console.warn = () => {};
   try {
-    await transformBundleCells(cells, { host: { transformMany: oxcTransformHost(ctx, env, fallback) } }, (path, result) => placed.set(path, result));
+    await transformBundleCells(cells, { host: { transformMany: oxcTransformHost(ctx, env, fallback) }, scope: 'node' }, (path, result) => placed.set(path, result));
   } finally {
     console.warn = warn;
   }

@@ -80,7 +80,7 @@ try {
 assert.deepEqual([node.read, node.late], [[0, 'early', 2], 'late'], 'the oracle: Node reads its imports live');
 
 // ── The bounded rewrite ──
-const cell = prepareBundleCell('/home/user/node_modules/pkg/big.mjs', BIG, null);
+const cell = prepareBundleCell('/home/user/node_modules/pkg/big.mjs', BIG, null, 'node');
 assert.ok(cell.outcome && 'code' in cell.outcome, `a module this large is lowered in the session: ${JSON.stringify(Object.keys(cell))}`);
 const lowered = (source) => {
   const module = { exports: {} };

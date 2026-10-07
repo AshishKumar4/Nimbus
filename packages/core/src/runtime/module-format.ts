@@ -53,6 +53,16 @@ export function isEsModuleInput(source: string, inputType: string | undefined): 
 }
 
 /**
+ * Whose scope a runtime runs an ES module in. Node's binds none of
+ * CommonJS's wrapper names, and is strict with `this` undefined at the top
+ * (ES_MODULE_UNBOUND_NAMES, esModuleSource, esModuleScopeTypeofs: the
+ * transform's EsbuildTransformOptions.esModuleScope). Bun's binds `require`,
+ * `__filename` and `__dirname` in every module (bun.sh/docs/runtime/modules),
+ * and a module is lowered as CommonJS, all of whose names it keeps.
+ */
+export type ModuleScope = 'node' | 'bun';
+
+/**
  * The global the guest defines (node-shims.ts) with an accessor for each
  * CommonJS wrapper name, which throws the ReferenceError V8 throws for a name
  * bound nowhere ("require is not defined"), from the frame that named it.
