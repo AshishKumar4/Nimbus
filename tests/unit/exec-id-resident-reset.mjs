@@ -25,6 +25,16 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { RESIDENT_PROVEN_MS } from '../../packages/fabric/src/fenced-work.ts';
+
+// The proof a resident ran is its own instance's timer: captured here, and
+// run when the test says the process has been up that long.
+const proofs = [];
+const realSetTimeout = globalThis.setTimeout;
+globalThis.setTimeout = (fn, ms, ...args) => {
+  if (ms !== RESIDENT_PROVEN_MS) return realSetTimeout(fn, ms, ...args);
+  proofs.push(() => fn(...args));
+  return proofs.length;
+};
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
@@ -122,16 +132,12 @@ await settle(() => row(node2.pid)?.phase === 'running');
 assert.equal(row(node2.pid)?.execId, 'j1', 'the re-drive journals it again, for the next reset');
 
 // ── generation 3: and the next one ──────────────────────────────────────
-// Once the re-driven residents have run RESIDENT_PROVEN_MS, a reset re-drives
-// them again (fenced-work.ts); sooner, they would be left stopped.
-const realNow = Date.now;
-Date.now = () => realNow() + RESIDENT_PROVEN_MS;
+// Once the re-driven residents have run RESIDENT_PROVEN_MS in gen2 (its own
+// proof timers, run here), a reset re-drives them again (fenced-work.ts);
+// sooner, they would be left stopped.
+await Promise.all(proofs.splice(0).map((prove) => prove()));
 const gen3 = createInstance(3);
-try {
-  await gen3.manager.pumpResidentLaunches();
-} finally {
-  Date.now = realNow;
-}
+await gen3.manager.pumpResidentLaunches();
 await settle(() => gen3.spawns.length === 3);
 const node3 = gen3.processes.get(gen3.spawns.find((spawn) => spawn.command === 'node server.js').pid);
 assert.equal(node3.execId, 'j1', 'a second reset keeps it');

@@ -699,13 +699,12 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   assert.equal(fm.launchJournal.has(a.pid), false, 'a same-instance restart releases journal lifetime bookkeeping');
   assert.ok(notices.some((line) => /exited with code 1 — restarting in 1s \(FencedWork attempt 1/.test(line)), JSON.stringify(notices));
 
-  // A healthy boot stamps the run's start and keeps the attempt it spent: the
-  // budget is whole again only once the run has lasted RESIDENT_PROVEN_MS
+  // A healthy boot keeps the attempt it spent: the budget is whole again
+  // only once the process has run RESIDENT_PROVEN_MS in this instance
   // (fenced-work.ts). A spent unproven launch cannot bypass the journal's
   // ceiling through the terminal-hook path.
   const healthy = await rowFor(ctx, redriven.pid);
   assert.equal(healthy.attempt, 1);
-  assert.equal(typeof healthy.runningSince, 'number');
   await ctx.storage.put(`resident-launch:${redriven.pid}`, { ...healthy, phase: 'starting', attempt: FENCED_WORK_MAX_ATTEMPT });
   fm.finishProcess(redriven.pid, 1, 'crashed before healthy boot');
   await waitFor(async () => (await rowFor(ctx, redriven.pid)) === undefined, 5_000);

@@ -43,7 +43,7 @@ globalThis.setTimeout = (fn, ms, ...args) => {
 };
 /** Every captured proof timer fires: each process it was set for has run RESIDENT_PROVEN_MS. */
 async function runFor(gen) {
-  for (const prove of proofs.splice(0)) prove();
+  await Promise.all(proofs.splice(0).map((prove) => prove()));
   await gen.ctx.storage.sync();
 }
 
