@@ -62,7 +62,9 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
   kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
   const files = new ProcessFiles(vfs);
   for (const [point, backend] of Object.entries(mounts)) files.vfs.mount(point, backend);
-  const bridge = Object.keys(mounts).length > 0 ? files.openHost(CRED_KERNEL).fs : new SqliteRuntimeFsBridge(kernel, vfs);
+  // With mounts, the facets write as the session user, as a session's binding does (its pid's credential).
+  const writer = Object.keys(mounts).length > 0 ? vfs.as(CRED_SESSION_USER) : kernel;
+  const bridge = Object.keys(mounts).length > 0 ? files.openHost(CRED_SESSION_USER).fs : new SqliteRuntimeFsBridge(kernel, vfs);
   // failWaveAt: the 1-based write wave that fails, once, as a dropped session connection does.
   // hangPhaseAt: the 1-based facet call of that phase that never answers, once.
   // stallPhaseAt: the same, but the call runs on, its answer withheld: a late writer.
@@ -120,7 +122,7 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
           throw new Error('Network connection lost.');
         }
         return refused(async () => {
-          const result = await kernel.writeStream(stream, lease);
+          const result = await writer.writeStream(stream, lease);
           if (result.ok === false) requests.refusals.push(String(result.error?.code ?? result.error?.message));
           return result;
         });
