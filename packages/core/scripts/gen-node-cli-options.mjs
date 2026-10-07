@@ -40,8 +40,9 @@ const aliasEntries = [...aliases].map(([alias, expansion]) => [alias, [...expans
 const KINDS = new Map([[0, 'noop'], [1, 'v8'], [2, 'boolean']]);
 // EnvironmentOptions' kAllowedInEnvvar.
 const ALLOWED_IN_ENVVAR = 0;
+/** @type {[string, { kind: string, env: boolean }][]} */
 const table = [...options]
-  .map(([name, info]) => [name, { kind: KINDS.get(info.type) ?? 'value', env: info.envVarSettings === ALLOWED_IN_ENVVAR }])
+  .map(([name, info]) => /** @type {[string, { kind: string, env: boolean }]} */ ([name, { kind: KINDS.get(info.type) ?? 'value', env: info.envVarSettings === ALLOWED_IN_ENVVAR }]))
   .sort(([a], [b]) => (a < b ? -1 : 1));
 // V8's own flags, which Node passes to V8 (an option neither knows is "bad"):
 // each named as `node --v8-options` lists it.
