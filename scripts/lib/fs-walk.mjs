@@ -3,16 +3,19 @@
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { existsSync, readdirSync, readFileSync } from 'node:fs';
+import { existsSync, lstatSync, readdirSync, readFileSync, readlinkSync } from 'node:fs';
 import { join } from 'node:path';
 
 /** @param {string | Uint8Array} bytes */
 export const sha256Hex = (bytes) => createHash('sha256').update(bytes).digest('hex');
 
 /**
- * path → sha256 of every file under `roots` (relative to `root`) that git
- * would carry: tracked plus untracked-and-not-ignored. A tracked file that is
- * not on disk is left out: absence is a state for the caller to see.
+ * path → digest of every file under `roots` (relative to `root`) that git
+ * would carry: tracked plus untracked-and-not-ignored. A regular file's
+ * digest is the sha256 of its bytes; a symlink's is `link:<its target>`,
+ * read with readlink and never followed, as git records a symlink. So a
+ * symlink and the file it points at never compare equal. A tracked file
+ * that is not on disk is left out: absence is a state for the caller to see.
  *
  * @returns {Map<string, string>}
  */
@@ -28,13 +31,12 @@ export function trackedFileDigests(root, roots) {
   const digests = new Map();
   for (const rel of listed.stdout.toString('utf8').split('\0')) {
     if (!rel) continue;
-    let bytes;
+    const path = join(root, rel);
     try {
-      bytes = readFileSync(join(root, rel));
+      digests.set(rel, lstatSync(path).isSymbolicLink() ? `link:${readlinkSync(path)}` : sha256Hex(readFileSync(path)));
     } catch {
       continue;
     }
-    digests.set(rel, sha256Hex(bytes));
   }
   return digests;
 }

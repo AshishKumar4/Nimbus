@@ -86,17 +86,29 @@
  *   a drift report (exit 1). And in a bun workspace it refuses to build at
  *   all with any toolchain but the workspace's own: node_modules installed,
  *   and the tsc each package resolves being the lockfile's.
+ *
+ * ONE GATE PER CHECKOUT AT A TIME
+ *   Two gates on one checkout would read each other's half-built tree: B
+ *   snapshots while A has cleaned dist, and B's rollback then deletes A's
+ *   rebuilt output as "added". Every entry point (the gate, rebuildDrift,
+ *   runBuildFixpoint, the generated-source guard) takes the checkout lock
+ *   (withCheckoutLock: a file in the checkout's git dir) before its first
+ *   snapshot and holds it through build, rollback and verification. A
+ *   second gate waits for the first; a lock whose process is gone is
+ *   broken.
  */
 
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
+import { AsyncLocalStorage } from 'node:async_hooks';
 import {
-  chmodSync, constants, copyFileSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, realpathSync,
-  rmSync, statSync, writeFileSync,
+  chmodSync, constants, copyFileSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync,
+  readlinkSync, realpathSync, rmSync, symlinkSync, unlinkSync, writeFileSync,
 } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { hostname, tmpdir } from 'node:os';
 import { delimiter, dirname, join, relative } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
+import { processStartTime } from './lib/bounded-process.mjs';
 import { filesUnder, trackedFileDigests } from './lib/fs-walk.mjs';
 
 export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
@@ -353,10 +365,12 @@ export function diffSnapshots(before, after) {
 export function rebuildDrift({
   root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent,
 } = {}) {
-  const before = snapshotBuildOutputs({ root, roots });
-  log(`digested ${before.size} build outputs under ${roots.join(', ')}`);
-  runBuildFixpoint({ root, steps, log, roots, before });
-  return diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
+  return withCheckoutLock(root, () => {
+    const before = snapshotBuildOutputs({ root, roots });
+    log(`digested ${before.size} build outputs under ${roots.join(', ')}`);
+    runBuildFixpoint({ root, steps, log, roots, before });
+    return diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
+  }, { log });
 }
 
 /**
@@ -384,7 +398,8 @@ export class BuildFailure extends Error {
  * other file is still put back, the copies are kept, and BuildFailure names
  * each file left wrong, why, and where the copies are.
  *
- * `roots` must cover everything `steps` can write.
+ * `roots` must cover everything `steps` can write. A `before` snapshot
+ * must have been taken under the same checkout lock (withCheckoutLock).
  *
  * @param {{ root?: string, steps?: Array<{ cwd: string, script: string, why: string }>, log?: (line: string) => void,
  *   roots?: string[], before?: Map<string, string> }} [options]
@@ -392,8 +407,16 @@ export class BuildFailure extends Error {
 export function runBuildFixpoint({
   root = REPO_ROOT, steps = BUILD_FIXPOINT, log = silent, roots = OUTPUT_ROOTS, before,
 } = {}) {
-  assertWorkspaceToolchain({ root, steps });
-  before ??= snapshotBuildOutputs({ root, roots });
+  if (before !== undefined && !holdsCheckoutLock(root)) {
+    throw new Error('runBuildFixpoint: a `before` snapshot must be taken under withCheckoutLock, or another gate can move the tree between it and the build');
+  }
+  return withCheckoutLock(root, () => {
+    assertWorkspaceToolchain({ root, steps });
+    runSteps({ root, steps, log, roots, before: before ?? snapshotBuildOutputs({ root, roots }) });
+  }, { log });
+}
+
+function runSteps({ root, steps, log, roots, before }) {
   const held = holdOutputs({ root, roots, before });
   let keep = false;
   try {
@@ -418,6 +441,158 @@ export function runBuildFixpoint({
     }
   } finally {
     if (!keep) rmSync(held.dir, { recursive: true, force: true });
+  }
+}
+
+// ── The checkout lock ────────────────────────────────────────────────
+
+/** How long a gate waits for another gate on the same checkout. */
+const CHECKOUT_LOCK_WAIT_MS = 30 * 60_000;
+const lockScope = new AsyncLocalStorage();
+/** Lock files this process holds, removed if it exits holding them. */
+const heldLockFiles = new Set();
+process.on('exit', () => {
+  for (const file of heldLockFiles) {
+    try { unlinkSync(file); } catch { /* already gone */ }
+  }
+});
+
+/** The checkout's lock file: in its own git dir, so each worktree has its own. */
+function checkoutLockFile(root) {
+  const gitDir = spawnSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: root, encoding: 'utf8' });
+  if (gitDir.status !== 0) {
+    throw new BuildFailure(`refusing to build — ${root} is not a git checkout, so it has no lock and no rollback: ${(gitDir.stderr || '').trim()}`);
+  }
+  return join(gitDir.stdout.trim(), 'nimbus-dist-integrity.lock');
+}
+
+/** Whether the current task holds `root`'s checkout lock. */
+function holdsCheckoutLock(root) {
+  return lockScope.getStore()?.has(checkoutLockFile(root)) ?? false;
+}
+
+/**
+ * Run `fn` holding `root`'s checkout lock: exclusive across processes, and
+ * re-entrant within the task that holds it. Waits (bounded) while another
+ * gate holds it; a lock whose process is gone is broken. `fn` may be async;
+ * the lock is held until it settles.
+ *
+ * @template T
+ * @param {string} root
+ * @param {() => T} fn
+ * @param {{ log?: (line: string) => void, waitMs?: number }} [options]
+ * @returns {T}
+ */
+export function withCheckoutLock(root, fn, { log = silent, waitMs = CHECKOUT_LOCK_WAIT_MS } = {}) {
+  const file = checkoutLockFile(root);
+  const held = lockScope.getStore();
+  if (held?.has(file)) return fn();
+  const token = acquireCheckoutLock(file, root, log, waitMs);
+  const release = () => releaseCheckoutLock(file, token);
+  let result;
+  try {
+    result = lockScope.run(new Set([...(held ?? []), file]), fn);
+  } catch (error) {
+    release();
+    throw error;
+  }
+  if (result && typeof (/** @type {any} */ (result)).then === 'function') {
+    return /** @type {any} */ (result).finally(release);
+  }
+  release();
+  return result;
+}
+
+/** Block this thread for `ms` (a bounded poll on another process, which no event announces). */
+const pause = (ms) => Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, ms);
+
+function lockOwner(file) {
+  try {
+    return JSON.parse(readFileSync(file, 'utf8'));
+  } catch {
+    return null;
+  }
+}
+
+/** Whether the process that wrote `owner` is gone. Unknowable for another host: then it is live. */
+function ownerIsGone(owner) {
+  if (!owner || owner.host !== hostname()) return false;
+  try {
+    process.kill(owner.pid, 0);
+  } catch (error) {
+    if (error.code === 'ESRCH') return true;
+  }
+  const start = processStartTime(owner.pid);
+  return owner.start !== null && start !== null && start !== owner.start;
+}
+
+function acquireCheckoutLock(file, root, log, waitMs) {
+  const token = JSON.stringify({
+    pid: process.pid, start: processStartTime(process.pid), host: hostname(), root, since: new Date().toISOString(),
+  });
+  const deadline = Date.now() + waitMs;
+  let announced = false;
+  for (;;) {
+    try {
+      writeFileSync(file, token, { flag: 'wx' });
+      heldLockFiles.add(file);
+      return token;
+    } catch (error) {
+      if (error.code !== 'EEXIST') throw new BuildFailure(`refusing to build — could not take the checkout lock ${file}: ${error.message}`);
+    }
+    const owner = lockOwner(file);
+    if (owner?.pid === process.pid && owner?.host === hostname()) {
+      throw new BuildFailure(`refusing to build — this process already holds the checkout lock on ${root} in another task; one gate at a time`);
+    }
+    if (ownerIsGone(owner)) {
+      breakStaleLock(file, owner);
+      continue;
+    }
+    if (Date.now() >= deadline) {
+      throw new BuildFailure(
+        `refusing to build — another dist-integrity (pid ${owner?.pid ?? '?'} on ${owner?.host ?? '?'}, since ${owner?.since ?? '?'}) `
+        + `has held the checkout lock on ${root} for longer than ${Math.round(waitMs / 1000)} s. `
+        + `Wait for it to finish, or, if that process is gone, remove ${file}.`,
+      );
+    }
+    if (!announced) {
+      log(`waiting for the checkout lock: another dist-integrity (pid ${owner?.pid ?? '?'}, since ${owner?.since ?? '?'}) is building ${root}`);
+      announced = true;
+    }
+    pause(250);
+  }
+}
+
+/**
+ * Remove a lock whose process is gone, under a breaker lock so two waiters
+ * that both saw it stale cannot remove a fresh lock one of them took since.
+ */
+function breakStaleLock(file, staleOwner) {
+  const breaker = `${file}.break`;
+  try {
+    writeFileSync(breaker, String(process.pid), { flag: 'wx' });
+  } catch (error) {
+    if (error.code !== 'EEXIST') throw error;
+    // Another waiter is breaking it; a breaker left by a dead process is removed.
+    const pid = Number(readFileSync(breaker, 'utf8'));
+    try { process.kill(pid, 0); } catch (e) { if (e.code === 'ESRCH') rmSync(breaker, { force: true }); }
+    pause(50);
+    return;
+  }
+  try {
+    const now = lockOwner(file);
+    if (now && now.pid === staleOwner.pid && now.since === staleOwner.since) unlinkSync(file);
+  } finally {
+    rmSync(breaker, { force: true });
+  }
+}
+
+function releaseCheckoutLock(file, token) {
+  heldLockFiles.delete(file);
+  try {
+    if (readFileSync(file, 'utf8') === token) unlinkSync(file);
+  } catch {
+    // Already gone.
   }
 }
 
@@ -490,43 +665,69 @@ function lockedTypescript(root) {
   return match[1];
 }
 
-const fileMode = (path) => statSync(path).mode & 0o7777;
+/**
+ * What a path is, without following it: a symlink's target, or a regular
+ * file's mode. A symlink is never followed, so nothing here can reach
+ * outside the roots through one.
+ *
+ * @returns {{ link: string } | { mode: number } | null}
+ */
+function entryOf(path) {
+  let st;
+  try {
+    st = lstatSync(path);
+  } catch {
+    return null;
+  }
+  return st.isSymbolicLink() ? { link: readlinkSync(path) } : { mode: st.mode & 0o7777 };
+}
+
+const sameEntry = (a, b) => (a === null || b === null ? a === b
+  : 'link' in a ? 'link' in b && a.link === b.link : 'mode' in b && a.mode === b.mode);
 
 /**
- * What a failed build must be able to put back: the mode of every file
- * under `roots`, and a copy (in a directory under the system tmpdir,
- * mirroring the repo's paths) of every file git cannot give back as it is:
- * one that differs from HEAD, or that HEAD does not have. Every other file
- * is HEAD's, byte for byte. Throws BuildFailure, before anything is built,
- * if any of it cannot be made.
+ * What a failed build must be able to put back: what every path under
+ * `roots` is (a symlink and its target, or a regular file and its mode),
+ * and a copy (in a directory under the system tmpdir, mirroring the repo's
+ * paths) of every regular file git cannot give back as it is: one that
+ * differs from HEAD, or that HEAD does not have. Every other file is HEAD's.
+ * Throws BuildFailure, before anything is built, if any of it cannot be made.
  */
 function holdOutputs({ root, roots, before }) {
   let dir;
   try {
     dir = mkdtempSync(join(tmpdir(), 'dist-integrity-held-'));
-    /** @type {Map<string, number>} */
-    const modes = new Map();
-    for (const path of before.keys()) modes.set(path, fileMode(join(root, path)));
+    /** @type {Map<string, { link: string } | { mode: number }>} */
+    const entries = new Map();
+    for (const path of before.keys()) {
+      const entry = entryOf(join(root, path));
+      if (entry === null) throw new Error(`${path} vanished while it was being held`);
+      entries.set(path, entry);
+    }
     const status = spawnSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...roots], {
       cwd: root, encoding: 'buffer', maxBuffer: 1 << 28,
     });
     if (status.status !== 0) throw new Error(`git status failed: ${status.stderr || status.error?.message}`);
+    /** Paths git cannot give back as they are. */
+    const dirty = new Set();
     /** @type {Map<string, string>} */
     const copies = new Map();
-    const entries = status.stdout.toString('utf8').split('\0');
-    for (let i = 0; i < entries.length; i++) {
-      const entry = entries[i];
-      if (!entry) continue;
+    const lines = status.stdout.toString('utf8').split('\0');
+    for (let i = 0; i < lines.length; i++) {
+      const line = lines[i];
+      if (!line) continue;
       // A rename or copy is followed by its source path, which is not a file here.
-      if (entry[0] === 'R' || entry[0] === 'C') i++;
-      const path = entry.slice(3);
+      if (line[0] === 'R' || line[0] === 'C') i++;
+      const path = line.slice(3);
       if (!before.has(path)) continue;
+      dirty.add(path);
+      if ('link' in entries.get(path)) continue;
       const copy = join(dir, path);
       mkdirSync(dirname(copy), { recursive: true });
       copyFileSync(join(root, path), copy, constants.COPYFILE_FICLONE);
       copies.set(path, copy);
     }
-    return { dir, copies, modes };
+    return { dir, entries, dirty, copies };
   } catch (error) {
     if (dir) rmSync(dir, { recursive: true, force: true });
     throw new BuildFailure(
@@ -538,9 +739,12 @@ function holdOutputs({ root, roots, before }) {
 
 /**
  * Put every file under `roots` back as `before` had it: remove what the
- * build added, restore what it changed or removed (from the held copy, or
- * HEAD), and give every file its mode back. Each path is attempted on its
- * own, so one that cannot be restored never stops the rest.
+ * build added, restore what it changed or removed (a held copy, a symlink
+ * with its target, or HEAD), and give every regular file its mode back.
+ * Each path is attempted on its own, so one that cannot be restored never
+ * stops the rest. Nothing is written through a symlink: whatever stands at
+ * a path is removed before the path is restored, and a path whose
+ * directory now leads outside the checkout is refused.
  *
  * @returns {{ restored: string[], unrestored: Array<{ path: string, why: string }> }}
  */
@@ -554,47 +758,61 @@ function restoreOutputs({ root, roots, before, held }) {
       failed.set(path, error.code ? `${error.code}: ${error.message}` : error.message);
     }
   };
+  const realRoot = realpathSync(root);
+  /** Clear `path` for restoring, making sure its directory is inside the checkout. */
+  const clear = (path) => {
+    const target = join(root, path);
+    mkdirSync(dirname(target), { recursive: true });
+    const parent = relative(realRoot, realpathSync(dirname(target)));
+    if (parent.startsWith('..')) throw new Error(`its directory now leads outside the checkout (${realpathSync(dirname(target))})`);
+    rmSync(target, { recursive: true, force: true });
+    return target;
+  };
   const { changed, added, removed } = diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
   for (const path of added) attempt(path, () => rmSync(join(root, path)));
   const fromHead = [];
   for (const path of [...changed, ...removed]) {
-    const copy = held.copies.get(path);
-    if (!copy) {
+    const entry = held.entries.get(path);
+    if (!held.dirty.has(path)) {
+      // HEAD has it as it was. git replaces whatever stands there, symlink or not.
+      attempt(path, () => clear(path));
       fromHead.push(path);
-      continue;
+    } else if ('link' in entry) {
+      attempt(path, () => symlinkSync(entry.link, clear(path)));
+    } else {
+      attempt(path, () => copyFileSync(held.copies.get(path), clear(path)));
     }
-    attempt(path, () => {
-      mkdirSync(dirname(join(root, path)), { recursive: true });
-      copyFileSync(copy, join(root, path));
-    });
   }
-  if (fromHead.length > 0) {
+  const restorable = fromHead.filter((path) => !failed.has(path));
+  if (restorable.length > 0) {
     const restored = spawnSync('git', ['restore', '--source=HEAD', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], {
-      cwd: root, input: fromHead.join('\0'), encoding: 'utf8',
+      cwd: root, input: restorable.join('\0'), encoding: 'utf8',
     });
     if (restored.status !== 0) {
       const why = `git restore failed: ${(restored.stderr || restored.error?.message || '').trim()}`;
-      for (const path of fromHead) failed.set(path, why);
+      for (const path of restorable) failed.set(path, why);
     }
   }
   // HEAD knows only 0644 and 0755, a copy takes the mode of its target, and
   // a build can change a file's mode without its bytes: every mode back.
+  // Only a regular file is chmodded: chmod follows a symlink.
   const remoded = new Set();
-  for (const [path, mode] of held.modes) {
+  for (const [path, entry] of held.entries) {
+    if (!('mode' in entry)) continue;
     attempt(path, () => {
-      const target = join(root, path);
-      if (!existsSync(target) || fileMode(target) === mode) return;
-      chmodSync(target, mode);
+      const now = entryOf(join(root, path));
+      if (now === null || !('mode' in now) || now.mode === entry.mode) return;
+      chmodSync(join(root, path), entry.mode);
       remoded.add(path);
     });
   }
 
-  // What is still wrong is judged against the snapshot, not the attempts.
+  // What is still wrong is judged against the snapshot (bytes, or a link's
+  // target) and each path's type and mode, not the attempts.
   const left = diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
   const stillWrong = new Set([...left.changed, ...left.added, ...left.removed]);
-  for (const [path, mode] of held.modes) {
-    const target = join(root, path);
-    if (existsSync(target) && fileMode(target) !== mode) stillWrong.add(path);
+  for (const [path, entry] of held.entries) {
+    if (!sameEntry(entryOf(join(root, path)), entry)) stillWrong.add(path);
   }
   const unrestored = [...stillWrong].sort().map((path) => ({
     path, why: failed.get(path) ?? 'differs from before the build after the rollback',
@@ -777,9 +995,14 @@ export async function checkStagedAssets({ root = REPO_ROOT } = {}) {
  * as before. Unit fixtures pass custom roots/steps and bypass the record
  * entirely — they verify a different tree.
  */
-export async function assertDistMatchesSource({
+export function assertDistMatchesSource({
   root = REPO_ROOT, roots = OUTPUT_ROOTS, steps = BUILD_FIXPOINT, log = silent, useCache = true,
 } = {}) {
+  // Held from before the first read of the tree through the last.
+  return withCheckoutLock(root, () => verifyUnderLock({ root, roots, steps, log, useCache }), { log });
+}
+
+async function verifyUnderLock({ root, roots, steps, log, useCache }) {
   const defaultScope = roots === OUTPUT_ROOTS && steps === BUILD_FIXPOINT;
   assertWorkspaceToolchain({ root, steps });
   // An output whose source is gone would ship, and load. The record cannot
@@ -942,20 +1165,22 @@ if (import.meta.main) {
   // that directory as it stands, so beyond the fixpoint it must hold exactly
   // what HEAD holds: a consistent but uncommitted src+dist edit would
   // otherwise ship bytes git never saw.
-  if (process.argv.includes('--publish')) {
-    const dirty = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.'], {
-      encoding: 'utf8',
-    });
-    if (dirty.status !== 0 || dirty.stdout.trim()) {
-      console.error(
-        `\nrefusing to publish — ${process.cwd()} differs from HEAD:\n${dirty.stdout}${dirty.stderr}`
-        + 'Commit or discard these, then publish again.\n',
-      );
-      process.exit(1);
-    }
-  }
   try {
-    const { assets, cached } = await assertDistMatchesSource({ log, useCache });
+    const { assets, cached } = await withCheckoutLock(REPO_ROOT, async () => {
+      if (process.argv.includes('--publish')) {
+        const dirty = spawnSync('git', ['status', '--porcelain', '--untracked-files=all', '--', '.'], {
+          encoding: 'utf8',
+        });
+        if (dirty.status !== 0 || dirty.stdout.trim()) {
+          console.error(
+            `\nrefusing to publish — ${process.cwd()} differs from HEAD:\n${dirty.stdout}${dirty.stderr}`
+            + 'Commit or discard these, then publish again.\n',
+          );
+          process.exit(1);
+        }
+      }
+      return assertDistMatchesSource({ log, useCache });
+    }, { log });
     console.log(
       'dist-integrity OK: the build output is the fixpoint of src; ' +
       `${assets.verified.length} staged assets match what dist points at` +

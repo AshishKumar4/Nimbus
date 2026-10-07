@@ -36,8 +36,8 @@ function statFields(pid) {
   return stat.slice(stat.lastIndexOf(')') + 2).split(' ');
 }
 
-/** A process's start time: with its pid, the identity a reused pid cannot fake. */
-function identity(pid) {
+/** A process's start time: with its pid, the identity a reused pid cannot fake. Null where /proc does not say. */
+export function processStartTime(pid) {
   try { return statFields(pid)[19]; } catch { return null; }
 }
 
@@ -82,7 +82,7 @@ function killTree(child, rootStart, known) {
       if (statFields(pid)[19] === start) process.kill(pid, 'SIGKILL');
     } catch { /* Already gone; never kill a reused pid. */ }
   }
-  const current = identity(child.pid);
+  const current = processStartTime(child.pid);
   if (current !== null && current !== rootStart) return;
   try { process.kill(-child.pid, 'SIGKILL'); } catch { /* Group already gone. */ }
   if (current !== null) { try { child.kill('SIGKILL'); } catch { /* Spawn failed. */ } }
@@ -267,7 +267,7 @@ export function runBoundedProcess(command, args = [], { env = process.env, timeo
         ...Object.entries(cgroupEnv).filter(([key, value]) => key && !key.includes('=') && value !== undefined).map(([key, value]) => `${key}=${value}`),
         executable, ...args], { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: {}, cwd })
       : spawn(unit ? '/usr/bin/systemd-run' : executable, launchArgs, { detached: true, stdio: ['ignore', 'pipe', 'pipe'], env: unit ? process.env : env, cwd });
-    const rootStart = child.pid ? identity(child.pid) : null;
+    const rootStart = child.pid ? processStartTime(child.pid) : null;
     const job = {
       name,
       kill() {

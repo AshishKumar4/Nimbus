@@ -17,11 +17,12 @@
 // never been observed refusing anything is not evidence.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
+import { hostname, tmpdir } from 'node:os';
 import { join } from 'node:path';
+import { fileURLToPath } from 'node:url';
 
 import {
   BuildFailure,
@@ -547,6 +548,173 @@ writeFileSync('../../held-copies', String(held.reduce((n, dir) => n + readdirSyn
     assert.equal(readFileSync(join(root, 'held-copies'), 'utf8'), '0', 'nothing under packages/worker/src needed a copy, and nothing else may be held');
   });
   console.log('  ok  [17] the generated-sources guard holds copies only of what its step can write');
+}
+
+// ── [18] RED: two gates on one checkout ──────────────────────────────
+// Gate A cleans dist and is rebuilding it when gate B starts; B's build
+// then fails. Unlocked, B snapshotted a tree with no dist, and its rollback
+// deleted A's rebuilt dist as "added", after A had passed. With the
+// checkout lock, B waits for A before its first snapshot.
+{
+  const { root, pkg } = await fixtureAtFixpoint();
+  const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
+  manifest.scripts['slow-build'] = 'node slow-build.mjs';
+  manifest.scripts['fail-build'] = 'node fail-build.mjs';
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify(manifest));
+  // Each waits, bounded, for a file the orchestrator writes.
+  const waitFor = (file) => `
+const until = Date.now() + 60_000;
+while (!existsSync(${JSON.stringify(file)})) {
+  if (Date.now() > until) { console.error('gave up waiting for ${file}'); process.exit(3); }
+  Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+}`;
+  writeFileSync(join(pkg, 'slow-build.mjs'), `
+import { cpSync, existsSync, rmSync, writeFileSync } from 'node:fs';
+rmSync('dist', { recursive: true, force: true });
+writeFileSync('../../cleaned', '');
+${waitFor('../../go')}
+cpSync('src', 'dist', { recursive: true });
+`);
+  writeFileSync(join(pkg, 'fail-build.mjs'), `
+import { existsSync, writeFileSync } from 'node:fs';
+writeFileSync('../../b-started', '');
+${waitFor('../../a-done')}
+process.exit(1);
+`);
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'two builds');
+  const atFixpoint = snapshotBuildOutputs({ root, roots: ROOTS });
+
+  const gateModule = new URL('../../scripts/dist-integrity.mjs', import.meta.url).href;
+  writeFileSync(join(root, 'gate.mjs'), `
+import { assertDistMatchesSource } from ${JSON.stringify(gateModule)};
+const [root, script] = process.argv.slice(2);
+try {
+  await assertDistMatchesSource({
+    root, roots: ['packages/worker'], steps: [{ cwd: 'packages/worker', script, why: script }],
+    log: (line) => console.error(line),
+  });
+  console.log('RESULT ok');
+} catch (error) {
+  console.log('RESULT ' + error.name);
+  console.error(error.message);
+}
+`);
+  const gate = (script) => {
+    const child = spawn(process.execPath, [join(root, 'gate.mjs'), root, script], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+    const run = { out: '', err: '', done: null };
+    child.stdout.on('data', (chunk) => { run.out += chunk; });
+    child.stderr.on('data', (chunk) => { run.err += chunk; });
+    run.done = new Promise((resolve) => child.on('exit', resolve));
+    return run;
+  };
+  const until = async (what, predicate) => {
+    for (const deadline = Date.now() + 60_000; !predicate();) {
+      if (Date.now() > deadline) throw new assert.AssertionError({ message: `timed out waiting for ${what}` });
+      await new Promise((resolve) => setTimeout(resolve, 20));
+    }
+  };
+
+  const a = gate('slow-build');
+  await until('gate A to clean dist', () => existsSync(join(root, 'cleaned')));
+  const b = gate('fail-build');
+  // B either gets in (unlocked: its build starts) or reports that it waits.
+  await until('gate B to start or wait', () => existsSync(join(root, 'b-started')) || /waiting for the checkout lock/.test(b.err));
+  const bWaited = !existsSync(join(root, 'b-started'));
+  writeFileSync(join(root, 'go'), '');
+  await a.done;
+  assert.match(a.out, /RESULT ok/, `gate A passes:\n${a.out}${a.err}`);
+  writeFileSync(join(root, 'a-done'), '');
+  await b.done;
+  assert.match(b.out, /RESULT BuildFailure/, `gate B's build fails:\n${b.out}${b.err}`);
+  assert.ok(bWaited, 'gate B must wait for gate A before its first snapshot');
+  assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), atFixpoint, "A's rebuilt dist survives B's failed build");
+  console.log('  ok  [18] two gates on one checkout: the second waits, and its rollback leaves the first\'s output');
+}
+
+// ── [19] RED: the generated-sources guard rolls back core's generated modules ─
+// bundle:facets writes four core runtime modules (virtual-socket-kernel,
+// supervisor-answering, wasi-instance, bash-runner .generated.ts) before
+// steps that can still fail; a failed regeneration must put them back.
+{
+  const root = mkdtempSync(join(tmpdir(), 'dist-integrity-freshness-core-'));
+  process.on('exit', () => rmSync(root, { recursive: true, force: true }));
+  const worker = join(root, 'packages', 'worker');
+  const kernel = join(root, 'packages', 'core', 'src', 'runtime', 'virtual-socket-kernel.generated.ts');
+  mkdirSync(join(worker, 'src'), { recursive: true });
+  mkdirSync(join(root, 'packages', 'core', 'src', 'runtime'), { recursive: true });
+  writeFileSync(kernel, 'export const KERNEL = 1;\n');
+  writeFileSync(join(worker, 'package.json'), JSON.stringify({ name: 'w', type: 'module', scripts: { 'bundle:facets': 'node facets.mjs' } }));
+  writeFileSync(join(worker, 'facets.mjs'), `
+import { writeFileSync } from 'node:fs';
+writeFileSync('../core/src/runtime/virtual-socket-kernel.generated.ts', 'half-written');
+process.exit(1);
+`);
+  git(root, 'init', '-q');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'generated sources current');
+  assert.throws(() => assertGeneratedSourcesAreCurrent({ root }), BuildFailure);
+  assert.equal(readFileSync(kernel, 'utf8'), 'export const KERNEL = 1;\n', "the core module the failed regeneration rewrote is put back");
+  console.log('  ok  [19] a failed regeneration puts back the core modules bundle:facets rewrote');
+}
+
+// ── [20] RED: a symlink comes back a symlink ─────────────────────────
+// An untracked dist symlink that clean-dist deleted must be restored as the
+// same link, not as a regular file holding its target's bytes; and a link
+// and the file it points at are not "the same" to the verification.
+{
+  await withPrivateTmp(async () => {
+    const { root, pkg } = await committedFixture();
+    symlinkSync('payload.js', join(pkg, 'dist', 'link.js'));
+    writeFileSync(join(pkg, 'build.mjs'), BUILD_MJS + 'process.exit(1);\n');
+    const before = snapshotBuildOutputs({ root, roots: ROOTS });
+    assert.equal(before.get('packages/worker/dist/link.js'), 'link:payload.js', 'a symlink is recorded by its target, not followed');
+    const message = await buildFailure(root);
+    const link = join(pkg, 'dist', 'link.js');
+    assert.ok(lstatSync(link).isSymbolicLink(), 'dist/link.js is a symlink again');
+    assert.equal(readlinkSync(link), 'payload.js');
+    assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), before);
+    assert.match(message, /The tree is as it was before the build/);
+  });
+  console.log('  ok  [20] a deleted dist symlink is restored as the same link, and verified as one');
+}
+
+// ── [21] RED: nothing is written or chmodded through a symlink ────────
+// A failing build replaces a held dist file with a symlink that leads out
+// of the roots. The rollback must replace the link, never write the held
+// copy through it or chmod what it points at.
+{
+  await withPrivateTmp(async () => {
+    const { root, pkg } = await committedFixture();
+    const outside = join(root, 'outside.txt');
+    writeFileSync(outside, 'outside the roots\n');
+    chmodSync(outside, 0o600);
+    writeFileSync(join(pkg, 'build.mjs'), BUILD_MJS + `
+import { symlinkSync as link } from 'node:fs';
+link('../../../outside.txt', 'dist/held-a.js');
+process.exit(1);
+`);
+    const message = await buildFailure(root);
+    assert.equal(readFileSync(outside, 'utf8'), 'outside the roots\n', 'the file outside the roots is untouched');
+    assert.equal((statSync(outside).mode & 0o777).toString(8), '600', 'and so is its mode');
+    const held = join(pkg, 'dist', 'held-a.js');
+    assert.ok(lstatSync(held).isFile(), 'dist/held-a.js is a regular file again');
+    assert.equal(readFileSync(held, 'utf8'), 'export const A = 1;\n');
+    assert.match(message, /The tree is as it was before the build/);
+  });
+  console.log('  ok  [21] a symlink planted by a failed build is replaced; nothing is written or chmodded through it');
+}
+
+// ── [22] A lock left by a process that is gone is broken ─────────────
+{
+  const { root } = await fixtureAtFixpoint();
+  const gone = spawnSync(process.execPath, ['-e', 'process.exit(0)']).pid;
+  const gitDir = spawnSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: root, encoding: 'utf8' }).stdout.trim();
+  const lock = join(gitDir, 'nimbus-dist-integrity.lock');
+  writeFileSync(lock, JSON.stringify({ pid: gone, start: null, host: hostname(), root, since: '2026-01-01T00:00:00.000Z' }));
+  await assertDistMatchesSource({ root, roots: ROOTS, steps: STEPS });
+  assert.ok(!existsSync(lock), 'the gate broke the stale lock, ran, and released its own');
+  console.log('  ok  [22] a checkout lock whose process is gone is broken, and the gate runs');
 }
 
 console.log('dist-integrity: all cases passed');

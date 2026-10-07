@@ -28,14 +28,18 @@ import {
   diffSnapshots,
   runBuildFixpoint,
   snapshotBuildOutputs,
+  withCheckoutLock,
 } from '../../../scripts/dist-integrity.mjs';
 
 /**
  * Everything `bundle:facets` can write, without naming its outputs: the
- * generated sources, and the runtime scripts it stages and pins in them.
- * A failed regeneration is rolled back over exactly these.
+ * worker's generated sources, the runtime scripts it stages and pins in
+ * them, and the core runtime modules it generates (virtual-socket-kernel,
+ * supervisor-answering, wasi-instance and bash-runner .generated.ts, all
+ * written before steps that can still fail). A failed regeneration is
+ * rolled back over exactly these.
  */
-const ROOTS = ['packages/worker/src', 'packages/worker/public/_assets/runtime'];
+const ROOTS = ['packages/worker/src', 'packages/worker/public/_assets/runtime', 'packages/core/src'];
 
 const REGENERATE = [{
   cwd: 'packages/worker',
@@ -44,9 +48,13 @@ const REGENERATE = [{
 }];
 
 export function assertGeneratedSourcesAreCurrent({ root = REPO_ROOT } = {}) {
-  const before = snapshotBuildOutputs({ root, roots: ROOTS });
-  runBuildFixpoint({ root, steps: REGENERATE, roots: ROOTS, before });
-  const after = snapshotBuildOutputs({ root, roots: ROOTS });
+  // One lock from the first snapshot to the last: no other gate on this
+  // checkout can move the tree in between.
+  const { before, after } = withCheckoutLock(root, () => {
+    const before = snapshotBuildOutputs({ root, roots: ROOTS });
+    runBuildFixpoint({ root, steps: REGENERATE, roots: ROOTS, before });
+    return { before, after: snapshotBuildOutputs({ root, roots: ROOTS }) };
+  });
 
   const { changed, added, removed } = diffSnapshots(before, after);
   const moved = [...changed, ...added, ...removed];
