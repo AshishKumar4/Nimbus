@@ -12,24 +12,9 @@
 // checked against a direct sum of what it holds.
 
 import assert from 'node:assert/strict';
-import { Database } from 'bun:sqlite';
 
 import { FACET_RESIDENT_STORE_SOURCE } from '../../packages/worker/src/vfs/facet-resident-store.ts';
-
-/** workerd's `ctx.storage.sql` over a real SQLite: exec(query, ...params) → rows. */
-function sqlShim() {
-  const db = new Database(':memory:');
-  return {
-    exec(query, ...params) {
-      if (/^\s*(CREATE|INSERT|UPDATE|DELETE|REPLACE|DROP)/i.test(query)) {
-        db.query(query).run(...params);
-        return [];
-      }
-      return db.query(query).all(...params);
-    },
-    get databaseSize() { return 0; },
-  };
-}
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const STORE_API = 'onSql: __residentTablesOnSql, inMemory: __residentTablesInMemory, OWN: __RK_OWN_WRITE, ROW: __RESIDENT_ROW_BYTES,'
   + ' nsReady: __nsReady, markReady: __nsMarkReady, replaceNamespace: __nsReplace, LINK: __NS_LINK,'
@@ -155,7 +140,7 @@ const STEPS = 120;
 let compared = 0;
 for (let seed = 1; seed <= SEQUENCES; seed++) {
   const rand = prng(seed);
-  const sql = store.onSql(sqlShim());
+  const sql = store.onSql(createSqliteVfsTestHarness().sql);
   const heap = store.inMemory();
   const ops = [];
   for (let i = 0; i < STEPS; i++) {

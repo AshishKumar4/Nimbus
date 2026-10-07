@@ -124,8 +124,9 @@ it. Nothing per-process chooses:
 no spawn site, program name, mode or payload size reaches the selection, and an
 unrecognised value is refused rather than defaulted. Flip it on a target with
 `bun tests/behavioral/_throwaway-target.mjs up --var NIMBUS_PROCESS_HOST:peer`,
-and read back where a process actually landed by also setting
-`--var NIMBUS_DEBUG:1` and watching the process log.
+and read back where a process actually landed in the process log: every
+probe target, each throwaway included, is deployed with `NIMBUS_DEBUG=1`
+(`PROBE_TARGET_VARS` in `tests/behavioral/_deploy-target.mjs`).
 
 The Runtime OS target and honest support matrix are tracked in
 `docs/architecture/nimbus-os-runtime-spec.md`. Keep docs and UI claims within
