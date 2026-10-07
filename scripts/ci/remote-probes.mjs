@@ -5,22 +5,22 @@
 //
 //   bun scripts/ci/remote-probes.mjs --target staging|throwaway:<name> [<commit>]
 //       [--only a,b] [--skip c,d] [--parts N] [--jobs J] [--repeat a,b --times T]
-//   bun scripts/ci/remote-probes.mjs --deploy <name> [<commit>] [--only a,b] [--skip c,d] [--jobs J]
+//   bun scripts/ci/remote-probes.mjs --deploy <name> [<commit>] [--only a,b] [--skip c,d] [--parts N] [--jobs J]
 //
 // Run it in the lane's worktree. The probes are <commit>'s (default HEAD),
-// so commit first. With --target, the token is minted here, by the target's
-// own `token --json` (tests/behavioral/_staging-target.mjs or
-// _throwaway-target.mjs), with a two-hour lifetime: armada keeps a job's
-// environment while the job lives, so only a credential for this target and
-// run goes there, and no output carries it (probes.mjs scrubs).
+// so commit first. The token is minted here, by the target's own `token
+// --json` (tests/behavioral/_staging-target.mjs or _throwaway-target.mjs),
+// and lives only as long as the job may: armada keeps a job's environment,
+// so only a credential for this target and run goes there, expiring with
+// it, and no output carries it (probes.mjs scrubs).
 //
-// --deploy deploys <commit> to the throwaway <name> in a container (its
-// gate and wrangler's bundle run there, not here), with a new signing
-// secret, then runs the selection against it in that container, which
-// mints the probe token and keeps it. The deploy needs a scoped Cloudflare
-// API token: CLOUDFLARE_API_TOKEN, else ~/.config/nimbus/cf-deploy-token,
-// passed in that one job's environment, and CLOUDFLARE_ACCOUNT_ID. Tear the
-// throwaway down from here, which needs no build:
+// --deploy first deploys <commit> (HEAD, clean where a deploy reads it) to
+// the throwaway <name>, then probes it as --target throwaway:<name> does.
+// The dist gate and wrangler's bundle run on CI (scripts/ci/bundle.mjs);
+// this machine only uploads the bundle, as built, with its own wrangler
+// login (_throwaway-target.mjs up --bundle), and checks the deployment by
+// its id. No Cloudflare credential leaves this machine. Tear the throwaway
+// down from here, which builds nothing:
 // `bun tests/behavioral/_throwaway-target.mjs down --name <name>`.
 //
 // --parts N splits the selection N ways, each run --jobs J at a time
@@ -35,13 +35,17 @@
 // keeps the whole verdict under ~/.local/state/nimbus/remote-probes/.
 // Exit: 0, every row green; 1, a red row; 2, a task not graded.
 import { spawnSync } from 'node:child_process';
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { PROBE_TARGET_SKIPS } from '../../tests/behavioral/_probe-target-skips.mjs';
 import { mapOnArmada } from './lib/armada.mjs';
 
-const TOKEN_TTL_MS = 2 * 60 * 60 * 1000;
+/** A task's limit on armada, and so the job's: every part runs at once. */
+const TASK_TIMEOUT_S = 30 * 60;
+/** How long a new environment may take to prepare before the first task starts. */
+const PREPARE_S = 15 * 60;
+const TOKEN_TTL_MS = (PREPARE_S + TASK_TIMEOUT_S) * 1000;
 
 const argv = process.argv.slice(2);
 const VALUED = ['--target', '--deploy', '--only', '--skip', '--parts', '--jobs', '--repeat', '--times'];
@@ -54,7 +58,6 @@ for (let i = 0; i < argv.length; i++) {
 }
 const target = /^(staging|throwaway:(.+))$/.exec(flags.target ?? '');
 if (!target === !flags.deploy || positional.length > 1) usage('one of --target staging, --target throwaway:<name> and --deploy <name> is required');
-if (flags.deploy && (flags.parts || flags.repeat)) usage('--deploy runs in one container: no --parts or --repeat');
 const count = (name, fallback) => {
   const value = flags[name] === undefined ? fallback : Number(flags[name]);
   if (!Number.isInteger(value) || value < 1) usage(`--${name} must be a positive integer`);
@@ -73,59 +76,79 @@ const git = (cwd, args) => {
   if (done.status !== 0) throw new Error(`git ${args[0]} failed: ${(done.stderr || done.error?.message || '').trim()}`);
   return done.stdout.trim();
 };
-const repo = git(process.cwd(), ['rev-parse', '--show-toplevel']);
-const sha = git(repo, ['rev-parse', '--verify', `${positional[0] ?? 'HEAD'}^{commit}`]);
+let repo;
+let sha;
+try {
+  repo = git(process.cwd(), ['rev-parse', '--show-toplevel']);
+  sha = git(repo, ['rev-parse', '--verify', `${positional[0] ?? 'HEAD'}^{commit}`]);
+} catch (error) {
+  console.error(`remote-probes: NOT GRADED — ${error.message}`);
+  process.exit(2);
+}
+
+if (flags.deploy) {
+  try {
+    await deploy(flags.deploy);
+  } catch (error) {
+    console.error(`remote-probes: NOT GRADED — ${error.message}`);
+    process.exit(2);
+  }
+}
 
 const skip = flags.skip ?? PROBE_TARGET_SKIPS.join(',');
-/** What the job carries, and how its tasks run. */
-let job;
-if (flags.deploy) {
-  const tokenFile = join(homedir(), '.config', 'nimbus', 'cf-deploy-token');
-  const cloudflare = process.env.CLOUDFLARE_API_TOKEN || (existsSync(tokenFile) ? readFileSync(tokenFile, 'utf8').trim() : '');
-  if (!cloudflare || !process.env.CLOUDFLARE_ACCOUNT_ID) {
-    console.error(`remote-probes: NOT GRADED — --deploy needs CLOUDFLARE_ACCOUNT_ID and a scoped Cloudflare API token (CLOUDFLARE_API_TOKEN, or ${tokenFile})`);
-    process.exit(2);
-  }
-  job = {
-    secrets: [cloudflare],
-    items: [{ task: `deploy ${flags.deploy}, then probes`, only: flags.only ?? '' }],
-    env: { CLOUDFLARE_API_TOKEN: cloudflare, CLOUDFLARE_ACCOUNT_ID: process.env.CLOUDFLARE_ACCOUNT_ID },
-    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--deploy', flags.deploy, '--only', '{only}', '--skip', skip, '--jobs', String(jobs)],
-    label: `remote-probes ${sha.slice(0, 12)} deploy ${flags.deploy}`,
-    where: `the throwaway ${flags.deploy}, deployed from ${sha.slice(0, 12)}`,
-  };
-} else {
-  const minter = target[2] === undefined
-    ? ['tests/behavioral/_staging-target.mjs', 'token']
-    : ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', target[2]];
-  const minted = spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
-  if (minted.status !== 0) {
-    console.error(`remote-probes: NOT GRADED — could not mint a token for ${flags.target}:\n${minted.stderr}`);
-    process.exit(2);
-  }
-  const { base, token } = JSON.parse(minted.stdout);
-  job = {
-    secrets: [token],
-    items: [
-      ...Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', jobs })),
-      ...(flags.repeat ?? '').split(',').filter(Boolean).flatMap((probe) => Array.from({ length: times }, (_, i) => ({
-        task: `${probe} #${i + 1}`, part: '1/1', only: probe, jobs: 1,
-      }))),
-    ],
-    env: { NIMBUS_PROBE_TOKEN: token },
-    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}'],
-    label: `remote-probes ${sha.slice(0, 12)} ${flags.target}`,
-    where: base,
-  };
+const throwaway = flags.deploy ?? target[2];
+const minter = throwaway === undefined
+  ? ['tests/behavioral/_staging-target.mjs', 'token']
+  : ['tests/behavioral/_throwaway-target.mjs', 'token', '--name', throwaway];
+const minted = spawnSync('bun', [...minter, '--json', '--ttl-ms', String(TOKEN_TTL_MS)], { cwd: repo, encoding: 'utf8' });
+if (minted.status !== 0) {
+  console.error(`remote-probes: NOT GRADED — could not mint a token for ${throwaway ?? 'staging'}:\n${minted.stderr}`);
+  process.exit(2);
 }
-const scrub = (text) => job.secrets.reduce((out, secret) => out.replaceAll(secret, '[credential]'), text);
-console.error(`remote-probes: ${job.items.length} tasks against ${job.where}, probes of ${sha.slice(0, 12)}`);
+const { base, token } = JSON.parse(minted.stdout);
+const scrub = (text) => text.replaceAll(token, '[NIMBUS_PROBE_TOKEN]');
+const items = [
+  ...Array.from({ length: parts }, (_, i) => ({ task: `part ${i + 1}/${parts}`, part: `${i + 1}/${parts}`, only: flags.only ?? '', jobs })),
+  ...(flags.repeat ?? '').split(',').filter(Boolean).flatMap((probe) => Array.from({ length: times }, (_, i) => ({
+    task: `${probe} #${i + 1}`, part: '1/1', only: probe, jobs: 1,
+  }))),
+];
+console.error(`remote-probes: ${items.length} tasks against ${base}, probes of ${sha.slice(0, 12)}`);
+
+/**
+ * Deploy `sha` to the throwaway `name`: the bundle from CI, uploaded from
+ * here. Throws, saying why, when it could not.
+ */
+async function deploy(name) {
+  if (git(repo, ['rev-parse', 'HEAD']) !== sha) throw new Error(`--deploy deploys this worktree's HEAD, and ${sha.slice(0, 12)} is not it`);
+  const mapped = await mapOnArmada({
+    repo, sha, files: ['scripts/ci/bundle.mjs'], items: [1], label: `bundle ${sha.slice(0, 12)} for ${name}`,
+    command: ['bun', 'scripts/ci/bundle.mjs', '--out', '{out}', '--app', 'apps/probe'],
+  });
+  const [outcome] = mapped.outcomes;
+  if (outcome?.kind !== 'exited' || mapped.outputs[0] === null) throw new Error(`armada could not bundle ${sha.slice(0, 12)} (job ${mapped.jobId}):\n${outcome?.tail ?? 'no outcome'}`);
+  const verdict = JSON.parse(mapped.outputs[0]);
+  if (verdict.head !== mapped.commit) throw new Error(`the bundle is of ${verdict.head}, not ${mapped.commit} (job ${mapped.jobId})`);
+  if (verdict.bundle === null) {
+    const red = verdict.rows.filter((row) => row.exitCode !== 0);
+    throw new Error(`no bundle (job ${mapped.jobId}):\n${red.map((row) => `${row.name} exit ${row.exitCode}\n${row.output.trimEnd().split('\n').slice(-40).join('\n')}`).join('\n')}`);
+  }
+  const dir = join(homedir(), '.local', 'state', 'nimbus', 'remote-bundles', `${sha.slice(0, 12)}-${mapped.jobId}`);
+  mkdirSync(dir, { recursive: true });
+  writeFileSync(join(dir, verdict.bundle.main), Buffer.from(verdict.bundle.base64, 'base64'));
+  writeFileSync(join(dir, 'bundle.json'), `${JSON.stringify({ commit: sha, main: verdict.bundle.main, sha256: verdict.bundle.sha256, job: mapped.jobId })}\n`);
+  console.error(`remote-probes: bundled on CI (job ${mapped.jobId}, sha256 ${verdict.bundle.sha256.slice(0, 16)}…); uploading from here`);
+  // Its exports (a token among them) are not wanted: probes get their own, below.
+  const up = spawnSync('bun', ['tests/behavioral/_throwaway-target.mjs', 'up', '--name', name, '--bundle', dir], { cwd: repo, stdio: ['ignore', 'ignore', 'inherit'] });
+  if (up.status !== 0) throw new Error(`the upload of the bundle to ${name} failed (exit ${up.status}); the bundle is in ${dir}`);
+}
 
 let mapped;
 try {
   mapped = await mapOnArmada({
     repo, sha, files: ['scripts/ci/probes.mjs', 'tests/behavioral/run-all.mjs'], setup: 'scripts/armada/chromium.sh',
-    items: job.items, env: job.env, label: job.label, command: job.command,
+    items, env: { NIMBUS_PROBE_TOKEN: token }, label: `remote-probes ${sha.slice(0, 12)} ${throwaway ?? 'staging'}`, timeout: TASK_TIMEOUT_S,
+    command: ['bun', 'scripts/ci/probes.mjs', '--out', '{out}', '--base', base, '--only', '{only}', '--skip', skip, '--part', '{part}', '--jobs', '{jobs}'],
   });
 } catch (error) {
   console.error(`remote-probes: NOT GRADED — ${scrub(error.message)}`);
@@ -134,7 +157,7 @@ try {
 
 let status = 0;
 const tasks = mapped.outcomes.map((outcome, i) => {
-  const item = job.items[outcome.index];
+  const item = items[outcome.index];
   let verdict = null;
   try { verdict = JSON.parse(mapped.outputs[i] ?? 'null'); } catch { /* reported below */ }
   if (outcome.kind !== 'exited' || verdict === null) {
@@ -145,14 +168,19 @@ const tasks = mapped.outcomes.map((outcome, i) => {
   const red = verdict.rows.filter((row) => row.exitCode !== 0);
   if (red.some((row) => row.exitCode === 2)) status = 2;
   else if (red.length > 0 && status === 0) status = 1;
-  console.log(`${red.length === 0 ? 'ok  ' : 'FAIL'} ${item.task}: ${verdict.rows.length - red.length} of ${verdict.rows.length} rows green in ${Math.round(outcome.seconds)} s${flags.deploy && verdict.base ? `, at ${verdict.base}` : ''}`);
+  console.log(`${red.length === 0 ? 'ok  ' : 'FAIL'} ${item.task}: ${verdict.rows.length - red.length} of ${verdict.rows.length} rows green in ${Math.round(outcome.seconds)} s`);
   for (const row of red) console.log(`  FAIL ${row.name} (exit ${row.exitCode}, ${Math.round(row.seconds)} s)\n${row.output.trimEnd().split('\n').slice(-25).map((line) => `    ${line}`).join('\n')}`);
   return { ...item, outcome, rows: verdict.rows };
 });
 
 const state = join(homedir(), '.local', 'state', 'nimbus', 'remote-probes');
-mkdirSync(state, { recursive: true });
-const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}.json`);
-writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: flags.target ?? `deploy:${flags.deploy}`, where: job.where, job: mapped.jobId, tasks }, null, 2))}\n`);
-console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${mapped.jobId})`);
-process.exit(status);
+try {
+  mkdirSync(state, { recursive: true });
+  const report = join(state, `${new Date().toISOString().replace(/[-:]/g, '').slice(0, 15)}-${sha.slice(0, 12)}-${mapped.jobId}.json`);
+  writeFileSync(report, `${scrub(JSON.stringify({ commit: sha, target: throwaway ? `throwaway:${throwaway}` : 'staging', base, job: mapped.jobId, tasks }, null, 2))}\n`);
+  console.log(`remote-probes: ${status === 0 ? 'every row green' : status === 1 ? 'red rows above' : 'not every task was graded'}; verdict ${report} (job ${mapped.jobId})`);
+  process.exit(status);
+} catch (error) {
+  console.error(`remote-probes: NOT GRADED — the verdict could not be kept: ${scrub(error.message)}`);
+  process.exit(2);
+}

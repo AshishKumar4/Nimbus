@@ -556,6 +556,8 @@ Agent-specific probes:
 | Check deploy isolation | `bun scripts/deploy-isolation.mjs` |
 | Check dist matches src | `bun scripts/dist-integrity.mjs` |
 | Typecheck and dist fixpoint, remotely | `bun scripts/ci/remote-build.mjs [<commit>] [--no-cache]` |
+| Behavioral probes, from containers | `bun scripts/ci/remote-probes.mjs --target staging\|throwaway:<name> [--only a,b] [--parts N]` |
+| Deploy a commit to a throwaway, then probe it | `bun scripts/ci/remote-probes.mjs --deploy <name> [--only a,b]` |
 
 The root `predev` script regenerates worker bundles.
 
@@ -571,6 +573,25 @@ The container step is `scripts/ci/build.mjs --out <file>`, which any runner
 can run in a clean checkout after `bun install --frozen-lockfile`. Verdicts
 and patches are kept in `~/.local/state/nimbus/remote-builds/`. A full
 rebuild takes about 35 s there, plus about 25 s for the typecheck.
+
+The behavioral suite runs from containers too, with Chromium.
+`remote-probes.mjs` mints the target's probe token here. Its lifetime is
+bounded by the job's timeout, since armada keeps a job's environment. It
+maps `scripts/ci/probes.mjs` over parts of the suite (4 x 4 by default, the
+16 at once the suite has always run), and prints every red row. The ledger
+is checked per part, and no token is in any output. `--deploy <name>`
+first deploys the worktree's HEAD to that throwaway: CI runs the dist
+gate and wrangler's bundle (`scripts/ci/bundle.mjs`), and this machine
+only uploads the bundle as built (`_throwaway-target.mjs up --bundle`),
+with its own wrangler login, checked by deployment id. No Cloudflare
+credential goes to a container. `down` stays local; it builds nothing.
+
+All of it reaches armada through `scripts/ci/lib/armada.mjs`. Its client
+is pinned exactly: a clean checkout of the commit named there
+(`ARMADA_CLIENT`) at `/mnt/local/nimbus/armada-client`, or `ARMADA_DIR`.
+Upstream armada lacks the packing fix (17db0d5) that a commit off the
+environment's own history needs, so a run on any other client is refused,
+saying how to make the checkout.
 
 Every deploy path (`predeploy`, `deploy:production`, the throwaway and
 staging targets) runs `scripts/dist-integrity.mjs` instead of a build. It
