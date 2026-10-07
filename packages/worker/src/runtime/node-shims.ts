@@ -6439,7 +6439,7 @@ const __utilMod = {
       for (const [name, value] of this) output.push(innerInspect(name) + " => " + innerInspect(value));
       let length = -separator.length;
       for (let i = 0; i < output.length; i++) length += output[i].replace(/\\u001b\\[\\d\\d?m/g, "").length + separator.length;
-      if (length > ctx.breakLength) return this.constructor.name + " {\n  " + output.join(",\n  ") + " }";
+      if (length > ctx.breakLength) return this.constructor.name + " {\\n  " + output.join(",\\n  ") + " }";
       if (output.length) return this.constructor.name + " { " + output.join(separator) + " }";
       return this.constructor.name + " {}";
     },
