@@ -39,7 +39,7 @@ import type { RuntimeFileHandle, RuntimeVfsDirEntry } from '../os-contracts.js';
 import type { ResidentEntry } from './resident-filesystem.js';
 import { fsError, modeAllows } from '../beneath-walk.js';
 import type { W7Attrs } from '@nimbus-sh/platform/w7-frame.js';
-import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
+import { processFsClient, type ProcessFsClient, type ProcessFsGrant, type ProcessFsJournal, type ProcessFsOp, type ProcessFsSession } from '../../_shared/process-fs-client.js';
 
 /** Descriptors this holder opens are numbered below every session descriptor. */
 const FIRST_LOCAL_HANDLE = -1;
