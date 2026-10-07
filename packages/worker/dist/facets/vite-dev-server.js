@@ -292,7 +292,9 @@ function extractCjsExportNames(code) {
  */
 export function failingModule(diag, names) {
     const escaped = JSON.stringify(diag);
-    const declared = [...new Set(names)].filter((name) => name !== 'default');
+    // A string export name must be well-formed Unicode (a lone surrogate is a
+    // SyntaxError); `__nimbus_missing` is this module's own binding.
+    const declared = [...new Set(names)].filter((name) => name !== 'default' && name !== '__nimbus_missing' && isWellFormedUnicode(name));
     const exportList = declared
         .map((name) => (/^[A-Za-z_$][A-Za-z0-9_$]*$/.test(name) && !RESERVED_ES_KEYWORDS.has(name) ? `__nimbus_missing as ${name}` : `__nimbus_missing as ${JSON.stringify(name)}`))
         .join(', ');
@@ -303,13 +305,27 @@ export function failingModule(diag, names) {
         + `console.error(${escaped});\n`
         + `throw new Error(${escaped});\n`;
 }
-/** Files of a package an export scan follows `export *` (and CommonJS reexports) through, at most. */
+/** No lone UTF-16 surrogate: what a string export name may hold. */
+function isWellFormedUnicode(text) {
+    return !/[\uD800-\uDBFF](?![\uDC00-\uDFFF])|(?<![\uD800-\uDBFF])[\uDC00-\uDFFF]/.test(text);
+}
+/**
+ * What an export scan reads, at most: files followed through `export *` (and
+ * CommonJS reexports), one file's bytes, and all of them. It runs in the
+ * session's isolate on a path that has already failed (a package past its
+ * slice cap among them), and es-module-lexer's buffer is twice a source's
+ * length rounded up to a power of two: a file past the per-file bound adds
+ * no names rather than a buffer of its size.
+ */
 const EXPORT_SCAN_FILES = 64;
+const EXPORT_SCAN_FILE_BYTES = 1024 * 1024;
+const EXPORT_SCAN_TOTAL_BYTES = 4 * 1024 * 1024;
 /**
  * The names the module at `entry` exports, as far as its source and the
  * relative modules it re-exports say: ESM `export`s (es-module-lexer), or
  * for a module without them, CommonJS's (cjs-export-names under the Vite
- * policy). Best effort: what cannot be read or resolved adds nothing.
+ * policy). Best effort, and bounded (EXPORT_SCAN_*): what cannot be read,
+ * resolved or afforded adds nothing.
  */
 function moduleExportNames(vfs, entry) {
     const names = new Set();
@@ -328,6 +344,7 @@ function moduleExportNames(vfs, entry) {
         }
         return null;
     };
+    let read = 0;
     while (queue.length > 0 && seen.size < EXPORT_SCAN_FILES) {
         const path = queue.shift();
         if (seen.has(path))
@@ -335,6 +352,10 @@ function moduleExportNames(vfs, entry) {
         seen.add(path);
         let source;
         try {
+            const size = vfs.stat(path).size;
+            if (size > EXPORT_SCAN_FILE_BYTES || read + size > EXPORT_SCAN_TOTAL_BYTES)
+                continue;
+            read += size;
             source = vfs.readFileString(path);
         }
         catch {

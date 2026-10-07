@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b0bf8330f5aa4b92db965d5caef06e4bf96d8a2d3a8ef5090a140a32179c9335",
+  "fingerprint": "c9b92cbcb794370f8c884d3950b55919e738802f51347bf2b4f686cdab3afd42",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1804,8 +1804,8 @@
     "packages/worker/dist/facets/vite-config-file.d.ts.map": "ee2c98ef03cb038cea517650b95366aa42016f261e5735506de090be1aa0fbeb",
     "packages/worker/dist/facets/vite-config-file.js": "4c8d41d4f0fa1bafb2ccf6da5e09f272ab0ebe05a36de2d6310900148317ef2f",
     "packages/worker/dist/facets/vite-dev-server.d.ts": "a3100811249984890bc15aae704f2bf10a1d4ac04ffe28678e3f2992227f1207",
-    "packages/worker/dist/facets/vite-dev-server.d.ts.map": "7d5477b21ccbb2ee2c45996affffe910cfb8a6be6d0d9797622928a8e6ff66a9",
-    "packages/worker/dist/facets/vite-dev-server.js": "e8e646927eb8a98e2a6dd5d1e56a5c401d76579fd478955a069fd8dac0633450",
+    "packages/worker/dist/facets/vite-dev-server.d.ts.map": "0f9cde22c929d25deda6c71c4bb32bd91e41b6d0021ca8a9da8c348b4c1fbf8f",
+    "packages/worker/dist/facets/vite-dev-server.js": "8e0a68c05311840195641cf03c089ca166b861069d4c965f38ea3efd1f5efb77",
     "packages/worker/dist/facets/wasm-image-digest.d.ts": "8d607e53d152180480fe9e4d7f88b7379fbc298ffe5499da3e0070d6a6c54bac",
     "packages/worker/dist/facets/wasm-image-digest.d.ts.map": "676b0f40721a24277299072c5f844fc09c3ae20e374ff70e8646d5f286c63a12",
     "packages/worker/dist/facets/wasm-image-digest.js": "d84c5abafb1bc7112432678cd3bb0291e9c6da1d31ee7a6e042ad771c2470b37",
@@ -2446,7 +2446,7 @@
     "packages/worker/src/facets/resident-identity.ts": "5f87ca98442000b477d021d82e6fcd9bbe36e867306764d15df6a456a9ac97bb",
     "packages/worker/src/facets/transform-store.ts": "8f4399c37bb85dce0d7bd5dde7b69a5aea178b5d4a6b3549abba9e5bdb1f188c",
     "packages/worker/src/facets/vite-config-file.ts": "baba7d83894cbee80ad4d88796b121c12f467acade0fe062f7959f635ba3ed07",
-    "packages/worker/src/facets/vite-dev-server.ts": "ab98f5e1de175e9f5a4e6dc6f9b002b6c97948d2f942635c3dfa29dcc0a3a385",
+    "packages/worker/src/facets/vite-dev-server.ts": "14a4c36947bf84673b8f613413b229aeef7a412777750270abd2b6c3c956a6bf",
     "packages/worker/src/facets/wasm-image-digest.ts": "a7b62376aa3789557d52d1f97490cd5b0dab06d3092b44e9c8776b61620c9c9e",
     "packages/worker/src/facets/wasm-swap-registry.ts": "28babe15f4a0aeb0682c0947d8e7fdce9834384967e7ef98fab984b808879906",
     "packages/worker/src/facets/ws-terminal.ts": "3a04326928698a0a6d5978ac64aecf059d785a3b390ae73e2cb1e83156c0c6b3",

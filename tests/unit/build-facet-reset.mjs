@@ -13,23 +13,28 @@
 //   - a facet that cannot load is that error, not retried;
 //   - the dev server, its pool failing so: the module it serves links against
 //     what the project imports (an ESM package, a CommonJS one, a package
-//     re-exporting with `export *`) and throws the cause as it evaluates.
+//     re-exporting with `export *`, one with a key no export name can be,
+//     one whose entry is past what the scan reads) and throws the cause as
+//     it evaluates.
 
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { createRequire } from 'node:module';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { BuildFacetResetError, buildFacetPrebundler } from '../../packages/worker/src/facets/build-facet.ts';
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
-import { durableObject, freshFacetClass, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
+import { durableObject, freshFacetClass, memories, releaseBuildFacetHarness } from './lib/build-facet-harness.mjs';
 import { esbuildEngine, stopEsbuildEngine } from './lib/esbuild-engine.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const RESET = "Durable Object's isolate exceeded its memory limit and was reset.";
+// The spec's module grammar, as V8 reads it (Bun's accepts a string export name holding a lone surrogate; V8 does not).
+const acorn = createRequire(new URL('../../packages/core/package.json', import.meta.url))('acorn');
 const encoder = new TextEncoder();
 const failures = [];
 const check = (name, ok, detail) => {
@@ -65,33 +70,46 @@ async function warnings(run) {
 const scratch = mkdtempSync(join(process.env.TMPDIR ?? tmpdir(), 'build-facet-reset-'));
 try {
   // ── The pre-bundler ────────────────────────────────────────────────────
-  const { BuildFacet } = await freshFacetClass();
-  /** The facet class whose first `resets` pre-bundles are reset under the call, as workerd answers them. */
-  const resetting = (resets) => {
+  /**
+   * A Durable Object whose build facet is reset under its first `resets`
+   * pre-bundles, as workerd resets one: the call is rejected with the reason
+   * and the actor goes with its isolate (the harness's abort), so the next
+   * call gets a new actor, from a fresh evaluation of the facet's module (a
+   * fresh isolate: its own binding).
+   */
+  const resettingHost = (resets) => {
     let left = resets;
-    return class extends BuildFacet {
-      prebundle(s) {
-        if (left-- > 0) return Promise.reject(new Error(RESET));
-        return super.prebundle(s);
-      }
-    };
+    const host = durableObject(null, async () => {
+      const { BuildFacet: Fresh } = await freshFacetClass();
+      return class extends Fresh {
+        prebundle(s) {
+          if (left <= 0) return super.prebundle(s);
+          left--;
+          host.ctx.facets.abort(host.counts.loaderIds.at(-1), new Error(RESET));
+          return new Promise(() => {});
+        }
+      };
+    });
+    return host;
   };
   {
-    const { ctx, env, counts } = durableObject(BuildFacet, async () => resetting(1));
+    const { ctx, env, counts } = resettingHost(1);
+    const bindings = memories.length;
     const { value, lines } = await warnings(() => buildFacetPrebundler(ctx, env)(spec('once')));
     check('a pre-bundle reset once is pre-bundled again, and answers', value.value?.ok === true && value.value.esmCode.includes('"once"'), JSON.stringify(value.error?.message ?? value.value).slice(0, 300));
     check('the retry is logged, naming the package and the reset', lines.length === 1 && lines[0].includes('pkg') && lines[0].includes(RESET) && /once more/.test(lines[0]), JSON.stringify(lines));
-    check('on a fresh facet', counts.loaderGets === 2, `${counts.loaderGets} loads`);
+    check('on a new actor, from a fresh evaluation, with a binding of its own', counts.facetInstances === 2 && counts.loaderGets === 2 && memories.length === bindings + 1, `${counts.facetInstances} actors, ${counts.loaderGets} loads, ${memories.length - bindings} bindings`);
   }
   {
-    const { ctx, env } = durableObject(BuildFacet, async () => resetting(2));
+    const { ctx, env, counts } = resettingHost(2);
     const { value } = await warnings(() => buildFacetPrebundler(ctx, env)(spec('twice')));
     const error = value.error;
     check('a pre-bundle reset twice fails with BuildFacetResetError', error instanceof BuildFacetResetError, String(error ?? JSON.stringify(value.value)).slice(0, 300));
     check('its message names the package and the reason', /build facet was reset twice while pre-bundling pkg/.test(error?.message ?? '') && (error?.message ?? '').includes(RESET), error?.message);
+    check('after one retry, not more', counts.facetInstances === 2, `${counts.facetInstances} actors`);
   }
   {
-    const { ctx, env } = durableObject(BuildFacet, async () => { throw new Error('the staged parts are corrupt'); });
+    const { ctx, env } = durableObject(null, async () => { throw new Error('the staged parts are corrupt'); });
     const { value, lines } = await warnings(() => buildFacetPrebundler(ctx, env)(spec('load')));
     check('a facet that cannot load is the load\'s error, not retried', /staged parts are corrupt/.test(value.error?.message ?? '') && !(value.error instanceof BuildFacetResetError) && lines.length === 0, `${value.error?.message}; ${JSON.stringify(lines)}`);
   }
@@ -159,6 +177,26 @@ try {
       },
     },
     {
+      // A CommonJS key that is no well-formed string (a lone surrogate) is no export name: left out, the rest link.
+      tag: 'surrogate', specifier: 'odd-keys', imports: ['fine'],
+      files: {
+        'package.json': JSON.stringify({ name: 'app' }),
+        'src/main.ts': "import { fine } from 'odd-keys';\nconsole.log(fine);\n",
+        'node_modules/odd-keys/package.json': JSON.stringify({ name: 'odd-keys', main: 'index.js' }),
+        'node_modules/odd-keys/index.js': 'exports.fine = 1;\nexports["\\ud800"] = 2;\nexports["two words"] = 3;\nexports.__nimbus_missing = 4;\n',
+      },
+    },
+    {
+      // An entry past what the scan reads (1 MiB) adds no names; the project's own imports still link.
+      tag: 'huge', specifier: 'huge-pkg', imports: ['big'], unscanned: 'pad',
+      files: {
+        'package.json': JSON.stringify({ name: 'app' }),
+        'src/main.ts': "import { big } from 'huge-pkg';\nconsole.log(big);\n",
+        'node_modules/huge-pkg/package.json': JSON.stringify({ name: 'huge-pkg', type: 'module', module: 'index.js', main: 'index.js' }),
+        'node_modules/huge-pkg/index.js': `export const big = 1;\nexport const ${'pad'.repeat(1)} = ${JSON.stringify('x'.repeat(1536 * 1024))};\n`,
+      },
+    },
+    {
       tag: 'star', specifier: 'ui-kit', imports: ['Button', 'Card'],
       files: {
         'package.json': JSON.stringify({ name: 'app' }),
@@ -170,10 +208,18 @@ try {
       },
     },
   ];
-  for (const { tag, specifier, imports, files } of cases) {
+  for (const { tag, specifier, imports, files, unscanned } of cases) {
     const { response, code, outcome } = await servedOnReset(tag, files, specifier, imports);
     const message = outcome instanceof Error ? outcome.message : String(outcome);
     check(`${tag}: the module served links against { ${imports.join(', ')} } and throws the cause`, outcome instanceof Error && !(outcome instanceof SyntaxError) && /build facet was reset twice while pre-bundling/.test(message) && message.includes(specifier), `${outcome?.constructor?.name}: ${message.slice(0, 300)}`);
+    let parsed = 'it parses';
+    try {
+      acorn.parse(code, { sourceType: 'module', ecmaVersion: 'latest' });
+    } catch (error) {
+      parsed = String(error?.message ?? error);
+    }
+    check(`${tag}: the module served is a module by the spec's grammar`, parsed === 'it parses', parsed);
+    if (unscanned) check(`${tag}: the entry past the scan's bound was not read`, !code.includes(` as ${unscanned}`), code.slice(0, 300));
     check(`${tag}: not cached, and says why it is not a bundle`, response.status === 200 && response.headers.get('cache-control') === 'no-store' && response.headers.get('x-nimbus-bundle-status') === 'bundle-failed', `${response.status} ${JSON.stringify([...response.headers])} ${code.slice(0, 200)}`);
   }
 } finally {
