@@ -152,6 +152,9 @@ export declare const REPLAY_OPERATION_POLICY: {
     openWaveWriter: {
         readonly kind: "effect";
     };
+    retireWaveWriter: {
+        readonly kind: "effect";
+    };
     putRegistryEntries: {
         readonly kind: "effect";
     };

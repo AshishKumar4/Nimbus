@@ -55,6 +55,8 @@ export const REPLAY_OPERATION_POLICY = {
     fsTruncate: effect, writeBatch: effect, writeBatchStream: effect,
     // Mints a write-wave epoch the session holds open for the live process (state on the host, not a read).
     openWaveWriter: effect,
+    // Ends a write-wave epoch the session holds open for the process.
+    retireWaveWriter: effect,
     putRegistryEntries: effect, stdout: output, stderr: output, prefetch: read,
     registerPort: effect, allocatePort: effect, unregisterPort: effect,
     reportExit: output, routeLoopback: effect, transform: read,

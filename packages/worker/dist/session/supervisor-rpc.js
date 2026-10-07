@@ -644,6 +644,16 @@ export class SupervisorRPC extends WorkerEntrypoint {
         return answer.writer;
     }
     /**
+     * Retire write-wave epoch `writer` (SupervisorDeliveries.retireWaveWriter):
+     * its writer gave a wave of it up, and nothing of it may land after what
+     * it sends next. Harmless to repeat, so a lost call is re-sent.
+     */
+    async retireWaveWriter(writer) {
+        if (this._hostIncarnation() === undefined)
+            return;
+        await this._call(this._resent({ op: 'retireWaveWriter', args: [writer], pid: this._pid() }, { kind: 'open' }, { hedgeAfterMs: LOST_CALL_HEDGE_AFTER_MS }));
+    }
+    /**
      * A write wave, sent once: its stream is consumed by the attempt that
      * carries it, so the writer that minted it re-sends a lost wave itself,
      * re-encoded under a newer fence (platform wave-writer.ts, lost-call.ts).

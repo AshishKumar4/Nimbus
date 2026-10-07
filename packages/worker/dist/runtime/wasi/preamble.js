@@ -182,6 +182,7 @@ function __wasiStartResident(sup, cred) {
         // Called as methods of the stub, never through .call/.apply: on an RPC stub those are remote method names too.
         openWriter: (first) => waves.openWaveWriter(first),
         writeBatchStream: (stream, fence, owner) => (owner === undefined ? waves.writeBatchStream(stream, fence) : waves.writeBatchStream(stream, fence, owner)),
+        retireWriter: async (writer) => { await waves.retireWaveWriter(writer); },
         grants: {
             acquire: async (path, delegate) => await authority.acquireExclusiveMutation(path, { delegate }),
             release: async (owner) => { await authority.releaseExclusiveMutation(owner); },

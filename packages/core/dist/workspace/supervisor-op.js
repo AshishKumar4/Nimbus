@@ -323,6 +323,15 @@ const NATIVE_OPS = {
     // A write-wave epoch for the live process that asks, on this instance:
     // the only writer identity a fenced writeBatchStream is admitted under.
     // Repeating it is harmless: an unused epoch admits nothing and expires.
+    // A writer gave a wave of an epoch up: the epoch admits nothing more. Repeating it is harmless.
+    retireWaveWriter: (e, t) => {
+        if (t.deliveries === undefined)
+            return;
+        if (e.pid === undefined)
+            throw new Error('supervisor op: retireWaveWriter names no process');
+        t.bridge(e.pid, e.cred);
+        t.deliveries.retireWaveWriter(e.pid, stringArg(e, 0));
+    },
     openWaveWriter: (e, t) => {
         // A host that delivers in process fences nothing: no epoch (null), and waves go unfenced.
         if (t.deliveries === undefined)

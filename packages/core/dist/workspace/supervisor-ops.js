@@ -60,6 +60,7 @@ export const SUPERVISOR_OP_TABLE = {
     writeBatch: 'once',
     writeBatchStream: null,
     openWaveWriter: null,
+    retireWaveWriter: null,
     putRegistryEntries: null,
     stdout: null,
     stderr: null,

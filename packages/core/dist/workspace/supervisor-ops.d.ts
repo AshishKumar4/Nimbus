@@ -60,6 +60,7 @@ export declare const SUPERVISOR_OP_TABLE: {
     readonly writeBatch: "once";
     readonly writeBatchStream: null;
     readonly openWaveWriter: null;
+    readonly retireWaveWriter: null;
     readonly putRegistryEntries: null;
     readonly stdout: null;
     readonly stderr: null;

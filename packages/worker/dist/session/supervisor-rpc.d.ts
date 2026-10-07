@@ -332,6 +332,12 @@ export declare class SupervisorRPC extends WorkerEntrypoint {
      */
     openWaveWriter(first?: boolean): Promise<string | null>;
     /**
+     * Retire write-wave epoch `writer` (SupervisorDeliveries.retireWaveWriter):
+     * its writer gave a wave of it up, and nothing of it may land after what
+     * it sends next. Harmless to repeat, so a lost call is re-sent.
+     */
+    retireWaveWriter(writer: string): Promise<void>;
+    /**
      * A write wave, sent once: its stream is consumed by the attempt that
      * carries it, so the writer that minted it re-sends a lost wave itself,
      * re-encoded under a newer fence (platform wave-writer.ts, lost-call.ts).

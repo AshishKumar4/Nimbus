@@ -27,7 +27,7 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter } from './events.js';
-import { normalizeVfsPath, parentVfsPath } from './path.js';
+import { normalizeVfsPath, parentVfsPath, pathsOverlap } from './path.js';
 import { PathRevisions } from './path-revisions.js';
 import { z } from 'zod/v4';
 import { LRU_MAX_ENTRIES, FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES, FS_READ_BATCH_REQUEST_BYTES, INODE_CACHE_MAX_ENTRIES, } from '../constants.js';
@@ -37,11 +37,15 @@ import { classifyError } from '@nimbus-sh/platform/oom-classify.js';
 import { utf8Length } from '@nimbus-sh/platform/utf8.js';
 import { acquireSupervisorAllocation, tryAcquireSupervisorAllocation, } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { enc, dec } from '../_shared/bytes.js';
-import { decodeWriteBatchStream, encodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
+import { decodeWriteBatchStream, w7ChunkCount, w7Chunks, encodeWriteBatchStream, } from '@nimbus-sh/platform/w7-frame.js';
 import { WeightedCreditPool, } from '@nimbus-sh/platform/weighted-credit-pool.js';
 import { createHash } from 'node:crypto';
 import { LEGACY_SYMLINK_REGISTRY_PATH } from './symlink-registry.js';
+import { posixAccess } from './posix-access.js';
+import { RecallRequired, withRecall } from './recall.js';
+export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { readDeclaredSource } from './vfs.js';
+import { SYSCALL_VERDICTS } from './vfs-error.js';
 import { LEDGER_ROW_BYTES, StorageLedger, databaseBytesOf } from '../runtime/storage-ledger.js';
 import { CDC_MIN, ContentCutter, EMPTY_CONTENT_KEY, ManifestDigest, chunkHash, cutContent, hex, } from './content-chunking.js';
 import { inflateChunk } from './chunk-codec.js';
@@ -54,11 +58,18 @@ import { CRED_KERNEL, sameCred, } from '../runtime/os-contracts.js';
  */
 const VFS_SCHEMA = 3;
 /** Every table of the content store, dropped when an older schema is reset. */
-const STORE_TABLES = [
+/** Tables an older store kept that no store keeps now: dropped when a store opens. */
+const RETIRED_STORE_TABLES = [
     'vfs_append_receipts_v2', 'vfs_append_writer_state_v2', 'vfs_append_module_state_v2',
-    'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2', 'vfs_state', 'vfs_inodes', 'vfs_chunks',
+    'vfs_append_pid_revocations_v2', 'vfs_append_acked_gaps_v2',
+    'vfs_append_receipts', 'vfs_append_writer_state', 'vfs_append_module_state',
+    'vfs_append_pid_revocations', 'vfs_append_acked_gaps',
+];
+/** The tables the store keeps (dropped whole by a reset of an older store; listed by an embedder's destroy). */
+export const STORE_TABLES = [
+    'vfs_state', 'vfs_inodes', 'vfs_chunks',
     'vfs_contents', 'vfs_content_chunks', 'vfs_inode_history', 'vfs_tombstones', 'vfs_cold_trash',
-    'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs',
+    'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs', 'vfs_wave_cursors',
 ];
 /** The root directory has no row; this is what it is. */
 export const ROOT_DIRECTORY_MODE = 0o40755;
@@ -69,6 +80,14 @@ export const ROOT_INODE = 1;
  * shape is declared here rather than assumed present.
  */
 const nodeHost = globalThis;
+/**
+ * A wave's consecutive calls that commit together, in one transaction (the
+ * stream's call group): at most this many, or this many bytes of their
+ * data. Measured in process: a writeFile call alone cost 177 us, most of it
+ * its own commit (2026-10-07, apply-prof); a group pays that once.
+ */
+const CALL_GROUP_OPS = 512;
+const CALL_GROUP_BYTES = 1024 * 1024;
 /** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
 export const ROUTED_LINK_TARGET_MAX = 4096;
 /**
@@ -133,6 +152,8 @@ const PAGE_DIGEST_MEMO_ENTRIES = 8_192;
  * 1M-row copyTree in one turn was reset).
  */
 const JOB_SLICE_PAGES = 200;
+/** The most inode numbers one delegation reserves at once: a holder that uses them asks again (a new grant). */
+const MAX_DELEGATED_INOS = 1 << 20;
 /** Chunks one tier pass moves, and chunk ids it examines. */
 const TIER_PAGE_CHUNKS = 64;
 const TIER_SCAN_ROWS = 4_096;
@@ -148,7 +169,6 @@ const GC_MANIFEST_ROWS = Math.floor((MAX_TX_LOGICAL_ROWS - KEYS_PER_SQL_EXEC) / 
 const TRANSACTION_DURATION_SAMPLE_COUNT = 128;
 /** Storage key of the shared scratch tree. `normalizeVfsPath` drops the slash. */
 const TMP_ROOT = 'tmp';
-export const VFS_APPEND_RECEIPT_LIMIT = 2048;
 const INODE_KIND_FILE = 0;
 const INODE_KIND_DIRECTORY = 1;
 const INODE_KIND_SYMLINK = 2;
@@ -202,19 +222,6 @@ const LEGACY_TABLES = [
     { name: 'vfs_schema_migrations', columns: ['id', 'applied_at'] },
     { name: 'fs_objects', columns: ['path', 'chunk_index', 'data'] },
 ];
-function withCommitRowMetrics(metrics) {
-    return {
-        ...metrics,
-        logicalRows: metrics.logicalRows + 1,
-        sqlExecs: metrics.sqlExecs + 1,
-    };
-}
-const VFS_APPEND_INCARNATION_PATTERN = /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i;
-function assertAppendIncarnation(value, kind) {
-    if (!VFS_APPEND_INCARNATION_PATTERN.test(value)) {
-        throw vfsError('EINVAL', `invalid append ${kind} incarnation`);
-    }
-}
 export class SqliteVfsTransactionTooLargeError extends Error {
     limit;
     actual;
@@ -428,7 +435,9 @@ class TransactionPlanBuilder {
             stagingCreated: this.stagingCreated,
             affectedPaths: this.affectedPaths,
             entryParents: this.entryParents,
-            metrics: this.metricsWith({}, false),
+            // The checkpoint row a commit callback writes is the plan's: checked
+            // and admitted under the one accounting it commits under.
+            metrics: this.metricsWith({}),
         };
     }
     /**
@@ -531,6 +540,19 @@ function importRowMeta(row) {
 }
 /** The principal of a mutation no view made (the engine's own work). */
 const KERNEL_ORIGIN = Object.freeze({ cred: null });
+/** The paths a W7 record writes at (none for a chunk, a file's end or the batch's end). */
+function recordPaths(record) {
+    switch (record.type) {
+        case 'delete':
+        case 'truncate':
+        case 'setattr': return [record.path];
+        case 'directory':
+        case 'file-begin': return [record.inode.path];
+        case 'rename': return [record.from, record.to];
+        case 'call': return [record.call.path];
+        default: return [];
+    }
+}
 /** Whether two calls are the same principal's: one credential (sameCred) and one actor. */
 function samePrincipal(a, b) {
     if (a === b)
@@ -552,12 +574,26 @@ const APPEND_RUN_LATENCY_MS = 100;
 /**
  * The calls of a credentialed view that look at no file but the one their
  * path resolves to (resolvePath writes its held appends): every other call
- * writes them all first (settlingView).
+ * writes them all first (callerView).
  */
 const LEAF_READS = new Set([
     'exists', 'isDirectory', 'isFile', 'isSymlink', 'kind', 'access', 'readlink', 'resolveSymlink', 'resolveName',
     'readFile', 'readFileUncached', 'readRange', 'readRangeUncached', 'readFileString', 'stat', 'lstat',
     'getDefaultAcl', 'readdir', 'contentKey', 'storageKey',
+]);
+/**
+ * The synchronous mutations of a credentialed view: a view bound to a
+ * mutation lease makes each within it (callerView). Spanning ones
+ * (writeFileFrom, copyTreeAsync, writeStream) carry the owner per slice.
+ */
+const OWNED_MUTATIONS = new Set([
+    'mkdir', 'writeFile', 'symlink', 'writeRange', 'truncate', 'utimes', 'chmod',
+    'setDefaultAcl', 'chown', 'unlink', 'rmdir', 'removeRecursive', 'rename', 'copyFile', 'copyTree', 'writeBatch',
+    'mkdirBatch',
+]);
+/** The mutations of a credentialed view that span turns (their slices carry the caller's lease themselves). */
+const SPANNING_MUTATIONS = new Set([
+    'writeFileFrom', 'copyTreeAsync', 'writeStream', 'writeBatchPlaced',
 ]);
 const NO_STRUCTURAL_CHANGES = new Map();
 /** The directories among `inodes`, each reported as having gone from its name. */
@@ -841,6 +877,16 @@ export class SqliteVFS {
     }
     exclusiveMutationLeases = new Map();
     activeMutationOwner = null;
+    /**
+     * The delegations the running call is made by (callerView: a view bound
+     * to a lease, or a holder process's view, which answers what it holds):
+     * its own lookups recall none of them.
+     */
+    activeHolds = null;
+    /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
+    activeWrite = false;
+    /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
+    activeLanded = false;
     /** Shared by every concurrent stream targeting this session's VFS. */
     writeStreamCredits = new WeightedCreditPool(MAX_GLOBAL_WRITE_STREAM_CREDIT_BYTES);
     _stagedStreamBytes = 0;
@@ -990,7 +1036,6 @@ export class SqliteVFS {
         if ([...this.sql.exec("SELECT 1 FROM sqlite_master WHERE type = 'index' AND name IN ('vfs_inodes_ino', 'vfs_history_ino') LIMIT 1")].length) {
             this.transactionSync(() => this.dropUnusedImportIdentityIndexes());
         }
-        this.resumeAppendMaintenance();
         this.queueAbandonedStaging();
         this.resumeJobs();
         this.runContentMaintenanceSafely(2, true);
@@ -1015,51 +1060,16 @@ export class SqliteVFS {
     initSchema() {
         this.transactionSync(() => {
             const olderStoreReset = this.resetOlderStore();
-            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_receipts_v2 (
-        namespace TEXT NOT NULL,
-        pid INTEGER NOT NULL,
-        writer_id TEXT NOT NULL,
-        module_id TEXT NOT NULL,
-        operation_id INTEGER NOT NULL,
-        path TEXT NOT NULL,
-        byte_length INTEGER NOT NULL,
-        digest TEXT NOT NULL,
-        created_at INTEGER NOT NULL,
-        PRIMARY KEY (namespace, pid, writer_id, module_id, operation_id)
-      )`);
-            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_writer_state_v2 (
-        namespace TEXT NOT NULL,
-        pid INTEGER NOT NULL,
-        writer_id TEXT NOT NULL,
-        revoked INTEGER NOT NULL DEFAULT 0,
-        retired_at INTEGER,
-        PRIMARY KEY (namespace, pid, writer_id)
-      )`);
-            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_module_state_v2 (
-        namespace TEXT NOT NULL,
-        pid INTEGER NOT NULL,
-        writer_id TEXT NOT NULL,
-        module_id TEXT NOT NULL,
-        acked_through INTEGER NOT NULL DEFAULT 0,
-        PRIMARY KEY (namespace, pid, writer_id, module_id)
-      )`);
-            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_pid_revocations_v2 (
-        namespace TEXT NOT NULL,
-        pid INTEGER NOT NULL,
-        retired_at INTEGER NOT NULL,
-        PRIMARY KEY (namespace, pid)
-      )`);
-            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_append_acked_gaps_v2 (
-        namespace TEXT NOT NULL,
-        pid INTEGER NOT NULL,
-        writer_id TEXT NOT NULL,
-        module_id TEXT NOT NULL,
-        operation_id INTEGER NOT NULL,
-        path TEXT NOT NULL,
-        byte_length INTEGER NOT NULL,
-        digest TEXT NOT NULL,
-        PRIMARY KEY (namespace, pid, writer_id, module_id, operation_id)
-      )`);
+            // The tables of the append protocol a process's write log replaced
+            // (its calls are numbered under its writer's cursor instead): gone
+            // from every store, whatever they still held.
+            // Read first: a current store opens without a write statement.
+            const retired = new Set(RETIRED_STORE_TABLES);
+            const present = [...this.sql.exec("SELECT name FROM sqlite_master WHERE type = 'table' AND name LIKE 'vfs_append_%'")]
+                .map((row) => String(row.name))
+                .filter((name) => retired.has(name));
+            for (const table of present)
+                this.sql.exec(`DROP TABLE IF EXISTS ${table}`);
             // Every counter moves inside the transaction that consumes it.
             this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_state (
         slot INTEGER PRIMARY KEY CHECK (slot = 1),
@@ -1167,6 +1177,15 @@ export class SqliteVFS {
             this.sql.exec('CREATE TABLE IF NOT EXISTS vfs_cold_trash (hash BLOB PRIMARY KEY) WITHOUT ROWID');
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_chunk ON vfs_inode_history(chunk_id) WHERE chunk_id IS NOT NULL');
             this.sql.exec('CREATE INDEX IF NOT EXISTS vfs_history_content ON vfs_inode_history(content_id) WHERE content_id IS NOT NULL');
+            // Each sequenced writer's cursor (WaveSequence), and the refusal it has not had answered.
+            this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_wave_cursors (
+        writer TEXT PRIMARY KEY,
+        seq INTEGER NOT NULL,
+        refused_seq INTEGER,
+        refused_errno TEXT,
+        refused_message TEXT,
+        touched_at INTEGER NOT NULL
+      )`);
             this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_gc_queue (
         kind INTEGER NOT NULL,
         id INTEGER NOT NULL,
@@ -1420,10 +1439,25 @@ export class SqliteVFS {
      * wherever they run: `principal` (else the calling view's, else `cred`'s)
      * is the one its write events name and its held appends are written as.
      */
-    openDescription(path, cred, rights, principal) {
+    openDescription(path, cred, rights, principal, holds) {
         const origin = principal ?? this.activeOrigin ?? Object.freeze({ cred });
-        const asOpener = (call) => (...args) => this.asOrigin(origin, () => call(...args));
-        const resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+        // Its calls are its opener's: as its principal, and as the delegations its process holds then.
+        const asOpener = (call) => (...args) => this.asOrigin(origin, () => (holds === undefined ? call(...args) : this.withHolds(holds(), () => call(...args))));
+        // Opened to write, it revokes a delegation it meets, rather than sharing
+        // it; opened by a holder, it recalls none of the holder's own.
+        const priorWrite = this.activeWrite;
+        const priorHolds = this.activeHolds;
+        this.activeWrite = priorWrite || rights.write;
+        if (holds !== undefined)
+            this.activeHolds = holds();
+        let resolved;
+        try {
+            resolved = this.checkAccess(path, (rights.read ? 4 : 0) | (rights.write ? 2 : 0), cred);
+        }
+        finally {
+            this.activeWrite = priorWrite;
+            this.activeHolds = priorHolds;
+        }
         if (!resolved.inode)
             throw vfsKeyError('ENOENT', path);
         // Descriptions share the canonical inode object: a second descriptor
@@ -1459,9 +1493,7 @@ export class SqliteVFS {
                 throw vfsKeyError('EBADF', path);
             if (node.isDir)
                 throw vfsKeyError('EISDIR', path);
-            const start = clampNonNegativeInt(offset);
-            const end = Math.min(node.size, start + clampNonNegativeInt(length));
-            return this.readContent(node, start, end, false);
+            return this.readNodeRange(node, offset, length, false);
         };
         const description = {
             get ino() { return live().ino; },
@@ -1958,34 +1990,13 @@ export class SqliteVFS {
     }
     // ── Filesystem operations ─────────────────────────────────────────────
     /**
-     * uid 0's view: its writes may use the storage the ledger keeps back from
-     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
-     * Covers each call's synchronous part; the kernel's bookkeeping is that.
-     */
-    privilegedView(view) {
-        const out = {};
-        for (const [key, descriptor] of Object.entries(Object.getOwnPropertyDescriptors(view))) {
-            const value = descriptor.value;
-            if (typeof value === 'function') {
-                descriptor.value = (...args) => {
-                    const prior = this.privileged;
-                    this.privileged = true;
-                    try {
-                        return value(...args);
-                    }
-                    finally {
-                        this.privileged = prior;
-                    }
-                };
-            }
-            Object.defineProperty(out, key, descriptor);
-        }
-        return out;
-    }
-    /**
      * Bind credentials and, optionally, the capability of a live mutation
      * lease; `actor` names the principal finer than its uid, in the write
-     * events its mutations make (observeWrites).
+     * events its mutations make (observeWrites); `holds` answers, at each
+     * call, the delegations the view's process holds (its own lookups recall
+     * none of them). `landed`: the view reads what has landed, never asking a
+     * holder to send first (an observer that is told when a wave lands, the
+     * editor's file tree, reads after it); its writes still recall.
      */
     as(cred, options) {
         const engine = this;
@@ -2000,6 +2011,7 @@ export class SqliteVFS {
         const view = {
             cred: bound,
             principal: origin,
+            holds: options?.holds,
             exists: (path) => this.exists(path, bound),
             isDirectory: (path) => this.isDirectory(path, bound),
             isFile: (path) => this.isFile(path, bound),
@@ -2018,8 +2030,6 @@ export class SqliteVFS {
             readRange: (path, offset, length) => this.readRange(path, offset, length, bound),
             readRangeUncached: (path, offset, length) => (this.readRange(path, offset, length, bound, { cached: false })),
             writeRange: (path, offset, bytes) => this.writeRange(path, offset, bytes, bound),
-            appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => (this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)),
-            acknowledgeAppend: (pid, writerId, moduleId, operationId) => (this.acknowledgeAppend(pid, writerId, moduleId, operationId)),
             truncate: (path, size) => this.truncate(path, size, bound),
             readFileString: (path) => this.readFileString(path, bound),
             stat: (path) => this.stat(path, bound, true),
@@ -2044,7 +2054,7 @@ export class SqliteVFS {
                 return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
             },
             writeBatch: (payload) => this.writeBatch(payload, bound),
-            writeBatchPlaced: (payload, options) => this.writeBatchPlaced(payload, bound, origin, undefined, options?.signal),
+            writeBatchPlaced: (payload, options) => this.writeBatchPlaced(payload, bound, origin, mutationOwner, options?.signal),
             writeStream: (stream, options) => this.writeStream(stream, mutationOwner === undefined ? options : { ...options, mutationOwner }, bound, origin),
             mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
             revision: (path) => this.revision(path, bound),
@@ -2053,41 +2063,14 @@ export class SqliteVFS {
             storageKey: (path) => this.storageKey(path, bound),
             acquireExclusiveMutation: (path, options) => {
                 const lease = this.acquireExclusiveMutationAt(this.storageKey(path, bound), options);
-                // Never null: the key came from a name this caller has.
-                return { root: this.logicalPath(lease.root, bound) ?? lease.root, owner: lease.owner };
+                // Never null: the key came from a name this caller has. A delegation's reservations travel with it.
+                return { ...lease, root: this.logicalPath(lease.root, bound) ?? lease.root };
             },
             subscribe: (path, listener) => this.subscribe(path, bound, listener),
             // Live: a view outlives rotateIncarnation.
             get epoch() { return engine._epoch; },
         };
-        if (mutationOwner !== undefined) {
-            // Only synchronous mutations enter an ambient scope; spanning work carries the owner per slice.
-            const mutations = {
-                mkdir: (path, options) => this.withMutationOwner(mutationOwner, () => this.mkdir(path, options, bound)),
-                writeFile: (path, content, options) => this.withMutationOwner(mutationOwner, () => this.writeFile(path, content, options, bound)),
-                symlink: (target, path) => this.withMutationOwner(mutationOwner, () => this.symlink(target, path, bound)),
-                writeRange: (path, offset, bytes) => this.withMutationOwner(mutationOwner, () => this.writeRange(path, offset, bytes, bound)),
-                appendOnce: (path, pid, writerId, moduleId, operationId, digest, bytes) => this.withMutationOwner(mutationOwner, () => this.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, bound)),
-                acknowledgeAppend: (pid, writerId, moduleId, operationId) => this.withMutationOwner(mutationOwner, () => this.acknowledgeAppend(pid, writerId, moduleId, operationId)),
-                truncate: (path, size) => this.withMutationOwner(mutationOwner, () => this.truncate(path, size, bound)),
-                utimes: (path, atimeMs, mtimeMs, options) => this.withMutationOwner(mutationOwner, () => this.utimes(path, atimeMs, mtimeMs, bound, options?.followSymlinks !== false)),
-                chmod: (path, mode) => this.withMutationOwner(mutationOwner, () => this.chmod(path, mode, bound)),
-                setDefaultAcl: (path, perms) => this.withMutationOwner(mutationOwner, () => this.setDefaultAcl(path, perms, bound)),
-                chown: (path, uid, gid, options) => this.withMutationOwner(mutationOwner, () => this.chown(path, uid, gid, bound, options?.followSymlinks !== false)),
-                unlink: (path) => this.withMutationOwner(mutationOwner, () => this.unlink(path, bound)),
-                rmdir: (path) => this.withMutationOwner(mutationOwner, () => this.rmdir(path, bound)),
-                removeRecursive: (path) => this.withMutationOwner(mutationOwner, () => this.removeRecursive(path, bound)),
-                rename: (from, to) => this.withMutationOwner(mutationOwner, () => this.rename(from, to, bound)),
-                copyFile: (from, to) => this.withMutationOwner(mutationOwner, () => this.copyFile(from, to, bound)),
-                copyTree: (from, to, options) => this.withMutationOwner(mutationOwner, () => this.copyTreeNow(this.planCopyTree(from, to, bound, options))),
-                writeBatch: (payload) => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, bound)),
-                writeBatchPlaced: (payload, options) => this.writeBatchPlaced(payload, bound, origin, mutationOwner, options?.signal),
-                mkdirBatch: (paths) => this.withMutationOwner(mutationOwner, () => this.mkdirBatch(paths, bound)),
-            };
-            Object.assign(view, mutations);
-        }
-        const settling = this.settlingView(view, origin);
-        return bound.uid === 0 ? this.privilegedView(settling) : settling;
+        return this.callerView(view, { origin, privileged: bound.uid === 0, mutationOwner, holds: options?.holds, landed: options?.landed === true });
     }
     /** `run` as `origin`'s call: the principal its write events name. */
     asOrigin(origin, run) {
@@ -2101,21 +2084,55 @@ export class SqliteVFS {
         }
     }
     /**
-     * `view`, each of its calls but LEAF_READS first writing every append
-     * this VFS holds (appendThrough): a view is how a caller changes the
-     * store or reads more of it than one file, and none may do either
-     * without them. A leaf read looks at the one file it names, which path
-     * resolution writes the appends of, so a program reading one file while
-     * appending to another is not made to store each append as it comes.
+     * `view`, each call made as its caller, the one place a view's calls
+     * enter the engine: with the caller's privilege (uid 0 may use the
+     * storage the ledger keeps back from everyone else, N18's kernel reserve,
+     * as ext4 reserves blocks for root), as its principal (the write events
+     * it makes), and, for a synchronous mutation (OWNED_MUTATIONS), within
+     * its mutation lease (spanning work carries the owner per slice). Each
+     * call but a LEAF_READS one first writes every append this VFS holds
+     * (appendThrough): a view is how a caller changes the store or reads more
+     * of it than one file, and none may do either without them. A leaf read
+     * looks at the one file it names, which path resolution writes the
+     * appends of, so a program reading one file while appending to another is
+     * not made to store each append as it comes. Each covers its call's
+     * synchronous part; work it defers re-enters it (asCaller).
      */
-    settlingView(view, origin) {
+    callerView(view, caller) {
+        const { origin, privileged, mutationOwner, landed } = caller;
+        const leased = mutationOwner === undefined ? null : new Set([mutationOwner]);
+        const holds = leased !== null ? () => leased : caller.holds ?? null;
         for (const key of Object.keys(view)) {
             const method = Reflect.get(view, key);
-            if (typeof method !== 'function' || LEAF_READS.has(key))
+            // `holds` answers who the caller is; it is no call on the filesystem.
+            if (typeof method !== 'function' || key === 'holds')
                 continue;
+            const settles = !LEAF_READS.has(key);
+            const writes = OWNED_MUTATIONS.has(key) || SPANNING_MUTATIONS.has(key);
+            const owned = mutationOwner !== undefined && OWNED_MUTATIONS.has(key);
             Reflect.set(view, key, (...args) => {
-                this.settleAppends();
-                return this.asOrigin(origin, () => Reflect.apply(method, view, args));
+                const prior = this.privileged;
+                const priorHolds = this.activeHolds;
+                const priorWrite = this.activeWrite;
+                const priorLanded = this.activeLanded;
+                if (privileged)
+                    this.privileged = true;
+                if (holds !== null)
+                    this.activeHolds = holds();
+                this.activeLanded = landed;
+                this.activeWrite = writes;
+                try {
+                    if (settles)
+                        this.settleAppends();
+                    const call = () => Reflect.apply(method, view, args);
+                    return this.asOrigin(origin, owned ? () => this.withMutationOwner(mutationOwner, call) : call);
+                }
+                finally {
+                    this.privileged = prior;
+                    this.activeHolds = priorHolds;
+                    this.activeWrite = priorWrite;
+                    this.activeLanded = priorLanded;
+                }
             });
         }
         return view;
@@ -2124,20 +2141,7 @@ export class SqliteVFS {
         return this.accessMode(inode.mode, inode.uid, inode.gid, want, cred);
     }
     accessMode(mode, uid, gid, want, cred) {
-        const requested = want & 0o7;
-        if (requested === 0)
-            return true;
-        const permissions = mode & 0o777;
-        if (cred.uid === 0) {
-            return (requested & 0o1) === 0 || (permissions & 0o111) !== 0;
-        }
-        const shift = cred.uid === uid
-            ? 6
-            : cred.gid === gid || cred.groups.includes(gid)
-                ? 3
-                : 0;
-        const granted = (permissions >> shift) & 0o7;
-        return (granted & requested) === requested;
+        return posixAccess({ mode, uid, gid }, want, cred);
     }
     /**
      * Walk `path` to its inode, following links, in the caller's own names.
@@ -2159,7 +2163,14 @@ export class SqliteVFS {
      * (appendThrough): every call that names a path comes through here.
      */
     resolvePath(path, cred, followLeaf, allowMissing, tree = this.inodes) {
+        // A delegated subtree's live state may be its holder's, not stored yet:
+        // a lookup into it, by name or through a link, recalls it first.
+        const live = tree === this.inodes && this.exclusiveMutationLeases.size > 0;
+        if (live)
+            this.recallReads(this.nameOf(path, cred));
         const resolved = this.walkPath(path, cred, followLeaf, allowMissing, tree);
+        if (live && this.exclusiveMutationLeases.size > 0)
+            this.recallReads(resolved.path);
         if (tree !== this.inodes || resolved.inode === undefined || !this.appendRuns.has(resolved.inode.ino))
             return resolved;
         this.settleAppend(resolved.inode.ino);
@@ -2195,7 +2206,7 @@ export class SqliteVFS {
                 if (inode.kind === 'symlink' && (!leaf || followLeaf)) {
                     if (hops === 40)
                         throw vfsKeyError('ELOOP', path);
-                    const target = dec.decode(this.readInodeBytes(inode.path, inode));
+                    const target = dec.decode(this.readWhole(inode));
                     const suffix = parts.slice(index + 1).join('/');
                     const base = target.startsWith('/') ? target : `${this.parentPath(prefix)}/${target}`;
                     current = this.nameOf(suffix ? `${base}/${suffix}` : base, cred);
@@ -2230,6 +2241,11 @@ export class SqliteVFS {
     resolveName(path, cred, followLeaf, stop, tree = this.inodes) {
         const root = this.confinedTmpRoots.get(cred.uid);
         const current = this.nameOf(path, cred);
+        // As resolvePath: a lookup into a delegated subtree recalls it first.
+        // A walk that follows a link answers null below (the caller walks it by
+        // components, through resolvePath, which recalls where the link leads).
+        if (tree === this.inodes && this.exclusiveMutationLeases.size > 0)
+            this.recallReads(this.keyOfName(current, root));
         // A namespace's claim includes every ancestor of a mount. Even a
         // reusable inode walk asks the current namespace first: mount/unmount
         // is not an engine mutation.
@@ -2746,14 +2762,39 @@ export class SqliteVFS {
                     break;
             }
         }
-        for (const lockedRoot of this.exclusiveMutationLeases.values()) {
-            if (pathsOverlap(root, lockedRoot)) {
-                throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lockedRoot}`);
-            }
+        // A subtree the delegation's maker will not have delegated is refused before anything is recalled for it.
+        options.delegation?.admit?.(root);
+        // A holder decides creates as a plain directory makes them: a subtree
+        // whose directories inherit a default ACL, or a shared directory's, is
+        // the session's to decide (EPERM: its holder writes through).
+        if (options.delegation !== undefined && this.inheritsPermissions(root)) {
+            throw vfsError('EPERM', root, 'a subtree with a default ACL or a shared directory is not delegated');
+        }
+        for (const [held, lease] of this.exclusiveMutationLeases) {
+            if (!pathsOverlap(root, lease.root))
+                continue;
+            // A delegation it overlaps is given up first (its holder's decided operations stored).
+            if (lease.delegation !== null && !this.isHolder(held))
+                throw this.recallRequired(held, lease, 'revoke', root);
+            throw vfsError('EBUSY', root, `overlaps the exclusive mutation at /${lease.root}`);
         }
         const owner = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(owner, root);
-        return { root, owner };
+        // The holder's storage first: a grant the ledger cannot back is refused (ENOSPC) before it numbers anything.
+        const bytes = options.delegation?.bytes ?? 0;
+        if (bytes > 0)
+            this.ledger.reserve(owner, bytes, this.privileged);
+        let inos;
+        try {
+            inos = this.reserveInos(options.delegation?.inos ?? 0);
+        }
+        catch (error) {
+            this.ledger.release(owner);
+            throw error;
+        }
+        this.exclusiveMutationLeases.set(owner, {
+            root, delegation: options.delegation ?? null, inos, numbered: new Map(), reservation: bytes > 0 ? owner : null, shared: false, recalling: null,
+        });
+        return { root, owner, ...(inos === null ? {} : { inos }), ...(bytes > 0 ? { bytes } : {}) };
     }
     acquireGlobalExclusiveMutation() {
         this.settleAppends();
@@ -2761,11 +2802,20 @@ export class SqliteVFS {
             throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
         }
         const owner = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(owner, '');
+        this.exclusiveMutationLeases.set(owner, { root: '', delegation: null, inos: null, numbered: new Map(), reservation: null, shared: false, recalling: null });
         return { root: '', owner };
     }
     releaseExclusiveMutation(owner) {
+        this.endLease(owner);
+    }
+    /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
+    endLease(owner) {
+        const lease = this.exclusiveMutationLeases.get(owner);
+        if (lease === undefined)
+            return;
         this.exclusiveMutationLeases.delete(owner);
+        if (lease.reservation !== null)
+            this.ledger.release(lease.reservation);
     }
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
@@ -2774,36 +2824,150 @@ export class SqliteVFS {
      * answer timed out) loses its authority before the work is redone.
      */
     rotateExclusiveMutation(owner) {
-        const root = this.exclusiveMutationLeases.get(owner);
-        if (root === undefined)
+        const lease = this.exclusiveMutationLeases.get(owner);
+        if (lease === undefined)
             throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
         this.exclusiveMutationLeases.delete(owner);
         const next = crypto.randomUUID();
-        this.exclusiveMutationLeases.set(next, root);
+        this.exclusiveMutationLeases.set(next, lease);
         return next;
     }
     hasExclusiveMutation() {
         return this.exclusiveMutationLeases.size > 0;
     }
+    /**
+     * Recall a read-covering delegation `key` lies in, for any caller but its
+     * holder (the lease a mutation scope or a view presents).
+     */
+    recallReads(key) {
+        // A read of what has landed asks nothing of a holder; a write still recalls (refusalAt, and below).
+        if (this.activeLanded && !this.activeWrite)
+            return;
+        for (const [owner, lease] of this.exclusiveMutationLeases) {
+            if (lease.delegation === null || !lease.delegation.reads || lease.shared || this.isHolder(owner))
+                continue;
+            const { root } = lease;
+            if (root === '' || key === root || key.startsWith(`${root}/`))
+                throw this.recallRequired(owner, lease, this.activeWrite ? 'revoke' : 'share', key);
+        }
+    }
+    /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
+    inheritsPermissions(root) {
+        if (this.sharedDirectory(root + '/x') !== undefined)
+            return true;
+        for (const shared of this.sharedDirectories.keys())
+            if (pathsOverlap(shared, root))
+                return true;
+        const under = subtreeWhere(root, { withRoot: true });
+        return [...this.sql.exec(`SELECT 1 AS found FROM vfs_inodes WHERE dacl IS NOT NULL${under === null ? '' : ` AND ${under.sql}`} LIMIT 1`, ...(under?.params ?? []))].length > 0;
+    }
+    /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
+    reserveInos(count) {
+        if (count <= 0)
+            return null;
+        if (!Number.isSafeInteger(count) || count > MAX_DELEGATED_INOS)
+            throw vfsError('EINVAL', `cannot reserve ${count} inode numbers`);
+        const end = this.withTransaction(() => Number([...this.sql.exec('UPDATE vfs_state SET next_ino = next_ino + ? WHERE slot = 1 RETURNING next_ino', count)][0].next_ino));
+        return { first: end - count, end };
+    }
+    /**
+     * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
+     * be numbered here. Only the holder of a delegation numbers its own
+     * entries, from a range one of its leases reserved (the one its call is
+     * made under, or any its process holds), and a number already used by
+     * another name is refused (there are no hard links).
+     */
+    askedIno(entry) {
+        if (entry.ino === undefined)
+            return undefined;
+        const ino = entry.ino;
+        const owners = [...(this.activeMutationOwner === null ? [] : [this.activeMutationOwner]), ...(this.activeHolds ?? [])];
+        const lease = owners
+            .map((owner) => this.exclusiveMutationLeases.get(owner))
+            .find((held) => held?.inos != null && ino >= held.inos.first && ino < held.inos.end);
+        if (lease === undefined) {
+            throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is not one this writer's delegation reserved`);
+        }
+        // A reserved number is only ever this lease's to give: one it gave
+        // another name is refused, unless that name is the file this one is now.
+        const given = lease.numbered.get(ino);
+        if (given !== undefined && given !== entry.path && this.inodes.peek(entry.path)?.ino !== ino) {
+            throw vfsError('EINVAL', entry.path, `inode ${entry.ino} is ${given}'s`);
+        }
+        lease.numbered.set(ino, entry.path);
+        return ino;
+    }
+    /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
+    isHolder(owner) {
+        return this.activeMutationOwner === owner || this.activeHolds?.has(owner) === true;
+    }
+    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
+    async recallDelegationsAt(key, holds) {
+        for (;;) {
+            const normalized = normalizeVfsPath(key);
+            const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (lease.delegation !== null && holds?.has(id) !== true && pathsOverlap(normalized, lease.root)));
+            if (met === undefined)
+                return;
+            await this.recallRequired(met[0], met[1], 'revoke', normalized).recall();
+        }
+    }
+    /**
+     * The refusal for an access to `key` that `lease`'s holder must answer
+     * first, and the recall it waits on: one per delegation at a time, a
+     * revoke superseding a share. A shared delegation stays; a revoked one
+     * ends here, so its holder's later writes under it are ESTALE.
+     */
+    recallRequired(owner, lease, kind, key) {
+        const recall = () => {
+            const running = lease.recalling;
+            if (running !== null && (running.kind === kind || running.kind === 'revoke'))
+                return running.done;
+            const done = (async () => {
+                if (running !== null)
+                    await running.done.catch(() => { });
+                if (this.exclusiveMutationLeases.get(owner) !== lease)
+                    return;
+                await lease.delegation.recall(kind);
+                if (kind === 'share')
+                    lease.shared = true;
+                else if (this.exclusiveMutationLeases.get(owner) === lease)
+                    this.endLease(owner);
+            })().finally(() => {
+                if (lease.recalling?.done === done)
+                    lease.recalling = null;
+            });
+            lease.recalling = { kind, done };
+            return done;
+        };
+        // Started now, whether or not the caller can wait for it: one that
+        // cannot is refused, and its retry finds the subtree recalled.
+        recall().catch(() => { });
+        return new RecallRequired(lease.root, kind, key, recall);
+    }
     withMutationOwner(owner, callback) {
         if (owner === undefined)
             return callback();
-        if (!this.exclusiveMutationLeases.has(owner))
+        const lease = this.exclusiveMutationLeases.get(owner);
+        if (lease === undefined)
             throw vfsError('ESTALE', 'exclusive mutation lease is no longer active');
         if (this.activeMutationOwner !== null) {
             throw new Error('[sqlite-vfs] nested mutation owner scope is not supported');
         }
         this.activeMutationOwner = owner;
         try {
-            return callback();
+            // A delegation's writes draw on the storage its grant reserved.
+            return lease.reservation === null || this.activeReservation !== null ? callback() : this.withReservation(lease.reservation, callback);
         }
         finally {
             this.activeMutationOwner = null;
         }
     }
-    /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
-    assertMutationAllowed(path, owner) {
-        this.withMutationOwner(owner, () => this.assertMutationsAllowed([path]));
+    /**
+     * Refuse a mutation at `path` another lease covers; `owner` presents the
+     * caller's own lease, `holds` the delegations the caller's process holds.
+     */
+    assertMutationAllowed(path, owner, holds) {
+        this.withHolds(holds === undefined ? this.activeHolds : holds(), () => this.withMutationOwner(owner, () => this.assertMutationsAllowed([path])));
     }
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
@@ -2825,13 +2989,22 @@ export class SqliteVFS {
             this.exclusiveMutationLeases.size > 0) {
             return { code: 'EBUSY', detail: 'locked while an exclusive mutation is active' };
         }
-        for (const [owner, root] of this.exclusiveMutationLeases) {
+        for (const [owner, lease] of this.exclusiveMutationLeases) {
+            const { root } = lease;
             if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner)
                 continue;
+            if (lease.delegation !== null) {
+                // Its holder decides there: a call it makes itself rather than sends
+                // in a wave follows what it sent before (it sends first), in order.
+                if (this.isHolder(owner))
+                    continue;
+                // Another's holder may have decided what this would change: it gives the subtree up first.
+                throw this.recallRequired(owner, lease, 'revoke', normalized);
+            }
             return { code: 'EBUSY', detail: `locked by an exclusive mutation at /${root}` };
         }
         if (this.activeMutationOwner !== null) {
-            const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
+            const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner)?.root;
             if (ownedRoot === undefined || (ownedRoot !== '' && normalized !== ownedRoot && !normalized.startsWith(`${ownedRoot}/`))) {
                 return { code: 'EPERM', detail: `outside the exclusive mutation root /${ownedRoot ?? ''}` };
             }
@@ -2845,6 +3018,7 @@ export class SqliteVFS {
                 throw vfsError(refusal.code, normalizeVfsPath(path), refusal.detail);
         }
     }
+    /** `ino`: the number a delegation's holder gave the directory it made (askedIno), for a lone mkdir. */
     mkdir(path, options, cred) {
         const normalized = this.storageKey(path, cred);
         // A directory that is there is made already: no mutation, so no lease
@@ -2861,7 +3035,7 @@ export class SqliteVFS {
             const placed = this.resolvePath(name, cred, false, true).path;
             this.assertMutationsAllowed([placed]);
             this.checkParentAccess(placed, cred);
-            this._mkdirSingle(placed, options?.mode, cred);
+            this._mkdirSingle(placed, options?.mode, cred, options?.recursive ? undefined : options?.ino);
         };
         if (!options?.recursive) {
             create(normalized);
@@ -2874,7 +3048,7 @@ export class SqliteVFS {
                 create(current);
         }
     }
-    _mkdirSingle(path, requestedMode, cred) {
+    _mkdirSingle(path, requestedMode, cred, ino) {
         const now = this.now();
         const made = this.creationAttrs(path, requestedMode ?? 0o777, cred, true);
         const builder = this.newPlan();
@@ -2891,6 +3065,7 @@ export class SqliteVFS {
             gid: made.gid,
             content: { type: 'none' },
             defaultAcl: made.defaultAcl,
+            ...(ino === undefined ? {} : { ino: this.askedIno({ path, ino }) }),
         });
         this._writeBatchOnce({ plan: builder.build(), deletedInodes: [] }, { source: 'strict-batch', limitMode: 'bounded' });
     }
@@ -2932,22 +3107,17 @@ export class SqliteVFS {
                 : made?.mode ?? this.creationMode(options?.mode ?? 0o666, cred),
             uid: prior?.uid ?? cred.uid,
             gid: prior?.gid ?? made.gid,
-            chunkCount: size === 0 ? 0 : Math.ceil(size / CHUNK_SIZE),
+            chunkCount: w7ChunkCount(size),
+            // Asked only for a name this makes: a file there keeps its own number.
+            ...(prior === undefined && options?.ino !== undefined ? { ino: options.ino } : {}),
         };
     }
+    /** `ino`: the number a delegation's holder gave the file it made (askedIno), kept when this makes it. */
     writeFile(path, content, options, cred, onCommit) {
         const data = typeof content === 'string' ? enc.encode(content) : content;
         const inode = this.fileWriteInode(path, data.length, options, cred);
-        const chunks = [];
-        for (let chunkId = 0; chunkId < inode.chunkCount; chunkId++) {
-            chunks.push({
-                path: inode.path,
-                chunkId,
-                data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-            });
-        }
         try {
-            this.writeBatch({ inodes: [inode], chunks }, cred, onCommit);
+            this.writeBatch({ inodes: [inode], chunks: w7Chunks(inode.path, data) }, cred, onCommit);
         }
         catch (error) {
             if (!(error instanceof SqliteVfsTransactionTooLargeError))
@@ -2955,7 +3125,7 @@ export class SqliteVFS {
             this.replaceFileWithStagedContent(inode, data, onCommit);
         }
     }
-    symlink(target, path, cred) {
+    symlink(target, path, cred, ino) {
         const normalized = this.storageKey(path, cred);
         // Created where the name resolves with its last component unfollowed, as
         // symlink(2) does: under a link to a directory, inside that directory.
@@ -2969,7 +3139,6 @@ export class SqliteVFS {
         this.checkParentAccess(placed, cred);
         const data = enc.encode(target);
         const now = this.now();
-        const chunkCount = data.length === 0 ? 0 : Math.ceil(data.length / CHUNK_SIZE);
         const inode = {
             path: placed,
             parentPath: this.parentPath(placed),
@@ -2981,20 +3150,17 @@ export class SqliteVFS {
             mode: inodeTypeBits('symlink') | 0o777,
             uid: cred.uid,
             gid: this.creationAttrs(placed, 0o777, cred, false).gid,
-            chunkCount,
+            chunkCount: w7ChunkCount(data.length),
+            ...(ino === undefined ? {} : { ino }),
         };
-        const chunks = Array.from({ length: chunkCount }, (_, chunkId) => ({
-            path: placed,
-            chunkId,
-            data: data.subarray(chunkId * CHUNK_SIZE, (chunkId + 1) * CHUNK_SIZE),
-        }));
+        const chunks = w7Chunks(placed, data);
         this.writeBatch({ inodes: [inode], chunks }, cred);
     }
     readlink(path, cred) {
         const resolved = this.checkAccess(path, 0, cred, { followLeaf: false });
         if (resolved.inode?.kind !== 'symlink')
             throw vfsError('EINVAL', path, 'not a symlink');
-        return dec.decode(this.readInodeBytes(resolved.path, resolved.inode));
+        return dec.decode(this.readWhole(resolved.inode));
     }
     /** Where `path` leads, in the caller's names, or null for a loop. */
     resolveSymlink(path, cred) {
@@ -3009,7 +3175,14 @@ export class SqliteVFS {
         }
     }
     readFile(path, cred) {
-        const resolved = this.checkAccess(path, 0o4, cred);
+        return this.readWhole(this.regularFile(this.checkAccess(path, 0o4, cred), path));
+    }
+    /**
+     * The regular file a pathname read resolved to (live or a snapshot's):
+     * ENOENT when nothing is there, EISDIR for a directory, EINVAL for
+     * anything else that is not a regular file.
+     */
+    regularFile(resolved, path) {
         const inode = resolved.inode;
         if (!inode)
             throw vfsKeyError('ENOENT', path);
@@ -3017,10 +3190,16 @@ export class SqliteVFS {
             throw vfsKeyError('EISDIR', resolved.path);
         if (inode.kind !== 'file')
             throw vfsError('EINVAL', resolved.path, 'not a regular file');
-        return this.readInodeBytes(resolved.path, inode);
+        return inode;
     }
-    readInodeBytes(_path, inode, cached = true) {
+    /** All of an inode's bytes (a link's text). */
+    readWhole(inode, cached = true) {
         return this.readContent(inode, 0, inode.size, cached);
+    }
+    /** `length` bytes of an inode's at `offset`, clamped to its size: a read past the end is short. */
+    readNodeRange(inode, offset, length, cached) {
+        const start = clampNonNegativeInt(offset);
+        return this.readContent(inode, start, Math.min(inode.size, start + clampNonNegativeInt(length)), cached);
     }
     /**
      * Read a whole file straight from SQL, bypassing the LRU content cache
@@ -3032,15 +3211,7 @@ export class SqliteVFS {
      * blob read once and handed to a Worker Loader module map.
      */
     readFileUncached(path, cred) {
-        const resolved = this.checkAccess(path, 0o4, cred);
-        const inode = resolved.inode;
-        if (!inode)
-            throw vfsKeyError('ENOENT', path);
-        if (inode.kind === 'directory')
-            throw vfsKeyError('EISDIR', resolved.path);
-        if (inode.kind !== 'file')
-            throw vfsError('EINVAL', resolved.path, 'not a regular file');
-        return this.readInodeBytes(resolved.path, inode, false);
+        return this.readWhole(this.regularFile(this.checkAccess(path, 0o4, cred), path), false);
     }
     /**
      * Read `length` bytes at `offset` without assembling the whole file —
@@ -3060,19 +3231,8 @@ export class SqliteVFS {
      * slice count.
      */
     readRange(path, offset, length, cred, options = {}) {
-        const resolved = this.checkAccess(path, 0o4, cred);
-        const inode = resolved.inode;
-        if (!inode)
-            throw vfsKeyError('ENOENT', path);
-        if (inode.kind === 'directory')
-            throw vfsKeyError('EISDIR', resolved.path);
-        if (inode.kind !== 'file')
-            throw vfsError('EINVAL', resolved.path, 'not a regular file');
-        const start = clampNonNegativeInt(offset);
-        const end = Math.min(inode.size, start + clampNonNegativeInt(length));
-        if (start >= end)
-            return new Uint8Array(0);
-        return this.readContent(inode, start, end, options.cached !== false);
+        const inode = this.regularFile(this.checkAccess(path, 0o4, cred), path);
+        return this.readNodeRange(inode, offset, length, options.cached !== false);
     }
     /** Bytes [start, end) of the content an inode (or a snapshot's row) names. */
     readContent(ref, start, end, cached) {
@@ -3104,14 +3264,9 @@ export class SqliteVFS {
                     missing.push(row.chunkId);
             }
             for (let i = 0; i < missing.length; i += KEYS_PER_SQL_EXEC) {
-                const page = missing.slice(i, i + KEYS_PER_SQL_EXEC);
-                this._sqlReads++;
-                for (const row of this.sql.exec(`SELECT id, hash, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page)) {
-                    if (!chunkHeld(Number(row.state)))
-                        throw unreadableChunkError(Number(row.state), ref.path);
-                    const data = this.heldChunkBytes(row, ref.path);
-                    found.set(Number(row.id), data);
-                    this.cacheSet(Number(row.id), data);
+                for (const [id, data] of this.loadChunks(missing.slice(i, i + KEYS_PER_SQL_EXEC), ref.path)) {
+                    found.set(id, data);
+                    this.cacheSet(id, data);
                 }
             }
             for (const row of rows) {
@@ -3125,13 +3280,7 @@ export class SqliteVFS {
             // One statement for the whole range: nothing is cached, so nothing is looked up.
             for (let i = 0; i < rows.length; i += KEYS_PER_SQL_EXEC) {
                 const page = rows.slice(i, i + KEYS_PER_SQL_EXEC);
-                const byId = new Map();
-                this._sqlReads++;
-                for (const row of this.sql.exec(`SELECT id, hash, size, data, state FROM vfs_chunks WHERE id IN (${page.map(() => '?').join(',')})`, ...page.map((row) => row.chunkId))) {
-                    if (!chunkHeld(Number(row.state)))
-                        throw unreadableChunkError(Number(row.state), ref.path);
-                    byId.set(Number(row.id), this.heldChunkBytes(row, ref.path));
-                }
+                const byId = this.loadChunks(page.map((row) => row.chunkId), ref.path);
                 for (const row of page) {
                     const data = byId.get(row.chunkId);
                     if (!data)
@@ -3211,19 +3360,31 @@ export class SqliteVFS {
         return out;
     }
     /** One chunk's bytes, through the LRU when `cached`. */
+    /**
+     * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
+     * statement, by id; a chunk not stored here (cold, pending) is
+     * unreadable. A missing id is absent from the answer: the caller names
+     * what it expected.
+     */
+    loadChunks(ids, path) {
+        const out = new Map();
+        this._sqlReads++;
+        for (const row of this.sql.exec(`SELECT id, hash, size, data, state FROM vfs_chunks WHERE id IN (${ids.map(() => '?').join(',')})`, ...ids)) {
+            if (!chunkHeld(Number(row.state)))
+                throw unreadableChunkError(Number(row.state), path);
+            out.set(Number(row.id), this.heldChunkBytes(row, path));
+        }
+        return out;
+    }
     readChunk(chunkId, cached, path) {
         if (cached) {
             const hit = this.cacheGet(chunkId);
             if (hit)
                 return hit;
         }
-        this._sqlReads++;
-        const row = [...this.sql.exec('SELECT hash, size, data, state FROM vfs_chunks WHERE id = ?', chunkId)][0];
-        if (!row)
+        const data = this.loadChunks([chunkId], path).get(chunkId);
+        if (!data)
             throw vfsError('EIO', path, `missing chunk ${chunkId}`);
-        if (!chunkHeld(Number(row.state)))
-            throw unreadableChunkError(Number(row.state), path);
-        const data = this.heldChunkBytes(row, path);
         if (cached)
             this.cacheSet(chunkId, data);
         return data;
@@ -3354,309 +3515,6 @@ export class SqliteVFS {
         this.rewriteFile(prior, effectivePath, Math.max(prior.size, end), { start, bytes, madeAt }, onCommit);
     }
     /**
-     * Publish an append and its dedupe receipt in the same SQLite transaction.
-     * Large content may stage privately first, but its inode publication and
-     * receipt still share the final transaction. Receipts are removed only by
-     * explicit client acknowledgement after that client relinquishes retries.
-     */
-    appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes, cred) {
-        if (!Number.isSafeInteger(pid) || pid <= 0)
-            throw vfsError('EINVAL', `invalid append pid ${pid}`);
-        assertAppendIncarnation(writerId, 'writer');
-        assertAppendIncarnation(moduleId, 'module');
-        if (!Number.isSafeInteger(operationId) || operationId <= 0) {
-            throw vfsError('EINVAL', `invalid append operation ${operationId}`);
-        }
-        const normalized = normalizeVfsPath(path);
-        const pidRevoked = [...this.sql.exec('SELECT 1 AS revoked FROM vfs_append_pid_revocations_v2 WHERE namespace = ? AND pid = ?', this.namespace, pid)].length > 0;
-        if (pidRevoked)
-            throw vfsError('ESTALE', `append process ${pid} is being retired`);
-        const writer = [...this.sql.exec(`SELECT revoked FROM vfs_append_writer_state_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ?`, this.namespace, pid, writerId)][0];
-        if (!writer || Number(writer.revoked) !== 0) {
-            throw vfsError('ESTALE', `append writer ${pid}/${writerId} is unavailable`);
-        }
-        let moduleState = [...this.sql.exec(`SELECT acked_through FROM vfs_append_module_state_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ?`, this.namespace, pid, writerId, moduleId)][0];
-        const ackedThrough = Number(moduleState?.acked_through ?? 0);
-        if (operationId <= ackedThrough)
-            return bytes.byteLength;
-        const acknowledgedGap = [...this.sql.exec(`SELECT path, byte_length, digest
-       FROM vfs_append_acked_gaps_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`, this.namespace, pid, writerId, moduleId, operationId)][0];
-        if (acknowledgedGap) {
-            if (acknowledgedGap.path !== normalized
-                || Number(acknowledgedGap.byte_length) !== bytes.byteLength
-                || acknowledgedGap.digest !== digest) {
-                throw vfsError('EINVAL', `append acknowledgement collision for ${pid}/${operationId}`);
-            }
-            return bytes.byteLength;
-        }
-        const existing = [...this.sql.exec(`SELECT path, byte_length, digest
-       FROM vfs_append_receipts_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`, this.namespace, pid, writerId, moduleId, operationId)][0];
-        if (existing) {
-            if (existing.path !== normalized
-                || Number(existing.byte_length) !== bytes.byteLength
-                || existing.digest !== digest) {
-                throw vfsError('EINVAL', `append receipt collision for ${pid}/${writerId}/${operationId}`);
-            }
-            return bytes.byteLength;
-        }
-        const highestKnown = Number([...this.sql.exec(`SELECT MAX(operation_id) AS operation_id
-         FROM (
-           SELECT operation_id FROM vfs_append_receipts_v2
-             WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ?
-           UNION ALL
-           SELECT operation_id FROM vfs_append_acked_gaps_v2
-             WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ?
-         )`, this.namespace, pid, writerId, moduleId, this.namespace, pid, writerId, moduleId)][0]?.operation_id
-            ?? ackedThrough);
-        if (operationId > Math.max(ackedThrough, highestKnown) + VFS_APPEND_RECEIPT_LIMIT) {
-            throw vfsError('EINVAL', `append operation gap exceeds ${VFS_APPEND_RECEIPT_LIMIT}`);
-        }
-        const resolved = this.checkAccess(normalized, 0, cred, { allowMissingLeaf: true });
-        const effectivePath = resolved.path;
-        this.assertMutationsAllowed([this.storageKey(normalized, cred), effectivePath]);
-        const inode = resolved.inode;
-        if (inode?.kind === 'directory')
-            throw vfsKeyError('EISDIR', effectivePath);
-        if (inode && inode.kind !== 'file') {
-            throw vfsError('EINVAL', effectivePath, 'not a regular file');
-        }
-        if (inode && !this.accessInode(inode, 0o2, cred))
-            throw vfsKeyError('EACCES', effectivePath);
-        if (!inode)
-            this.checkParentAccess(effectivePath, cred);
-        const offset = inode?.size ?? 0;
-        const retainedCount = Number([...this.sql.exec(`SELECT
-           (SELECT COUNT(*) FROM vfs_append_writer_state_v2 WHERE namespace = ? AND revoked = 0)
-           + (SELECT COUNT(*) FROM vfs_append_module_state_v2 WHERE namespace = ?)
-           + (SELECT COUNT(*) FROM vfs_append_receipts_v2 WHERE namespace = ?)
-           + (SELECT COUNT(*) FROM vfs_append_acked_gaps_v2 WHERE namespace = ?) AS count`, this.namespace, this.namespace, this.namespace, this.namespace)][0]?.count ?? 0);
-        const requiredRows = 1 + (moduleState ? 0 : 1);
-        if (retainedCount > VFS_APPEND_RECEIPT_LIMIT - requiredRows) {
-            throw vfsError('ENOSPC', 'append receipt journal is full');
-        }
-        if (!moduleState) {
-            this.sql.exec(`INSERT INTO vfs_append_module_state_v2
-         (namespace, pid, writer_id, module_id, acked_through) VALUES (?, ?, ?, ?, 0)`, this.namespace, pid, writerId, moduleId);
-            moduleState = { acked_through: 0 };
-        }
-        const recordReceipt = () => {
-            this.sql.exec(`INSERT INTO vfs_append_receipts_v2
-         (namespace, pid, writer_id, module_id, operation_id, path, byte_length, digest, created_at)
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`, this.namespace, pid, writerId, moduleId, operationId, normalized, bytes.byteLength, digest, Date.now());
-        };
-        this.writeRange(effectivePath, offset, bytes, cred, recordReceipt);
-        return bytes.byteLength;
-    }
-    activateAppendWriter(pid, writerId) {
-        if (!Number.isSafeInteger(pid) || pid <= 0)
-            throw vfsError('EINVAL', `invalid append pid ${pid}`);
-        assertAppendIncarnation(writerId, 'writer');
-        if ([...this.sql.exec('SELECT 1 AS revoked FROM vfs_append_pid_revocations_v2 WHERE namespace = ? AND pid = ?', this.namespace, pid)].length > 0) {
-            throw vfsError('ESTALE', `append process ${pid} is being retired`);
-        }
-        const writers = [...this.sql.exec(`SELECT writer_id, revoked FROM vfs_append_writer_state_v2
-       WHERE namespace = ? AND pid = ?`, this.namespace, pid)];
-        const writer = writers.find((candidate) => candidate.writer_id === writerId);
-        if (writer && Number(writer.revoked) === 0) {
-            return;
-        }
-        if (writers.length > 0) {
-            throw vfsError('ESTALE', `append process ${pid} already has a different writer`);
-        }
-        const retainedCount = Number([...this.sql.exec(`SELECT
-           (SELECT COUNT(*) FROM vfs_append_writer_state_v2 WHERE namespace = ? AND revoked = 0)
-           + (SELECT COUNT(*) FROM vfs_append_module_state_v2 WHERE namespace = ?)
-           + (SELECT COUNT(*) FROM vfs_append_receipts_v2 WHERE namespace = ?)
-           + (SELECT COUNT(*) FROM vfs_append_acked_gaps_v2 WHERE namespace = ?) AS count`, this.namespace, this.namespace, this.namespace, this.namespace)][0]?.count ?? 0);
-        if (retainedCount >= VFS_APPEND_RECEIPT_LIMIT) {
-            throw vfsError('ENOSPC', 'append receipt journal is full');
-        }
-        this.transactionSync(() => {
-            this.sql.exec(`INSERT INTO vfs_append_writer_state_v2
-         (namespace, pid, writer_id, revoked, retired_at) VALUES (?, ?, ?, 0, NULL)`, this.namespace, pid, writerId);
-        });
-    }
-    acknowledgeAppend(pid, writerId, moduleId, operationId) {
-        if (!Number.isSafeInteger(pid) || pid <= 0)
-            throw vfsError('EINVAL', `invalid append pid ${pid}`);
-        assertAppendIncarnation(writerId, 'writer');
-        assertAppendIncarnation(moduleId, 'module');
-        if (!Number.isSafeInteger(operationId) || operationId <= 0) {
-            throw vfsError('EINVAL', `invalid append operation ${operationId}`);
-        }
-        const writer = [...this.sql.exec(`SELECT revoked FROM vfs_append_writer_state_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ?`, this.namespace, pid, writerId)][0];
-        if (!writer || Number(writer.revoked) !== 0) {
-            throw vfsError('ESTALE', `append writer ${pid} is unavailable`);
-        }
-        const moduleState = [...this.sql.exec(`SELECT acked_through FROM vfs_append_module_state_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ?`, this.namespace, pid, writerId, moduleId)][0];
-        if (!moduleState) {
-            throw vfsError('ESTALE', `append module ${pid}/${writerId}/${moduleId} is unavailable`);
-        }
-        let ackedThrough = Number(moduleState.acked_through);
-        if (operationId <= ackedThrough)
-            return;
-        const existingGap = [...this.sql.exec(`SELECT 1 AS present FROM vfs_append_acked_gaps_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`, this.namespace, pid, writerId, moduleId, operationId)].length > 0;
-        let receipt;
-        if (!existingGap) {
-            receipt = [...this.sql.exec(`SELECT path, byte_length, digest
-         FROM vfs_append_receipts_v2
-         WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`, this.namespace, pid, writerId, moduleId, operationId)][0];
-            if (!receipt) {
-                throw vfsError('EINVAL', `append operation ${pid}/${operationId} has not completed`);
-            }
-        }
-        const acknowledged = [...this.sql.exec(`SELECT operation_id FROM vfs_append_acked_gaps_v2
-       WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ? AND operation_id > ?
-       ORDER BY operation_id`, this.namespace, pid, writerId, moduleId, ackedThrough)];
-        if (!existingGap)
-            acknowledged.push({ operation_id: operationId });
-        acknowledged.sort((left, right) => Number(left.operation_id) - Number(right.operation_id));
-        for (const row of acknowledged) {
-            const sequence = Number(row.operation_id);
-            if (sequence <= ackedThrough)
-                continue;
-            if (sequence !== ackedThrough + 1)
-                break;
-            ackedThrough = sequence;
-        }
-        const priorAckedThrough = Number(moduleState.acked_through);
-        if (!existingGap || ackedThrough > priorAckedThrough) {
-            this.transactionSync(() => {
-                if (!existingGap) {
-                    if (!receipt) {
-                        throw vfsError('EINVAL', `append operation ${pid}/${operationId} has not completed`);
-                    }
-                    this.sql.exec(`INSERT INTO vfs_append_acked_gaps_v2
-             (namespace, pid, writer_id, module_id, operation_id, path, byte_length, digest)
-             VALUES (?, ?, ?, ?, ?, ?, ?, ?)`, this.namespace, pid, writerId, moduleId, operationId, receipt.path, receipt.byte_length, receipt.digest);
-                    this.sql.exec(`DELETE FROM vfs_append_receipts_v2
-             WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ? AND operation_id = ?`, this.namespace, pid, writerId, moduleId, operationId);
-                }
-                if (ackedThrough > priorAckedThrough) {
-                    this.sql.exec(`UPDATE vfs_append_module_state_v2 SET acked_through = ?
-             WHERE namespace = ? AND pid = ? AND writer_id = ? AND module_id = ?`, ackedThrough, this.namespace, pid, writerId, moduleId);
-                }
-            });
-        }
-        if (ackedThrough > priorAckedThrough) {
-            this.deleteAppendRowsBounded('vfs_append_acked_gaps_v2', 'namespace = ? AND pid = ? AND writer_id = ? AND module_id = ? AND operation_id <= ?', [this.namespace, pid, writerId, moduleId, ackedThrough]);
-        }
-    }
-    revokeAppendWriter(pid, writerId) {
-        if (!Number.isSafeInteger(pid) || pid <= 0)
-            throw vfsError('EINVAL', `invalid append pid ${pid}`);
-        assertAppendIncarnation(writerId, 'writer');
-        this.transactionSync(() => {
-            this.sql.exec(`UPDATE vfs_append_writer_state_v2
-         SET revoked = 1, retired_at = ?
-         WHERE namespace = ? AND pid = ? AND writer_id = ?`, Date.now(), this.namespace, pid, writerId);
-        });
-        this.deleteAppendRowsBounded('vfs_append_receipts_v2', 'namespace = ? AND pid = ? AND writer_id = ?', [this.namespace, pid, writerId]);
-        this.deleteAppendRowsBounded('vfs_append_acked_gaps_v2', 'namespace = ? AND pid = ? AND writer_id = ?', [this.namespace, pid, writerId]);
-        this.deleteAppendRowsBounded('vfs_append_module_state_v2', 'namespace = ? AND pid = ? AND writer_id = ?', [this.namespace, pid, writerId]);
-        this.deleteAppendRowsBounded('vfs_append_writer_state_v2', 'namespace = ? AND pid = ? AND writer_id = ? AND revoked = 1', [this.namespace, pid, writerId]);
-    }
-    revokeAppendWriters(pid) {
-        if (!Number.isSafeInteger(pid) || pid <= 0)
-            throw vfsError('EINVAL', `invalid append pid ${pid}`);
-        this.transactionSync(() => {
-            this.sql.exec(`INSERT INTO vfs_append_pid_revocations_v2 (namespace, pid, retired_at) VALUES (?, ?, ?)
-         ON CONFLICT(namespace, pid) DO UPDATE SET retired_at = excluded.retired_at`, this.namespace, pid, Date.now());
-        });
-        this.finishAppendPidRevocation(pid);
-    }
-    revokeAppendWritersThrough(maxPid) {
-        if (!Number.isSafeInteger(maxPid) || maxPid < 0) {
-            throw vfsError('EINVAL', `invalid append pid ceiling ${maxPid}`);
-        }
-        for (;;) {
-            const pids = [...this.sql.exec(`SELECT DISTINCT pid FROM vfs_append_writer_state_v2
-         WHERE namespace = ? AND pid <= ?
-         ORDER BY pid
-         LIMIT ?`, this.namespace, maxPid, MAX_TX_LOGICAL_ROWS)];
-            if (pids.length === 0)
-                return;
-            for (const row of pids)
-                this.revokeAppendWriters(Number(row.pid));
-        }
-    }
-    finishAppendPidRevocation(pid) {
-        for (;;) {
-            const writers = [...this.sql.exec(`SELECT writer_id FROM vfs_append_writer_state_v2
-         WHERE namespace = ? AND pid = ? AND revoked = 0
-         ORDER BY rowid
-         LIMIT ?`, this.namespace, pid, Math.min(MAX_TX_LOGICAL_ROWS, SQL_MAX_BOUND_PARAMETERS - 3))];
-            if (writers.length === 0)
-                break;
-            const placeholders = writers.map(() => '?').join(',');
-            this.transactionSync(() => {
-                this.sql.exec(`UPDATE vfs_append_writer_state_v2
-           SET revoked = 1, retired_at = ?
-           WHERE namespace = ? AND pid = ? AND writer_id IN (${placeholders})`, Date.now(), this.namespace, pid, ...writers.map((writer) => writer.writer_id));
-            });
-        }
-        this.deleteAppendRowsBounded('vfs_append_receipts_v2', 'namespace = ? AND pid = ?', [this.namespace, pid]);
-        this.deleteAppendRowsBounded('vfs_append_acked_gaps_v2', 'namespace = ? AND pid = ?', [this.namespace, pid]);
-        this.deleteAppendRowsBounded('vfs_append_module_state_v2', 'namespace = ? AND pid = ?', [this.namespace, pid]);
-        this.deleteAppendRowsBounded('vfs_append_writer_state_v2', 'namespace = ? AND pid = ? AND revoked = 1', [this.namespace, pid]);
-        this.transactionSync(() => {
-            this.sql.exec('DELETE FROM vfs_append_pid_revocations_v2 WHERE namespace = ? AND pid = ?', this.namespace, pid);
-        });
-    }
-    deleteAppendRowsBounded(table, predicate, params) {
-        for (;;) {
-            const rows = [...this.sql.exec(`SELECT rowid FROM ${table} WHERE ${predicate} ORDER BY rowid LIMIT ?`, ...params, Math.min(MAX_TX_LOGICAL_ROWS, SQL_MAX_BOUND_PARAMETERS))];
-            if (rows.length === 0)
-                return;
-            const placeholders = rows.map(() => '?').join(',');
-            this.transactionSync(() => {
-                this.sql.exec(`DELETE FROM ${table} WHERE rowid IN (${placeholders})`, ...rows.map((row) => row.rowid));
-            });
-        }
-    }
-    resumeAppendMaintenance() {
-        for (;;) {
-            const revocations = [...this.sql.exec(`SELECT pid FROM vfs_append_pid_revocations_v2
-         WHERE namespace = ?
-         ORDER BY pid
-         LIMIT ?`, this.namespace, MAX_TX_LOGICAL_ROWS)];
-            if (revocations.length === 0)
-                break;
-            for (const row of revocations) {
-                this.finishAppendPidRevocation(Number(row.pid));
-            }
-        }
-        for (const table of [
-            'vfs_append_receipts_v2',
-            'vfs_append_acked_gaps_v2',
-            'vfs_append_module_state_v2',
-        ]) {
-            this.deleteAppendRowsBounded(table, `namespace = ? AND EXISTS (
-          SELECT 1 FROM vfs_append_writer_state_v2 AS writer
-          WHERE writer.namespace = ${table}.namespace
-            AND writer.pid = ${table}.pid
-            AND writer.writer_id = ${table}.writer_id
-            AND writer.revoked = 1
-        )`, [this.namespace]);
-        }
-        this.deleteAppendRowsBounded('vfs_append_writer_state_v2', 'namespace = ? AND revoked = 1', [this.namespace]);
-        this.deleteAppendRowsBounded('vfs_append_acked_gaps_v2', `namespace = ? AND EXISTS (
-        SELECT 1 FROM vfs_append_module_state_v2 AS module
-        WHERE module.namespace = vfs_append_acked_gaps_v2.namespace
-          AND module.pid = vfs_append_acked_gaps_v2.pid
-          AND module.writer_id = vfs_append_acked_gaps_v2.writer_id
-          AND module.module_id = vfs_append_acked_gaps_v2.module_id
-          AND module.acked_through >= vfs_append_acked_gaps_v2.operation_id
-      )`, [this.namespace]);
-    }
-    /**
      * Truncate or zero-extend to `size`. Only the chunk at the new end is
      * re-cut; rows past it go. Every mutation commits before return.
      */
@@ -3734,22 +3592,7 @@ export class SqliteVFS {
         const held = [];
         let heldBytes = 0;
         let staging = null;
-        let builder = null;
-        const stagedPath = path ?? node.path;
-        const flush = () => {
-            if (builder === null || builder.empty)
-                return;
-            const plan = builder.build();
-            builder = this.newPlan();
-            this.assertTransactionFits(plan.metrics);
-            this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
-        };
-        const stage = (next) => {
-            builder ??= this.newPlan();
-            if (builder.wouldExceedPieces(next.data.byteLength, 1) !== null)
-                flush();
-            builder.addStagedPiece(staging, next, stagedPath);
-        };
+        const { stage, flush } = this.stagingWriter(() => staging, path ?? node.path, (plan) => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
         const startStaging = () => {
             staging = this.beginStaging();
             if (node.contentId !== null && from > 0)
@@ -3805,7 +3648,7 @@ export class SqliteVFS {
                         digest.add(entry.piece.hash);
                     content = { type: 'large', pieces: held.map((entry) => entry.piece), size: newSize, digest: digest.digest(newSize) };
                 }
-                if (content !== null && this.tryPublishRewrite(node, path, newSize, content, onCommit, madeAt))
+                if (content !== null && this.publishRewrite(node, path, newSize, content, onCommit, madeAt, true))
                     return;
                 startStaging();
             }
@@ -3826,21 +3669,24 @@ export class SqliteVFS {
         }
     }
     /** Publish a rewrite in one transaction when it fits; false when it does not. */
-    tryPublishRewrite(node, path, newSize, content, onCommit, madeAt) {
-        const builder = this.newPlan();
+    /**
+     * Publish `node` rewritten to `content` in one transaction. One that would
+     * not fit the transaction bounds is refused (assertTransactionFits), or,
+     * `ifFits`, not made: false, and the caller publishes it another way.
+     */
+    publishRewrite(node, path, newSize, content, onCommit, madeAt, ifFits = false) {
+        const builder = this.newPlan(onCommit !== undefined);
         builder.addInode(this.rewrittenEntry(node, path, newSize, content, madeAt));
         const plan = builder.build();
-        if (exceededTransactionLimit(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics) !== null)
-            return false;
+        if (ifFits) {
+            if (exceededTransactionLimit(plan.metrics) !== null)
+                return false;
+        }
+        else {
+            this.assertTransactionFits(plan.metrics);
+        }
         this.commitRewrite(node, path, plan, onCommit);
         return true;
-    }
-    publishRewrite(node, path, newSize, content, onCommit, madeAt) {
-        const builder = this.newPlan();
-        builder.addInode(this.rewrittenEntry(node, path, newSize, content, madeAt));
-        const plan = builder.build();
-        this.assertTransactionFits(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics);
-        this.commitRewrite(node, path, plan, onCommit);
     }
     /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
     rewrittenEntry(node, path, newSize, content, madeAt) {
@@ -3931,6 +3777,31 @@ export class SqliteVFS {
     }
     newPlan(commitRow = false) {
         return new TransactionPlanBuilder(this._pinGen > 0, commitRow);
+    }
+    /**
+     * Pieces staged into `staging` (of the file at `path`) in bounded
+     * transactions: each takes pieces until the next would not fit, then
+     * commits through `commit` (the caller's: its authority, its checkpoint
+     * row with `commitRow`). `flush` commits what is held.
+     */
+    stagingWriter(staging, path, commit, commitRow = false) {
+        let builder = this.newPlan(commitRow);
+        const flush = () => {
+            if (builder.empty)
+                return;
+            const plan = builder.build();
+            builder = this.newPlan(commitRow);
+            this.assertTransactionFits(plan.metrics);
+            commit(plan);
+        };
+        return {
+            stage: (piece) => {
+                if (builder.wouldExceedPieces(piece.data.byteLength, 1) !== null)
+                    flush();
+                builder.addStagedPiece(staging(), piece, path);
+            },
+            flush,
+        };
     }
     /** Create a state-0 content in its own transaction and hold it live. */
     beginStaging() {
@@ -4228,7 +4099,7 @@ export class SqliteVFS {
                     // The row's own target. Re-resolving the listed name would follow the
                     // directories above it, and a row they no longer lead to (one left
                     // under a link) made the whole enumeration throw ENOENT.
-                    ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readInodeBytes(path, inode)) } : {}),
+                    ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readWhole(inode)) } : {}),
                     ...(inode.kind === 'file' ? { contentKey: this.listedContentKey(inode, row) } : {}),
                 };
                 if (!fits(entry))
@@ -4267,7 +4138,7 @@ export class SqliteVFS {
             const reported = {
                 ...entry,
                 stat: { ...this.statOf(inode), revision: this.pathRevision(key, inode) },
-                ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readInodeBytes(key, inode)) } : {}),
+                ...(inode.kind === 'symlink' ? { linkTarget: dec.decode(this.readWhole(inode)) } : {}),
                 // Content identity, as list() reports it: a holder of equal bytes keeps them.
                 ...(inode.kind === 'file' ? { contentKey: this.contentKeyOf(inode) } : {}),
             };
@@ -4373,8 +4244,8 @@ export class SqliteVFS {
         // directory inodes of the subtree, and enumerating one needed read
         // permission. Answering from the index would otherwise skip that check.
         // All of them pass before the first group commits.
-        for (const inode of this.subtreeDescending(resolved.path, resolved.inode, true)) {
-            if (!this.accessInode(inode, 0o4, cred))
+        for (const inode of followedBy(this.subtree(resolved.path, { desc: true, directoriesOnly: true }), resolved.inode)) {
+            if (inode.isDir && !this.accessInode(inode, 0o4, cred))
                 throw vfsKeyError('EACCES', inode.path);
         }
         let removed = 0;
@@ -4392,7 +4263,7 @@ export class SqliteVFS {
             this.commitBatch({ inodes: [], chunks: [], deletePaths: paths }, cred);
             removed += paths.length;
         };
-        for (const inode of this.subtreeDescending(resolved.path, resolved.inode, false)) {
+        for (const inode of followedBy(this.subtree(resolved.path, { desc: true }), resolved.inode)) {
             // Close the group before the entry that would overflow it. The estimate
             // only picks the boundary — the commit asserts the bound it writes.
             if (budget.wouldExceedDeletion() !== null)
@@ -4405,28 +4276,44 @@ export class SqliteVFS {
         return removed;
     }
     /**
-     * The inodes under `root`, then `root` itself, in descending path order, a
-     * bounded page at a time. A path under a directory extends the directory's
-     * path, so it sorts after it: every entry comes before the directory that
-     * holds it. Each page starts below the last path read, so removing what
-     * was already yielded does not disturb the walk.
+     * Every inode strictly under `root`, a bounded page at a time: the live
+     * tree, or the tree as of generation `at` (pageAt, live and history
+     * merged), in path order; or, live, in descending path order (`desc`),
+     * where every entry comes before the directory holding it (a path under a
+     * directory extends the directory's) and each page starts below the last
+     * path read, so removing what was already yielded does not disturb the
+     * walk. `directoriesOnly` takes only directories.
      */
-    *subtreeDescending(root, rootInode, directoriesOnly) {
-        const range = subtreeRange(root);
-        const kind = directoriesOnly ? ` AND kind = ${INODE_KIND_DIRECTORY}` : '';
-        let below = range.upper;
-        for (;;) {
-            const rows = [...(below === null
-                    ? this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?${kind} ORDER BY path DESC LIMIT ?`, range.lower, SUBTREE_PAGE_ROWS)
-                    : this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ? AND path < ?${kind} ORDER BY path DESC LIMIT ?`, range.lower, below, SUBTREE_PAGE_ROWS))];
-            for (const row of rows)
-                yield this.inodes.peek(String(row.path)) ?? this.inodeFromRow(row);
-            if (rows.length < SUBTREE_PAGE_ROWS)
-                break;
-            below = String(rows[rows.length - 1].path);
+    *subtree(root, options = {}) {
+        const kind = options.directoriesOnly ? ` AND kind = ${INODE_KIND_DIRECTORY}` : '';
+        if (options.desc) {
+            let below = subtreeRange(root).upper;
+            for (;;) {
+                const under = subtreeWhere(root, { below });
+                const rows = [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE ${under.sql}${kind} ORDER BY path DESC LIMIT ?`, ...under.params, SUBTREE_PAGE_ROWS)];
+                for (const row of rows)
+                    yield this.inodes.peek(String(row.path)) ?? this.inodeFromRow(row);
+                if (rows.length < SUBTREE_PAGE_ROWS)
+                    return;
+                below = String(rows[rows.length - 1].path);
+            }
         }
-        if (!directoriesOnly || rootInode.isDir)
-            yield rootInode;
+        const range = subtreeRange(root);
+        let after = range.lower;
+        for (;;) {
+            const page = options.at === undefined
+                ? (() => {
+                    const under = subtreeWhere(root, { after });
+                    return [...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE ${under.sql}${kind} ORDER BY path LIMIT ?`, ...under.params, SUBTREE_PAGE_ROWS)].map((row) => this.inodes.peek(String(row.path)) ?? this.inodeFromRow(row));
+                })()
+                : this.pageAt(options.at, after, SUBTREE_PAGE_ROWS, range.upper);
+            for (const inode of page)
+                if (!options.directoriesOnly || inode.isDir)
+                    yield inode;
+            if (page.length < SUBTREE_PAGE_ROWS)
+                return;
+            after = page[page.length - 1].path;
+        }
     }
     rename(oldPath, newPath, cred) {
         // Resolve private /tmp names to storage keys before reading or mutating.
@@ -4855,8 +4742,8 @@ export class SqliteVFS {
         }
         if (cred.uid !== 0 && root.isDir) {
             const entries = atGen === undefined
-                ? this.subtreeDescending(source.path, root, false)
-                : this.subtreeAt(source.path, atGen);
+                ? followedBy(this.subtree(source.path, { desc: true }), root)
+                : this.subtree(source.path, { at: atGen });
             for (const inode of entries) {
                 if (!this.accessInode(inode, inode.isDir ? 0o5 : inode.kind === 'symlink' ? 0 : 0o4, cred)) {
                     throw vfsKeyError('EACCES', inode.path);
@@ -4869,13 +4756,11 @@ export class SqliteVFS {
         let rows = 1;
         if (root.isDir) {
             if (atGen === undefined) {
-                const range = subtreeRange(source.path);
-                rows += Number([...(range.upper === null
-                        ? this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ?', range.lower)
-                        : this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ? AND path < ?', range.lower, range.upper))][0].n);
+                const under = subtreeWhere(source.path);
+                rows += Number([...this.sql.exec(`SELECT COUNT(*) AS n FROM vfs_inodes WHERE ${under.sql}`, ...under.params)][0].n);
             }
             else {
-                for (const _ of this.subtreeAt(source.path, atGen))
+                for (const _ of this.subtree(source.path, { at: atGen }))
                     rows++;
             }
         }
@@ -4903,7 +4788,11 @@ export class SqliteVFS {
             let copied = slice.copied;
             while (!slice.done) {
                 await yieldToStorage();
-                slice = run(slice.id);
+                // A delegation granted over the destination since the last slice is
+                // recalled, and the slice (one transaction, refused before it wrote)
+                // runs again: the copy waits for it rather than failing.
+                const id = slice.id;
+                slice = await withRecall(() => run(id));
                 copied += slice.copied;
             }
             return copied;
@@ -4927,22 +4816,6 @@ export class SqliteVFS {
         const id = crypto.randomUUID();
         this.ledger.reserve(id, (job.rows ?? 0) * LEDGER_ROW_BYTES);
         return id;
-    }
-    /** Every entry strictly under `root` as of generation `g`, a page at a time. */
-    *subtreeAt(root, g) {
-        const range = subtreeRange(root);
-        let cursor = range.lower;
-        for (;;) {
-            const page = this.pageAt(g, cursor, SUBTREE_PAGE_ROWS);
-            for (const inode of page) {
-                if (range.upper !== null && inode.path >= range.upper)
-                    return;
-                yield inode;
-            }
-            if (page.length < SUBTREE_PAGE_ROWS)
-                return;
-            cursor = page[page.length - 1].path;
-        }
     }
     /**
      * Run a copyTree job to completion: the root row and the job row in the
@@ -5142,15 +5015,13 @@ export class SqliteVFS {
     /** Rows a copy job has left: the source's rows past its cursor, and each page's two. */
     remainingCopyRows(id, job) {
         const cursor = String([...this.sql.exec('SELECT cursor FROM vfs_jobs WHERE id = ?', id)][0].cursor);
-        const range = subtreeRange(job.src);
         let rows = 0;
         if (job.atGen === undefined) {
-            rows = Number([...(range.upper === null
-                    ? this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ?', cursor)
-                    : this.sql.exec('SELECT COUNT(*) AS n FROM vfs_inodes WHERE path > ? AND path < ?', cursor, range.upper))][0].n);
+            const under = subtreeWhere(job.src, { after: cursor });
+            rows = Number([...this.sql.exec(`SELECT COUNT(*) AS n FROM vfs_inodes WHERE ${under.sql}`, ...under.params)][0].n);
         }
         else {
-            for (const inode of this.subtreeAt(job.src, job.atGen))
+            for (const inode of this.subtree(job.src, { at: job.atGen }))
                 if (inode.path > cursor)
                     rows++;
         }
@@ -5193,16 +5064,24 @@ export class SqliteVFS {
         if (typeof name !== 'string' || name === '' || name.length > 256)
             throw vfsError('EINVAL', 'invalid snapshot name');
         this.settleAppends();
-        if (!options.quiesce)
+        if (!options.quiesce) {
+            // It cannot wait for a holder's decided operations: refused (EAGAIN),
+            // their recall started, until every delegation is shared.
+            for (const [owner, lease] of this.exclusiveMutationLeases) {
+                if (lease.delegation !== null && !lease.shared)
+                    throw this.recallRequired(owner, lease, 'share', lease.root);
+            }
             return this.pinSnapshot(name);
+        }
         return this.quiesced(() => this.pinSnapshot(name));
     }
     /**
-     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
-     * check and `pin` run in one turn, so nothing can start between them. New
-     * spanning work waits behind the gate until then (Kinu N14: await, never
-     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
-     * is waited out too.
+     * Run `pin` once nothing spans awaits, no plain exclusive lease is held,
+     * and every delegation is shared (its holder's decided operations stored):
+     * the check and `pin` run in one turn, so nothing can start between them.
+     * New spanning work waits behind the gate until then (Kinu N14: await,
+     * never EBUSY). A lease is synchronous and cannot wait, so one taken
+     * meanwhile is waited out too.
      */
     quiesced(pin) {
         const previous = this.quiesceGate ?? Promise.resolve();
@@ -5218,8 +5097,17 @@ export class SqliteVFS {
                         await Promise.allSettled([...this.activeWork]);
                         continue;
                     }
-                    if (this.exclusiveMutationLeases.size > 0) {
+                    // A plain lease is waited out. A delegation may stand for as long
+                    // as its holder works: its decided operations are recalled (shared)
+                    // instead, so the snapshot holds them, and it stays.
+                    const leases = [...this.exclusiveMutationLeases];
+                    if (leases.some(([, lease]) => lease.delegation === null)) {
                         await yieldToStorage();
+                        continue;
+                    }
+                    const unshared = leases.find(([, lease]) => !lease.shared);
+                    if (unshared !== undefined) {
+                        await this.recallRequired(unshared[0], unshared[1], 'share', unshared[1].root).recall();
                         continue;
                     }
                     return pin();
@@ -5379,26 +5267,12 @@ export class SqliteVFS {
                 throw error;
             }
         };
-        const file = (path) => {
-            const resolved = resolve(path, 0o4);
-            const inode = resolved.inode;
-            if (inode.kind === 'directory')
-                throw vfsKeyError('EISDIR', resolved.path);
-            if (inode.kind !== 'file')
-                throw vfsError('EINVAL', resolved.path, 'not a regular file');
-            return inode;
-        };
-        const range = (path, offset, length) => {
-            const inode = file(path);
-            const start = clampNonNegativeInt(offset);
-            const end = Math.min(inode.size, start + clampNonNegativeInt(length));
-            return this.readContent(inode, start, end, true);
-        };
+        const file = (path) => this.regularFile(resolve(path, 0o4), path);
         const readlink = (path) => {
             const inode = resolve(path, 0, false).inode;
             if (inode.kind !== 'symlink')
                 throw vfsError('EINVAL', path, 'not a symlink');
-            return dec.decode(this.readContent(inode, 0, inode.size, true));
+            return dec.decode(this.readWhole(inode));
         };
         return {
             cred: bound,
@@ -5425,19 +5299,13 @@ export class SqliteVFS {
                 }
             },
             resolveName: (path, followLeaf, stop) => { pinned(); return this.resolveName(path, bound, followLeaf, stop, tree); },
-            readFile: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, true); },
-            readFileUncached: (path) => { const inode = file(path); return this.readContent(inode, 0, inode.size, false); },
-            readRange: range,
-            readRangeUncached: (path, offset, length) => {
-                const inode = file(path);
-                const start = clampNonNegativeInt(offset);
-                return this.readContent(inode, start, Math.min(inode.size, start + clampNonNegativeInt(length)), false);
-            },
+            readFile: (path) => this.readWhole(file(path)),
+            readFileUncached: (path) => this.readWhole(file(path), false),
+            readRange: (path, offset, length) => this.readNodeRange(file(path), offset, length, true),
+            readRangeUncached: (path, offset, length) => this.readNodeRange(file(path), offset, length, false),
             writeRange: readOnly,
-            appendOnce: readOnly,
-            acknowledgeAppend: readOnly,
             truncate: readOnly,
-            readFileString: (path) => { const inode = file(path); return dec.decode(this.readContent(inode, 0, inode.size, true)); },
+            readFileString: (path) => dec.decode(this.readWhole(file(path))),
             stat: (path) => this.statOf(resolve(path, 0).inode),
             lstat: (path) => this.statOf(resolve(path, 0, false).inode),
             utimes: readOnly,
@@ -5583,7 +5451,7 @@ export class SqliteVFS {
         else {
             // A full restore changes everything: only the caller's own global lease may be live.
             const owner = this.activeMutationOwner;
-            const others = [...this.exclusiveMutationLeases].filter(([id, root]) => id !== owner || root !== '');
+            const others = [...this.exclusiveMutationLeases].filter(([id, { root }]) => id !== owner || root !== '');
             if (others.length > 0)
                 throw vfsError('EBUSY', 'an exclusive filesystem mutation is active');
         }
@@ -5624,11 +5492,9 @@ export class SqliteVFS {
     runRestore(id, job, startGen, maxPages = Infinity) {
         this.assertSnapshotLocal(job.g, job.subtree, job.name);
         this.revokeSharedDirectories(job.subtree);
-        const range = subtreeRange(job.subtree);
         // Path filter for both tables, as SQL plus its parameters.
-        const within = job.subtree === ''
-            ? { sql: '', params: [] }
-            : { sql: ' AND (path = ? OR (path > ? AND path < ?))', params: [job.subtree, range.lower, range.upper] };
+        const scope = subtreeWhere(job.subtree, { withRoot: true });
+        const within = scope === null ? { sql: '', params: [] } : { sql: ` AND ${scope.sql}`, params: scope.params };
         let restored = 0;
         // Revived paths go in path order, so the next page starts past the last:
         // what it skipped already has a live row, and a write after the restore
@@ -6059,10 +5925,8 @@ export class SqliteVFS {
         // Nothing an unreachable dst holds is an import's progress.
         if (target !== '' && !this.reachable(target))
             return null;
-        const range = subtreeRange(target);
-        const last = range.upper === null
-            ? [...this.sql.exec('SELECT MAX(path) AS path FROM vfs_inodes')][0]
-            : [...this.sql.exec('SELECT MAX(path) AS path FROM vfs_inodes WHERE path > ? AND path < ?', range.lower, range.upper)][0];
+        const under = subtreeWhere(target);
+        const last = [...this.sql.exec(`SELECT MAX(path) AS path FROM vfs_inodes WHERE ${under.sql}`, ...under.params)][0];
         if (last?.path !== null && last?.path !== undefined) {
             const path = String(last.path);
             return exportCursor(target === '' ? path : path.slice(target.length + 1));
@@ -6301,7 +6165,7 @@ export class SqliteVFS {
             this.sql.exec('UPDATE vfs_jobs SET args = ?, cursor = ? WHERE id = ?', JSON.stringify(state), progress ?? '', jobId);
         };
         const commit = (plan) => {
-            this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
+            this.assertTransactionFits(plan.metrics);
             if (plan.inodes.length)
                 this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, save);
             else
@@ -6343,7 +6207,7 @@ export class SqliteVFS {
                     const plan = part.build();
                     part = this.newPlan(true);
                     const prior = state.pending;
-                    this.assertTransactionFits(withCommitRowMetrics(plan.metrics));
+                    this.assertTransactionFits(plan.metrics);
                     this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
                         state.pending = { path: row.path, meta: importRowMeta(row), content: staging.id, offset: staging.size, count: staging.count };
                         progress = exportCursor(row.path, staging.size);
@@ -6586,24 +6450,15 @@ export class SqliteVFS {
             const row = [...this.sql.exec('SELECT COUNT(*) AS count, COALESCE(MAX(off + len), 0) AS size FROM vfs_content_chunks WHERE content_id = ?', job.ahead)][0];
             Object.assign(staging, { id: job.ahead, size: Number(row.size), count: Number(row.count) });
         }
-        let builder = this.newPlan(true);
-        const flush = () => {
-            if (builder.empty)
-                return;
-            const plan = builder.build();
-            builder = this.newPlan(true);
-            this.assertTransactionFits(plan.metrics);
-            // The job names the staging in the transaction that makes it.
+        // The job names the staging in the transaction that makes it.
+        const { stage, flush } = this.stagingWriter(() => staging, target, (plan) => {
             this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }, () => {
                 this.sql.exec("UPDATE vfs_jobs SET args = json_set(args, '$.ahead', ?) WHERE id = ?", staging.id, id);
             });
-        };
+        }, true);
         let stored = 0;
         for (const hash of this.absentChunks([...given.keys()])) {
-            const data = given.get(hash);
-            if (builder.wouldExceedPieces(data.byteLength, 1) !== null)
-                flush();
-            builder.addStagedPiece(staging, { data, hash: unhex(hash) }, target);
+            stage({ data: given.get(hash), hash: unhex(hash) });
             stored++;
         }
         flush();
@@ -6895,9 +6750,9 @@ export class SqliteVFS {
     }
     /** Hashes of cold chunks the history rows covering `g` under `root` reference. */
     coldChunksAt(g, root, limit) {
-        const range = subtreeRange(root);
-        const within = root === '' ? '' : ' AND (h.path = ? OR (h.path > ? AND h.path < ?))';
-        const bounds = root === '' ? [] : [root, range.lower, range.upper];
+        const scope = subtreeWhere(root, { column: 'h.path', withRoot: true });
+        const within = scope === null ? '' : ` AND ${scope.sql}`;
+        const bounds = scope?.params ?? [];
         return [...this.sql.exec(`SELECT c.hash FROM vfs_chunks c WHERE c.state = ${CHUNK_COLD} AND c.id IN (
          SELECT h.chunk_id FROM vfs_inode_history h WHERE h.chunk_id IS NOT NULL AND h.gen_from <= ? AND ? < h.gen_to${within}
          UNION SELECT cc.chunk_id FROM vfs_inode_history h JOIN vfs_content_chunks cc ON cc.content_id = h.content_id
@@ -7163,23 +7018,13 @@ export class SqliteVFS {
             throw vfsError('EINVAL', inode.path, `${data.byteLength} bytes for size ${inode.size}`);
         }
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-        let builder = this.newPlan();
-        const flush = () => {
-            if (builder.empty)
-                return;
-            const plan = builder.build();
-            builder = this.newPlan();
-            this.assertTransactionFits(plan.metrics);
-            this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
-        };
+        const { stage, flush } = this.stagingWriter(() => staging, inode.path, (plan) => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
         try {
             let start = 0;
             for (const end of cutContent(data)) {
                 const piece = data.subarray(start, end);
                 start = end;
-                if (builder.wouldExceedPieces(piece.byteLength, 1) !== null)
-                    flush();
-                builder.addStagedPiece(staging, { data: piece, hash: chunkHash(piece) }, inode.path);
+                stage({ data: piece, hash: chunkHash(piece) });
             }
             flush();
             const result = this.publishStagedFile(inode, staging, onCommit);
@@ -7214,14 +7059,15 @@ export class SqliteVFS {
             uid: inode.uid ?? prior?.uid ?? 1000,
             gid: inode.gid ?? prior?.gid ?? 1000,
             content,
+            ...(inode.ino !== undefined ? { ino: this.askedIno(inode) } : {}),
             ...(knownPrior && knownPrior.gen === this._gen ? { knownPrior } : {}),
         };
     }
     publishStagedFile(inode, staging, onCommit) {
-        const builder = this.newPlan();
+        const builder = this.newPlan(onCommit !== undefined);
         builder.addInode(this.fileEntry(inode, { type: 'staged', content: staging }));
         const plan = builder.build();
-        this.assertTransactionFits(onCommit ? withCommitRowMetrics(plan.metrics) : plan.metrics);
+        this.assertTransactionFits(plan.metrics);
         const result = this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' }, onCommit);
         return { inodes: result.inodes, chunks: inode.chunkCount };
     }
@@ -7240,7 +7086,7 @@ export class SqliteVFS {
     async writeFileFrom(path, size, source, options, cred, mutationOwner, origin = null) {
         if (!Number.isSafeInteger(size) || size < 0)
             throw vfsError('EINVAL', path, `invalid size ${size}`);
-        // uid 0 may use the ledger's kernel reserve (privilegedView), but that view
+        // uid 0 may use the ledger's kernel reserve (callerView), but that view
         // only covers a call's synchronous part, and this one awaits its source:
         // each transaction below is run with the caller's own privilege, as its call.
         const asCaller = (fn) => {
@@ -7253,8 +7099,9 @@ export class SqliteVFS {
                 this.privileged = prior;
             }
         };
-        // Refused before a byte is read, as writeFile would refuse it.
-        const target = asCaller(() => this.fileWriteInode(path, size, options, cred)).path;
+        // Refused before a byte is read, as writeFile would refuse it; a
+        // delegation it meets is recalled first, so the source is read once.
+        const target = (await withRecall(() => asCaller(() => this.fileWriteInode(path, size, options, cred)))).path;
         const sourceMismatch = (received) => vfsError('EINVAL', `${target}: source ${received > size ? 'ran past' : `ended after ${received} of`} the ${size} bytes declared`);
         if (size <= CHUNK_SIZE) {
             // One chunk, named from its inode: no cut to stream into.
@@ -7263,20 +7110,9 @@ export class SqliteVFS {
             return this._revision;
         }
         const staging = { id: 0, size: 0, count: 0, hashed: true, digest: new ManifestDigest() };
-        let builder = this.newPlan();
-        const flush = () => {
-            if (builder.empty)
-                return;
-            const plan = builder.build();
-            builder = this.newPlan();
-            this.assertTransactionFits(plan.metrics);
-            asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
-        };
-        const stage = (data) => {
-            if (builder.wouldExceedPieces(data.byteLength, 1) !== null)
-                flush();
-            builder.addStagedPiece(staging, { data, hash: chunkHash(data) }, target);
-        };
+        const writer = this.stagingWriter(() => staging, target, (plan) => asCaller(() => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' })));
+        const flush = writer.flush;
+        const stage = (data) => writer.stage({ data, hash: chunkHash(data) });
         const cutter = new ContentCutter();
         let received = 0;
         try {
@@ -7390,8 +7226,10 @@ export class SqliteVFS {
      */
     async writeBatchPlaced(payload, cred, origin, mutationOwner, signal) {
         signal?.throwIfAborted();
+        // Read now, in the caller's turn: its lookups recall none of what it holds.
+        const holds = mutationOwner !== undefined ? new Set([mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
         const names = [...payload.inodes.map((inode) => inode.path), ...(payload.deletePaths ?? [])];
-        if (this.placedHere(names, cred, signal))
+        if (this.withHolds(holds, () => this.placedHere(names, cred, signal)))
             return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, cred)));
         const result = await this.writeStream(encodeWriteBatchStream(payload), { mutationOwner, signal }, cred, origin);
         if (!result.ok)
@@ -7425,7 +7263,7 @@ export class SqliteVFS {
             const epoch = at.view();
             if (route === undefined || route.epoch !== epoch) {
                 // Synchronous while the lookup stays on this filesystem's backends.
-                const answer = parent === '' ? '' : router.resolveDirectory('/' + parent, cred, at.signal);
+                const answer = parent === '' ? '' : this.withHolds(at.holds, () => router.resolveDirectory('/' + parent, cred, at.signal));
                 const resolved = typeof answer === 'string' ? answer : await answer;
                 route = { resolved, epoch };
                 at.routes.set(parent, route);
@@ -7474,6 +7312,21 @@ export class SqliteVFS {
                 at.committed(null);
                 return true;
             }
+            case 'call': {
+                const call = record.call;
+                if (call.call !== 'mkdir')
+                    at.routes.clear();
+                const placed = await mountOf(call.call === 'mkdir' ? 'directory'
+                    : call.call === 'symlink' || call.call === 'ftruncate' || call.call === 'lchown' || call.call === 'lutimes' ? 'file' : 'delete', call.path);
+                if (placed === null)
+                    return false;
+                at.setPhase('publish');
+                at.settleBefore();
+                reached();
+                await router.apply({ type: 'call', call: { ...call, path: placed } }, cred, at.guard);
+                at.committed(null);
+                return true;
+            }
             case 'file-begin': {
                 const placed = await mountOf('file', record.inode.path);
                 if (placed === null)
@@ -7497,6 +7350,8 @@ export class SqliteVFS {
                     streamContentId: record.streamContentId, named: record.inode.path, placed, link: record.inode.kind === 'symlink',
                     mode: record.inode.mode, size: record.inode.size, received: 0, nextChunk: 0, held: [], index: at.index,
                     credit: { left: record.inode.size, lease },
+                    ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
+                    ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
                 };
                 return true;
             }
@@ -7533,9 +7388,11 @@ export class SqliteVFS {
                     at.settleBefore();
                     reached();
                     const bytes = concatBytes(file.held.map((chunk) => chunk.data));
-                    const stat = await router.apply(file.link
-                        ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
-                        : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
+                    const stat = await router.apply(file.call !== undefined
+                        ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes, ...(file.offset === undefined ? {} : { offset: file.offset }) }
+                        : file.link
+                            ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
+                            : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
                     at.committed(stat === null ? null : { path: file.named, ...stat });
                 }
                 finally {
@@ -7551,9 +7408,122 @@ export class SqliteVFS {
         }
     }
     writeStream(stream, options = {}, cred, origin = null) {
-        return this.spanning(() => this.consumeStream(stream, options, cred, origin), options.mutationOwner);
+        // The delegations its caller holds, read now, in the caller's turn: its records apply as them.
+        const holds = options.mutationOwner !== undefined ? new Set([options.mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
+        return this.spanning(() => this.consumeStream(stream, options, cred, origin, holds), options.mutationOwner);
     }
-    async consumeStream(stream, options, cred, origin) {
+    /**
+     * A sequenced writer's state as its wave starts: its cursor, and the
+     * refusal it has not had answered (dropped once `ack` reaches it). Kept
+     * until its process is over and its log drained (forgetSequences). A
+     * wave that starts past the op after the cursor
+     * names ops the session never had: refused, ESTALE (they are lost).
+     */
+    openSequence(sequence) {
+        if (!Number.isSafeInteger(sequence.first) || sequence.first < 1 || !Number.isSafeInteger(sequence.ack) || sequence.ack < 0) {
+            throw vfsError('EINVAL', sequence.writer, 'a sequenced wave numbers its ops from 1');
+        }
+        const now = Date.now();
+        let state = { cursor: 0, refused: null };
+        this.transactionSync(() => {
+            const row = [...this.sql.exec('SELECT seq, refused_seq, refused_errno, refused_message FROM vfs_wave_cursors WHERE writer = ?', sequence.writer)][0];
+            if (row === undefined) {
+                this.sql.exec('INSERT INTO vfs_wave_cursors (writer, seq, touched_at) VALUES (?, 0, ?)', sequence.writer, now);
+                return;
+            }
+            const refusedSeq = row.refused_seq === null ? null : Number(row.refused_seq);
+            if (refusedSeq !== null && refusedSeq <= sequence.ack) {
+                this.sql.exec('UPDATE vfs_wave_cursors SET refused_seq = NULL, refused_errno = NULL, refused_message = NULL, touched_at = ? WHERE writer = ?', now, sequence.writer);
+                state = { cursor: Number(row.seq), refused: null };
+                return;
+            }
+            this.sql.exec('UPDATE vfs_wave_cursors SET touched_at = ? WHERE writer = ?', now, sequence.writer);
+            state = {
+                cursor: Number(row.seq),
+                refused: refusedSeq === null ? null : { seq: refusedSeq, errno: String(row.refused_errno), message: String(row.refused_message) },
+            };
+        });
+        if (sequence.first > state.cursor + 1) {
+            throw vfsError('ESTALE', sequence.writer, `ops ${state.cursor + 1} to ${sequence.first - 1} of this writer never reached the session`);
+        }
+        return state;
+    }
+    /**
+     * A process's data call, made as the call of that name: a writeFile, an
+     * appendFile (made where missing), or a write or append through an open
+     * description (describedFile). The published name's stat, or null for a
+     * description whose file no name has any more (the bytes go with it).
+     */
+    applyDataCall(file, bytes, cred) {
+        switch (file.call) {
+            case 'writeFile':
+                this.writeFile(file.path, bytes, { mode: file.mode, ino: file.ino }, cred);
+                return this.stat(file.path, cred, true);
+            case 'appendFile': {
+                const prior = this.checkAccess(file.path, 0, cred, { allowMissingLeaf: true }).inode;
+                if (prior === undefined)
+                    this.writeFile(file.path, bytes, { mode: file.mode, ino: file.ino }, cred);
+                else
+                    this.writeRange(file.path, prior.size, bytes, cred);
+                return this.stat(file.path, cred, true);
+            }
+            case 'write':
+            case 'append': {
+                const at = this.describedFile(file.path, file.ino, cred);
+                if (at === null)
+                    return null;
+                const offset = file.call === 'write' ? file.offset : this.stat(at, cred, true).size;
+                this.writeRange(at, offset, bytes, cred);
+                return this.stat(at, cred, true);
+            }
+        }
+    }
+    /**
+     * The file an open description writes: the one inode `ino` names, wherever
+     * it is named now, or null once no name has it; without `ino`, the file at
+     * `path`. Found by its name while that still names it; else by a scan for
+     * its number (a rename by another process under an open description).
+     */
+    describedFile(path, ino, cred) {
+        if (ino === undefined)
+            return path;
+        if (this.checkAccess(path, 0, cred, { allowMissingLeaf: true }).inode?.ino === ino)
+            return path;
+        const row = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', ino)][0];
+        return row === undefined ? null : String(row.path);
+    }
+    /**
+     * Process `pid` is over and its write log drained: its writers' cursors
+     * (`${pid}:${writer}`, processWaveSequence) go. They live exactly that long, so
+     * a drain after a restart still finds them, and nothing else keeps them.
+     */
+    forgetSequences(pid) {
+        this.sql.exec("DELETE FROM vfs_wave_cursors WHERE writer >= ? AND writer < ?", `${pid}:`, `${pid};`);
+    }
+    /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */
+    advanceSequence(writer, seq) {
+        this.sql.exec('UPDATE vfs_wave_cursors SET seq = ?, touched_at = ? WHERE writer = ?', seq, Date.now(), writer);
+    }
+    /** The op numbered `seq` was refused: the cursor passes it, and the refusal is kept until the writer has had it answered. */
+    refuseInSequence(writer, refused) {
+        this.transactionSync(() => {
+            this.sql.exec('UPDATE vfs_wave_cursors SET seq = ?, refused_seq = ?, refused_errno = ?, refused_message = ?, touched_at = ? WHERE writer = ?', refused.seq, refused.seq, refused.errno, refused.message, Date.now(), writer);
+        });
+    }
+    /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
+    withHolds(holds, run) {
+        const prior = this.activeHolds;
+        this.activeHolds = holds;
+        try {
+            return run();
+        }
+        finally {
+            this.activeHolds = prior;
+        }
+    }
+    async consumeStream(stream, options, cred, origin, holds) {
+        // A delegation's holder's wave: the names it made are owned as the caller's.
+        const delegatedWave = options.mutationOwner !== undefined && (this.exclusiveMutationLeases.get(options.mutationOwner)?.delegation ?? null) !== null;
         // Each group commits in its own turn, as the stream's caller (its lease, its principal).
         const asCaller = (fn) => this.asOrigin(origin, () => this.withMutationOwner(options.mutationOwner, fn));
         const decodeDrainStartedAt = options.decodeDrainStartedAt ?? performance.now();
@@ -7563,13 +7533,17 @@ export class SqliteVFS {
         let decodeDrainWaitMs = Math.max(0, performance.now() - decodeDrainStartedAt);
         let recordIterator = null;
         let recordIteratorFinished = false;
+        // Assigned as records apply (withHolds): typed so, not narrowed to their first value.
         let decodedRecordLease = null;
         /** Staging contents this stream created and has not yet published. */
         const ownedStaging = new Set();
         let activeFile = null;
+        /** A call's file (W7DataCall), its bytes gathered until its end. */
+        let callFile = null;
         const progress = {
             committedGroupSequence: 0,
             committedPathCount: 0,
+            committedOps: 0,
             inodes: 0,
             chunks: 0,
             receipts: [],
@@ -7578,7 +7552,7 @@ export class SqliteVFS {
         const router = this.waveRouter;
         /** A file the namespace places on a mount, its chunks handed to the router as they arrive. */
         const routed = { file: null };
-        /** Each directory's resolved namespace path and the revision it saw, until a link or removal of the wave's. */
+        /** Each directory's resolved namespace path and the view it was resolved in, until a link or removal of the wave's. */
         const routes = new Map();
         /**
          * The namespace as the wave's placements see it: `epoch` numbers the
@@ -7617,7 +7591,7 @@ export class SqliteVFS {
             if (route === undefined || route.epoch !== epoch) {
                 let answer;
                 try {
-                    answer = parent === '' ? '' : router.resolveDirectory('/' + parent, cred, options.signal);
+                    answer = parent === '' ? '' : this.withHolds(holds, () => router.resolveDirectory('/' + parent, cred, options.signal));
                 }
                 catch {
                     return undefined;
@@ -7641,7 +7615,7 @@ export class SqliteVFS {
          * A record that lands on this filesystem, decided without an await: a
          * file (not a link) or directory placed here by placeSync, a chunk or end
          * of a file no mount takes, or the batch's end. Every other record (a
-         * removal, a link) goes to routeRecord.
+         * removal, a call, a link) goes to routeRecord.
          */
         const landsHere = (record) => {
             if (routed.file !== null)
@@ -7665,7 +7639,7 @@ export class SqliteVFS {
          * own publication reshaped nothing a name resolves through (no directory
          * or link made, replaced or removed). The revision taken is the one that
          * publication made, at the publication itself (publishWatch), so a write
-         * an observer of it makes in the same turn still starts a new view.
+         * anything else makes in the same turn still starts a new view.
          */
         const ownFiles = (commit) => {
             const before = this._revision;
@@ -7713,7 +7687,7 @@ export class SqliteVFS {
                     if (dir === undefined) {
                         let answer;
                         try {
-                            answer = parent === '' ? '' : router.resolveDirectory('/' + parent, cred);
+                            answer = parent === '' ? '' : this.withHolds(holds, () => router.resolveDirectory('/' + parent, cred));
                         }
                         catch {
                             answer = null;
@@ -7837,6 +7811,7 @@ export class SqliteVFS {
                 }
                 progress.committedGroupSequence++;
                 progress.committedPathCount += paths;
+                progress.committedOps += paths;
                 progress.inodes += result.inodes;
                 progress.chunks += publishedChunks;
                 for (const entry of plan.inodes) {
@@ -7871,6 +7846,7 @@ export class SqliteVFS {
             const result = asCaller(() => (this.writeBatch({ inodes, chunks: [] }, cred)));
             progress.committedGroupSequence++;
             progress.committedPathCount += inodes.length;
+            progress.committedOps += inodes.length;
             progress.inodes += result.inodes;
         };
         // A removal observes everything the stream wrote before it.
@@ -7885,6 +7861,7 @@ export class SqliteVFS {
             });
             progress.committedGroupSequence++;
             progress.committedPathCount += affected;
+            progress.committedOps++;
         };
         // The wave's leading removals and directories (an encoder sends them
         // before its first file) are held until the first file or the end, and
@@ -8002,7 +7979,126 @@ export class SqliteVFS {
                 flushGroup();
             return acquireCredit(byteLength, signal);
         };
+        // A sequenced writer's wave (WaveSequence): its ops are numbered from
+        // `first`, and one the writer's cursor has passed is answered, never
+        // applied again.
+        const sequence = options.sequence === undefined ? null : { spec: options.sequence, cursor: 0 };
+        /** The number of the op being applied: a refusal now is its answer. */
+        let applying = null;
+        /** A re-sent data call the cursor has passed: its chunks are drained, not applied. */
+        let skipping = null;
+        const advanced = (seq) => {
+            sequence.cursor = seq;
+            progress.sequence = { cursor: seq };
+            applying = null;
+        };
+        const pendingCalls = [];
+        let pendingCallBytes = 0;
+        /** Apply `calls` in one transaction; the index of the one that threw, and its error, or null. */
+        const applyCalls = (calls) => {
+            const befores = [];
+            const results = [];
+            let failed = null;
+            try {
+                this.withHolds(holds, () => this.publishedTransaction(() => {
+                    for (const [at, call] of calls.entries()) {
+                        befores.push(this.revision(call.path, cred));
+                        try {
+                            results.push(asCaller(call.apply));
+                        }
+                        catch (error) {
+                            failed = { at, error };
+                            throw error;
+                        }
+                        if (sequence !== null && call.seq !== null)
+                            this.advanceSequence(sequence.spec.writer, call.seq);
+                    }
+                }, (error) => error));
+            }
+            catch (error) {
+                return failed ?? { at: 0, error };
+            }
+            return { befores, results };
+        };
+        const flushCalls = () => {
+            if (pendingCalls.length === 0)
+                return;
+            // The op being decoded now (a routed one settling what came before it) stays the one being applied.
+            const current = applying;
+            const calls = pendingCalls.splice(0);
+            pendingCallBytes = 0;
+            phase = 'publish';
+            options.admit?.();
+            let applied = applyCalls(calls);
+            let refused = null;
+            if ('error' in applied) {
+                // Rolled back whole: the calls before the one refused commit
+                // together again (they did, before it), and its refusal is its answer.
+                const at = applied.at;
+                refused = { call: calls[at], error: applied.error };
+                applied = at === 0 ? { befores: [], results: [] } : applyCalls(calls.slice(0, at));
+                if ('error' in applied) {
+                    applying = calls[applied.at].seq;
+                    throw applied.error;
+                }
+            }
+            const after = this._revision;
+            // Read as the wave's writer: its receipts recall none of what it holds.
+            const { results, befores } = applied;
+            this.withHolds(holds, () => results.forEach((result, at) => {
+                const call = calls[at];
+                progress.committedGroupSequence++;
+                progress.committedPathCount += call.paths;
+                progress.committedOps++;
+                (progress.mutations ??= []).push({ index: call.index, before: befores[at], after });
+                if (call.receipt && result) {
+                    // The revision its file was published at, as its path reports it.
+                    progress.receipts.push({
+                        path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
+                        uid: result.uid, gid: result.gid, dev: this.deviceId, revision: this.revision(call.path, cred),
+                    });
+                }
+                if (call.seq !== null)
+                    advanced(call.seq);
+            }));
+            if (refused !== null) {
+                applying = refused.call.seq;
+                throw refused.error;
+            }
+            applying = current;
+        };
+        /**
+         * Queue the call at the wave's current place, made at `path` by `apply`.
+         * `alone`: it may change where later names resolve (a removal, a link,
+         * a rename, an attribute change), so it commits now, after the ones
+         * before it.
+         */
+        const queueCall = (path, apply, options = {}) => {
+            endLeading();
+            flushGroup();
+            flushDirectories();
+            pendingCalls.push({ index: recordIndex, seq: applying, path, paths: options.paths ?? 1, apply, receipt: options.receipt === true });
+            applying = null;
+            pendingCallBytes += options.bytes ?? 0;
+            if (options.alone === true || pendingCalls.length >= CALL_GROUP_OPS || pendingCallBytes >= CALL_GROUP_BYTES)
+                flushCalls();
+        };
         try {
+            if (sequence !== null) {
+                const opened = this.openSequence(sequence.spec);
+                sequence.cursor = opened.cursor;
+                progress.sequence = { cursor: opened.cursor };
+                // A re-send of a wave whose op was refused: answered as it was, nothing after that op applied.
+                if (opened.refused !== null && opened.refused.seq >= sequence.spec.first) {
+                    progress.sequence.refused = opened.refused;
+                    stream.cancel().catch(() => { });
+                    return {
+                        ok: false,
+                        ...progress,
+                        error: { code: 'ERR_WRITE_BATCH_STREAM', phase: 'publish', message: opened.refused.message, errno: opened.refused.errno },
+                    };
+                }
+            }
             const decoded = await decodeWriteBatchStream(stream, {
                 signal: options.signal,
                 retainChunk,
@@ -8023,14 +8119,52 @@ export class SqliteVFS {
                     throw new Error('w7-frame: stream ended without batch-end');
                 }
                 const record = next.value;
-                if (record.type === 'delete' || record.type === 'directory' || record.type === 'file-begin')
+                // A record that lands in another holder's delegation waits for it to
+                // be given up first, here between records, where the stream may wait:
+                // its group's commit would otherwise be refused.
+                if (this.exclusiveMutationLeases.size > 0) {
+                    for (const lands of recordPaths(record))
+                        await this.recallDelegationsAt(lands, holds);
+                }
+                // A record that is no call: the calls before it commit first.
+                const partOfCall = record.type === 'call' || (record.type === 'file-begin' && record.inode.call !== undefined)
+                    || (callFile !== null && (record.type === 'file-chunk' || record.type === 'file-end'));
+                if (!partOfCall)
+                    flushCalls();
+                if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end')
                     recordIndex++;
+                if (sequence !== null && record.type !== 'batch-end') {
+                    if (record.type === 'file-chunk' || record.type === 'file-end') {
+                        if (skipping !== null) {
+                            if (record.type === 'file-chunk')
+                                record.retention.release();
+                            else
+                                skipping = null;
+                            continue;
+                        }
+                    }
+                    else {
+                        // Numbered: a process's calls, renames, truncates and attribute changes; an upsert has no answer to keep.
+                        if (record.type === 'delete' || record.type === 'directory' || (record.type === 'file-begin' && record.inode.call === undefined)) {
+                            throw vfsError('EINVAL', record.type === 'delete' ? record.path : record.inode.path, 'a sequenced wave carries calls, renames, truncates and attribute changes, not upserts');
+                        }
+                        // Each op's number is its place in the wave (recordIndex counts ops, from 0).
+                        const seq = sequence.spec.first + recordIndex;
+                        if (seq <= sequence.cursor) {
+                            if (record.type === 'file-begin')
+                                skipping = record.streamContentId;
+                            continue;
+                        }
+                        applying = seq;
+                    }
+                }
                 if (router !== null && !landsHere(record) && await this.routeRecord(record, router, cred, {
                     get file() { return routed.file; },
                     set file(file) { routed.file = file; },
                     index: recordIndex,
                     waveId,
                     routes,
+                    holds,
                     view: viewEpoch,
                     placeSync,
                     placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
@@ -8043,6 +8177,7 @@ export class SqliteVFS {
                     },
                     // Whatever the wave wrote here before the record commits first.
                     settleBefore: () => {
+                        flushCalls();
                         endLeading();
                         flushDirectories();
                         flushGroup();
@@ -8053,188 +8188,348 @@ export class SqliteVFS {
                     committed: (receipt) => {
                         progress.committedGroupSequence++;
                         progress.committedPathCount++;
+                        progress.committedOps++;
                         if (receipt !== null)
                             progress.receipts.push(receipt);
+                        // On a mount: the cursor moves once the backend has it, in a transaction of its own.
+                        if (sequence !== null && applying !== null) {
+                            const seq = applying;
+                            this.transactionSync(() => this.advanceSequence(sequence.spec.writer, seq));
+                            advanced(seq);
+                        }
                     },
                 }))
                     continue;
-                switch (record.type) {
-                    case 'delete': {
-                        phase = 'publish';
-                        if (leading)
-                            leadingDeletes.push(record.path);
-                        else
-                            commitDelete(record.path);
-                        break;
+                // A call's bytes are gathered whole, and the call made at its end.
+                if (record.type === 'file-begin' && record.inode.call !== undefined) {
+                    phase = 'validation';
+                    this.validateInodeContentShape(record.inode);
+                    callFile = {
+                        streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
+                        ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
+                        ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
+                        parts: [], received: 0, nextChunk: 0,
+                    };
+                    continue;
+                }
+                if (callFile !== null && record.type === 'file-chunk') {
+                    phase = 'validation';
+                    if (record.streamContentId !== callFile.streamContentId || record.path !== callFile.path) {
+                        throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
                     }
-                    case 'directory': {
-                        phase = 'validation';
-                        this.validateFileChunks(record.inode, []);
-                        phase = 'publish';
-                        // Directory inodes carry no payload: rows are the only bound in
-                        // reach, priced by the plan's own accounting (each row, the
-                        // parent it dates, and a snapshot's before-images of both), so
-                        // the strict batch the flush commits always fits. The leading
-                        // ones are bounded as they commit (endLeading).
-                        if (!leading && this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null)
+                    if (record.chunkId !== callFile.nextChunk || callFile.received + record.data.byteLength > callFile.size) {
+                        throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
+                    }
+                    callFile.nextChunk++;
+                    callFile.received += record.data.byteLength;
+                    // Copied out, and the chunk's credit given back.
+                    callFile.parts.push(record.data.slice());
+                    record.retention.release();
+                    continue;
+                }
+                if (callFile !== null && record.type === 'file-end') {
+                    phase = 'validation';
+                    const file = callFile;
+                    callFile = null;
+                    if (record.streamContentId !== file.streamContentId)
+                        throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
+                    if (file.received !== file.size)
+                        throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
+                    phase = 'publish';
+                    const bytes = concatBytes(file.parts);
+                    queueCall(file.path, () => this.applyDataCall(file, bytes, cred), { bytes: bytes.byteLength, receipt: true });
+                    continue;
+                }
+                // A name a delegation's holder made is the caller's, as a create of
+                // its own would make it (creationAttrs): its owner, and a setgid
+                // directory's group. The holder made it so; this keeps it so.
+                if ((record.type === 'directory' || record.type === 'file-begin') && delegatedWave && !this.inodes.get(record.inode.path)) {
+                    const attrs = this.creationAttrs(record.inode.path, record.inode.mode, cred, record.type === 'directory');
+                    Object.assign(record.inode, { uid: cred.uid, gid: attrs.gid, mode: attrs.mode });
+                }
+                // Each record is applied in one synchronous turn, by the stream's
+                // caller: as the delegations it holds, whose lookups recall none of them.
+                const ended = this.withHolds(holds, () => {
+                    switch (record.type) {
+                        case 'delete': {
+                            phase = 'publish';
+                            if (leading)
+                                leadingDeletes.push(record.path);
+                            else
+                                commitDelete(record.path);
+                            break;
+                        }
+                        case 'directory': {
+                            phase = 'validation';
+                            this.validateFileChunks(record.inode, []);
+                            phase = 'publish';
+                            // Records commit in their order: files the stream wrote before
+                            // this directory commit before it.
+                            if (groupInodes.length > 0)
+                                flushGroup();
+                            // Directory inodes carry no payload: rows are the only bound in
+                            // reach, priced by the plan's own accounting (each row, the
+                            // parent it dates, and a snapshot's before-images of both), so
+                            // the strict batch the flush commits always fits. The leading
+                            // ones are bounded as they commit (endLeading).
+                            if (!leading && this.newPlan().wouldExceedInodes(pendingDirectories.length + 1) !== null)
+                                flushDirectories();
+                            pendingDirectories.push(record.inode);
+                            break;
+                        }
+                        case 'file-begin': {
+                            if (activeFile)
+                                throw vfsError('EINVAL', `nested streamed file ${record.inode.path}`);
+                            phase = 'validation';
+                            this.validateInodeContentShape(record.inode);
+                            phase = 'publish';
+                            // Authorising a file reads its parent from the committed inode
+                            // tree, so pending directories become visible first.
+                            endLeading();
                             flushDirectories();
-                        pendingDirectories.push(record.inode);
-                        break;
-                    }
-                    case 'file-begin': {
-                        if (activeFile)
-                            throw vfsError('EINVAL', `nested streamed file ${record.inode.path}`);
-                        phase = 'validation';
-                        this.validateInodeContentShape(record.inode);
-                        phase = 'publish';
-                        // Authorising a file reads its parent from the committed inode
-                        // tree, so pending directories become visible first.
-                        endLeading();
-                        flushDirectories();
-                        phase = 'validation';
-                        // The file lands where its name resolves (links followed, as a
-                        // batch places it), and that is the path its lease is checked on.
-                        // Close the group before the file that would overflow it, so a
-                        // file either fits whole or begins a group of its own; one too
-                        // large for any group stages across several.
-                        if (group.wouldExceedFile(record.inode.size) !== null)
-                            flushGroup();
-                        const whole = group.wouldExceedFile(record.inode.size) === null;
-                        if (placement.gen !== this._gen)
-                            placement = { gen: this._gen, placed: new Map() };
-                        let placedInode;
-                        let placedPrior = null;
-                        if (whole) {
-                            // Held whole until its group commits, and authorised there.
-                            const path = this.createdPath(this.storageKey(record.inode.path, cred), cred, placement.placed);
-                            asCaller(() => this.assertMutationsAllowed([path]));
-                            placedInode = { ...record.inode, path, parentPath: this.parentPath(path) };
-                        }
-                        else {
-                            // Too large for one group: its chunks commit as they arrive, so it
-                            // is authorised before the first of them.
-                            const priors = new Map();
-                            placedInode = asCaller(() => {
-                                const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
-                                this.assertMutationsAllowed([placed.path]);
-                                return placed;
-                            });
-                            placedPrior = { inode: priors.get(placedInode.path), gen: this._gen };
-                        }
-                        phase = 'stage';
-                        activeFile = {
-                            streamContentId: record.streamContentId,
-                            named: record.inode.path,
-                            inode: placedInode,
-                            received: 0,
-                            nextChunk: 0,
-                            cutter: new ContentCutter(),
-                            held: whole ? [] : null,
-                            heldLeases: [],
-                            staging: null,
-                            stagedBytes: 0,
-                            raw: record.inode,
-                            prior: placedPrior,
-                        };
-                        break;
-                    }
-                    case 'file-chunk': {
-                        decodedRecordLease = record.retention;
-                        phase = 'validation';
-                        const file = activeFile;
-                        if (!file
-                            || record.streamContentId !== file.streamContentId
-                            || record.path !== file.named) {
-                            throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
-                        }
-                        if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
-                            throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
-                        }
-                        file.nextChunk++;
-                        file.received += record.data.byteLength;
-                        phase = 'stage';
-                        if (file.inode.size <= CHUNK_SIZE) {
-                            // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
-                            file.held.push({ data: record.data, hash: new Uint8Array(0) });
-                        }
-                        else {
-                            for (const data of file.cutter.push(record.data))
-                                stagePiece(file, { data, hash: chunkHash(data) });
-                        }
-                        if (file.held !== null)
-                            file.heldLeases.push(record.retention);
-                        else
-                            groupLeases.push(record.retention);
-                        decodedRecordLease = null;
-                        break;
-                    }
-                    case 'file-end': {
-                        phase = 'validation';
-                        const file = activeFile;
-                        if (!file || record.streamContentId !== file.streamContentId) {
-                            throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
-                        }
-                        if (file.received !== file.inode.size) {
-                            throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
-                        }
-                        phase = 'publish';
-                        let content;
-                        if (file.inode.size === 0)
-                            content = { type: 'none' };
-                        else if (file.inode.size <= CHUNK_SIZE) {
-                            const parts = file.held;
-                            const data = parts.length === 1 ? parts[0].data : concatBytes(parts.map((part) => part.data));
-                            content = { type: 'small', piece: { data, hash: chunkHash(data) } };
-                        }
-                        else {
-                            for (const data of file.cutter.finish())
-                                stagePiece(file, { data, hash: chunkHash(data) });
-                            if (file.held !== null) {
-                                const digest = new ManifestDigest();
-                                for (const piece of file.held)
-                                    digest.add(piece.hash);
-                                content = { type: 'large', pieces: file.held, size: file.inode.size, digest: digest.digest(file.inode.size) };
+                            phase = 'validation';
+                            // The file lands where its name resolves (links followed, as a
+                            // batch places it), and that is the path its lease is checked on.
+                            // Close the group before the file that would overflow it, so a
+                            // file either fits whole or begins a group of its own; one too
+                            // large for any group stages across several.
+                            if (group.wouldExceedFile(record.inode.size) !== null)
+                                flushGroup();
+                            const whole = group.wouldExceedFile(record.inode.size) === null;
+                            if (placement.gen !== this._gen)
+                                placement = { gen: this._gen, placed: new Map() };
+                            let placedInode;
+                            let placedPrior = null;
+                            if (whole) {
+                                // Held whole until its group commits, and authorised there.
+                                const path = this.createdPath(this.storageKey(record.inode.path, cred), cred, placement.placed);
+                                asCaller(() => this.assertMutationsAllowed([path]));
+                                placedInode = { ...record.inode, path, parentPath: this.parentPath(path) };
                             }
                             else {
-                                content = { type: 'staged', content: file.staging };
+                                // Too large for one group: its chunks commit as they arrive, so it
+                                // is authorised before the first of them.
+                                const priors = new Map();
+                                placedInode = asCaller(() => {
+                                    const [placed] = this.authorizeBatch({ inodes: [record.inode], chunks: [] }, cred, priors).inodes;
+                                    this.assertMutationsAllowed([placed.path]);
+                                    return placed;
+                                });
+                                placedPrior = { inode: priors.get(placedInode.path), gen: this._gen };
                             }
+                            phase = 'stage';
+                            activeFile = {
+                                streamContentId: record.streamContentId,
+                                named: record.inode.path,
+                                inode: placedInode,
+                                received: 0,
+                                nextChunk: 0,
+                                cutter: new ContentCutter(),
+                                held: whole ? [] : null,
+                                heldLeases: [],
+                                staging: null,
+                                stagedBytes: 0,
+                                raw: record.inode,
+                                prior: placedPrior,
+                            };
+                            break;
                         }
-                        const overflows = file.held !== null
-                            ? group.wouldExceedFile(file.inode.size)
-                            : group.wouldExceedInode();
-                        if (overflows !== null)
+                        case 'file-chunk': {
+                            decodedRecordLease = record.retention;
+                            phase = 'validation';
+                            const file = activeFile;
+                            if (!file
+                                || record.streamContentId !== file.streamContentId
+                                || record.path !== file.named) {
+                                throw vfsError('EINVAL', `streamed chunk ownership mismatch: ${record.path}`);
+                            }
+                            if (record.chunkId !== file.nextChunk || file.received + record.data.byteLength > file.inode.size) {
+                                throw vfsError('EINVAL', record.path, `chunk ${record.chunkId} out of order or past size`);
+                            }
+                            file.nextChunk++;
+                            file.received += record.data.byteLength;
+                            phase = 'stage';
+                            if (file.inode.size <= CHUNK_SIZE) {
+                                // One chunk is the whole file; CDC starts only above CHUNK_SIZE.
+                                file.held.push({ data: record.data, hash: new Uint8Array(0) });
+                            }
+                            else {
+                                for (const data of file.cutter.push(record.data))
+                                    stagePiece(file, { data, hash: chunkHash(data) });
+                            }
+                            if (file.held !== null)
+                                file.heldLeases.push(record.retention);
+                            else
+                                groupLeases.push(record.retention);
+                            decodedRecordLease = null;
+                            break;
+                        }
+                        case 'file-end': {
+                            phase = 'validation';
+                            const file = activeFile;
+                            if (!file || record.streamContentId !== file.streamContentId) {
+                                throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
+                            }
+                            if (file.received !== file.inode.size) {
+                                throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.inode.size} bytes`);
+                            }
+                            phase = 'publish';
+                            let content;
+                            if (file.inode.size === 0)
+                                content = { type: 'none' };
+                            else if (file.inode.size <= CHUNK_SIZE) {
+                                const parts = file.held;
+                                const data = parts.length === 1 ? parts[0].data : concatBytes(parts.map((part) => part.data));
+                                content = { type: 'small', piece: { data, hash: chunkHash(data) } };
+                            }
+                            else {
+                                for (const data of file.cutter.finish())
+                                    stagePiece(file, { data, hash: chunkHash(data) });
+                                if (file.held !== null) {
+                                    const digest = new ManifestDigest();
+                                    for (const piece of file.held)
+                                        digest.add(piece.hash);
+                                    content = { type: 'large', pieces: file.held, size: file.inode.size, digest: digest.digest(file.inode.size) };
+                                }
+                                else {
+                                    content = { type: 'staged', content: file.staging };
+                                }
+                            }
+                            const overflows = file.held !== null
+                                ? group.wouldExceedFile(file.inode.size)
+                                : group.wouldExceedInode();
+                            if (overflows !== null)
+                                flushGroup();
+                            // Every file of the group, staged ones included, is authorised
+                            // (again) in the turn its group commits; until then its entry
+                            // holds the group's place and accounting, and claims no prior.
+                            const entry = asCaller(() => (this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })));
+                            group.addInode(entry);
+                            unauthorized.push({ raw: file.raw, entry });
+                            groupLeases.push(...file.heldLeases);
+                            groupInodes.push(entry.path);
+                            groupNames.set(entry.path, file.named);
+                            groupPublishedChunks += record.chunkCount;
+                            groupStagedBytes += file.stagedBytes;
+                            groupPaths++;
+                            activeFile = null;
+                            break;
+                        }
+                        case 'rename':
+                        case 'truncate':
+                        case 'setattr': {
+                            // Like a delete, it observes everything the stream wrote before it.
+                            phase = 'publish';
+                            queueCall(record.type === 'rename' ? record.from : record.path, () => {
+                                if (record.type === 'rename')
+                                    this.rename(record.from, record.to, cred);
+                                else if (record.type === 'truncate')
+                                    this.truncate(record.path, record.size, cred);
+                                else if ('mode' in record.attrs)
+                                    this.chmod(record.path, record.attrs.mode, cred);
+                                else if ('uid' in record.attrs)
+                                    this.chown(record.path, record.attrs.uid, record.attrs.gid, cred, true);
+                                else
+                                    this.utimes(record.path, record.attrs.atime, record.attrs.mtime, cred, true);
+                            }, { paths: record.type === 'rename' ? 2 : 1, alone: true });
+                            break;
+                        }
+                        case 'call': {
+                            // A call observes everything the stream wrote before it.
+                            phase = 'publish';
+                            const call = record.call;
+                            // A mkdir commits with the calls beside it; any other may change
+                            // where later names resolve, and commits now.
+                            queueCall(call.path, () => {
+                                if (call.call === 'mkdir') {
+                                    // mkdir(2): a name that is there, whatever it is, is EEXIST
+                                    // (the engine's mkdir keeps an existing directory as made);
+                                    // `existing: 'ok'` takes a directory there (followed, as mkdir -p does).
+                                    const there = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+                                    if (there !== undefined) {
+                                        const directory = call.existing === 'ok' && (there.kind === 'directory' || (there.kind === 'symlink' && this.isDirectory(call.path, cred)));
+                                        if (!directory)
+                                            throw vfsError('EEXIST', call.path);
+                                    }
+                                    else {
+                                        this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
+                                    }
+                                }
+                                else if (call.call === 'unlink')
+                                    this.unlink(call.path, cred);
+                                else if (call.call === 'rmdir')
+                                    this.rmdir(call.path, cred);
+                                else if (call.call === 'ftruncate') {
+                                    const at = this.describedFile(call.path, call.ino, cred);
+                                    if (at !== null)
+                                        this.truncate(at, call.size, cred);
+                                }
+                                else if (call.call === 'rm') {
+                                    // fs.rm: a name not there is no refusal when forced.
+                                    try {
+                                        if (call.recursive)
+                                            this.removeRecursive(call.path, cred);
+                                        else
+                                            this.unlink(call.path, cred);
+                                    }
+                                    catch (error) {
+                                        if (!(call.force && errnoOf(error) === 'ENOENT'))
+                                            throw error;
+                                    }
+                                }
+                                else if (call.call === 'lchown')
+                                    this.chown(call.path, call.uid, call.gid, cred, false);
+                                else if (call.call === 'lutimes')
+                                    this.utimes(call.path, call.atime, call.mtime, cred, false);
+                                else
+                                    this.symlink(call.target, call.path, cred, call.ino);
+                            }, { alone: call.call !== 'mkdir' });
+                            break;
+                        }
+                        case 'batch-end':
+                            phase = 'publish';
+                            endLeading();
+                            flushDirectories();
                             flushGroup();
-                        // Every file of the group, staged ones included, is authorised
-                        // (again) in the turn its group commits; until then its entry
-                        // holds the group's place and accounting, and claims no prior.
-                        const entry = asCaller(() => (this.fileEntry(file.inode, content, file.prior ?? { inode: undefined, gen: this._gen })));
-                        group.addInode(entry);
-                        unauthorized.push({ raw: file.raw, entry });
-                        groupLeases.push(...file.heldLeases);
-                        groupInodes.push(entry.path);
-                        groupNames.set(entry.path, file.named);
-                        groupPublishedChunks += record.chunkCount;
-                        groupStagedBytes += file.stagedBytes;
-                        groupPaths++;
-                        activeFile = null;
-                        break;
+                            return true;
                     }
-                    case 'batch-end':
-                        phase = 'publish';
-                        endLeading();
-                        flushDirectories();
-                        flushGroup();
-                        if (recordIterator.return)
-                            await recordIterator.return();
-                        recordIteratorFinished = true;
-                        this._decodeDrainStarts.delete(decodeDrainToken);
-                        this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
-                        decodeDrainFinished = true;
-                        return { ok: true, ...progress };
+                    return false;
+                });
+                if (ended) {
+                    if (recordIterator.return)
+                        await recordIterator.return();
+                    recordIteratorFinished = true;
+                    this._decodeDrainStarts.delete(decodeDrainToken);
+                    this.recordDuration(this._decodeDrainDuration, decodeDrainWaitMs);
+                    decodeDrainFinished = true;
+                    return { ok: true, ...progress };
                 }
             }
         }
-        catch (error) {
+        catch (caught) {
+            let error = caught;
+            // The calls decoded before a stream that failed (cut, malformed) commit
+            // as they would have: a re-send then carries only what came after them.
+            if (pendingCalls.length > 0) {
+                try {
+                    flushCalls();
+                }
+                catch (refusal) {
+                    error = refusal;
+                }
+            }
+            const errno = errnoOf(error);
+            // The op being applied was refused: its answer, kept for a re-send; nothing after it applies.
+            if (sequence !== null && applying !== null && errno !== undefined && SYSCALL_VERDICTS.has(errno)) {
+                const refused = { seq: applying, errno, message: this.errorMessage(error) };
+                try {
+                    this.refuseInSequence(sequence.spec.writer, refused);
+                    progress.sequence = { cursor: refused.seq, refused };
+                }
+                catch {
+                    // Not kept: the op is unanswered, and a re-send applies it again.
+                }
+            }
             return {
                 ok: false,
                 ...progress,
@@ -8242,7 +8537,7 @@ export class SqliteVFS {
                     code: 'ERR_WRITE_BATCH_STREAM',
                     phase,
                     message: this.errorMessage(error),
-                    ...(errnoOf(error) === undefined ? {} : { errno: errnoOf(error) }),
+                    ...(errno === undefined ? {} : { errno }),
                 },
             };
         }
@@ -8281,12 +8576,11 @@ export class SqliteVFS {
         }
     }
     _writeBatchWithRetry(payload, execution, enforceLimits, onCommit) {
-        const prepared = this.prepareBatchTransaction(payload);
+        const prepared = this.prepareBatchTransaction(payload, onCommit !== undefined);
         if (prepared.plan.inodes.length === 0 && prepared.plan.deletes.length === 0)
             return { inodes: 0, chunks: 0 };
-        if (enforceLimits) {
-            this.assertTransactionFits(onCommit ? withCommitRowMetrics(prepared.plan.metrics) : prepared.plan.metrics);
-        }
+        if (enforceLimits)
+            this.assertTransactionFits(prepared.plan.metrics);
         const chunks = payload.chunks.length;
         try {
             return { inodes: this._writeBatchOnce(prepared, execution, onCommit).inodes, chunks };
@@ -8362,6 +8656,10 @@ export class SqliteVFS {
      * with both errors; the embedder must discard this VFS in that case.
      */
     withTransaction(callback) {
+        return this.publishedTransaction(callback, (error) => new Error('[sqlite-vfs] embedder transaction rolled back', { cause: error }));
+    }
+    /** withTransaction, its rollback reported as `rolledBack` makes it of the callback's error. */
+    publishedTransaction(callback, rolledBack) {
         if (this.transactionPublication !== null) {
             throw new Error('[sqlite-vfs] nested embedder transactions are not supported');
         }
@@ -8422,7 +8720,7 @@ export class SqliteVFS {
             catch (reloadError) {
                 throw new AggregateError([error, reloadError], '[sqlite-vfs] transaction rollback reload failed', { cause: error });
             }
-            throw new Error('[sqlite-vfs] embedder transaction rolled back', { cause: error });
+            throw rolledBack(error);
         }
         finally {
             this.transactionPublication = null;
@@ -8724,9 +9022,9 @@ export class SqliteVFS {
                 const inodeLimit = Number(state.next_ino);
                 if (!Number.isSafeInteger(inodeLimit))
                     throw vfsError('ENOSPC', 'inode identity space exhausted');
-                let nextIno = inodeLimit - reserve.inos;
-                let nextChunk = Number(state.next_chunk) - reserve.chunks;
-                let nextContent = Number(state.next_content) - reserve.contents;
+                const nextIno = inodeLimit - reserve.inos;
+                const nextChunk = Number(state.next_chunk) - reserve.chunks;
+                const nextContent = Number(state.next_content) - reserve.contents;
                 const limits = { ino: nextIno + reserve.inos, chunk: nextChunk + reserve.chunks, content: nextContent + reserve.contents };
                 const queue = new GcQueue();
                 // Before-images for every row this transaction replaces or removes
@@ -8734,288 +9032,21 @@ export class SqliteVFS {
                 if (pinGen > 0) {
                     this.recordBeforeImages([...plan.inodes.filter((entry) => !entry.detached).map((entry) => entry.path), ...deletedPaths, ...touched], gen, pinGen);
                 }
-                const deletes = [...deletedPaths];
-                for (let i = 0; i < deletes.length; i += KEYS_PER_SQL_EXEC) {
-                    const batch = deletes.slice(i, i + KEYS_PER_SQL_EXEC);
-                    this.sql.exec(`DELETE FROM vfs_inodes WHERE path IN (${batch.map(() => '?').join(',')})`, ...batch);
-                }
-                this.insertRows('vfs_tombstones (path, gen)', 2, deletes.flatMap((path) => [path, gen]), 'INSERT OR REPLACE');
-                if (deletes.length > 0) {
-                    if (this._tombstoneRows !== null)
-                        this._tombstoneRows += deletes.length;
-                    if (this.tombstoneRows() > this.tombstoneRetain)
-                        this.maintenancePending = true;
-                }
-                for (const entry of plan.deletes) {
-                    if (!entry.dereference || !entry.prior)
-                        continue;
-                    if (entry.prior.chunkId !== null)
-                        queue.add(GC_CHUNK, entry.prior.chunkId);
-                    if (entry.prior.contentId !== null)
-                        queue.add(GC_CONTENT, entry.prior.contentId);
-                }
-                if (plan.stagingCreated.length > 0) {
-                    const rows = [];
-                    for (const staging of plan.stagingCreated) {
-                        staging.id = nextContent++;
-                        created.push(staging);
-                        rows.push(staging.id, 0, 0, null, CONTENT_STAGING, committedAt);
-                    }
-                    this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, rows);
-                }
-                // ── Chunks, by hash ───────────────────────────────────────────────
-                const pieces = [];
-                const rewrites = [];
-                for (const entry of plan.inodes) {
-                    const content = entry.content;
-                    if (content.type === 'small')
-                        pieces.push(content.piece);
-                    else if (content.type === 'large')
-                        pieces.push(...content.pieces);
-                    else if (content.type === 'edit')
-                        for (const edit of content.pieces)
-                            pieces.push(edit.piece);
-                    else if (content.type === 'rewrite') {
-                        pieces.push(content.piece);
-                        rewrites.push({ entry, chunkId: content.chunkId, piece: content.piece });
-                    }
-                }
-                for (const staged of plan.staged)
-                    if (!staged.named)
-                        pieces.push(staged.piece);
-                const chunkIds = new Map();
-                const wanted = new Map();
-                for (const piece of pieces)
-                    wanted.set(hashKey(piece.hash), piece);
-                // Imported chunks named without bytes must already be stored.
-                const named = new Map();
-                for (const staged of plan.staged) {
-                    if (staged.named && !wanted.has(hashKey(staged.piece.hash)))
-                        named.set(hashKey(staged.piece.hash), staged.piece.hash);
-                }
-                for (const entry of plan.inodes) {
-                    if (entry.content.type !== 'imported')
-                        continue;
-                    for (const piece of entry.content.pieces) {
-                        const key = hashKey(piece.hash);
-                        if (piece.data !== null)
-                            wanted.set(key, { hash: piece.hash, data: piece.data });
-                        else if (!wanted.has(key))
-                            named.set(key, piece.hash);
-                    }
-                }
-                for (const key of wanted.keys())
-                    named.delete(key);
-                const lookup = new Map(named);
-                const remote = new Set();
-                const pending = new Set();
-                for (const [key, piece] of wanted)
-                    lookup.set(key, piece.hash);
-                const keys = [...lookup.keys()];
-                for (let i = 0; i < keys.length; i += KEYS_PER_SQL_EXEC) {
-                    const batch = keys.slice(i, i + KEYS_PER_SQL_EXEC);
-                    for (const row of this.sql.exec(`SELECT id, hash, state FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`, ...batch.map((key) => lookup.get(key)))) {
-                        const key = hashKey(this.blobToUint8Array(row.hash));
-                        chunkIds.set(key, Number(row.id));
-                        if (!chunkHeld(Number(row.state)))
-                            remote.add(key);
-                        if (Number(row.state) === CHUNK_PENDING)
-                            pending.add(key);
-                    }
-                }
-                for (const [key, hash] of named) {
-                    // A pending chunk (a lazy import's, N17) is named as it stands.
-                    if (!chunkIds.has(key) || (remote.has(key) && !pending.has(key)))
-                        throw vfsError('EIO', `import names chunk ${hex(hash)}, which is not stored`);
-                }
-                // A write whose bytes a cold chunk already names brings them back:
-                // no live row ever names a chunk that is not local.
-                for (const key of remote) {
-                    const piece = wanted.get(key);
-                    if (piece === undefined)
-                        continue;
-                    this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, piece.data, chunkIds.get(key));
-                }
-                // An unshared chunk is rewritten in place unless its new bytes
-                // already exist. A piece that deduplicated onto its old bytes must
-                // not follow them, so the old hash stops resolving to it.
-                for (const rewrite of rewrites) {
-                    const key = hashKey(rewrite.piece.hash);
-                    if (chunkIds.has(key))
-                        continue;
-                    for (const [other, id] of chunkIds)
-                        if (id === rewrite.chunkId)
-                            chunkIds.delete(other);
-                    // Stored as written, whatever form the old bytes had.
-                    this.sql.exec(`UPDATE vfs_chunks SET hash = ?, size = ?, data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, rewrite.piece.hash, rewrite.piece.data.byteLength, rewrite.piece.data, rewrite.chunkId);
-                    chunkIds.set(key, rewrite.chunkId);
-                    rewritten.push(rewrite.chunkId);
-                }
-                const inserts = [];
-                for (const [key, piece] of wanted) {
-                    if (chunkIds.has(key))
-                        continue;
-                    const id = nextChunk++;
-                    chunkIds.set(key, id);
-                    inserts.push(id, piece.hash, piece.data);
-                }
-                this.insertChunkRows(inserts);
-                const chunkOf = (piece) => chunkIds.get(hashKey(piece.hash));
-                // ── Manifests ─────────────────────────────────────────────────────
-                const manifest = [];
-                for (const staged of plan.staged) {
-                    manifest.push(staged.content.id, staged.off, staged.size, chunkOf(staged.piece));
-                }
-                // Whole large files and published stagings resolve by digest first:
-                // identical bytes written twice share one content.
-                const digests = new Map();
-                const stagedDigests = new Map();
-                for (const entry of plan.inodes) {
-                    if (entry.content.type === 'large')
-                        digests.set(hex(entry.content.digest), entry.content.digest);
-                    else if (entry.content.type === 'imported' && entry.content.digest !== null) {
-                        digests.set(hex(entry.content.digest), entry.content.digest);
-                    }
-                    else if (entry.content.type === 'staged') {
-                        const digest = entry.content.digest ?? (entry.content.content.hashed ? entry.content.content.digest.digest(entry.size) : undefined);
-                        if (digest !== undefined) {
-                            stagedDigests.set(entry.content.content, digest);
-                            digests.set(hex(digest), digest);
-                        }
-                    }
-                }
-                const contentByDigest = new Map();
-                const digestKeys = [...digests.keys()];
-                for (let i = 0; i < digestKeys.length; i += KEYS_PER_SQL_EXEC) {
-                    const batch = digestKeys.slice(i, i + KEYS_PER_SQL_EXEC);
-                    for (const row of this.sql.exec(`SELECT id, digest FROM vfs_contents WHERE digest IN (${batch.map(() => '?').join(',')})`, ...batch.map((key) => digests.get(key))))
-                        contentByDigest.set(hex(this.blobToUint8Array(row.digest)), Number(row.id));
-                }
-                const contentRows = [];
-                for (const entry of plan.inodes) {
-                    const content = entry.content;
-                    let chunkId = null;
-                    let contentId = null;
-                    switch (content.type) {
-                        case 'none':
-                            break;
-                        case 'small':
-                        case 'rewrite':
-                            chunkId = chunkOf(content.piece);
-                            break;
-                        case 'ref':
-                            chunkId = content.chunkId;
-                            contentId = content.contentId;
-                            break;
-                        case 'large': {
-                            const key = hex(content.digest);
-                            contentId = contentByDigest.get(key) ?? null;
-                            if (contentId === null) {
-                                contentId = nextContent++;
-                                contentByDigest.set(key, contentId);
-                                contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, committedAt);
-                                let off = 0;
-                                for (const piece of content.pieces) {
-                                    manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
-                                    off += piece.data.byteLength;
-                                }
-                            }
-                            break;
-                        }
-                        case 'imported': {
-                            if (!content.manifest) {
-                                chunkId = chunkIds.get(hashKey(content.pieces[0].hash));
-                                break;
-                            }
-                            const key = hex(content.digest);
-                            contentId = contentByDigest.get(key) ?? null;
-                            if (contentId === null) {
-                                contentId = nextContent++;
-                                contentByDigest.set(key, contentId);
-                                contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, committedAt);
-                                let off = 0;
-                                for (const piece of content.pieces) {
-                                    manifest.push(contentId, off, piece.size, chunkIds.get(hashKey(piece.hash)));
-                                    off += piece.size;
-                                }
-                            }
-                            break;
-                        }
-                        case 'staged': {
-                            const staging = content.content;
-                            const digest = stagedDigests.get(staging) ?? null;
-                            const existing = digest === null ? undefined : contentByDigest.get(hex(digest));
-                            if (existing !== undefined && existing !== staging.id) {
-                                contentId = existing;
-                                queue.add(GC_CONTENT, staging.id);
-                            }
-                            else {
-                                contentId = staging.id;
-                                if (digest !== null)
-                                    contentByDigest.set(hex(digest), staging.id);
-                                this.sql.exec('UPDATE vfs_contents SET state = ?, digest = ?, size = ?, chunk_count = ? WHERE id = ?', CONTENT_LIVE, digest, entry.size, staging.count, staging.id);
-                            }
-                            published.push(staging);
-                            break;
-                        }
-                        case 'edit': {
-                            contentId = content.contentId;
-                            const removed = [...this.sql.exec('SELECT chunk_id FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?', contentId, content.from, content.to)];
-                            for (const row of removed)
-                                queue.add(GC_CHUNK, Number(row.chunk_id));
-                            this.sql.exec('DELETE FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?', contentId, content.from, content.to);
-                            for (const { off, piece } of content.pieces) {
-                                manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
-                            }
-                            this.sql.exec('UPDATE vfs_contents SET size = ?, chunk_count = chunk_count - ? + ?, digest = NULL WHERE id = ?', entry.size, removed.length, content.pieces.length, contentId);
-                            this.contentKeyMemo.delete(contentId);
-                            this.manifestWindows.delete(contentId);
-                            break;
-                        }
-                    }
-                    entry.chunkId = chunkId;
-                    entry.contentId = contentId;
-                }
-                this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, contentRows);
-                this.insertManifestRows(manifest);
-                // ── Inodes ────────────────────────────────────────────────────────
-                const rows = [];
-                for (let i = 0; i < plan.inodes.length; i++) {
-                    const inode = plan.inodes[i];
-                    const before = prior[i];
-                    // Identity order: an explicit ino travels with moves and metadata
-                    // changes; an existing row at this path keeps its number (write
-                    // preserves identity, unlink+recreate allocates fresh); anything
-                    // else takes the counter.
-                    inode.ino ??= before?.ino ?? nextIno++;
-                    inode.gen = gen;
-                    if (inode.defaultAcl === undefined)
-                        inode.defaultAcl = before?.defaultAcl ?? null;
-                    inode.ctime ??= committedAt;
-                    if (before) {
-                        if (before.chunkId !== null && before.chunkId !== inode.chunkId)
-                            queue.add(GC_CHUNK, before.chunkId);
-                        if (before.contentId !== null && before.contentId !== inode.contentId)
-                            queue.add(GC_CONTENT, before.contentId);
-                    }
-                    if (inode.detached) {
-                        // Nothing durable names it; GC steps over it while it is pinned.
-                        if (inode.chunkId !== null && inode.chunkId !== undefined)
-                            queue.add(GC_CHUNK, inode.chunkId);
-                        if (inode.contentId !== null && inode.contentId !== undefined)
-                            queue.add(GC_CONTENT, inode.contentId);
-                        continue;
-                    }
-                    rows.push(inode.path, inode.parentPath, inodeKindCode(inode.kind), inode.size, inode.atime !== undefined && Number.isFinite(inode.atime) ? inode.atime : inode.mtime, inode.mtime, inode.ctime, inode.mode, inode.uid, inode.gid, inode.ino, gen, inode.chunkId, inode.contentId, inode.defaultAcl);
-                }
-                this.insertRows('vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)', INODE_ROW_COLUMNS, rows, 'INSERT OR REPLACE');
-                this.touchDirectoryRows(touched, committedAt, gen);
+                const x = {
+                    plan, gen, committedAt, queue,
+                    next: { ino: nextIno, chunk: nextChunk, content: nextContent },
+                    created, published, rewritten,
+                };
+                this.applyPlanDeletes(x, deletedPaths);
+                this.createPlanStagings(x);
+                this.publishPlanContents(x, this.storePlanChunks(x));
+                this.upsertPlanInodes(x, prior, touched);
                 const queued = queue.rows();
                 this.insertRows('vfs_gc_queue (kind, id)', GC_ROW_COLUMNS, queued, 'INSERT OR IGNORE');
                 if (queued.length > 0)
                     this.maintenancePending = true;
                 onCommit?.();
-                if (nextIno > limits.ino || nextChunk > limits.chunk || nextContent > limits.content) {
+                if (x.next.ino > limits.ino || x.next.chunk > limits.chunk || x.next.content > limits.content) {
                     throw new Error('[sqlite-vfs] a transaction allocated more ids than it reserved');
                 }
             });
@@ -9045,6 +9076,305 @@ export class SqliteVFS {
         // leave an import's path leading elsewhere: the next sweep ends it.
         if (this.importJobsExist && (plan.deletes.length > 0 || plan.inodes.length > 0))
             this.importSweepPending = true;
+    }
+    /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
+    applyPlanDeletes(x, deletedPaths) {
+        const deletes = [...deletedPaths];
+        for (let i = 0; i < deletes.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = deletes.slice(i, i + KEYS_PER_SQL_EXEC);
+            this.sql.exec(`DELETE FROM vfs_inodes WHERE path IN (${batch.map(() => '?').join(',')})`, ...batch);
+        }
+        this.insertRows('vfs_tombstones (path, gen)', 2, deletes.flatMap((path) => [path, x.gen]), 'INSERT OR REPLACE');
+        if (deletes.length > 0) {
+            if (this._tombstoneRows !== null)
+                this._tombstoneRows += deletes.length;
+            if (this.tombstoneRows() > this.tombstoneRetain)
+                this.maintenancePending = true;
+        }
+        for (const entry of x.plan.deletes) {
+            if (!entry.dereference || !entry.prior)
+                continue;
+            if (entry.prior.chunkId !== null)
+                x.queue.add(GC_CHUNK, entry.prior.chunkId);
+            if (entry.prior.contentId !== null)
+                x.queue.add(GC_CONTENT, entry.prior.contentId);
+        }
+    }
+    /** The plan's new staging contents, numbered and stored (state staging). */
+    createPlanStagings(x) {
+        if (x.plan.stagingCreated.length > 0) {
+            const rows = [];
+            for (const staging of x.plan.stagingCreated) {
+                staging.id = x.next.content++;
+                x.created.push(staging);
+                rows.push(staging.id, 0, 0, null, CONTENT_STAGING, x.committedAt);
+            }
+            this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, rows);
+        }
+    }
+    /**
+     * Every chunk the plan's pieces name, by hash: found, brought back from
+     * cold, rewritten in place, or inserted. Its id, by hash key.
+     */
+    storePlanChunks(x) {
+        // ── Chunks, by hash ───────────────────────────────────────────────
+        const pieces = [];
+        const rewrites = [];
+        for (const entry of x.plan.inodes) {
+            const content = entry.content;
+            if (content.type === 'small')
+                pieces.push(content.piece);
+            else if (content.type === 'large')
+                pieces.push(...content.pieces);
+            else if (content.type === 'edit')
+                for (const edit of content.pieces)
+                    pieces.push(edit.piece);
+            else if (content.type === 'rewrite') {
+                pieces.push(content.piece);
+                rewrites.push({ entry, chunkId: content.chunkId, piece: content.piece });
+            }
+        }
+        for (const staged of x.plan.staged)
+            if (!staged.named)
+                pieces.push(staged.piece);
+        const chunkIds = new Map();
+        const wanted = new Map();
+        for (const piece of pieces)
+            wanted.set(hashKey(piece.hash), piece);
+        // Imported chunks named without bytes must already be stored.
+        const named = new Map();
+        for (const staged of x.plan.staged) {
+            if (staged.named && !wanted.has(hashKey(staged.piece.hash)))
+                named.set(hashKey(staged.piece.hash), staged.piece.hash);
+        }
+        for (const entry of x.plan.inodes) {
+            if (entry.content.type !== 'imported')
+                continue;
+            for (const piece of entry.content.pieces) {
+                const key = hashKey(piece.hash);
+                if (piece.data !== null)
+                    wanted.set(key, { hash: piece.hash, data: piece.data });
+                else if (!wanted.has(key))
+                    named.set(key, piece.hash);
+            }
+        }
+        for (const key of wanted.keys())
+            named.delete(key);
+        const lookup = new Map(named);
+        const remote = new Set();
+        const pending = new Set();
+        for (const [key, piece] of wanted)
+            lookup.set(key, piece.hash);
+        const keys = [...lookup.keys()];
+        for (let i = 0; i < keys.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = keys.slice(i, i + KEYS_PER_SQL_EXEC);
+            for (const row of this.sql.exec(`SELECT id, hash, state FROM vfs_chunks WHERE hash IN (${batch.map(() => '?').join(',')})`, ...batch.map((key) => lookup.get(key)))) {
+                const key = hashKey(this.blobToUint8Array(row.hash));
+                chunkIds.set(key, Number(row.id));
+                if (!chunkHeld(Number(row.state)))
+                    remote.add(key);
+                if (Number(row.state) === CHUNK_PENDING)
+                    pending.add(key);
+            }
+        }
+        for (const [key, hash] of named) {
+            // A pending chunk (a lazy import's, N17) is named as it stands.
+            if (!chunkIds.has(key) || (remote.has(key) && !pending.has(key)))
+                throw vfsError('EIO', `import names chunk ${hex(hash)}, which is not stored`);
+        }
+        // A write whose bytes a cold chunk already names brings them back:
+        // no live row ever names a chunk that is not local.
+        for (const key of remote) {
+            const piece = wanted.get(key);
+            if (piece === undefined)
+                continue;
+            this.sql.exec(`UPDATE vfs_chunks SET data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, piece.data, chunkIds.get(key));
+        }
+        // An unshared chunk is rewritten in place unless its new bytes
+        // already exist. A piece that deduplicated onto its old bytes must
+        // not follow them, so the old hash stops resolving to it.
+        for (const rewrite of rewrites) {
+            const key = hashKey(rewrite.piece.hash);
+            if (chunkIds.has(key))
+                continue;
+            for (const [other, id] of chunkIds)
+                if (id === rewrite.chunkId)
+                    chunkIds.delete(other);
+            // Stored as written, whatever form the old bytes had.
+            this.sql.exec(`UPDATE vfs_chunks SET hash = ?, size = ?, data = ?, state = ${CHUNK_LOCAL} WHERE id = ?`, rewrite.piece.hash, rewrite.piece.data.byteLength, rewrite.piece.data, rewrite.chunkId);
+            chunkIds.set(key, rewrite.chunkId);
+            x.rewritten.push(rewrite.chunkId);
+        }
+        const inserts = [];
+        for (const [key, piece] of wanted) {
+            if (chunkIds.has(key))
+                continue;
+            const id = x.next.chunk++;
+            chunkIds.set(key, id);
+            inserts.push(id, piece.hash, piece.data);
+        }
+        this.insertChunkRows(inserts);
+        return chunkIds;
+    }
+    /**
+     * Each inode's content reference (entry.chunkId, entry.contentId): a
+     * chunk, a manifest found by digest or made, a staging published, or an
+     * edit of a manifest in place.
+     */
+    publishPlanContents(x, chunkIds) {
+        const chunkOf = (piece) => chunkIds.get(hashKey(piece.hash));
+        // ── Manifests ─────────────────────────────────────────────────────
+        const manifest = [];
+        for (const staged of x.plan.staged) {
+            manifest.push(staged.content.id, staged.off, staged.size, chunkOf(staged.piece));
+        }
+        // Whole large files and published stagings resolve by digest first:
+        // identical bytes written twice share one content.
+        const digests = new Map();
+        const stagedDigests = new Map();
+        for (const entry of x.plan.inodes) {
+            if (entry.content.type === 'large')
+                digests.set(hex(entry.content.digest), entry.content.digest);
+            else if (entry.content.type === 'imported' && entry.content.digest !== null) {
+                digests.set(hex(entry.content.digest), entry.content.digest);
+            }
+            else if (entry.content.type === 'staged') {
+                const digest = entry.content.digest ?? (entry.content.content.hashed ? entry.content.content.digest.digest(entry.size) : undefined);
+                if (digest !== undefined) {
+                    stagedDigests.set(entry.content.content, digest);
+                    digests.set(hex(digest), digest);
+                }
+            }
+        }
+        const contentByDigest = new Map();
+        const digestKeys = [...digests.keys()];
+        for (let i = 0; i < digestKeys.length; i += KEYS_PER_SQL_EXEC) {
+            const batch = digestKeys.slice(i, i + KEYS_PER_SQL_EXEC);
+            for (const row of this.sql.exec(`SELECT id, digest FROM vfs_contents WHERE digest IN (${batch.map(() => '?').join(',')})`, ...batch.map((key) => digests.get(key))))
+                contentByDigest.set(hex(this.blobToUint8Array(row.digest)), Number(row.id));
+        }
+        const contentRows = [];
+        for (const entry of x.plan.inodes) {
+            const content = entry.content;
+            let chunkId = null;
+            let contentId = null;
+            switch (content.type) {
+                case 'none':
+                    break;
+                case 'small':
+                case 'rewrite':
+                    chunkId = chunkOf(content.piece);
+                    break;
+                case 'ref':
+                    chunkId = content.chunkId;
+                    contentId = content.contentId;
+                    break;
+                case 'large': {
+                    const key = hex(content.digest);
+                    contentId = contentByDigest.get(key) ?? null;
+                    if (contentId === null) {
+                        contentId = x.next.content++;
+                        contentByDigest.set(key, contentId);
+                        contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, x.committedAt);
+                        let off = 0;
+                        for (const piece of content.pieces) {
+                            manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
+                            off += piece.data.byteLength;
+                        }
+                    }
+                    break;
+                }
+                case 'imported': {
+                    if (!content.manifest) {
+                        chunkId = chunkIds.get(hashKey(content.pieces[0].hash));
+                        break;
+                    }
+                    const key = hex(content.digest);
+                    contentId = contentByDigest.get(key) ?? null;
+                    if (contentId === null) {
+                        contentId = x.next.content++;
+                        contentByDigest.set(key, contentId);
+                        contentRows.push(contentId, content.size, content.pieces.length, content.digest, CONTENT_LIVE, x.committedAt);
+                        let off = 0;
+                        for (const piece of content.pieces) {
+                            manifest.push(contentId, off, piece.size, chunkIds.get(hashKey(piece.hash)));
+                            off += piece.size;
+                        }
+                    }
+                    break;
+                }
+                case 'staged': {
+                    const staging = content.content;
+                    const digest = stagedDigests.get(staging) ?? null;
+                    const existing = digest === null ? undefined : contentByDigest.get(hex(digest));
+                    if (existing !== undefined && existing !== staging.id) {
+                        contentId = existing;
+                        x.queue.add(GC_CONTENT, staging.id);
+                    }
+                    else {
+                        contentId = staging.id;
+                        if (digest !== null)
+                            contentByDigest.set(hex(digest), staging.id);
+                        this.sql.exec('UPDATE vfs_contents SET state = ?, digest = ?, size = ?, chunk_count = ? WHERE id = ?', CONTENT_LIVE, digest, entry.size, staging.count, staging.id);
+                    }
+                    x.published.push(staging);
+                    break;
+                }
+                case 'edit': {
+                    contentId = content.contentId;
+                    const removed = [...this.sql.exec('SELECT chunk_id FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?', contentId, content.from, content.to)];
+                    for (const row of removed)
+                        x.queue.add(GC_CHUNK, Number(row.chunk_id));
+                    this.sql.exec('DELETE FROM vfs_content_chunks WHERE content_id = ? AND off >= ? AND off < ?', contentId, content.from, content.to);
+                    for (const { off, piece } of content.pieces) {
+                        manifest.push(contentId, off, piece.data.byteLength, chunkOf(piece));
+                    }
+                    this.sql.exec('UPDATE vfs_contents SET size = ?, chunk_count = chunk_count - ? + ?, digest = NULL WHERE id = ?', entry.size, removed.length, content.pieces.length, contentId);
+                    this.contentKeyMemo.delete(contentId);
+                    this.manifestWindows.delete(contentId);
+                    break;
+                }
+            }
+            entry.chunkId = chunkId;
+            entry.contentId = contentId;
+        }
+        this.insertRows('vfs_contents (id, size, chunk_count, digest, state, created_at)', CONTENT_ROW_COLUMNS, contentRows);
+        this.insertManifestRows(manifest);
+    }
+    /** The plan's inode rows: identity, generation and content; what each replaced is queued for collection. */
+    upsertPlanInodes(x, prior, touched) {
+        // ── Inodes ────────────────────────────────────────────────────────
+        const rows = [];
+        for (let i = 0; i < x.plan.inodes.length; i++) {
+            const inode = x.plan.inodes[i];
+            const before = prior[i];
+            // Identity order: an explicit ino travels with moves and metadata
+            // changes; an existing row at this path keeps its number (write
+            // preserves identity, unlink+recreate allocates fresh); anything
+            // else takes the counter.
+            inode.ino ??= before?.ino ?? x.next.ino++;
+            inode.gen = x.gen;
+            if (inode.defaultAcl === undefined)
+                inode.defaultAcl = before?.defaultAcl ?? null;
+            inode.ctime ??= x.committedAt;
+            if (before) {
+                if (before.chunkId !== null && before.chunkId !== inode.chunkId)
+                    x.queue.add(GC_CHUNK, before.chunkId);
+                if (before.contentId !== null && before.contentId !== inode.contentId)
+                    x.queue.add(GC_CONTENT, before.contentId);
+            }
+            if (inode.detached) {
+                // Nothing durable names it; GC steps over it while it is pinned.
+                if (inode.chunkId !== null && inode.chunkId !== undefined)
+                    x.queue.add(GC_CHUNK, inode.chunkId);
+                if (inode.contentId !== null && inode.contentId !== undefined)
+                    x.queue.add(GC_CONTENT, inode.contentId);
+                continue;
+            }
+            rows.push(inode.path, inode.parentPath, inodeKindCode(inode.kind), inode.size, inode.atime !== undefined && Number.isFinite(inode.atime) ? inode.atime : inode.mtime, inode.mtime, inode.ctime, inode.mode, inode.uid, inode.gid, inode.ino, x.gen, inode.chunkId, inode.contentId, inode.defaultAcl);
+        }
+        this.insertRows('vfs_inodes (path, parent_path, kind, size, atime, mtime, ctime, mode, uid, gid, ino, gen, chunk_id, content_id, dacl)', INODE_ROW_COLUMNS, rows, 'INSERT OR REPLACE');
+        this.touchDirectoryRows(touched, x.committedAt, x.gen);
     }
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
@@ -9558,10 +9888,11 @@ export class SqliteVFS {
      * joined, cut and hashed here, before the transaction; the hashes resolve
      * to chunk ids inside it.
      */
-    prepareBatchTransaction(payload) {
+    /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
+    prepareBatchTransaction(payload, commitRow = false) {
         const deletedInodes = this.collectSubtreeInodes(payload.deletePaths ?? []);
         const deletedInodesByPath = new Map(deletedInodes.map((inode) => [inode.path, inode]));
-        const builder = this.newPlan();
+        const builder = this.newPlan(commitRow);
         const deletedPaths = new Set(payload.deletePaths ?? []);
         for (const inode of deletedInodes)
             deletedPaths.add(inode.path);
@@ -9618,6 +9949,7 @@ export class SqliteVFS {
                 gid: entry.gid,
                 content,
                 defaultAcl: entry.defaultAcl,
+                ...(entry.ino !== undefined ? { ino: this.askedIno(entry) } : {}),
             });
         }
         return { plan: builder.build(), deletedInodes };
@@ -9662,9 +9994,7 @@ export class SqliteVFS {
         if (kind === 'directory' && inode.size !== 0) {
             throw vfsError('EINVAL', inode.path, 'directory size must be zero');
         }
-        const expectedChunkCount = kind === 'directory' || inode.size === 0
-            ? 0
-            : Math.ceil(inode.size / CHUNK_SIZE);
+        const expectedChunkCount = kind === 'directory' ? 0 : w7ChunkCount(inode.size);
         if (inode.chunkCount !== expectedChunkCount) {
             throw vfsError('EINVAL', `${inode.path}: expected ${expectedChunkCount} chunks for ${inode.size} bytes, got ${inode.chunkCount}`);
         }
@@ -9834,7 +10164,7 @@ export class SqliteVFS {
      * 19,429-file tree, on the object's only thread.
      *
      * The subtree is held whole, so only callers that commit it whole use this:
-     * a batch's deletions and a rename. A removal pages (subtreeDescending).
+     * a batch's deletions and a rename. A removal pages (subtree, descending).
      */
     collectSubtreeInodes(roots) {
         if (roots.length === 0)
@@ -9842,12 +10172,10 @@ export class SqliteVFS {
         const collected = [];
         const visited = new Set();
         for (const root of roots) {
-            const range = subtreeRange(root);
+            const under = subtreeWhere(root);
             const rows = [
                 ...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path = ?`, root),
-                ...(range.upper === null
-                    ? this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ?`, range.lower)
-                    : this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE path > ? AND path < ?`, range.lower, range.upper)),
+                ...this.sql.exec(`SELECT ${INODE_SELECT_COLUMNS} FROM vfs_inodes WHERE ${under.sql}`, ...under.params),
             ];
             for (const row of rows) {
                 const path = String(row.path);
@@ -10137,13 +10465,6 @@ function batchMutationPaths(payload) {
         paths.add(chunk.path);
     return paths;
 }
-function pathsOverlap(left, right) {
-    return left === ''
-        || right === ''
-        || left === right
-        || left.startsWith(`${right}/`)
-        || right.startsWith(`${left}/`);
-}
 /**
  * The paths strictly under `root`, as a range of the path index: `lower` <
  * path < `upper`. A path under `root` extends it with '/', and '0' is the
@@ -10152,6 +10473,30 @@ function pathsOverlap(left, right) {
  */
 function subtreeRange(root) {
     return root === '' ? { lower: '', upper: null } : { lower: `${root}/`, upper: `${root}0` };
+}
+/** `items`, then `last`. */
+function* followedBy(items, last) {
+    yield* items;
+    yield last;
+}
+/**
+ * subtreeRange as an SQL condition on `column`, with its parameters: the one
+ * spelling of it. The paths strictly under `root`, past `after` (a keyset
+ * cursor) and below `below` (a descending one) when given; `withRoot` takes
+ * `root` too, and under the empty root, which holds every path, is no
+ * condition at all (null).
+ */
+function subtreeWhere(root, options = {}) {
+    if (options.withRoot && root === '')
+        return null;
+    const column = options.column ?? 'path';
+    const range = subtreeRange(root);
+    const after = options.after ?? range.lower;
+    const below = options.below === undefined ? range.upper : options.below;
+    const under = below === null
+        ? { sql: `${column} > ?`, params: [after] }
+        : { sql: `${column} > ? AND ${column} < ?`, params: [after, below] };
+    return options.withRoot ? { sql: `(${column} = ? OR (${under.sql}))`, params: [root, ...under.params] } : under;
 }
 /** An error's errno (an `E…` code), if it carries one. */
 function errnoOf(error) {
@@ -10293,7 +10638,6 @@ function hashKey(hash) {
         key += String.fromCharCode(hash[i]);
     return key;
 }
-/** The (kind, id) rows one transaction queues for GC, each once. */
 class GcQueue {
     seen = new Set();
     values = [];

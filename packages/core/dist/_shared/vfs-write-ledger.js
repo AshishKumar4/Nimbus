@@ -51,6 +51,10 @@ function __nimbusProcessFs() {
       writeBatchStream: (stream, fence, owner) => (owner === undefined
         ? supervisor().writeBatchStream(stream, fence)
         : supervisor().writeBatchStream(stream, fence, owner)),
+      retireWriter: async (writer) => {
+        const bound = supervisor();
+        if (typeof bound.retireWaveWriter === "function") await bound.retireWaveWriter(writer);
+      },
       // The subtrees the process writes often enough: decided here
       // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
       grants: {

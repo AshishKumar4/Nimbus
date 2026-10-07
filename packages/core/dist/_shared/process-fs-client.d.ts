@@ -73,6 +73,12 @@ export interface ProcessFsSession {
     openWriter(first: boolean): Promise<string | null>;
     /** One attempt of one wave (SupervisorRPC.writeBatchStream). */
     writeBatchStream(stream: ReadableStream<Uint8Array>, fence?: WaveFence, owner?: string): Promise<unknown>;
+    /**
+     * Retire writer epoch `writer` (SupervisorRPC.retireWaveWriter): an
+     * attempt of it that arrives from now on is refused. Absent, the session
+     * fences nothing to retire.
+     */
+    retireWriter?(writer: string): Promise<void>;
     /** Delegations; absent, the process holds none and the session decides every op. */
     readonly grants?: ProcessFsGrantSession;
 }

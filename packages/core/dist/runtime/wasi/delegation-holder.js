@@ -151,8 +151,15 @@ export function delegationHolder(options) {
     };
     /** The file's bytes changed: logged whole before the next decision, or at the flush. */
     const written = (file) => {
+        if (file.detached)
+            return;
         dirty.delete(file);
         dirty.add(file);
+    };
+    /** `file` lost its name: what is written through its open descriptions stays theirs. */
+    const detach = (file) => {
+        file.detached = true;
+        dirty.delete(file);
     };
     const handleOf = (handleId) => {
         const handle = handles.get(handleId);
@@ -254,6 +261,17 @@ export function delegationHolder(options) {
                 // with its bytes, before the next decision (drain), as one call.
                 drain();
                 written(file);
+            }
+            else if (!flags.truncate) {
+                // An existing file opened to write, not emptied (O_CREAT without
+                // O_TRUNC): its bytes are kept, so only one whose bytes are here is
+                // opened here; any other is the session's.
+                if (!modeAllows(current, 2, store.cred))
+                    throw fsError('EACCES', 'open', path);
+                const local = files.get(current.ino);
+                if (local === undefined || local.key !== key)
+                    return undefined;
+                file = local;
             }
             else {
                 // An existing file emptied: decided here, its number the session's.
@@ -376,8 +394,9 @@ export function delegationHolder(options) {
             const local = files.get(current.ino);
             if (local !== undefined && local.key === key) {
                 files.delete(current.ino);
-                // Its bytes go with it: nothing of them is logged.
-                dirty.delete(local);
+                // Its bytes go with it: nothing of them is logged, now or through a
+                // description still open on it.
+                detach(local);
                 // Made here and never logged: the session never had the name.
                 if (local.made !== undefined)
                     return true;
@@ -421,6 +440,14 @@ export function delegationHolder(options) {
             decided.set(to, { ...source, ctime: now() });
             note(parentKey(from), nameOf(from), null);
             note(parentKey(to), nameOf(to), source.type);
+            // A file it replaces loses its name: its open descriptions keep its bytes.
+            if (target !== null) {
+                const replaced = files.get(target.ino);
+                if (replaced !== undefined && replaced.key === to) {
+                    files.delete(target.ino);
+                    detach(replaced);
+                }
+            }
             for (const file of files.values())
                 if (within(file.key, from))
                     file.key = to + file.key.slice(from.length);

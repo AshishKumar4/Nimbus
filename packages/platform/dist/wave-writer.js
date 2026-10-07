@@ -738,6 +738,9 @@ export async function sendWaveAttempts(options) {
         }
         catch (error) {
             const lost = error instanceof WaveLost || isLostFencedCall(error);
+            // Given up: the attempt reads nothing more either (its writer retires its epoch).
+            if (lost && (options.streamed || attempt >= backoffMs.length))
+                attemptStream.abort(error);
             if (!lost || options.streamed || attempt >= backoffMs.length)
                 throw error;
             // The abandoned attempt can read nothing more, and its late answer is dropped.

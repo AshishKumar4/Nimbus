@@ -803,6 +803,8 @@ var __nimbusProcessFsModule = (() => {
         return await Promise.race([answer, attemptStream.lost]);
       } catch (error) {
         const lost = error instanceof WaveLost || isLostFencedCall(error);
+        if (lost && (options.streamed || attempt >= backoffMs.length))
+          attemptStream.abort(error);
         if (!lost || options.streamed || attempt >= backoffMs.length)
           throw error;
         attemptStream.abort(error);
@@ -1153,6 +1155,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
   var DATA_PIECE_BYTES = WAVE_BYTES;
   var MAX_DELEGATIONS_PER_PROCESS = 8;
   var GRANT_AFTER = 8;
+  var SYMLINK_TARGET_MAX = 4096;
+  var utf8 = new TextEncoder();
+  var utf8Bytes = (text) => utf8.encode(text).byteLength;
   var GRANT_IDLE_MS = 2e3;
   var GRANT_INOS = 4096;
   var GRANT_BYTES = 64 * 1024 * 1024;
@@ -1252,6 +1257,7 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     let epoch = null;
     let ack = 0;
     let wave = 0;
+    const retiring = [];
     const failures = [];
     let logged = 0;
     let answered = 0;
@@ -1309,6 +1315,10 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
     const writerFor = async (entries) => {
       const numberedPending = entries.some((entry) => entry.seq !== 0) || queue.some((entry) => entry.seq !== 0);
       if (epoch !== null && (epoch.writer === null || numberedPending || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
+      while (retiring.length > 0) {
+        await session.retireWriter?.(retiring[0]);
+        retiring.shift();
+      }
       const openedAt = now();
       const writer = await session.openWriter(counters.epochs === 0);
       epoch = { writer, openedAt, numbering: null };
@@ -1355,13 +1365,23 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         journal.dropThrough(entries[entries.length - 1].jid);
         return;
       }
-      const ops = entries.map(opOf2);
-      for (const entry of entries) if (entry.op !== null) {
-        heapBytes -= entry.bytes;
-        entry.op = null;
+      let ops;
+      let bytes;
+      try {
+        ops = entries.map(opOf2);
+        for (const entry of entries) if (entry.op !== null) {
+          heapBytes -= entry.bytes;
+          entry.op = null;
+        }
+        bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
+        numberEntries(entries);
+      } catch (error2) {
+        const code = error2?.code;
+        const errno = typeof code === "string" && /^E[A-Z0-9]+$/.test(code) ? code : "EIO";
+        for (const entry of entries) fail(entry, errno, `this write could not be sent: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        journal.dropThrough(entries[entries.length - 1].jid);
+        return;
       }
-      const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops });
-      numberEntries(entries);
       const firstSeq = entries[0].seq;
       counters.waves++;
       counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
@@ -1382,14 +1402,14 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
           timers
         });
       } catch (error2) {
-        lostEpoch(entries, `the session did not answer this write: ${error2 instanceof Error ? error2.message : String(error2)}`);
+        lostEpoch(entries, `the session did not answer this write: ${error2 instanceof Error ? error2.message : String(error2)}`, writer);
         return;
       }
       const answer = result;
       const error = answer.ok ? null : answer.error;
       const cursor = writer === null ? firstSeq - 1 + (answer.ok ? entries.length : answer.committedOps) : answer.sequence?.cursor;
       if (cursor === void 0) {
-        lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? "no error"}`);
+        lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? "no error"}`, writer);
         return;
       }
       ack = Math.max(ack, cursor);
@@ -1429,14 +1449,15 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         queue.unshift(...back);
         return;
       }
-      lostEpoch(back, `the session could not apply this write: ${error?.message ?? "no error"}`);
+      lostEpoch(back, `the session could not apply this write: ${error?.message ?? "no error"}`, writer);
     };
-    const lostEpoch = (entries, message) => {
+    const lostEpoch = (entries, message, writer) => {
       for (const entry of entries) {
         counters.lost++;
         fail(entry, "EIO", message);
       }
       journal.dropThrough(entries[entries.length - 1].jid);
+      if (writer !== null) retiring.push(writer);
       epoch = null;
       for (const entry of queue) entry.seq = 0;
     };
@@ -1496,9 +1517,12 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         }
         if (kind === null || grant.ended) continue;
         counters.recalls++;
+        const wasClosing = grant.closing;
+        grant.closing = true;
         await client.flush();
         if (kind === "share") {
           grant.shared = true;
+          grant.closing = wasClosing;
           options.released?.(grant.root);
         }
         try {
@@ -1630,6 +1654,9 @@ ${UNSETTLED_END_NOTE}`, { cause: error }), { unsettled: true, ...code === void 0
         const acknowledged = submitOptions?.acknowledged === true;
         const named = pathsOf(op);
         for (const path of named) if (!canonical(path)) throw fsError("EINVAL", `EINVAL: not a filesystem path the session takes: '${path}'`, path);
+        if (op.type === "call" && op.call.call === "symlink" && utf8Bytes(op.call.target) > SYMLINK_TARGET_MAX) {
+          throw fsError("ENAMETOOLONG", `ENAMETOOLONG: a link's target is at most ${SYMLINK_TARGET_MAX} bytes`, op.call.path);
+        }
         const parts = pieces(op);
         const bytes = parts.reduce((sum, part) => sum + (part.type === "call" && "data" in part.call ? part.call.data.byteLength : 0), 0);
         if (acknowledged && pendingSyncBytes + bytes > syncCap) {
@@ -1926,6 +1953,10 @@ function __nimbusProcessFs() {
       writeBatchStream: (stream, fence, owner) => (owner === undefined
         ? supervisor().writeBatchStream(stream, fence)
         : supervisor().writeBatchStream(stream, fence, owner)),
+      retireWriter: async (writer) => {
+        const bound = supervisor();
+        if (typeof bound.retireWaveWriter === "function") await bound.retireWaveWriter(writer);
+      },
       // The subtrees the process writes often enough: decided here
       // (__nimbusDecidedHere), sent in its waves, recalled by another's access.
       grants: {
