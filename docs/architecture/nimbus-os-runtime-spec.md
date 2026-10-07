@@ -222,8 +222,9 @@ These areas exist, but are not yet good enough for Nimbus OS quality:
   a large file (open, write in pieces, close), the index to `index.lock`
   and renamed over it, as git does. A failed clone there is removed as on
   the session's own filesystem. A mount backend without `rename`,
-  `writeRange` or `truncate` fails the clone with ENOTSUP naming the
-  operation, and the destination is removed. Writers outside Nimbus are not
+  `writeRange` or `truncate` fails the clone with the namespace's refusal
+  naming the call (EXDEV for a rename it cannot make in place, ENOTSUP for
+  the others), and the destination is removed. Writers outside Nimbus are not
   fenced by the lease.
 
   Its worktree commands (`status`, `diff`, `add`, `commit`, `ls-files`,

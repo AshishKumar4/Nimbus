@@ -11,8 +11,9 @@ published independently in the `@nimbus-sh` npm scope.
   4 MiB mount limit is written through the session's file API (open, write,
   close), the index through `index.lock`. A failed or interrupted clone
   there is cleaned up as on the session's own filesystem. A mount backend
-  without `rename`, `writeRange` or `truncate` fails the clone with ENOTSUP
-  naming the operation, and the destination is removed.
+  without `rename`, `writeRange` or `truncate` fails the clone with the
+  namespace's refusal naming the call (EXDEV for a rename, ENOTSUP for the
+  others), and the destination is removed.
 - Fixed: a write wave routed onto a mount, and a lease holder's `mkdir`,
   `open` for writing, `unlink` and `rmdir`, did not present the caller's
   exclusive-mutation lease: under its own lease a holder was refused EBUSY

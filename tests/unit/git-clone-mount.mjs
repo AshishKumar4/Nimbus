@@ -7,8 +7,8 @@
 // the namespace. Then fetch, pull and push in the mounted repository, host
 // git doing the same in its clone: the same refs, objects, worktree and
 // index, and the server's branch where ours pushed it. A mount whose
-// backend cannot rename fails the clone with ENOTSUP naming rename, and the
-// destination is removed.
+// backend cannot rename fails the clone with the namespace's refusal (EXDEV,
+// naming the rename), and the destination is removed.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -75,7 +75,8 @@ try {
   const server = startGitHttpServer(served);
 
   const mountHarness = createSqliteVfsTestHarness();
-  const mountEngine = new SqliteVFS(mountHarness.sql, mountHarness.ctx);
+  // Its own filesystem identity: a device the session's engine is not (engineKey tells them apart by it).
+  const mountEngine = new SqliteVFS(mountHarness.sql, mountHarness.ctx, 'mounted-data');
   // The session user's own directory on the mount.
   mountEngine.as(CRED_KERNEL).mkdir('work', { mode: 0o755 });
   mountEngine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
@@ -168,11 +169,11 @@ try {
     // A backend that cannot rename: the clone fails, naming the operation, and leaves nothing.
     const refused = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', '/mnt/norename/repo']);
     assert.notEqual(refused.code, 0, 'a clone onto a mount that cannot rename fails');
-    assert.match(refused.stderr, /ENOTSUP/, refused.stderr.slice(-400));
-    assert.match(refused.stderr, /rename/, refused.stderr.slice(-400));
+    // The namespace's refusal of a rename a backend cannot make in place: EXDEV, as rename(2) says it.
+    assert.match(refused.stderr, /EXDEV: \/mnt\/norename cannot rename in place, rename/, refused.stderr.slice(-400));
     assert.doesNotMatch(refused.stderr, /could not remove the failed clone/, refused.stderr.slice(-400));
     assert.deepEqual(noRename.readdir('/').map(({ name }) => name), [], 'and its destination is removed');
-    console.log('  ok  a mount that cannot rename: the clone fails with ENOTSUP naming rename; nothing left');
+    console.log('  ok  a mount that cannot rename: the clone fails with EXDEV naming the rename; nothing left');
   } finally {
     server.stop();
   }

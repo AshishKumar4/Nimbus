@@ -69,7 +69,8 @@ try {
     const rows = [];
     for (const where of ['sqlite', 'mount']) {
       const harness = createSqliteVfsTestHarness();
-      const engine = new SqliteVFS(harness.sql, harness.ctx);
+      // Its own filesystem identity: a device the session's engine is not (engineKey tells them apart by it).
+      const engine = new SqliteVFS(harness.sql, harness.ctx, 'mounted-data');
       engine.as(CRED_KERNEL).mkdir('work', { mode: 0o755 });
       engine.as(CRED_KERNEL).chown('work', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
       const session = await createFacetSession(work, where === 'mount' ? { mounts: { '/mnt/data': new SqliteFiles(engine, engine.as(CRED_KERNEL)) } } : {});
