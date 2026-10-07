@@ -5,6 +5,21 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: `npx create-react-router` stopped while copying its template with
+  "TypeError: dest.write is not a function". `stream.pipeline` turned every
+  stream without a `pipe` of its own into a Readable, its destination
+  included (tar-fs 3's extract), so the gunzip stream piped into a stream it
+  cannot write. It now adapts only the source, as Node's does.
+- `node` reads its command line as Node does: `--conditions`/`-C` (on the
+  command line or in `NODE_OPTIONS`) choose a program's `#imports` and its
+  packages' `exports`, for `import` and `require` alike; `process.execArgv`
+  holds node's options and `process.argv` the program's own; an option Node
+  refuses is refused with Node's message and exit code 9.
+- `node -p` prints the code's value when the process exits, as Node does,
+  and `echo code | node -p` too; it was refused. `-r`/`--require` and
+  `--import` load their modules before the program (`node -r dotenv/config
+  app.js`); they were ignored. In `-e` and `-p` code, `crypto` is
+  node:crypto, as in Node.
 - Fixed: `react-router dev` (React Router 8.4) exited at once with "Oops, Node
   v22.19.0 detected": processes now report Node v22.22.3, the release the
   tests use as Node's reference, which meets its `>=22.22.0` engines floor.
