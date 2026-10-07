@@ -8835,7 +8835,7 @@ function __nimbusReleaseStderr(line) {
   let task;
   try { task = gate === null ? send() : gate.then(send); } catch { return; }
   task = Promise.resolve(task).catch(() => {});
-  if (Array.isArray(__pendingIO)) __pendingIO.push(task);
+  if (typeof __pendingIO !== "undefined" && Array.isArray(__pendingIO)) __pendingIO.push(task);
 }
 
 function __nimbusReportProcessExit(code, reason) {
