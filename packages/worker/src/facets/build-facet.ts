@@ -6,6 +6,7 @@ import type {
   EsbuildRemotePlugin,
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
+import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
@@ -233,8 +234,8 @@ async function buildFacet(ctx: DurableObjectState, env: unknown, id: string): Pr
   if (!loader || typeof loader.get !== 'function') throw new Error('Nimbus: env.LOADER unavailable for the build facet');
   const assets = Reflect.get(Object(env), 'ASSETS');
   if (!assets || typeof assets.fetch !== 'function') throw new Error('Nimbus: env.ASSETS unavailable for the build facet');
-  const worker = await loader.get(id, async () => buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets })));
-  const facetClass = worker.getDurableObjectClass('BuildFacet');
+  const worker = await loader.get(id, async () => applyFacetLimits('build', buildFacetWorkerCode(await fetchBuildFacetParts({ ASSETS: assets }))));
+  const facetClass = worker.getDurableObjectClass('BuildFacet', { limits: facetLimits('build') });
   return ctx.facets.get<BuildFacetRpc>(id, async () => ({ class: facetClass }));
 }
 

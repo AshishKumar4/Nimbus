@@ -45,6 +45,7 @@ import {
   type ResidentSupervisorProps,
 } from './process-fabric.js';
 import { supervisorLoaderKey, mintProcessSupervisor, type SupervisorBindingProps } from './supervisor-props.js';
+import { applyFacetLimits } from './facet-limits.js';
 
 // ── Loaded-worker entrypoint plumbing ───────────────────────────────────────
 
@@ -590,7 +591,7 @@ function residentProcessClass(
     );
   }
   return loader
-    .get(loaderKey, () => residentWorkerConfig(env, disk, supervisor, params.boot))
+    .get(loaderKey, async () => applyFacetLimits('process', await residentWorkerConfig(env, disk, supervisor, params.boot)))
     .getDurableObjectClass(RESIDENT_PROCESS_CLASS);
 }
 
@@ -641,7 +642,7 @@ async function runOneShot<T>(
       params.onWriterActivated(params.writerId);
       supervisorBinding = mintProcessSupervisor(supervisorRpc, supervisor);
     }
-    worker = loader.load({
+    worker = loader.load(applyFacetLimits('process', {
       compatibilityDate: spec.compatibilityDate,
       compatibilityFlags: spec.compatibilityFlags,
       mainModule: spec.mainModule,
@@ -652,7 +653,7 @@ async function runOneShot<T>(
       ...(supervisorBinding && params.outbound
         ? { globalOutbound: supervisorBinding }
         : supervisor.egress !== undefined ? { globalOutbound: supervisor.egress } : {}),
-    });
+    }));
     // The loader has taken the map; holding it here would keep a second full
     // copy of the program alive for as long as the program runs.
     spec = undefined;
