@@ -100,6 +100,8 @@ export interface DelegationHolder {
      * next sync (flush) to report: what goes before a call to the session.
      */
     send(): Promise<void>;
+    /** A refusal the session has made of what this process logged, thrown now (with its errno), not waiting for anything: what a close reports. */
+    reportRecorded(): void;
     /** Whether `handleId` writes through: its reads are the session's (readThrough). */
     through(handleId: number): boolean;
     /** A write-through description's session descriptor (its open answered), or undefined (a mount's file keeps none). */

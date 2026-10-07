@@ -644,6 +644,7 @@ export function delegationHolder(options) {
             await client.flush();
             sentSome();
         },
+        reportRecorded: () => failed(),
         settle: async () => {
             drain();
             await client.settle();

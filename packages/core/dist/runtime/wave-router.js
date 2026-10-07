@@ -75,7 +75,7 @@ export function namespaceWaveRouter(namespace, credential) {
             const ns = view(cred, guard);
             // Removing its own slot after a failure is the record's own, unguarded.
             const cleanup = view(cred);
-            return applyRecord(ns, cleanup, record, pinsOf(ns, record), cred.umask & 0o777);
+            return applyRecord(ns, cleanup, record, pinsOf(ns, record));
         },
     };
 }
@@ -132,12 +132,12 @@ function pinOf(ns, dir) {
     };
 }
 /**
- * `umask`: what a process's call that makes a name takes from its mode, as
- * the session's own filesystem takes it (the call's own, W7Call umask, or
- * its credential's): a mount stores the mode it is given. A record that is
- * no call (a checkout's file or directory) carries its exact mode.
+ * A record as the namespace's single operation of its name makes it, under
+ * the view's credential (its umask the call's own, W7Call umask): a mount
+ * that takes credentials applies it as it applies any (a default ACL
+ * instead, where one is set); one that takes none stores what it is given.
  */
-async function applyRecord(ns, cleanup, record, pinned, umask) {
+async function applyRecord(ns, cleanup, record, pinned) {
     switch (record.type) {
         case 'directory':
             await pinned();
@@ -179,7 +179,7 @@ async function applyRecord(ns, cleanup, record, pinned, umask) {
                 const there = call.existing === 'ok' ? await ns.stat(call.path) : null;
                 await pinned();
                 if (there === null || there.type !== 'directory')
-                    await ns.mkdir(call.path, { mode: call.mode & ~umask });
+                    await ns.mkdir(call.path, { mode: call.mode });
             }
             else if (call.call === 'unlink')
                 await ns.unlink(call.path);
@@ -224,11 +224,14 @@ async function applyRecord(ns, cleanup, record, pinned, umask) {
                     throw new VfsError('EISDIR', 'is a directory', call.path);
                 await pinned();
                 if (there === null)
-                    await ns.writeFile(call.path, new Uint8Array(0), { mode: call.mode & ~umask });
+                    await ns.writeFile(call.path, new Uint8Array(0), { mode: call.mode });
                 else if (call.truncate === true)
                     await ns.truncate(call.path, 0);
                 return statOf(await ns.stat(call.path));
             }
+            // A description's close: a mount keeps no description (its open made none).
+            else if (call.call === 'close')
+                return null;
             else
                 await ns.symlink(call.target, call.path);
             return null;
@@ -261,7 +264,7 @@ async function applyRecord(ns, cleanup, record, pinned, umask) {
                 const prior = await ns.stat(record.path);
                 await pinned();
                 if (prior === null && record.call === 'appendFile')
-                    await ns.writeFile(record.path, record.bytes, { mode: record.mode & ~umask });
+                    await ns.writeFile(record.path, record.bytes, { mode: record.mode });
                 else if (prior === null)
                     throw new VfsError('ENOENT', 'the file an open description appends to is gone', record.path);
                 else
@@ -271,7 +274,7 @@ async function applyRecord(ns, cleanup, record, pinned, umask) {
                 await ns.writeRange(record.path, record.offset ?? 0, record.bytes);
             }
             else {
-                await ns.writeFile(record.path, record.bytes, { mode: record.mode & ~umask });
+                await ns.writeFile(record.path, record.bytes, { mode: record.mode });
             }
             return statOf(await ns.stat(record.path));
         }
