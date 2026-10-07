@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "b0a7308a5ea62c26a5aab1efd3167020b516318f47a469e5842cf0899c976e43",
+  "fingerprint": "fe1ff2a501ca7afff7ce143a9a55821274760b7c839cf4cf12507aa6dd17670c",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -384,9 +384,9 @@
     "packages/core/dist/runtime/prebundle-slice.d.ts": "a087a3c3a9bcd3420634b8dc9be2c6ca67e0298285bdd65643ceb67d3f3f2e77",
     "packages/core/dist/runtime/prebundle-slice.d.ts.map": "cc98344bea07e1a399c42a81a77f5aa30baa50925259c5aa0df8b8c3ae8ac4d8",
     "packages/core/dist/runtime/prebundle-slice.js": "5457cd8698da19f7081b535c6aca1794b21189cb98f6b911ff5d88e85ccbdced",
-    "packages/core/dist/runtime/process-files.d.ts": "f5c3b636865215b901dba9fb417ada731abea992c2331ea55691c0d80685a58b",
-    "packages/core/dist/runtime/process-files.d.ts.map": "a8cfd8275589a6bf5579e2959498316b545d1ef4cb22dc3dadbe7d8fe5a568c1",
-    "packages/core/dist/runtime/process-files.js": "26dd74243f958f77c658ab7d754bc7e82e0ef31369dff6a122462d6cf3f91a8a",
+    "packages/core/dist/runtime/process-files.d.ts": "68f9340d562d8a0d565c2eb3a32352aa062ed38d593f437adec5b448a3a2a6a2",
+    "packages/core/dist/runtime/process-files.d.ts.map": "a081a4c16c64429448fcc948e279e581b81148e2d7e6fe9927bee04e2f08e596",
+    "packages/core/dist/runtime/process-files.js": "3ddcf1509e4c333e5c72e6afde6430dbd81513d0c8b5503c7db91275a568876b",
     "packages/core/dist/runtime/process-input-routing.d.ts": "907df5f7eb7fc180bb78c1984fdaa6265bdb8411d9dadc8f79c191d7971f2f24",
     "packages/core/dist/runtime/process-input-routing.d.ts.map": "ef2d1104c98e0921b1c5f02a996f27da7b34b44ea5cd9919472f6abc640f9bb6",
     "packages/core/dist/runtime/process-input-routing.js": "4c38bf38518ea0e42c3205ea19ce372756b15f881f6e093c34c4cfc95a9aa9f1",
@@ -1190,7 +1190,7 @@
     "packages/core/src/runtime/oxc-transform.ts": "7df20e068b4debe867b2d3936d030373e830c8f6368e08f911cf44beca2c76e1",
     "packages/core/src/runtime/port-registry.ts": "e94215146ed8f02b69befd7a81b95a00573fc206006e437e9345a26f364a3bfd",
     "packages/core/src/runtime/prebundle-slice.ts": "b482b3b3ddb36ba7c1b9587b3d4bc2d887f4af1343c54588b07458b6b95e7f08",
-    "packages/core/src/runtime/process-files.ts": "5b98914f0cf47a3faa63c9ab8080ad1d9bb363ff6b48db2af15755a70a879b00",
+    "packages/core/src/runtime/process-files.ts": "195211fc33b409e9aa79d33e1b163936c2459756da127fe1e7e2bf3da68a86c8",
     "packages/core/src/runtime/process-input-routing.ts": "96ef539c05d1294945fd6988addadeba99b3748abfe13a76280ea0cfabc93830",
     "packages/core/src/runtime/process-input.ts": "dc73fa0f1a5ae83eb1ab9c4901c5f9da6da6d9afcad2790254f79da725b82f78",
     "packages/core/src/runtime/process-io-protocol.ts": "29dceff8de177b9c8186832ba36c67a8ffd616676b32424bbd21f9d5ba1dd62d",
