@@ -2891,8 +2891,9 @@ export class ViteDevServer {
     // If the exact path doesn't exist, try Vite-style extension resolution.
     // This is essential for ES module imports like `import X from "./foo"` —
     // the browser fetches /preview/src/foo with no extension, and we need to
-    // try .tsx/.ts/.jsx/.js/.mjs/.cjs/.json and directory index files.
-    if (!this.vfs.exists(vfsPath) || (this.vfs.isDirectory(vfsPath) && !pathname.endsWith('/'))) {
+    // try .tsx/.ts/.jsx/.js/.mjs/.cjs/.json and directory index files. A
+    // directory always resolves here: sanitizePath leaves no trailing slash.
+    if (!this.vfs.exists(vfsPath) || this.vfs.isDirectory(vfsPath)) {
       const resolved = this.resolveFileCandidate(pathname);
       if (resolved) {
         vfsPath = resolved.vfsPath;
@@ -2910,19 +2911,6 @@ export class ViteDevServer {
       }
     }
 
-    if (this.vfs.isDirectory(vfsPath)) {
-      const indexPath = vfsPath + '/index.html';
-      if (this.vfs.exists(indexPath)) {
-        const html = this.withDevHead(this.vfs.readFileString(indexPath), base, '');
-        return new Response(html, {
-          headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
-        });
-      }
-      return new Response('403 Directory listing not supported', {
-        status: 403, headers,
-      });
-    }
-
     // Extract extension using slash-aware dot detection. Naive `split('.').pop()`
     // returns garbage for paths with dotted directories like `/src/v1.0/App`
     // (would produce `ext = '.0/app'`). We only accept a dot that occurs AFTER
@@ -2933,6 +2921,14 @@ export class ViteDevServer {
       ? pathname.substring(pExtLastDot).toLowerCase()
       : '';
     const contentType = MIME_TYPES[ext] || 'application/octet-stream';
+
+    // Every HTML page gets the dev head, as Vite's transformIndexHtml gives
+    // every page of a multi-page app; only the root index.html takes a <base>.
+    if (ext === '.html') {
+      return new Response(this.withDevHead(this.vfs.readFileString(vfsPath), base, ''), {
+        headers: { ...headers, 'Content-Type': contentType },
+      });
+    }
 
     // Transform TS/TSX/JSX/MTS/CTS files
     if (ext === '.ts' || ext === '.tsx' || ext === '.jsx' || ext === '.mts' || ext === '.cts') {
