@@ -49,6 +49,7 @@ import { NIMBUS_AI_TOKEN_ENV, mintSessionAiToken } from '@nimbus-sh/core/_shared
 import {
   NIMBUS_AGENT_AUTH_COOKIE,
   NIMBUS_CLOUDFLARE_API,
+  envString,
   fetchNimbusCloudflareAccounts,
   fetchNimbusCloudflareUserInfo,
   loadNimbusAgentOAuthFromRequest,
@@ -703,11 +704,6 @@ async function ensureFreshCredential(
     await clearSessionAiCredential(self);
     return null;
   }
-}
-
-function envString(env: Record<string, unknown>, key: string): string {
-  const value = env?.[key];
-  return typeof value === 'string' ? value.trim() : '';
 }
 
 function envBool(env: Record<string, unknown>, key: string): boolean {

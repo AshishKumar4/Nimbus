@@ -67,13 +67,6 @@ export const HYDRATION_DEADLINE_MS = 30_000;
 export const SQLITE_MAX_STATEMENT_BYTES = 100 * 1024;
 
 /**
- * Maximum bound parameters per query. The easiest cap to hit accidentally:
- * a batched insert of more than 100/columns rows in one statement breaches
- * it.
- */
-export const SQLITE_MAX_BOUND_PARAMETERS = 100;
-
-/**
  * Maximum bytes of one string, BLOB, or table ROW — the bound is per ROW,
  * key length included, not per value. The measured single-value ceiling is
  * 2,199,981 bytes, ABOVE this constant: budgeting each value against the

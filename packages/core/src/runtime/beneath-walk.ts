@@ -7,35 +7,20 @@
  */
 
 import type { RuntimeFsPath } from './os-contracts.js';
-import { errnoDescription } from '../vfs/vfs-error.js';
+import { fsError as nodeFsError, type FsError } from '../vfs/vfs-error.js';
+
+export type { FsError };
 
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export const MAX_LINK_HOPS = 40;
 
-/** An error carrying the fields Node's `fs` puts on a failed syscall. */
-export interface FsError extends Error {
-  code: string;
-  syscall: string;
-  path: string;
-  /** The second path of a call that names two (rename, symlink's link). */
-  dest?: string;
-}
-
-/**
- * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
- * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
- */
+/** vfs-error.ts's fsError for a call on a runtime path, named by its path. */
 export function fsError(
   code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath, options: { detail?: string; cause?: unknown } = {},
 ): FsError {
   const name = typeof path === 'string' ? path : path.path;
   const second = dest === undefined ? undefined : typeof dest === 'string' ? dest : dest.path;
-  const words = options.detail ?? errnoDescription(code);
-  const message = `${code}: ${words === undefined ? '' : `${words}, `}${syscall} '${name}'${second === undefined ? '' : ` -> '${second}'`}`;
-  const error = new Error(message, options.cause === undefined ? undefined : { cause: options.cause });
-  return Object.assign(error, {
-    code, syscall, path: name, ...(second === undefined ? {} : { dest: second }), ...(options.detail === undefined ? {} : { detail: options.detail }),
-  });
+  return nodeFsError(code, syscall, name, second, options);
 }
 
 /** POSIX rwx for `cred` on a stat: root reads and writes anything and executes what anyone may. */
