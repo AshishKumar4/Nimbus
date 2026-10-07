@@ -79,7 +79,7 @@ const options = { followSymlinks: false }, epoch = 'epoch', cursor = 9, after = 
 const url = 'https://remote.test/', protocols = ['protocol'], id = 7, waitMs = 25, text = 'text';
 const wsHeaders = [['Authorization', 'Bearer t']];
 const code = 0, reason = 'closed', offset = 0, length = 3;
-const requests = [{ path, offset, length }], moduleId = 'module', operationId = 'operation';
+const requests = [{ path, offset, length }];
 const payload = { inodes: [], chunks: [] }, stream = encodeWriteBatchStream({ inodes: [], chunks: [] });
 const entries = [], data = new TextEncoder().encode('output'), tail = 'tail', cwd = '/cwd', entryCode = 'export {}', port = 8080;
 const request = new Request('https://loopback.test/'), loader = 'js', req = { parentPid: 999, command: 'cat' };
@@ -150,8 +150,6 @@ const INPUTS = {
   fsReadRangeUncached: [path, offset, length],
   fsReadBatch: [requests],
   fsWriteRange: [rangePath, 2, bytes],
-  fsAppend: [path, moduleId, operationId, bytes],
-  fsAppendAck: [moduleId, operationId],
   fsTruncate: [truncPath, size],
   writeBatch: [payload],
   writeBatchStream: [stream],
@@ -518,9 +516,6 @@ supervisor.ctx.props.pid = 0;
 await assert.rejects(supervisor.writeFile('/a', 'bad'), /invalid process pid/);
 await assert.rejects(supervisor.cpSpawn({ parentPid: 999 }), /invalid process pid/);
 supervisor.ctx.props.pid = pid;
-supervisor.ctx.props.writerId = '';
-await assert.rejects(supervisor.fsAppend('/a', 'm', 'op', bytes), /writer incarnation|requires a run/);
-supervisor.ctx.props.writerId = writerId;
 supervisor.ctx.props.doId = '';
 await assert.rejects(supervisor.readFile('/a'), /missing doId/);
 supervisor.ctx.props.doId = 'host-id';

@@ -495,19 +495,6 @@ const FsWriteRangeArgsSchema = z.object({
   offset: FsRangeOffsetSchema,
 });
 
-const FsAppendArgsSchema = z.object({
-  path: z.string(),
-  writerId: z.string().uuid(),
-  moduleId: z.string().uuid(),
-  operationId: z.string().regex(/^[1-9][0-9]*$/).max(32),
-});
-
-const FsAppendAckArgsSchema = FsAppendArgsSchema.pick({
-  writerId: true,
-  moduleId: true,
-  operationId: true,
-});
-
 const FsTruncateArgsSchema = z.object({
   path: z.string(),
   size: FsRangeOffsetSchema,
@@ -895,56 +882,6 @@ export async function _rpcFsWriteRange(
 ): Promise<VfsMutationReceipt> {
   const args = FsWriteRangeArgsSchema.parse({ path, offset });
   return self.supervisorBridge(pid).writeRange(args.path, args.offset, normalizeWriteBatchChunkData(bytes));
-}
-
-export async function _rpcFsAppend(
-  self: RpcHost,
-  path: string,
-  writerId: string,
-  moduleId: string,
-  operationId: string,
-  bytes: Uint8Array | ArrayBuffer | number[],
-  pid?: number,
-): Promise<number> {
-  const args = FsAppendArgsSchema.parse({ path, writerId, moduleId, operationId });
-  const sequence = Number(args.operationId);
-  if (!Number.isSafeInteger(sequence)) {
-    throw new Error('filesystem append operation exceeds the safe integer range');
-  }
-  const processId = processPid(pid);
-  const data = normalizeWriteBatchChunkData(bytes);
-  const digestBytes = new Uint8Array(await crypto.subtle.digest('SHA-256', data));
-  const digest = Array.from(digestBytes, (byte) => byte.toString(16).padStart(2, '0')).join('');
-  return self.supervisorBridge(pid).appendOnce(
-    args.path,
-    processId,
-    args.writerId,
-    args.moduleId,
-    sequence,
-    digest,
-    data,
-  );
-}
-
-export async function _rpcFsAppendAck(
-  self: RpcHost,
-  writerId: string,
-  moduleId: string,
-  operationId: string,
-  pid?: number,
-): Promise<void> {
-  const args = FsAppendAckArgsSchema.parse({ writerId, moduleId, operationId });
-  const sequence = Number(args.operationId);
-  if (!Number.isSafeInteger(sequence)) {
-    throw new Error('filesystem append operation exceeds the safe integer range');
-  }
-  const processId = processPid(pid);
-  await self.supervisorBridge(processId).acknowledgeAppend(
-    processId,
-    args.writerId,
-    args.moduleId,
-    sequence,
-  );
 }
 
   /**

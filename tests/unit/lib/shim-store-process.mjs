@@ -20,9 +20,8 @@ export const PROCESS_DIR = '/home/user/p';
 /**
  * @param {{ seed?: (vfs: any) => void, writer?: string }} [options]
  *   `seed` adds kernel-written tree before it is handed to the user;
- *   `writer` activates that append writer and gives the supervisor the
- *   ranged, append and metadata ops (fsWriteRange, fsTruncate, fsAppend,
- *   fsAppendAck, utimes, chmod, chown) a FileHandle reaches.
+ *   `writer` gives the supervisor the ranged and metadata ops
+ *   (fsWriteRange, fsTruncate, utimes, chmod, chown) a FileHandle reaches.
  */
 export function shimStoreProcess({ seed, writer } = {}) {
   const harness = createSqliteVfsTestHarness();
@@ -32,7 +31,6 @@ export function shimStoreProcess({ seed, writer } = {}) {
   const dec = new TextDecoder();
   vfs.mkdir(PROCESS_DIR, { recursive: true });
   seed?.(vfs);
-  if (writer) rawVfs.activateAppendWriter(1, writer);
   const ownTree = (path = '') => {
     for (const entry of vfs.readdir(path)) {
       const at = path ? `${path}/${entry.name}` : entry.name;
@@ -56,12 +54,6 @@ export function shimStoreProcess({ seed, writer } = {}) {
     ...(writer ? {
       fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
       fsTruncate: (p, s) => bridge.truncate(p, s),
-      async fsAppend(p, moduleId, operationId, bytes) {
-        const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-        const digest = Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
-        return bridge.appendOnce(p, 1, writer, moduleId, Number(operationId), digest, bytes);
-      },
-      fsAppendAck: (moduleId, operationId) => bridge.acknowledgeAppend(1, writer, moduleId, Number(operationId)),
       utimes: (p, a, m) => bridge.utimes(p, a, m),
       chmod: (p, m) => bridge.chmod(p, m),
       chown: (p, u, g, o) => bridge.chown(p, u, g, o),

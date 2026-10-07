@@ -31,16 +31,9 @@ const dec = new TextDecoder();
 const home = '/home/user';
 vfs.mkdir(home, { recursive: true });
 
-// The append protocol is identity-bound: one live writer per pid.
-const APPEND_PID = 7;
-const writerId = crypto.randomUUID();
-rawVfs.activateAppendWriter(APPEND_PID, writerId);
-async function digestOf(bytes) {
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
-}
 // An append the test can hold in flight: while \`appendGate\` is set, each
-// fsAppend waits on it before reaching the authority.
+// ranged write (an append to a file the authority has) waits on it before
+// reaching the authority.
 let appendGate = null;
 // A write-back the test holds in flight: a writeFile of \`writeGate.path\`
 // waits on it before reaching the authority.
@@ -69,13 +62,11 @@ const supervisor = {
   unlink: record('unlink', first, (p) => bridge.unlink(p)),
   rename: record('rename', (a, b) => `${a} -> ${b}`, (a, b) => bridge.rename(a, b)),
   fsReadRange: record('fsReadRange', first, (p, o, l) => bridge.readRange(p, o, l)),
-  fsWriteRange: record('fsWriteRange', first, (p, o, b) => bridge.writeRange(p, o, b)),
-  fsTruncate: record('fsTruncate', first, (p, s) => bridge.truncate(p, s)),
-  fsAppend: record('fsAppend', first, async (p, moduleId, opId, bytes) => {
+  fsWriteRange: record('fsWriteRange', first, async (p, o, b) => {
     if (appendGate) await appendGate.promise;
-    return bridge.appendOnce(p, APPEND_PID, writerId, moduleId, Number(opId), await digestOf(bytes), bytes);
+    return bridge.writeRange(p, o, b);
   }),
-  fsAppendAck: (moduleId, opId) => bridge.acknowledgeAppend(APPEND_PID, writerId, moduleId, Number(opId)),
+  fsTruncate: record('fsTruncate', first, (p, s) => bridge.truncate(p, s)),
   fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
@@ -225,10 +216,10 @@ for (const inFlight of [false, true]) {
     appendGate = Promise.withResolvers();
     const issued = calls.length;
     // The debounced write-back issues the append, which the gate holds.
-    for (let i = 0; i < 50 && !calls.slice(issued).some((c) => c.op === 'fsAppend'); i++) {
+    for (let i = 0; i < 50 && !calls.slice(issued).some((c) => c.op === 'fsWriteRange'); i++) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }
-    assert.ok(calls.slice(issued).some((c) => c.op === 'fsAppend'), 'the append is in flight');
+    assert.ok(calls.slice(issued).some((c) => c.op === 'fsWriteRange'), 'the append is in flight');
     fs.appendFileSync(`${from}/app.log`, 'second\n');
   }
   fs.renameSync(from, to);

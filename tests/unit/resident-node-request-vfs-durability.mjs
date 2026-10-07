@@ -133,33 +133,11 @@ assert.ok(residentWorkerSource().includes('NimbusProcess'), 'the facet booted th
 function asLaunchSupervisor(supervisor) {
   if (listingOps) for (const [name, op] of Object.entries(listingOps)) if (!(name in supervisor)) supervisor[name] = op;
   // Its process's waves reach the supervisor's own calls (lib/wave-supervisor.mjs).
-  return waveSupervisor(withTestAppendAuthority(supervisor));
-}
-
-function withTestAppendAuthority(supervisor) {
-  if (
-    typeof supervisor.fsAppend !== 'function'
-    && typeof supervisor.stat === 'function'
-    && typeof supervisor.fsWriteRange === 'function'
-  ) {
-    const appendReceipts = new Map();
-    supervisor.fsAppend = async (path, moduleId, operationId, bytes) => {
-      const key = `${moduleId}:${operationId}`;
-      if (appendReceipts.has(key)) return bytes.byteLength;
-      const meta = await supervisor.stat(path);
-      await supervisor.fsWriteRange(path, Number(meta?.size) || 0, bytes);
-      appendReceipts.set(key, bytes.slice());
-      return bytes.byteLength;
-    };
-    supervisor.fsAppendAck = async (moduleId, operationId) => {
-      appendReceipts.delete(`${moduleId}:${operationId}`);
-    };
-  }
-  return supervisor;
+  return waveSupervisor(supervisor);
 }
 
 function makeShimFsFacet(supervisor, bundle = {}) {
-  waveSupervisor(withTestAppendAuthority(supervisor));
+  waveSupervisor(supervisor);
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${SHIMS_STORE_PRELUDE + generateShimsCode()}
@@ -1235,12 +1213,12 @@ process.exit(0);
     createProcessFacetCtx(`vfs-durability-${++facetSeq}`),
     {
       SUPERVISOR: asLaunchSupervisor({
-        async fsAppend() {
+        // The append's wave fails.
+        async writeBatchStream() {
           const error = new Error('injected append failure after exit intent');
           error.code = 'EIO';
           throw error;
         },
-        async fsAppendAck() {},
         async reportExit(code) { reports.push(code); },
         async stdout() {},
         async stderr() {},
@@ -1265,13 +1243,14 @@ process.exit(0);
   const reports = [];
   let appendCalls = 0;
   const supervisor = {
-    async fsAppend() {
+    // The append's wave fails, definitively: not a lost call, so not re-sent.
+    async writeBatchStream() {
       appendCalls++;
       const error = new Error('injected one-shot append failure');
       error.code = 'EIO';
       throw error;
     },
-    async fsAppendAck() {},
+    async openWaveWriter() { return null; },
     async reportExit(code) { reports.push(code); },
     async stdout() {},
     async stderr() {},

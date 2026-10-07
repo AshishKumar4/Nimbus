@@ -660,19 +660,9 @@ export class NimbusWorkspace {
   }
 }
 
-/**
- * Open the durable filesystem for a host that has not opened one itself.
- *
- * The revocation is here rather than in `create` because it is the act of
- * OPENING that carries it: pids at or below this generation's floor belong to
- * an instance that is gone, and their append capabilities must stop being
- * honoured before the first read. A host that opened the filesystem itself has
- * already done this, at the same seam, for the same reason.
- */
+/** Open the durable filesystem for a host that has not opened one itself. */
 function openFilesystem(options: NimbusWorkspaceOptions): SqliteVFS {
-  const vfs = new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
-  vfs.revokeAppendWritersThrough((options.generation ?? 1) * PID_GEN_STRIDE);
-  return vfs;
+  return new SqliteVFS(options.sql, options.transactions, options.filesystemNamespace);
 }
 
 /**
@@ -876,11 +866,6 @@ function once<T>(make: () => Promise<T>): () => Promise<T> {
 const WORKSPACE_TABLES = [
   // The store's own, as it keeps them.
   ...STORE_TABLES,
-  'vfs_append_receipts',
-  'vfs_append_writer_state',
-  'vfs_append_module_state',
-  'vfs_append_pid_revocations',
-  'vfs_append_acked_gaps',
   SHELLS_TABLE,
 ] as const;
 

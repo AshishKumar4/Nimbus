@@ -60,7 +60,7 @@ export const REPLAY_OPERATION_POLICY = {
   wsOpen: effect, wsPoll: read, wsSend: effect, wsClose: effect,
   fsOpen: { kind: 'open' }, fsRead: read, fsWrite: effect, fsClose: read,
   fsReadRange: read, fsReadRangeUncached: read, fsReadBatch: read,
-  fsWriteRange: effect, fsAppend: effect, fsAppendAck: effect,
+  fsWriteRange: effect,
   fsTruncate: effect, writeBatch: effect, writeBatchStream: effect,
   // Mints a write-wave epoch the session holds open for the live process (state on the host, not a read).
   openWaveWriter: effect,

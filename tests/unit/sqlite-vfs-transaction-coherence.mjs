@@ -87,7 +87,6 @@ for (const [name, mutate] of [
   ['writeRange staged', (vfs) => vfs.writeRange('affected', 3, new Uint8Array(MAX_TX_BLOB_BYTES + 1).fill(22))],
   ['truncate', (vfs) => vfs.truncate('affected', 2)],
   ['truncate staged', (vfs) => vfs.truncate('affected', MAX_TX_BLOB_BYTES + CHUNK_SIZE)],
-  ['appendOnce', (vfs) => vfs.appendOnce('affected', 1, '12345678-1234-4234-9234-123456789012', '12345678-1234-4234-9234-123456789013', 1, 'digest', replacement)],
   ['utimes', (vfs) => vfs.utimes('affected', 11, 22)],
   ['chmod', (vfs) => vfs.chmod('affected', 0o700)],
   ['chown', (vfs) => vfs.chown('affected', 42, 43)],
@@ -107,7 +106,6 @@ for (const [name, mutate] of [
   vfs.writeFile('affected', 'original bytes');
   vfs.writeFile('dir/child', 'child bytes');
   vfs.symlink('affected', 'link');
-  raw.activateAppendWriter(1, '12345678-1234-4234-9234-123456789012');
   const before = tree(vfs);
   const revision = vfs.revision();
   const events = [];
@@ -126,7 +124,6 @@ for (const [name, mutate] of [
   assert.equal(vfs.revision(), revision, `${name}: rollback publishes no revision`);
   assert.deepEqual(events, [], `${name}: rollback publishes no watch events`);
   assert.deepEqual(tree(new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL)), before);
-  assert.deepEqual(harness.sql.exec('SELECT operation_id FROM vfs_append_receipts_v2'), []);
   assert.equal(raw._verifyCounters(), null);
   harness.db.close();
 }

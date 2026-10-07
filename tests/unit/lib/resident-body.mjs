@@ -83,7 +83,6 @@ export async function until(ready, what, ms = 2_000) {
 }
 
 export const CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
-const WRITER_ID = '22222222-2222-4222-8222-222222222222';
 const dec = new TextDecoder();
 
 /**
@@ -135,11 +134,9 @@ export function createAuthority(vfsOptions) {
  * output, exit and ports are captured here instead.
  */
 export function facetSupervisor(authority, overrides = {}) {
-  const { host, rawVfs } = authority;
-  // The process the facet is: an entry in the session's table, and the append
-  // writer incarnation the manager activates for it when it spawns one.
+  const { host } = authority;
+  // The process the facet is: an entry in the session's table.
   const { pid } = host.processes.spawn('node', ['main.js'], '/home/user/app', { longRunning: true, cred: CRED });
-  rawVfs.activateAppendWriter(pid, WRITER_ID);
   const log = { pid, stdout: '', stderr: '', calls: {}, exit: null, ports: new Set() };
   /** @type {Record<string, any>} */
   const own = {
@@ -151,11 +148,7 @@ export function facetSupervisor(authority, overrides = {}) {
     setUmask: async (mask) => mask,
     ...overrides,
   };
-  // The append pair also carries the writer incarnation, as SupervisorRPC's
-  // envelopes for exactly those two ops do.
-  const send = opSender((envelope) => host.supervisorOp(envelope.op === 'fsAppend' || envelope.op === 'fsAppendAck'
-    ? { ...envelope, pid, writerId: WRITER_ID }
-    : { ...envelope, pid }));
+  const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid }));
   const forward = (name, args) => send(name, args);
   // An async read's barrier and read travel as one fsAcquired. A test that
   // overrides fsAcquire, or the read it carries, overrides it there too: the

@@ -24,10 +24,6 @@ export function waveSupervisor(supervisor, engine) {
   return supervisor;
 }
 
-/** Appends replayed through a mock's own fsAppend, numbered under one module incarnation. */
-let appends = 0;
-const APPEND_MODULE = crypto.randomUUID();
-
 /** Each record of the wave as the supervisor's own call of that name, in order. */
 async function replay(supervisor, stream) {
   const decoded = await decodeWriteBatchStream(stream);
@@ -58,12 +54,7 @@ async function replay(supervisor, stream) {
           for (const part of parts) { data.set(part, at); at += part.byteLength; }
           let revision;
           if (inode.call === 'write') noted(await supervisor.fsWriteRange(abs(inode.path), inode.offset, data));
-          else if ((inode.call === 'append' || inode.call === 'appendFile') && typeof supervisor.fsAppend === 'function') {
-            // A mock that keeps appends itself takes each as its own append.
-            const id = String(++appends);
-            await supervisor.fsAppend(abs(inode.path), APPEND_MODULE, id, data);
-            await supervisor.fsAppendAck?.(APPEND_MODULE, id);
-          } else if (inode.call === 'append' || inode.call === 'appendFile') {
+          else if (inode.call === 'append' || inode.call === 'appendFile') {
             const prior = typeof supervisor.stat === 'function' ? await supervisor.stat(abs(inode.path)) : null;
             if (prior) noted(await supervisor.fsWriteRange(abs(inode.path), Number(prior.size) || 0, data));
             else revision = await supervisor.writeFile(abs(inode.path), data);

@@ -32,17 +32,7 @@ const dec = new TextDecoder();
 const dir = '/home/user/t';
 vfs.mkdir(dir, { recursive: true });
 
-// The append protocol is identity-bound: one live writer per pid.
-const APPEND_PID = 7;
-const writerId = crypto.randomUUID();
-rawVfs.activateAppendWriter(APPEND_PID, writerId);
-async function digestOf(bytes) {
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 let writeRpcs = 0;
-let appendRpcs = 0;
 const supervisor = {
   readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
   writeFile: (p, c) => { writeRpcs++; return bridge.writeFile(p, c); },
@@ -53,12 +43,7 @@ const supervisor = {
   access: (p, m) => bridge.access(p, m),
   mkdir: (p) => bridge.mkdir(p, { recursive: true }),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
-  fsAppend: async (p, moduleId, opId, bytes) => {
-    appendRpcs++;
-    return bridge.appendOnce(p, APPEND_PID, writerId, moduleId, Number(opId), await digestOf(bytes), bytes);
-  },
-  fsAppendAck: (moduleId, opId) =>
-    bridge.acknowledgeAppend(APPEND_PID, writerId, moduleId, Number(opId)),
+  fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
   fsAcquire: (epoch, cursor, options) => bridge.acquire(epoch, cursor, options),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).

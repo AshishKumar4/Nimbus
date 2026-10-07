@@ -9,10 +9,8 @@
  *   `writeBatchStream` is not one: its stream is consumed by the first
  *   delivery, and its writer re-sends a lost wave re-encoded, under a newer
  *   fence in an epoch the host issued (SupervisorDeliveries.admitWave).
- *   Nor are the descriptor read `fsRead` (it advances the position and
- *   answers bytes a receipt would have to hold) or `fsAppend`/`fsAppendAck`
- *   (the append ledger's writer/module/operation identity makes them
- *   repeatable).
+ *   Nor is the descriptor read `fsRead` (it advances the position and
+ *   answers bytes a receipt would have to hold).
  * - 'joined': a filesystem read the supervisor may send more than once (it
  *   re-sends a dropped one and hedges an unanswered one), each attempt under
  *   the one read id it minted; a repeat that reaches the host while the read
@@ -58,8 +56,6 @@ export const SUPERVISOR_OP_TABLE = {
   fsReadRangeUncached: 'joined',
   fsReadBatch: 'joined',
   fsWriteRange: 'once',
-  fsAppend: null,
-  fsAppendAck: null,
   fsTruncate: 'once',
   writeBatch: 'once',
   writeBatchStream: null,

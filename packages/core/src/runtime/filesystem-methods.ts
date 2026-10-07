@@ -67,8 +67,6 @@ export const FILESYSTEM_METHODS = {
   fchmod: { rpc: 'fsFchmod', answer: 'value' },
   fchown: { rpc: 'fsFchown', answer: 'value' },
   futimes: { rpc: 'fsFutimes', answer: 'value' },
-  appendOnce: { rpc: 'fsAppend', answer: 'value' },
-  acknowledgeAppend: { rpc: 'fsAppendAck', answer: 'value' },
   writeBatch: { rpc: 'writeBatch', answer: 'value' },
   writeStream: { rpc: 'writeBatchStream', answer: 'stream' },
   acquireExclusiveMutation: { rpc: 'fsAcquireExclusiveMutation', answer: 'value' },

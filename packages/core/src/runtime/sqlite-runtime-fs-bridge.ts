@@ -388,29 +388,6 @@ export class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     return owner === undefined ? this.vfs : this.rawVfs.as(this.vfs.cred, { mutationOwner: owner, actor: this.vfs.principal.actor, holds: this.vfs.holds });
   }
 
-  appendOnce(
-    path: RuntimeFsPath,
-    pid: number,
-    writerId: string,
-    moduleId: string,
-    operationId: number,
-    digest: string,
-    bytes: Uint8Array,
-  ): number {
-    return called({ syscall: 'append', path }, () => {
-      return this.vfs.appendOnce(this.sqlitePath(path, true, 'append'), pid, writerId, moduleId, operationId, digest, bytes);
-    });
-  }
-
-  acknowledgeAppend(
-    pid: number,
-    writerId: string,
-    moduleId: string,
-    operationId: number,
-  ): void {
-    this.vfs.acknowledgeAppend(pid, writerId, moduleId, operationId);
-  }
-
   truncate(
     path: RuntimeFsPath,
     size: number,

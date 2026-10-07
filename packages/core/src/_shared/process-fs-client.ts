@@ -122,8 +122,6 @@ export interface ProcessFsClientOptions {
    * yields, so its bytes are all held until then.
    */
   readonly syncCapBytes?: number;
-  /** Told of every call the client makes to the session (the invocation budget). */
-  readonly charge?: (call: string) => void;
   /** The lost-call policy's timings; tests shorten them. */
   readonly retry?: { backoffMs: readonly number[]; stallMs: number; answerDeadlineMs: number };
   /** Mutations in a subtree before the client takes it (GRANT_AFTER). */
@@ -353,7 +351,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const timers = options.timers ?? GLOBAL_TIMERS;
   const now = options.now ?? Date.now;
   const syncCap = options.syncCapBytes ?? PROCESS_FS_SYNC_CAP_BYTES;
-  const charge = options.charge ?? (() => {});
   /** Logged, not yet sent; the first ones may carry numbers from a wave they came back from. */
   const queue: Entry[] = [];
   let inFlight: Entry[] | null = null;
@@ -433,7 +430,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   /** The epoch a new wave is numbered under: a fresh one before the first, and once half its life has passed with nothing unanswered. */
   const writerFor = async (): Promise<string | null> => {
     if (epoch !== null && (epoch.writer === null || now() - epoch.openedAt < WAVE_EPOCH_TTL_MS / 2)) return epoch.writer;
-    charge('openWaveWriter');
     const openedAt = now();
     const writer = await session.openWriter(counters.epochs === 0);
     epoch = { writer, openedAt };
@@ -476,8 +472,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   const send = async (entries: Entry[]): Promise<void> => {
     const first = entries[0]!;
     if (first.op.type === 'run') {
-      const { name, run } = first.op;
-      charge(name);
+      const { run } = first.op;
       try {
         const value = await run();
         settled(first);
@@ -504,7 +499,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     wave++;
     let result: unknown;
     try {
-      charge('writeBatchStream');
       result = await sendWaveAttempts({
         supervisor: session,
         writer: async () => writer,
@@ -513,7 +507,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         wave,
         ...(writer === null ? {} : { sequence: { seq: firstSeq, ack } }),
         ...(options.retry === undefined ? {} : { retry: options.retry }),
-        resent: () => { counters.resends++; charge('writeBatchStream'); },
+        resent: () => { counters.resends++; },
         timers,
       });
     } catch (error) {
@@ -632,7 +626,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     counters.released++;
     options.released?.(grant.root);
     try {
-      charge('fsReleaseExclusiveMutation');
       await session.grants?.release(grant.owner);
     } catch {
       // Already ended by the session (revoked, or the process is ending).
@@ -645,7 +638,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     while (!grant.ended) {
       let kind: RecallKind | null;
       try {
-        charge('fsAwaitRecall');
         kind = await port.awaitRecall(grant.owner, recallPollMs);
       } catch {
         // ESTALE: the session ended it (revoked for an unanswered recall, or the process is ending).
@@ -665,7 +657,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         options.released?.(grant.root);
       }
       try {
-        charge('fsRecalled');
         await port.recalled(grant.owner, kind);
       } catch {
         // Ended meanwhile.
@@ -727,7 +718,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const inos = rangeOf.has(target) ? rangeOf.get(target)! * 2 : (options.grantInos ?? GRANT_INOS);
       let granted: ExclusiveMutationGrant;
       try {
-        charge('fsAcquireExclusiveMutation');
         granted = await port.acquire('/' + target, { reads: true, inos, bytes: GRANT_BYTES });
       } catch (error) {
         // EBUSY (another's lease), EPERM (the session's own), ENOSPC: the

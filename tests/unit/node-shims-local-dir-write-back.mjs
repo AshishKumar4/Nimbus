@@ -9,7 +9,7 @@
 //
 // RED on the pre-fix build: supervisor.writeFile creates missing parents
 // implicitly, so writeFileSync into a fresh mkdirSync tree happened to work
-// and hid the gap. fsAppend and fsTruncate do not, so an appendFileSync log
+// and hid the gap. An append and a truncate do not, so an appendFileSync log
 // inside that tree failed with `ENOENT: <parent dir>` out of
 // __nimbusPersistVfsWrite, and the file never reached the authority at all —
 // which is how `opencode run` and `opencode --help` exited 1 on their own
@@ -38,16 +38,6 @@ const dec = new TextDecoder();
 
 vfs.mkdir('/home/user', { recursive: true });
 
-// The append protocol is identity-bound: one live writer per pid.
-const APPEND_PID = 7;
-const writerId = crypto.randomUUID();
-rawVfs.activateAppendWriter(APPEND_PID, writerId);
-
-async function digestOf(bytes) {
-  const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-  return Array.from(hash, (b) => b.toString(16).padStart(2, '0')).join('');
-}
-
 const supervisor = {
   readFile: async (p) => { const b = await bridge.readFile(p); return b ? dec.decode(b) : null; },
   writeFile: (p, c) => bridge.writeFile(p, c),
@@ -60,11 +50,6 @@ const supervisor = {
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
   fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
   fsTruncate: (p, s) => bridge.truncate(p, s),
-  fsAppend: async (p, moduleId, opId, bytes) => bridge.appendOnce(
-    p, APPEND_PID, writerId, moduleId, Number(opId), await digestOf(bytes), bytes,
-  ),
-  fsAppendAck: (moduleId, opId) =>
-    bridge.acknowledgeAppend(APPEND_PID, writerId, moduleId, Number(opId)),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).
 waveSupervisor(supervisor);

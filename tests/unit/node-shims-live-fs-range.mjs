@@ -27,7 +27,6 @@ const vfs = rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 });
 // and the tree the process works in is its own: what it writes back is owned
 // by it, and a stat of it says so.
 const bridge = processBridge(rawVfs, rawVfs.as({ uid: 1000, gid: 1000, groups: [1000], umask: 0o022 }));
-rawVfs.activateAppendWriter(1, 'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa');
 
 // Supervisor stub speaking the SupervisorRPC fs surface over the real bridge.
 const supervisor = {
@@ -47,25 +46,6 @@ const supervisor = {
   utimes: (p, a, m) => bridge.utimes(p, a, m),
   fsReadRange: (p, o, l) => bridge.readRange(p, o, l),
   fsWriteRange: (p, o, b) => bridge.writeRange(p, o, b),
-  async fsAppend(p, moduleId, operationId, bytes) {
-    const hash = new Uint8Array(await crypto.subtle.digest('SHA-256', bytes));
-    const digest = Array.from(hash, (byte) => byte.toString(16).padStart(2, '0')).join('');
-    return bridge.appendOnce(
-      p,
-      1,
-      'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-      moduleId,
-      Number(operationId),
-      digest,
-      bytes,
-    );
-  },
-  fsAppendAck: (moduleId, operationId) => bridge.acknowledgeAppend(
-    1,
-    'aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa',
-    moduleId,
-    Number(operationId),
-  ),
   fsTruncate: (p, s) => bridge.truncate(p, s),
 };
 // Its process's waves reach these calls (lib/wave-supervisor.mjs).

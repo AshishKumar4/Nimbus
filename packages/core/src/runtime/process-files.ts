@@ -226,14 +226,6 @@ class GuardedProcessBridge implements RuntimeFsBridge {
   fchmod(handleId: number, mode: number): void { this.guard(); return this.target.fchmod(handleId, mode); }
   fchown(handleId: number, uid: number, gid: number): void { this.guard(); return this.target.fchown(handleId, uid, gid); }
   futimes(handleId: number, atimeMs: number, mtimeMs: number): void { this.guard(); return this.target.futimes(handleId, atimeMs, mtimeMs); }
-  appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number {
-    this.guard(); this.ownPid(pid);
-    return this.target.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
-  }
-  acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
-    this.guard(); this.ownPid(pid);
-    return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
-  }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }> {
     this.guard();
     // As writeStream: closing the scope cancels the commit.
@@ -464,7 +456,6 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
       if (scope) this.closeScope(scope);
     } finally {
       this.processes.delete(pid);
-      this.engine.revokeAppendWriters(pid);
     }
   }
 
@@ -490,7 +481,6 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.listings.delete(pid);
     const scope = this.processes.get(pid);
     this.processes.delete(pid);
-    this.engine.revokeAppendWriters(pid);
     if (!scope || scope.closed) return { lost: [] };
     const lost: number[] = [];
     for (const [id, opened] of scope.handles) {
@@ -506,14 +496,6 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     scope.subscriptions.clear();
     return { lost };
   }
-
-  async activateAppendWriter(pid: number, writerId: string): Promise<void> {
-    if (this.retired.has(pid)) throw Object.assign(new Error('ESTALE: process released'), { code: 'ESTALE' });
-    this.engine.activateAppendWriter(pid, writerId);
-  }
-  async revokeAppendWriter(pid: number, writerId: string): Promise<void> { this.engine.revokeAppendWriter(pid, writerId); }
-  async revokeAppendWriters(pid: number): Promise<void> { this.engine.revokeAppendWriters(pid); }
-  async revokeAppendWritersThrough(maxPid: number): Promise<void> { this.engine.revokeAppendWritersThrough(maxPid); }
 
   /** The mounts `cred` sees, root first: what df, mount and `/proc/mounts` list. */
   mounts(cred: Readonly<VfsCred>): readonly NimbusMountEntry[] {
@@ -646,12 +628,6 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   gateLaunch(named: readonly string[]): Promise<void> { return this.bridge.gateLaunch(named); }
   revision(path?: RuntimeFsPath): number { return this.bridge.revision(path); }
   subscribe(path: string, listener: (event: VfsEvent) => void): () => void { return this.bridge.subscribe(path, listener); }
-  appendOnce(path: RuntimeFsPath, pid: number, writerId: string, moduleId: string, operationId: number, digest: string, bytes: Uint8Array): number {
-    return this.bridge.appendOnce(path, pid, writerId, moduleId, operationId, digest, bytes);
-  }
-  acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
-    return this.bridge.acknowledgeAppend(pid, writerId, moduleId, operationId);
-  }
   writeBatch(payload: BatchWritePayload, options?: { signal?: AbortSignal }) { return this.bridge.writeBatch(payload, options); }
   writeStream(
     stream: ReadableStream<Uint8Array>,
