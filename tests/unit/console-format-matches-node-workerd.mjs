@@ -167,12 +167,21 @@ class Checked {
 }
 const checked = new Checked();
 proxies.push(new Proxy(checked, {}));
-const own = new Set([hooked, plainTarget, innerPlain, innerHooked, checked, ...proxies]);
-for (const holder of [Promise.resolve(proxies[0]), Promise.resolve(proxies[2]), Promise.resolve(proxies[4]), new Set(proxies).values(), new Map([[proxies[1], proxies[3]]]).entries()]) {
-  for (const options of [{}, { showProxy: true }, { getters: true }, { customInspect: false }, { showProxy: true, getters: true }]) util.inspect(holder, options);
+// And one whose prototype's getters (a toStringTag, a property) are.
+class Gotten {
+  get [Symbol.toStringTag]() { seenThis.push(this); return 'Gotten'; }
+  get shown() { seenThis.push(this); return 1; }
+  static [Symbol.hasInstance](value) { seenThis.push(value); return true; }
+}
+const gotten = new Gotten();
+proxies.push(new Proxy(gotten, {}));
+const own = new Set([hooked, plainTarget, innerPlain, innerHooked, checked, gotten, Gotten.prototype, ...proxies]);
+for (const holder of [Promise.resolve(proxies[0]), Promise.resolve(proxies[2]), Promise.resolve(proxies[4]), Promise.resolve(proxies[5]), new Set(proxies).values(), new Map([[proxies[1], proxies[3]]]).entries()]) {
+  for (const options of [{}, { showProxy: true }, { getters: true }, { customInspect: false }, { showProxy: true, getters: true }, { showHidden: true, getters: true }]) util.inspect(holder, options);
 }
 console.log('callbacks given only their own objects', seenThis.every((value) => own.has(value)));
 console.log(util.inspect(new Set([new Proxy(plainTarget, {})]).values(), { getters: true }), util.inspect(Promise.resolve(new Proxy([1, 2], {})), { showProxy: true }));
+console.log(util.inspect(Promise.resolve(new Proxy(gotten, {})), { showHidden: true, getters: true }));
 const styled = new Set();
 console.log(util.inspect(Promise.resolve([1]), { stylize(text) { styled.add(util.inspect(new Map([[text, 1]]).entries())); return text; } }), [...styled]);
 console.log(util.inspect({ a: { b: { c: { d: 1 } } } }, { depth: 0, sorted: true, compact: false, breakLength: 20 }), util.inspect('x'.repeat(30), { maxStringLength: 4 }));
