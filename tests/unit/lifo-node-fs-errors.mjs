@@ -4,11 +4,13 @@
  * a filesystem call that fails are Node's: the same code, errno, syscall,
  * path and message as real Node's fs gives for the same call on the same
  * tree, sync and callback alike (one error shape, core vfs/vfs-error.ts).
+ * The oracle is the `node` on PATH (the CI image's Node 22), in a process
+ * of its own: this test runs under Bun, whose node:fs is not Node's.
  */
 
 import assert from 'node:assert/strict';
-import * as realFs from 'node:fs';
-import { mkdtempSync, rmSync } from 'node:fs';
+import { spawnSync } from 'node:child_process';
+import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { createFs } from '../../packages/core/src/substrate/lifo/node-compat/fs.ts';
@@ -26,14 +28,37 @@ const shape = (error, root) => error && {
   path: error.path?.replace(root, ''),
   message: error.message.replaceAll(root, ''),
 };
-/** The error `call` throws (sync) or passes to its callback, as `shape` reads it. */
-const thrown = (call, root) => { try { call(); return null; } catch (error) { return shape(error, root); } };
-const passed = (call, root) => new Promise((resolve) => call((error) => resolve(shape(error, root))));
+/**
+ * The error `call` throws (sync) or passes to its callback, as `shape` reads
+ * it, through JSON as the oracle's comes (a field it lacks is absent).
+ */
+const json = (value) => JSON.parse(JSON.stringify(value));
+const thrown = (call, root) => { try { call(); return null; } catch (error) { return json(shape(error, root)); } };
+const passed = (call, root) => new Promise((resolve) => call((error) => resolve(json(shape(error, root)))));
+
+/** Each case's code, run against `fs` with `at(name)` naming a file of the tree (and `cb`, a callback case's). */
+const SYNC = {
+  'readFileSync of a missing file': 'fs.readFileSync(at("missing"))',
+  'readFileSync of a directory': 'fs.readFileSync(at("dir"))',
+  'statSync of a missing file': 'fs.statSync(at("missing"))',
+  'readdirSync of a file': 'fs.readdirSync(at("file"))',
+  'openSync of a missing file': 'fs.openSync(at("missing"), "r")',
+  'accessSync of a missing file': 'fs.accessSync(at("missing"))',
+  'realpathSync of a missing file': 'fs.realpathSync(at("missing"))',
+  'mkdirSync of an existing directory': 'fs.mkdirSync(at("dir"))',
+  'rmdirSync of a missing directory': 'fs.rmdirSync(at("missing"))',
+  'unlinkSync of a missing file': 'fs.unlinkSync(at("missing"))',
+  'readSync of a closed descriptor': 'fs.readSync(987654, Buffer.alloc(1))',
+};
+const CALLBACK = {
+  'readFile of a missing file': 'fs.readFile(at("missing"), cb)',
+  'stat of a missing file': 'fs.stat(at("missing"), cb)',
+};
 
 // One tree, on disk for Node and in the session's VFS for the shell's node.
 const disk = mkdtempSync(join(tmpdir(), 'lifo-fs-errors-'));
-realFs.mkdirSync(join(disk, 'dir'));
-realFs.writeFileSync(join(disk, 'file'), 'x');
+mkdirSync(join(disk, 'dir'));
+writeFileSync(join(disk, 'file'), 'x');
 const harness = createSqliteVfsTestHarness();
 const rawVfs = new SqliteVFS(harness.sql, harness.ctx);
 const kernel = rawVfs.as(CRED_KERNEL);
@@ -41,40 +66,41 @@ kernel.mkdir('t/dir', { recursive: true });
 kernel.writeFile('t/file', 'x');
 const ours = createFs(synchronousFilesystem({ process: processBridge(rawVfs, CRED_KERNEL) })(), '/t');
 
-const CASES = [
-  ['readFileSync of a missing file', (fs, at) => fs.readFileSync(at('missing'))],
-  ['readFileSync of a directory', (fs, at) => fs.readFileSync(at('dir'))],
-  ['statSync of a missing file', (fs, at) => fs.statSync(at('missing'))],
-  ['readdirSync of a file', (fs, at) => fs.readdirSync(at('file'))],
-  ['openSync of a missing file', (fs, at) => fs.openSync(at('missing'), 'r')],
-  ['accessSync of a missing file', (fs, at) => fs.accessSync(at('missing'))],
-  ['realpathSync of a missing file', (fs, at) => fs.realpathSync(at('missing'))],
-  ['mkdirSync of an existing directory', (fs, at) => fs.mkdirSync(at('dir'))],
-  ['rmdirSync of a missing directory', (fs, at) => fs.rmdirSync(at('missing'))],
-  ['unlinkSync of a missing file', (fs, at) => fs.unlinkSync(at('missing'))],
-  ['readSync of a closed descriptor', (fs) => fs.readSync(987654, Buffer.alloc(1))],
-];
+// Real Node, on the disk tree: every case's error, as `shape` reads it.
+const oracle = spawnSync('node', ['--input-type=module', '-e', `
+  import * as fs from 'node:fs';
+  const root = ${JSON.stringify(disk)};
+  const at = (name) => root + '/' + name;
+  const shape = ${shape.toString()};
+  const out = { runtime: typeof Bun === 'undefined' ? 'node ' + process.versions.node : 'bun', sync: {}, callback: {} };
+  for (const [label, code] of Object.entries(${JSON.stringify(SYNC)})) {
+    try { new Function('fs', 'at', code)(fs, at); out.sync[label] = null; } catch (error) { out.sync[label] = shape(error, root); }
+  }
+  for (const [label, code] of Object.entries(${JSON.stringify(CALLBACK)})) {
+    out.callback[label] = await new Promise((resolve) => new Function('fs', 'at', 'cb', code)(fs, at, (error) => resolve(shape(error, root))));
+  }
+  process.stdout.write(JSON.stringify(out));
+`], { encoding: 'utf8' });
+assert.equal(oracle.status, 0, oracle.stderr);
+const node = JSON.parse(oracle.stdout);
+assert.match(node.runtime, /^node \d+\./, `the oracle is Node: ${node.runtime}`);
+
 const failed = [];
 try {
-  for (const [label, call] of CASES) {
-    const node = thrown(() => call(realFs, (name) => join(disk, name)), disk);
-    const lifo = thrown(() => call(ours, (name) => `/t/${name}`), '/t');
+  for (const [label, code] of Object.entries(SYNC)) {
+    const lifo = thrown(() => new Function('fs', 'at', code)(ours, (name) => `/t/${name}`), '/t');
     try {
-      assert.deepEqual(lifo, node, label);
-    } catch (error) {
-      failed.push(`${label}\n  node: ${JSON.stringify(node)}\n  ours: ${JSON.stringify(lifo)}`);
+      assert.deepEqual(lifo, node.sync[label], label);
+    } catch {
+      failed.push(`${label}\n  node: ${JSON.stringify(node.sync[label])}\n  ours: ${JSON.stringify(lifo)}`);
     }
   }
-  for (const [label, call] of [
-    ['readFile of a missing file', (fs, at, cb) => fs.readFile(at('missing'), cb)],
-    ['stat of a missing file', (fs, at, cb) => fs.stat(at('missing'), cb)],
-  ]) {
-    const node = await passed((cb) => call(realFs, (name) => join(disk, name), cb), disk);
-    const lifo = await passed((cb) => call(ours, (name) => `/t/${name}`, cb), '/t');
+  for (const [label, code] of Object.entries(CALLBACK)) {
+    const lifo = await passed((cb) => new Function('fs', 'at', 'cb', code)(ours, (name) => `/t/${name}`, cb), '/t');
     try {
-      assert.deepEqual(lifo, node, label);
+      assert.deepEqual(lifo, node.callback[label], label);
     } catch {
-      failed.push(`${label} (callback)\n  node: ${JSON.stringify(node)}\n  ours: ${JSON.stringify(lifo)}`);
+      failed.push(`${label} (callback)\n  node: ${JSON.stringify(node.callback[label])}\n  ours: ${JSON.stringify(lifo)}`);
     }
   }
 } finally {
@@ -82,4 +108,4 @@ try {
   harness.db.close();
 }
 assert.deepEqual(failed, [], `every error is Node's:\n${failed.join('\n')}`);
-console.log(`lifo-node-fs-errors: ${CASES.length + 2} failing calls error as Node's do`);
+console.log(`lifo-node-fs-errors: ${Object.keys(SYNC).length + Object.keys(CALLBACK).length} failing calls error as ${node.runtime}'s do`);
