@@ -255,26 +255,25 @@ try {
 
   {
     // What the target adds outside the cone, untracked files in its way: indexed skip-worktree, left alone.
+    const q = new Pair('dir-to-file', seed('dir-to-file'));
+    await q.run(['checkout', 'other']);
+    q.same('a directory outside the cone become a file');
     const p = new Pair('added', seed('added'));
     p.write('b/new.txt', 'mine\n');
     p.write('b/d/u', 'untracked\n');
     await p.run(['checkout', 'other']);
     p.same('a switch adding files outside the cone over untracked ones');
-    const q = new Pair('dir-to-file', seed('dir-to-file'));
-    await q.run(['checkout', 'other']);
-    q.same('a directory outside the cone become a file');
     console.log('  ok  what a switch adds outside the cone: skip-worktree, the worktree there untouched');
   }
 
   {
     // reset keeps skip-worktree bits: add -A then stages nothing outside the cone.
     const p = new Pair('reset', seed('reset'));
-    await p.run(['checkout', 'other']);
-    await p.run(['reset', '-q', 'main']);
-    p.same('reset (mixed) to main');
+    await p.run(['reset', '-q', 'other']);
+    p.same('reset (mixed) to other');
     await p.run(['add', '-A']);
     p.same('add -A after the reset');
-    await p.run(['reset', '-q', 'other', '--', 'b']);
+    await p.run(['reset', '-q', 'main', '--', 'b']);
     p.same('reset of paths outside the cone');
     await p.run(['commit', '-q', '-a', '-m', 'all'], { stderr: false });
     p.same('commit -a after the reset of paths');
@@ -319,18 +318,23 @@ try {
   }
 
   {
-    // The cone as git reads it: "/*" alone is every path; core.ignoreCase folds the cone's names.
+    // "/*" alone is the full cone.
     const p = new Pair('full', seed('full'));
     p.write('.git/info/sparse-checkout', '/*\n');
     await p.run(['checkout', 'main']);
     p.same('a switch under the full cone');
+    console.log('  ok  the full cone: every path');
+  }
+
+  {
+    // core.ignoreCase folds the cone's names.
     const folded = seed('fold');
     sh(folded, ['config', 'core.ignorecase', 'true']);
     const q = new Pair('fold', folded);
     q.write('.git/info/sparse-checkout', '/*\n!/*/\n/B/\n');
     await q.run(['checkout', 'main']);
     q.same('a switch under core.ignoreCase');
-    console.log('  ok  the full cone, and core.ignoreCase: the paths git holds');
+    console.log('  ok  core.ignoreCase: the cone compared as git compares it');
   }
 } finally {
   rmSync(scratch, { recursive: true, force: true });

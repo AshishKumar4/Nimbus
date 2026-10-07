@@ -10,12 +10,13 @@
 //     info/sparse-checkout, config.worktree and config, and a clean status,
 //     host git's and ours; without a filter every object, as git holds them
 //     (fsck clean), with one the objects host git holds;
-//   - git checkout of another commit: what changed outside the cone is
-//     indexed skip-worktree and never written (nor fetched, partial), what
-//     changed inside is written; the same index and worktree as host git;
+//   - git checkout of another commit: what changed outside the cone (a
+//     directory become a file included) is indexed skip-worktree and never
+//     written (nor fetched, partial), what changed inside is written; the
+//     same index and worktree as host git;
 //   - an edit inside the cone, add -A and commit: the tree host git writes;
 //   - a merge: refused with a named message, nothing changed (it does not
-//     read skip-worktree entries yet).
+//     read skip-worktree entries yet); a pull the same, before it fetches.
 
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
@@ -76,17 +77,21 @@ try {
   write('a/same.txt', 'shared blob\n');
   write('a/b/y.txt', 'a b y\n');
   write('c/z.txt', 'c z\n');
+  write('c/dir/f.txt', 'c dir f\n');
   symlinkSync('README.md', join(source, 'link'));
   symlinkSync('../README.md', join(source, 'c/up'));
   hostGit(source, ['add', '-A']);
   hostGit(source, ['update-index', '--chmod=+x', 'run.sh']);
   hostGit(source, ['update-index', '--add', '--cacheinfo', '160000,1234567890123456789012345678901234567890,sub']);
   hostGit(source, ['commit', '-q', '-m', 'first']);
-  // The second commit changes one file inside the cone and two outside, and adds a directory.
+  // The second commit changes one file inside the cone and two outside, adds a directory, and
+  // makes one outside the cone a file.
   write('README.md', 'top, again\n');
   write('a/x.txt', 'a x, again\n');
   write('c/z.txt', 'c z, again\n');
   write('d/new.txt', 'new\n');
+  rmSync(join(source, 'c/dir'), { recursive: true });
+  write('c/dir', 'c dir, a file now\n');
   hostGit(source, ['add', '-A']);
   hostGit(source, ['commit', '-q', '-m', 'second']);
   const first = hostGit(source, ['rev-parse', 'HEAD~1']).trim();
@@ -173,6 +178,21 @@ try {
         }
         assert.equal((await git('/home/user/' + name, ['checkout', 'main'], ident)).code, 0);
         console.log('  ok  merge in the sparse clone (stream): refused, named, nothing changed');
+
+        // A pull: refused before its fetch, though the remote has moved on.
+        write('pulled.txt', 'pulled\n');
+        hostGit(source, ['add', '-A']);
+        hostGit(source, ['commit', '-q', '-m', 'third']);
+        hostGit(source, ['push', '-q', join(served, 'stream.git'), 'main']);
+        const third = hostGit(source, ['rev-parse', 'HEAD']).trim();
+        const unpulled = session.materialize('home/user/' + name, join(work, `ours-${name}-before-pull`));
+        const pulled = await git('/home/user/' + name, ['pull'], ident);
+        assert.equal(pulled.code, 128, `pull: refused: ${pulled.stderr}`);
+        assert.equal(pulled.stderr, 'fatal: merging in a sparse checkout is not supported yet; nothing was changed\n');
+        const afterPull = session.materialize('home/user/' + name, join(work, `ours-${name}-after-pull`));
+        assert.equal(hostGit(afterPull, ['rev-parse', 'origin/main']), hostGit(unpulled, ['rev-parse', 'origin/main']), 'pull refused: origin/main as it was');
+        assert.notEqual(spawnSync('git', ['cat-file', '-e', third], { cwd: afterPull }).status, 0, 'pull refused: nothing fetched');
+        console.log('  ok  pull in the sparse clone (stream): refused before it fetches');
       }
 
       // An edit inside the cone, add -A, commit: host git's tree.
