@@ -39,12 +39,14 @@ export type GraphFiltersStep = {
 } | {
     step: 'piece';
     layer: string;
+    pass: string;
     from: number;
     to: number;
     budgetMs: number;
 } | {
     step: 'assemble';
     layer: string;
+    pass: string;
     files: {
         name: string;
         bytes: number;
@@ -52,6 +54,7 @@ export type GraphFiltersStep = {
 } | {
     step: 'discard';
     layer: string;
+    pass: string;
 };
 export interface GitNetworkOpts {
     op: GitNetworkOp;

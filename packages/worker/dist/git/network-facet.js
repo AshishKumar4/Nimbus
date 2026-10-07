@@ -647,7 +647,7 @@ async function driveGraphFilters(call, opts) {
     try {
         for (let from = 0; from < plan.commits;) {
             const piece = await step({
-                step: 'piece', layer: plan.layer, from, to: Math.min(from + size, plan.commits), budgetMs,
+                step: 'piece', layer: plan.layer, pass: plan.pass, from, to: Math.min(from + size, plan.commits), budgetMs,
             });
             if (piece.next <= from)
                 throw new Error('graph-filters piece made no progress at ' + from);
@@ -661,10 +661,10 @@ async function driveGraphFilters(call, opts) {
     }
     catch (error) {
         // The base layer stays, without filters, as git leaves one it was not asked to filter.
-        await step({ step: 'discard', layer: plan.layer }).catch(() => null);
+        await step({ step: 'discard', layer: plan.layer, pass: plan.pass }).catch(() => null);
         throw error;
     }
-    const assembled = await step({ step: 'assemble', layer: plan.layer, files });
+    const assembled = await step({ step: 'assemble', layer: plan.layer, pass: plan.pass, files });
     return { ...outcome, layer: assembled.layer, ...(assembled.skipped ? { skipped: assembled.skipped } : {}), elapsed: Date.now() - started };
 }
 /**

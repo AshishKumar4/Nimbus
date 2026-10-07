@@ -5,11 +5,10 @@
  * in pieces and added to it, as `git commit-graph write --changed-paths`
  * would have written them.
  *
- *   plan      what a pass that did not finish left (its temporary layers and
- *             pieces) goes; then the base layer from the commit records the
- *             clone's history left (GRAPH_RECORDS_DIR), as the chain's one
- *             layer; its name and commits, unless the chain is anything
- *             else (filtered already, split, or not there)
+ *   plan      the base layer from the commit records the clone's history
+ *             left (GRAPH_RECORDS_DIR), as the chain's one layer; its name,
+ *             its commits and the pass's own name, unless the chain is
+ *             anything else (filtered already, split, or not there)
  *   piece     commits [from, to) of the layer in date order, newest first (a
  *             commit's first parent is most often the next one, and they
  *             share most of their trees): each one's first-parent tree diff,
@@ -19,15 +18,20 @@
  *             length), then the filters
  *   assemble  the layer with every commit's filter, streamed a window of
  *             positions at a time (the filters are never held whole), as a
- *             new layer; the chain moved to it; the old layer and the
- *             pieces go
+ *             new layer; the chain moved to it; the pieces go, and layers
+ *             the chain no longer names
  *
- * A layer is written under a temporary name and renamed to its own (a pass
- * cut short leaves a read-only file another can replace), and the chain is
- * replaced as git replaces it (commit-graph.c): commit-graph-chain.lock
- * created exclusively, the chain checked under it, the lock renamed over the
- * chain. A lock this pass did not create is never removed: the pass leaves
- * the chain as it is and says why, as git does.
+ * The chain is replaced as git replaces it (commit-graph.c
+ * write_commit_graph_file): commit-graph-chain.lock created exclusively, the
+ * chain checked under it, the layer's temporary file (a name of this pass's
+ * own) renamed to its content's name under it, the lock renamed over the
+ * chain. Another writer's lock, or a chain that moved, leaves everything as
+ * it is but the pass's own temporary, and the pass says why, as git does: a
+ * content-addressed layer is never removed on a skip (another writer may be
+ * publishing the same one). Layers the chain does not name are removed
+ * after a pass succeeds, under the lock, as git's expire_commit_graphs
+ * removes them after it writes. What a pass cut short left (its temporary,
+ * its pieces) stays: another pass cannot tell it from a live one's.
  *
  * Nothing holds a layer whole: a piece reads its CDAT chunk (36 bytes a
  * commit, and 12 for its date order), and holds a cache of trees, the pack
@@ -74,6 +78,7 @@ export type GraphSkip = 'no-graph' | 'not-a-base' | 'locked' | 'moved';
 export declare function graphFiltersPlan(context: GraphContext): Promise<{
     layer: string;
     commits: number;
+    pass: string;
 } | {
     skipped: GraphSkip;
 }>;
@@ -85,6 +90,7 @@ export declare function graphFiltersPlan(context: GraphContext): Promise<{
  */
 export declare function graphFiltersPiece(context: GraphContext, request: {
     layer: string;
+    pass: string;
     from: number;
     to: number;
     budgetMs: number;
@@ -97,6 +103,7 @@ export declare function graphFiltersPiece(context: GraphContext, request: {
 /** A pass that did not finish: its pieces go, and the layer stays as it is. */
 export declare function graphFiltersDiscard(context: GraphContext, request: {
     layer: string;
+    pass: string;
 }): Promise<null>;
 /**
  * The layer with every commit's filter, as a new layer the chain names; or
@@ -104,6 +111,7 @@ export declare function graphFiltersDiscard(context: GraphContext, request: {
  */
 export declare function graphFiltersAssemble(context: GraphContext, request: {
     layer: string;
+    pass: string;
     files: readonly FilterFile[];
     windowBytes?: number;
 }): Promise<{
