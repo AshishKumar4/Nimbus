@@ -118,8 +118,11 @@ function noteMinted(sid, status, { reap } = {}) {
     }
   }
   undeleted.set(sid, requestHeaders({ 'X-Nimbus-Cleanup-Reason': 'probe-exit' }));
-  minted.push({ sid, at: new Date().toISOString() });
-  ledger('mint', sid, status, reap ? { reap } : {});
+  // One time for the mint, in the failure's list and the ledger alike: read
+  // twice, the two could fall in different milliseconds.
+  const at = new Date().toISOString();
+  minted.push({ sid, at });
+  ledger('mint', sid, status, { at, ...(reap ? { reap } : {}) });
 }
 
 /**

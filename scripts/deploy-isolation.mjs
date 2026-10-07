@@ -55,7 +55,6 @@ export const REPO_ROOT = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 /** Deployable Worker configs in this repo. */
 export const DEPLOYABLE_CONFIGS = [
-  'apps/ci-runner/wrangler.jsonc',
   'apps/hosted-demo/wrangler.jsonc',
   'apps/probe/wrangler.jsonc',
 ];

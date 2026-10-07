@@ -7,14 +7,7 @@
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
 import { NpmCache } from '../../packages/worker/src/npm/cache.ts';
-
-/** Minimal SqlStorage-shaped adapter over bun:sqlite. */
-class FakeSql {
-  constructor(db) { this.db = db; }
-  exec(query, ...params) {
-    return this.db.query(query).all(...params);
-  }
-}
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const entryFixture = {
   name: 'opencode-linux-x64',
@@ -35,7 +28,7 @@ const entryFixture = {
 // ── Fresh schema: platform/optional-deps metadata round-trips ──────────
 
 {
-  const cache = new NpmCache(new FakeSql(new Database(':memory:')));
+  const cache = new NpmCache(createSqliteVfsTestHarness().sql);
   assert.deepEqual(cache.putRegistryEntries([entryFixture]), { written: 1, failed: 0 });
 
   const got = cache.getRegistryEntry('opencode-linux-x64', '1.16.2');
@@ -73,7 +66,7 @@ const entryFixture = {
     VALUES ('left-pad', '1.3.0', 'https://example.invalid/left-pad.tgz', 'sha512-old', '{}', 'null', 'index.js', '', '{}', 1600000000000)
   `).run();
 
-  const cache = new NpmCache(new FakeSql(db));
+  const cache = new NpmCache(createSqliteVfsTestHarness(db).sql);
   const old = cache.getRegistryEntry('left-pad', '1.3.0');
   assert.ok(old, 'pre-migration row must still read');
   assert.equal(old.platformJson, '{}', 'pre-migration rows read as metadata misses');
