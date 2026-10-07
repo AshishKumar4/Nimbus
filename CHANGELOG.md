@@ -5,6 +5,19 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Faster installs and clones: a write wave whose files are all in memory is
+  encoded once and sent to the session in 1 MiB pieces, instead of being
+  pulled a few kilobytes at a time. Markflow's `npm install` went from about
+  65 s to 41-47 s (writes from about 1,000 to 1,600 files/s), and a vscode
+  clone from about 40 s to 28-30 s, with the session's memory unchanged. A
+  file larger than one wave still streams. Stall detection counts the bytes
+  a reader drains, so a slow reader is not taken for a lost call.
+- The VFS can read a chunk stored deflated. Nothing writes one yet; a later
+  release compacts cold chunks in the background. Shipping the reader first
+  means rolling back one release never meets data that release can't read.
+  An inflated chunk must match its SHA-256 before it is returned or cached,
+  or the read fails with EIO. `storeStats()` now reports the database size
+  through the same `databaseSize` the storage ledger charges.
 - Fixed: the Vite dev server's scan of the project for the names it imports
   from a barrel package (one of over 1500 files) is bounded. It ran on every
   request for a barrel and read every source file whole. It now reads at most
