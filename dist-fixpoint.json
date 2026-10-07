@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "0e848709a43916bfa0e8bcd75093ed6181e17f5f63e56f82cf9a5166d19fdfd8",
+  "fingerprint": "9a297d1b0721d339b345b3562c5b1d98249f8a108f5a2c7531bc3ca6c536f8d9",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -2454,7 +2454,7 @@
     "packages/worker/scripts/resolve-package-dir.mjs": "c4b7f84d185c498e4b9279d1556c4ef6c922856abda8a3a3c5d632bcb2977e95",
     "packages/worker/scripts/rolldown-facet/entry.mjs": "3696ed018a524682b2eb13d0b6244ff662b209073ae2e3b9c094ca3ff4337ac6",
     "packages/worker/scripts/rolldown-facet/shims.mjs": "cc790a0a7af7360f198b301b4f2d8e42848edf1788e9ccbd62335dbd0d41de9e",
-    "packages/worker/scripts/runtime-specs.mjs": "ace11b7069d52028aaeb4f01c8752ad44534aba9d307814a3f45b36c093e1ad0",
+    "packages/worker/scripts/runtime-specs.mjs": "25c82479fb9d3b81507b09461a93b5358dde658ecdad70b506b79cb9bce53819",
     "packages/worker/scripts/stage-asset.mjs": "2187cb40e0491884adea0ae5deb543205f431e995a4e1e3a726d93d4e1173929",
     "packages/worker/src/_shared/preview-host.ts": "903136b3a1bfeaad3e1de9e347e79bd732e1ea88bc54178dc306095ddacec411",
     "packages/worker/src/_shared/preview-isolation.ts": "0705d54ac7e95fe006113b097067432fc938cfb2e35ad8c8c0a3a2afbbb2e091",
@@ -2688,7 +2688,7 @@
     "packages/worker/wasm/python/.gitignore": "819ff9cebee3d26e4e665aeb64b2b8602d750c6c640e513a0e7277be207df055",
     "packages/worker/wasm/python/EXTENSIONS.md": "09f7ea1603cd5c1f12dbfceb0f0d308ed8b4455d082b3cbb5e10448df4894dea",
     "packages/worker/wasm/python/Setup.local": "a7f117c96caaaab335b7bc39c753699d0e96341c6c6dff4cb8c9061f549d1a0f",
-    "packages/worker/wasm/python/build-python.sh": "66b0706c525556b16dcefc8c3aa9ad66a5fe656fd1903dcb244a59c9e20a1be2",
+    "packages/worker/wasm/python/build-python.sh": "c359d5fdec1202c713311c88d3334ae15e86f5700d44c61e04bbcedd886d0b10",
     "packages/worker/wasm/python/cacert.pem": "3ff344e30b9b1ed2971044eabb438a08f2e2245ddb5f8ab1a3ad8b63ab4eaf91",
     "packages/worker/wasm/python/config.site-nimbus-wasi": "03c22c8582d316a68beda01c3ff8c7fcce94c344822ce9ac35e6f5dabbc8fab3",
     "packages/worker/wasm/python/include/__struct_sockaddr_un.h": "7356db4435c9aed4f664a64398313627f614b2c70f75bac71f3ec2ec009930ca",
@@ -2705,9 +2705,9 @@
     "packages/worker/wasm/python/patches/0002-numpy-share-one-reference-lapack.patch": "58f6724a8436fa67bd7383c4d484c4f5ed8248d18f5d7eb85be5e79b9c527b73",
     "packages/worker/wasm/python/patches/0003-numpy-namespace-the-legacy-random-build.patch": "84fefd4997223b0698052db81d1236bf9c206f915b83ae4de089169a8d29cfe2",
     "packages/worker/wasm/python/pip-26.1.2-py3-none-any.whl": "382ff9f685ee3bc25864f820aa50505825f10f5458ffff07e30a6d96e5715cab",
-    "packages/worker/wasm/python/python-sci.wasm": "3f4df4dee0739bc2086a98f6e43e9b0a2c03e88cffd2789114fd7be0314ca31e",
-    "packages/worker/wasm/python/python.wasm": "33e2238093b146b752f1bd9f3a67e23c131158b8d7a642295eadec435225d7c2",
-    "packages/worker/wasm/python/python313.zip": "ab127429fed65106bf45074bfd3f7038a55651232f0e646896e614c2a333fd95",
-    "packages/worker/wasm/python/sci-packages.zip": "63d3afd71fbfe8549bbd6f86aaf7aeac84b81d904a671f5f46e866811542eefc"
+    "packages/worker/wasm/python/python-sci.wasm": "5f24efd29dd08670d9384be66d06f8d845f8309d71d3cc3117ac74cd362b8830",
+    "packages/worker/wasm/python/python.wasm": "bf1041f9932afb4eac0ee39df69770339de0e0d511d160acfa3999fc2154ff5a",
+    "packages/worker/wasm/python/python313.zip": "62ff741c1fc8e0d67120c41a27737d2a91a3f1558c2a3c7f132ce3efc4c39d02",
+    "packages/worker/wasm/python/sci-packages.zip": "c8f75fa904af325b5b2bc5c800936cd398bb74ea3df49fd519962dc8bbe6ca19"
   }
 }
