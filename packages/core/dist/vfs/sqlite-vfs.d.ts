@@ -27,7 +27,7 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
-import { type BatchWritePayload, type VfsInodeKind, type W7DataCall, type W7PathCall } from '@nimbus-sh/platform/w7-frame.js';
+import { type BatchWritePayload, type VfsInodeKind, type W7Attrs, type W7DataCall, type W7PathCall } from '@nimbus-sh/platform/w7-frame.js';
 export { RecallRequired, recallOf, withRecall } from './recall.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
@@ -465,6 +465,20 @@ export type RoutedWaveRecord = {
     readonly mode: number;
     readonly bytes: Uint8Array;
     readonly offset?: number;
+}
+/** A process's rename, truncate or attribute change (W7 v4), made by the namespace's operation of that name. */
+ | {
+    readonly type: 'rename';
+    readonly from: string;
+    readonly to: string;
+} | {
+    readonly type: 'truncate';
+    readonly path: string;
+    readonly size: number;
+} | {
+    readonly type: 'setattr';
+    readonly path: string;
+    readonly attrs: W7Attrs;
 };
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {

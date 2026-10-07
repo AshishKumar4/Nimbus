@@ -75,12 +75,37 @@ export function namespaceWaveRouter(namespace, credential) {
             const ns = view(cred, guard);
             // Removing its own slot after a failure is the record's own, unguarded.
             const cleanup = view(cred);
-            return applyRecord(ns, cleanup, record, pinOf(ns, parentOf(record.type === 'call' ? record.call.path : record.path)));
+            return applyRecord(ns, cleanup, record, pinsOf(ns, record));
         },
     };
 }
 function parentOf(path) {
     return path.slice(0, path.lastIndexOf('/')) || '/';
+}
+/** Every directory the record names a place in, pinned (a rename's two). */
+function pinsOf(ns, record) {
+    const dirs = record.type === 'rename' ? [parentOf(record.from), parentOf(record.to)]
+        : [parentOf(record.type === 'call' ? record.call.path : record.path)];
+    const pins = dirs.map((dir) => pinOf(ns, dir));
+    if (pins.length === 1)
+        return pins[0];
+    return () => {
+        const pending = pins.map((pin) => pin()).filter((result) => result instanceof Promise);
+        if (pending.length > 0)
+            return Promise.all(pending).then(() => { });
+    };
+}
+/**
+ * An rm -r's removal, whole or refused: what it kept or failed on is the
+ * call's error (its first failure's code), never a partial removal answered
+ * as done.
+ */
+function removedWhole(removal, path) {
+    if (removal.kept.length === 0 && removal.failures.length === 0)
+        return;
+    const first = removal.failures[0];
+    const code = first?.error.code ?? 'EIO';
+    throw new VfsError(code, `rm -r removed ${removal.removed.length}, kept ${removal.kept.length}${removal.kept.length > 0 ? ` (${removal.kept.slice(0, 3).join(', ')})` : ''}, failed ${removal.failures.length}${first ? ` (${first.path}: ${first.error.message})` : ''}`, path);
 }
 /**
  * The record's directory, pinned: refuses (ESTALE) when it no longer
@@ -117,12 +142,7 @@ async function applyRecord(ns, cleanup, record, pinned) {
             if ((await ns.stat(record.path, { follow: false })) === null)
                 return null;
             await pinned();
-            const removal = await ns.removeRecursive(record.path);
-            if (removal.kept.length > 0 || removal.failures.length > 0) {
-                const first = removal.failures[0];
-                const code = first?.error.code ?? 'EIO';
-                throw new VfsError(code, `rm -r removed ${removal.removed.length}, kept ${removal.kept.length}${removal.kept.length > 0 ? ` (${removal.kept.slice(0, 3).join(', ')})` : ''}, failed ${removal.failures.length}${first ? ` (${first.path}: ${first.error.message})` : ''}`, record.path);
-            }
+            removedWhole(await ns.removeRecursive(record.path), record.path);
             return null;
         }
         case 'symlink': {
@@ -173,9 +193,11 @@ async function applyRecord(ns, cleanup, record, pinned) {
                 else if (there.type === 'directory') {
                     if (!call.recursive)
                         throw new VfsError('EISDIR', 'is a directory', call.path);
-                    await ns.removeRecursive(call.path);
+                    await pinned();
+                    removedWhole(await ns.removeRecursive(call.path), call.path);
                 }
                 else {
+                    await pinned();
                     await ns.unlink(call.path);
                 }
             }
@@ -185,6 +207,26 @@ async function applyRecord(ns, cleanup, record, pinned) {
             else
                 await ns.symlink(call.target, call.path);
             return null;
+        }
+        case 'rename':
+            await pinned();
+            await ns.rename(record.from, record.to);
+            return null;
+        case 'truncate':
+            await pinned();
+            await ns.truncate(record.path, record.size);
+            return statOf(await ns.stat(record.path));
+        case 'setattr': {
+            // Followed, as the session's own chmod, chown and utimes of a process's setattr are.
+            await pinned();
+            const attrs = record.attrs;
+            if ('mode' in attrs)
+                await ns.chmod(record.path, attrs.mode);
+            else if ('uid' in attrs)
+                await ns.chown(record.path, attrs.uid, attrs.gid);
+            else
+                await ns.utimes(record.path, attrs.atime, attrs.mtime);
+            return statOf(await ns.stat(record.path));
         }
         case 'data-call': {
             // The namespace's call with the whole bytes; a description's write or

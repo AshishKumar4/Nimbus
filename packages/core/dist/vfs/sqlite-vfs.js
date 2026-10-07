@@ -7336,6 +7336,41 @@ export class SqliteVFS {
                 at.committed(null);
                 return true;
             }
+            case 'rename': {
+                // Both names placed: on one filesystem, the rename is that one's;
+                // between this filesystem and a mount (or two mounts), EXDEV, as
+                // rename(2) across mounts is. A directory above a mount point is
+                // EBUSY to move, as one is to remove.
+                at.routes.clear();
+                const from = await mountOf('delete', record.from);
+                const to = await mountOf('file', record.to);
+                if (from === null && to === null)
+                    return false;
+                if (from === null || to === null || router.placement(from) !== router.placement(to)) {
+                    throw vfsError('EXDEV', record.from, `a rename to '${record.to}' crosses a mount`);
+                }
+                at.setPhase('publish');
+                at.settleBefore();
+                reached();
+                await router.apply({ type: 'rename', from, to }, cred, at.guard);
+                at.committed(null);
+                return true;
+            }
+            case 'truncate':
+            case 'setattr': {
+                // A mode changes who may search a directory: later names resolve again.
+                if (record.type === 'setattr')
+                    at.routes.clear();
+                const placed = await mountOf('file', record.path);
+                if (placed === null)
+                    return false;
+                at.setPhase('publish');
+                at.settleBefore();
+                reached();
+                await router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard);
+                at.committed(null);
+                return true;
+            }
             case 'file-begin': {
                 const placed = await mountOf('file', record.inode.path);
                 if (placed === null)
