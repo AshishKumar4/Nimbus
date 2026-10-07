@@ -9,21 +9,26 @@
 //   a .d.ts; a package.json that is there, in its own indent, with what npm
 //   normalizes of it (bins of every shape, `_` keys, funding, a GitLab
 //   subgroup, a Bitbucket shortcut, an author); and npm's configuration:
-//   ~/.npmrc, a project .npmrc, npm_config_* and the command line (init-*,
-//   the deprecated init.*, ${VAR}, an invalid init-version or url, scope,
-//   save-exact, save-prefix).
+//   ~/.npmrc, a project .npmrc, npm_config_* and the command line, parsed
+//   as nopt parses it (abbreviations, joined shorthands), with init-*, the
+//   deprecated init.*, ${VAR}, an invalid init-version or url, scope,
+//   save-exact and save-prefix.
 // - The template asked on a terminal (real npm on a pty, its echo the
 //   terminal's): every question, an invalid name, version and license told
 //   and asked again, "Is this OK?" answered yes and no, ^C, and input that
 //   ends.
-// - An initializer, flags before or after it: the package npm exec runs
-//   (real npm's request to a stand-in registry, or the repository its git
-//   is asked for), and one npm does not recognize.
+// - An initializer, flags (abbreviated too) before or after it: the package
+//   npm exec runs (real npm's request to a stand-in registry), one npm does
+//   not recognize, and a git repository, which the shell's npm refuses
+//   (it installs from the registry only), naming the repository npm asks
+//   its git for.
 //
 // Before: the shell's npm wrote `type: "module"`, Vite's scripts, license MIT
 // and empty dependency maps, asked nothing, read no configuration, refused a
 // package.json that was there without -y, and took `npm init -y vite` for
-// the template.
+// the template; then (e1c846512 to ae7a376cd) `--y` and `--init-lic=MIT`
+// were not npm's abbreviations, and `npm init u/r` asked npx for a registry
+// package.
 import assert from 'node:assert/strict';
 import { spawnSync, spawn } from 'node:child_process';
 import { createServer } from 'node:http';
@@ -263,6 +268,11 @@ try {
   await stage('project', { ...node, 'package.json': '{"name":"project"}', '.npmrc': 'save-prefix=~\ninit-license=0BSD\n' });
   await compareTemplate('project', {}, { args: ['init', '-f'] });
   await compareTemplate('env-yes', {}, { args: ['init'], env: { npm_config_yes: 'true' } });
+  // nopt's abbreviations, values apart or joined, and an invalid one on the command line.
+  await compareTemplate('abbreviated', {}, { args: ['init', '--y'] });
+  await compareTemplate('abbreviated-license', {}, { args: ['init', '--init-lic=MIT', '--yes'] });
+  await compareTemplate('abbreviated-more', node, { args: ['innit', '--init-author-n', 'Abbrev Name', '--sco', 'abbr', '--init-v', '2.0.0', '--save-ex', '--ye'] });
+  await compareTemplate('invalid-flag', {}, { args: ['init', '-yf', '--init-version', 'abc', '--no-save-exact'] });
 
   // ── The template asked on a terminal ───────────────────────────────────
   async function compareAsked(name, files, answers, args = ['init']) {
@@ -315,25 +325,33 @@ try {
   });
   for (const args of [
     ['init', 'vite'], ['init', '-y', 'vite@latest', 'app'], ['create', 'vite@6', 'app', '--', '--template', 'react-ts'],
-    ['init', '--yes', '@scope'], ['init', '@scope@2'], ['init', '@scope/foo'], ['innit', '@scope/foo@1.2.3', '-y'],
-    ['init', 'u/r'], ['init', 'github:u/r'], ['create', 'git+https://github.com/u/r.git'], ['init', 'gitlab:g/r'],
+    ['init', '--yes', '@scope'], ['init', '@scope@2'], ['init', '--y', '@scope/foo'], ['innit', '@scope/foo@1.2.3', '-y'],
+    ['create', '--sco', 'x', 'vite', 'app', '--ye'],
   ]) {
-    const before = { requests: requests.length, git: diskFile(gitLog)?.length ?? 0 };
+    const before = requests.length;
     await realRun(args);
     const ours = await sessionNpm(args, initDir);
     assert.equal(ours.ran.length, 1, `npm ${args.join(' ')} runs one initializer: ${ours.stderr}`);
     const [command, yes, initializer, ...rest] = ours.ran[0];
     assert.deepEqual([command, yes], ['npx', '--yes'], `npm ${args.join(' ')}: npm exec's run`);
-    const hosted = hostedGitInfo.fromUrl(initializer);
-    if (hosted) {
-      const asked = (diskFile(gitLog) ?? '').slice(before.git).trim().split('\n')[0];
-      assert.ok(asked.includes(`${hosted.domain}/${hosted.user}/${hosted.project}.git`), `npm ${args.join(' ')}: ${initializer} is the repository npm asks git for (${asked})`);
-    } else {
-      assert.equal(requests[before.requests], initializer.replace(/(.)@[^@]*$/, '$1'), `npm ${args.join(' ')}: ${initializer} is the package npm asks the registry for`);
-    }
-    // What follows the initializer, past npm's own flags, is the initializer's.
-    const positionals = args.slice(1).filter((arg, i, all) => !arg.startsWith('-') || all.slice(0, i).includes('--')).filter((arg) => arg !== '--');
-    assert.deepEqual(rest, positionals.slice(1), `npm ${args.join(' ')}: the initializer's arguments`);
+    assert.equal(requests[before], initializer.replace(/(.)@[^@]*$/, '$1'), `npm ${args.join(' ')}: ${initializer} is the package npm asks the registry for`);
+    // What follows the initializer, past npm's own flags and their values, is the initializer's.
+    const expected = { 'create vite@6 app -- --template react-ts': ['app', '--template', 'react-ts'], 'init -y vite@latest app': ['app'], 'create --sco x vite app --ye': ['app'] };
+    assert.deepEqual(rest, expected[args.join(' ')] ?? [], `npm ${args.join(' ')}: the initializer's arguments`);
+    cases++;
+  }
+  // A git repository as the initializer: npm installs it with git, which the
+  // shell's npm does not (named limit): refused, naming the repository npm asks git for.
+  for (const args of [['init', 'u/r'], ['init', 'github:u/r'], ['create', '-y', 'git+https://github.com/u/r.git'], ['init', 'gitlab:g/r']]) {
+    const before = diskFile(gitLog)?.length ?? 0;
+    await realRun(args);
+    const asked = (diskFile(gitLog) ?? '').slice(before).trim().split('\n')[0];
+    const ours = await sessionNpm(args, initDir);
+    assert.equal(ours.exitCode, 1, `npm ${args.join(' ')}: refused`);
+    assert.equal(ours.ran.length, 0, `npm ${args.join(' ')} runs nothing`);
+    const named = /Unsupported initializer: (\S+) is a git repository/.exec(ours.stderr)?.[1];
+    const hosted = named && hostedGitInfo.fromUrl(named);
+    assert.ok(hosted && asked.includes(`${hosted.domain}/${hosted.user}/${hosted.project}.git`), `npm ${args.join(' ')}: names ${named}, the repository npm asks git for (${asked}): ${ours.stderr}`);
     cases++;
   }
   registry.close();

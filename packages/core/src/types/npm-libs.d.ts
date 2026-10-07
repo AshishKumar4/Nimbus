@@ -1,6 +1,7 @@
 // The surface of npm's own libraries the shell's npm runs (pinned to the
 // versions npm 10.9.8 ships): `npm init`'s package.json (npm-init.ts) and
-// npm's configuration (npm-config.ts).
+// npm's configuration (npm-config.ts: nopt and @npmcli/config's definitions,
+// field parsing and validation).
 
 declare module 'hosted-git-info' {
   interface GitHost {
@@ -53,4 +54,42 @@ declare module 'semver' {
     clean(version: string, loose?: boolean): string | null;
   };
   export default semver;
+}
+
+declare module 'nopt' {
+  type Handler = ((key: string, value: unknown, type: unknown) => void) | null;
+  interface Parsed { argv: { remain: string[]; cooked: string[]; original: string[] } }
+  interface Nopt {
+    (types: Record<string, unknown>, shorthands: Record<string, string[]>, args: string[], slice: number): Record<string, unknown> & Parsed;
+    clean(data: Record<string, unknown>, types: Record<string, unknown>, typeDefs: object): void;
+    invalidHandler: Handler;
+  }
+  const nopt: Nopt;
+  export default nopt;
+}
+
+declare module '@npmcli/config/lib/definitions/index.js' {
+  interface Definition { default: unknown; type: unknown; deprecated?: string }
+  const npmDefinitions: { definitions: Record<string, Definition>; shorthands: Record<string, string[]> };
+  export default npmDefinitions;
+}
+
+declare module '@npmcli/config/lib/env-replace.js' {
+  function envReplace(text: string, env: Record<string, string>): string;
+  export default envReplace;
+}
+
+declare module '@npmcli/config/lib/parse-field.js' {
+  function parseField(value: unknown, key: string, options: { platform: string; types: Record<string, unknown>; home: string; env: Record<string, string> }): unknown;
+  export default parseField;
+}
+
+declare module '@npmcli/config/lib/type-defs.js' {
+  const typeDefs: Record<string, { type: unknown; description?: string }> & { url: { type: unknown }; path: { type: unknown } };
+  export default typeDefs;
+}
+
+declare module '@npmcli/config/lib/type-description.js' {
+  function typeDescription(type: unknown): unknown[];
+  export default typeDescription;
 }

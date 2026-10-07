@@ -17,8 +17,8 @@
  * licenses npm's own validators', versions npm's own semver's.
  *
  * Named limits: a directory's entries are read in sorted order (npm reads the
- * main and bin candidates in the operating system's order), and an
- * `init-module` (~/.npm-init.js) is not run.
+ * main and bin candidates in the operating system's order), an `init-module`
+ * (~/.npm-init.js) is not run, and a git initializer is refused.
  */
 import hostedGitInfo from 'hosted-git-info';
 import npa, { type Result as NpaResult } from 'npm-package-arg';
@@ -30,7 +30,7 @@ import { normalizePackageJsonBin } from '../../../../runtime/npm-bin-map.js';
 import type { CommandContext } from '../types.js';
 import type { ProcessView as VFS } from '../../../../runtime/process-files.js';
 import { join } from '../../utils/path.js';
-import { loadNpmConfig, parseNpmArgv, type NpmConfig } from './npm-config.js';
+import { loadNpmConfig, type NpmConfig } from './npm-config.js';
 
 type Json = Record<string, unknown>;
 const isObject = (value: unknown): value is Json => typeof value === 'object' && value !== null && !Array.isArray(value);
@@ -61,10 +61,12 @@ export class NpmError extends Error {
 
 /**
  * The package `npm init <initializer>` runs (init.js execCreate): `@scope`
- * is `@scope/create`, a hosted git repository `user/project` is
- * `user/create-project`, a registry package `name@spec` is
- * `create-name@spec` (`@scope/create-name@spec` for a scoped one); anything
- * else is not an initializer.
+ * is `@scope/create`, a registry package `name@spec` is `create-name@spec`
+ * (`@scope/create-name@spec` for a scoped one); anything else is not an
+ * initializer. A hosted git repository `user/project` would be
+ * `user/create-project`, which npm installs with git: the shell's npm
+ * installs from the registry only, so it refuses one, naming it (named
+ * limit).
  */
 export function npmInitializerPackage(initializer: string): string {
   if (/^@[^/]+$/.test(initializer)) {
@@ -80,7 +82,9 @@ export function npmInitializerPackage(initializer: string): string {
   }
   if (spec.type === 'git' && spec.hosted) {
     const { user, project } = spec.hosted;
-    return initializer.replace(`${user}/${project}`, `${user}/create-${project}`);
+    const repository = initializer.replace(`${user}/${project}`, `${user}/create-${project}`);
+    // npm exec installs it with git; the shell's npm installs from the registry only.
+    throw new NpmError(`Unsupported initializer: ${repository} is a git repository\nThis npm installs packages from the registry only; git dependencies are not supported`, 'EUNSUPPORTED');
   }
   if (spec.registry && spec.name !== null) return `${spec.name.replace(/^(@[^/]+\/)?/, '$1create-')}@${spec.rawSpec}`;
   throw new NpmError(
@@ -102,11 +106,10 @@ export async function npmInitCommand(ctx: CommandContext): Promise<number> {
     for (const line of error.message.split('\n')) await ctx.stderr.write(`npm error ${line}\n`);
     return 1;
   };
-  const argv = parseNpmArgv(ctx.args.slice(1));
-  const config = await loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, argv);
+  const config = await loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
   for (const warning of config.warnings) await ctx.stderr.write(`npm warn ${warning}\n`);
   if (config.get('force')) await ctx.stderr.write('npm warn using --force Recommended protections disabled.\n');
-  const [initializer, ...rest] = argv.positionals;
+  const [initializer, ...rest] = config.positionals.slice(1);
   if (initializer !== undefined) {
     let initializerPackage: string;
     try {
@@ -224,7 +227,7 @@ export async function npmInitTemplate(vfs: VFS, dir: string, config: NpmConfig, 
   const pkg = content;
   const getConfig = (key: string): unknown => {
     const dotted = config.get(`init.${key}`);
-    return dotted !== DOTTED_DEFAULTS[key] && dotted ? dotted : config.get(`init-${key.replace(/\./g, '-')}`);
+    return dotted !== config.default(`init.${key}`) && dotted ? dotted : config.get(`init-${key.replace(/\./g, '-')}`);
   };
   const ask = async (prompt: string, def: string | undefined, transform?: (answer: string) => unknown): Promise<unknown> => {
     for (;;) {
@@ -380,11 +383,6 @@ export async function npmInitTemplate(vfs: VFS, dir: string, config: NpmConfig, 
   await save();
   return 'written';
 }
-
-/** The defaults of the deprecated `init.*` keys, which a set dashed key yields to only when they differ. */
-const DOTTED_DEFAULTS: Record<string, unknown> = {
-  'author.name': '', 'author.email': '', 'author.url': '', license: 'ISC', version: '1.0.0',
-};
 
 class EndOfInput extends Error {}
 
