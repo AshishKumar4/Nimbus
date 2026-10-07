@@ -3968,6 +3968,23 @@ function residentOwner(record) {
 function residentLaunchDoing(record) {
     return record.phase === 'running' ? 'running' : 'starting';
 }
+/**
+ * Why a resident the session restarted is not restarted again. One that was
+ * running when the session restarted had been restarted already, and had not
+ * run RESIDENT_PROVEN_MS: a new process whose isolate has used about a second
+ * of CPU makes Cloudflare restart the session (spike/isolate-move), and
+ * restarting it again would only repeat that.
+ */
+function residentAbandonedNotice(record, now) {
+    if (record.phase === 'running' && record.runningSince !== undefined) {
+        const seconds = Math.max(0, Math.round((now - record.runningSince) / 1000));
+        return `\x1b[2m[nimbus: the session restarted again ${seconds} s after restarting "${record.command}", so it is left stopped: `
+            + 'Cloudflare restarts a session when a newly started process has used about a second of CPU, and restarting '
+            + `it would do that again; start it again with: ${record.command}]\x1b[0m\r\n`;
+    }
+    return '\x1b[2m[nimbus: the session restarted again while '
+        + `"${record.command}" was ${residentLaunchDoing(record)} — leaving it stopped]\x1b[0m\r\n`;
+}
 export class FacetManager {
     ctx;
     env;
@@ -4152,8 +4169,7 @@ export class FacetManager {
             redrive: (record, attempt) => this._redrive(record, attempt),
             onRedrive: (record) => this.hooks.notify?.('\x1b[2m[nimbus: the session restarted while '
                 + `"${record.command}" was ${residentLaunchDoing(record)} — restarting it]\x1b[0m\r\n`),
-            onAbandoned: (record) => this.hooks.notify?.('\x1b[2m[nimbus: the session restarted again while '
-                + `"${record.command}" was ${residentLaunchDoing(record)} — leaving it stopped]\x1b[0m\r\n`),
+            onAbandoned: (record) => this.hooks.notify?.(residentAbandonedNotice(record, Date.now())),
             onRedriveFailed: (record, e) => {
                 console.warn(`[facet-manager] resident pid ${record.pid} ("${record.command}") not re-driven: ${errorMessage(e)}`);
                 this.hooks.notify?.(`\x1b[2m[nimbus: "${record.command}" could not be restarted: `
@@ -6919,14 +6935,14 @@ export class FacetManager {
         finally {
             pacer.settle();
         }
-        // Booted and running: the launch proved itself, so the resident starts
-        // its running life with a fresh re-drive budget. If the process already
+        // Booted and running: the resident's budget is whole again once it has
+        // run RESIDENT_PROVEN_MS from now (fenced-work.ts). If the process already
         // ended inside the launch body's own settlement, the terminal hook has
         // released the row — do not write it back. Amended, not rewritten from
         // `record`: a port the program bound during its boot has already been
         // stamped onto the row, and the settle must not lose it.
         if (this.launchJournal.has(entry.pid)) {
-            await this._amendRow(entry.pid, (row) => ({ ...row, attempt: 0, phase: 'running' }));
+            await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running', runningSince: Date.now() }));
         }
     }
     async _residentLaunchBody(entry, code, command, cwd, opts, pacer, durableFacetName, launchEnv) {
@@ -7430,9 +7446,8 @@ export class FacetManager {
             this.portRegistry.bindFacetStub(entry.pid, handle.routeTarget);
             const boot = foreground ? await Promise.race([handle.booted(), foreground.interrupted]) : await handle.booted();
             if (record && this.launchJournal.has(entry.pid)) {
-                // Booted and running: the launch proved itself, so the resident
-                // starts its running life with a fresh re-drive budget.
-                await this._amendRow(entry.pid, (row) => ({ ...row, attempt: 0, phase: 'running' }));
+                // Booted and running: its budget is whole again once it has run RESIDENT_PROVEN_MS (fenced-work.ts).
+                await this._amendRow(entry.pid, (row) => ({ ...row, phase: 'running', runningSince: Date.now() }));
             }
             if (opts.port && opts.port > 0 && opts.port < 65536) {
                 if (opts.durable && !opts.resident) {

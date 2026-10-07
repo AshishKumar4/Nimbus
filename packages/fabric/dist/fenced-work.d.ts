@@ -40,6 +40,15 @@ export declare const FENCED_WORK_KEY_PREFIX = "resident-launch:";
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
 export declare const FENCED_WORK_MAX_ATTEMPT = 1;
 /**
+ * How long a resident runs before its re-drive budget is whole again. A
+ * process whose new isolate has used about a second of CPU makes the
+ * platform restart its session (spike/isolate-move), and its re-drive is a
+ * new process in a new isolate that does it again: a budget refilled at boot
+ * re-drove such a process, and restarted its session, forever. One that has
+ * run this long has proved the reset was not its own.
+ */
+export declare const RESIDENT_PROVEN_MS = 120000;
+/**
  * A resident process this session owes the user, as a later instance would
  * have to re-drive it.
  *
@@ -63,9 +72,13 @@ export interface FencedWorkRecord {
     /** 0 for a launch the user asked for; 1 for the one re-drive it may get. */
     attempt: number;
     /** Where the resident was when its instance died: still being built, or
-     *  booted and running. Running residents re-drive with a fresh attempt
-     *  budget — their launch already proved itself once. */
+     *  booted and running. */
     phase: 'starting' | 'running';
+    /**
+     * When the resident booted, in this row's run (Date.now()). One that has
+     * run RESIDENT_PROVEN_MS re-drives with a fresh attempt budget.
+     */
+    runningSince?: number;
 }
 /**
  * The slice of Durable Object storage the journal writes through. Exactly a
@@ -194,7 +207,8 @@ export declare class FencedWork<R extends FencedWorkRecord> {
      *
      * Runs once per instance — re-calls in the same instance are no-ops — and
      * re-drives every row whose pid is `> 0` and at or below `generationBase()`
-     * with `attempt < FENCED_WORK_MAX_ATTEMPT`; the rest are abandoned. What the
+     * with fewer than FENCED_WORK_MAX_ATTEMPT attempts spent (spentAttempts);
+     * the rest are abandoned. What the
      * re-drive resolver receives is the journalled record and nothing else: a
      * host keeps env and secrets out of it, so the resolver's embedder
      * re-resolves them rather than reading them back.

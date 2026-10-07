@@ -40,6 +40,19 @@ export const FENCED_WORK_KEY_PREFIX = 'resident-launch:';
 /** A launch is re-driven once. A reset that recurs is not the transient one. */
 export const FENCED_WORK_MAX_ATTEMPT = 1;
 /**
+ * How long a resident runs before its re-drive budget is whole again. A
+ * process whose new isolate has used about a second of CPU makes the
+ * platform restart its session (spike/isolate-move), and its re-drive is a
+ * new process in a new isolate that does it again: a budget refilled at boot
+ * re-drove such a process, and restarted its session, forever. One that has
+ * run this long has proved the reset was not its own.
+ */
+export const RESIDENT_PROVEN_MS = 120_000;
+/** The re-drive attempts `record` has spent: none once it has run RESIDENT_PROVEN_MS. */
+function spentAttempts(record, now) {
+    return record.runningSince !== undefined && now - record.runningSince >= RESIDENT_PROVEN_MS ? 0 : record.attempt;
+}
+/**
  * The resident-launch journal of one Durable Object instance.
  *
  * In-memory state here is per-instance on purpose: `journalledPids` tracks the
@@ -145,14 +158,15 @@ export class FencedWork {
         let inflight = this.drives.get(key);
         if (inflight === undefined) {
             inflight = (async () => {
-                if (record.attempt >= FENCED_WORK_MAX_ATTEMPT) {
+                const spent = spentAttempts(record, Date.now());
+                if (spent >= FENCED_WORK_MAX_ATTEMPT) {
                     this.host.onAbandoned?.(record);
                     await this.supersede(key);
                     return true;
                 }
                 let failed = false;
                 try {
-                    await this.host.redrive(record, record.attempt + 1);
+                    await this.host.redrive(record, spent + 1);
                 }
                 catch (e) {
                     this.host.onRedriveFailed?.(record, e);
@@ -182,7 +196,8 @@ export class FencedWork {
      *
      * Runs once per instance — re-calls in the same instance are no-ops — and
      * re-drives every row whose pid is `> 0` and at or below `generationBase()`
-     * with `attempt < FENCED_WORK_MAX_ATTEMPT`; the rest are abandoned. What the
+     * with fewer than FENCED_WORK_MAX_ATTEMPT attempts spent (spentAttempts);
+     * the rest are abandoned. What the
      * re-drive resolver receives is the journalled record and nothing else: a
      * host keeps env and secrets out of it, so the resolver's embedder
      * re-resolves them rather than reading them back.
@@ -202,7 +217,8 @@ export class FencedWork {
             // `session/rpc.ts` uses to attribute a prior generation's pid.
             if (!(record.pid > 0 && record.pid <= base))
                 continue;
-            (record.attempt >= FENCED_WORK_MAX_ATTEMPT ? abandoned : redriven).push([key, record]);
+            const spent = spentAttempts(record, Date.now());
+            (spent >= FENCED_WORK_MAX_ATTEMPT ? abandoned : redriven).push([key, { ...record, attempt: spent }]);
         }
         // The attempt is SPENT in storage, synced, before any re-drive starts.
         // Deleting the row here instead would open a loss window: writes flush in
@@ -216,7 +232,10 @@ export class FencedWork {
         for (const [key] of abandoned)
             await this.storage.delete(key);
         for (const [key, record] of redriven) {
-            await this.storage.put(key, { ...record, attempt: record.attempt + 1 });
+            // The spent attempt stands for this run: its boot time is the old run's, not a proof.
+            const spentRow = { ...record, attempt: record.attempt + 1 };
+            delete spentRow.runningSince;
+            await this.storage.put(key, spentRow);
         }
         if (abandoned.length > 0 || redriven.length > 0)
             await this.storage.sync();
