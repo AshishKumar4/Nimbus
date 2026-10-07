@@ -17,16 +17,19 @@
  *
  * THE BINDING. A promise's state and result, a proxy's target and handler,
  * a Map or Set iterator's and a weak collection's entries are V8 slots no
- * user-land JavaScript can read. Only for those slots, the binding renders
- * the slot's content with the platform's inspect (workerd's port of Node's,
- * which reads them), under the options the slot is formatted with, and
- * hands inspect.js a value that prints as that text where Node's binding
- * result goes. Nothing else ever goes through the platform's inspect.
- * Named limits: what such a slot holds is printed by workerd's port (it
- * prints a symbol key bare, `Symbol(k)` for Node's `[Symbol(k)]`); and
- * `util.format('%s', proxy)` reads the proxy's toString as a built-in's.
+ * user-land JavaScript can read. Node's util binding reads them; here
+ * `platform.slots` does, with its signatures (getPromiseDetails,
+ * getProxyDetails, previewEntries), after the host's intrinsic brand check,
+ * and hands inspect.js the slots' values, which it formats itself: one
+ * formatter for every value. In workerd, platform.slots is
+ * createWorkerdSlots (WORKERD_SLOTS_SOURCE); where Node runs this host (its
+ * parity test), Node's own binding. Named limits (fine-print capabilities):
+ * a proxy among a slot's values is handed over as a stand-in over its
+ * target and handler, not the proxy itself; and reading a slot reads the
+ * promise's, iterator's or collection's own toStringTag (and prototype
+ * chain) once more than Node.
  *
- * `platform`: { util (the platform's node:util), Buffer, url ({ URL,
+ * `platform`: { util (the platform's node:util), slots, Buffer, url ({ URL,
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code),
  * primordialsOf(primordials, globalThis), inspectOf(exports, require, module,
@@ -146,185 +149,11 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
     removeColors: (str) => String.prototype.replace.call(str, colorRegExp, ""),
   };
 
-  // THE BINDING: V8's internal slots, read by workerd's inspect.
-  // A promise's state and result, a proxy's target and handler, a Map or Set
-  // iterator's and a weak collection's entries are V8 internals no user-land
-  // JavaScript can read; workerd's inspect reads them. After an intrinsic
-  // brand check (util.types), this binding renders just that slot's content
-  // with workerd's inspect, under the options the slot is being formatted
-  // with, and hands inspect.js a value that renders as that text exactly
-  // where Node's binding result would go ('slot'). Nothing else ever goes
-  // through workerd's inspect, and nothing here invents a state. What the
-  // slot holds is then printed by workerd's port, not Node's (the support
-  // matrix lists its divergences).
-  const platformInspect = (value, options) => platformUtil.inspect(value, options);
-  // Each public call's renderings, by value and options: one exotic's slots
-  // are read from one rendering.
-  let renderings = null;
-  function rendering(value, options) {
-    const key = JSON.stringify(options);
-    let byOptions = renderings?.get(value);
-    if (byOptions === undefined) {
-      byOptions = new Map();
-      renderings?.set(value, byOptions);
-    }
-    let text = byOptions.get(key);
-    if (text === undefined) {
-      text = platformInspect(value, options);
-      byOptions.set(key, text);
-    }
-    return text;
-  }
-  // The options a slot is rendered with: the call's, at the slot's depth,
-  // every entry shown (inspect.js applies maxArrayLength itself) and the
-  // custom-inspect choice of the call, not of the instance running it.
-  function slotOptions(depth, options) {
-    return {
-      showHidden: options.showHidden, depth: depth === null ? null : depth + 1, colors: options.colors,
-      customInspect: callCustomInspect, showProxy: options.showProxy, maxArrayLength: options.maxArrayLength,
-      maxStringLength: options.maxStringLength, breakLength: options.breakLength, compact: options.compact,
-      sorted: options.sorted, getters: options.getters, numericSeparator: options.numericSeparator,
-    };
-  }
-  const ANSI = /\u001b\[[0-9;]*m/y;
-  // The top-level entries of 'text' from 'from' to its closing bracket, as
-  // inspect prints them: separated by ", " or ",\n" outside brackets and
-  // quoted strings (or by 'separator'). Returns the entries and where the
-  // closing bracket is.
-  function topLevelEntries(text, from, separator) {
-    const entries = [];
-    let depth = 0;
-    let quote = null;
-    let start = from;
-    let previous = " ";
-    for (let i = from; i < text.length; i++) {
-      ANSI.lastIndex = i;
-      const escape = ANSI.exec(text);
-      if (escape !== null) {
-        i += escape[0].length - 1;
-        continue;
-      }
-      const char = text[i];
-      if (quote !== null) {
-        if (char === "\\") i++;
-        else if (char === quote) quote = null;
-        previous = char;
-        continue;
-      }
-      if ((char === "'" || char === "\"" || char === "\u0060") && " \n[{(,:".includes(previous)) quote = char;
-      else if (char === "[" || char === "{" || char === "(") depth++;
-      else if (char === "]" || char === "}" || char === ")") {
-        if (depth === 0) {
-          entries.push(text.slice(start, i));
-          return { entries, end: i };
-        }
-        depth--;
-      } else if (depth === 0 && separator !== undefined && text.startsWith(separator, i)) {
-        entries.push(text.slice(start, i));
-        start = i + separator.length;
-        i += separator.length - 1;
-      } else if (separator === undefined && char === "," && depth === 0 && (text[i + 1] === " " || text[i + 1] === "\n")) {
-        entries.push(text.slice(start, i));
-        start = i + 1;
-      }
-      previous = char;
-    }
-    entries.push(text.slice(start));
-    return { entries, end: text.length };
-  }
-  // An entry as inspect.js takes a hook's text: its own indentation gone
-  // (workerd printed it 'indent' columns in), surrounding blank space trimmed.
-  function entryText(raw, indent) {
-    return raw.replace(/^\s+|\s+$/g, "").split("\n").map((line, i) => (i === 0 ? line : line.replace(new RegExp("^ {0," + indent + "}"), ""))).join("\n");
-  }
-  // The entries inside the first top-level brace or bracket of 'text'.
-  function slotEntries(text, open) {
-    let at = 0;
-    for (; at < text.length; at++) {
-      ANSI.lastIndex = at;
-      const escape = ANSI.exec(text);
-      if (escape !== null) {
-        at += escape[0].length - 1;
-        continue;
-      }
-      if (text[at] === open) break;
-    }
-    const { entries } = topLevelEntries(text, at + 1);
-    return entries.map((entry) => entryText(entry, 2)).filter((entry, i, all) => entry !== "" || all.length > 1);
-  }
-  // A value inspect.js formats as 'render(depth, options)', where Node's
-  // binding result would be. Found by the custom-inspect symbol of the
-  // instance formatting it (see 'privateCustom'), so it renders in both.
-  function slot(render) {
-    const value = Object.create(null);
-    const hook = { value(depth, options) { return render(depth, options); } };
-    Object.defineProperty(value, customInspectSymbol, hook);
-    Object.defineProperty(value, privateCustom, hook);
-    return Object.freeze(value);
-  }
-  // Whether inspect.js would show own properties of 'value' beside its slot.
-  function ownKeysShown(value, showHidden) {
-    const keys = showHidden ? Reflect.ownKeys(value) : Reflect.ownKeys(value).filter((key) => Object.prototype.propertyIsEnumerable.call(value, key));
-    return keys.length > 0;
-  }
-  const stripAnsi = (text) => text.replace(/\u001b\[[0-9;]*m/g, "");
-  const plain = { depth: 0, colors: false, customInspect: false, showProxy: false, maxArrayLength: Infinity, breakLength: Infinity, compact: 3 };
-
-  function promiseDetails(promise) {
-    const state = stripAnsi(slotEntries(rendering(promise, plain), "{")[0] ?? "");
-    if (state === "<pending>") return [0, undefined];
-    const rejected = state.startsWith("<rejected> ");
-    const result = slot((depth, options) => {
-      const text = rendering(promise, slotOptions(depth, options));
-      let entry = ownKeysShown(promise, options.showHidden)
-        ? slotEntries(text, "{")[0]
-        : entryText(text.slice(text.indexOf("{") + 1, text.lastIndexOf("}")), 2);
-      // Node puts its own '<rejected> ' before the result.
-      if (rejected) entry = entry.replace(/^(?:\u001b\[[0-9;]*m)*<rejected>(?:\u001b\[[0-9;]*m)* /, "");
-      return entry;
-    });
-    return [rejected ? 2 : 1, result];
-  }
-  function entriesOf(value, isKeyValue) {
-    // A weak collection's entries are what showHidden shows (Node asks only then).
-    const weak = types.isWeakMap(value) || types.isWeakSet(value);
-    const text = rendering(value, weak ? { ...plain, showHidden: true } : plain);
-    const keyValue = isKeyValue === true && /^\[[^\]]* Entries\] \{/.test(stripAnsi(text));
-    const count = slotEntries(text, "{").filter((entry) => stripAnsi(entry) !== "").length;
-    // Entry 'i', or its key (part 0) or value (part 1): '[ k, v ]' for an
-    // entries iterator, 'k => v' for a WeakMap.
-    const entryAt = (i, part) => slot((depth, options) => {
-      const shown = slotEntries(rendering(value, slotOptions(depth, options)), "{")[i] ?? "";
-      if (part === undefined) return shown;
-      // Its parts were formatted where the entry was: one dedent was all they needed.
-      const parts = types.isWeakMap(value)
-        ? topLevelEntries(shown, 0, " => ").entries
-        : topLevelEntries(shown, shown.indexOf("[") + 1).entries;
-      return entryText(parts[part] ?? "", 0);
-    });
-    const entries = [];
-    for (let i = 0; i < count; i++) {
-      if (keyValue || types.isWeakMap(value)) entries.push(entryAt(i, 0), entryAt(i, 1));
-      else entries.push(entryAt(i));
-    }
-    return isKeyValue === undefined ? entries : [entries, keyValue];
-  }
-  function proxyDetails(proxy, showProxy) {
-    if (stripAnsi(rendering(proxy, plain)) === "<Revoked Proxy>") return null;
-    if (!showProxy) {
-      // The target, at the proxy's place. workerd marks each proxy it looks
-      // through, Proxy(<target>) (styled "special", cyan); Node prints the target.
-      return slot((depth, options) => {
-        let text = entryText(rendering(proxy, { ...slotOptions(depth, options), showProxy: false, depth }), 0);
-        const open = options.colors ? "\u001b[36mProxy(\u001b[39m" : "Proxy(";
-        const close = options.colors ? "\u001b[36m)\u001b[39m" : ")";
-        while (text.startsWith(open) && text.endsWith(close)) text = text.slice(open.length, text.length - close.length);
-        return text;
-      });
-    }
-    const part = (i) => slot((depth, options) => slotEntries(rendering(proxy, { ...slotOptions(depth, options), showProxy: true }), "[")[i] ?? "");
-    return [part(0), part(1)];
-  }
+  // THE BINDING's V8 slots (a promise's state and result, a proxy's target
+  // and handler, an iterator's and a weak collection's entries) are
+  // platform.slots', after an intrinsic brand check: values, which
+  // inspect.js formats itself.
+  const slots = platform.slots;
 
   // V8's names (Object::GetConstructorName) for objects inspect.js finds no named constructor for.
   const builtinNames = [
@@ -357,9 +186,10 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
       }
       return keys;
     },
-    getProxyDetails: (value, showProxy) => (types.isProxy(value) ? proxyDetails(value, showProxy) : undefined),
-    getPromiseDetails: (promise) => promiseDetails(promise),
-    previewEntries: (value, isKeyValue) => entriesOf(value, isKeyValue),
+    getProxyDetails: (value, showProxy) => (types.isProxy(value) ? slots.getProxyDetails(value, showProxy) : undefined),
+    getPromiseDetails: (promise) => slots.getPromiseDetails(promise),
+    // As inspect.js asks: a weak collection's entries alone, an iterator's with whether they pair.
+    previewEntries: (...args) => Reflect.apply(slots.previewEntries, slots, args),
     getConstructorName(value) {
       if (Array.isArray(value)) return "Array";
       if (types.isTypedArray(value)) return String(Reflect.apply(typedArrayTag, value, []));
@@ -386,17 +216,9 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
     },
   };
 
-  // inspect.js runs as two instances over the same binding: 'node', whose
-  // custom-inspect symbol is Node's (util.inspect.custom), for every call
-  // that runs programs' hooks; and, for a call with customInspect false,
-  // 'opaque', whose symbol is 'privateCustom', called with customInspect on:
-  // it runs no program's hook, and still renders the binding's slots, which
-  // answer both symbols. Its styles, colours and defaults are 'node''s.
-  const privateCustom = Symbol("nimbus.inspect.slot");
-  let callCustomInspect = true;
-  function evaluate(customSymbol) {
+  function evaluate() {
     const modules = {
-      "internal/util": { ...internalUtil, customInspectSymbol: customSymbol },
+      "internal/util": internalUtil,
       "internal/errors": { isStackOverflowError },
       "internal/util/types": types,
       "internal/assert": assert,
@@ -420,57 +242,192 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
   const inspectPrimordials = Object.create(null);
   for (const key of Reflect.ownKeys(primordials)) inspectPrimordials[key] = primordials[key];
   inspectPrimordials.globalThis = bootGlobal;
-  const nodeInspect = evaluate(customInspectSymbol);
+  const nodeInspect = evaluate();
   lazyInspect = nodeInspect;
-  let opaqueInspect = null;
-  function opaque() {
-    if (opaqueInspect === null) {
-      opaqueInspect = evaluate(privateCustom);
-      opaqueInspect.inspect.styles = nodeInspect.inspect.styles;
-      opaqueInspect.inspect.colors = nodeInspect.inspect.colors;
+  return nodeInspect;
+}`;
+/**
+ * Source of `createWorkerdSlots(util)`: Node's util binding's V8 slot
+ * readers (getPromiseDetails, getProxyDetails, previewEntries) over
+ * workerd's node:util, whose inspect reads those slots and no other
+ * workerd API does. A read runs workerd's inspect on the value with
+ * customInspect and getters off, and takes each value it formats one level
+ * in as the formatter reaches it, in order: an object at the cycle check
+ * every object passes (`ctx.seen.includes(value)`), which answers it seen so
+ * none of it is formatted, a primitive at `stylize`, as the literal it is
+ * handed decodes. Of what it
+ * renders, only workerd's own marks are read: a proxy past the depth
+ * (`Proxy [Array]`), a revoked one (`<Revoked Proxy>`), a promise's
+ * state, and whether an iterator's entries are key-value pairs (its brace,
+ * `[Map Entries] {`).
+ *
+ * A proxy among a slot's values is read the same way, its target and
+ * handler a level deeper, and handed over as a stand-in over them
+ * (`new Proxy(target, handler)`), which inspect.js formats as it would the
+ * proxy, traps and all; it is not the same object (named limit).
+ */
+export const WORKERD_SLOTS_SOURCE = String.raw `function createWorkerdSlots(util) {
+  "use strict";
+  const kPending = 0;
+  const kFulfilled = 1;
+  const kRejected = 2;
+  const PROXY = "Proxy [Array]";
+  const REVOKED = "<Revoked Proxy>";
+  const arrayPrototype = Array.prototype;
+  const escapes = { b: "\b", t: "\t", n: "\n", f: "\f", r: "\r", "'": "'", "\\": "\\" };
+  // The primitive workerd's formatPrimitive handed stylize as 'text', or null for any other mark.
+  function primitiveOf(text, style) {
+    switch (style) {
+      case "number": return /^(?:-?(?:[0-9]|Infinity)|NaN$)/.test(text) ? { primitive: Number(text) } : null;
+      case "bigint": return /^-?[0-9]+n$/.test(text) ? { primitive: BigInt(text.slice(0, -1)) } : null;
+      case "boolean": return text === "true" || text === "false" ? { primitive: text === "true" } : null;
+      case "undefined": return text === "undefined" ? { primitive: undefined } : null;
+      case "null": return text === "null" ? { primitive: null } : null;
+      case "symbol": return text.startsWith("Symbol(") && text.endsWith(")") ? { primitive: Symbol(text.slice(7, -1)) } : null;
+      case "string":
+        if (!/^['"\u0060]/.test(text)) return null;
+        // strEscape's escapes: the meta table's and a lone surrogate's.
+        return { primitive: text.slice(1, -1).replace(/\\(x[0-9A-Fa-f]{2}|u[0-9A-Fa-f]{4}|[btnfr'\\])/g, (all, escape) => (escape.length > 1 ? String.fromCharCode(parseInt(escape.slice(1), 16)) : escapes[escape])) };
+      default: return null;
     }
-    return opaqueInspect;
   }
-
-  const customInspectOf = (options) => (options !== null && typeof options === "object" && "customInspect" in options
-    ? options.customInspect !== false
-    : nodeInspect.inspectDefaultOptions.customInspect !== false);
-  // One public call: the instance its customInspect asks for, the options
-  // 'opaque' takes for it, and the binding's renderings kept for its length.
-  function call(options, run) {
-    const custom = customInspectOf(options);
-    const previous = [callCustomInspect, renderings];
-    callCustomInspect = custom;
-    renderings = new WeakMap();
+  // What workerd's inspect of 'value' formats 'level' deep: objects,
+  // primitives and marks, in order, and the text, for an iterator's brace.
+  // Its 'seen' (the objects being formatted, outermost first) holds 'level'
+  // of them then: a prototype's properties showHidden adds are formatted
+  // before the value is pushed, and a proxy (showProxy) pushes none.
+  // Array.prototype.includes is held only until workerd's first cycle
+  // check, which no program code runs before; from then the hook is that
+  // call's own 'seen' array's, where no program can reach it. What program
+  // code still runs while workerd formats (the value's own toStringTag
+  // getter, a proxy in its prototype chain) sees every built-in as it was,
+  // and can inspect: a nested read holds and lets go of its own.
+  function capture(value, options, level) {
+    const events = [];
+    const previous = arrayPrototype.includes;
+    let seen = null;
+    let referenced = false;
+    const isObject = (item) => (typeof item === "object" && item !== null) || typeof item === "function";
+    // An object 'level' deep is taken, and answered as seen: workerd marks
+    // it circular and formats none of it, so no code of it runs (a getter,
+    // a trap). Answered so for the value itself, workerd marks the value a
+    // reference too, last.
+    function record(item) {
+      if (this !== seen || seen.length !== level || !isObject(item)) return Reflect.apply(previous, this, arguments);
+      events.push({ object: item });
+      if (item === value) referenced = true;
+      return true;
+    }
+    const first = function includes(item) {
+      arrayPrototype.includes = previous;
+      seen = this;
+      Object.defineProperty(seen, "includes", { value: record, writable: true, configurable: true });
+      return Reflect.apply(record, this, arguments);
+    };
+    arrayPrototype.includes = first;
+    let text;
     try {
-      if (custom) return run(nodeInspect, options);
-      const merged = { ...nodeInspect.inspectDefaultOptions, ...(options !== null && typeof options === "object" ? options : {}), customInspect: true };
-      return run(opaque(), merged);
+      text = util.inspect(value, {
+        showHidden: false, depth: 0, ...options,
+        showProxy: true, colors: false, customInspect: false, getters: false, maxStringLength: Infinity,
+        breakLength: Infinity, compact: 3, sorted: false, numericSeparator: false,
+        stylize(mark, style) {
+          if ((seen === null ? 0 : seen.length) === level) events.push(primitiveOf(mark, style) ?? { mark });
+          return mark;
+        },
+      });
     } finally {
-      [callCustomInspect, renderings] = previous;
+      if (arrayPrototype.includes === first) arrayPrototype.includes = previous;
+    }
+    if (referenced) events.pop();
+    return { events, text };
+  }
+  // The values a slot holds, read from 'read(depth)' (capture's events),
+  // each a value, a proxy (its parts, read a level deeper each time, until
+  // none is left past the depth) or a revoked proxy. 'count' values, or as
+  // many as the first read holds.
+  function slotValues(read, count) {
+    let nodes;
+    for (let depth = 0; ; depth++) {
+      const events = read(depth);
+      let at = 0;
+      let deeper = false;
+      // A node 'r' levels in, as this read formats it ('known' from the last).
+      const node = (known, r) => {
+        if (known !== undefined && known.parts !== undefined) {
+          if (r > depth) {
+            if (events[at++]?.mark !== PROXY) throw unreadable("a proxy");
+            deeper = true;
+            return known;
+          }
+          return { parts: [node(known.parts?.[0], r + 1), node(known.parts?.[1], r + 1)] };
+        }
+        const event = events[at++];
+        if (event === undefined) throw unreadable("a value");
+        if ("primitive" in event) return { value: event.primitive };
+        if ("object" in event) {
+          // Its own mark, past the depth.
+          while (at < events.length && "mark" in events[at] && events[at].mark !== PROXY && events[at].mark !== REVOKED) at++;
+          return { value: event.object };
+        }
+        if (event.mark === REVOKED) return { revoked: true };
+        if (event.mark === PROXY) {
+          deeper = true;
+          return { parts: null };
+        }
+        throw unreadable("a mark (" + event.mark + ")");
+      };
+      const next = [];
+      for (let i = 0; nodes === undefined ? at < events.length : i < nodes.length; i++) {
+        next.push(node(nodes?.[i], 1));
+        if (count !== undefined && nodes === undefined && next.length === count) break;
+      }
+      nodes = next;
+      if (!deeper) return nodes.map(standIn);
+      if (depth === 64) throw unreadable("a proxy 64 deep");
     }
   }
-  const nodeInspectFunction = nodeInspect.inspect;
-  const inspect = function inspect(value, options) {
-    // inspect(value, showHidden, depth, colors), the legacy form, is Node's own.
-    if (arguments.length > 2 || (options !== undefined && (options === null || typeof options !== "object"))) {
-      return call(undefined, () => Reflect.apply(nodeInspectFunction, this, [...arguments]));
+  function standIn(node) {
+    if (node.revoked) {
+      const revocable = Proxy.revocable({}, {});
+      revocable.revoke();
+      return revocable.proxy;
     }
-    return call(options, (instance, merged) => instance.inspect(value, merged));
-  };
-  for (const key of Reflect.ownKeys(nodeInspectFunction)) {
-    if (key !== "prototype" && key !== "length" && key !== "name") {
-      Object.defineProperty(inspect, key, Object.getOwnPropertyDescriptor(nodeInspectFunction, key));
-    }
+    return node.parts === undefined ? node.value : new Proxy(standIn(node.parts[0]), standIn(node.parts[1]));
   }
-  return {
-    ...nodeInspect,
-    inspect,
-    format: (...args) => call(undefined, (instance, merged) => (instance === nodeInspect ? nodeInspect.format(...args) : instance.formatWithOptions(merged, ...args))),
-    formatWithOptions(options, ...args) {
-      // Its own validation, before any call's options are read.
-      if (options === null || typeof options !== "object" || Array.isArray(options)) return nodeInspect.formatWithOptions(options, ...args);
-      return call(options, (instance, merged) => instance.formatWithOptions(merged, ...args));
-    },
-  };
+  function unreadable(what) {
+    return new Error("util.inspect: workerd's inspect did not hand over " + what + " in a V8 slot");
+  }
+  function getPromiseDetails(promise) {
+    const first = capture(promise, {}, 1);
+    if (first.events.length > 0 && first.events[0].mark === "<pending>") return [kPending];
+    const rejected = first.events.some((event) => event.mark === "<rejected>");
+    // Its result, the first value formatted (before the promise's own properties).
+    const [result] = slotValues((depth) => (depth === 0 ? first : capture(promise, { depth }, 1)).events, 1);
+    return [rejected ? kRejected : kFulfilled, result];
+  }
+  function getProxyDetails(proxy, showProxy) {
+    const first = capture(proxy, {}, 0);
+    // Revoked itself: its one mark (a revoked target's is the first of two parts').
+    if (first.events.length === 1 && first.events[0].mark === REVOKED) return showProxy ? [null, null] : null;
+    const parts = slotValues((depth) => (depth === 0 ? first : capture(proxy, { depth }, 0)).events, 2);
+    return showProxy ? parts : parts[0];
+  }
+  function previewEntries(value, isKeyValue) {
+    // A weak collection's entries are what showHidden shows. The value's own
+    // properties follow its entries: counted off by a read showing none.
+    const options = { showHidden: isKeyValue === undefined };
+    let text;
+    const entries = slotValues((depth) => {
+      const all = capture(value, { ...options, depth, maxArrayLength: Infinity }, 1);
+      const own = capture(value, { ...options, depth, maxArrayLength: 0 }, 1).events;
+      text ??= all.text;
+      return all.events.slice(0, all.events.length - own.length);
+    });
+    if (isKeyValue === undefined) return entries;
+    const pairs = /^[^{]*\[(?:Map|Set) Entries\] \{/.test(text);
+    if (pairs && entries.length % 2 !== 0) throw unreadable("an iterator's pairs");
+    return [entries, pairs];
+  }
+  return { getPromiseDetails, getProxyDetails, previewEntries };
 }`;

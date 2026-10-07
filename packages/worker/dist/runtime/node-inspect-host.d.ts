@@ -17,16 +17,19 @@
  *
  * THE BINDING. A promise's state and result, a proxy's target and handler,
  * a Map or Set iterator's and a weak collection's entries are V8 slots no
- * user-land JavaScript can read. Only for those slots, the binding renders
- * the slot's content with the platform's inspect (workerd's port of Node's,
- * which reads them), under the options the slot is formatted with, and
- * hands inspect.js a value that prints as that text where Node's binding
- * result goes. Nothing else ever goes through the platform's inspect.
- * Named limits: what such a slot holds is printed by workerd's port (it
- * prints a symbol key bare, `Symbol(k)` for Node's `[Symbol(k)]`); and
- * `util.format('%s', proxy)` reads the proxy's toString as a built-in's.
+ * user-land JavaScript can read. Node's util binding reads them; here
+ * `platform.slots` does, with its signatures (getPromiseDetails,
+ * getProxyDetails, previewEntries), after the host's intrinsic brand check,
+ * and hands inspect.js the slots' values, which it formats itself: one
+ * formatter for every value. In workerd, platform.slots is
+ * createWorkerdSlots (WORKERD_SLOTS_SOURCE); where Node runs this host (its
+ * parity test), Node's own binding. Named limits (fine-print capabilities):
+ * a proxy among a slot's values is handed over as a stand-in over its
+ * target and handler, not the proxy itself; and reading a slot reads the
+ * promise's, iterator's or collection's own toStringTag (and prototype
+ * chain) once more than Node.
  *
- * `platform`: { util (the platform's node:util), Buffer, url ({ URL,
+ * `platform`: { util (the platform's node:util), slots, Buffer, url ({ URL,
  * pathToFileURL }), process, builtinModules, builtinObjects (Node's
  * NODE_BUILTIN_OBJECTS), eastAsianWide(code),
  * primordialsOf(primordials, globalThis), inspectOf(exports, require, module,
@@ -34,4 +37,25 @@
  * upstream sources.
  */
 export declare const NODE_INSPECT_HOST_SOURCE: string;
+/**
+ * Source of `createWorkerdSlots(util)`: Node's util binding's V8 slot
+ * readers (getPromiseDetails, getProxyDetails, previewEntries) over
+ * workerd's node:util, whose inspect reads those slots and no other
+ * workerd API does. A read runs workerd's inspect on the value with
+ * customInspect and getters off, and takes each value it formats one level
+ * in as the formatter reaches it, in order: an object at the cycle check
+ * every object passes (`ctx.seen.includes(value)`), which answers it seen so
+ * none of it is formatted, a primitive at `stylize`, as the literal it is
+ * handed decodes. Of what it
+ * renders, only workerd's own marks are read: a proxy past the depth
+ * (`Proxy [Array]`), a revoked one (`<Revoked Proxy>`), a promise's
+ * state, and whether an iterator's entries are key-value pairs (its brace,
+ * `[Map Entries] {`).
+ *
+ * A proxy among a slot's values is read the same way, its target and
+ * handler a level deeper, and handed over as a stand-in over them
+ * (`new Proxy(target, handler)`), which inspect.js formats as it would the
+ * proxy, traps and all; it is not the same object (named limit).
+ */
+export declare const WORKERD_SLOTS_SOURCE: string;
 //# sourceMappingURL=node-inspect-host.d.ts.map
