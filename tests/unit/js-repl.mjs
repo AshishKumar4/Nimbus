@@ -60,6 +60,9 @@ const LINES = [
   'g()',
   'let viaHoist = h(); function h() { return "hoisted" }',
   'viaHoist',
+  // A function in a block is hoisted within it, and is a global after (Annex B).
+  'if (true) { var viaBlock = blockFn(); function blockFn() { return 1 } } viaBlock',
+  'blockFn()',
   "class C { m() { return 'm' } }",
   'new C().m()',
   '{ a: 1 }',

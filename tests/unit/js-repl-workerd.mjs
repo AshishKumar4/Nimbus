@@ -12,7 +12,9 @@
 // `import('./dep.mjs')` from the working directory, interpreted in the
 // launch that first runs the line and natively (from the staged `gen/`
 // module) in the next. And with no script and stdin not the terminal, stdin
-// is the program, as in Node: `echo code | node` runs it, never a REPL.
+// is the program, as in Node: `echo code | node` runs it, never a REPL; and
+// a background `node &` has /dev/null for stdin, so Ctrl-C reaches the
+// foreground job beside it.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -100,6 +102,19 @@ try {
       await t.waitFor((b) => /user@nimbus:.*\$\s*$/.test(stripAnsi(b)), 30_000, '.exit returns to the shell');
     }
     console.log('  ok   import() interpreted, then staged');
+    // A background `node` does not take the terminal: Ctrl-C reaches the
+    // foreground job beside it.
+    {
+      t.reset();
+      t.cmd('node & sleep 60');
+      await new Promise((resolve) => setTimeout(resolve, 3_000));
+      const sent = Date.now();
+      t.send('\x03');
+      await t.waitFor((b) => /user@nimbus:.*\$\s*$/.test(stripAnsi(b)), 20_000, 'the shell prompt after Ctrl-C');
+      assert.ok(Date.now() - sent < 20_000, 'Ctrl-C interrupted the foreground sleep');
+      assert.doesNotMatch(stripAnsi(t.buf), /^> /m, 'no REPL prompt from the background node');
+      console.log('  ok   background node, Ctrl-C to the foreground');
+    }
     for (const runtime of ['node', 'bun']) {
       const piped = await t.run(`echo 'console.log(6 * 7)' | ${runtime}; echo "STATUS=$?"`, 120_000);
       const text = stripAnsi(piped.output).replace(/\r/g, '');
