@@ -1984,6 +1984,7 @@ export default {
               kind: history.kind,
               piece: history.piece,
               head: history.head,
+              depth: history.depth,
               source: history.source,
               capabilities: opts.capabilities,
               budgetUnits: opts.historyBudgetUnits,

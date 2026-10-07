@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "6cec4019bfbe486c0c24b57cf476a19b3c649759331de3d6eba9ccd5d937d0f2",
+  "fingerprint": "78c42472e2f5884460d63c049276ddaefd27838b221e70b7a7a49e389cca038f",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -1843,7 +1843,7 @@
     "packages/worker/dist/git/commands.js": "b6da07258e7a1b18b367abe0301618c04d6c71cfda06bb415c8834723fdeaeaf",
     "packages/worker/dist/git/network-facet.d.ts": "ac6e51ceaec13a583fd648f302bbde948fa32528a95a2ae67935b7ac45a174a3",
     "packages/worker/dist/git/network-facet.d.ts.map": "dfee18f849fc8d8d9b91d5c683536f93a14b33980f18becbfd172148ccb8dcab",
-    "packages/worker/dist/git/network-facet.js": "852184a7d54b2ffe947e80c062b2996874f96c7e7db04dbf38297ae292352e7c",
+    "packages/worker/dist/git/network-facet.js": "2156eac875fdacbd2b98922e179777d6a1f7f5e099b0994cb16d7c0868550904",
     "packages/worker/dist/git/pack/byte-lru.d.ts": "0d2ff7bbc74a583a5783cfbdaf6fa2587a6a314497deb02fcaa4bb0e7ebcb5f4",
     "packages/worker/dist/git/pack/byte-lru.d.ts.map": "1084a9f7e7e1c94651ac1d765cc2333dc8932bd3b2672ac7d7d0334b6d900004",
     "packages/worker/dist/git/pack/byte-lru.js": "0b43366e81f380a6e245b946d35c69fc44ffddf15b3471463fe444368e87622f",
@@ -2470,7 +2470,7 @@
     "packages/worker/src/git-bundle.generated.ts": "e3d64e53e093c870822cd3f72c5f59155f62b378f0acd08503164e6a23cf4000",
     "packages/worker/src/git/clone-job.ts": "c4d69f19f674b6c52f00b327ff2a456dd37bf5c7584a073ed16df60897260041",
     "packages/worker/src/git/commands.ts": "4614823cffb49ede66ca7455a035c5a6e724a755735ed97e681a797884aef09b",
-    "packages/worker/src/git/network-facet.ts": "bceb6053066f2c0b720280eeb551a8106106c8582d95b6f350632f5c80866b53",
+    "packages/worker/src/git/network-facet.ts": "ede44bda10b4714672b5d967411b724a35715891a7f9e92a45c3ebe5d1545374",
     "packages/worker/src/git/pack/byte-lru.ts": "8c11a8c87f9d9d060d32e6df3d068727a093fa32acbb9735a7c2af6abbee83f3",
     "packages/worker/src/git/pack/clone.ts": "8bea6d21d1815eaae0c449fab5364767b0c2de1ebfe80d7da44748ada98ba9d1",
     "packages/worker/src/git/pack/facet-packs.ts": "cfb5c121087dbe0b199561722563f3afe8d92fcd971deb4fef49543593a1512d",
