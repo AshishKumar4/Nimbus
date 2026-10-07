@@ -1,6 +1,8 @@
 /**
- * git/pack/history.ts — a clone's full history, fetched in self-contained
- * pieces after its depth-1 worktree.
+ * git/pack/history.ts — a clone's history, fetched in self-contained pieces
+ * after its worktree: all of it for a full clone, its N commits for a
+ * --depth N clone (N > 1: the older commits' blobs the worktree's batches
+ * did not fetch).
  *
  *   commits  every commit, no trees or blobs (filter tree:0); their root
  *            trees listed in pack order (newest first: neighbours share
@@ -118,11 +120,13 @@ export async function historyStep(context, request) {
     writer.setPin(context.marker.path, context.marker.text, true);
     let wants;
     let filter;
+    let depth;
     if (request.kind === 'commits') {
         if (request.head === undefined)
             throw new PackFormatError('a commits piece needs the head');
         wants = [request.head];
         filter = 'tree:0';
+        depth = request.depth;
     }
     else {
         const source = request.source;
@@ -135,7 +139,7 @@ export async function historyStep(context, request) {
         wants = [...unique];
         filter = request.kind === 'trees' ? 'blob:none' : undefined;
     }
-    const response = await requestPack(transport(context), new Set(request.capabilities), { wants, filter });
+    const response = await requestPack(transport(context), new Set(request.capabilities), { wants, filter, ...(depth !== undefined ? { depth } : {}) });
     if (response.pack === null)
         throw new PackFormatError('the server sent no pack for history piece ' + request.piece);
     const list = new ListWriter();

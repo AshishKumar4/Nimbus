@@ -1,6 +1,8 @@
 /**
- * git/pack/history.ts — a clone's full history, fetched in self-contained
- * pieces after its depth-1 worktree.
+ * git/pack/history.ts — a clone's history, fetched in self-contained pieces
+ * after its worktree: all of it for a full clone, its N commits for a
+ * --depth N clone (N > 1: the older commits' blobs the worktree's batches
+ * did not fetch).
  *
  *   commits  every commit, no trees or blobs (filter tree:0); their root
  *            trees listed in pack order (newest first: neighbours share
@@ -54,6 +56,8 @@ export declare function historyStep(context: CloneContext, request: {
     piece: string;
     /** commits: the branch head. */
     head?: string;
+    /** commits: the clone's depth, for a shallow clone's history (its older commits' blobs); none for all of it. */
+    depth?: number;
     /** trees: a slice of a commits list (20-byte root trees); blobs: a batch file (20-byte ids). */
     source?: StagedFile & {
         offset?: number;
