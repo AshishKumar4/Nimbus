@@ -552,10 +552,6 @@ export class WaveWriter {
         this.inFlightSymlinks = symlinks;
         const sentAt = Date.now();
         const opened = this.open({ inodes, chunks, deletePaths, streams }, waveBytes);
-        // The next wave buffers only once this one is encoded and its records
-        // let go, so a producer holds one wave's bytes beside the next, not two;
-        // its answer is still awaited only by the cut after it.
-        await opened.catch(() => { });
         const published = opened.then(({ open, streamed }) => this.sendAttempts(open, streamed, wave)).then((result) => {
             try {
                 const error = waveResultError(result);
@@ -595,9 +591,15 @@ export class WaveWriter {
             if (this.inFlight === published)
                 this.inFlight = null;
         });
-        // Its failure reaches whoever waits next; it is never unobserved.
+        // Its failure reaches whoever waits next; it is never unobserved. In
+        // flight from here, before its encode is awaited: its records are no
+        // longer buffered, so settled() must wait for it.
         published.catch(() => { });
         this.inFlight = published;
+        // The next wave buffers only once this one is encoded and its records
+        // let go, so a producer holds one wave's bytes beside the next, not two;
+        // its answer is still awaited only by the cut after it.
+        await opened.catch(() => { });
     }
     /**
      * How a wave of `bytes` content crosses: an attempt's stream, made anew
