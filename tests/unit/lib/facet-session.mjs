@@ -18,6 +18,8 @@ import { runGitCommand } from '../../../packages/worker/src/git/commands.ts';
 import { assembleGitNetworkFacetSource } from '../../../packages/worker/src/git/network-facet.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { stagedAssets } from './staged-assets.mjs';
+import { memoryStorage } from './do-storage.mjs';
+
 
 export function hostGitEnv(home) {
   return {
@@ -132,9 +134,10 @@ export async function createFacetSession(work, { realGit = false, asUser = false
   writeFileSync(join(tempDir, 'git-bundle.js'), realGit ? stagedGitBundle() : 'export const git = {}; export const gitHttp = {};');
   const facet = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
   // Work a command leaves running after it answers (a full clone's
-  // changed-path filters): `settled()` waits for all of it.
+  // changed-path filters): `settled()` waits for all of it. The DO's
+  // storage, as a clone's job records use it (git/clone-job.ts).
   const background = [];
-  const doCtx = { id: { toString: () => 'facet-session-do' }, waitUntil(promise) { background.push(promise); } };
+  const doCtx = { id: { toString: () => 'facet-session-do' }, storage: memoryStorage(), waitUntil(promise) { background.push(promise); } };
   const settled = async () => { while (background.length > 0) await background.shift(); };
   const doEnv = {
     ASSETS: stagedAssets,

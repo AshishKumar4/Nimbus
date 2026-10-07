@@ -620,6 +620,8 @@ export declare class SqliteVFS {
      */
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
+    /** Why a lease holds what it holds, where its holder said: what a write it refuses is told. */
+    private readonly exclusiveMutationReasons;
     private activeMutationOwner;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
@@ -1141,7 +1143,11 @@ export declare class SqliteVFS {
      */
     acquireExclusiveMutation(path: string, options?: ExclusiveMutationOptions): ExclusiveMutationLease;
     private acquireExclusiveMutationAt;
-    acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
+    /**
+     * Hold the whole session for one owner. `reason`, when given, is what a
+     * write it refuses is told (EBUSY's detail), instead of the lease's root.
+     */
+    acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
