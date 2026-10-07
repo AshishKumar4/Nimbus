@@ -3,7 +3,7 @@
   "environment": {
     "setup": "scripts/ci/recipe/setup.sh",
     "install": "scripts/ci/recipe/install.sh",
-    "key": ["bun.lock", "bunfig.toml", "package.json", "apps/*/package.json", "packages/*/package.json", "packages/worker/scripts/patch-install-deps.mjs", "lean/lean-toolchain"],
+    "key": ["bun.lock", "bunfig.toml", "package.json", "apps/*/package.json", "packages/*/package.json", "packages/worker/scripts/patch-install-deps.mjs", "packages/worker/scripts/cf-git-patch.mjs", "packages/worker/patches/**", "lean/lean-toolchain"],
     "smoke": "bun --version && node --version && redis-server --version && $HOME/.elan/bin/lean --version && gnurealpath --version > /dev/null && bun tests/unit/run-all.mjs --list > /dev/null"
   },
   "history": "commit",

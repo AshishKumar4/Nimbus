@@ -74,6 +74,11 @@ try {
   const missing = await runBoundedProcess(join(root, 'no-command'));
   assert.equal(missing.ok, false);
   assert.match(missing.reason, /spawn failed/);
+  // What never started is no test's verdict: a runner reads launchError as not graded.
+  assert.equal(missing.launchError, missing.reason, 'a missing command never started');
+  const nowhere = await runBoundedProcess('sh', ['-c', 'exit 0'], { cwd: join(root, 'no-such-directory') });
+  assert.equal(nowhere.ok, false);
+  assert.match(nowhere.launchError ?? '', /spawn failed/, `a missing working directory never started: ${JSON.stringify(nowhere)}`);
   const emptyPath = await runBoundedProcess('sh', ['-c', 'exit 0'], { env: { ...process.env, PATH: '' } });
   assert.match(emptyPath.reason, /spawn failed/);
   // A directory named like the command, earlier in PATH, is not the command.
