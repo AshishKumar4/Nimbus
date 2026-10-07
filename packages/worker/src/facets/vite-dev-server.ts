@@ -2012,23 +2012,31 @@ export class ViteDevServer {
       });
     }
 
-    let html = this.vfs.readFileString(htmlPath);
+    const html = this.vfs.readFileString(htmlPath);
 
     // Detect importmap
     this.hasImportmap = html.includes('"importmap"') || html.includes("'importmap'");
 
-    // Build head injections
-    let headInjections = '';
+    // A <base> tag for SPA router support, on the root page only. A
+    // root-mounted request (base '', e.g. a `<port>--<sid>` host) needs none —
+    // assets already resolve against the origin root; injecting `<base
+    // href="/preview/">` there is exactly what 404'd every asset before this
+    // became per-request.
+    return new Response(this.withDevHead(html, base, base ? `<base href="${base}/">\n` : ''), {
+      headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
+    });
+  }
 
-    // 1. <base> tag for SPA router support. A root-mounted request (base '',
-    //    e.g. a `<port>--<sid>` host) needs no <base> — assets already resolve
-    //    against the origin root; injecting `<base href="/preview/">` there is
-    //    exactly what 404'd every asset before this became per-request.
-    if (base) {
-      headInjections += `<base href="${base}/">\n`;
-    }
+  /**
+   * An HTML page as the dev server serves it: `rootHead` (the root page's
+   * <base>), the Tailwind Play bundle for a Tailwind project, and the error
+   * overlay and HMR client, before </head> (else before <body, else first),
+   * with absolute paths under the mount base.
+   */
+  private withDevHead(html: string, base: string, rootHead: string): string {
+    let headInjections = rootHead;
 
-    // 2. Tailwind: serve the vendored Play CDN bundle from our edge.
+    // Tailwind: serve the vendored Play CDN bundle from our edge.
     //    Was previously `<script src="https://cdn.tailwindcss.com/...">`
     //    — that violated the 100% edge contract by making the browser
     //    fetch a third-party CDN on every preview load. The bundle is
@@ -2041,12 +2049,11 @@ export class ViteDevServer {
       const twUrl = base + '/__nimbus_assets/tailwind-play.js';
       headInjections += `<script src="${twUrl}"></script>\n`;
       if (this.tailwindConfigJs) {
-        // Inject tailwind config
         headInjections += `<script>\ntailwind.config = ${this.tailwindConfigJs}\n</script>\n`;
       }
     }
 
-    // 3. HMR client + runtime error overlay.
+    // HMR client + runtime error overlay.
     // Overlay is injected alongside HMR because both need to attach global
     // window listeners before any user modules start loading. The overlay
     // catches uncaught runtime errors (including "does not provide an export"
@@ -2056,21 +2063,18 @@ export class ViteDevServer {
     headInjections += ERROR_OVERLAY_CLIENT + '\n';
     headInjections += HMR_CLIENT + '\n';
 
-    // Inject before </head>
+    // A replacer function, so a `$` in the injected code is never a replacement pattern.
+    let page: string;
     if (html.includes('</head>')) {
-      html = html.replace('</head>', headInjections + '</head>');
+      page = html.replace('</head>', () => headInjections + '</head>');
     } else if (html.includes('<body')) {
-      html = html.replace('<body', headInjections + '<body');
+      page = html.replace('<body', () => headInjections + '<body');
     } else {
-      html = headInjections + html;
+      page = headInjections + html;
     }
 
     // Rewrite absolute paths to include the mount-base prefix
-    html = this.rewriteHtmlPaths(html, base);
-
-    return new Response(html, {
-      headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
-    });
+    return this.rewriteHtmlPaths(page, base);
   }
 
   // ── Module serving (/@modules/<pkg>) ──────────────────────────────────
@@ -2920,11 +2924,7 @@ export class ViteDevServer {
     if (this.vfs.isDirectory(vfsPath)) {
       const indexPath = vfsPath + '/index.html';
       if (this.vfs.exists(indexPath)) {
-        let html = this.vfs.readFileString(indexPath);
-        if (html.includes('</head>')) {
-          html = html.replace('</head>', ERROR_OVERLAY_CLIENT + '\n' + HMR_CLIENT + '\n</head>');
-        }
-        html = this.rewriteHtmlPaths(html, base);
+        const html = this.withDevHead(this.vfs.readFileString(indexPath), base, '');
         return new Response(html, {
           headers: { ...headers, 'Content-Type': 'text/html; charset=utf-8' },
         });
