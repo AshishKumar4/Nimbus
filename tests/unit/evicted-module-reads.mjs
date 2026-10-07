@@ -20,13 +20,13 @@ import assert from 'node:assert/strict';
 import { buildPrefetchBundle } from '../../packages/worker/src/facets/manager.ts';
 import { findStaticFsReferences } from '../../packages/core/src/runtime/static-fs-refs.ts';
 import { EsbuildService } from '../../packages/core/src/runtime/esbuild-service.ts';
-import { oxcEngine } from './lib/oxc-engine.mjs';
 import { launchFs } from './lib/launch-fs.mjs';
 
-// The launch's own lowering: an ESM module's CommonJS emit is part of what it costs.
+// A lowering whose emit is half again its file (a real one's CommonJS
+// wrapper costs more than the walk, which counts files, can know), and the
+// same every run: the eviction must not depend on an engine.
 const esbuild = new EsbuildService(undefined, {
-  transformHost: (requests) => Promise.all(requests.map(({ code, options }) =>
-    oxcEngine.transform(code, { loader: options.loader, format: options.format, target: options.target }))),
+  transformHost: async (requests) => requests.map(({ code }) => ({ code: code + '\n//' + '~'.repeat(code.length >> 1), map: '', warnings: [] })),
 });
 const APP = 'home/user/app';
 const NM = `${APP}/node_modules`;
@@ -40,22 +40,21 @@ const files = {
     'import { readFileSync } from "node:fs";',
     'export const table = JSON.parse(readFileSync(new URL("./table.json", import.meta.url), "utf8"));',
     'export const load = () => new WebAssembly.Module(readFileSync(new URL("./bindings_bg.wasm", import.meta.url)));',
-    `export const padding = "${'g'.repeat(100_000)}";`,
+    '// ' + 'g'.repeat(100_000),
   ].join('\n'),
   [`${NM}/glue/table.json`]: '{"a":1}',
   [`${NM}/glue/bindings_bg.wasm`]: image,
-  // A TypeScript guess: its emit is what takes the snapshot past its bound.
   [`${NM}/big/package.json`]: JSON.stringify({ name: 'big', main: 'index.ts' }),
-  [`${NM}/big/index.ts`]: `export const padding: string = "${'b'.repeat(40_000)}";\n`,
+  [`${NM}/big/index.ts`]: 'export const answer: number = 1;\n// ' + 'b'.repeat(40_000),
 };
 
-// Both guesses fit the bound as read; with big's emit they do not, and the
-// larger unit, glue, is what goes.
+// Both guesses fit the bound as the walk counts them, by their files. With
+// their emits they do not, and the larger unit, glue, is what goes.
 const state = await buildPrefetchBundle(launchFs(files).fs, {
   scriptPath: `${APP}/entry.js`, cwd: '/' + APP, entryCode: files[`${APP}/entry.js`], esbuild,
   maxBundleBytes: 170_000,
 });
-assert.equal(state.truncated, true, `the launch evicted a guess (staged: ${JSON.stringify(Object.keys(state.bundle))}; emits: ${JSON.stringify([...(state.emits?.keys() ?? [])])})`);
+assert.equal(state.truncated, true, `the launch evicted a guess (staged: ${JSON.stringify(Object.keys(state.bundle))})`);
 assert.equal(state.bundle[`${NM}/glue/index.mjs`], undefined, 'glue was evicted from the map');
 assert.equal(typeof state.bundle[`${NM}/big/index.ts`], 'string', 'big stayed');
 
