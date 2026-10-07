@@ -227,8 +227,9 @@ export interface RequiredModuleRoot {
   /**
    * A module an earlier run executed that the required closure could not
    * hold with the rest (buildPrefetchBundle walks the learned roots again so
-   * when they take it past the bound): phase 2's first tier, staged within
-   * the bound and evictable, never the launch's failure.
+   * when they take it past the bound): phase 2's first tier, its closure
+   * staged whole within the bound or not at all, evictable, never the
+   * launch's failure.
    */
   optional?: boolean;
 }
@@ -267,6 +268,9 @@ export async function prefetchForRequire(
   let additionalBytes = 0;
   let additionalFiles = 0;
   const encoder = new TextEncoder();
+  // The phase-2 unit staged whole or not at all (an optional learned root):
+  // what it staged, and whether the bound cut its closure.
+  let unit: { staged: Array<[string, number]>; cut: boolean } | null = null;
 
   function fits(path: string, bytes: number): boolean {
     if (!policy || policy.held[path] !== undefined) return true;
@@ -296,6 +300,7 @@ export async function prefetchForRequire(
       if (!fits(path, size)) return null;
       if (counted && bytesSeen + size > maxBundleBytes) {
         if (!lazy) closureExceeded = { kind: 'closure-exceeds-bound', entry: entryFile ?? 'entry code', bytesSeen, bound: maxBundleBytes, lastPath: path };
+        if (unit) unit.cut = true;
         return null;
       }
     }
@@ -318,6 +323,7 @@ export async function prefetchForRequire(
     if (counted) bytesSeen += size;
     bundle[path] = content;
     if (lazy) speculative.add(path);
+    if (unit) unit.staged.push([path, counted ? size : 0]);
     if (progress) await progress(content.length);
     return content;
   }
@@ -373,6 +379,7 @@ export async function prefetchForRequire(
   }
   /** Tool configs found for the launch; phase 2 stages them first. */
   const configRoots = new Set<string>();
+  const optionalRoots = new Set<string>();
   let lazy = false;
 
   // `entry`: the entry file itself, whose own `import()` is a deferral of its
@@ -605,6 +612,7 @@ export async function prefetchForRequire(
       const path = stripLeadingSlashes(root.path);
       if ((root.config || root.optional) && root.text === undefined) {
         if (root.config) configRoots.add(path);
+        if (root.optional) optionalRoots.add(path);
         defer({ specifier: path, fromDir: path.slice(0, path.lastIndexOf('/')), alternatives: 0, path });
         continue;
       }
@@ -636,7 +644,16 @@ export async function prefetchForRequire(
       const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
       if (!resolved) continue;
       edge(next.from, resolved);
-      await addFile(resolved);
+      // An optional learned root is staged whole or not at all: a module in
+      // the map without what it imports fails where the module's late load
+      // would have worked.
+      unit = optionalRoots.has(resolved) ? { staged: [], cut: false } : null;
+      try { await addFile(resolved); } finally {
+        if (unit?.cut) {
+          for (const [path, size] of unit.staged) { delete bundle[path]; speculative.delete(path); bytesSeen -= size; }
+        }
+        unit = null;
+      }
       if (configRoots.has(resolved) && typeof bundle[resolved] === 'string') await deferConfigNames(resolved);
     }
 
