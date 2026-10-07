@@ -274,6 +274,7 @@ export class IsolatePool {
                 const supervisor = opts?.processSupervisor ?? infrastructureSupervisorProps(ctx, opts?.supervisorPid ?? 0, {
                     doId: opts?.supervisorDoIdOverride,
                     route: opts?.supervisorRoute,
+                    network: opts.network,
                 });
                 bindings.SUPERVISOR = opts?.processSupervisor
                     ? mintProcessSupervisor(supervisorRpc, opts.processSupervisor) : supervisorRpc({ props: supervisor });

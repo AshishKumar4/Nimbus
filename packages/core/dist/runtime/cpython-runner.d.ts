@@ -91,6 +91,8 @@ export declare function makeCPythonRunnerFactory(deps: {
     facets: FacetHost;
     filesystem: NimbusFilesystemAuthority;
     processes: SessionProcessSupervisor;
+    /** The workspace's network: `pip` reaches PyPI through its egress. */
+    network: WorkspaceNetwork;
     /** Where a program that keeps serving goes. See {@link CPythonResidentStart}. */
     startResident?: CPythonResidentStart;
 }): (manifest: RuntimeManifest, installRoot: string, binName: string, binKind: string | undefined) => Command;

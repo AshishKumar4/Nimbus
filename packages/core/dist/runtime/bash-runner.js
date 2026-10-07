@@ -355,7 +355,7 @@ export function makeBashRunnerFactory(deps) {
             catch (e) {
                 // Killed: the program ends as an interrupted one does.
                 if (stdio.signal.aborted)
-                    return exitCode = 130;
+                    return exitCode = exitCodeForAbortSignal(stdio.signal);
                 ctx.stderr.write(`${binName}: dispatch failed: ${errorMessage(e)}\n`);
                 return 1;
             }

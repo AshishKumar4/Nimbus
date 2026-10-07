@@ -181,6 +181,37 @@ export function buildRuntimeHandler(spec, ctx0) {
                     ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
                     : { stdin: pipedStdin }),
         };
+        /**
+         * Run `code` as this invocation's program, whichever way the arguments
+         * named it (-e, the REPL, stdin, a file): what the program is (its argv,
+         * file, command line, stdin) with what every mode shares, and its output
+         * written through. `reserved` is false where the runner keeps no process
+         * a bin wrapper reserved (wasm-runner's).
+         */
+        const runProgram = async (code, program) => {
+            const result = await spec.run(code, {
+                cred: ctx.cred,
+                invokerPid: ctx.pid,
+                signal: ctx.signal,
+                argv: program.argv,
+                env: ctx.env,
+                cwd: ctx.cwd,
+                filename: program.filename,
+                dirname: program.dirname,
+                command: program.command,
+                output: programStdin.output,
+                ...program.stdin,
+                ...(program.reserved === false ? {} : reservedProcess),
+                ...(captureOutput ? { captureOutput: true } : {}),
+                ...(bundleProfile ? { bundleProfile } : {}),
+                ...(program.launchesServer ? { launchesServer: true } : {}),
+            });
+            if (result.stdout)
+                ctx.stdout.write(result.stdout);
+            if (result.stderr)
+                ctx.stderr.write(result.stderr);
+            return result.exitCode;
+        };
         // ── Flag-span computation (primitive #1) ──
         //
         // Real-Node only treats args UP TO the first non-flag token as
@@ -271,11 +302,8 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -`,
-                output: programStdin.output,
-                ...reservedProcess,
-                ...(captureOutput ? { captureOutput: true } : {}),
-                ...(bundleProfile ? { bundleProfile } : {}),
-                ...(launchesServer ? { launchesServer: true } : {}),
+                stdin: { output: programStdin.output },
+                launchesServer: await launches(code, null, ctx.cwd || '/home/user', ['-', ...args.slice(scriptIdx + 1)]),
             });
         }
         // ── bypassesScriptRead branch (wasm-runner) ──
@@ -296,9 +324,8 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename,
                 dirname,
                 command: `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
-                ...programStdin,
-                ...(captureOutput ? { captureOutput: true } : {}),
-                ...(bundleProfile ? { bundleProfile } : {}),
+                stdin: programStdin,
+                reserved: false,
             });
         }
         // Resolve against cwd: `.` → the package entry, then extension probing.

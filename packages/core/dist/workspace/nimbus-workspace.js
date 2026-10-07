@@ -610,9 +610,9 @@ function registerWasmRuntimes(deps) {
         // run as a one-shot that dies with it. Same for ruby, where a script is
         // the shape that may bind a port.
         'cpython-runner': lazy(async () => (await import('../runtime/cpython-runner.js'))
-            .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
+            .makeCPythonRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, network: deps.network })),
         'ruby-runner': lazy(async () => (await import('../runtime/ruby-runner.js'))
-            .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome })),
+            .makeRubyRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes, registry: deps.registry, getHome: deps.getHome, network: deps.network })),
         'clang-runner': lazy(async () => (await import('../runtime/clang-runner.js'))
             .makeClangRunnerFactory({ facets: deps.facets, filesystem: deps.filesystem, processes })),
     };

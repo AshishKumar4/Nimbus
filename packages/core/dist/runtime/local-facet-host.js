@@ -190,6 +190,7 @@ class RealmFacet {
             parking: engineParks(),
             preamble: this.spec.preamble,
             supervisor: this.supervisor ? { methods: this.supervisorMethods, synchronous: this.synchronous ? SYNCHRONOUS_METHODS : null } : undefined,
+            egress: this.network.egress !== undefined,
         };
         let post = () => false;
         const egress = this.network.egress === undefined ? null : new RealmEgress(this.network, (event) => { post(event); });
