@@ -8,6 +8,7 @@
 // primitive one level in); console-format-matches-node-workerd reads real
 // slots in workerd.
 import assert from 'node:assert/strict';
+import { types } from 'node:util';
 
 import { WORKERD_SLOTS_SOURCE } from '../../packages/worker/src/runtime/node-inspect-host.ts';
 
@@ -16,14 +17,14 @@ const includes = Array.prototype.includes;
 
 // Thrown before the first cycle check.
 {
-  const slots = createWorkerdSlots({ inspect() { throw new Error('inside the window'); } });
+  const slots = createWorkerdSlots({ types, inspect() { throw new Error('inside the window'); } });
   assert.throws(() => slots.getPromiseDetails(Promise.resolve(1)), /inside the window/);
   assert.equal(Array.prototype.includes, includes, 'let go when the inspect throws before its first cycle check');
 }
 
 // Thrown after it.
 {
-  const slots = createWorkerdSlots({ inspect(value) { [].includes(value); throw new Error('after the window'); } });
+  const slots = createWorkerdSlots({ types, inspect(value) { [].includes(value); throw new Error('after the window'); } });
   assert.throws(() => slots.getPromiseDetails(Promise.resolve(1)), /after the window/);
   assert.equal(Array.prototype.includes, includes, 'let go when the inspect throws after it');
 }
@@ -33,6 +34,7 @@ const includes = Array.prototype.includes;
   let slots;
   const inner = Promise.resolve('inner');
   slots = createWorkerdSlots({
+    types,
     inspect(value, options) {
       const seen = [];
       seen.includes(value);

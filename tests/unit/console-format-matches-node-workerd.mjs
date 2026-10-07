@@ -128,8 +128,7 @@ for (const value of [new Set([new Proxy(target, handler), new Proxy(new Proxy([1
   }
 }
 // A slot's value's code (a toStringTag getter) runs as often as in node, and
-// can throw; the holder's own, which runs while its slot is read too, sees
-// the built-ins as they are and can inspect; so can a stylize option.
+// can throw, seeing the built-ins as they are, and can inspect.
 const includes = Array.prototype.includes;
 const describe = Object.getOwnPropertyDescriptor;
 const seenInGetter = new Set();
@@ -142,14 +141,31 @@ class Peek {
 console.log(util.inspect(new Set([new Peek()]).values()), [...seenInGetter]);
 class Boom { get [Symbol.toStringTag]() { throw new Error('tag'); } }
 try { util.inspect(new Set([new Boom()]).values()); } catch (e) { console.log('threw', e.message, e.code, Array.prototype.includes === includes); }
-class Peeking extends Promise {
-  get [Symbol.toStringTag]() {
-    seenInGetter.add((Array.prototype.includes === includes) + ' ' + util.inspect(new Map([[1, new Set([2])]]).entries()));
-    return 'Peeking';
-  }
+// A holder's own toStringTag getter runs as often as in node (reading the
+// slot runs none of it); what it holds is then unknown here.
+let tagReads = 0;
+class Tagged extends Promise { get [Symbol.toStringTag]() { tagReads += 1; return 'Tagged'; } }
+const taggedIterator = new Set([1]).values();
+Object.defineProperty(taggedIterator, Symbol.toStringTag, { get() { tagReads += 1; return 'Set Iterator'; } });
+util.inspect(Tagged.resolve(1));
+util.inspect(taggedIterator, { showHidden: true });
+console.log('holder tag reads', tagReads);
+// No program's callback is handed anything but its own objects: a custom
+// inspect's this, a trap's receiver, a getter's this, for a proxy in a slot,
+// nested or not, whatever showProxy and getters say.
+const seenThis = [];
+const hooked = { name: 'hooked', [util.inspect.custom]() { seenThis.push(this); return 'custom'; } };
+const plainTarget = { get value() { seenThis.push(this); return 1; } };
+const trapping = { get(t, key, receiver) { seenThis.push(receiver); return Reflect.get(t, key, receiver); } };
+const innerPlain = new Proxy(plainTarget, trapping);
+const innerHooked = new Proxy(hooked, {});
+const proxies = [new Proxy(hooked, trapping), new Proxy(plainTarget, trapping), new Proxy(innerPlain, trapping), new Proxy(innerHooked, {})];
+const own = new Set([hooked, plainTarget, innerPlain, innerHooked, ...proxies]);
+for (const holder of [Promise.resolve(proxies[0]), Promise.resolve(proxies[2]), new Set(proxies).values(), new Map([[proxies[1], proxies[3]]]).entries()]) {
+  for (const options of [{}, { showProxy: true }, { getters: true }, { customInspect: false }, { showProxy: true, getters: true }]) util.inspect(holder, options);
 }
-seenInGetter.clear();
-console.log(util.inspect(Peeking.resolve(new Set([3]).values())), [...seenInGetter]);
+console.log('callbacks given only their own objects', seenThis.every((value) => own.has(value)));
+console.log(util.inspect(new Set([new Proxy(plainTarget, {})]).values(), { getters: true }), util.inspect(Promise.resolve(new Proxy([1, 2], {})), { showProxy: true }));
 const styled = new Set();
 console.log(util.inspect(Promise.resolve([1]), { stylize(text) { styled.add(util.inspect(new Map([[text, 1]]).entries())); return text; } }), [...styled]);
 console.log(util.inspect({ a: { b: { c: { d: 1 } } } }, { depth: 0, sorted: true, compact: false, breakLength: 20 }), util.inspect('x'.repeat(30), { maxStringLength: 4 }));
