@@ -8835,14 +8835,14 @@ export class SqliteVFS {
    * from what the session kept when the binding has it no more. Null when
    * it is closed since, or its file is gone.
    */
-  private reopened(by: DescribedBy, call: Extract<W7PathCall, { call: 'open' }>, cred: VfsCred): WriteStreamReceipt | null {
-    const node = this.described(by, call.description!, call.path, cred);
+  private reopened(by: DescribedBy, path: string, id: string, cred: VfsCred): WriteStreamReceipt | null {
+    const node = this.described(by, id, path, cred);
     if (node === null || node === undefined) return null;
     const stat = node.stat();
-    const handle = by.descriptions!.handle(call.description!);
+    const handle = by.descriptions?.handle(id);
     return {
-      path: call.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
-      uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this.revision(call.path, cred),
+      path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
+      uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this.revision(path, cred),
       ...(handle === undefined ? {} : { handle }),
     };
   }
@@ -9576,7 +9576,8 @@ export class SqliteVFS {
               // An open the cursor passed is answered again as it was (its
               // reply was lost): its description's descriptor and file.
               else if (record.type === 'call' && record.call.call === 'open' && record.call.description !== undefined) {
-                const receipt = this.withHolds(holds, () => this.reopened(described, record.call as Extract<W7PathCall, { call: 'open' }>, cred));
+                const { path, description } = record.call;
+                const receipt = this.withHolds(holds, () => this.reopened(described, path, description, cred));
                 if (receipt !== null) progress.receipts.push(receipt);
               }
               continue;
