@@ -34,6 +34,14 @@ export interface ParsedGitGlobals {
     subArgs: string[];
     /** The directory the subcommand runs in, after every `-C`. */
     dir: string;
+    /** `-c <name>=<value>`: each key (its section and name in lower case), its values in order. */
+    config: Map<string, string[]>;
+}
+/** A refusal of git's own options, in git's words, and the exit it takes. */
+export declare class GitGlobalsError extends Error {
+    readonly lines: string;
+    readonly code: number;
+    constructor(lines: string, code: number);
 }
 /**
  * The options git accepts BEFORE the subcommand. `-C <path>` runs the
