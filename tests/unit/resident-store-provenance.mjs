@@ -62,7 +62,11 @@ async function boot(files = {}, overrides = () => ({}), vfsOptions) {
   for (const [path, text] of Object.entries(files)) {
     authority.kfs.writeFile(`home/user/app/${path}`, text, { mode: 0o644 });
   }
-  const { supervisor, log } = facetSupervisor(authority, overrides(authority));
+  // `overrides` is given the authority, and the session's own answer to an op (facetSupervisor's `forward`).
+  let forward;
+  const handle = facetSupervisor(authority, overrides(authority, (name, args) => forward(name, args)));
+  forward = handle.forward;
+  const { supervisor, log } = handle;
   // Run from outside the app, holding it by plan: its files are then not
   // under the push roots, so a peer's change reaches a held row through
   // eviction and refetch, the protocol this file is about. (Pushed content,
@@ -434,14 +438,22 @@ function heldWriteFile() {
   return {
     wrote: landed.promise,
     release: () => gate.resolve(),
-    overrides: (auth) => ({
-      async writeFile(path, content) {
-        const revision = await auth.host.supervisorOp({ op: 'writeFile', args: [path, content] });
-        landed.resolve();
-        await gate.promise;
-        return revision;
-      },
-    }),
+    // The process's first wave (its write), applied by the session and its answer held.
+    overrides: (_authority, forward) => {
+      let first = true;
+      return {
+        async writeBatchStream(...args) {
+          const holding = first;
+          first = false;
+          const answer = await forward('writeBatchStream', args);
+          if (holding) {
+            landed.resolve();
+            await gate.promise;
+          }
+          return answer;
+        },
+      };
+    },
   };
 }
 

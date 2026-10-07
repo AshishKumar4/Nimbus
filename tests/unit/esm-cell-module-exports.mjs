@@ -30,7 +30,7 @@ import { createFacetCtx, createFacetWorld } from './facet-host-harness.mjs';
 import { processFiles } from './lib/process-bridge.mjs';
 import { createAuthority } from './lib/resident-body.mjs';
 import { writeModuleSet } from './lib/module-map-bundle.mjs';
-import { supervisorDouble } from './lib/supervisor-double.mjs';
+import { opSender, supervisorDouble } from './lib/supervisor-double.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
 
 const ROOT = '/home/user/cellx';
@@ -55,11 +55,14 @@ const { host, rawVfs, kfs } = authority;
 const dec = new TextDecoder();
 let out = '';
 adoptCtxExports({
-  SupervisorRPC: ({ props }) => supervisorDouble(async (name, args) => {
-    if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
-    if (name === 'reportExit') return;
-    return host.supervisorOp({ op: name, args, pid: props?.pid });
-  }),
+  SupervisorRPC: ({ props }) => {
+    const send = opSender((envelope) => host.supervisorOp({ ...envelope, pid: props?.pid }));
+    return supervisorDouble(async (name, args) => {
+      if (name === 'stdout' || name === 'stderr') { out += dec.decode(args[0]); return; }
+      if (name === 'reportExit') return;
+      return send(name, args);
+    });
+  },
 });
 const runnerDir = mkdtempSync(join(tmpdir(), 'nimbus-esm-cell-module-exports-'));
 process.on('exit', () => rmSync(runnerDir, { recursive: true, force: true }));

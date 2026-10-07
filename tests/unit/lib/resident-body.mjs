@@ -44,7 +44,7 @@ import * as rpc from '../../../packages/worker/src/session/rpc.ts';
 import { buildSessionSupervisorOps } from '../../../packages/worker/src/session/supervisor-op.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { attachSupervisorOps } from './session-supervisor-ops.mjs';
-import { supervisorDouble, waveCalls } from './supervisor-double.mjs';
+import { opSender, supervisorDouble } from './supervisor-double.mjs';
 
 plugin({
   name: 'resident-body-cloudflare-workers',
@@ -153,13 +153,10 @@ export function facetSupervisor(authority, overrides = {}) {
   };
   // The append pair also carries the writer incarnation, as SupervisorRPC's
   // envelopes for exactly those two ops do.
-  const envelope = (name, args) => (name === 'fsAppend' || name === 'fsAppendAck'
-    ? { op: name, args, pid, writerId: WRITER_ID }
-    : { op: name, args, pid });
-  const forward = (name, args) => host.supervisorOp(envelope(name, args));
-  // The process's waves, as SupervisorRPC sends them (waveCalls).
-  const waves = waveCalls((sent) => host.supervisorOp({ ...sent, pid }));
-  for (const name of ['openWaveWriter', 'writeBatchStream']) if (!Object.hasOwn(own, name)) own[name] = waves[name];
+  const send = opSender((envelope) => host.supervisorOp(envelope.op === 'fsAppend' || envelope.op === 'fsAppendAck'
+    ? { ...envelope, pid, writerId: WRITER_ID }
+    : { ...envelope, pid }));
+  const forward = (name, args) => send(name, args);
   // An async read's barrier and read travel as one fsAcquired. A test that
   // overrides fsAcquire, or the read it carries, overrides it there too: the
   // call is composed as the session composes it (session/rpc.ts

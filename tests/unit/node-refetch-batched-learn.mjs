@@ -82,7 +82,9 @@ const hostEnv = {
           try {
             // A round trip takes time: calls issued together overlap.
             await new Promise((resolve) => realSetTimeout(resolve, 1));
-            return structuredClone(await host.supervisorOp(structuredClone(envelope)));
+            // As RPC carries it: the envelope copied, a stream in it transferred.
+            const { stream, ...rest } = envelope;
+            return structuredClone(await host.supervisorOp({ ...structuredClone(rest), ...(stream === undefined ? {} : { stream }) }));
           } finally {
             if (op === 'fsReadBatch') batchesInFlight--;
           }

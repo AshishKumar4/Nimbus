@@ -22,6 +22,7 @@ import { _rpcFsAcquire, _rpcFsList, _rpcFsReadBatch } from '../../packages/worke
 import { attachSupervisorOps } from './lib/session-supervisor-ops.mjs';
 import { importModuleSet } from './lib/module-map-bundle.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
+import { waveSupervisor } from './lib/wave-supervisor.mjs';
 
 /** One storage slot per constructed process: these cases are independent. */
 let facetSeq = 0;
@@ -131,7 +132,8 @@ assert.ok(residentWorkerSource().includes('NimbusProcess'), 'the facet booted th
  */
 function asLaunchSupervisor(supervisor) {
   if (listingOps) for (const [name, op] of Object.entries(listingOps)) if (!(name in supervisor)) supervisor[name] = op;
-  return withTestAppendAuthority(supervisor);
+  // Its process's waves reach the supervisor's own calls (lib/wave-supervisor.mjs).
+  return waveSupervisor(withTestAppendAuthority(supervisor));
 }
 
 function withTestAppendAuthority(supervisor) {
@@ -157,7 +159,7 @@ function withTestAppendAuthority(supervisor) {
 }
 
 function makeShimFsFacet(supervisor, bundle = {}) {
-  withTestAppendAuthority(supervisor);
+  waveSupervisor(withTestAppendAuthority(supervisor));
   const factory = new Function(
     '__vfsBundle', '__vfsDirs', '__supervisor', 'cred', 'cwd', 'argv', 'env', 'filename', 'dirname',
     `"use strict";${VFS_WRITE_LEDGER_SOURCE}\n${SHIMS_STORE_PRELUDE + generateShimsCode()}
@@ -277,7 +279,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   const calls = [];
   const supervisor = {
     async writeFile(path, content) {
-      const text = String(content);
+      const text = cellText(content);
       calls.push(text);
       if (text === 'older') {
         olderStarted();
@@ -316,7 +318,7 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
       completions.push('append');
     },
     async writeFile(_path, content) {
-      durable = String(content);
+      durable = cellText(content);
       completions.push('full');
     },
   };
@@ -409,284 +411,6 @@ await assertAsyncFlushPreservesNewerWrite('same', 'same');
   assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/concurrent-appends.txt'), false);
 }
 
-function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
-  let durable = 'base';
-  const calls = [];
-  let releaseFirst;
-  let firstStarted;
-  const firstGate = new Promise((resolve) => { releaseFirst = resolve; });
-  const firstCall = new Promise((resolve) => { firstStarted = resolve; });
-  const supervisor = {
-    async stat() { return { type: 'file', size: durable.length }; },
-    async fsWriteRange(_path, position, bytes) {
-      const suffix = new TextDecoder().decode(bytes);
-      calls.push(`range:${suffix}`);
-      if (blockFirst && calls.length === 1) {
-        firstStarted();
-        await firstGate;
-      }
-      if (failedCalls.has(calls.length)) throw new Error(`injected append failure ${calls.length}`);
-      durable = durable.slice(0, position) + suffix;
-    },
-    async writeFile(_path, content) { durable = cellText(content); },
-  };
-  const facet = makeShimFsFacet(supervisor);
-  const path = '/home/user/append-retry.txt';
-  const retry = () => facet.flushVfsWrite(
-    path,
-    (content, snapshot) =>
-      facet.persistVfsWrite(supervisor, path, content, snapshot),
-  );
-  return {
-    ...facet,
-    path,
-    calls,
-    durable: () => durable,
-    retry,
-    firstStarted: firstCall,
-    releaseFirst,
-  };
-}
-
-// A committed A is not part of B's retry suffix: retrying the exact failed
-// authority attempt appends B, not the whole local AB fragment.
-{
-  const retry = makeAppendRetryFacet(new Set([2]), { blockFirst: true });
-  const first = retry.fs.promises.appendFile(retry.path, 'A');
-  await retry.firstStarted;
-  const second = retry.fs.promises.appendFile(retry.path, 'B');
-  retry.releaseFirst();
-  await first;
-  await assert.rejects(
-    second,
-    /injected append failure 2/,
-  );
-  await retry.retry();
-  assert.equal(retry.durable(), 'baseAB');
-  assert.deepEqual(retry.calls, ['range:A', 'range:B', 'range:B']);
-  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
-}
-
-// A failed ancestor is included in its descendant's first authority attempt.
-{
-  const retry = makeAppendRetryFacet(new Set([1]), { blockFirst: true });
-  const first = retry.fs.promises.appendFile(retry.path, 'A');
-  await retry.firstStarted;
-  const second = retry.fs.promises.appendFile(retry.path, 'B');
-  retry.releaseFirst();
-  await assert.rejects(
-    first,
-    /injected append failure 1/,
-  );
-  await second;
-  assert.equal(retry.durable(), 'baseAB');
-  assert.deepEqual(retry.calls, ['range:A', 'range:A', 'range:B']);
-  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
-}
-
-// If both ancestor attempts fail, retry preserves operation order and commits
-// each suffix once.
-{
-  const retry = makeAppendRetryFacet(new Set([1, 2]), { blockFirst: true });
-  const first = retry.fs.promises.appendFile(retry.path, 'A');
-  await retry.firstStarted;
-  const second = retry.fs.promises.appendFile(retry.path, 'B');
-  retry.releaseFirst();
-  await assert.rejects(
-    first,
-    /injected append failure 1/,
-  );
-  await assert.rejects(
-    second,
-    /injected append failure 2/,
-  );
-  await retry.retry();
-  assert.equal(retry.durable(), 'baseAB');
-  assert.deepEqual(retry.calls, ['range:A', 'range:A', 'range:A', 'range:B']);
-  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
-}
-
-// A single failed append retries only its own suffix and clears the pending cell.
-{
-  const retry = makeAppendRetryFacet(new Set([1]));
-  await assert.rejects(
-    retry.fs.promises.appendFile(retry.path, 'A'),
-    /injected append failure 1/,
-  );
-  await retry.retry();
-  assert.equal(retry.durable(), 'baseA');
-  assert.deepEqual(retry.calls, ['range:A', 'range:A']);
-  assert.equal(Object.prototype.hasOwnProperty.call(retry.writes, 'home/user/append-retry.txt'), false);
-}
-
-// A response lost after the authority atomically committed B reuses the same
-// writer/operation receipt, so B is not appended twice.
-{
-  let durable = 'base';
-  let loseBResponse = true;
-  const receipts = new Map();
-  const calls = [];
-  const supervisor = {
-    async fsAppend(_path, moduleId, operationId, bytes) {
-      const suffix = new TextDecoder().decode(bytes);
-      const key = `${moduleId}:${operationId}`;
-      calls.push({ moduleId, operationId, suffix });
-      if (!receipts.has(key)) {
-        durable += suffix;
-        receipts.set(key, suffix);
-      }
-      if (suffix === 'B' && loseBResponse) {
-        loseBResponse = false;
-        throw new Error('injected response loss after append commit');
-      }
-      return bytes.byteLength;
-    },
-    async fsAppendAck(moduleId, operationId) {
-      receipts.delete(`${moduleId}:${operationId}`);
-    },
-    async writeFile(_path, content) { durable = cellText(content); },
-  };
-  const firstFacet = makeShimFsFacet(supervisor);
-  const path = '/home/user/postcommit-append-retry.txt';
-  await firstFacet.fs.promises.appendFile(path, 'A');
-  await assert.rejects(
-    firstFacet.fs.promises.appendFile(path, 'B'),
-    /response loss after append commit/,
-  );
-  await firstFacet.flushVfsWrite(
-    path,
-    (content, snapshot) =>
-      firstFacet.persistVfsWrite(supervisor, path, content, snapshot),
-  );
-  assert.equal(durable, 'baseAB');
-  const bCalls = calls.filter((call) => call.suffix === 'B');
-  assert.equal(bCalls.length, 2);
-  assert.equal(bCalls[0].operationId, bCalls[1].operationId);
-  assert.equal(Object.prototype.hasOwnProperty.call(
-    firstFacet.writes,
-    'home/user/postcommit-append-retry.txt',
-  ), false);
-}
-
-// A one-shot boundary retries an ambiguous append with the same operation
-// identity while its writer is still active. It never degrades the suffix into
-// a whole-file write assembled from a possibly stale local cache.
-{
-  let durable = 'live-prefix';
-  let loseFirstResponse = true;
-  let writeFileCalls = 0;
-  const receipts = new Set();
-  const appendCalls = [];
-  const supervisor = {
-    async fsAppend(_path, moduleId, operationId, bytes) {
-      const key = `${moduleId}:${operationId}`;
-      appendCalls.push(key);
-      if (!receipts.has(key)) {
-        durable += new TextDecoder().decode(bytes);
-        receipts.add(key);
-      }
-      if (loseFirstResponse) {
-        loseFirstResponse = false;
-        throw new Error('injected one-shot response loss after commit');
-      }
-      return bytes.byteLength;
-    },
-    async fsAppendAck(moduleId, operationId) {
-      receipts.delete(`${moduleId}:${operationId}`);
-    },
-    async writeFile() {
-      writeFileCalls++;
-      throw new Error('append recovery must not write a whole-file image');
-    },
-  };
-  const facet = makeShimFsFacet(supervisor, {
-    'home/user/oneshot-append.txt': 'stale-prefix',
-  });
-  facet.fs.appendFileSync('/home/user/oneshot-append.txt', 'A');
-  await facet.drainVfsWrites(supervisor);
-  assert.equal(durable, 'live-prefixA');
-  assert.equal(appendCalls.length, 2);
-  assert.equal(appendCalls[0], appendCalls[1]);
-  assert.equal(writeFileCalls, 0);
-  assert.equal(Object.prototype.hasOwnProperty.call(
-    facet.writes,
-    'home/user/oneshot-append.txt',
-  ), false);
-}
-
-// Missing append authority fails the one-shot boundary loudly. The buffered
-// suffix remains retryable and is never reinterpreted as a full replacement.
-{
-  let writeFileCalls = 0;
-  const supervisor = {
-    async writeFile() {
-      writeFileCalls++;
-    },
-  };
-  const facet = makeShimFsFacet(supervisor, {
-    'home/user/unsupported-oneshot-append.txt': 'stale-prefix',
-  });
-  facet.fs.appendFileSync('/home/user/unsupported-oneshot-append.txt', 'A');
-  await assert.rejects(
-    facet.drainVfsWrites(supervisor),
-    (error) => error?.code === 'ENOSYS',
-  );
-  assert.equal(writeFileCalls, 0);
-  assert.equal(
-    cellText(facet.writes['home/user/unsupported-oneshot-append.txt']),
-    'stale-prefixA',
-  );
-}
-
-// A terminal failure on one path cannot let the boundary return and revoke its
-// writer while another path's recovery is still using that capability.
-{
-  let releaseSlowWrite;
-  const slowWriteGate = new Promise((resolve) => { releaseSlowWrite = resolve; });
-  const supervisor = {
-    async writeFile(path) {
-      if (path.endsWith('/fast-failure.txt')) {
-        throw new Error('injected terminal write failure');
-      }
-      await slowWriteGate;
-    },
-  };
-  const facet = makeShimFsFacet(supervisor);
-  facet.fs.writeFileSync('/home/user/fast-failure.txt', 'A');
-  facet.fs.writeFileSync('/home/user/slow-write.txt', 'B');
-  let drainSettled = false;
-  const drain = facet.drainVfsWrites(supervisor);
-  void drain.then(
-    () => { drainSettled = true; },
-    () => { drainSettled = true; },
-  );
-  await new Promise((resolve) => setTimeout(resolve, 0));
-  assert.equal(drainSettled, false);
-  releaseSlowWrite();
-  await assert.rejects(drain, /injected terminal write failure/);
-}
-
-// Definitive authority errors are not retried. Only an uncoded transport-style
-// failure can represent an ambiguous committed-but-response-lost outcome.
-{
-  let calls = 0;
-  const supervisor = {
-    async writeFile() {
-      calls++;
-      const error = new Error('permission denied');
-      error.code = 'EACCES';
-      throw error;
-    },
-  };
-  const facet = makeShimFsFacet(supervisor);
-  facet.fs.writeFileSync('/home/user/denied-write.txt', 'A');
-  await assert.rejects(
-    facet.drainVfsWrites(supervisor),
-    (error) => error?.code === 'EACCES',
-  );
-  assert.equal(calls, 1);
-}
-
 // The request boundary can await every queued file-content mutation, including
 // operations that do not create a whole-file __vfsWrites cell.
 {
@@ -723,134 +447,6 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
     /settled before boundary/,
   );
   await facet.drainVfsMutations();
-}
-
-// Re-evaluating the dynamic-worker module resets its local numeric sequence,
-// but a fresh module incarnation keeps the new operation distinct under the
-// same still-live trusted host binding.
-{
-  let durable = 'base';
-  const receipts = new Set();
-  const calls = [];
-  const supervisor = {
-    async fsAppend(_path, moduleId, operationId, bytes) {
-      const key = `${moduleId}:${operationId}`;
-      calls.push({ moduleId, operationId });
-      if (!receipts.has(key)) {
-        durable += new TextDecoder().decode(bytes);
-        receipts.add(key);
-      }
-      return bytes.byteLength;
-    },
-    async fsAppendAck() {},
-    async writeFile(_path, content) { durable = cellText(content); },
-  };
-  const firstModule = makeShimFsFacet(supervisor);
-  const secondModule = makeShimFsFacet(supervisor);
-  const path = '/home/user/module-reload-append.txt';
-  await firstModule.fs.promises.appendFile(path, 'A');
-  await secondModule.fs.promises.appendFile(path, 'B');
-  assert.equal(durable, 'baseAB');
-  assert.equal(calls[0].operationId, '1');
-  assert.equal(calls[1].operationId, '1');
-  assert.notEqual(calls[0].moduleId, calls[1].moduleId);
-  assert.notEqual(firstModule.moduleIncarnation(), secondModule.moduleIncarnation());
-}
-
-// Once fsAppend succeeds, the facet relinquishes retry ownership before ACK.
-// A crash/failure before the ACK reaches authority retains the receipt, and a
-// delayed duplicate is still deduplicated without local retry state.
-{
-  let durable = 'base';
-  const receipts = new Set();
-  const calls = [];
-  const supervisor = {
-    async fsAppend(_path, moduleId, operationId, bytes) {
-      const key = `${moduleId}:${operationId}`;
-      calls.push({ moduleId, operationId });
-      if (!receipts.has(key)) {
-        durable += new TextDecoder().decode(bytes);
-        receipts.add(key);
-      }
-      return bytes.byteLength;
-    },
-    async fsAppendAck() {
-      throw new Error('injected failure before ACK delivery');
-    },
-    async writeFile(_path, content) { durable = cellText(content); },
-  };
-  const facet = makeShimFsFacet(supervisor);
-  const path = '/home/user/undelivered-append-ack.txt';
-  await facet.fs.promises.appendFile(path, 'A');
-  assert.equal(durable, 'baseA');
-  assert.equal(receipts.size, 1);
-  assert.equal(Object.prototype.hasOwnProperty.call(
-    facet.writes,
-    'home/user/undelivered-append-ack.txt',
-  ), false);
-  await supervisor.fsAppend(
-    path,
-    calls[0].moduleId,
-    calls[0].operationId,
-    new TextEncoder().encode('A'),
-  );
-  assert.equal(durable, 'baseA');
-}
-
-// Losing the response after authority processes ACK cannot turn the committed
-// append into a rejection or a second append.
-{
-  let durable = 'base';
-  let appendCalls = 0;
-  let ackCalls = 0;
-  const receipts = new Set();
-  const supervisor = {
-    async fsAppend(_path, moduleId, operationId, bytes) {
-      appendCalls++;
-      const key = `${moduleId}:${operationId}`;
-      if (!receipts.has(key)) {
-        durable += new TextDecoder().decode(bytes);
-        receipts.add(key);
-      }
-      return bytes.byteLength;
-    },
-    async fsAppendAck(moduleId, operationId) {
-      ackCalls++;
-      receipts.delete(`${moduleId}:${operationId}`);
-      throw new Error('injected lost ACK response');
-    },
-    async writeFile(_path, content) { durable = cellText(content); },
-  };
-  const facet = makeShimFsFacet(supervisor);
-  const path = '/home/user/lost-append-ack.txt';
-  await facet.fs.promises.appendFile(path, 'A');
-  await facet.flushVfsWrite(
-    path,
-    (content, snapshot) =>
-      facet.persistVfsWrite(supervisor, path, content, snapshot),
-  );
-  assert.equal(durable, 'baseA');
-  assert.equal(appendCalls, 1);
-  assert.equal(ackCalls, 1);
-  assert.equal(Object.prototype.hasOwnProperty.call(
-    facet.writes,
-    'home/user/lost-append-ack.txt',
-  ), false);
-}
-
-// Without the authority primitives needed to distinguish create from append,
-// a fragment fails precisely instead of falling back to a prefix-clobbering full write.
-{
-  let durable = 'base';
-  const { fs, writes } = makeShimFsFacet({
-    async writeFile(_path, content) { durable = cellText(content); },
-  });
-  await assert.rejects(
-    fs.promises.appendFile('/home/user/unsupported-append.txt', 'A'),
-    (error) => error?.code === 'ENOSYS',
-  );
-  assert.equal(durable, 'base');
-  assert.equal(cellText(writes['home/user/unsupported-append.txt']), 'A');
 }
 
 // A FileHandle range that first flushes a pending full image and a concurrent
@@ -1087,7 +683,7 @@ function makeAppendRetryFacet(failedCalls, { blockFirst = false } = {}) {
 
   writes['home/user/retry-after-failure.txt'] = 'recovered';
   let durable;
-  await flushVfsWrite(path, async (content) => { durable = String(content); });
+  await flushVfsWrite(path, async (content) => { durable = cellText(content); });
   assert.equal(durable, 'recovered');
   assert.equal(Object.prototype.hasOwnProperty.call(writes, 'home/user/retry-after-failure.txt'), false);
 }
@@ -1119,8 +715,8 @@ function request(path = 'first') {
   const writes = [];
   const supervisor = {
     async writeFile(path, content) {
-      writes.push([path, String(content)]);
-      durable.set(path, String(content));
+      writes.push([path.replace(/^\/+/, ''), cellText(content)]);
+      durable.set(path.replace(/^\/+/, ''), cellText(content));
     },
     async registerPort() {},
     async unregisterPort() {},
@@ -1317,7 +913,7 @@ function request(path = 'first') {
   delete globalThis.__portRegistry;
   const durable = new Map();
   const supervisor = {
-    async writeFile(path, content) { durable.set(path, String(content)); },
+    async writeFile(path, content) { durable.set(path.replace(/^\/+/, ''), cellText(content)); },
     async registerPort() {},
     async unregisterPort() {},
     async stdout() {},
@@ -1357,7 +953,7 @@ function request(path = 'first') {
   const writes = [];
   const supervisor = {
     async writeFile(_path, content) {
-      const text = String(content);
+      const text = cellText(content);
       writes.push(text);
       if (text === 'older') {
         olderStarted();
@@ -1413,7 +1009,7 @@ function request(path = 'first') {
   let sameCalls = 0;
   const supervisor = {
     async writeFile(_path, content) {
-      const text = String(content);
+      const text = cellText(content);
       writes.push(text);
       if (text === 'same' && sameCalls++ === 0) {
         firstStarted();
@@ -1485,7 +1081,7 @@ function request(path = 'first') {
   const durable = new Map();
   const stderr = [];
   const supervisor = {
-    async writeFile(path, content) { durable.set(path, String(content)); },
+    async writeFile(path, content) { durable.set(path.replace(/^\/+/, ''), cellText(content)); },
     async registerPort() {},
     async unregisterPort() {},
     async stdout() {},

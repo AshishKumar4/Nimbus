@@ -43,3 +43,17 @@ export function waveCalls(send) {
     }),
   };
 }
+
+/**
+ * A call by name, sent as SupervisorRPC sends it through `send(envelope)`
+ * (a session's supervisor-op handler, for the process the envelope's sender
+ * adds): its arguments in `args`, but a wave's stream and fence on the
+ * envelope (waveCalls).
+ * @param {(envelope: Record<string, unknown>) => Promise<any>} send
+ */
+export function opSender(send) {
+  const waves = waveCalls(send);
+  return (name, args) => (name === 'openWaveWriter' || name === 'writeBatchStream'
+    ? waves[name](...args)
+    : send({ op: name, args }));
+}
