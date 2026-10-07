@@ -3233,8 +3233,12 @@ const __fsMod = (() => {
    * reading the same data: all of those are refused a second time for a
    * reason that was already repairable after the first.
    *
-   * One round trip per path, ever: the ledger above is the dedupe, so a read
-   * loop over a non-resident file costs one fetch rather than one per turn.
+   * One round trip per path while it is out: the ledger above is the
+   * dedupe, so a read loop over a non-resident file costs one fetch rather
+   * than one per turn. A fetch whose bytes did not land (its fill was spoiled
+   * by a barrier that could not date them, or the store refused them) is not
+   * an answer: the path is asked for again by the next read that misses it,
+   * up to _FAULT_ATTEMPTS times. Once asked for good, it was answered.
    *
    * Nothing awaits the fill, but it rides the same RPC accounting every other
    * read does, so the drain settles it before teardown. That is the behaviour
@@ -3242,6 +3246,8 @@ const __fsMod = (() => {
    * cost of not doing so is one read the program was going to need anyway.
    */
   const _repairOf = new Map();
+  const _FAULT_ATTEMPTS = 4;
+  const _faultAttempts = new Map();
   function _faultIn(k) {
     if (!_supervisor()) return;
     const speculation = _speculation();
@@ -3256,14 +3262,21 @@ const __fsMod = (() => {
     // read of it later still faults it in.
     if (speculation && speculation.quota && !speculation.quota.file()) return;
     _faultOnce("content", k);
+    const attempt = (_faultAttempts.get(k) || 0) + 1;
+    _faultAttempts.set(k, attempt);
     // Swallowed here rather than at the settle: a repair nobody asked for
     // must not surface as an unhandled rejection, and a failed one is simply
     // a path that stays unanswered and stays in the ledger.
     try {
-      const repair = _observeThenFill(k, speculation && speculation.quota).catch(() => {}).finally(() => _repairOf.delete(k));
+      const repair = _observeThenFill(k, speculation && speculation.quota).catch(() => {}).finally(() => {
+        _repairOf.delete(k);
+        // Not landed and not proven absent: the next miss may ask again.
+        const landed = (__vfsBundle && k in __vfsBundle) || _observedAbsent.has(k);
+        if (!landed && attempt < _FAULT_ATTEMPTS) _faulted.delete("content:" + k);
+      });
       _repairs.push(repair);
       _repairOf.set(k, repair);
-      if (speculation) speculation.repairs.push(repair);
+      if (speculation) { speculation.repairs.push(repair); speculation.issued.add(k); }
     } catch { /* the fill is speculative */ }
   }
 
@@ -16720,7 +16733,7 @@ function __nimbusPrefetchQuota(specifier, limits) {
 async function __nimbusHydrated(step, quota) {
   let missed = null;
   for (let round = 1; ; round++) {
-    const speculation = { misses: new Set(), repairs: [], quota };
+    const speculation = { misses: new Set(), repairs: [], issued: new Set(), quota };
     const outer = globalThis.__nimbusVfsSpeculation;
     globalThis.__nimbusVfsSpeculation = speculation;
     let value;
@@ -16729,7 +16742,10 @@ async function __nimbusHydrated(step, quota) {
     try { value = step(); } catch (e) { error = e; threw = true; } finally { globalThis.__nimbusVfsSpeculation = outer; }
     await Promise.allSettled(speculation.repairs);
     if (quota.error) throw quota.error;
-    const fresh = [...speculation.misses].filter((k) => missed === null || !missed.has(k));
+    // A miss is worth another round when this one issued or joined a fetch
+    // for it: a first miss, or one whose earlier fetch did not land and was
+    // issued again (_faultIn); a miss with no fetch behind it is final.
+    const fresh = [...speculation.misses].filter((k) => missed === null || !missed.has(k) || speculation.issued.has(k));
     if (fresh.length === 0 || speculation.repairs.length === 0) {
       if (threw) throw error;
       return value;
