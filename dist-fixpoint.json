@@ -1,6 +1,6 @@
 {
   "version": 1,
-  "fingerprint": "585fa617a877803bcb292eacea2e6e776638f6b4a466259cbe018db14c88252e",
+  "fingerprint": "e979e54f1786f884c5ab43e5bd96e851eafea1273f2dff256122bec9c9229669",
   "toolchain": {
     "bun": "1.4.0",
     "node": "v22.22.3"
@@ -460,8 +460,8 @@
     "packages/core/dist/runtime/runtime-package.d.ts.map": "480289dd19f7bc640bbb4c3012d0d7fab5365f8a7f69f739055ff885b45bb2a1",
     "packages/core/dist/runtime/runtime-package.js": "9ca30709b48fa22e5f6b9e5a8cefcc7c5139a6d50452720c51feeb585c84d02f",
     "packages/core/dist/runtime/runtime-registry.d.ts": "2313271aabbb1a3b89e8866fef7129693efe5310da0c842fba18219b635a5fcd",
-    "packages/core/dist/runtime/runtime-registry.d.ts.map": "7f8c0b8bd7495ae79b88f01566b839f4ecd4fa4b3bc6a72d4ffa959abb278067",
-    "packages/core/dist/runtime/runtime-registry.js": "649d4b4fd7ab0e04bceaf9a550f766cf6d2671c255d9635cfd27cbcacf982594",
+    "packages/core/dist/runtime/runtime-registry.d.ts.map": "c1e061cbebcf0e33b7a90768b078affa0dfc34b3a11ea46c089032c2760a7da8",
+    "packages/core/dist/runtime/runtime-registry.js": "df7a87276ba1876141990f907520e60aac376fa93b57d049bd1fc1b2cc403eab",
     "packages/core/dist/runtime/runtime-stdio.d.ts": "99fa7ed7a3a8e9fa63fdd490f004fafc4edef2c9ee99206f868ad026a56682a9",
     "packages/core/dist/runtime/runtime-stdio.d.ts.map": "72a553b55874beaca659e2be30aff6c6dc4fe0ee9aee21ec96b9f624fee55270",
     "packages/core/dist/runtime/runtime-stdio.js": "4b307afe4fe034631238631fb7e14158776a5f66d533d37ab5738c07b6f7eca8",
@@ -1220,7 +1220,7 @@
     "packages/core/src/runtime/runtime-manager.ts": "17dca3b070000838db45363d8d8d100fe66c1d2ccedec83ef7cd5d609dd47301",
     "packages/core/src/runtime/runtime-manifest.ts": "e39d00e3bb1cf4f56a7fcf37cd80fd1ff042c78919168a5d7eaed6f750fcc46f",
     "packages/core/src/runtime/runtime-package.ts": "2862e655b33c71264b8ef8679838fd697a5995d54419bc73a60559898b6c9048",
-    "packages/core/src/runtime/runtime-registry.ts": "5414e422023277201286c6f77b2ce75e890f8fba0c12d24e801a733cd9831be7",
+    "packages/core/src/runtime/runtime-registry.ts": "f001ad8ed412a23377e37e44185a9ea9d1e60ae884b7f8f0fb1b386176c01eb1",
     "packages/core/src/runtime/runtime-stdio.ts": "762a27aec181c3c707e9896bf233d7f4809eae20fe1ebcdcf133164a11d49401",
     "packages/core/src/runtime/server-launch.ts": "8c355b6a686eb7a8c9240c49fc59a0e6f7409efa202388a37b97ebc0455aad18",
     "packages/core/src/runtime/session-process-supervisor.ts": "8778910a27846b4ce761f58698a6d1474701a9f41ff6849f5f2f450dcf5c42b7",
