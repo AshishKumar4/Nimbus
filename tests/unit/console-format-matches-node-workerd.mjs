@@ -194,7 +194,8 @@ try {
     const ESC = '\u001b[';
     for (const [env, coloured] of [['', true], ['NO_COLOR=1 ', false], ['NODE_DISABLE_COLORS=1 ', false], ['TERM=dumb ', false], ['FORCE_COLOR=0 ', false]]) {
       const run = await t.run(`${env}node -e "console.log({ a: 1 })"`, 60_000);
-      const line = run.output.split('\n').find((l) => l.includes('a:'));
+      // The object's line, not the command's echo.
+      const line = run.output.split('\n').find((l) => l.includes('a:') && !l.includes('console.log'));
       assert.ok(line, `${env}node printed the object: ${JSON.stringify(run.output.slice(-300))}`);
       assert.equal(line.includes(ESC), coloured, `${env || 'no env: '}node at a terminal ${coloured ? 'colours' : 'does not colour'}: ${JSON.stringify(line)}`);
     }
