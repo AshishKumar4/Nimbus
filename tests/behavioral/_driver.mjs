@@ -45,12 +45,37 @@ export function wsHeaders() {
   return Object.keys(headers).length > 0 ? { headers } : undefined;
 }
 
+/**
+ * What the session `sid` recorded about itself since `openedAt`, read after
+ * its socket closed abnormally: its isolate generation now, and its recovery
+ * ring's transitions since then (/api/_diag/memory, which every probe
+ * target serves: NIMBUS_DEBUG, PROBE_TARGET_VARS). A `ws-close`/`ws-error`
+ * on the generation it had means the session saw its socket end and lived:
+ * the connection dropped. An `init-session` after the socket opened, on a
+ * higher generation, means a fresh isolate: the session was reset or
+ * evicted. The ring is per isolate, so another session sharing it can add
+ * lines. Resolves to text, never throws; bounded at 10 s.
+ */
+async function sessionRecord(sid, openedAt, base) {
+  try {
+    const r = await fetch(`${base}/s/${encodeURIComponent(sid)}/api/_diag/memory`, { headers: requestHeaders(), signal: AbortSignal.timeout(10_000) });
+    if (!r.ok) return `the session's record: unavailable (/api/_diag/memory answered ${r.status})`;
+    const diag = await r.json();
+    const time = (at) => new Date(at).toISOString().slice(11, 23);
+    const since = (diag.recoveryEvents ?? []).filter((e) => e.at >= openedAt - 1000).reverse()
+      .map((e) => `${time(e.at)} ${e.fromState}→${e.toState} ${e.trigger} gen ${e.isolateGen}${e.dataLoss ? ' DATA LOSS' : ''}`);
+    return `the session's record (socket opened ${time(openedAt)}; isolate gen now ${diag.hib?.isolateGen ?? '?'}): ${since.length ? since.join('; ') : 'no transitions since the socket opened'}`;
+  } catch (error) {
+    return `the session's record: unavailable (${error.message})`;
+  }
+}
+
 /** A close frame in one clause: `code 1006 (abnormal): <reason>`. */
 function describeSocketClose(code, reason) {
   const text = reason ? String(reason).slice(0, 200) : '';
   const known = code === 1000 ? 'normal'
     : code === 1001 ? 'going away'
-    : code === 1006 ? 'abnormal — no close frame; usually a session DO reset, named per AGENTS.md "Tails reset sessions"'
+    : code === 1006 ? 'abnormal — no close frame: the session reset, or the connection dropped; the session\'s own record follows'
     : code === 1011 ? 'server error'
     : code === 1012 ? 'service restart'
     : null;
@@ -319,6 +344,9 @@ export class Terminal {
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
+    /** What the session recorded about an abnormal close (sessionRecord), once read. */
+    this.closeRecord = null;
+    this.closing = false;
   }
 
   async connect(timeoutMs = 15_000) {
@@ -326,10 +354,16 @@ export class Terminal {
     this.connected = false;
     this.closed = false;
     this.closeDetail = null;
-    this.ws.on('open', () => { this.connected = true; });
+    this.closeRecord = null;
+    this.closing = false;
+    let openedAt = Date.now();
+    this.ws.on('open', () => { this.connected = true; openedAt = Date.now(); });
     this.ws.on('close', (code, reason) => {
       this.closed = true;
       this.closeDetail = describeSocketClose(code, reason);
+      // A close this side did not ask for classifies itself: the session's
+      // own record of what happened to it since the socket opened.
+      if (!this.closing && code !== 1000) this.closeRecord = sessionRecord(this.sid, openedAt, this.wsBase.replace(/^ws/, 'http'));
     });
     this.ws.on('message', (data) => {
       try {
@@ -370,8 +404,9 @@ export class Terminal {
           if (predicate(stripAnsi(this.buf))) { cleanup(); resolve(Date.now() - t0); }
           else if (this.closed) {
             cleanup();
-            reject(new Error(`Terminal closed while waiting for ${label} after ${Date.now() - t0}ms `
-              + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}`));
+            const elapsed = Date.now() - t0;
+            Promise.resolve(this.closeRecord).then((record) => reject(new Error(`Terminal closed while waiting for ${label} after ${elapsed}ms `
+              + `(${this.closeDetail ?? 'no close frame'}); tail: ${JSON.stringify(stripAnsi(this.buf).slice(-600))}${record ? `\n${record}` : ''}`)));
           }
         } catch (error) { cleanup(); reject(error); }
       };
@@ -424,6 +459,7 @@ export class Terminal {
   }
 
   async close() {
+    this.closing = true;
     if (this.ws && this.ws.readyState !== WebSocket.CLOSED) {
       try { this.ws.close(); } catch { /* swallow */ }
     }
