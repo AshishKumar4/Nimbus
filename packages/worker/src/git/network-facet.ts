@@ -81,8 +81,10 @@ export interface GitNetworkOpts {
    * git's remove_junk does (builtin/clone.c).
    */
   cloneRootExisted?: boolean;
-  /** Clone-only tuning: one abort invocation's budget before it answers `more`. */
+  /** Clone-abort: one invocation's time budget before it answers `more` (the driver's CLONE_ABORT_PIECE_MS). */
   cloneAbortPieceMs?: number;
+  /** Clone-only verification knob: the entries one abort invocation removes before it answers `more` (else its time budget alone). */
+  cloneAbortPieceEntries?: number;
   /** Clone-only: normalized root covered by the exclusive mutation lease. */
   exclusiveMutationRoot?: string;
   /** Trusted supervisor-only lease owner; never sent to the dynamic worker. */
@@ -1134,12 +1136,7 @@ export async function execGitNetwork(
                   facets.entrypoint,
                   'clone-abort',
                   crypto.randomUUID(),
-                  {
-                    ...facetOpts,
-                    jobId,
-                    optionsHash,
-                    cloneAbortPieceMs: positiveSafeInteger(facetOpts.cloneAbortPieceMs, CLONE_ABORT_PIECE_MS, 'clone abort piece'),
-                  },
+                  { ...facetOpts, jobId, optionsHash, cloneAbortPieceMs: CLONE_ABORT_PIECE_MS },
                   Date.now() + CLONE_ABORT_TIMEOUT_MS,
                   CLONE_ABORT_TIMEOUT_MS,
                 );
@@ -2540,9 +2537,10 @@ export default {
         const gitdir = root + '/.git';
         const markerPath = cloneJobMarkerPath(opts.dir);
         const stopAt = Date.now() + (Number(opts.cloneAbortPieceMs) || 20000);
+        const entries = Number(opts.cloneAbortPieceEntries) || Infinity;
         let removed = 0;
         let more = false;
-        const spent = () => removed > 0 && Date.now() >= stopAt;
+        const spent = () => removed > 0 && (Date.now() >= stopAt || removed >= entries);
         // Every directory below the destination, parents before children.
         const directories = [];
         const walk = async (dir) => {

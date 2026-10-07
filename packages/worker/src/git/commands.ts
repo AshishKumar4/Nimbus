@@ -2694,7 +2694,7 @@ export async function runGitCommand(
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
               cloneRootExisted,
-              cloneAbortPieceMs: Number(ctx.env.NIMBUS_GIT_CLONE_ABORT_PIECE_MS) || undefined,
+              cloneAbortPieceEntries: Number(ctx.env.NIMBUS_GIT_CLONE_ABORT_PIECE_ENTRIES) || undefined,
               mutationOwner,
               rotateMutationOwner: () => (mutationOwner = vfs.rotateExclusiveMutation(mutationOwner)),
               // Verification/tuning knobs: smaller pieces make ordinary repos
@@ -2718,6 +2718,8 @@ export async function runGitCommand(
               );
             } else {
               ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
+              // What the failed clone wrote could not all be removed: say so, and where.
+              if (result.cleanupError) ctx.stderr.write(`[git] could not remove the failed clone at '${dest}': ${result.cleanupError}\n`);
             }
             return result.success;
           } finally {

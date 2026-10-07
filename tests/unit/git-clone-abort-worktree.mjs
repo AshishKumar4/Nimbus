@@ -5,7 +5,7 @@
 //   - a destination it made: gone, with every file it checked out and .git;
 //   - its leading directories (nested/a of nested/a/repo): kept;
 //   - a destination that existed, empty: kept, empty.
-// The abort runs in pieces (a 1 ms budget each, so several), and finishes.
+// The abort runs in pieces (40 entries each, so several), and finishes.
 // Red before: the abort removed .git only, and the checked-out files stayed
 // (staging, next.js --depth 1: 32,940 files with no .git).
 
@@ -68,14 +68,14 @@ try {
       const cloned = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', dest], {
         NIMBUS_GIT_BLOBS_PER_BATCH: '10',
         NIMBUS_GIT_BATCH_CONCURRENCY: '1',
-        NIMBUS_GIT_CLONE_ABORT_PIECE_MS: '1',
+        NIMBUS_GIT_CLONE_ABORT_PIECE_ENTRIES: '40',
       });
       globalThis.fetch = realFetch;
       assert.notEqual(cloned.code, 0, `${dest}: the clone fails`);
       assert.match(cloned.stderr, /HTTP 403/);
       const aborts = session.requests.phases.filter((phase) => phase === 'clone-abort').length - abortsBefore;
       assert.ok(aborts > 1, `${dest}: the abort ran in pieces (${aborts}): ${cloned.stderr.slice(-400)}`);
-      assert.doesNotMatch(cloned.stderr, /did not finish|clone-abort failed/, cloned.stderr.slice(-400));
+      assert.doesNotMatch(cloned.stderr, /could not remove the failed clone/, cloned.stderr.slice(-400));
       if (dest === 'empty') {
         assert.deepEqual(session.kernel.readdir('home/user/empty').map(({ name }) => name), [], 'a destination that existed: kept, empty');
       } else {
