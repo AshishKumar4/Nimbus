@@ -20,6 +20,17 @@
  * refuses to print it (ERR_EVAL_ESM_CANNOT_PRINT), which the code becomes.
  * Nor is code with a `return` at its top, which Node refuses to compile.
  */
+/** The code an eval runs, and when Node refuses it. */
+export interface NodeEvalProgram {
+    code: string;
+    /**
+     * Node refuses the code as it compiles it (a syntax error, or `-p` of
+     * module syntax): after `-r`'s modules have run, before `--import`'s load
+     * (eval_string.js compiles before run_main.js imports them). Known for
+     * `-p`'s code, which is parsed here; `-e`'s is not.
+     */
+    refusedBeforeImports: boolean;
+}
 /**
  * The entry code for `node -e <code>`, or `-p`: with `print`, a body that
  * returns the code's completion value. Node keeps the identifier `crypto`
@@ -27,7 +38,7 @@
  * wrapping code that names it (eval_string.js: the same test, the same
  * wrappers).
  */
-export declare function nodeEvalCode(code: string, print: boolean): string;
+export declare function nodeEvalProgram(code: string, print: boolean): NodeEvalProgram;
 /** The entry code for `node -p` reading its code from stdin (eval_stdin.js: no `crypto` wrapper). */
-export declare function nodeStdinPrintCode(source: string): string;
+export declare function nodeStdinPrintProgram(source: string): NodeEvalProgram;
 //# sourceMappingURL=node-eval.d.ts.map

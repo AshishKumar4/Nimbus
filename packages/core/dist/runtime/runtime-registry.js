@@ -43,7 +43,7 @@ import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
 import { parseNodeCommandLine } from './node-cli.js';
-import { nodeEvalCode, nodeStdinPrintCode } from './node-eval.js';
+import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
  * The first one wins (Node's rule); the filesystem root is not a package.
@@ -248,7 +248,9 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: program.filename,
                 dirname: program.dirname,
                 command: program.command,
-                ...(spec.nodeCommandLine ? { node: { ...launch, print: program.print === true } } : {}),
+                ...(spec.nodeCommandLine
+                    ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+                    : {}),
                 ...program.stdin,
                 ...(program.reserved === false ? {} : reservedProcess),
                 ...(captureOutput ? { captureOutput: true } : {}),
@@ -277,10 +279,11 @@ export function buildRuntimeHandler(spec, ctx0) {
         // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
         // the value the process prints when it exits.
         if (line.eval !== undefined) {
-            const code = spec.nodeCommandLine ? nodeEvalCode(line.eval, print) : line.eval;
+            const { code, refusedBeforeImports } = spec.nodeCommandLine ? nodeEvalProgram(line.eval, print) : { code: line.eval, refusedBeforeImports: false };
             const programArgs = args.slice(flagSpan);
             return runProgram(code, {
                 print,
+                refusedBeforeImports,
                 argv: programArgs,
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
@@ -326,9 +329,10 @@ export function buildRuntimeHandler(spec, ctx0) {
         if (scriptPath === '-') {
             const input = ctx.stdin ? (await ctx.stdin.readAll()) : '';
             // `-p` prints the value of the code it read (eval_stdin.js).
-            const code = spec.nodeCommandLine && print ? nodeStdinPrintCode(input) : input;
+            const { code, refusedBeforeImports } = spec.nodeCommandLine && print ? nodeStdinPrintProgram(input) : { code: input, refusedBeforeImports: false };
             return runProgram(code, {
                 print,
+                refusedBeforeImports,
                 argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',

@@ -21,6 +21,7 @@
  * Nor is code with a `return` at its top, which Node refuses to compile.
  */
 import { parse } from 'acorn';
+import { full } from 'acorn-walk';
 import { applySourceEdits } from './javascript-ast.js';
 /**
  * The entry code for `node -e <code>`, or `-p`: with `print`, a body that
@@ -29,15 +30,15 @@ import { applySourceEdits } from './javascript-ast.js';
  * wrapping code that names it (eval_string.js: the same test, the same
  * wrappers).
  */
-export function nodeEvalCode(code, print) {
+export function nodeEvalProgram(code, print) {
     const namesCrypto = /\bcrypto\b/.test(code);
     if (!print)
-        return namesCrypto ? `(crypto=>{{${code}}})(require('node:crypto'))` : code;
-    return printedCode(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code);
+        return { code: namesCrypto ? `(crypto=>{{${code}}})(require('node:crypto'))` : code, refusedBeforeImports: false };
+    return printedProgram(namesCrypto ? `let crypto=require("node:crypto");{${code}}` : code);
 }
 /** The entry code for `node -p` reading its code from stdin (eval_stdin.js: no `crypto` wrapper). */
-export function nodeStdinPrintCode(source) {
-    return printedCode(source);
+export function nodeStdinPrintProgram(source) {
+    return printedProgram(source);
 }
 const SCRIPT = { ecmaVersion: 'latest', sourceType: 'script', allowHashBang: true };
 const MODULE = { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true };
@@ -49,55 +50,67 @@ function parsed(source, options) {
         return null;
     }
 }
-function printedCode(source) {
+function printedProgram(source) {
     const program = parsed(source, SCRIPT);
     if (program === null) {
-        // Thrown as the program's first act, after its preloads, as Node throws
-        // it; its stack leads with the code, as a Node error's does.
+        // Thrown as the program's first act, after its -r preloads, as Node
+        // throws it; its stack leads with the code, as a Node error's does.
         if (parsed(source, MODULE) !== null) {
-            return 'const e = new Error("--print cannot be used with ESM input"); e.code = "ERR_EVAL_ESM_CANNOT_PRINT";'
-                + ' e.name = "Error [ERR_EVAL_ESM_CANNOT_PRINT]"; e.stack; delete e.name; throw e;';
+            return {
+                code: 'const e = new Error("--print cannot be used with ESM input"); e.code = "ERR_EVAL_ESM_CANNOT_PRINT";'
+                    + ' e.name = "Error [ERR_EVAL_ESM_CANNOT_PRINT]"; e.stack; delete e.name; throw e;',
+                refusedBeforeImports: true,
+            };
         }
         // A return at the top compiles in the entry's function, not in Node's script.
-        if (parsed(source, { ...SCRIPT, allowReturnOutsideFunction: true }) !== null)
-            return 'throw new SyntaxError("Illegal return statement");';
+        if (parsed(source, { ...SCRIPT, allowReturnOutsideFunction: true }) !== null) {
+            return { code: 'throw new SyntaxError("Illegal return statement");', refusedBeforeImports: true };
+        }
         // Neither: it fails to compile in the process, as it does in Node.
-        return source;
+        return { code: source, refusedBeforeImports: true };
     }
-    const result = freshName(source, '__nimbus_print_result');
-    const rewriter = new CompletionRewriter(source, result, freshName(source, '__nimbus_print_backup'));
+    const rewriter = new CompletionRewriter(source, freshNames(program));
     rewriter.process(program.body, 0);
-    return `${rewriter.apply()}\n;var ${rewriter.names()};return ${result};`;
+    return { code: `${rewriter.apply()}\n;var ${rewriter.declared.join(',')};return ${rewriter.result};`, refusedBeforeImports: false };
 }
-/** `base`, or `base` and a number, so that it names nothing the source does. */
-function freshName(source, base) {
-    if (!source.includes(base))
-        return base;
-    let n = 1;
-    while (source.includes(`${base}${n}`))
-        n++;
-    return `${base}${n}`;
+/**
+ * Names for the rewrite's variables: `base`, or `base` and a number, naming
+ * no identifier of the program, as the parser decoded it (`\u005f` is `_`),
+ * nor one taken before.
+ */
+function freshNames(program) {
+    const taken = new Set();
+    full(program, (node) => {
+        if (node.type === 'Identifier')
+            taken.add(node.name);
+    });
+    return (base) => {
+        let name = base;
+        for (let n = 1; taken.has(name); n++)
+            name = `${base}${n}`;
+        taken.add(name);
+        return name;
+    };
 }
 const LOOPS = new Set(['WhileStatement', 'DoWhileStatement', 'ForStatement', 'ForInStatement', 'ForOfStatement']);
 /** V8's Processor (src/parsing/rewriter.cc), over ESTree, as source insertions. */
 class CompletionRewriter {
     source;
-    result;
-    backup;
+    fresh;
     /** A later statement already decides the value. */
     isSet = false;
     /** Inside a loop, a switch or a labelled statement: a `break` can leave from anywhere. */
     breakable = false;
-    backupUsed = false;
     insertions = [];
-    constructor(source, result, backup) {
+    /** The variable holding the value. */
+    result;
+    /** The variables the rewritten code declares: the value's, and each finally block's saved value. */
+    declared;
+    constructor(source, fresh) {
         this.source = source;
-        this.result = result;
-        this.backup = backup;
-    }
-    /** The variables the rewritten code declares. */
-    names() {
-        return this.backupUsed ? `${this.result},${this.backup}` : this.result;
+        this.fresh = fresh;
+        this.result = fresh('__nimbus_print_result');
+        this.declared = [this.result];
     }
     apply() {
         const ordered = [...this.insertions].sort((a, b) => a.at - b.at
@@ -197,10 +210,17 @@ class CompletionRewriter {
                 this.isSet = true;
                 this.process(node.finalizer.body, depth + 1);
                 if (this.isSet) {
-                    // Kept and restored: the finally block does not change the value it was entered with.
-                    this.backupUsed = true;
-                    this.insert(node.finalizer.start + 1, `${this.backup}=${this.result};`, false, depth);
-                    this.insert(node.finalizer.end - 1, `;${this.result}=${this.backup};`, true, depth);
+                    // Kept and restored, in a variable of its own: the finally block
+                    // does not change the value it was entered with.
+                    const backup = this.fresh('__nimbus_print_backup');
+                    this.declared.push(backup);
+                    this.insert(node.finalizer.start + 1, `${backup}=${this.result};`, false, depth);
+                    this.insert(node.finalizer.end - 1, `;${this.result}=${backup};`, true, depth);
+                }
+                else {
+                    // It breaks or continues with no value of its own before: the
+                    // try statement's value is undefined.
+                    this.insert(node.finalizer.start + 1, `${this.result}=void 0;`, false, depth);
                 }
                 this.isSet = false;
             }
