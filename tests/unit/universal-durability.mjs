@@ -38,7 +38,7 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { resolveDurableWorkerImage } from '../../packages/worker/src/facets/durable-images.ts';
 import { deriveResidentOwner } from '../../packages/worker/src/facets/resident-identity.ts';
 import { rubyResidentStart } from '../../packages/worker/src/runtime/ruby-resident.ts';

@@ -27,7 +27,8 @@ import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast
 /**
  * Bundled ESM this large is lowered by the bounded declaration rewrite in the
  * session rather than by esbuild: esbuild's Go heap grows with the module and
- * is never released.
+ * is never released. Its named imports are bound once, not live: at this size
+ * there is no AST to find their uses in.
  */
 export const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
 /**

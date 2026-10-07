@@ -402,7 +402,7 @@ function lossy(loss, losses = 1) {
 {
   const { SqliteVFS } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
   const { CRED_KERNEL } = await import('../../packages/core/src/runtime/os-contracts.ts');
-  const { createSqliteVfsTestHarness } = await import('./sqlite-vfs-test-harness.mjs');
+  const { createSqliteVfsTestHarness } = await import('./lib/sqlite-vfs-test-harness.mjs');
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx).as(CRED_KERNEL);
   let calls = 0;

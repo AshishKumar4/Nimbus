@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 47 s wall, 34 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // The wasm half of Nimbus, off Cloudflare.
 //
 // `nimbus-workspace-embedded.mjs` proves the JavaScript half runs over
@@ -19,7 +20,7 @@
 
 import assert from 'node:assert/strict';
 import { Database } from 'bun:sqlite';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { missingRuntimeFile, RUNTIMES, seedRuntime } from './lib/wasm-runtimes.mjs';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host.ts';

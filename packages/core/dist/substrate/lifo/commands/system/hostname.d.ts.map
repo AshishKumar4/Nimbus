@@ -1,1 +1,1 @@
-{"version":3,"file":"hostname.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/system/hostname.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAE3C,QAAA,MAAM,OAAO,EAAE,OAId,CAAC;AAEF,eAAe,OAAO,CAAC"}
+{"version":3,"file":"hostname.d.ts","sourceRoot":"","sources":["../../../../../src/substrate/lifo/commands/system/hostname.ts"],"names":[],"mappings":"AAAA,OAAO,KAAK,EAAE,OAAO,EAAE,MAAM,aAAa,CAAC;AAG3C,6FAA6F;AAC7F,QAAA,MAAM,OAAO,EAAE,OAGd,CAAC;AAEF,eAAe,OAAO,CAAC"}

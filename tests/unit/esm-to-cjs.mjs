@@ -190,5 +190,99 @@ for (const [label, source] of Object.entries(CASES)) {
   }
 }
 
+// Live bindings, against real Node 22: an importer reads an exporter's
+// binding as it is now, not as it was when the import ran; through a named
+// import, a default import, an export of an import, a re-export and a
+// namespace, and across cycles: a function another module reads while the
+// cycle is still evaluating is there, declarations being hoisted, as Node's
+// are and as esbuild installs its getters first. A call through an import leaves `this`
+// unbound, a write to an import throws, and a name a nested scope declares
+// again is that scope's.
+{
+  const FILES = {
+    'counter.mjs': [
+      'export let count = 0;',
+      'export function increment() { count++; }',
+      'export default count;',
+      'let d = 1; export { d as live };',
+      'export function bumpLive() { d++; }',
+      "export function who() { return this === undefined || this === globalThis ? 'unbound' : 'bound'; }",
+      "export function tag(strings) { return strings[0] + ':' + who.call(this); }",
+    ].join('\n'),
+    'importer.mjs': [
+      "import { count, increment, live, bumpLive, who, tag } from './counter.mjs';",
+      "import first, { default as alsoFirst } from './counter.mjs';",
+      "import * as ns from './counter.mjs';",
+      "export { count as reexported } from './counter.mjs';",
+      'export { count as relayed };',
+      'export default count;',
+      'const seen = [count, live];',
+      'increment(); increment(); bumpLive();',
+      'seen.push(count, ns.count, live, first, alsoFirst);',
+      "const object = { count, [live]: 'key' };",
+      'function shadow(count) { return count; }',
+      'const arrow = (live) => live;',
+      'function nested() { let count = 99; { return count; } }',
+      'class Holder { count = 7; get value() { return this.count; } }',
+      'count: for (;;) break count;',
+      'const writes = [() => { count = 5; }, () => { count++; }, () => { ({ count } = { count: 1 }); }, () => { [count] = [1]; }]',
+      "  .map((write) => { try { write(); return 'wrote'; } catch (error) { return error.constructor.name; } });",
+      'export const results = [...seen, Object.keys(object), object.count, shadow(5), arrow(6), nested(), new Holder().value,',
+      '  typeof count, who(), tag`t`, ns.who(), writes, count];',
+    ].join('\n'),
+    'cycle-a.mjs': "import { readA } from './cycle-b.mjs'; export let a = 'early'; a = 'late'; export const seen = readA();",
+    'cycle-b.mjs': "import { a } from './cycle-a.mjs'; export function readA() { return a; }",
+    'hoist-a.mjs': "import './hoist-b.mjs'; export function helper() { return 'h'; } export { early } from './hoist-b.mjs';",
+    'hoist-b.mjs': "import { helper } from './hoist-a.mjs'; export const early = helper();",
+  };
+  const PROGRAM = (load) => `
+    const m = await ${load('importer.mjs')};
+    const c = await ${load('counter.mjs')};
+    c.increment();
+    const cycle = await ${load('cycle-a.mjs')};
+    const hoisted = await ${load('hoist-a.mjs')};
+    return { results: m.results, reexported: m.reexported, relayed: m.relayed, default: m.default, seen: cycle.seen, early: hoisted.early };
+  `;
+
+  const dir = mkdtempSync(join(tmpdir(), 'esm-live-'));
+  try {
+    for (const [name, text] of Object.entries(FILES)) writeFileSync(join(dir, name), text);
+    const nodeRun = spawnSync('node', ['--input-type=module', '-e',
+      `process.stdout.write(JSON.stringify(await (async () => { ${PROGRAM((name) => `import(${JSON.stringify(join(dir, name))})`)} })()));`,
+    ], { encoding: 'utf8' });
+    assert.equal(nodeRun.status, 0, nodeRun.stderr);
+    const node = JSON.parse(nodeRun.stdout);
+    assert.deepEqual(node.results.slice(0, 7), [0, 1, 2, 2, 2, 0, 0], 'the oracle: what Node gives');
+    if (process.env.ESM_LIVE_DEBUG) console.log(JSON.stringify(node));
+
+    for (const body of ['sync', 'async']) {
+      // require over the lowered files: one module per name, run when first
+      // required, its exports object handed out unfinished to a cycle.
+      const modules = new Map();
+      const pending = [];
+      const require = (specifier) => {
+        const name = specifier.slice(2);
+        if (!modules.has(name)) {
+          const module = { exports: {} };
+          modules.set(name, module);
+          pending.push(new Function('module', 'exports', 'require', emitCommonJs(FILES[name], readEsmRecords(FILES[name]), { body }))(
+            module, module.exports, require,
+          ));
+        }
+        return modules.get(name).exports;
+      };
+      const load = async (name) => {
+        const exports = require(`./${name}`);
+        await Promise.all(pending);
+        return exports;
+      };
+      const lowered = await new Function('load', `return (async () => { ${PROGRAM((name) => `load(${JSON.stringify(name)})`)} })();`)(load);
+      assert.deepEqual(JSON.parse(JSON.stringify(lowered)), node, `${body} body: imports are live bindings, as in Node`);
+    }
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+}
+
 await esbuild.stop?.();
 console.log(`esm-to-cjs: ${Object.keys(CASES).length} modules lower as esbuild's CommonJS does, in both bodies and the bundle rewrite`);

@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 38 s wall, 18 s CPU, 0.6 GiB peak (6 runs, 2026-10-06)
 // A facet of the local facet host is a realm of its own (Kinu ask 17,
 // local-facet-host.ts:183).
 //
@@ -98,22 +99,56 @@ const family = () => {
   }
   return [...members];
 };
-/** Clock ticks of CPU this process and its descendants have used. */
+/** Clock ticks of CPU this process and its descendants have used (a process's count includes its ended threads). */
 const cpuTicks = () => family().reduce((sum, pid) => { const stat = statOf(pid); return stat ? sum + Number(stat[11]) + Number(stat[12]) : sum; }, 0);
+/** Each live thread of the family, as `pid/tid`, and the clock ticks of CPU it has used. */
+const threadTicks = () => {
+  const ticks = new Map();
+  for (const pid of family()) {
+    let tids = [];
+    try { tids = readdirSync(`/proc/${pid}/task`); } catch { /* gone */ }
+    for (const tid of tids) {
+      try {
+        const stat = readFileSync(`/proc/${pid}/task/${tid}/stat`, 'utf8').split(') ')[1].split(' ');
+        ticks.set(`${pid}/${tid}`, Number(stat[11]) + Number(stat[12]));
+      } catch { /* gone */ }
+    }
+  }
+  return ticks;
+};
 const threadCount = () => family().reduce((sum, pid) => { try { return sum + readdirSync(`/proc/${pid}/task`).length; } catch { return sum; } }, 0);
 const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
+/** CPU over 400 ms: the family's, and the part of it spent by threads `before` (a {@link settled} count) already had. */
+async function cpuWindow(before) {
+  const fromAll = cpuTicks();
+  const from = threadTicks();
+  await sleep(400);
+  const all = cpuTicks() - fromAll;
+  let host = 0;
+  for (const [thread, ticks] of threadTicks()) if (before.threadIds.includes(thread) && from.has(thread)) host += ticks - from.get(thread);
+  return { all, host };
+}
 /**
- * That what an abort ended is over: from 1 s after it, 400 ms in which the
- * family spends no more than a tick or two of CPU (a spinning thread spends
- * about 40), and no process or thread is left that `before` (a
- * {@link settled} count) did not have.
+ * That what an abort ended is over: from 1 s after it, 400 ms in which what
+ * the call started (any process or thread `before` did not have, ended ones
+ * included) spends no more than a tick or two of CPU (a spinning thread
+ * spends about 40, and some in every window however loaded the machine),
+ * and no process or thread is left that `before` did not have. The host's
+ * own threads, which `before` had, go quiet too, but their work after an
+ * abort (a V8 helper finishing a collection or a compile) is finite and a
+ * loaded machine runs it late: measured under contention, 4 to 6 ticks from
+ * one such thread a second after the abort, asleep by the window's end, and
+ * none in any window after. So a window of theirs is waited for, up to
+ * 10 s; a spin in one never gives one.
  */
 async function assertEnded(what, before) {
   await sleep(1000);
-  const from = cpuTicks();
-  await sleep(400);
-  const spent = cpuTicks() - from;
-  assert.ok(spent <= 3, `${what}: nothing spins after the abort (${spent} ticks in 400 ms)`);
+  const first = await cpuWindow(before);
+  const spent = first.all - first.host;
+  assert.ok(spent <= 3, `${what}: nothing it started spins after the abort (${spent} ticks in 400 ms)`);
+  let host = first.host;
+  for (const deadline = Date.now() + 10_000; host > 3 && Date.now() < deadline;) host = (await cpuWindow(before)).host;
+  assert.ok(host <= 3, `${what}: the host's own threads go quiet after the abort (${host} ticks in the last 400 ms of 10 s)`);
   const left = family().filter((pid) => !before.processes.includes(pid));
   assert.deepEqual(left, [], `${what}: no process outlives it`);
   const threads = threadCount();
@@ -130,7 +165,7 @@ async function settled() {
   await warm.submit(function warm() { return 1; }, null);
   warm.dispose();
   await sleep(1000);
-  return { processes: family(), threads: threadCount() };
+  return { processes: family(), threads: threadCount(), threadIds: [...threadTicks().keys()] };
 }
 
 const hostGlobals = () => ({

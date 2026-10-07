@@ -6,7 +6,7 @@ import { createTar } from '../../packages/core/src/substrate/lifo/utils/archive.
 import { createNpmCommand } from '../../packages/core/src/substrate/lifo/commands/system/npm.ts';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { readText } from '../../packages/core/src/vfs/vfs.ts';
 
 function archive(entries, prefix = 'package') {
@@ -124,13 +124,16 @@ try {
     },
   });
 
+  // The fallback picks from the packument, as the worker's resolver does.
   globalThis.fetch = async (url) => {
-    if (String(url).endsWith('/example/latest')) return Response.json({
-      name: 'example', version: '1.0.0', dist: { tarball: 'https://registry.test/example.tgz' },
+    if (String(url).endsWith('/example')) return Response.json({
+      name: 'example',
+      'dist-tags': { latest: '1.0.0' },
+      versions: { '1.0.0': { name: 'example', version: '1.0.0', dist: { tarball: 'https://registry.test/example.tgz' } } },
     });
     assert.equal(String(url), 'https://registry.test/example.tgz');
     const response = new Response(archive(entries));
-    response.arrayBuffer = () => { throw new Error('tarball must not be buffered'); };
+    response.arrayBuffer = () => { throw new Error('a tarball without integrity must not be buffered'); };
     return response;
   };
   ws.registry.register('npm', createNpmCommand(ws.registry, undefined, ws.kernel));

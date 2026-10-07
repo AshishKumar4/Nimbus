@@ -4,7 +4,7 @@ import type { CommandOutputStream } from '../commands/types.js';
 import type { BuiltinExecutionContext } from './interpreter.js';
 import type { WordPart } from './types.js';
 import { expandWord, type ExpandContext } from './expander.js';
-import { globMatch } from '../utils/glob.js';
+import { globMatch, hasGlobChars } from '../utils/glob.js';
 import { resolve } from '../utils/path.js';
 import { S_IFCHR, S_IFMT } from '../../../vfs/vfs.js';
 import { lstatOrThrow, statOrThrow } from '../../../vfs/vfs.js';
@@ -53,7 +53,7 @@ export async function evaluateDoubleBracketWords(
       const value = await expandWord(word, expandCtx);
       const arg: TestArg = {
         value,
-        canUseAsPattern: hasUnquotedPart(word) && hasPatternSyntax(value),
+        canUseAsPattern: hasUnquotedPart(word) && hasGlobChars(value),
       };
       expanded.set(i, arg);
       return arg;
@@ -324,10 +324,6 @@ function literalArg(value: string): TestArg {
 
 function hasUnquotedPart(word: WordPart[]): boolean {
   return word.some((part) => part.quoted === 'none');
-}
-
-function hasPatternSyntax(value: string): boolean {
-  return value.includes('*') || value.includes('?') || value.includes('[');
 }
 
 /**

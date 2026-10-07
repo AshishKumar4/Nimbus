@@ -23,7 +23,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../../lean/fixtures/process-files.json', import.meta.url), 'utf8'));
 const letters = (text) => new Uint8Array([...text].map((c) => c.charCodeAt(0) - 97));

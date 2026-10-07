@@ -16,7 +16,8 @@
 
 import realm from 'node:process';
 import { joinRealm } from '../../../../runtime/realm-guest.js';
-import type { VirtualRequest, VirtualRequestHandler, VirtualResponse } from '../../kernel/index.js';
+import { DNSResolver } from '../../kernel/dns-resolver.js';
+import { createHostsResolver, type VirtualRequest, type VirtualRequestHandler, type VirtualResponse } from '../../kernel/index.js';
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { CommandOutputStream } from '../types.js';
 import { ProcessExitError } from '../../node-compat/index.js';
@@ -29,7 +30,10 @@ import {
 
 const joined = await joinRealm();
 if (!isNodeRealmPayload(joined.payload)) throw new Error('node-guest: started without a program');
-const { program, egress } = joined.payload;
+const { program, hosts, egress } = joined.payload;
+// The kernel's resolver, as the host sent it; one with the default /etc/hosts without a kernel.
+const dns = hosts === undefined ? createHostsResolver() : new DNSResolver();
+if (hosts !== undefined) dns.loadHostsFile(hosts);
 const { events } = joined;
 
 /** A synchronous call to the host: its value is the host's answer, as cloned. */
@@ -212,6 +216,7 @@ const end = await runNodeProgram(program, {
   stdin: () => bytes(call({ op: 'stdin' }), 'stdin'),
   portRegistry: ports,
   routeLoopback,
+  dns,
 });
 if (end.ended) exitNow(end.code);
 post({ type: 'exit', code: end.code });

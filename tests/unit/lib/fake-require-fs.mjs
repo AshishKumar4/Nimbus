@@ -4,8 +4,6 @@
 // reads, not what the session's store does.
 
 export class FakeVfs {
-  get authority() { return { acquire: async () => ({ epoch: this.epoch, rev: this.revision() }), stat: async path => this.lstat(path) }; }
-
   constructor(files = {}) {
     this.files = new Map(Object.entries(files));
     this.dirs = new Set();

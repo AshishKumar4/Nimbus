@@ -33,7 +33,7 @@ import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import { type EgressGuestEvent, type EgressHostEvent } from '../../../../runtime/realm-egress.js';
 import type { NodeProgram } from './node.js';
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'network'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
 /** A synchronous call the guest makes. */
@@ -93,9 +93,13 @@ export type HostEvent = {
 } | {
     readonly type: 'changed';
 } | EgressHostEvent;
-/** What the realm starts with: the program, and whether its network goes through an egress. */
+/**
+ * What the realm starts with: the program, the kernel's /etc/hosts its
+ * dns.lookup answers from, and whether its network goes through an egress.
+ */
 export interface NodeRealmPayload {
     readonly program: NodeProgram;
+    readonly hosts?: string;
     /**
      * The workspace's network goes through its host's egress: every request
      * the program makes off the box crosses here (`egress`) and leaves through

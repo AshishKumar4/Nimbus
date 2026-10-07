@@ -16,15 +16,12 @@
  * and esbuild read it.
  */
 import type { Awaitable } from '../vfs/vfs.js';
-/**
- * The filesystem a resolution reads, by absolute `/`-rooted path: answered
- * synchronously (a pre-bundle's in-memory slice) or not (the session VFS).
- */
-export interface BundlerResolveFs<Answer extends 'sync' | 'async' = 'async'> {
-    isFile(path: string): Answer extends 'sync' ? boolean : Awaitable<boolean>;
-    isDirectory(path: string): Answer extends 'sync' ? boolean : Awaitable<boolean>;
+/** The filesystem a resolution reads, by absolute `/`-rooted path. */
+export interface BundlerResolveFs {
+    isFile(path: string): Awaitable<boolean>;
+    isDirectory(path: string): Awaitable<boolean>;
     /** The file's text, or null when it cannot be read. */
-    readText(path: string): Answer extends 'sync' ? string | null : Awaitable<string | null>;
+    readText(path: string): Awaitable<string | null>;
 }
 /**
  * The conditions for an import of `kind` (esbuild's ImportKind). A require
@@ -36,21 +33,13 @@ export interface BundlerResolveFs<Answer extends 'sync' | 'async' = 'async'> {
 export declare function bundlerConditions(kind: string | undefined): string[];
 /** The conditions of an import (and a pre-bundle's own build options). */
 export declare const BUNDLER_IMPORT_CONDITIONS: string[];
-/** The resolutions over a filesystem, each answered as the filesystem answers. */
-export interface BundlerResolver<Answer extends 'sync' | 'async' = 'async'> {
-    resolveFile(base: string): Answer extends 'sync' ? string | null : Promise<string | null>;
-    resolvePackageImport(specifier: string, fromDir: string): Answer extends 'sync' ? string | null : Promise<string | null>;
-    resolveBarePackage(specifier: string, fromDir: string, conditions: string[]): Answer extends 'sync' ? string | null : Promise<string | null>;
+export interface BundlerResolver {
+    /** The file `base` names, by extension, TypeScript twin, then directory index. */
+    resolveFile(base: string): Promise<string | null>;
+    /** A `#name` from a module in `fromDir`. */
+    resolvePackageImport(specifier: string, fromDir: string): Promise<string | null>;
+    /** A bare specifier from a module in `fromDir`. */
+    resolveBarePackage(specifier: string, fromDir: string, conditions: string[]): Promise<string | null>;
 }
-/**
- * The resolutions over a synchronous filesystem, answered synchronously.
- * A pre-bundle's slice plugin resolves this way, in the build facet: its
- * rolldown hook gets a promise that is already settled, as it did before
- * the resolution was shared. Driven asynchronously instead, the deployed
- * facet's pre-bundles stopped settling (frameworks/markflow-real) though
- * every one built under the local harness.
- */
-export declare function createSyncBundlerResolver(fs: BundlerResolveFs<'sync'>): BundlerResolver<'sync'>;
-/** The resolutions over a filesystem that may answer later (the session VFS). */
 export declare function createBundlerResolver(fs: BundlerResolveFs): BundlerResolver;
 //# sourceMappingURL=bundler-resolution.d.ts.map

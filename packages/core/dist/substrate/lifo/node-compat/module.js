@@ -109,15 +109,19 @@ export class Module {
     static _cache = {};
 }
 /**
- * Create the full module shim object with createRequire bound to a module map.
+ * The `module` built-in over a module map: its builtinModules are the map's
+ * names, and createRequire is `createRequire` (the CommonJS loader's, which
+ * resolves files and packages too) or, for a bare map, one that serves the
+ * map's built-ins alone.
  */
-export function createModuleShim(moduleMap) {
-    const createRequire = makeCreateRequire(moduleMap);
+export function createModuleShim(moduleMap, createRequire = makeCreateRequire(moduleMap)) {
+    const names = Object.keys(moduleMap);
+    const isMapBuiltin = (specifier) => names.includes(specifier.startsWith('node:') ? specifier.slice(5) : specifier);
     Module.createRequire = createRequire;
     return {
         Module,
-        builtinModules,
-        isBuiltin,
+        builtinModules: names,
+        isBuiltin: isMapBuiltin,
         createRequire,
         default: Module,
     };

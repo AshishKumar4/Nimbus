@@ -6,6 +6,7 @@ import { parse } from './parser.js';
 import { expandWords, expandWord, evaluateSubscript, ExpansionError, } from './expander.js';
 import { evaluateDoubleBracketWords } from './test-builtin.js';
 import { isPipeEnd, PipeChannel } from './pipe.js';
+import { arrayFor, assignArray, assignVariable, cloneArrays, restoreVariable, saveVariable } from './variables.js';
 import { exitCodeForAbortSignal, KILLED_BY_SIGPIPE } from './signals.js';
 import { isBrokenPipe, isRefusedWrite } from '../utils/bytes-io.js';
 import { resolve } from '../utils/path.js';
@@ -13,6 +14,7 @@ import { encode } from '../utils/encoding.js';
 import { globMatch } from '../utils/glob.js';
 import { staticStdinReader } from '../../../shell/stdin-adapter.js';
 import { BASH_BUILTINS } from './bash-builtins.js';
+import { isDecimalInteger } from './names.js';
 import { statOrThrow } from '../../../vfs/vfs.js';
 import { yieldToEventLoop } from '../utils/event-loop.js';
 import { WorkThread } from './work-thread.js';
@@ -80,13 +82,6 @@ function exited(status) {
  * `a=(x y); a=plain` sets `a[0]` and leaves `a[1]` alone, which is bash's rule
  * and the reason a variable's type only changes through `unset`.
  */
-export function assignScalar(env, arrays, name, value) {
-    const array = arrays.get(name);
-    if (array === undefined)
-        env[name] = value;
-    else
-        array[0] = value;
-}
 export class Interpreter {
     config;
     lastExitCode = 0;
@@ -129,7 +124,7 @@ export class Interpreter {
             ...parent,
             env,
             jobTable: parent.jobTable.fork(),
-            arrays: new Map(Array.from(parent.arrays, ([name, elements]) => [name, [...elements]])),
+            arrays: cloneArrays(parent.arrays),
             getCwd: () => cwd,
             setCwd: (next) => { cwd = next; env.PWD = next; },
             options: { ...parent.options },
@@ -255,21 +250,13 @@ export class Interpreter {
                     backgroundIo.workThread?.close();
                 }
             })();
-            const pid = this.config.processRegistry.spawn({
-                command: commandText.split(' ')[0] || 'unknown',
-                args: commandText.split(' '),
+            const { pid, id: jobId } = this.config.jobTable.start({
+                command: commandText,
                 cwd: this.config.getCwd(),
                 env: { ...this.config.env },
-                isForeground: false,
                 promise,
                 abortController,
             });
-            const waitable = this.config.processRegistry.get(pid)?.promise ?? promise;
-            const jobId = this.config.jobTable.add(commandText, waitable, abortController, pid);
-            // `%N` (kill, fg, wait) names the job by the table's number.
-            const registered = this.config.processRegistry.get(pid);
-            if (registered)
-                registered.jobId = jobId;
             this.config.env['!'] = String(pid);
             // An interactive bash reports the job; a script (bash -c) says nothing.
             if (io.interactive)
@@ -440,9 +427,8 @@ export class Interpreter {
             case 'for':
                 return (await this.executeFor(cmd, io));
             case 'while':
-                return (await this.executeWhile(cmd, io));
             case 'until':
-                return (await this.executeUntil(cmd, io));
+                return (await this.executeLoop(cmd, io));
             case 'case':
                 return (await this.executeCase(cmd, io));
             case 'group':
@@ -556,7 +542,7 @@ export class Interpreter {
             return exitCode;
         }));
     }
-    async executeWhile(node, io) {
+    async executeLoop(node, io) {
         return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
             let exitCode = 0;
             while (true) {
@@ -565,39 +551,8 @@ export class Interpreter {
                 if (abortCode !== null)
                     return abortCode;
                 const condCode = await this.withErrexitSuppressed(async () => (await this.executeCompoundList(node.condition, redirIo)));
-                if (condCode !== 0)
-                    break;
-                try {
-                    exitCode = await this.executeCompoundList(node.body, redirIo);
-                }
-                catch (e) {
-                    if (e instanceof BreakSignal) {
-                        if (e.levels > 1)
-                            throw new BreakSignal(e.levels - 1);
-                        break;
-                    }
-                    if (e instanceof ContinueSignal) {
-                        if (e.levels > 1)
-                            throw new ContinueSignal(e.levels - 1);
-                        continue;
-                    }
-                    throw e;
-                }
-            }
-            this.lastExitCode = exitCode;
-            return exitCode;
-        }));
-    }
-    async executeUntil(node, io) {
-        return (await this.executeWithRedirections(node.redirections, io, async (redirIo) => {
-            let exitCode = 0;
-            while (true) {
-                await this.loopTick();
-                const abortCode = this.abortExitCode(redirIo);
-                if (abortCode !== null)
-                    return abortCode;
-                const condCode = await this.withErrexitSuppressed(async () => (await this.executeCompoundList(node.condition, redirIo)));
-                if (condCode === 0)
+                // while goes on while its condition succeeds, until while it fails.
+                if ((condCode === 0) !== (node.type === 'while'))
                     break;
                 try {
                     exitCode = await this.executeCompoundList(node.body, redirIo);
@@ -722,7 +677,7 @@ export class Interpreter {
         const saved = new Map();
         for (const assign of cmd.assignments) {
             if (!saved.has(assign.name))
-                saved.set(assign.name, this.saveVariable(assign.name));
+                saved.set(assign.name, saveVariable(this.config, assign.name));
             if (!await this.applyAssignment(assign, expandCtx)) {
                 (await (io.stderr ?? this.terminalSink(io)).write(`${assign.name}: readonly variable\n`));
                 return 1;
@@ -885,7 +840,7 @@ export class Interpreter {
             writeFailed = await this.flushFds(fds, name);
             // Restore env from per-command assignments
             for (const [name, value] of saved)
-                this.restoreVariable(name, value);
+                restoreVariable(this.config, name, value);
         }
         if (writeFailed && exitCode === 0)
             exitCode = 1;
@@ -955,6 +910,7 @@ export class Interpreter {
                 : undefined,
             isFdTerminal: spec.isFdTerminal,
             isFdPipe: spec.isFdPipe,
+            isShellBuiltin: (builtin) => this.config.builtins.has(builtin),
             setUmask: identity.setUmask,
             runAs: async (cred, argv, options) => spec.runAs
                 ? (await spec.runAs(options?.parent ?? ctx, cred, argv))
@@ -1030,10 +986,7 @@ export class Interpreter {
         }
     }
     assignEnv(name, value) {
-        if (this.config.readonlyNames.has(name))
-            return false;
-        assignScalar(this.config.env, this.config.arrays, name, value);
-        return true;
+        return assignVariable(this.config, name, value);
     }
     /**
      * `name=value`, `name+=value`, `name[expr]=value` and `name=(word …)`.
@@ -1043,54 +996,17 @@ export class Interpreter {
         const { name } = assign;
         if (this.config.readonlyNames.has(name))
             return false;
-        if (assign.elements !== undefined) {
-            const values = await expandWords(assign.elements, ctx);
-            const existing = assign.append ? this.config.arrays.get(name) ?? [] : [];
-            delete this.config.env[name];
-            this.config.arrays.set(name, [...existing, ...values]);
-            return true;
-        }
+        if (assign.elements !== undefined)
+            return assignArray(this.config, name, await expandWords(assign.elements, ctx), assign.append);
         const value = await expandWord(assign.value, ctx);
         if (assign.subscript !== undefined) {
-            const array = this.arrayFor(name);
+            const array = arrayFor(this.config, name);
             const index = await evaluateSubscript(assign.subscript, array.length, ctx);
             array[index] = assign.append ? (array[index] ?? '') + value : value;
             return true;
         }
-        // A plain assignment to an array name lands on its first element, and
-        // `arr+=x` appends to that element rather than adding one.
-        const array = this.config.arrays.get(name);
-        if (array !== undefined) {
-            array[0] = assign.append ? (array[0] ?? '') + value : value;
-            return true;
-        }
-        this.config.env[name] = assign.append ? (this.config.env[name] ?? '') + value : value;
-        return true;
-    }
-    /** One variable's whole binding, so a scope can put it back exactly. */
-    saveVariable(name) {
-        return { scalar: this.config.env[name], array: this.config.arrays.get(name) };
-    }
-    restoreVariable(name, saved) {
-        if (saved.array === undefined)
-            this.config.arrays.delete(name);
-        else
-            this.config.arrays.set(name, saved.array);
-        if (saved.scalar === undefined)
-            delete this.config.env[name];
-        else
-            this.config.env[name] = saved.scalar;
-    }
-    /** The array behind a subscripted assignment, promoting a scalar if needed. */
-    arrayFor(name) {
-        const existing = this.config.arrays.get(name);
-        if (existing !== undefined)
-            return existing;
-        const scalar = this.config.env[name];
-        const array = scalar === undefined ? [] : [scalar];
-        delete this.config.env[name];
-        this.config.arrays.set(name, array);
-        return array;
+        // On an array name, `arr=x` and `arr+=x` land on its first element.
+        return assignVariable(this.config, name, value, assign.append);
     }
     async executeFunction(body, args, io) {
         let exitCode;
@@ -1112,7 +1028,7 @@ export class Interpreter {
             const frame = this.localFrames.pop();
             if (frame !== undefined) {
                 for (const [name, saved] of frame)
-                    this.restoreVariable(name, saved);
+                    restoreVariable(this.config, name, saved);
             }
         }
         this.lastExitCode = exitCode;
@@ -1129,7 +1045,7 @@ export class Interpreter {
         if (frame === undefined)
             return false;
         if (!frame.has(name))
-            frame.set(name, this.saveVariable(name));
+            frame.set(name, saveVariable(this.config, name));
         delete this.config.env[name];
         this.config.arrays.delete(name);
         return true;
@@ -1809,16 +1725,6 @@ function setMembership(set, value, present) {
         set.add(value);
     else
         set.delete(value);
-}
-function isDecimalInteger(value) {
-    if (value.length === 0)
-        return false;
-    for (let i = 0; i < value.length; i++) {
-        const code = value.charCodeAt(i);
-        if (code < 48 || code > 57)
-            return false;
-    }
-    return true;
 }
 function isFatalSpecialBuiltin(name) {
     switch (name) {

@@ -1,9 +1,9 @@
 import type { NodeFilesystem } from '../../node-compat/filesystem.js';
 import type { Command } from '../types.js';
+import { type PackageType } from '../../node-compat/cjs-loader.js';
 import type { VirtualRequestHandler, Kernel, LoopbackRouter } from '../../kernel/index.js';
+import type { DNSResolver } from '../../kernel/dns-resolver.js';
 import type { CommandOutputStream } from '../types.js';
-/** Determine if source should be treated as ESM based on filename, content, and package.json type */
-export type PackageType = 'module' | 'commonjs' | null;
 /** A program the inline node runs, and where it runs from. */
 export interface NodeProgram {
     readonly source: string;
@@ -24,6 +24,7 @@ export interface NodeProgramHost {
     readonly stdin: () => Uint8Array;
     readonly portRegistry?: Map<number, VirtualRequestHandler>;
     readonly routeLoopback?: LoopbackRouter;
+    readonly dns?: DNSResolver;
 }
 /**
  * How a program's main script ended: its exit code, and whether its process

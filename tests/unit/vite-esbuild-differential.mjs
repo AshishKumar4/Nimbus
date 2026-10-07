@@ -38,7 +38,7 @@ import { readViteConfigFile } from '../../packages/worker/src/facets/vite-config
 import { ViteDevServer } from '../../packages/worker/src/facets/vite-dev-server.ts';
 import { CASES, caseDigest } from '../reference/vite-esbuild-cases.mjs';
 import { oxcEngine } from './lib/oxc-engine.mjs';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const fixture = JSON.parse(readFileSync(new URL('../fixtures/vite-esbuild-reference.json', import.meta.url), 'utf8'));
 const ROOT = fixture.root.replace(/^\//, '');

@@ -1,4 +1,5 @@
 // @serial
+// @tier slow — drives a local workerd; CI 54 s wall, 27 s CPU, 0.6 GiB peak (1 run, 2026-10-06)
 // Durable Objects whose build facets share one isolate, and so one rolldown
 // binding, building at once in one workerd process (Kinu's ask 22). Each
 // object's plugin hooks must run in its own context: workerd refuses I/O on

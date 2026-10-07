@@ -26,38 +26,18 @@ import {
   encodeWriteBatchStream,
 } from '../../packages/platform/src/w7-frame.ts';
 import { decodeWave, packageTarball } from './lib/tarball-fixture.mjs';
+import './lib/install-facet-scope.mjs';
 
-globalThis.streamPackageEntries = streamPackageEntries;
-globalThis.streamTarEntries = streamTarEntries;
-globalThis.readableStreamToAsyncIterable = readableStreamToAsyncIterable;
-globalThis.encodeWriteBatchStream = encodeWriteBatchStream;
 // The shard writes through the platform's wave writer, whose lost-transport
 // policy is what these cases exercise. It re-sends from the records it
 // holds: the encoder copies a chunk's bytes into buffers it builds, so a
 // payload is never detached by sending it (w7-encode-coalesce pins that).
-globalThis.__nimbusWaveWriter = await import('../../packages/platform/src/wave-writer.ts');
 const { WAVE_PATHS } = globalThis.__nimbusWaveWriter;
 const { LOST_CALL_RESEND_BACKOFF_MS: WAVE_RETRY_BACKOFF_MS } = await import('../../packages/platform/src/lost-call.ts');
 // The policy's backoffs (~42 s) and attempt deadline (60 s) run a thousand
 // times faster here.
 const realSetTimeout = globalThis.setTimeout;
 globalThis.setTimeout = (fn, ms, ...rest) => realSetTimeout(fn, Math.ceil((ms ?? 0) / 1000), ...rest);
-globalThis.__nimbusUseRpcResult = async (promise, use) => use(await promise);
-globalThis.DecompressionStream = class DecompressionStream {
-  readable;
-  writable;
-
-  constructor(format) {
-    assert.equal(format, 'gzip');
-    const transform = new TransformStream({
-      transform(chunk, controller) {
-        controller.enqueue(gunzipSync(chunk));
-      },
-    });
-    this.readable = transform.readable;
-    this.writable = transform.writable;
-  }
-};
 
 function makeTarball() {
   return packageTarball({

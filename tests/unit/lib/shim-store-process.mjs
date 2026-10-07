@@ -9,7 +9,7 @@ import { VFS_WRITE_LEDGER_SOURCE } from '../../../packages/core/src/_shared/vfs-
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../../packages/core/src/vfs/sqlite-vfs.ts';
 import { generateShimsCode } from '../../../packages/worker/src/runtime/node-shims.ts';
-import { createSqliteVfsTestHarness } from '../sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { processBridge } from './process-bridge.mjs';
 import { SHIMS_STORE_PRELUDE, declareNamespace } from './shims-namespace.mjs';
 

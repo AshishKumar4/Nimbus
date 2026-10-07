@@ -26,7 +26,7 @@ import { localFacetHost } from '../../packages/core/src/runtime/local-facet-host
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { rpcExec } from '../../packages/worker/src/session/programmatic.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { programmaticHost } from './lib/programmatic-host.mjs';
 
 // Creates `made-by-guest` in its working directory (the preopen at fd 3) and

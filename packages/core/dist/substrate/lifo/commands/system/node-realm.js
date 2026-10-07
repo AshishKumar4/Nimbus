@@ -25,6 +25,7 @@
  * workerd has no worker threads; its sessions run their own `node` (worker
  * hosted/commands.ts).
  */
+import { exitCodeForAbortSignal } from '../../shell/signals.js';
 import { realmOutcome, startRealm } from '../../../../runtime/realm.js';
 import { synchronousFilesystem } from '../../node-compat/filesystem.js';
 import { VfsError } from '../../../../vfs/vfs-error.js';
@@ -65,7 +66,8 @@ export function isHostEvent(value) {
     }
 }
 export function isNodeRealmPayload(value) {
-    return record(value) && record(value.program) && typeof value.program.source === 'string' && typeof value.egress === 'boolean';
+    return record(value) && record(value.program) && typeof value.program.source === 'string'
+        && (value.hosts === undefined || typeof value.hosts === 'string') && typeof value.egress === 'boolean';
 }
 export function isStat(value) {
     return record(value) && typeof value.type === 'string' && typeof value.mode === 'number' && typeof value.size === 'number';
@@ -166,7 +168,7 @@ export function serveRealmCall(call, services) {
  */
 export async function runNodeInRealm(program, ctx, kernel) {
     if (ctx.signal.aborted)
-        return 130;
+        return exitCodeForAbortSignal(ctx.signal);
     const filesystem = synchronousFilesystem(ctx.vfs);
     // Output in the order it was written, each write after the last.
     let written = Promise.resolve();
@@ -236,7 +238,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
         },
     };
     let code = null;
-    const payload = { program, egress: kernel?.network?.egress !== undefined };
+    const payload = { program, hosts: kernel?.dns?.hostsFile(), egress: kernel?.network?.egress !== undefined };
     const network = kernel?.network;
     const egress = network?.egress === undefined ? null : new RealmEgress(network, (event) => { post(event); });
     const realm = await startRealm({
@@ -291,7 +293,7 @@ export async function runNodeInRealm(program, ctx, kernel) {
     unwatch?.();
     await written;
     if (end.terminated)
-        return 130;
+        return exitCodeForAbortSignal(ctx.signal);
     if (end.failure !== null) {
         await ctx.stderr.write(`${end.failure.stack ?? end.failure.message}\n`);
         return code ?? 1;

@@ -162,20 +162,6 @@ export interface ResolveOneResult {
     };
 }
 /**
- * Parse an npm spec into install-name / registry-name / range. `npm:`
- * aliases redirect the registry lookup to a different package while the
- * dep records the alias as the install name; everything else is the
- * identity. Shared with the installer's lockfile check (which reads the
- * inner range out of an alias spec) and re-declared in the loader
- * preamble so the facet's serialized body sees the same implementation.
- */
-export declare function parseRegistryRequest(name: string, range: string): {
-    installName: string;
-    registryName: string;
-    range: string;
-    alias: boolean;
-};
-/**
  * Per-package fanout task body. Serialised via fn.toString() and
  * dispatched by Fanout.submitMany — see installer.ts
  * resolveTreeViaFanout.

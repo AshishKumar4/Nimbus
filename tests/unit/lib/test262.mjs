@@ -170,7 +170,9 @@ function collect(include) {
     const skip = (why) => { skipped.push([file, why]); };
     const source = readFileSync(path, 'utf8');
     const frontmatter = source.match(/\/\*---([\s\S]*?)---\*\//);
-    const meta = (frontmatter && YAML.parse(frontmatter[1])) || {};
+    /** test262's frontmatter (INTERPRETING.md): the fields the runner reads. */
+    const meta = /** @type {{ flags?: string[], features?: string[], includes?: string[], negative?: { phase: string, type: string } }} */ (
+      (frontmatter && YAML.parse(frontmatter[1])) || {});
     const flags = new Set(meta.flags ?? []);
     const unclaimed = (meta.features ?? []).find((f) => UNCLAIMED_FEATURES.has(f));
     if (flags.has('module')) { skip('module code'); continue; }

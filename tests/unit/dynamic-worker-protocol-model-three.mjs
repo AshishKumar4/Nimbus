@@ -1,4 +1,5 @@
 #!/usr/bin/env bun
+// @tier slow — long; CI median 93 s wall, 82 s CPU, 0.1 GiB peak (6 runs, 2026-10-06)
 // The Dynamic Worker ledger's deadlock protocol over every interleaving
 // (lib/ledger-protocol-model.mjs, wired to production), for families of
 // three guest holders, side by side and in a chain, each with its holders'

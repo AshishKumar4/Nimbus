@@ -13,7 +13,7 @@ import { makeWasmRunner } from '../../packages/core/src/runtime/wasm-runner.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const USER_CRED = { uid: 1000, gid: 1000, groups: [1000], umask: 0o022 };
 const text = (s) => [...new TextEncoder().encode(s)];

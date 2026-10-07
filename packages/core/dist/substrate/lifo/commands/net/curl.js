@@ -1,10 +1,8 @@
-import { ISOLATE_NETWORK } from '../../../../_shared/workspace-network.js';
 import { resolve } from '../../utils/path.js';
-import { dispatchWorkspaceRequest, workspaceRequestPort } from './kernel-fetch.js';
+import { MAX_REDIRECTS, dispatchWorkspaceRequest, hopInit, sendHop, walkRedirects, workspaceRequestPort } from './kernel-fetch.js';
 import { NIMBUS_AI_TOKEN_ENV, requestCarriesSessionAiToken } from '../../../../_shared/ai-egress.js';
 import { NIMBUS_AI_GATEWAY_PORT } from '../../../../constants.js';
 const SHORT_VALUE_OPTIONS = new Set(['X', 'H', 'd', 'o', 'w', 'D']);
-const MAX_REDIRECTS = 20;
 /** curl's exit code for local write failures (-o/-D targets). */
 const CURL_WRITE_ERROR_EXIT = 23;
 /**
@@ -111,31 +109,7 @@ function createCurlImpl(kernel) {
             const requestSignal = createRequestSignal(ctx.signal, options.maxTimeSeconds);
             try {
                 await headers.open();
-                if (kernel) {
-                    // Kernel-bound: every hop — including any a redirect lands on — is
-                    // classified before it is served, so a loopback hop is answered by
-                    // this kernel's port registry or its host's loopback router, never
-                    // by fetch. The hop walk itself is the same fetch-follow mutation
-                    // the external -L path performs.
-                    return await executeKernelRequest(kernel, ctx, options, url, headers, requestSignal.signal);
-                }
-                // -L with a dump target needs every hop's headers, so redirects are
-                // followed manually here; without -D the fetch-native follow keeps
-                // its proven semantics.
-                if (options.followRedirects && !headers.inert) {
-                    return await followExternalWithDump(ISOLATE_NETWORK, ctx, options, url, headers, requestSignal.signal);
-                }
-                // No kernel bound (the process-wide default): the isolate's own network.
-                const response = await ISOLATE_NETWORK.fetch(url, {
-                    method: options.method,
-                    headers: Object.keys(options.headers).length > 0 ? options.headers : undefined,
-                    body: options.data,
-                    redirect: options.followRedirects ? 'follow' : 'manual',
-                    signal: requestSignal.signal,
-                });
-                // Headers are dumped on arrival — before any arrayBuffer()/body drain.
-                await writeHeaderDump(headers, response);
-                return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || url));
+                return await executeCurlRequest(kernel, ctx, options, url, headers, requestSignal.signal);
             }
             finally {
                 requestSignal.cleanup();
@@ -159,79 +133,6 @@ function createCurlImpl(kernel) {
             return 7;
         }
     };
-}
-/** Request headers fetch-follow strips when a redirect crosses origins. */
-const CREDENTIAL_HEADERS = ['authorization', 'proxy-authorization', 'cookie', 'cookie2'];
-/** Content headers that only make sense on a request that carries a body. */
-const CONTENT_HEADERS = ['content-type', 'content-length', 'transfer-encoding', 'expect'];
-/**
- * Bounded manual redirect walk for external -L with a dump target: every
- * hop's header block is written on arrival, and the final response goes
- * through normal handling; exceeding the cap reports curl's redirect error.
- * Request mutation mirrors fetch-follow: 301/302 collapse only POST to a
- * bodyless GET, 303 collapses everything but HEAD, 307/308 preserve method
- * and body; content headers go with the body, and credential headers are
- * stripped when a hop crosses origins.
- */
-async function followExternalWithDump(network, ctx, options, startUrl, headers, signal) {
-    let current = new URL(startUrl);
-    let method = options.method;
-    let data = options.data;
-    let requestHeaders = new Headers(Object.keys(options.headers).length > 0 ? options.headers : {});
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-        const response = await network.fetch(current, {
-            method,
-            headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
-            body: data,
-            redirect: 'manual',
-            signal,
-        });
-        // Dump on arrival — before any drain of this hop's body.
-        await writeHeaderDump(headers, response);
-        const record = headersToRecord(response.headers);
-        if (!isRedirectStatus(response.status)) {
-            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || current.toString()));
-        }
-        const location = getHeader(record, 'location');
-        if (!location) {
-            // Redirect status without a target: nothing to follow, handle as final.
-            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || current.toString()));
-        }
-        if (redirects === MAX_REDIRECTS) {
-            cancelStreamBody(response.body);
-            break;
-        }
-        let next;
-        try {
-            next = new URL(location, current);
-        }
-        catch {
-            // Unusable Location: this hop is as final as it gets — the body must
-            // still be drainable, so it is only released once we decide to follow.
-            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, current.toString()));
-        }
-        // Follow decision made: this hop's body is no longer needed.
-        cancelStreamBody(response.body);
-        if ([301, 302].includes(response.status) && method === 'POST') {
-            method = 'GET';
-            data = undefined;
-        }
-        else if (response.status === 303 && method !== 'HEAD') {
-            method = 'GET';
-            data = undefined;
-        }
-        if (data === undefined) {
-            for (const name of CONTENT_HEADERS)
-                requestHeaders.delete(name);
-        }
-        if (next.origin !== current.origin) {
-            for (const name of CREDENTIAL_HEADERS)
-                requestHeaders.delete(name);
-        }
-        current = next;
-    }
-    await ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
-    return 47;
 }
 /**
  * Shape a native Response for response handling. Body streams to stdout as
@@ -470,131 +371,49 @@ function addHeader(options, header) {
     options.headers[header.slice(0, colonIdx).trim()] = header.slice(colonIdx + 1).trim();
 }
 /**
- * One bounded hop walk for a kernel-bound request. Loopback hops — including
- * ones a redirect lands on — go through `dispatchWorkspaceRequest`; external
- * hops fetch directly. Redirects mutate exactly as fetch-follow and
- * `followExternalWithDump` do: 301/302 collapse only POST, 303 collapses
- * everything but HEAD, content headers die with the body, and credential
- * headers are stripped when a hop crosses origins. An external hop that
- * presents this session's AI capability token is served by the session's
- * gateway wherever it was addressed — `routeLoopback` on the AI port.
+ * The request and its redirects (-L), as walkRedirects walks them; every
+ * hop's headers are dumped (-D) as it arrives. Bound to a kernel, a
+ * loopback hop, including one a redirect lands on, is served by the
+ * kernel (sendHop), and an external hop that presents this session's AI
+ * capability token by the session's gateway wherever it was addressed,
+ * which is how `curl https://api.openai.com/v1/models -H "Authorization:
+ * Bearer $OPENAI_API_KEY"` answers with the session's models; a gateway
+ * that refuses leaves the hop to fetch, as the remote it claims to be.
  */
-async function executeKernelRequest(kernel, ctx, options, startUrl, headers, signal) {
-    let current = startUrl;
-    let method = options.method;
-    let data = options.data;
-    const requestHeaders = new Headers(Object.keys(options.headers).length > 0 ? options.headers : {});
-    for (let redirects = 0; redirects <= MAX_REDIRECTS; redirects++) {
-        let requestUrl;
-        try {
-            requestUrl = new URL(current);
-        }
-        catch {
-            requestUrl = null;
-        }
-        let response = null;
-        if (requestUrl !== null) {
-            const hasBody = method !== 'GET' && method !== 'HEAD' && data !== undefined;
-            const port = workspaceRequestPort(kernel, requestUrl);
-            if (port !== null) {
-                const local = await dispatchWorkspaceRequest(kernel, port, new Request(requestUrl, {
-                    method,
-                    headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
-                    body: hasBody ? data : undefined,
-                    signal,
-                }));
-                if (local.kind === 'aborted') {
-                    if (signal.reason instanceof Error && signal.reason.message === CURL_TIMEOUT_ERROR) {
-                        await ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
-                        return 7;
-                    }
-                    return 130;
-                }
-                if (local.kind === 'timeout') {
-                    await ctx.stderr.write('curl: request timeout after 30s\n');
-                    return 7;
-                }
-                if (local.kind === 'refused') {
-                    await ctx.stderr.write(`curl: (7) Failed to connect to ${requestUrl.hostname} port ${port}\n`);
-                    return 7;
-                }
-                response = local.response;
-            }
-            else if (requestCarriesSessionAiToken(requestHeaders, ctx.env[NIMBUS_AI_TOKEN_ENV] || '')) {
-                // Off-box, but possibly still ours: inference the session owns is
-                // served by the session's gateway wherever it was addressed — which
-                // is how `curl https://api.openai.com/v1/models -H "Authorization:
-                // Bearer $OPENAI_API_KEY"` answers with the session's models. An
-                // aborted gateway hop is the caller's own cancel; a refusal keeps
-                // the old behavior: the request falls through and is fetched as
-                // the remote it claims to be.
-                const gateway = await dispatchWorkspaceRequest(kernel, NIMBUS_AI_GATEWAY_PORT, new Request(requestUrl, {
-                    method,
-                    headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
-                    body: hasBody ? data : undefined,
-                    signal,
-                }));
-                if (gateway.kind === 'response')
-                    response = gateway.response;
-                else if (gateway.kind === 'aborted')
-                    return 130;
-                else if (gateway.kind === 'timeout') {
-                    await ctx.stderr.write('curl: request timeout after 30s\n');
-                    return 7;
-                }
-            }
-        }
-        // Off the box: through the workspace's network (its host's egress, when it supplied one).
-        response ??= await kernel.network.fetch(current, {
-            method,
-            headers: [...requestHeaders.keys()].length > 0 ? requestHeaders : undefined,
-            body: data,
-            redirect: 'manual',
-            signal,
-        });
+async function executeCurlRequest(kernel, ctx, options, startUrl, headers, signal) {
+    const aiToken = ctx.env[NIMBUS_AI_TOKEN_ENV] || '';
+    const walk = await walkRedirects({ url: new URL(startUrl), method: options.method, headers: new Headers(options.headers), body: options.data }, {
+        follow: options.followRedirects,
         // Dump on arrival — before any drain of this hop's body.
-        await writeHeaderDump(headers, response);
-        const record = headersToRecord(response.headers);
-        const follow = options.followRedirects && isRedirectStatus(response.status)
-            ? getHeader(record, 'location')
-            : undefined;
-        if (follow && redirects === MAX_REDIRECTS) {
-            cancelStreamBody(response.body);
-            break;
-        }
-        if (!follow) {
-            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, response.url || current));
-        }
-        let next;
-        try {
-            next = new URL(follow, current);
-        }
-        catch {
-            // Unusable Location: this hop is as final as it gets.
-            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, response, current));
-        }
-        // Follow decision made: this hop's body is no longer needed.
-        cancelStreamBody(response.body);
-        if ([301, 302].includes(response.status) && method === 'POST') {
-            method = 'GET';
-            data = undefined;
-        }
-        else if (response.status === 303 && method !== 'HEAD') {
-            method = 'GET';
-            data = undefined;
-        }
-        if (data === undefined) {
-            for (const name of CONTENT_HEADERS)
-                requestHeaders.delete(name);
-        }
-        if (next.origin !== requestUrl?.origin) {
-            for (const name of CREDENTIAL_HEADERS)
-                requestHeaders.delete(name);
-        }
-        current = next.toString();
+        arrived: (response) => writeHeaderDump(headers, response),
+        send: async (hop) => {
+            if (kernel && workspaceRequestPort(kernel, hop.url) === null && requestCarriesSessionAiToken(hop.headers, aiToken)) {
+                const gateway = await dispatchWorkspaceRequest(kernel, NIMBUS_AI_GATEWAY_PORT, new Request(hop.url, hopInit(hop, signal)));
+                if (gateway.kind !== 'refused')
+                    return gateway;
+            }
+            return await sendHop(kernel, hop.url, hopInit(hop, signal));
+        },
+    });
+    switch (walk.kind) {
+        case 'response':
+            return await handleCurlResponse(ctx, options, await drainCurlResponse(options, walk.response, walk.response.url || walk.url.toString()));
+        case 'refused':
+            await ctx.stderr.write(`curl: (7) Failed to connect to ${walk.url.hostname} port ${kernel ? workspaceRequestPort(kernel, walk.url) : ''}\n`);
+            return 7;
+        case 'aborted':
+            if (signal.reason instanceof Error && signal.reason.message === CURL_TIMEOUT_ERROR) {
+                await ctx.stderr.write(`curl: operation timed out after ${options.maxTimeSeconds} seconds\n`);
+                return 7;
+            }
+            return 130;
+        case 'timeout':
+            await ctx.stderr.write('curl: request timeout after 30s\n');
+            return 7;
+        case 'too-many-redirects':
+            await ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
+            return 47;
     }
-    await ctx.stderr.write(`curl: (47) Maximum (${MAX_REDIRECTS}) redirects followed\n`);
-    return 47;
 }
 async function handleCurlResponse(ctx, options, response) {
     const failed = options.fail && response.status >= 400;
@@ -638,9 +457,6 @@ async function writeCurlFailure(ctx, options, response) {
 }
 function curlExitCode(options, status) {
     return options.fail && status >= 400 ? 22 : 0;
-}
-function isRedirectStatus(status) {
-    return status >= 300 && status < 400;
 }
 async function writeCurlOutput(ctx, options, body) {
     if (!options.outputFile) {
@@ -759,14 +575,6 @@ function curlHeaderBlock(response) {
         : `HTTP/1.1 ${response.status}`;
     const lines = [statusLine, ...curlHeaderEntries(response.headers).map(([n, v]) => `${n}: ${v}`)];
     return lines.map((line) => `${line}\r\n`).join('') + '\r\n';
-}
-function getHeader(headers, name) {
-    const wanted = name.toLowerCase();
-    for (const [key, value] of Object.entries(headers)) {
-        if (key.toLowerCase() === wanted)
-            return value;
-    }
-    return undefined;
 }
 function bodySize(body) {
     if (typeof body === 'string')

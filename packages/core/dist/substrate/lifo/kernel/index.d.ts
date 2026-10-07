@@ -1,7 +1,6 @@
 import { type WorkspaceNetwork } from '../../../_shared/workspace-network.js';
 import { ProcessRegistry } from '../shell/ProcessRegistry.js';
-import { NetworkStack } from './network/NetworkStack.js';
-import { PortBridge } from './network/PortBridge.js';
+import { DNSResolver } from './dns-resolver.js';
 export interface VirtualRequest {
     method: string;
     url: string;
@@ -16,10 +15,12 @@ export interface VirtualResponse {
 export type VirtualRequestHandler = (req: VirtualRequest, res: VirtualResponse) => void;
 export type LoopbackRouter = (port: number, request: Request) => Promise<Response | null>;
 export { isLoopbackHost } from '../../../_shared/loopback.js';
+/** A resolver holding the default /etc/hosts: the one place `localhost` is named. */
+export declare function createHostsResolver(): DNSResolver;
 /**
  * What a session's processes share besides their filesystem (which is
- * ProcessFiles'): the process table, the virtual ports and the network stack,
- * whose resolver starts from the default /etc/hosts.
+ * ProcessFiles'): the process table, the virtual ports and the resolver,
+ * which starts from the default /etc/hosts.
  */
 export declare class Kernel {
     portRegistry: Map<number, VirtualRequestHandler>;
@@ -31,10 +32,8 @@ export declare class Kernel {
      */
     network: WorkspaceNetwork;
     routeLoopback?: LoopbackRouter;
-    portBridge: PortBridge;
     processRegistry: ProcessRegistry;
-    networkStack: NetworkStack;
+    readonly dns: DNSResolver;
     constructor();
-    getDefaultEnv(): Record<string, string>;
 }
 //# sourceMappingURL=index.d.ts.map

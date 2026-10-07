@@ -33,9 +33,8 @@ import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
 import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
 import { workspaceNetwork, type WorkspaceEgress, type WorkspaceNetwork } from '../_shared/workspace-network.js';
-import { runCommand } from '../substrate/lifo/sandbox/SandboxCommands.js';
+import { runCommand, type CommandResult, type RunOptions } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
-import type { CommandResult, RunOptions } from '../substrate/lifo/sandbox/types.js';
 import type { ITerminal } from '../substrate/lifo/terminal/ITerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import {

@@ -5,7 +5,7 @@ import { MemoryVFS } from '../../packages/core/src/vfs/memory.ts';
 import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { FS_LIST_PAGE_LIMIT, MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/core/src/constants.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 const h = createSqliteVfsTestHarness();
 try {
   const engine = new SqliteVFS(h.sql,h.ctx);

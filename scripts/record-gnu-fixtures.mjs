@@ -23,7 +23,7 @@
 // Each child has 30 seconds and 8 MiB of combined output. Infrastructure
 // failures abort recording; normal nonzero exits remain reference results.
 //
-// The reference is GNU coreutils/grep/sed (util-linux for rev); the host
+// The reference is GNU coreutils/grep/sed/diffutils (util-linux for rev); the host
 // may install coreutils as gnu<tool> beside another implementation.
 import { existsSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, renameSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
 import { runBoundedProcess } from './lib/bounded-process.mjs';
@@ -36,6 +36,9 @@ const REFERENCE = {
   sed: /\(GNU sed\)/,
   rev: /util-linux/,
   awk: /GNU Awk/,
+  diff: /GNU diffutils/,
+  // Ubuntu's gnudd says `dd (coreutils)`; uutils' dd says `dd (uutils coreutils)`.
+  dd: /^dd \((GNU )?coreutils\)/,
 };
 
 async function oracle(command, args, options, label) {

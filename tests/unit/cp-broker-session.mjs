@@ -27,7 +27,7 @@ import { ProcessRegistry } from '../../packages/core/src/substrate/lifo/shell/Pr
 import { Shell } from '../../packages/core/src/substrate/lifo/shell/Shell.ts';
 import { exitCodeForSignal } from '../../packages/core/src/substrate/lifo/shell/signals.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { importWorkerBundle } from './lib/worker-bundle.mjs';
 
 const decoder = new TextDecoder();

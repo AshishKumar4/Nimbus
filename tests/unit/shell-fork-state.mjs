@@ -8,7 +8,7 @@
 // Each case's answer is what bash 5.3 prints on Linux.
 import assert from 'node:assert/strict';
 import { NimbusWorkspace } from '../../packages/core/src/workspace/nimbus-workspace.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const CASES = [
   ["(exit 4) & p=$!; sleep 0.2; wait $p; echo a=$?; wait $p; echo b=$?", "a=4\nb=4\n"],

@@ -133,7 +133,7 @@ export async function runThroughCore(dir) {
   };
   try {
     const workspace = await NimbusWorkspace.create({
-      sql: { exec: (query, ...bindings) => db.prepare(query).all(...bindings) },
+      sql: { exec: (query, ...bindings) => db.prepare(query).all(.../** @type {import('node:sqlite').SQLInputValue[]} */ (bindings)) },
       transactions,
       generation: 1,
       facets: localFacetHost(ISOLATE_NETWORK),

@@ -30,7 +30,8 @@ class FixedLengthStream extends TransformStream {
         }
       },
     });
-    this.readable.expectedLength = expectedLength;
+    // workerd's FixedLengthStream readable carries the declared length.
+    /** @type {any} */ (this.readable).expectedLength = expectedLength;
   }
 }
 

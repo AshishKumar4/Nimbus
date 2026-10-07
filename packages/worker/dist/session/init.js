@@ -23,9 +23,6 @@ import { recordRecoveryEvent } from '@nimbus-sh/platform/oom-discriminator.js';
 import { sessionAiEnv } from './ai.js';
 import { setPhase } from './init-phases.js';
 import { shellTerminalTee } from './ws.js';
-function quoteShellArgument(value) {
-    return `'${value.replace(/'/g, `'\\''`)}'`;
-}
 export async function initSession(self, ws, options = {}) {
     const replayScrollback = options.resume !== 'wake';
     self.ensureSqliteFs();

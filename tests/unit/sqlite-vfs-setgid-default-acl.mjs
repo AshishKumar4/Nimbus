@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
-import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
+import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const perms = (stat) => (stat.mode & 0o7777).toString(8);
 const code = (run) => { try { run(); return 'ok'; } catch (error) { return error.code ?? error.message; } };

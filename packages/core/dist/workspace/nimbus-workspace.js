@@ -29,7 +29,7 @@ import { createWgetCommand } from '../substrate/lifo/commands/net/wget.js';
 import { createDigCommand } from '../substrate/lifo/commands/net/dig.js';
 import { createPingCommand } from '../substrate/lifo/commands/net/ping.js';
 import { workspaceNetwork } from '../_shared/workspace-network.js';
-import { runCommand } from '../substrate/lifo/sandbox/SandboxCommands.js';
+import { runCommand } from '../substrate/lifo/sandbox/run-command.js';
 import { HeadlessTerminal } from '../substrate/lifo/sandbox/HeadlessTerminal.js';
 import { SqliteVFS } from '../vfs/sqlite-vfs.js';
 import { DEFAULT_HOME, DEFAULT_HOSTNAME, defaultPath, SEEDED_TOP_LEVEL_DIRS, DEFAULT_SHELL, DEFAULT_USER, NIMBUS_VERSION, } from '../constants.js';

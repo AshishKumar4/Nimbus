@@ -26,6 +26,7 @@
  * hosted/commands.ts).
  */
 
+import { exitCodeForAbortSignal } from '../../shell/signals.js';
 import type { RuntimeVfsDirEntry, RuntimeVfsStat } from '../../../../runtime/os-contracts.js';
 import { realmOutcome, startRealm, type RealmOutcome } from '../../../../runtime/realm.js';
 import type { CommandContext, CommandOutputStream } from '../types.js';
@@ -38,7 +39,7 @@ import { isEgressGuestEvent, isEgressHostEvent, RealmEgress, type EgressGuestEve
 import type { NodeProgram } from './node.js';
 
 /** The session services a run reaches: the kernel's ports and loopback, where the host has them. */
-export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'network'>>;
+export type NodeRealmKernel = Pick<Kernel, 'portRegistry'> & Partial<Pick<Kernel, 'routeLoopback' | 'dns' | 'network'>>;
 
 /** The filesystem methods a call names: NodeFilesystem's, but its change listener. */
 export type FsMethod = Exclude<keyof NodeFilesystem, 'onChange'>;
@@ -73,9 +74,13 @@ export type HostEvent =
   | { readonly type: 'changed' }
   | EgressHostEvent;
 
-/** What the realm starts with: the program, and whether its network goes through an egress. */
+/**
+ * What the realm starts with: the program, the kernel's /etc/hosts its
+ * dns.lookup answers from, and whether its network goes through an egress.
+ */
 export interface NodeRealmPayload {
   readonly program: NodeProgram;
+  readonly hosts?: string;
   /**
    * The workspace's network goes through its host's egress: every request
    * the program makes off the box crosses here (`egress`) and leaves through
@@ -122,7 +127,8 @@ export function isHostEvent(value: unknown): value is HostEvent {
 }
 
 export function isNodeRealmPayload(value: unknown): value is NodeRealmPayload {
-  return record(value) && record(value.program) && typeof value.program.source === 'string' && typeof value.egress === 'boolean';
+  return record(value) && record(value.program) && typeof value.program.source === 'string'
+    && (value.hosts === undefined || typeof value.hosts === 'string') && typeof value.egress === 'boolean';
 }
 
 export function isStat(value: unknown): value is RuntimeVfsStat {
@@ -232,7 +238,7 @@ export function serveRealmCall(call: unknown, services: RealmServices): Promise<
  * loop ran empty, or the caller's abort (kill, Ctrl-C) terminated it.
  */
 export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, kernel: NodeRealmKernel | undefined): Promise<number> {
-  if (ctx.signal.aborted) return 130;
+  if (ctx.signal.aborted) return exitCodeForAbortSignal(ctx.signal);
   const filesystem = synchronousFilesystem(ctx.vfs);
 
   // Output in the order it was written, each write after the last.
@@ -294,7 +300,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   };
 
   let code: number | null = null;
-  const payload: NodeRealmPayload = { program, egress: kernel?.network?.egress !== undefined };
+  const payload: NodeRealmPayload = { program, hosts: kernel?.dns?.hostsFile(), egress: kernel?.network?.egress !== undefined };
   const network = kernel?.network;
   const egress = network?.egress === undefined ? null : new RealmEgress(network, (event) => { post(event); });
   const realm = await startRealm({
@@ -345,7 +351,7 @@ export async function runNodeInRealm(program: NodeProgram, ctx: CommandContext, 
   egress?.close();
   unwatch?.();
   await written;
-  if (end.terminated) return 130;
+  if (end.terminated) return exitCodeForAbortSignal(ctx.signal);
   if (end.failure !== null) {
     await ctx.stderr.write(`${end.failure.stack ?? end.failure.message}\n`);
     return code ?? 1;

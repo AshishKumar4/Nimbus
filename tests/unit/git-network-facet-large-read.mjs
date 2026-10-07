@@ -1,11 +1,10 @@
 import assert from 'node:assert/strict';
-import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { pathToFileURL } from 'node:url';
 
 import { MAX_RPC_SAFE_PAYLOAD_BYTES } from '../../packages/platform/src/limits.ts';
-import { assembleGitNetworkFacetSource } from '../../packages/worker/src/git/network-facet.ts';
+import { importGitFacetWorker } from './lib/git-facet-worker.mjs';
 
 const LARGE_FILE_BYTES = MAX_RPC_SAFE_PAYLOAD_BYTES + 1;
 const RANGE_CONTENT_BYTES = 4 * 1024 * 1024;
@@ -13,25 +12,6 @@ const PACK_PATH = 'repo/.git/objects/pack/pack-test.pack';
 const tempDir = mkdtempSync(join(tmpdir(), 'nimbus-git-facet-large-read-'));
 
 try {
-  writeFileSync(join(tempDir, 'git-network-worker.mjs'), assembleGitNetworkFacetSource());
-  writeFileSync(join(tempDir, 'git-bundle.js'), `
-export const gitHttp = {};
-export const git = {
-  async fetch({ fs, dir }) {
-    const bytes = await fs.promises.readFile(dir + '/.git/objects/pack/pack-test.pack');
-    if (!(bytes instanceof Uint8Array)) throw new Error('pack read did not return bytes');
-    const expectedSize = dir === '/repo' ? ${LARGE_FILE_BYTES} : 3;
-    if (bytes.byteLength !== expectedSize) {
-      throw new Error('pack read returned ' + bytes.byteLength + ' bytes');
-    }
-    const expectedLast = dir === '/repo' ? ${Math.floor((LARGE_FILE_BYTES - 1) / RANGE_CONTENT_BYTES)} : 3;
-    if (bytes[0] !== (dir === '/repo' ? 0 : 1) || bytes[bytes.byteLength - 1] !== expectedLast) {
-      throw new Error('pack read returned incorrect range content');
-    }
-  },
-};
-`);
-
   const calls = { whole: 0, ranges: [] };
   const supervisor = {
     async stat(path) {
@@ -52,7 +32,23 @@ export const git = {
     async stdout() {},
   };
 
-  const worker = await import(pathToFileURL(join(tempDir, 'git-network-worker.mjs')).href);
+  const worker = await importGitFacetWorker(tempDir, `
+export const gitHttp = {};
+export const git = {
+  async fetch({ fs, dir }) {
+    const bytes = await fs.promises.readFile(dir + '/.git/objects/pack/pack-test.pack');
+    if (!(bytes instanceof Uint8Array)) throw new Error('pack read did not return bytes');
+    const expectedSize = dir === '/repo' ? ${LARGE_FILE_BYTES} : 3;
+    if (bytes.byteLength !== expectedSize) {
+      throw new Error('pack read returned ' + bytes.byteLength + ' bytes');
+    }
+    const expectedLast = dir === '/repo' ? ${Math.floor((LARGE_FILE_BYTES - 1) / RANGE_CONTENT_BYTES)} : 3;
+    if (bytes[0] !== (dir === '/repo' ? 0 : 1) || bytes[bytes.byteLength - 1] !== expectedLast) {
+      throw new Error('pack read returned incorrect range content');
+    }
+  },
+};
+`);
   const response = await worker.default.fetch(
     new Request('http://git/op', {
       method: 'POST',
