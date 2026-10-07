@@ -324,11 +324,15 @@ export declare function assertModuleMapWithinCodeLimit(modules: Record<string, u
 export declare const FACET_ID_LIFETIME_BUDGET = 65536;
 /** Where the ledger persists the count of facet names ever minted. */
 export declare const FACET_NAME_HIGH_WATER_KEY = "fabric_facet_name_high_water";
-/** The slice of storage the facet-name ledger persists through. */
+/**
+ * The slice of storage the facet-name ledger persists through. A multi-key
+ * put is one atomic write, as Durable Object storage's is: a charge's counts
+ * and its name's row land together or not at all.
+ */
 interface FacetNameLedgerStorage {
     storage: {
         get(key: string): Promise<unknown> | unknown;
-        put(key: string, value: unknown): Promise<void>;
+        put(entries: Record<string, unknown>): Promise<void>;
     };
 }
 /**

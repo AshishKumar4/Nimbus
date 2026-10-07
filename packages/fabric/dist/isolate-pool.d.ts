@@ -209,9 +209,9 @@ export interface IsolateCallOptions {
      * permitted. The bytes ride INSIDE the worker code blob; workerd
      * never crosses structured-clone, never executes user-eval.
      *
-     * Cache key impact: per-call bytes are fingerprinted as
-     * constructor bytes are (name, length, a hash of every byte) and
-     * folded into the loader cache key. Identical bytes on the same
+     * Cache key impact: per-call bytes are identified as constructor
+     * bytes are (name, length, SHA-256; wasmIdentity) and folded into
+     * the loader cache key. Identical bytes on the same
      * slot → warm reuse; different bytes → fresh isolate. The pool's
      * `wasmHash` field captures CONSTRUCTOR-time bytes only; per-call
      * bytes get their own fingerprint mixed into the slot id at dispatch.
@@ -303,12 +303,12 @@ export declare class IsolatePool {
      * across pool dispatches (cache-key stability).
      */
     private readonly wasmModules;
-    /** Hash of every constructor-time wasm module, folded into the loader
-     *  cache key so changes invalidate warm slots: a compiled module by the
-     *  identity its host described, bytes by their content fingerprint,
-     *  computed once at construction. Bytes are not pinned at deploy time:
-     *  an interpreter image can be read from the filesystem. */
-    private readonly wasmHash;
+    /** Every constructor-time wasm module, as the loader cache key names it
+     *  (wasmIdentity), so a change invalidates warm slots: a compiled module
+     *  by the identity its host described, bytes by their SHA-256. Bytes are
+     *  not pinned at deploy time: an interpreter image can be read from the
+     *  filesystem. */
+    private readonly wasmKeyParts;
     /**
      * Short prefix of the owning DO's id, baked into the loader.get()
      * cache key so warm isolates are scoped to ONE session. Without this,
