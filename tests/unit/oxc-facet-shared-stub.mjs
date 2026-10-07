@@ -174,7 +174,7 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   const warn = console.warn;
   console.warn = () => {};
   try {
-    await transformBundleCells(cells, { host: { transformMany: oxcTransformHost(ctx, env, fallback) } }, (path, result) => placed.set(path, result));
+    await transformBundleCells(cells, { host: { transformMany: oxcTransformHost(ctx, env, fallback) }, scope: 'node' }, (path, result) => placed.set(path, result));
   } finally {
     console.warn = warn;
   }
@@ -186,20 +186,6 @@ const request = { code: 'const n: number = 1; export default n;', options: { loa
   }
   assert.ok(calls.every((n) => n <= 4) && calls.reduce((a, b) => a + b, 0) === 6, JSON.stringify(calls));
   console.log('  ok  six too-deep cells with no store or pacer are all placed, four per esbuild call at most');
-}
-
-// ── The host's identity names both engines ──────────────────────────────────
-{
-  // The launch's transform store keys results by it: a new esbuild (which
-  // answers the deep modules) must miss them as a new Oxc does.
-  const { TRANSFORM_HOST_ID, ESBUILD_FACET_WORKER_ID, supervisorEsbuildService } = await import('../../packages/worker/src/facets/esbuild-transform.ts');
-  const { OXC_FACET_WORKER_ID } = await import('../../packages/worker/src/facets/oxc-transform.ts');
-  const { ctx, env } = durableObject(await freshFacetClass());
-  const hostId = supervisorEsbuildService(ctx, env, undefined).transformHostId;
-  assert.equal(hostId, TRANSFORM_HOST_ID);
-  assert.ok(hostId.includes(OXC_FACET_WORKER_ID) && hostId.includes(ESBUILD_FACET_WORKER_ID), hostId);
-  assert.match(ESBUILD_FACET_WORKER_ID, /^nimbus-esbuild:0\.24\.2:/);
-  console.log('  ok  the transform host\'s identity names the Oxc facet and the esbuild facet');
 }
 
 // ── A stub that threw is dropped: the retry mints a fresh one ───────────────

@@ -43,6 +43,8 @@
 import type { FacetManager, FacetExecResult } from '../facets/manager.js';
 import { parsePortFromArgv } from '@nimbus-sh/core/runtime/long-running-handle.js';
 import type { FacetBundleProfile } from '@nimbus-sh/core/runtime/bundle-profile.js';
+import type { ModuleScope } from '@nimbus-sh/core/runtime/module-format.js';
+import type { NodeLaunch } from '@nimbus-sh/core/runtime/node-cli.js';
 import type { StdinBytes } from '../facets/manager.js';
 
 /**
@@ -108,6 +110,10 @@ export interface RunFreshOpts {
   launchesServer?: boolean;
   /** The program is an ES module the runtime lowered (RuntimeRunOpts.esModule). */
   esModule?: boolean;
+  /** Whose scope the runtime runs an ES module in (RuntimeRunOpts.moduleScope): absent, Node's. */
+  moduleScope?: ModuleScope;
+  /** A node program's command line (RuntimeRunOpts.node). */
+  node?: NodeLaunch;
 }
 
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
@@ -127,7 +133,8 @@ export async function runFresh(
   // their PID accounting assumes a single foreground exec.
   const wantsLongRunning =
     opts.forceLongRunning ||
-    isLongRunningInvocation(args) ||
+    // Node's options are its execArgv now, not its argv (node-cli.ts).
+    isLongRunningInvocation([...(opts.node?.execArgv ?? []), ...args]) ||
     (!opts.skipSpawn && opts.launchesServer === true);
 
   if (!wantsLongRunning) {
@@ -179,6 +186,7 @@ export async function runFresh(
       filename: opts.filename,
       dirname: opts.dirname,
       ...(opts.esModule ? { esModule: true } : {}),
+      ...(opts.moduleScope ? { moduleScope: opts.moduleScope } : {}),
       command,
       port,
       attachedTty: opts.attachedTty,
@@ -187,6 +195,7 @@ export async function runFresh(
       callerPid: opts.callerPid,
       invokerPid: opts.invokerPid,
       bundleProfile: opts.bundleProfile,
+      ...(opts.node ? { node: opts.node } : {}),
     });
   } catch (e: any) {
     // Hard-fail per anti-requirement: missing env.LOADER throws here.

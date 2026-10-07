@@ -43,6 +43,16 @@ assert.equal(containsModuleSyntax('async function load() { return import("x"); }
     "{ const __dirname = '/a'; }",
     "var __dirname = '/a';",
     'const dirname = __dirname;',
+    // Through any pattern, declarator or escape: V8's redeclaration error; not a class expression's name.
+    'const { __filename } = {};',
+    'const a = 1, require = 2;',
+    'const requir\\u0065 = 3;',
+    'let { a: [, exports] } = { a: [0, 4] };',
+    'const X = class {}, require = 1;',
+    'const a = 1\nclass require {}',
+    'const C = class module {};',
+    // Awaits V8 finds where a call, a parenthesis or a conditional wants another token.
+    'const v = [(await 1), f(await 2), true ? await 3 : 0];\nfunction f(x) { return x; }',
     // A member named import, export, await, const or class is not module syntax, after `?.` as after `.`.
     'const x = a.import; a.export = 1; a.await = 2;',
     'const x = a?.import; const y = a?.export;',
@@ -60,9 +70,27 @@ assert.equal(containsModuleSyntax('async function load() { return import("x"); }
       assert.ok(ran, `node ran ${JSON.stringify(source)}: ${node.stderr.slice(-400)}`);
       assert.equal(containsModuleSyntax(source), ran === 'module', `${JSON.stringify(source)} is ${ran} to node`);
     }
+    // Code Node evaluates is compiled with no wrapper, so a wrapper name is no
+    // redeclaration there. (Its CommonJS names are globals, which a module
+    // sees too: `this` tells them apart.)
+    for (const source of ['const require = 1;', 'let { exports } = {};', 'const x = await Promise.resolve(1);']) {
+      const node = spawnSync('node', ['--no-warnings', '-e', "process.on('exit', () => console.log(this === undefined ? 'module' : 'commonjs'));\n" + source], { cwd: dir, encoding: 'utf8' });
+      const ran = /^(module|commonjs)$/m.exec(node.stdout)?.[1];
+      assert.ok(ran, `node -e ran ${JSON.stringify(source)}: ${node.stderr.slice(-400)}`);
+      assert.equal(containsModuleSyntax(source, 'eval'), ran === 'module', `${JSON.stringify(source)} is ${ran} to node -e`);
+    }
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
+}
+
+// An await whose expression a template's ${} holds is V8's "Missing } in
+// template expression", an error Node does not retry as a module: CommonJS,
+// which then fails to compile.
+for (const source of ['console.log(`${await 1}`);', 'x = `${a + await 1}`;']) {
+  const node = spawnSync('node', ['--no-warnings', '--input-type=commonjs', '--check'], { input: source, encoding: 'utf8' });
+  assert.match(node.stderr, /SyntaxError: Missing } in template expression/, `premise: node names ${JSON.stringify(source)}'s error so`);
+  assert.equal(containsModuleSyntax(source), false, `${JSON.stringify(source)} is CommonJS to node`);
 }
 
 // Pi 0.84.3 changed its executable from dist/cli.js to a split ESM bundle

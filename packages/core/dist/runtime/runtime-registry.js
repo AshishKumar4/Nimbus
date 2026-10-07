@@ -45,6 +45,8 @@ import { isEsModuleFile, isEsModuleInput } from './module-format.js';
 import { packageScopeType } from './require-resolution.js';
 import { isDirectory } from '../vfs/vfs.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
+import { parseNodeCommandLine } from './node-cli.js';
+import { nodeEvalProgram, nodeStdinPrintProgram } from './node-eval.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
  * The first one wins (Node's rule); the filesystem root is not a package.
@@ -66,6 +68,41 @@ const SCRIPT_RESOLUTION_CANDIDATES = ['.js', '.ts', '.tsx', '.mjs', '.jsx', '/in
  * candidates, so `bun ./tools` finds `tools/index.js` the way real bun does
  * rather than trying to read the directory as source.
  */
+/**
+ * Another runtime's command line, as the registry has always read it:
+ * flags up to the program (a bare `-` is the program, read from stdin), the
+ * first `-e`/`--eval` taking its code; `-v`/`--version` and `-h`/`--help`
+ * among them.
+ */
+function genericCommandLine(name, args) {
+    let span = 0;
+    let evalCode;
+    let evalFlag = false;
+    while (span < args.length && args[span].startsWith('-') && args[span] !== '-') {
+        const flag = args[span++];
+        if (flag === '-e' || flag === '--eval') {
+            if (!evalFlag)
+                evalCode = args[span];
+            evalFlag = true;
+            if (span < args.length)
+                span++;
+        }
+    }
+    const flags = args.slice(0, span);
+    if (evalFlag && !evalCode)
+        return { error: `${name}: -e requires an argument\n`, exitCode: 1 };
+    return {
+        execArgv: [],
+        programIndex: span,
+        conditions: [],
+        require: [],
+        import: [],
+        ...(evalCode !== undefined ? { eval: evalCode } : {}),
+        print: false,
+        version: flags.includes('-v') || flags.includes('--version'),
+        help: flags.includes('--help') || flags.includes('-h'),
+    };
+}
 export async function resolveRuntimeScriptPath(fs, cwd, target, opts) {
     const base = normalizeVfsPath(cwd || '/home/user');
     let resolved;
@@ -136,6 +173,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             ...(binSpawn.stdinWriter === true ? { stdinWriter: true } : {}),
         } : {};
         const bundleProfile = parseFacetBundleProfile(nimbusCtx.__nimbusBundleProfile);
+        const moduleScope = spec.moduleScope ?? 'node';
         // How the analyses of a program's code read its modules: the command's
         // own view of the filesystem.
         const programHost = {
@@ -177,6 +215,25 @@ export function buildRuntimeHandler(spec, ctx0) {
             : pipedStdin.file
                 ? { stdinFile: { path: pipedStdin.file.path, offset: pipedStdin.file.offset } }
                 : { stdin: pipedStdin };
+        // ── Flag-span computation (primitive #1) ──
+        //
+        // Real-Node only treats args UP TO the first non-flag token as
+        // CLI flags. Pre-refactor, version/help/eval scanned the entire
+        // args array, breaking `node /path/to/tsc --version` (the user's
+        // --version was misinterpreted as a node flag).
+        // The command line: Node's own reading of it (node-cli.ts) for node, the
+        // one parser its options, execArgv, conditions and program come from;
+        // for the other runtimes, flags up to the program, `-e` taking its code.
+        const line = spec.nodeCommandLine ? parseNodeCommandLine(args, ctx.env?.NODE_OPTIONS ?? '') : genericCommandLine(name, args);
+        if ('error' in line) {
+            ctx.stderr.write(line.error);
+            return line.exitCode;
+        }
+        const flagSpan = line.programIndex;
+        // What a node run takes of its command line (RuntimeRunOpts.node).
+        const { programIndex: _programIndex, version: _version, help: _help, print, inputType, ...launch } = line;
+        // A node program's argv is its own: Node's options are execArgv. Another runtime's carries its flags.
+        const leadingFlags = spec.nodeCommandLine ? [] : args.slice(0, flagSpan);
         /**
          * Run `code` as this invocation's program, whichever way the arguments
          * named it (-e, the REPL, stdin, a file): what the program is (its argv,
@@ -195,12 +252,17 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: program.filename,
                 dirname: program.dirname,
                 command: program.command,
+                ...(spec.nodeCommandLine
+                    ? { node: { ...launch, print: program.print === true, ...(program.refusedBeforeImports ? { import: [] } : {}) } }
+                    : {}),
                 ...program.stdin,
                 ...(program.reserved === false ? {} : reservedProcess),
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
                 ...(program.launchesServer ? { launchesServer: true } : {}),
-                ...(program.esModule ? { esModule: true } : {}),
+                // Evaluated as Node's loader runs an ES module, in Node's scope.
+                ...(program.esModule && moduleScope === 'node' ? { esModule: true } : {}),
+                moduleScope,
             });
             if (result.stdout)
                 ctx.stdout.write(result.stdout);
@@ -208,30 +270,6 @@ export function buildRuntimeHandler(spec, ctx0) {
                 ctx.stderr.write(result.stderr);
             return result.exitCode;
         };
-        // ── Flag-span computation (primitive #1) ──
-        //
-        // Real-Node only treats args UP TO the first non-flag token as
-        // CLI flags. Pre-refactor, version/help/eval scanned the entire
-        // args array, breaking `node /path/to/tsc --version` (the user's
-        // --version was misinterpreted as a node flag).
-        let flagSpan = 0;
-        // A bare `-` is not a flag: it is the program itself, read from stdin
-        // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
-        while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
-            flagSpan++;
-            const prev = args[flagSpan - 1];
-            // -e / --eval and a spaced --input-type consume one value; advance past it.
-            if ((prev === '-e' || prev === '--eval' || prev === '--input-type') && flagSpan < args.length) {
-                flagSpan++;
-            }
-        }
-        const flagSlice = args.slice(0, flagSpan);
-        // What `-e` code and a program read from stdin are: `--input-type=module`
-        // or `--input-type module`, else Node's syntax detection (module-format.ts).
-        const inputTypeAt = flagSlice.findIndex((arg) => arg === '--input-type' || arg.startsWith('--input-type='));
-        const inputType = inputTypeAt === -1 ? undefined
-            : flagSlice[inputTypeAt] === '--input-type' ? flagSlice[inputTypeAt + 1]
-                : flagSlice[inputTypeAt].slice('--input-type='.length);
         /**
          * A program's source as the CommonJS a facet runs (core/_shared/commonjs-cell.ts):
          * TypeScript, JSX or an ES module (`esm`) compiled by esbuild, its import() calls kept
@@ -244,9 +282,9 @@ export function buildRuntimeHandler(spec, ctx0) {
         async function lowerToCommonJs(code, loader, url, what, esm) {
             try {
                 const eb = await getEsbuild();
-                // An ES module keeps its scope (module-format.ts): strict, no CommonJS wrapper name.
+                // An ES module keeps Node's scope (module-format.ts ModuleScope): strict, no CommonJS wrapper name.
                 return (await eb.transform(code, {
-                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm ? { esModuleScope: true } : {}),
+                    loader, format: 'cjs', dynamicImportParent: url, moduleMetadata: true, ...(esm && moduleScope === 'node' ? { esModuleScope: true } : {}),
                 })).code;
             }
             catch (e) {
@@ -256,43 +294,53 @@ export function buildRuntimeHandler(spec, ctx0) {
         }
         /** The URL Node gives `-e` code and a program read from stdin: `[eval1]` in the working directory. */
         const evalUrl = () => 'file:///' + normalizeVfsPath((ctx.cwd || '/home/user') + '/[eval1]');
+        /**
+         * `-e` code or a program read from stdin as the process runs it: an ES
+         * module (`--input-type=module`, or its syntax, module-format.ts) lowered,
+         * which `-p` refuses as Node does (node-eval.ts); else Node's eval code.
+         */
+        async function inputProgram(source, what) {
+            const esModule = isEsModuleInput(source, inputType);
+            if (esModule && !print) {
+                const lowered = await lowerToCommonJs(source, 'js', evalUrl(), what, true);
+                return lowered === null ? null : { code: lowered, refusedBeforeImports: false, esModule: true };
+            }
+            if (!spec.nodeCommandLine)
+                return { code: source, refusedBeforeImports: false, esModule: false };
+            const prepared = what === '[eval]' ? nodeEvalProgram(source, print, esModule) : print ? nodeStdinPrintProgram(source, esModule) : { code: source, refusedBeforeImports: false };
+            return { ...prepared, esModule: false };
+        }
         // ── --version ──
-        if (flagSlice.includes('-v') || flagSlice.includes('--version')) {
+        if (line.version) {
             ctx.stdout.write(spec.version + '\n');
             return 0;
         }
         // ── --help ──
-        if (flagSlice.includes('--help') || flagSlice.includes('-h')) {
+        if (line.help) {
             ctx.stdout.write(spec.helpText);
             if (!spec.helpText.endsWith('\n'))
                 ctx.stdout.write('\n');
             return 0;
         }
-        // ── -e / --eval ──
-        const evalIdx = flagSlice.indexOf('-e') !== -1
-            ? flagSlice.indexOf('-e')
-            : flagSlice.indexOf('--eval');
-        if (evalIdx !== -1) {
-            let code = args[evalIdx + 1];
-            if (!code) {
-                ctx.stderr.write(`${name}: -e requires an argument\n`);
+        // ── -e / --eval, and -p / --print ──
+        // Node's eval code as Node prepares it (node-eval.ts); `-p`'s returns
+        // the value the process prints when it exits.
+        if (line.eval !== undefined) {
+            const program = await inputProgram(line.eval, '[eval]');
+            if (program === null)
                 return 1;
-            }
-            const esModule = isEsModuleInput(code, inputType);
-            if (esModule) {
-                const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[eval]', true);
-                if (lowered === null)
-                    return 1;
-                code = lowered;
-            }
+            const { code, refusedBeforeImports, esModule } = program;
+            const programArgs = args.slice(flagSpan);
             return runProgram(code, {
+                print,
+                refusedBeforeImports,
                 esModule,
-                argv: args.slice(evalIdx + 2),
+                argv: programArgs,
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -e ...`,
                 stdin: programStdin,
-                launchesServer: await launches(code, null, ctx.cwd || '/home/user', args.slice(evalIdx + 2)),
+                launchesServer: await launches(code, null, ctx.cwd || '/home/user', programArgs),
             });
         }
         // ── script path (or .wasm path for bypassesScriptRead) ──
@@ -307,7 +355,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             terminal.signalKeys = false;
             try {
                 return await runProgram(spec.repl, {
-                    argv: args.slice(0, scriptIdx),
+                    argv: leadingFlags,
                     filename: '<repl>',
                     dirname: ctx.cwd || '/home/user',
                     command: binSpawn?.command || name,
@@ -330,17 +378,17 @@ export function buildRuntimeHandler(spec, ctx0) {
         // `process.argv[2]`, where a program written for real Node looks. The
         // program's own stdin is what is left after the read: nothing.
         if (scriptPath === '-') {
-            let code = ctx.stdin ? (await ctx.stdin.readAll()) : '';
-            const esModule = isEsModuleInput(code, inputType);
-            if (esModule) {
-                const lowered = await lowerToCommonJs(code, 'js', evalUrl(), '[stdin]', true);
-                if (lowered === null)
-                    return 1;
-                code = lowered;
-            }
+            const input = ctx.stdin ? (await ctx.stdin.readAll()) : '';
+            // `-p` prints the value of the code it read (eval_stdin.js).
+            const program = await inputProgram(input, '[stdin]');
+            if (program === null)
+                return 1;
+            const { code, refusedBeforeImports, esModule } = program;
             return runProgram(code, {
+                print,
+                refusedBeforeImports,
                 esModule,
-                argv: [...args.slice(0, scriptIdx), '-', ...args.slice(scriptIdx + 1)],
+                argv: [...leadingFlags, '-', ...args.slice(scriptIdx + 1)],
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -`,
@@ -449,7 +497,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             : '/';
         return runProgram(code, {
             esModule: esm,
-            argv: [...args.slice(0, scriptIdx), filename, ...args.slice(scriptIdx + 1)],
+            argv: [...leadingFlags, filename, ...args.slice(scriptIdx + 1)],
             filename,
             dirname,
             command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,

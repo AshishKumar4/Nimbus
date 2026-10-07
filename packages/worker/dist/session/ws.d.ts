@@ -147,7 +147,7 @@ interface WsAttachment {
 export declare function wsKind(ws: WebSocket): WsAttachment;
 export declare function wsMessage(self: WsHost, ws: WebSocket, message: string | ArrayBuffer): Promise<void>;
 export declare function wsClose(self: WsHost, ws: WebSocket, code?: number, reason?: string, _wasClean?: boolean): Promise<void>;
-export declare function wsError(self: WsHost, ws: WebSocket, _error?: any): Promise<void>;
+export declare function wsError(self: WsHost, ws: WebSocket, error?: unknown): Promise<void>;
 /**
  * W5 Lever 5: bridge between _w5PersistRing (which returns a Promise)
  * and ctx.waitUntil. Skipped silently if ctx.waitUntil isn't available

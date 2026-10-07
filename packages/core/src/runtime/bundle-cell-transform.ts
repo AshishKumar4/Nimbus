@@ -31,7 +31,7 @@ import {
   type EsbuildTransformRequest,
 } from './esbuild-service.js';
 import { MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
-import { esModuleSource, isEsModuleFile, type PackageType } from './module-format.js';
+import { esModuleSource, isEsModuleFile, type ModuleScope, type PackageType } from './module-format.js';
 
 /**
  * Bundled ESM this large is lowered in the session (esbuild-service.ts
@@ -162,20 +162,22 @@ export interface BundleCellResult {
 }
 
 /**
- * Run the session's steps of the pipeline on `source`, staged at `path`.
+ * Run the session's steps of the pipeline on `source`, staged at `path`, for
+ * a runtime whose ES modules run in `scope` (module-format.ts ModuleScope).
  *
  * This is computation in the caller's isolate proportional to the source —
  * the provided-module pre-pass and, for large bundled ESM, its lowering to
  * CommonJS — so a paced caller accounts the source before it.
  */
-export function prepareBundleCell(path: string, source: string, packageType: PackageType): BundleCell {
+export function prepareBundleCell(path: string, source: string, packageType: PackageType, scope: ModuleScope): BundleCell {
   const loader = bundleTypescriptLoader(path);
   const typescript = loader !== null;
-  // A JavaScript file Node runs as an ES module is lowered in a module's
+  // A JavaScript file Node runs as an ES module is lowered in Node's module
   // scope (module-format.ts): strict, `this` undefined at the top, and no
-  // CommonJS wrapper name. TypeScript keeps CommonJS's names, as tsx and
-  // ts-node give them.
+  // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
+  // CommonJS's names, as tsx and ts-node give them.
   const esm = !typescript && looksLikeEsm(path, source, packageType);
+  const nodeScope = esm && scope === 'node';
   // Source is transformed once per path; import.meta reads metadata from
   // each evaluation's module object, including its query and fragment.
   // The source URL still supplies the static parent for rewritten dynamic
@@ -190,7 +192,7 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
       ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
       : {
         loader: loader ?? 'js', format: 'cjs', target: 'esnext', dynamicImportParent: absUrl, moduleMetadata,
-        ...(esm ? { esModuleScope: true } : {}),
+        ...(nodeScope ? { esModuleScope: true } : {}),
       },
   });
   let src: string;
@@ -206,7 +208,7 @@ export function prepareBundleCell(path: string, source: string, packageType: Pac
   if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
     let rewritten: EsbuildTransformOutcome | null;
     try {
-      rewritten = rewriteBundledEsmToCjs(esModuleSource(src), absUrl, true);
+      rewritten = rewriteBundledEsmToCjs(nodeScope ? esModuleSource(src) : src, absUrl, true, scope);
     } catch (e) {
       rewritten = { error: errorText(e) };
     }
@@ -259,9 +261,10 @@ export interface BundleCellResultStore {
   /**
    * The content address of `source` staged at `at` as a `kind`: a module
    * cell at its bundle path, under its package scope's `packageType` (which
-   * decides whether it is an ES module), or an entry script at its URL.
+   * decides whether it is an ES module) for a runtime whose ES modules run
+   * in `scope`, or an entry script at its URL.
    */
-  key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType): Promise<string>;
+  key(kind: 'cell' | 'entry', at: string, source: string, packageType?: PackageType, scope?: ModuleScope): Promise<string>;
   /** The results held for `keys`; a key the store does not hold is absent. */
   getMany(keys: readonly string[]): Map<string, StoredBundleCell>;
   /**
@@ -318,11 +321,12 @@ export interface BundleCellTransformStats {
  * Only a paced launch stores what it transforms: its writes land on as many
  * turns as they take, where an unpaced one would put every write in one turn.
  * A transient host failure throws (settleBundleCell) before anything of its
- * slice is placed.
+ * slice is placed. Each cell is lowered for the launch's runtime's module
+ * `scope`.
  */
 export async function transformBundleCells(
   cells: ReadonlyArray<{ readonly path: string; readonly source: string; readonly packageType: PackageType }>,
-  { host, store, pacer }: { host: BundleCellHost; store?: BundleCellResultStore | null; pacer?: BundleCellPacer },
+  { host, store, pacer, scope }: { host: BundleCellHost; store?: BundleCellResultStore | null; pacer?: BundleCellPacer; scope: ModuleScope },
   place: (path: string, result: BundleCellResult) => void,
 ): Promise<BundleCellTransformStats> {
   const started = Date.now();
@@ -345,7 +349,7 @@ export async function transformBundleCells(
     stats.storeError ??= refused;
   };
   for (const slice of transformSlices(cells, (cell) => cell.source.length)) {
-    const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source, cell.packageType))) : [];
+    const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source, cell.packageType, scope))) : [];
     const held = store ? store.getMany(keys) : new Map<string, StoredBundleCell>();
     const pending: Array<{ cell: BundleCell & { readonly request: EsbuildTransformRequest }; key: string | undefined }> = [];
     for (const [i, { path, source, packageType }] of slice.entries()) {
@@ -357,7 +361,7 @@ export async function transformBundleCells(
         continue;
       }
       if (pacer) await pacer.spend(source.length);
-      const cell = prepareBundleCell(path, source, packageType);
+      const cell = prepareBundleCell(path, source, packageType, scope);
       if ('outcome' in cell) await settle(cell, key, cell.outcome);
       else pending.push({ cell, key });
     }

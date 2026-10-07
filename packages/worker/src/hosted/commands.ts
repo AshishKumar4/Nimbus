@@ -380,6 +380,7 @@ const nodeSpec: RuntimeSpec = {
   run: (code, opts) => runFresh(facetMgr, code, opts),
   supportsBinSpawn: true,
   routesServers: true,
+  nodeCommandLine: true,
   repl: jsReplProgram(`Welcome to Node.js ${NODE_VERSION}.\nType ".help" for more information.\n`),
 };
 {
@@ -437,6 +438,8 @@ const bunSpec: RuntimeSpec = {
   run: (code, opts) => runBunScript(facetMgr, code, opts),
   supportsBinSpawn: true,
   routesServers: true,
+  // Bun binds require, __filename and __dirname in an ES module.
+  moduleScope: 'bun',
   repl: jsReplProgram(`Welcome to Bun v${BUN_VERSION}\nType ".help" for more information.\n`),
   subcommands: {
     // bun install / i / add → npm install (same VFS, same R2 caches).

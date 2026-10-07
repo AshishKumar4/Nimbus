@@ -42,6 +42,13 @@ assert.equal(routed.status, 200);
 assert.deepEqual(routed.names, ['acme:alice:nimble-otter-4271']);
 assert.equal(routed.body.pathname, '/api/agent/oauth/callback');
 
+// An SDK sandbox's session id (its own stable id, as isValidSessionId
+// admits it) is routed the same way.
+const sdkState = await signAgentOAuthState({ ...payload, sessionId: 'Build_7.a' }, { JWT_SECRET: secret });
+const sdkRouted = await call(sdkState);
+assert.equal(sdkRouted.status, 200);
+assert.deepEqual(sdkRouted.names, ['acme:alice:Build_7.a']);
+
 // Anything else never names a DO.
 const unsigned = encodeJsonBase64Url({ ...payload, tenantSegment: 'victim:bob' });
 const [body, signature] = signed.split('.');

@@ -121,20 +121,22 @@ export function esbuildDiagnosticShim(path, reason) {
         '(function () { throw new Error(' + escapedReason + '); })();\n';
 }
 /**
- * Run the session's steps of the pipeline on `source`, staged at `path`.
+ * Run the session's steps of the pipeline on `source`, staged at `path`, for
+ * a runtime whose ES modules run in `scope` (module-format.ts ModuleScope).
  *
  * This is computation in the caller's isolate proportional to the source —
  * the provided-module pre-pass and, for large bundled ESM, its lowering to
  * CommonJS — so a paced caller accounts the source before it.
  */
-export function prepareBundleCell(path, source, packageType) {
+export function prepareBundleCell(path, source, packageType, scope) {
     const loader = bundleTypescriptLoader(path);
     const typescript = loader !== null;
-    // A JavaScript file Node runs as an ES module is lowered in a module's
+    // A JavaScript file Node runs as an ES module is lowered in Node's module
     // scope (module-format.ts): strict, `this` undefined at the top, and no
-    // CommonJS wrapper name. TypeScript keeps CommonJS's names, as tsx and
-    // ts-node give them.
+    // CommonJS wrapper name; in Bun's, with CommonJS's names. TypeScript keeps
+    // CommonJS's names, as tsx and ts-node give them.
     const esm = !typescript && looksLikeEsm(path, source, packageType);
+    const nodeScope = esm && scope === 'node';
     // Source is transformed once per path; import.meta reads metadata from
     // each evaluation's module object, including its query and fragment.
     // The source URL still supplies the static parent for rewritten dynamic
@@ -149,7 +151,7 @@ export function prepareBundleCell(path, source, packageType) {
             ? { rewriteOnly: true, dynamicImportParent: absUrl, moduleMetadata }
             : {
                 loader: loader ?? 'js', format: 'cjs', target: 'esnext', dynamicImportParent: absUrl, moduleMetadata,
-                ...(esm ? { esModuleScope: true } : {}),
+                ...(nodeScope ? { esModuleScope: true } : {}),
             },
     });
     let src;
@@ -166,7 +168,7 @@ export function prepareBundleCell(path, source, packageType) {
     if (esm && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
         let rewritten;
         try {
-            rewritten = rewriteBundledEsmToCjs(esModuleSource(src), absUrl, true);
+            rewritten = rewriteBundledEsmToCjs(nodeScope ? esModuleSource(src) : src, absUrl, true, scope);
         }
         catch (e) {
             rewritten = { error: errorText(e) };
@@ -220,9 +222,10 @@ export function entryScriptRequest(code, parentUrl) {
  * Only a paced launch stores what it transforms: its writes land on as many
  * turns as they take, where an unpaced one would put every write in one turn.
  * A transient host failure throws (settleBundleCell) before anything of its
- * slice is placed.
+ * slice is placed. Each cell is lowered for the launch's runtime's module
+ * `scope`.
  */
-export async function transformBundleCells(cells, { host, store, pacer }, place) {
+export async function transformBundleCells(cells, { host, store, pacer, scope }, place) {
     const started = Date.now();
     const stats = {
         cells: cells.length, stored: 0, transformed: 0, failed: 0, hostBytes: 0, storeErrors: 0, ms: 0,
@@ -245,7 +248,7 @@ export async function transformBundleCells(cells, { host, store, pacer }, place)
         stats.storeError ??= refused;
     };
     for (const slice of transformSlices(cells, (cell) => cell.source.length)) {
-        const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source, cell.packageType))) : [];
+        const keys = store ? await Promise.all(slice.map((cell) => store.key('cell', cell.path, cell.source, cell.packageType, scope))) : [];
         const held = store ? store.getMany(keys) : new Map();
         const pending = [];
         for (const [i, { path, source, packageType }] of slice.entries()) {
@@ -258,7 +261,7 @@ export async function transformBundleCells(cells, { host, store, pacer }, place)
             }
             if (pacer)
                 await pacer.spend(source.length);
-            const cell = prepareBundleCell(path, source, packageType);
+            const cell = prepareBundleCell(path, source, packageType, scope);
             if ('outcome' in cell)
                 await settle(cell, key, cell.outcome);
             else

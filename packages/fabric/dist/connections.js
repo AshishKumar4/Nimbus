@@ -32,6 +32,7 @@
  * exactly as the device hub does.
  */
 import { WS_ATTACHMENT_LIMIT_BYTES } from '@nimbus-sh/platform/limits.js';
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 const WS_OPEN = 1;
 /** The per-connection hub of one hosting actor. Cheap accessor; it holds no
  *  state of its own, which is the point. */
@@ -108,7 +109,4 @@ function jsonLength(value) {
     catch {
         return 0;
     }
-}
-function errorText(error) {
-    return error instanceof Error ? error.message : String(error);
 }
