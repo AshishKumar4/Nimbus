@@ -17,8 +17,8 @@
  * licenses npm's own validators', versions npm's own semver's.
  *
  * Named limits: a directory's entries are read in sorted order (npm reads the
- * main and bin candidates in the operating system's order), and an
- * `init-module` (~/.npm-init.js) is not run.
+ * main and bin candidates in the operating system's order), an `init-module`
+ * (~/.npm-init.js) is not run, and a git initializer is refused.
  */
 import hostedGitInfo from 'hosted-git-info';
 import npa from 'npm-package-arg';
@@ -27,7 +27,7 @@ import validateLicense from 'validate-npm-package-license';
 import validateName from 'validate-npm-package-name';
 import { normalizePackageJsonBin } from '../../../../runtime/npm-bin-map.js';
 import { join } from '../../utils/path.js';
-import { loadNpmConfig, parseNpmArgv } from './npm-config.js';
+import { loadNpmConfig } from './npm-config.js';
 const isObject = (value) => typeof value === 'object' && value !== null && !Array.isArray(value);
 const NO_TEST = 'echo "Error: no test specified" && exit 1';
 const NO_README = 'ERROR: No README data found!';
@@ -54,10 +54,12 @@ export class NpmError extends Error {
 }
 /**
  * The package `npm init <initializer>` runs (init.js execCreate): `@scope`
- * is `@scope/create`, a hosted git repository `user/project` is
- * `user/create-project`, a registry package `name@spec` is
- * `create-name@spec` (`@scope/create-name@spec` for a scoped one); anything
- * else is not an initializer.
+ * is `@scope/create`, a registry package `name@spec` is `create-name@spec`
+ * (`@scope/create-name@spec` for a scoped one); anything else is not an
+ * initializer. A hosted git repository `user/project` would be
+ * `user/create-project`, which npm installs with git: the shell's npm
+ * installs from the registry only, so it refuses one, naming it (named
+ * limit).
  */
 export function npmInitializerPackage(initializer) {
     if (/^@[^/]+$/.test(initializer)) {
@@ -74,7 +76,9 @@ export function npmInitializerPackage(initializer) {
     }
     if (spec.type === 'git' && spec.hosted) {
         const { user, project } = spec.hosted;
-        return initializer.replace(`${user}/${project}`, `${user}/create-${project}`);
+        const repository = initializer.replace(`${user}/${project}`, `${user}/create-${project}`);
+        // npm exec installs it with git; the shell's npm installs from the registry only.
+        throw new NpmError(`Unsupported initializer: ${repository} is a git repository\nThis npm installs packages from the registry only; git dependencies are not supported`, 'EUNSUPPORTED');
     }
     if (spec.registry && spec.name !== null)
         return `${spec.name.replace(/^(@[^/]+\/)?/, '$1create-')}@${spec.rawSpec}`;
@@ -96,13 +100,12 @@ export async function npmInitCommand(ctx) {
             await ctx.stderr.write(`npm error ${line}\n`);
         return 1;
     };
-    const argv = parseNpmArgv(ctx.args.slice(1));
-    const config = await loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, argv);
+    const config = await loadNpmConfig(ctx.vfs, ctx.cwd, ctx.env, ctx.args);
     for (const warning of config.warnings)
         await ctx.stderr.write(`npm warn ${warning}\n`);
     if (config.get('force'))
         await ctx.stderr.write('npm warn using --force Recommended protections disabled.\n');
-    const [initializer, ...rest] = argv.positionals;
+    const [initializer, ...rest] = config.positionals.slice(1);
     if (initializer !== undefined) {
         let initializerPackage;
         try {
@@ -233,7 +236,7 @@ export async function npmInitTemplate(vfs, dir, config, io) {
     const pkg = content;
     const getConfig = (key) => {
         const dotted = config.get(`init.${key}`);
-        return dotted !== DOTTED_DEFAULTS[key] && dotted ? dotted : config.get(`init-${key.replace(/\./g, '-')}`);
+        return dotted !== config.default(`init.${key}`) && dotted ? dotted : config.get(`init-${key.replace(/\./g, '-')}`);
     };
     const ask = async (prompt, def, transform) => {
         for (;;) {
@@ -413,10 +416,6 @@ export async function npmInitTemplate(vfs, dir, config, io) {
     await save();
     return 'written';
 }
-/** The defaults of the deprecated `init.*` keys, which a set dashed key yields to only when they differ. */
-const DOTTED_DEFAULTS = {
-    'author.name': '', 'author.email': '', 'author.url': '', license: 'ISC', version: '1.0.0',
-};
 class EndOfInput extends Error {
 }
 /** init-package-json stringifyPerson: an author object back as `name <email> (url)`. */

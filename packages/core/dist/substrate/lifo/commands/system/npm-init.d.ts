@@ -8,10 +8,12 @@ export declare class NpmError extends Error {
 }
 /**
  * The package `npm init <initializer>` runs (init.js execCreate): `@scope`
- * is `@scope/create`, a hosted git repository `user/project` is
- * `user/create-project`, a registry package `name@spec` is
- * `create-name@spec` (`@scope/create-name@spec` for a scoped one); anything
- * else is not an initializer.
+ * is `@scope/create`, a registry package `name@spec` is `create-name@spec`
+ * (`@scope/create-name@spec` for a scoped one); anything else is not an
+ * initializer. A hosted git repository `user/project` would be
+ * `user/create-project`, which npm installs with git: the shell's npm
+ * installs from the registry only, so it refuses one, naming it (named
+ * limit).
  */
 export declare function npmInitializerPackage(initializer: string): string;
 /**

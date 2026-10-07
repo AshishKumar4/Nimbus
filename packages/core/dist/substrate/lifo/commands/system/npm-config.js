@@ -1,165 +1,57 @@
 /**
- * npm-config.ts — npm's configuration, as npm 10.9.8 (@npmcli/config 9.0.0)
- * loads it, for the keys the shell's npm reads: the command line (nopt's
- * parse, flags anywhere, `--` ending them), `npm_config_*` in the
- * environment, the project's `.npmrc` (in its local prefix: the nearest
- * directory up from the working one with a package.json or node_modules),
- * the user's (`userconfig`, `~/.npmrc`) and the global one (`globalconfig`,
- * `<prefix>/etc/npmrc`), each over the next, then the defaults. A file is
- * read with npm's own ini, `${VAR}` in a key or value is the environment's,
- * and a value is typed as npm types it: a boolean from `true` and `false`, a
- * path from `~/`, a semver or url that is not one ignored with npm's
- * warning, as is a deprecated key's use (`init.author.name`).
+ * npm-config.ts — npm's configuration as npm 10.9.8's @npmcli/config 9.0.0
+ * loads it, over the session's files: the command line (nopt 8.1.0 with
+ * npm's definitions and shorthands: flags anywhere, abbreviations, `--`
+ * ending them), `npm_config_*` in the environment, the project's `.npmrc`
+ * (in its local prefix: the nearest directory up from the working one with a
+ * package.json or node_modules), the user's (`userconfig`, `~/.npmrc`) and
+ * the global one (`globalconfig`, `<prefix>/etc/npmrc`), each over the next,
+ * then npm's defaults. A file is read with npm's ini; each value is parsed
+ * with npm's parse-field (`${VAR}`, `~/`, booleans) and validated as npm
+ * validates it (nopt.clean with npm's type definitions), with npm's
+ * warnings: a deprecated key's use, and an invalid value, which is dropped.
  *
- * Named limits: only the definitions below are typed (any other key is read
- * as npm reads an unknown one), and the project config of a workspace's
- * root is not looked for above the local prefix.
+ * Named limits: a relative path value resolves against the Worker's own
+ * working directory (npm's process's, in npm), and a workspace root's project
+ * config above the local prefix is not looked for.
  */
+import npmDefinitions from '@npmcli/config/lib/definitions/index.js';
+import envReplace from '@npmcli/config/lib/env-replace.js';
+import parseField from '@npmcli/config/lib/parse-field.js';
+import typeDefs from '@npmcli/config/lib/type-defs.js';
+import typeDescription from '@npmcli/config/lib/type-description.js';
 import ini from 'ini';
-import semver from 'semver';
+import nopt from 'nopt';
 import { dirname, resolve } from '../../utils/path.js';
-/** npm's definitions of the keys read here: their type, default and short flag. */
-const DEFINITIONS = {
-    yes: { type: 'nullable-boolean', default: null },
-    force: { type: 'boolean', default: false },
-    global: { type: 'boolean', default: false },
-    scope: { type: 'string', default: '' },
-    'init-author-name': { type: 'string', default: '' },
-    'init-author-email': { type: 'string', default: '' },
-    'init-author-url': { type: 'url', default: '' },
-    'init-license': { type: 'string', default: 'ISC' },
-    'init-version': { type: 'semver', default: '1.0.0' },
-    'init-module': { type: 'path', default: '~/.npm-init.js' },
-    'init.author.name': { type: 'string', default: '', deprecated: 'Use `--init-author-name` instead.' },
-    'init.author.email': { type: 'string', default: '', deprecated: 'Use `--init-author-email` instead.' },
-    'init.author.url': { type: 'url', default: '', deprecated: 'Use `--init-author-url` instead.' },
-    'init.license': { type: 'string', default: 'ISC', deprecated: 'Use `--init-license` instead.' },
-    'init.version': { type: 'semver', default: '1.0.0', deprecated: 'Use `--init-version` instead.' },
-    'save-exact': { type: 'boolean', default: false },
-    'save-prefix': { type: 'string', default: '^' },
-    userconfig: { type: 'path', default: '~/.npmrc' },
-    globalconfig: { type: 'path', default: '' },
-    prefix: { type: 'path', default: '' },
-    loglevel: { type: 'string', default: 'notice' },
-    workspace: { type: 'string-list', default: [] },
-};
-/** nopt's shorthands among them. */
-const SHORTHANDS = {
-    y: ['--yes'], f: ['--force'], g: ['--global'], E: ['--save-exact'], s: ['--loglevel', 'silent'],
-    w: ['--workspace'], C: ['--prefix'], ws: ['--workspaces'],
-};
-/** The invalid-value message npm's type descriptions give. */
-const INVALID = {
-    semver: 'Must be full valid SemVer string',
-    url: 'Must be full url with "http://"',
-};
-/** nopt's parse of `argv` (the arguments after npm's subcommand). */
-export function parseNpmArgv(argv) {
-    const cli = Object.create(null);
-    const positionals = [];
-    const args = [...argv];
-    for (let i = 0; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === '--') {
-            positionals.push(...args.slice(i + 1));
-            break;
-        }
-        if (!arg.startsWith('-') || arg === '-') {
-            positionals.push(arg);
-            continue;
-        }
-        // A short flag, or several run together, by their expansions.
-        if (!arg.startsWith('--')) {
-            const letters = arg.slice(1).split('=')[0];
-            const expansion = SHORTHANDS[letters]
-                ?? (letters.split('').every((letter) => SHORTHANDS[letter]) ? letters.split('').flatMap((letter) => SHORTHANDS[letter]) : null);
-            if (expansion !== null) {
-                const value = arg.includes('=') ? [arg.slice(arg.indexOf('=') + 1)] : [];
-                args.splice(i, 1, ...expansion, ...value);
-                i--;
-                continue;
-            }
-        }
-        const equals = arg.indexOf('=');
-        let key = (equals === -1 ? arg : arg.slice(0, equals)).replace(/^-+/, '');
-        let negated = false;
-        if (key.startsWith('no-') && !(key in DEFINITIONS)) {
-            key = key.slice(3);
-            negated = true;
-        }
-        const type = DEFINITIONS[key]?.type;
-        const boolean = type === 'boolean' || type === 'nullable-boolean' || (type === undefined && equals === -1);
-        if (equals !== -1) {
-            cli[key] = negated ? false : arg.slice(equals + 1);
-        }
-        else if (boolean) {
-            const next = args[i + 1];
-            if (next === 'true' || next === 'false') {
-                cli[key] = negated ? next !== 'true' : next === 'true';
-                i++;
-            }
-            else {
-                cli[key] = !negated;
-            }
-        }
-        else {
-            // A typed value takes the next argument, unless that is `--`.
-            const next = args[i + 1];
-            const value = next === undefined || /^-{2,}$/.test(next) ? '' : next;
-            if (next !== undefined && !/^-{2,}$/.test(next))
-                i++;
-            if (type === 'string-list')
-                cli[key] = [...(cli[key] ?? []), value];
-            else
-                cli[key] = value;
-        }
-    }
-    return { cli, positionals };
+const { definitions, shorthands } = npmDefinitions;
+// npm's definitions in nopt's terms (@npmcli/config's constructor).
+const TYPES = {};
+const DEFAULTS = {};
+const DEPRECATED = {};
+for (const [key, definition] of Object.entries(definitions)) {
+    DEFAULTS[key] = definition.default;
+    TYPES[key] = definition.type;
+    if (definition.deprecated)
+        DEPRECATED[key] = definition.deprecated.trim().replace(/\n +/, '\n');
 }
-/** `${VAR}` in `text`, from `env` (@npmcli/config env-replace.js), backslashes escaping. */
-export function npmEnvReplace(text, env) {
-    return text.replace(/(?<!\\)(\\*)\$\{([^${}]+)\}/g, (original, escapes, name) => {
-        const value = env[name] !== undefined ? env[name] : `\${${name}}`;
-        if (escapes.length % 2)
-            return original.slice((escapes.length + 1) / 2);
-        return escapes.slice(escapes.length / 2) + value;
-    });
-}
-/** Load npm's configuration for a command run in `cwd` with `env` and the flags of `argv`. */
+/** Load npm's configuration for `argv` (the command and its arguments) run in `cwd` with `env`. */
 export async function loadNpmConfig(vfs, cwd, env, argv) {
     const home = env.HOME || '/home/user';
+    const globalPrefix = env.PREFIX || '/usr/local';
     const warnings = [];
+    const fieldOptions = { platform: 'linux', types: TYPES, home, env };
     // Highest first, as get reads them; `source` names one in a warning.
     const layers = [];
-    const parse = (value, key) => {
-        if (typeof value !== 'string')
-            return value;
-        const type = DEFINITIONS[key]?.type;
-        let text = value.trim();
-        if ((type === 'boolean' || type === 'nullable-boolean') && text === '')
-            return true;
-        if (type !== 'string' && type !== 'path') {
-            switch (text) {
-                case 'true': return true;
-                case 'false': return false;
-                case 'null': return null;
-                case 'undefined': return undefined;
-            }
-        }
-        text = npmEnvReplace(text, env);
-        if (type === 'path')
-            text = /^~\//.test(text) ? resolve(home, text.slice(2)) : resolve(cwd, text);
-        if (type === 'string-list')
-            return [text];
-        return text;
+    const invalid = (source) => (key, value, type) => {
+        warnings.push(`invalid config ${key}=${JSON.stringify(value)} set in ${source}`, invalidDescription(type));
     };
     const layer = (where, source, raw) => {
         const data = Object.create(null);
         for (const [rawKey, value] of Object.entries(raw ?? {})) {
-            const key = npmEnvReplace(rawKey, env);
-            data[key] = parse(value, key);
-            const deprecated = DEFINITIONS[rawKey]?.deprecated;
-            if (deprecated !== undefined)
+            const key = envReplace(rawKey, env);
+            data[key] = parseField(value, key, fieldOptions);
+            const deprecated = DEPRECATED[rawKey];
+            if (deprecated !== undefined && where !== 'default')
                 warnings.push(`config ${key} ${deprecated}`);
         }
         layers.push({ where, source, data });
@@ -170,7 +62,7 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
                 return data[key];
         return undefined;
     };
-    const readFile = async (path) => {
+    const readRc = async (path) => {
         try {
             return ini.decode(await vfs.readFileString(path));
         }
@@ -178,7 +70,17 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
             return null;
         }
     };
-    layer('cli', 'command line options', argv.cli);
+    // The command line, validated as nopt parses it.
+    nopt.invalidHandler = invalid('command line options');
+    let parsed;
+    try {
+        parsed = nopt(TYPES, shorthands, [...argv], 0);
+    }
+    finally {
+        nopt.invalidHandler = null;
+    }
+    const { argv: { remain }, ...cli } = parsed;
+    layer('cli', 'command line options', cli);
     const fromEnv = Object.create(null);
     for (const [name, value] of Object.entries(env)) {
         if (!/^npm_config_/i.test(name) || value === '')
@@ -194,7 +96,8 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
     let localPrefix = typeof cliPrefix === 'string' ? cliPrefix : '';
     if (localPrefix === '') {
         for (let dir = cwd;; dir = dirname(dir)) {
-            if (await exists(vfs, `${dir === '/' ? '' : dir}/package.json`) || await exists(vfs, `${dir === '/' ? '' : dir}/node_modules`)) {
+            const at = dir === '/' ? '' : dir;
+            if (await exists(vfs, `${at}/package.json`) || await exists(vfs, `${at}/node_modules`)) {
                 localPrefix = dir;
                 break;
             }
@@ -205,51 +108,53 @@ export async function loadNpmConfig(vfs, cwd, env, argv) {
     }
     const userconfig = () => String(get('userconfig') ?? resolve(home, '.npmrc'));
     const projectFile = resolve(localPrefix, '.npmrc');
-    if (get('global') !== true && projectFile !== userconfig())
-        layer('project', projectFile, await readFile(projectFile));
+    const global = get('global') === true || get('location') === 'global';
+    if (!global && projectFile !== userconfig())
+        layer('project', projectFile, await readRc(projectFile));
     const userFile = userconfig();
-    layer('user', userFile, await readFile(userFile));
-    const prefix = String(get('prefix') ?? (env.PREFIX || '/usr/local'));
+    layer('user', userFile, await readRc(userFile));
+    const prefix = String(get('prefix') ?? globalPrefix);
     const globalFile = String(get('globalconfig') || resolve(prefix, 'etc/npmrc'));
-    layer('global', globalFile, await readFile(globalFile));
-    // npm's validation, in its layers' order (global, user, project, env, cli).
-    for (const { source, data } of [...layers].reverse()) {
-        for (const [key, value] of Object.entries(data)) {
-            const type = DEFINITIONS[key]?.type;
-            let valid = value;
-            if (type === 'semver')
-                valid = semver.valid(value) ?? undefined;
-            else if (type === 'url')
-                valid = urlValue(value);
-            if (valid === undefined && (type === 'semver' || type === 'url')) {
-                warnings.push(`invalid config ${key}=${JSON.stringify(value)} set in ${source}`, `invalid config ${INVALID[type]}`);
-                delete data[key];
-            }
-            else {
-                data[key] = valid;
-            }
+    layer('global', globalFile, await readRc(globalFile));
+    layer('default', 'default values', { ...DEFAULTS, prefix: globalPrefix });
+    // npm's validation of every layer but the command line's (already) and
+    // the defaults, in its order: global, user, project, environment.
+    for (const { where, source, data } of [...layers].reverse()) {
+        if (where === 'default' || where === 'cli')
+            continue;
+        nopt.invalidHandler = invalid(source);
+        try {
+            nopt.clean(data, TYPES, typeDefs);
+        }
+        finally {
+            nopt.invalidHandler = null;
         }
     }
     return {
-        get: (key) => {
-            const value = get(key);
-            return value === undefined ? DEFINITIONS[key]?.default : value;
-        },
+        get,
+        default: (key) => DEFAULTS[key],
         localPrefix,
+        positionals: remain,
         warnings,
     };
 }
-/** nopt's url type: a URL with a host, as its href; undefined for anything else. */
-function urlValue(value) {
-    if (value === '')
-        return '';
-    try {
-        const url = new URL(String(value));
-        return url.host ? url.href : undefined;
+/** @npmcli/config invalidHandler's second line: what the value must be. */
+function invalidDescription(type) {
+    let described = type;
+    if (Array.isArray(type)) {
+        if (type.includes(typeDefs.url.type))
+            described = typeDefs.url.type;
+        else if (type.includes(typeDefs.path.type))
+            described = typeDefs.path.type;
     }
-    catch {
-        return undefined;
-    }
+    const descriptions = typeDescription(described);
+    const mustBe = descriptions.filter((m) => m !== undefined && m !== Array);
+    const keyword = mustBe.length === 1 && descriptions.includes(Array) ? ' one or more'
+        : mustBe.length > 1 && descriptions.includes(Array) ? ' one or more of:'
+            : mustBe.length > 1 ? ' one of:' : '';
+    const description = mustBe.length === 1 ? mustBe[0]
+        : [...new Set(mustBe.map((n) => (typeof n === 'string' ? n : JSON.stringify(n))))].join(', ');
+    return `invalid config Must be${keyword} ${String(description)}`;
 }
 async function exists(vfs, path) {
     try {
