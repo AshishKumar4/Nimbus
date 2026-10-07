@@ -12,16 +12,16 @@ import assert from 'node:assert/strict';
 import { facetPool } from '../../packages/fabric/src/facet-pool.ts';
 import {
   FACET_ID_LIFETIME_BUDGET,
-  recordFacetNameMinted,
+  FACET_NAME_HIGH_WATER_KEY,
   facetNameCount,
 } from '../../packages/fabric/src/budgets.ts';
 
 /** The platform seam: a ctx.facets that records which verb touched which
  *  facet, and models the storage consequence of each. */
-function createHost({ failDelete = false } = {}) {
+function createHost({ failDelete = false, namesMinted } = {}) {
   const verbs = [];
   const storage = new Map(); // name -> 'live' | 'kept' | 'wiped'
-  const kv = new Map();
+  const kv = new Map(namesMinted === undefined ? [] : [[FACET_NAME_HIGH_WATER_KEY, namesMinted]]);
   return {
     verbs,
     facetStorage: storage,
@@ -117,16 +117,16 @@ const start = async () => ({ class: {} });
 // ── 6. The 65,536-id lifetime wall: refused by the ledger, by name ───────────
 
 {
-  const host = createHost();
+  // One lifetime id left.
+  const host = createHost({ namesMinted: FACET_ID_LIFETIME_BUDGET - 1 });
   const pool = facetPool(host.ctx);
   const first = await pool.acquire('head-1', start);
-  assert.equal(facetNameCount(host.ctx), 1, 'a first-use name consumes one lifetime id');
+  assert.equal(facetNameCount(host.ctx), FACET_ID_LIFETIME_BUDGET, 'a first-use name consumes one lifetime id');
   await pool.acquire('head-1', start).then((lease) => lease.detach());
-  assert.equal(facetNameCount(host.ctx), 1, 'a reused name costs no new id');
+  assert.equal(facetNameCount(host.ctx), FACET_ID_LIFETIME_BUDGET, 'a reused name costs no new id');
   await first.retire();
 
   // The object has spent its lifetime budget.
-  recordFacetNameMinted(host.ctx, FACET_ID_LIFETIME_BUDGET);
   await assert.rejects(
     () => pool.acquire('head-new', start),
     (e) => /65,536/.test(e.message) && /lifetime budget/.test(e.message),

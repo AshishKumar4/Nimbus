@@ -29,7 +29,7 @@ import {
   claimAdmission,
   facetNameCount,
   facetNameCountDurable,
-  recordFacetNameMinted,
+  chargeFacetSlot,
   withDynamicWorkerCapNamed,
   withFacetBudgetNamed,
 } from './budgets.js';
@@ -315,7 +315,7 @@ function acquireSlot(ctx: DurableObjectState, pid: number): { slot: number; mint
   book.held.set(pid, slot);
   // A fresh name is a permanently consumed facet ID; the durable count lives
   // in the budgets ledger (see budgets.ts).
-  if (!reused) recordFacetNameMinted(ctx, book.next);
+  if (!reused) chargeFacetSlot(ctx, slot);
   return { slot, minted: !reused };
 }
 
