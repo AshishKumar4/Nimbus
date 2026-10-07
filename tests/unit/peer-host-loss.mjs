@@ -34,7 +34,7 @@ const SID = 'tenant:peer-loss';
 const SERVER = 'const http = require("http"); http.createServer(() => {}).listen(process.env.PORT || 3000);';
 const RESET = 'Durable Object reset because its code was updated.';
 
-function setup() {
+function setup({ onPeer, failReports = 0 } = {}) {
   // The module map is left unbuilt: this suite's subject is the host's life.
   const world = createFacetWorld(() => ({
     async startProcess() { return { ok: true }; },
@@ -47,10 +47,12 @@ function setup() {
     doId: SID,
     supervisorOp: ({ op, args }) => {
       if (op !== 'hostLost') throw new Error(`coordinator stub: unserved op ${op}`);
+      // `failReports` calls are lost on the way, as a call to a session can be.
+      if (failReports > 0) { failReports--; throw new Error('Network connection lost.'); }
       return _rpcHostLost(session, ...args);
     },
   };
-  const { ns, peers } = createPeerNamespace(world, hostEnv, { coordinator });
+  const { ns, peers } = createPeerNamespace(world, hostEnv, { coordinator, onPeer });
   const ctx = createFacetCtx(world, SID);
   const env = { ...hostEnv, NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' };
   const processes = new SessionProcessSupervisor();
@@ -174,6 +176,64 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
   await waitFor(() => processes.get(pid)?.state === 'exited', 1_000, 'the process to end when its host reports its reset');
   assert.equal(processes.get(pid).exitCode, 137);
   assert.match(exits.find((e) => e.pid === pid)?.reason ?? '', /its host was reset by the platform/);
+}
+
+// ── 6. a report the session never got is made again ─────────────────────────
+// The sibling keeps the hosting record, and its alarm, until the session
+// answers; a failure to read or drop records is retried the same way.
+{
+  const { peers, fm, processes } = setup({ failReports: 1 });
+  const { pid } = await fm.spawnNode(SERVER, { command: 'node retry.js', argv: ['/home/user/app/retry.js'], cwd: '/home/user/app', port: 20903 });
+  await waitFor(() => processes.get(pid)?.state === 'running', 5_000, 'the server running');
+  const peer = peerOf(peers, pid);
+  peer.reset(new Error(RESET));
+  const next = { ...peer, _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
+  assert.equal(typeof await hostingWatchFired(next), 'number', 'the report failed: the sibling looks again');
+  assert.equal(processes.get(pid).state, 'running', 'the session has not heard yet');
+  assert.equal((await next.ctx.storage.list({ prefix: 'hosting:' })).size, 1, 'the hosting record is kept');
+  assert.equal(await hostingWatchFired(next), null, 'the report reached the session: nothing left to watch');
+  await waitFor(() => processes.get(pid)?.state === 'exited', 1_000, 'the process to end on the second report');
+
+  const failing = { ...next, ctx: { ...next.ctx, storage: { ...next.ctx.storage, list: async () => { throw new Error('storage read failed'); } } } };
+  assert.equal(typeof await hostingWatchFired(failing), 'number', 'a failure to read the records is retried');
+}
+
+// ── 7. a host arms its watch even when the first arm fails ──────────────────
+{
+  const onPeer = (peer) => {
+    const arm = peer.ctx.storage.setAlarm;
+    let failed = false;
+    peer.ctx.storage.setAlarm = async (at) => {
+      if (!failed) { failed = true; throw new Error('alarm write failed'); }
+      return arm(at);
+    };
+  };
+  const { peers, fm, processes } = setup({ onPeer });
+  const { pid } = await fm.spawnNode(SERVER, { command: 'node armed.js', argv: ['/home/user/app/armed.js'], cwd: '/home/user/app', port: 20904 });
+  await waitFor(() => processes.get(pid)?.state === 'running', 5_000, 'the server running');
+  assert.notEqual(peerOf(peers, pid).ctx.storage.alarmAt, null, 'the watch is armed before the process is open');
+}
+
+// ── 8. a host that cannot keep its record does not host the process ─────────
+{
+  const onPeer = (peer) => {
+    const put = peer.ctx.storage.put;
+    let failed = false;
+    peer.ctx.storage.put = async (key, value) => {
+      if (!failed && typeof key === 'string' && key.startsWith('hosting:')) { failed = true; throw new Error('storage write failed'); }
+      return put(key, value);
+    };
+  };
+  const { peers, fm, processes } = setup({ onPeer });
+  await assert.rejects(
+    fm.spawnNode(SERVER, { command: 'node unwatched.js', argv: ['/home/user/app/unwatched.js'], cwd: '/home/user/app', port: 20905 }),
+    /storage write failed/,
+    'the open is refused, not left unwatched',
+  );
+  assert.deepEqual(processes.getRunning().filter((p) => p.command === 'node unwatched.js'), [], 'nothing runs');
+  for (const peer of peers.values()) {
+    assert.equal((await peer.ctx.storage.list({ prefix: 'hosting:' })).size, 0, 'no hosting record is left');
+  }
 }
 
 console.log('peer-host-loss: ok');

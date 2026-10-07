@@ -276,9 +276,9 @@ export function createProcessHost(mode, world, disk, {
  * `peerWithoutFacets: true` gives each peer no `ctx.facets`. `coordinator`
  * (`{ doId, supervisorOp }`) is the session a peer reaches back to through
  * the same namespace. Each peer's storage records the alarm it arms
- * (`ctx.storage.alarmAt`).
+ * (`ctx.storage.alarmAt`). `onPeer(peer)` sees each peer as it is made.
  */
-export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, coordinator } = {}) {
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, coordinator, onPeer } = {}) {
   const calls = [];
   const stubs = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
@@ -315,6 +315,7 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       // `error`.
       peer.resetBy = null;
       peer.reset = (error) => { peer.resetBy = error; };
+      onPeer?.(peer);
       peers.set(name, peer);
     }
     return peer;
