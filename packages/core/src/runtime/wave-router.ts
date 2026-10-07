@@ -39,22 +39,27 @@ export function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: 
     return guard === undefined ? as : as.scoped(guard);
   };
   return {
-    async resolveDirectory(path, cred, signal) {
+    resolveDirectory(path, cred, signal) {
       const ns = view(cred);
-      let missing = '';
-      for (let at = path; ; ) {
+      const join = (resolved: string, missing: string): string => (missing === '' ? resolved : `${resolved === '/' ? '' : resolved}/${missing}`);
+      // The nearest ancestor that resolves, the rest kept as named; synchronous while the lookup is.
+      const attempt = (at: string, missing: string): string | Promise<string> => {
         signal?.throwIfAborted();
-        try {
-          const resolved = (await ns.mutationRoute(at, { follow: true })).path;
-          return missing === '' ? resolved : `${resolved === '/' ? '' : resolved}/${missing}`;
-        } catch (error) {
+        const retry = (error: unknown): string | Promise<string> => {
           const code = (error as { code?: string }).code;
           if ((code !== 'ENOENT' && code !== 'ENOTDIR') || at === '/') throw error;
           const cut = at.lastIndexOf('/');
-          missing = missing === '' ? at.slice(cut + 1) : `${at.slice(cut + 1)}/${missing}`;
-          at = at.slice(0, cut) || '/';
+          return attempt(at.slice(0, cut) || '/', missing === '' ? at.slice(cut + 1) : `${at.slice(cut + 1)}/${missing}`);
+        };
+        let route: ReturnType<CompositeVFS['mutationRoute']>;
+        try {
+          route = ns.mutationRoute(at, { follow: true });
+        } catch (error) {
+          return retry(error);
         }
-      }
+        return route instanceof Promise ? route.then((resolved) => join(resolved.path, missing), retry) : join(route.path, missing);
+      };
+      return attempt(path, '');
     },
     placement(path) {
       const point = namespace.mountOf(path);

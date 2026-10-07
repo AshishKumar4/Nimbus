@@ -570,9 +570,10 @@ export interface WaveRouter {
    * The namespace path ('/'-rooted) directory `path` resolves to by the
    * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
    * that does not exist yet is kept as named, after the nearest ancestor
-   * that resolves.
+   * that resolves. Synchronous while the lookup stays on this filesystem,
+   * so it reads as the wave's holder does (SqliteVFS.withHolds).
    */
-  resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): Promise<string>;
+  resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
   /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
   placement(path: string): string | null;
   /**
@@ -8752,6 +8753,8 @@ export class SqliteVFS {
     mutationOwner?: string,
   ): Promise<{ inodes: number; chunks: number }> {
     const router = this.waveRouter;
+    // Read now, in the caller's turn: its lookups recall none of what it holds.
+    const holds = mutationOwner !== undefined ? new Set([mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
     if (router !== null) {
       const names = [...payload.inodes.map((inode) => inode.path), ...(payload.deletePaths ?? [])];
       const routes = new Map<string, string>();
@@ -8760,7 +8763,7 @@ export class SqliteVFS {
         const parent = this.parentPath(key);
         let resolved = routes.get(parent);
         if (resolved === undefined) {
-          resolved = parent === '' ? '' : await router.resolveDirectory('/' + parent, cred);
+          resolved = parent === '' ? '' : await this.withHolds(holds, () => router.resolveDirectory('/' + parent, cred));
           routes.set(parent, resolved);
         }
         if (router.placement(`${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`) !== null) {
@@ -8789,6 +8792,8 @@ export class SqliteVFS {
       file: RoutedFile | null;
       index: number;
       routes: Map<string, string>;
+      /** The delegations the wave's writer holds: its lookups recall none of them. */
+      holds: ReadonlySet<string> | null;
       signal?: AbortSignal;
       reach?: WaveMountReach;
       guard: () => void;
@@ -8797,15 +8802,19 @@ export class SqliteVFS {
       committed: (receipt: WriteStreamReceipt | null) => void;
     },
   ): Promise<boolean> {
-    /** The mount `named` lands on, or null: its directory resolved once per wave (until a link or removal). */
+    /**
+     * Where `named` lands: its namespace path (its directory resolved once
+     * per wave, until a link or removal) when that is on a mount, else null.
+     */
     const mountOf = async (named: string): Promise<string | null> => {
       const parent = this.parentPath(named);
       let resolved = at.routes.get(parent);
       if (resolved === undefined) {
-        resolved = parent === '' ? '' : await router.resolveDirectory('/' + parent, cred, at.signal);
+        resolved = parent === '' ? '' : await this.withHolds(at.holds, () => router.resolveDirectory('/' + parent, cred, at.signal));
         at.routes.set(parent, resolved);
       }
-      return router.placement(`${resolved === '/' ? '' : resolved}/${named.slice(named.lastIndexOf('/') + 1)}`);
+      const path = `${resolved === '/' ? '' : resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
+      return router.placement(path) === null ? null : path;
     };
     /** Refuse a record an earlier attempt may have applied; note this one. */
     const reached = (): void => {
@@ -8822,37 +8831,41 @@ export class SqliteVFS {
       case 'delete': {
         // A removal may change where later names resolve.
         at.routes.clear();
-        if (await mountOf(record.path) === null) return false;
+        const placed = await mountOf(record.path);
+        if (placed === null) return false;
         at.setPhase('publish');
         at.settleBefore();
         reached();
-        await router.apply({ type: 'delete', path: '/' + record.path }, cred, at.guard);
+        await router.apply({ type: 'delete', path: placed }, cred, at.guard);
         at.committed(null);
         return true;
       }
       case 'directory': {
-        if (await mountOf(record.inode.path) === null) return false;
+        const placed = await mountOf(record.inode.path);
+        if (placed === null) return false;
         at.setPhase('publish');
         at.settleBefore();
         reached();
         // A directory has no receipt, here as in a group.
-        await router.apply({ type: 'directory', path: '/' + record.inode.path, mode: record.inode.mode }, cred, at.guard);
+        await router.apply({ type: 'directory', path: placed, mode: record.inode.mode }, cred, at.guard);
         at.committed(null);
         return true;
       }
       case 'call': {
         const call = record.call;
         if (call.call !== 'mkdir') at.routes.clear();
-        if (await mountOf(call.path) === null) return false;
+        const placed = await mountOf(call.path);
+        if (placed === null) return false;
         at.setPhase('publish');
         at.settleBefore();
         reached();
-        await router.apply({ type: 'call', call: { ...call, path: '/' + call.path } }, cred, at.guard);
+        await router.apply({ type: 'call', call: { ...call, path: placed } }, cred, at.guard);
         at.committed(null);
         return true;
       }
       case 'file-begin': {
-        if (await mountOf(record.inode.path) === null) return false;
+        const placed = await mountOf(record.inode.path);
+        if (placed === null) return false;
         if (record.inode.kind === 'symlink') at.routes.clear();
         at.setPhase('validation');
         this.validateInodeContentShape(record.inode);
@@ -8861,7 +8874,7 @@ export class SqliteVFS {
         reached();
         const queue = new ChunkQueue();
         const named = record.inode.path;
-        const path = '/' + named;
+        const path = placed;
         const call = record.inode.call;
         const published = call !== undefined
           ? router.apply({ type: 'data-call', call, path, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard)
@@ -9295,6 +9308,7 @@ export class SqliteVFS {
           set file(file) { routed.file = file; },
           index: recordIndex,
           routes,
+          holds,
           signal: options.signal,
           reach: options.mountReach,
           // Right before each call to the backend: the wave is still admitted, and not cancelled.

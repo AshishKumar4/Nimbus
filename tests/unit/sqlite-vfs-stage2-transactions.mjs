@@ -143,6 +143,7 @@ function assertBounded(stats) {
     ok: true,
     committedGroupSequence: 1,
     committedPathCount: 1,
+    committedOps: 1,
     inodes: 1,
     chunks: entries.length,
   });
