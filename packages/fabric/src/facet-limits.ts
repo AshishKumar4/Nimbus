@@ -34,6 +34,12 @@ export function facetLimits(kind: FacetKind): Readonly<FacetResourceLimits> {
   return { cpuMs, subRequests };
 }
 
+/** A cached worker must not retain an earlier policy's limits or guest binding. */
+export function facetLoaderKey(kind: FacetKind, key: string): string {
+  const { cpuMs, subRequests } = FACET_LIMITS[kind];
+  return `${key}:limits:${kind}:${cpuMs}:${subRequests}:${DIAGNOSTIC_RESERVE}`;
+}
+
 /** Native enforcement and the guest's earlier, reportable refusal share one policy. */
 export function applyFacetLimits<C extends object>(kind: FacetKind, code: C) {
   const limits = facetLimits(kind);

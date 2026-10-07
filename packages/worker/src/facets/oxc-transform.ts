@@ -8,7 +8,7 @@ import {
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
-import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import { classifyDoCall } from '@nimbus-sh/platform/oom-classify.js';
 import type { DurableObject } from 'cloudflare:workers';
@@ -56,7 +56,7 @@ const OXC_FACET_BODY = [
 ].join('\n');
 
 // The loader serves the code it cached under an id, so the id carries the code.
-export const OXC_FACET_WORKER_ID = `nimbus-oxc:${OXC_WASM_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(OXC_FACET_BODY)}`;
+export const OXC_FACET_WORKER_ID = facetLoaderKey('transform', `nimbus-oxc:${OXC_WASM_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(OXC_FACET_BODY)}`);
 
 type OxcFacetRpc = DurableObject & {
   transformMany(requests: EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;

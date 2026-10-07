@@ -1,5 +1,5 @@
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
-import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import {
   EsbuildService,
@@ -84,7 +84,7 @@ const ESBUILD_FACET_BODY = [
 ].join('\n');
 
 // The loader serves the code it cached under an id, so the id carries the code.
-export const ESBUILD_FACET_WORKER_ID = `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`;
+export const ESBUILD_FACET_WORKER_ID = facetLoaderKey('esbuild', `nimbus-esbuild:${ESBUILD_WASM_VERSION}:${ESBUILD_CLI_BUILD_ID}:${OXC_FACET_BUILD_ID}:${hashSource(ESBUILD_FACET_BODY)}`);
 
 type EsbuildFacetRpc = DurableObject & {
   transformMany(requests: EsbuildTransformRequest[]): Promise<EsbuildTransformOutcome[]>;

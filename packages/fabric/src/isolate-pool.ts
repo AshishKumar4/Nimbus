@@ -29,7 +29,7 @@ import { loaderOutbound, requireNetwork, type WorkspaceNetwork } from '@nimbus-s
 import { CF_COMPAT_DATE, GUEST_COMPAT_FLAGS } from '@nimbus-sh/core/constants.js';
 import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.js';
 import { supervisorLoaderKey } from './supervisor-props.js';
-import { applyFacetLimits, facetLimits, FACET_LIMITS, type FacetKind } from './facet-limits.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey, FACET_LIMITS, type FacetKind } from './facet-limits.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { serializeFunction, hashSource } from './vendor/serialize.js';
@@ -920,7 +920,7 @@ export class IsolatePool {
       const endFetch = admitted ?? (this.claim ? undefined : claimAdmission(this.ctx)) ?? beginLoaderFetch(this.ctx, id, this.claim);
       admitted = undefined;
       try {
-        const stub = this.loader.get(id, async () => applyFacetLimits(this.facetKind, code));
+        const stub = this.loader.get(facetLoaderKey(this.facetKind, id), async () => applyFacetLimits(this.facetKind, code));
         const entrypoint = stub.getEntrypoint(undefined, { limits: facetLimits(this.facetKind) });
         // Direct property call, awaited by this frame — bracketed, never
         // wrapped. See beginLoaderFetch for the measured DO-poisoning hazard.

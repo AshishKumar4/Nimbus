@@ -6,7 +6,7 @@ import type {
   EsbuildRemotePlugin,
 } from '@nimbus-sh/core/runtime/esbuild-service.js';
 import { beginHelperFetch } from '@nimbus-sh/fabric/budgets.js';
-import { applyFacetLimits, facetLimits } from '@nimbus-sh/fabric/facet-limits.js';
+import { applyFacetLimits, facetLimits, facetLoaderKey } from '@nimbus-sh/fabric/facet-limits.js';
 import { hashSource } from '@nimbus-sh/fabric/vendor/serialize.js';
 import type { DurableObject } from 'cloudflare:workers';
 import type { WorkerCode } from '@nimbus-sh/fabric/vendor/types.js';
@@ -137,14 +137,14 @@ const BUILD_FACET_BODY = [
 ].join('\n');
 
 // The loader serves the code it cached under an id, so the id carries the code.
-export const BUILD_FACET_WORKER_ID = [
+export const BUILD_FACET_WORKER_ID = facetLoaderKey('build', [
   'nimbus-build',
   `rolldown-${ROLLDOWN.version}-${ROLLDOWN.wasm.sha256.slice(0, 16)}`,
   NAPI_WASM_LOADER.sha256.slice(0, 16),
   NAPI_WASM_TRAMPOLINE.sha256.slice(0, 16),
   ROLLDOWN_FACET_BUILD_ID,
   hashSource(BUILD_FACET_BODY),
-].join(':');
+].join(':'));
 
 /** What the facet says beside an answer: the binding died under the call, or has outgrown its mark. */
 interface Crashed {

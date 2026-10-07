@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetLimits } from '../../packages/fabric/src/facet-limits.ts';
+import { FACET_LIMITS, MAX_FACET_CPU_MS, applyFacetLimits, facetLimits, facetLoaderKey } from '../../packages/fabric/src/facet-limits.ts';
 import { facetCpuViolations } from '../../scripts/deploy-isolation.mjs';
 import { IsolatePool } from '../../packages/fabric/src/isolate-pool.ts';
 import { ISOLATE_NETWORK } from '../../packages/core/src/_shared/workspace-network.ts';
@@ -16,6 +16,7 @@ for (const [kind, configured] of Object.entries(FACET_LIMITS)) {
   assert.equal(applied.env.PRESERVED, 'value');
   assert.deepEqual(code.limits, { cpuMs: 1, subRequests: 1 }, `${kind}: caller config is not mutated`);
   assert.ok(configured.subRequests > 12000 + 64);
+  assert.ok(facetLoaderKey(kind, 'fixture').includes(`:${configured.cpuMs}:${configured.subRequests}:`));
   seen.add(kind);
 }
 for (const kind of ['process', 'build', 'esbuild', 'transform', 'git']) assert.ok(seen.has(kind));
