@@ -149,7 +149,7 @@ const main = writeModuleSet(join(dir, 'one-shot'), set, 'runner.js');
 const requireCell = globalThis.__nimbusTestCreateRequire(new URL(`file://${main}`).href);
 const call = (key, require = () => { throw new Error('no require expected'); }) => {
   const mod = { exports: {} };
-  requireCell('./' + commonJsCellModuleName(key))(mod.exports, require, mod, '/x', '/');
+  requireCell('./' + commonJsCellModuleName(key))(Function)(mod.exports, require, mod, '/x', '/');
   return mod.exports;
 };
 assert.equal(call(`${PROJ}/src/index.ts`).greet('ok'), 'NIMBUS-TSC-EMIT:ok', 'the source runs its emit, under its own path');
@@ -172,10 +172,10 @@ const extraMain = writeModuleSet(join(dir, 'extra'), extraSet, 'runner.js');
 const extraRequire = globalThis.__nimbusTestCreateRequire(new URL(`file://${extraMain}`).href);
 {
   const m = { exports: {} };
-  extraRequire('./' + commonJsCellModuleName(`${TS}/lib/runtime.js`))(m.exports, () => { throw new Error('the wrapper require'); }, m, '/x', '/');
+  extraRequire('./' + commonJsCellModuleName(`${TS}/lib/runtime.js`))(Function)(m.exports, () => { throw new Error('the wrapper require'); }, m, '/x', '/');
   assert.deepEqual(m.exports, { shebang: 'stripped' }, 'the module\'s own `require` declaration wins over the parameter');
   const legacy = { exports: {} };
-  extraRequire('./' + commonJsCellModuleName(`${TS}/lib/legacy.js`))(legacy.exports, () => {}, legacy, '/x', '/');
+  extraRequire('./' + commonJsCellModuleName(`${TS}/lib/legacy.js`))(Function)(legacy.exports, () => {}, legacy, '/x', '/');
   assert.equal(legacy.exports, 'number', 'a CommonJS var and function of one name compile, as in Node');
 }
 assert.equal(moduleMapBundle(extraSet)[`${TS}/LICENSE`], 'Apache License 2.0\n', 'LICENSE reads back as the file it is');

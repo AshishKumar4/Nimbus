@@ -17,7 +17,7 @@ for (const source of [
   const registryCell = { exports: {} };
   new Function('module', wrapCommonJsCell(code, 'block').text)(registryCell);
   const mod = { exports: {} };
-  await registryCell.exports(mod.exports, require, mod, '/cli.js', '/');
+  await registryCell.exports(Function)(mod.exports, require, mod, '/cli.js', '/');
   assert.equal(mod.exports.value, '/ready', 'hashbang + TLA module executes and exports its awaited value');
 }
 console.log('esbuild-hashbang-tla: ok');

@@ -26,6 +26,7 @@
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { FACET_RESIDENT_STORE_SOURCE } from '../../../packages/worker/src/vfs/facet-resident-store.ts';
 import { declaresWrapperBinding, wrapCommonJsCell } from '../../../packages/core/src/_shared/commonjs-cell.ts';
+import { moduleImporterUrl } from '../../../packages/core/src/_shared/module-importer.ts';
 
 const SEED = `
 ;(function __nimbusTestSeedNamespace() {
@@ -115,19 +116,19 @@ export function declareNamespace({ metadata = {}, manifest = {} } = {}) {
  * file the test's bundle holds is one of the launch's module cells, compiled
  * from the store's text with the wrapper a launch gives it
  * (core/_shared/commonjs-cell.ts), as the registry compiles its `{ cjs }`
- * module, once.
+ * module, once, and given its module's own Function as the guest gives it.
  */
-globalThis.__nimbusTestCompileCell = (text) => {
+globalThis.__nimbusTestCompileCell = (text, key) => {
   const moduleObject = { exports: {} };
   new Function('module', 'exports', wrapCommonJsCell(text, declaresWrapperBinding(text) ? 'block' : 'function').text)(moduleObject, moduleObject.exports);
-  return moduleObject.exports;
+  return moduleObject.exports(globalThis.__nimbusCodeOrigin(moduleImporterUrl(key)).Function);
 };
 const MODULE_CELLS = `
 const __nimbusTestCells = new Map();
 function __nimbusModuleCell(key) {
   if (!__nimbusTestCells.has(key)) {
     const text = __vfsBundle[key];
-    __nimbusTestCells.set(key, typeof text === "string" ? globalThis.__nimbusTestCompileCell(text) : null);
+    __nimbusTestCells.set(key, typeof text === "string" ? globalThis.__nimbusTestCompileCell(text, key) : null);
   }
   return __nimbusTestCells.get(key);
 }
