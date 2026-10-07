@@ -88,6 +88,8 @@ export type ProcessFsReceipt = Omit<WriteStreamReceipt, 'path'>;
 /** An op committed: the stat of the file its data call published, when it published one. */
 export interface ProcessFsAnswer {
   receipt?: ProcessFsReceipt;
+  /** What a session call of its own (ProcessFsClient.call) answered. */
+  value?: unknown;
 }
 
 /** An op the program was told succeeded that the session refused, or whose fate it could not answer. */
@@ -149,6 +151,13 @@ export interface ProcessFsClient {
    * cap throws ENOMEM here, logged nowhere.
    */
   submit(op: ProcessFsOp, options?: { acknowledged?: boolean }): Promise<ProcessFsAnswer>;
+  /**
+   * A mutation no call record carries (a tree's removal, a copy), made by
+   * `run` as one session call in its place in the log: once every op logged
+   * before it is answered, and before any logged after it is sent.
+   * Answers what `run` answers; a failure of an acknowledged one is reported.
+   */
+  call<T>(name: string, path: string, run: () => Promise<T>, options?: { acknowledged?: boolean }): Promise<T>;
   /** Resolves once every op logged so far is answered. */
   flush(): Promise<void>;
   /** The end of the run: everything answered; throws naming every failure not yet taken. */
@@ -238,7 +247,8 @@ function commonAncestor(left: string, right: string): string {
 }
 
 interface Entry {
-  op: ProcessFsOp;
+  /** A call record, or a session call of its own (ProcessFsClient.call). */
+  op: ProcessFsOp | { type: 'run'; name: string; path: string; run: () => Promise<unknown> };
   /** Its number under the writer epoch it was first sent under; 0 until then. */
   seq: number;
   bytes: number;
@@ -257,8 +267,9 @@ function utf8Length(text: string): number {
   return new TextEncoder().encode(text).byteLength;
 }
 
-function pathsOf(op: ProcessFsOp): string[] {
+function pathsOf(op: Entry['op']): string[] {
   switch (op.type) {
+    case 'run': return [op.path];
     case 'call': return [op.call.path];
     case 'rename': return [op.from, op.to];
     case 'truncate': case 'setattr': return [op.path];
@@ -270,8 +281,8 @@ function canonical(path: string): boolean {
   return path !== '' && path.split('/').every((part) => part !== '' && part !== '.' && part !== '..') && !path.includes('\0');
 }
 
-function nameOf(op: ProcessFsOp): string {
-  return op.type === 'call' ? op.call.call : op.type;
+function nameOf(op: Entry['op']): string {
+  return op.type === 'call' ? op.call.call : op.type === 'run' ? op.name : op.type;
 }
 
 function fsError(errno: string, message: string, path: string): Error & { code: string; path: string } {
@@ -378,6 +389,11 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     let bytes = 0;
     while (queue.length > 0) {
       const next = queue[0]!;
+      // A session call of its own is never in a wave: it is made alone, in its place.
+      if (next.op.type === 'run') {
+        if (taken.length === 0) taken.push(queue.shift()!);
+        break;
+      }
       const fresh = next.paths.filter((path) => !owned.has(path));
       const freshBytes = fresh.reduce((sum, path) => sum + utf8Length(path), 0);
       if (taken.length > 0 && (owned.size + fresh.length > WAVE_PATHS || pathBytes + freshBytes > WAVE_PATH_BYTES || bytes + next.bytes > WAVE_BYTES)) break;
@@ -390,6 +406,20 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
   };
 
   const send = async (entries: Entry[]): Promise<void> => {
+    const first = entries[0]!;
+    if (first.op.type === 'run') {
+      const { name, run } = first.op;
+      charge(name);
+      try {
+        const value = await run();
+        settled(first);
+        first.resolve({ value });
+      } catch (error) {
+        const code = (error as { code?: unknown } | null)?.code;
+        fail(first, typeof code === 'string' ? code : 'EIO', error instanceof Error ? error.message : String(error));
+      }
+      return;
+    }
     let writer: string | null;
     try {
       writer = await writerFor();
@@ -397,10 +427,10 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       for (const entry of entries) fail(entry, 'EIO', `the session gave this process no writer: ${error instanceof Error ? error.message : String(error)}`);
       return;
     }
-    const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops: entries.map((entry) => entry.op) });
+    const bytes = await encodeWriteBatch({ inodes: [], chunks: [], ops: entries.map((entry) => entry.op as ProcessFsOp) });
     // Numbered once, under the epoch they are first sent under; a re-send keeps them.
     for (const entry of entries) if (entry.seq === 0) entry.seq = nextSeq++;
-    const first = entries[0]!.seq;
+    const firstSeq = entries[0]!.seq;
     counters.waves++;
     counters.maxWaveOps = Math.max(counters.maxWaveOps, entries.length);
     wave++;
@@ -413,7 +443,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
         open: waveAttemptsOf(bytes),
         streamed: false,
         wave,
-        ...(writer === null ? {} : { sequence: { seq: first, ack } }),
+        ...(writer === null ? {} : { sequence: { seq: firstSeq, ack } }),
         ...(options.retry === undefined ? {} : { retry: options.retry }),
         resent: () => { counters.resends++; charge('writeBatchStream'); },
         timers,
@@ -427,7 +457,7 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     const answer = result as WriteBatchStreamResult;
     const error = answer.ok ? null : answer.error;
     // Unfenced, the session numbers nothing: committedOps says how far it went.
-    const cursor = writer === null ? first - 1 + (answer.ok ? entries.length : answer.committedOps) : answer.sequence?.cursor;
+    const cursor = writer === null ? firstSeq - 1 + (answer.ok ? entries.length : answer.committedOps) : answer.sequence?.cursor;
     if (cursor === undefined) {
       lostEpoch(entries, `the session answered this write without its cursor: ${error?.message ?? 'no error'}`);
       return;
@@ -713,6 +743,16 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       const answer = Promise.all(answers).then((all) => all[all.length - 1] ?? {});
       if (acknowledged) answer.catch(() => {});
       return answer;
+    },
+    call<T>(name: string, path: string, run: () => Promise<T>, callOptions?: { acknowledged?: boolean }): Promise<T> {
+      const acknowledged = callOptions?.acknowledged === true;
+      const answer = new Promise<ProcessFsAnswer>((resolve, reject) => {
+        queue.push({ op: { type: 'run', name, path, run }, seq: 0, bytes: 0, paths: [path], acknowledged, resolve, reject });
+        counters.ops++;
+      });
+      schedule();
+      if (acknowledged) answer.catch(() => {});
+      return answer.then((answered) => answered.value as T);
     },
     flush() {
       options.drain?.();

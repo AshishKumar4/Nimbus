@@ -265,4 +265,47 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   await c.settle();
 }
 
+// ── Two held subtrees: writes interleaved between them share one wave (no grant per record) ──
+{
+  const s = session();
+  for (const dir of ['home/user/one', 'home/user/two']) {
+    s.kernel.mkdir(dir, { mode: 0o755 });
+    s.kernel.chown(dir, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  }
+  const c = client(s, { grantAfter: 1, grantIdleMs: 60_000, recallPollMs: 100 });
+  c.holder('home/user/one/x');
+  const one = await until(() => c.holder('home/user/one/x'), 'the first grant');
+  c.holder('home/user/two/x');
+  const two = await until(() => c.holder('home/user/two/x'), 'the second grant');
+  const before = s.calls.waves;
+  for (const name of ['a', 'b', 'c']) {
+    for (const [dir, grant] of [['one', one], ['two', two]]) {
+      c.submit({ type: 'call', call: { call: 'writeFile', path: `home/user/${dir}/${name}`, mode: 0o644, ino: c.number(grant), data: enc.encode(`${dir}${name}`) } }, { acknowledged: true });
+    }
+  }
+  await c.flush();
+  assert.equal(s.calls.waves - before, 1, 'writes interleaved between two held subtrees were cut into waves per subtree');
+  assert.deepEqual(c.takeFailures(), []);
+  await c.settle();
+  assert.equal(s.text('home/user/one/c'), 'onec');
+  assert.equal(s.text('home/user/two/b'), 'twob');
+}
+
+// ── A session call of its own is made in its place in the log ──
+{
+  const s = session();
+  const c = client(s);
+  const seen = [];
+  c.submit(writeFile('home/user/before', 'b'), { acknowledged: true });
+  const removed = c.call('fsRemove', 'home/user/before', async () => {
+    seen.push(['before landed', s.text('home/user/before')], ['after landed', s.text('home/user/after')]);
+    return 'removed';
+  });
+  c.submit(writeFile('home/user/after', 'a'), { acknowledged: true });
+  assert.equal(await removed, 'removed');
+  await c.settle();
+  assert.deepEqual(seen, [['before landed', 'b'], ['after landed', null]], 'the call was made out of its place in the log');
+  assert.equal(s.text('home/user/after'), 'a');
+}
+
 console.log('process-fs-client: ok');

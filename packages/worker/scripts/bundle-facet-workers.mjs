@@ -46,6 +46,8 @@
  *       WASI_INSTANCE_BODY_SRC: string
  *   @nimbus-sh/core src/runtime/bash-runner.generated.ts — exports
  *       BASH_RUNNER_BODY_SRC: string
+ *   @nimbus-sh/core src/_shared/process-fs-client-source.generated.ts — exports
+ *       PROCESS_FS_CLIENT_SOURCE: string
  *   public/_assets/runtime/esbuild-cli-<buildId>.js — the `esbuild` command's
  *       runner, which only the session's esbuild facet evaluates. Staged as an
  *       asset rather than a string in the Worker bundle, like the esbuild
@@ -202,6 +204,35 @@ async function bundleWaveWriter() {
   const src = withoutComments(result.outputFiles[0].text);
   if (!/^var __nimbusWaveWriter = /m.test(src)) {
     throw new Error('[bundle-facet-workers/wave-writer] the bundle no longer binds __nimbusWaveWriter');
+  }
+  return src;
+}
+
+/**
+ * A process's filesystem client (@nimbus-sh/core src/_shared/process-fs-client.ts)
+ * as an IIFE bound to `__nimbusProcessFsModule`: core's write ledger
+ * (VFS_WRITE_LEDGER_SOURCE) carries it ahead of its own text, so every node
+ * facet that splices the ledger makes its process's client from it.
+ */
+async function bundleProcessFsClient() {
+  const result = await build({
+    entryPoints: [join(coreRoot, 'src', '_shared', 'process-fs-client.ts')],
+    bundle: true,
+    format: 'iife',
+    globalName: '__nimbusProcessFsModule',
+    target: 'esnext',
+    platform: 'neutral',
+    absWorkingDir: root,
+    write: false,
+    logLevel: 'warning',
+    legalComments: 'none',
+  });
+  if (!result.outputFiles || result.outputFiles.length === 0) {
+    throw new Error('[bundle-facet-workers/process-fs-client] esbuild produced no output');
+  }
+  const src = withoutComments(result.outputFiles[0].text);
+  if (!/^var __nimbusProcessFsModule = /m.test(src)) {
+    throw new Error('[bundle-facet-workers/process-fs-client] the bundle no longer binds __nimbusProcessFsModule');
   }
   return src;
 }
@@ -859,6 +890,25 @@ async function main() {
     '',
   ].join('\n'));
 
+  const processFsSrc = await bundleProcessFsClient();
+  const processFsOutPath = join(coreRoot, 'src', '_shared', 'process-fs-client-source.generated.ts');
+  writeFileSync(processFsOutPath, [
+    '/**',
+    ' * process-fs-client-source.generated.ts — AUTO-GENERATED. DO NOT EDIT.',
+    ' *',
+    ' * Produced by scripts/bundle-facet-workers.mjs (@nimbus-sh/worker) from:',
+    ' *   - src/_shared/process-fs-client.ts',
+    ' *',
+    ' * A process\'s filesystem client as an IIFE binding __nimbusProcessFsModule,',
+    ' * which the write ledger (vfs-write-ledger.ts) carries ahead of its text.',
+    ' *',
+    ` * Size: ${(processFsSrc.length / 1024).toFixed(2)} KiB`,
+    ' */',
+    '',
+    `export const PROCESS_FS_CLIENT_SOURCE: string = ${JSON.stringify(processFsSrc)};`,
+    '',
+  ].join('\n'));
+
   const bashSrc = await bundleBashRunner();
   const bashOutPath = join(coreRoot, 'src', 'runtime', 'bash-runner.generated.ts');
   writeFileSync(bashOutPath, [
@@ -893,6 +943,10 @@ async function main() {
   console.log(
     `[bundle-facet-workers] wrote ${wasiOutPath} ` +
     `(wasi=${(wasiSrc.length / 1024).toFixed(2)} KiB)`,
+  );
+  console.log(
+    `[bundle-facet-workers] wrote ${processFsOutPath} ` +
+    `(process-fs-client=${(processFsSrc.length / 1024).toFixed(2)} KiB)`,
   );
   console.log(
     `[bundle-facet-workers] wrote ${bashOutPath} ` +

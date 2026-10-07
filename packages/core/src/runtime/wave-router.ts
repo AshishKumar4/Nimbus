@@ -153,7 +153,12 @@ async function applyRecord(
       // The call itself, as the namespace makes it: its own refusals (EEXIST, ENOTEMPTY, …).
       const call = record.call;
       await pinned();
-      if (call.call === 'mkdir') await ns.mkdir(call.path, { mode: call.mode });
+      if (call.call === 'mkdir') {
+        // `existing: 'ok'`: a directory there is made already, as mkdir -p takes it.
+        const there = call.existing === 'ok' ? await ns.stat(call.path) : null;
+        await pinned();
+        if (there === null || there.type !== 'directory') await ns.mkdir(call.path, { mode: call.mode });
+      }
       else if (call.call === 'unlink') await ns.unlink(call.path);
       else if (call.call === 'rmdir') await ns.rmdir(call.path);
       // An open description's truncate, by its name: a mount numbers its files its own way.

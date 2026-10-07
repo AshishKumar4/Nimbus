@@ -109,7 +109,8 @@ export type W7Call =
   | { call: 'append'; path: string; ino?: number; data: Uint8Array }
   /** ftruncate(2) through an open description: the file `ino` names when given, else the one at `path`. */
   | { call: 'ftruncate'; path: string; ino?: number; size: number }
-  | { call: 'mkdir'; path: string; mode: number; ino?: number }
+  /** `existing: 'ok'`: a directory already there answers success, as `mkdir -p` takes it (anything else there is still EEXIST). */
+  | { call: 'mkdir'; path: string; mode: number; ino?: number; existing?: 'ok' }
   | { call: 'unlink'; path: string }
   | { call: 'rmdir'; path: string }
   | { call: 'symlink'; path: string; target: string; ino?: number };
@@ -636,7 +637,7 @@ async function* decodeRecords(
           if (v3) throw new Error(`w7-frame: unknown record tag ${envelope.tag}`);
           summary.pathCount++;
           summary.opCount++;
-          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size']);
+          const value = parseObject(payload, 'call', ['call', 'path'], ['mode', 'target', 'ino', 'size', 'existing']);
           yield { type: 'call', call: parsePathCall(value, (path, label) => ownedPaths.claim(canonicalPath(path, label))) };
           break;
         }
@@ -1037,12 +1038,16 @@ function parseFileBegin(bytes: Uint8Array, v3: boolean): FileBeginMetadata {
 function parsePathCall(value: Record<string, unknown>, path: (value: unknown, label: string) => string): W7PathCall {
   const keys = Object.keys(value).sort().join(',');
   switch (value.call) {
-    case 'mkdir':
-      if (keys !== 'call,mode,path' && keys !== 'call,ino,mode,path') break;
+    case 'mkdir': {
+      const optional = keys.replace(',existing', '').replace(',ino', '');
+      if (optional !== 'call,mode,path') break;
+      if (value.existing !== undefined && value.existing !== 'ok') throw new Error(`w7-frame: mkdir existing is 'ok' or absent, not ${String(value.existing)}`);
       return {
         call: 'mkdir', path: path(value.path, 'mkdir path'), mode: u32(value.mode, 'mkdir mode'),
         ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'mkdir ino') }),
+        ...(value.existing === undefined ? {} : { existing: 'ok' as const }),
       };
+    }
     case 'unlink':
     case 'rmdir':
       if (keys !== 'call,path') break;

@@ -169,6 +169,20 @@ async function cut(ops, keep) {
   assert.equal(s.text('home/user/moved'), null);
 }
 
+// ── mkdir -p: a directory there answers success; anything else there is EEXIST ──
+{
+  const s = session();
+  s.user.mkdir('home/user/made', { mode: 0o755 });
+  s.user.writeFile('home/user/plain', 'p');
+  const existing = (path) => call({ call: 'mkdir', path, mode: 0o755, existing: 'ok' });
+  const made = await s.send('w', 1, [existing('home/user/made'), existing('home/user/fresh')]);
+  assert.equal(made.ok, true, JSON.stringify(made.error));
+  assert.equal(s.user.stat('home/user/fresh').type, 'directory');
+  const file = await s.send('w', 3, [existing('home/user/plain')], { ack: 2 });
+  assert.equal(file.ok, false);
+  assert.equal(file.error.errno, 'EEXIST');
+}
+
 // ── Through the supervisor op: the writer is the process's epoch; on a mount too ──
 {
   const s = session();

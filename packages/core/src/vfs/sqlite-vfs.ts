@@ -9943,11 +9943,15 @@ export class SqliteVFS {
               committing(() => asCaller(() => {
                 if (call.call === 'mkdir') {
                   // mkdir(2): a name that is there, whatever it is, is EEXIST
-                  // (the engine's mkdir keeps an existing directory as made).
-                  if (this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode !== undefined) {
-                    throw vfsError('EEXIST', call.path);
+                  // (the engine's mkdir keeps an existing directory as made);
+                  // `existing: 'ok'` takes a directory there (followed, as mkdir -p does).
+                  const there = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
+                  if (there !== undefined) {
+                    const directory = call.existing === 'ok' && (there.kind === 'directory' || (there.kind === 'symlink' && this.isDirectory(call.path, cred)));
+                    if (!directory) throw vfsError('EEXIST', call.path);
+                  } else {
+                    this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
                   }
-                  this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
                 }
                 else if (call.call === 'unlink') this.unlink(call.path, cred);
                 else if (call.call === 'rmdir') this.rmdir(call.path, cred);
