@@ -102,8 +102,9 @@ try {
     for (const { name, repo, args, checkout } of cases) {
       const url = server.url + '/' + repo;
       const host = join(work, 'host-' + name);
-      // Host git over the same http-backend, so its config names the same kind of remote.
-      hostGit(work, ['clone', '-q', '--sparse', ...args, url, host]);
+      // Host git from the same repository, by file:// (the http server is this process's: a
+      // synchronous host git over it would wait on itself).
+      hostGit(work, ['clone', '-q', '--sparse', ...args, 'file://' + join(served, repo), host]);
       const cloned = await git('/home/user', ['clone', '--sparse', ...args, url, name]);
       assert.equal(cloned.code, 0, `${name}: ${cloned.stderr}`);
       const ours = session.materialize('home/user/' + name, join(work, 'ours-' + name));
