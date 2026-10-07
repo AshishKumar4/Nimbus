@@ -20,7 +20,11 @@
  *     xc@2.0.0`: the reused xa's edges are walked again, so xc@1 nests;
  *   - a replacement that fails its integrity check (bad@1, then bad@2.0.0
  *     whose tarball does not match): the install fails, and bad@1 and
- *     package.json stay as they were.
+ *     package.json stay as they were;
+ *   - an optional dependency (oa→ox) whose own required dependency (oy)
+ *     fails: ox is skipped with it, and the install succeeds;
+ *   - a name both a dependency and an optional one (ob→oz) that fails: the
+ *     optional entry wins, and oz is skipped.
  */
 
 import assert from 'node:assert/strict';
@@ -53,6 +57,11 @@ const REGISTRY = {
   xa: { '1.0.0': { dependencies: { xc: '^1.0.0' } } },
   xc: { '1.0.0': {}, '2.0.0': {} },
   bad: { '1.0.0': {}, '2.0.0': {} },
+  oa: { '1.0.0': { optionalDependencies: { ox: '^1.0.0' } } },
+  ox: { '1.0.0': { dependencies: { oy: '^1.0.0' } } },
+  oy: { '1.0.0': {} },
+  ob: { '1.0.0': { dependencies: { oz: '^1.0.0' }, optionalDependencies: { oz: '^1.0.0' } } },
+  oz: { '1.0.0': {} },
 };
 const ROOT = { a: '^1.0.0', b: '^1.0.0', host: '^1.0.0', shared: '1.0.0', user: '^1.0.0' };
 
@@ -67,7 +76,9 @@ const integrity = new Map();
 for (const [file, bytes] of tarballs) integrity.set(file, await sriOf(bytes));
 // bad@2.0.0's tarball is not the one its integrity names (and no tarball is,
 // so npm's content-addressed cache cannot answer for it).
-integrity.set('bad-2.0.0.tgz', await sriOf(new TextEncoder().encode('no tarball has these bytes')));
+for (const broken of ['bad-2.0.0.tgz', 'oy-1.0.0.tgz', 'oz-1.0.0.tgz']) {
+  integrity.set(broken, await sriOf(new TextEncoder().encode(`no tarball has these bytes: ${broken}`)));
+}
 
 // The registry npm and the fallback both read: packuments and tarballs.
 const server = createServer((request, response) => {
@@ -263,11 +274,15 @@ try {
     'several roots named at once': [['install', 'xa', 'xc@2.0.0']],
     'a reused tree whose root copy is replaced': [['install', 'xa'], ['install', 'xa@1', 'xc@2.0.0']],
     'a replacement that fails its integrity check': [['install', 'bad@1.0.0'], ['install', 'bad@2.0.0']],
+    'an optional dependency whose required dependency fails': [['install', 'oa']],
+    'a name both a dependency and an optional one': [['install', 'ob']],
   };
   const expected = {
     'several roots named at once': { xa: '1.0.0', 'xa/node_modules/xc': '1.0.0', xc: '2.0.0' },
     'a reused tree whose root copy is replaced': { xa: '1.0.0', 'xa/node_modules/xc': '1.0.0', xc: '2.0.0' },
     'a replacement that fails its integrity check': { bad: '1.0.0' },
+    'an optional dependency whose required dependency fails': { oa: '1.0.0' },
+    'a name both a dependency and an optional one': { ob: '1.0.0' },
   };
   for (const [label, commands] of Object.entries(scenarios)) {
     const { npm: oracle, fallback: steps } = await sequence(commands);

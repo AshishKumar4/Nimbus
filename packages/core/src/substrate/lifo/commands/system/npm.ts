@@ -269,31 +269,91 @@ interface TreeInstall {
 	globalBinDir?: string;
 }
 
-/** A package the plan puts at a placement: the edge that asked for it, and its manifest. */
+/** An edge of the tree: optional when it is an optionalDependencies entry. */
+type TreeEdge = PlacementEdge & { readonly optional: boolean };
+
+/** A package the plan puts at a placement: the edge that first asked for it, and its manifest. */
 interface PlannedPackage {
-	readonly edge: PlacementEdge & { readonly optional: boolean };
+	readonly edge: TreeEdge;
 	readonly at: string;
 	readonly info: RegistryVersionInfo;
 }
 
-/** The edges a manifest asks for from `from`: dependencies, optional ones, and the peers it requires. */
+/**
+ * The edges a manifest asks for from `from`: one per name among its
+ * dependencies and optional ones (an optionalDependencies entry overrides
+ * a dependencies one, as npm reads them), and the peers it requires.
+ */
 function manifestEdges(
 	manifest: Pick<RegistryVersionInfo, 'dependencies' | 'optionalDependencies' | 'peerDependencies' | 'peerDependenciesMeta'>,
 	from: string,
-): Array<PlacementEdge & { optional: boolean }> {
-	const edges: Array<PlacementEdge & { optional: boolean }> = [];
-	for (const [name, range] of Object.entries(manifest.dependencies ?? {})) edges.push({ name, range, from, kind: 'dep', optional: false });
-	for (const [name, range] of Object.entries(manifest.optionalDependencies ?? {})) edges.push({ name, range, from, kind: 'dep', optional: true });
+): TreeEdge[] {
+	const byName = new Map<string, TreeEdge>();
+	for (const [name, range] of Object.entries(manifest.dependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: false });
+	for (const [name, range] of Object.entries(manifest.optionalDependencies ?? {})) byName.set(name, { name, range, from, kind: 'dep', optional: true });
+	const edges = [...byName.values()];
 	const optionalPeers = manifest.peerDependenciesMeta ?? {};
 	for (const [name, range] of Object.entries(manifest.peerDependencies ?? {})) {
-		if (optionalPeers[name]?.optional !== true) edges.push({ name, range, from, kind: 'peer', optional: false });
+		if (optionalPeers[name]?.optional !== true && !byName.has(name)) edges.push({ name, range, from, kind: 'peer', optional: false });
 	}
 	return edges;
 }
 
+/** Installs into one node_modules, one at a time: each waits for the one before it (installTreeLocked). */
+const installQueues = new Map<string, Promise<unknown>>();
+
+/** `run` once no other install into `targetBase` in this isolate is running. */
+async function installTreeLocked<T>(targetBase: string, run: () => Promise<T>): Promise<T> {
+	const before = installQueues.get(targetBase) ?? Promise.resolve();
+	const done = before.then(run, run);
+	const settled = done.then(() => undefined, () => undefined);
+	installQueues.set(targetBase, settled);
+	try {
+		return await done;
+	} finally {
+		if (installQueues.get(targetBase) === settled) installQueues.delete(targetBase);
+	}
+}
+
+/**
+ * A retired copy: the package that was at `<dir>/<name>`, moved aside to
+ * `<dir>/.<name>-retired-<run>` while an install replaces it, as arborist
+ * retires one (a dot name no resolver asks for). The name says whose copy it
+ * is, so an install that finds one whose target is missing (it crashed after
+ * retiring) restores it.
+ */
+const RETIRED = /^\.(.+)-retired-[a-z0-9]+$/;
+
+/** Every retired copy under `dir`'s node_modules trees, with the target it is beside. */
+async function retiredCopies(vfs: VFS, dir: string, out: Array<{ retired: string; target: string }> = []): Promise<Array<{ retired: string; target: string }>> {
+	let entries: Array<{ name: string }>;
+	try {
+		entries = (await vfs.readdir(dir)) as Array<{ name: string }>;
+	} catch {
+		return out;
+	}
+	for (const { name } of entries) {
+		const retired = RETIRED.exec(name);
+		if (retired) {
+			out.push({ retired: join(dir, name), target: join(dir, retired[1]!) });
+		} else if (name.startsWith('@')) {
+			await retiredCopies(vfs, join(dir, name), out);
+		} else if (!name.startsWith('.')) {
+			await retiredCopies(vfs, join(dir, name, 'node_modules'), out);
+		}
+	}
+	return out;
+}
+
 /**
  * Install `roots` (name and range) and what they depend on under
- * `install.targetBase`, as npm's arborist does it, in two steps.
+ * `install.targetBase`, as npm's arborist does it. Its caller holds the
+ * node_modules (installTreeLocked) across what it reads and writes besides:
+ * the project's package.json.
+ *
+ * Recover: a retired copy whose target is missing (an install that crashed
+ * after retiring it) is moved back first. One whose target is there is left
+ * alone: no install deletes a retired copy it did not make.
  *
  * Plan: the whole ideal tree, before anything on disk changes. One
  * breadth-first walk over every root's edges puts each package where the
@@ -303,19 +363,26 @@ function manifestEdges(
  * replacement elsewhere in the tree (a root upgraded past a dependent's
  * range) nests the copy that dependent needs.
  *
- * Reify: every planned package is fetched, verified and extracted into a
- * staging directory first, then swapped into its placement, shallowest
- * first, an existing package's own node_modules kept under its replacement.
- * A failure anywhere (a manifest, a download, an integrity mismatch, a
- * corrupt archive, a swap) leaves the tree as it was: nothing is swapped, or
- * every swap is undone. An optional dependency that fails is skipped with a
- * warning, as npm skips it. `failed` names what failed; empty, the install
- * is complete.
+ * A package is optional when every path to it from a root passes through an
+ * optionalDependencies edge (a required path wins). One that fails (its
+ * manifest, its download, its integrity, its archive) is skipped with what
+ * needs it on the way, as arborist skips an optional dependency's set; any
+ * other failure fails the install before it changes anything.
+ *
+ * Reify: every package is fetched, verified and extracted into this run's
+ * own staging directory, then published, shallowest first: the package
+ * there is retired beside it (RETIRED), the new one moved in, and the old
+ * one's own node_modules moved under it. Each step is recorded before it is
+ * made; a failure undoes every recorded step in reverse, and a retired copy
+ * that could not be restored is kept and named. Retired copies are removed
+ * only once every package is published. `failed` names what failed; empty,
+ * the install is complete.
  */
 async function installTree(roots: ReadonlyArray<readonly [string, string | null]>, install: TreeInstall): Promise<{ installed: number; failed: string[] }> {
 	const { targetBase, vfs, network, npmRegistry, signal, stdout, stderr } = install;
+	const describe = (e: unknown) => e instanceof Error ? e.message : String(e);
 	const fail = async (edge: PlacementEdge, e: unknown): Promise<{ installed: number; failed: string[] }> => {
-		const message = e instanceof Error ? e.message : String(e);
+		const message = describe(e);
 		if (message.includes('Failed to fetch') || message.includes('NetworkError') || message.includes('CORS')) {
 			await stderr.write(`npm ERR! network error fetching ${edge.name}\n`);
 			await stderr.write(`This may be a CORS restriction. Try: export NPM_REGISTRY=<proxy-url>\n`);
@@ -325,6 +392,25 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 		return { installed: 0, failed: [edge.name] };
 	};
 
+	// ── Recover ──
+	// A staging directory left behind holds only new packages: no install
+	// in this isolate is using it while this one holds the node_modules.
+	try {
+		for (const { name } of (await vfs.readdir(targetBase)) as Array<{ name: string }>) {
+			if (name.startsWith('.nimbus-staging-')) await vfs.remove(join(targetBase, name), { recursive: true, force: true });
+		}
+	} catch { /* no node_modules yet */ }
+	for (const { retired, target } of await retiredCopies(vfs, targetBase)) {
+		if (await vfs.exists(target)) continue;
+		try {
+			await vfs.rename(retired, target);
+			await stderr.write(`npm WARN restored ${target}, retired by an install that did not finish\n`);
+		} catch (e) {
+			await stderr.write(`npm ERR! could not restore ${target}; its copy is kept at ${retired}: ${describe(e)}\n`);
+			return { installed: 0, failed: [target] };
+		}
+	}
+
 	// ── Plan ──
 	// Placements on disk (as probed) and planned, by version; their manifests
 	// on disk, for a reused package's edges.
@@ -332,10 +418,19 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 	const onDisk = new Map<string, PackageJson>();
 	const pending = new Set<string>();
 	const probed = new Set<string>();
-	// Placements decided (planned or skipped), and those whose edges are walked.
+	// Placements decided (planned or failed), and those whose edges are walked.
 	const settled = new Set<string>();
 	const walked = new Set<string>();
 	const plan: PlannedPackage[] = [];
+	// What failed, by placement: optional ones are skipped if they turn out optional.
+	const failures = new Map<string, { edge: TreeEdge; error: unknown }>();
+	// Who asks for each planned or failed placement, and by which kind of edge.
+	const askers = new Map<string, Array<{ from: string; optional: boolean }>>();
+	const asked = (at: string, edge: TreeEdge) => {
+		const list = askers.get(at) ?? [];
+		askers.set(at, list);
+		list.push({ from: edge.from, optional: edge.optional });
+	};
 	const probe = async (placement: string): Promise<void> => {
 		if (probed.has(placement) || placed.has(placement) || pending.has(placement)) return;
 		probed.add(placement);
@@ -346,16 +441,17 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 			onDisk.set(placement, pkg);
 		} catch { /* not on disk */ }
 	};
-	let queue: Array<PlacementEdge & { optional: boolean }> = roots.map(([name, range]) => ({ name, range: range ?? '', from: '', kind: 'dep', optional: false }));
+	let queue: TreeEdge[] = roots.map(([name, range]) => ({ name, range: range ?? '', from: '', kind: 'dep', optional: false }));
 	while (queue.length > 0) {
-		const layer: Array<{ edge: PlacementEdge & { optional: boolean }; at: string }> = [];
-		const next: Array<PlacementEdge & { optional: boolean }> = [];
+		const layer: Array<{ edge: TreeEdge; at: string }> = [];
+		const next: TreeEdge[] = [];
 		for (const edge of queue) {
 			for (const candidate of visiblePlacements(edge.from, edge.name)) await probe(candidate);
 			const decision = decidePlacement(edge, placed, pending);
 			if (decision.kind === 'wait') { next.push(edge); continue; }
 			if (decision.kind === 'met') {
 				if (decision.mismatch) await stderr.write(`npm WARN peer ${edge.name}@${edge.range} from ${edge.from} is met by ${decision.at}@${placed.get(decision.at)!.version}\n`);
+				if (settled.has(decision.at)) asked(decision.at, edge);
 				// A package reused from disk: its edges are the tree's too.
 				const reused = onDisk.get(decision.at);
 				if (reused && !walked.has(decision.at)) {
@@ -364,13 +460,17 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 				}
 				continue;
 			}
-			if (settled.has(decision.at)) continue;
+			if (settled.has(decision.at)) {
+				asked(decision.at, edge);
+				continue;
+			}
 			if (decision.kind === 'too-deep') {
 				settled.add(decision.at);
 				await stderr.write(`  warn: could not install ${edge.name}: ${edge.name}@${edge.range} from ${edge.from} would nest deeper than ${MAX_NEST_DEPTH} levels\n`);
 				continue;
 			}
 			pending.add(decision.at);
+			asked(decision.at, edge);
 			layer.push({ edge, at: decision.at });
 		}
 		for (const { edge, at } of layer) {
@@ -381,11 +481,8 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 			try {
 				info = await fetchPackageInfo(network, npmRegistry, edge.name, edge.range || null, signal);
 			} catch (e) {
-				if (edge.optional) {
-					await stderr.write(`npm WARN optional ${edge.name}: ${e instanceof Error ? e.message : String(e)}\n`);
-					continue;
-				}
-				return await fail(edge, e);
+				failures.set(at, { edge, error: e });
+				continue;
 			}
 			// What a copy already here was is replaced: its manifest is not the tree's.
 			onDisk.delete(at);
@@ -396,57 +493,110 @@ async function installTree(roots: ReadonlyArray<readonly [string, string | null]
 		}
 		queue = next;
 	}
-	if (plan.length === 0) return { installed: 0, failed: [] };
+
+	// Required: reached from a root by a path of required edges; the rest is optional.
+	const required = new Set<string>();
+	let grew = true;
+	while (grew) {
+		grew = false;
+		for (const [at, list] of askers) {
+			if (!required.has(at) && list.some(({ from, optional }) => !optional && (from === '' || required.has(from) || (!askers.has(from) && from !== '')))) {
+				required.add(at);
+				grew = true;
+			}
+		}
+	}
+	// What a failure takes with it: the optional packages that need what failed
+	// (by a required edge), and what only they ask for.
+	const skipped = new Set<string>();
+	const skip = (at: string) => {
+		const queued = [at];
+		while (queued.length > 0) {
+			const member = queued.pop()!;
+			if (skipped.has(member)) continue;
+			skipped.add(member);
+			for (const { from, optional } of askers.get(member) ?? []) if (!optional && from !== '' && askers.has(from)) queued.push(from);
+			for (const [other, list] of askers) {
+				if (!skipped.has(other) && !required.has(other) && list.every(({ from }) => skipped.has(from))) queued.push(other);
+			}
+		}
+	};
+	const settle = async (at: string, edge: TreeEdge, error: unknown): Promise<boolean> => {
+		if (required.has(at)) return false;
+		await stderr.write(`npm WARN optional SKIPPING OPTIONAL DEPENDENCY: ${edge.name}: ${describe(error)}\n`);
+		skip(at);
+		return true;
+	};
+	for (const [at, { edge, error }] of failures) {
+		if (!(await settle(at, edge, error))) return await fail(edge, error);
+	}
+	if (plan.every(({ at }) => skipped.has(at))) return { installed: 0, failed: [] };
 
 	// ── Reify ──
-	const staging = join(targetBase, '.nimbus-staging');
+	const run = Math.random().toString(36).slice(2, 10);
+	const staging = join(targetBase, `.nimbus-staging-${run}`);
 	const stagedAt = (i: number) => join(staging, String(i));
-	const skipped = new Set<string>();
-	const under = (at: string, parent: string) => at === parent || at.startsWith(`${parent}/node_modules/`);
 	try {
 		for (let i = 0; i < plan.length; i++) {
 			const { edge, at, info } = plan[i];
-			if ([...skipped].some((parent) => under(at, parent))) continue;
+			if (skipped.has(at)) continue;
 			try {
 				// writeTarballStream throws when the archive carried no manifest
 				// and writes package.json last, so a return is a complete package.
 				await fetchAndStreamPackage(network, info.dist.tarball, info.dist.integrity, stagedAt(i), vfs, signal, stderr);
 			} catch (e) {
-				if (!edge.optional) return await fail(edge, e);
-				await stderr.write(`npm WARN optional ${edge.name}: ${e instanceof Error ? e.message : String(e)}\n`);
-				skipped.add(at);
+				if (!(await settle(at, edge, e))) return await fail(edge, e);
 			}
 		}
 		const order = plan.map((_, i) => i)
-			.filter((i) => ![...skipped].some((parent) => under(plan[i].at, parent)))
+			.filter((i) => !skipped.has(plan[i].at))
 			.sort((x, y) => plan[x].at.split('/node_modules/').length - plan[y].at.split('/node_modules/').length);
-		const swapped: Array<{ target: string; backup: string | null; keptModules: boolean }> = [];
+
+		// Each publish, its steps recorded before they are made.
+		const published: Array<{ target: string; retired: string; steps: Set<'retire' | 'publish' | 'modules'> }> = [];
 		try {
 			for (const i of order) {
 				const target = join(targetBase, plan[i].at);
-				let backup: string | null = null;
+				const slash = target.lastIndexOf('/');
+				const step = { target, retired: `${target.slice(0, slash)}/.${target.slice(slash + 1)}-retired-${run}`, steps: new Set<'retire' | 'publish' | 'modules'>() };
+				published.push(step);
 				if (await vfs.exists(target)) {
-					backup = join(staging, `replaced-${i}`);
-					await vfs.rename(target, backup);
+					step.steps.add('retire');
+					await vfs.rename(target, step.retired);
 				}
-				const parent = target.slice(0, target.lastIndexOf('/'));
-				try { await vfs.mkdir(parent, { recursive: true }); } catch { /* exists */ }
+				try { await vfs.mkdir(target.slice(0, slash), { recursive: true }); } catch { /* exists */ }
+				step.steps.add('publish');
 				await vfs.rename(stagedAt(i), target);
 				// The package's files are replaced; what is installed under it stays.
-				let keptModules = false;
-				if (backup && await vfs.exists(join(backup, 'node_modules')) && !(await vfs.exists(join(target, 'node_modules')))) {
-					await vfs.rename(join(backup, 'node_modules'), join(target, 'node_modules'));
-					keptModules = true;
+				if (step.steps.has('retire') && await vfs.exists(join(step.retired, 'node_modules')) && !(await vfs.exists(join(target, 'node_modules')))) {
+					step.steps.add('modules');
+					await vfs.rename(join(step.retired, 'node_modules'), join(target, 'node_modules'));
 				}
-				swapped.push({ target, backup, keptModules });
 			}
 		} catch (e) {
-			for (const { target, backup, keptModules } of swapped.reverse()) {
-				if (keptModules && backup) await vfs.rename(join(target, 'node_modules'), join(backup, 'node_modules'));
-				await vfs.remove(target, { recursive: true });
-				if (backup) await vfs.rename(backup, target);
+			// Undo, newest first: what each recorded step may have done is
+			// checked on disk, and a retired copy not put back is kept.
+			for (const { target, retired, steps } of published.reverse()) {
+				try {
+					if (steps.has('modules') && await vfs.exists(join(target, 'node_modules')) && !(await vfs.exists(join(retired, 'node_modules')))) {
+						await vfs.rename(join(target, 'node_modules'), join(retired, 'node_modules'));
+					}
+					if (steps.has('publish') && (!steps.has('retire') || await vfs.exists(retired)) && await vfs.exists(target)) {
+						await vfs.remove(target, { recursive: true });
+					}
+					if (steps.has('retire') && await vfs.exists(retired) && !(await vfs.exists(target))) await vfs.rename(retired, target);
+				} catch (undo) {
+					await stderr.write(`npm ERR! could not restore ${target}; its previous copy is kept at ${retired}: ${describe(undo)}\n`);
+				}
 			}
-			return await fail(plan[order[swapped.length]]?.edge ?? plan[0].edge, e);
+			return await fail(plan[order[published.length - 1] ?? order[0]!].edge, e);
+		}
+		// Published: the retired copies this run made are the old tree's.
+		for (const { retired, steps } of published) {
+			if (!steps.has('retire')) continue;
+			try { await vfs.remove(retired, { recursive: true, force: true }); } catch (e) {
+				await stderr.write(`npm WARN could not remove ${retired}: ${describe(e)}\n`);
+			}
 		}
 		if (install.globalBinDir) {
 			for (const i of order) {
@@ -600,46 +750,53 @@ async function npmInstall(
 		...(invocation.global ? { globalBinDir } : {}),
 	};
 
-	// One plan for every root: the project's dependencies (a local install's)
-	// with the packages named on the command line, which win their names.
-	const project = invocation.global ? null : (await readProjectPackageJson(ctx.vfs, ctx.cwd));
-	if (packages.length === 0 && !project) {
-		await ctx.stderr.write('npm ERR! no package.json found\n');
-		return 1;
-	}
-	const named = packages.map(parsePackageSpec);
-	const roots = new Map<string, string | null>(Object.entries({ ...project?.dependencies, ...project?.devDependencies }));
-	for (const { name, version } of named) roots.set(name, version);
-	if (roots.size === 0) {
-		await ctx.stdout.write('up to date, audited 0 packages\n');
-		return 0;
-	}
-	await ctx.stdout.write(packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
-	const result = await installTree([...roots], tree);
-	installed += result.installed;
-	failed.push(...result.failed);
-
-	// What the command line named is saved to package.json, once it installed.
-	if (result.failed.length === 0 && project && named.length > 0) {
-		try {
-			const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd)) ?? project;
-			for (const { name } of named) {
-				let versionStr = 'latest';
-				try {
-					const ipkg = JSON.parse((await ctx.vfs.readFileString(join(targetBase, name, 'package.json'))));
-					// An alias (`mine@npm:real@^1`) saves the package it
-					// installed, as npm does: "mine": "npm:real@^1.1.0".
-					versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
-				} catch { /* ignore */ }
-				const field = invocation.saveDev ? 'devDependencies' : 'dependencies';
-				pkg[field] = { ...pkg[field], [name]: versionStr };
-			}
-			(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
-		} catch (e) {
-			failed.push(...named.map(({ name }) => name));
-			await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
+	// The project's package.json is read and written under the node_modules
+	// lock with the tree, so two installs at once add to it one after the
+	// other.
+	const status = await installTreeLocked(targetBase, async (): Promise<number | null> => {
+		// One plan for every root: the project's dependencies (a local install's)
+		// with the packages named on the command line, which win their names.
+		const project = invocation.global ? null : (await readProjectPackageJson(ctx.vfs, ctx.cwd));
+		if (packages.length === 0 && !project) {
+			await ctx.stderr.write('npm ERR! no package.json found\n');
+			return 1;
 		}
-	}
+		const named = packages.map(parsePackageSpec);
+		const roots = new Map<string, string | null>(Object.entries({ ...project?.dependencies, ...project?.devDependencies }));
+		for (const { name, version } of named) roots.set(name, version);
+		if (roots.size === 0) {
+			await ctx.stdout.write('up to date, audited 0 packages\n');
+			return 0;
+		}
+		await ctx.stdout.write(packages.length === 0 ? 'Installing dependencies...\n' : 'Installing packages...\n');
+		const result = await installTree([...roots], tree);
+		installed += result.installed;
+		failed.push(...result.failed);
+
+		// What the command line named is saved to package.json, once it installed.
+		if (result.failed.length === 0 && project && named.length > 0) {
+			try {
+				const pkg = (await readProjectPackageJson(ctx.vfs, ctx.cwd)) ?? project;
+				for (const { name } of named) {
+					let versionStr = 'latest';
+					try {
+						const ipkg = JSON.parse((await ctx.vfs.readFileString(join(targetBase, name, 'package.json'))));
+						// An alias (`mine@npm:real@^1`) saves the package it
+						// installed, as npm does: "mine": "npm:real@^1.1.0".
+						versionStr = (typeof ipkg.name === 'string' && ipkg.name !== name ? `npm:${ipkg.name}@` : '') + '^' + ipkg.version;
+					} catch { /* ignore */ }
+					const field = invocation.saveDev ? 'devDependencies' : 'dependencies';
+					pkg[field] = { ...pkg[field], [name]: versionStr };
+				}
+				(await writeProjectPackageJson(ctx.vfs, ctx.cwd, pkg));
+			} catch (e) {
+				failed.push(...named.map(({ name }) => name));
+				await ctx.stderr.write(`npm ERR! ${e instanceof Error ? e.message : String(e)}\n`);
+			}
+		}
+		return null;
+	});
+	if (status !== null) return status;
 
 	// The in-process fallback reports the count it actually installed;
 	// writeInstallSummary's file/bin/cache decorations don't apply here.
@@ -1164,10 +1321,10 @@ export function createNpxCommand(
 		if (!scriptPath) {
 			const cacheDir = join(NPX_CACHE, parsedName);
 			if (!(await ctx.vfs.exists(join(cacheDir, 'package.json')))) {
-				const result = await installTree([[parsedName, version]], {
+				const result = await installTreeLocked(NPX_CACHE, () => installTree([[parsedName, version]], {
 					targetBase: NPX_CACHE, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: getRegistry(ctx.env),
 					signal: ctx.signal, stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel,
-				});
+				}));
 				if (result.failed.length > 0) {
 					await ctx.stderr.write(`npx: could not install ${parsedName}\n`);
 					return 1;
@@ -1213,10 +1370,10 @@ export async function npmInstallGlobal(
 	try { (await ctx.vfs.mkdir(modulesDir, { recursive: true })); } catch { /* exists */ }
 	try { (await ctx.vfs.mkdir(binDir, { recursive: true })); } catch { /* exists */ }
 
-	const { installed, failed } = await installTree([[packageName, null]], {
+	const { installed, failed } = await installTreeLocked(modulesDir, () => installTree([[packageName, null]], {
 		targetBase: modulesDir, vfs: ctx.vfs, network: kernel?.network ?? ISOLATE_NETWORK, npmRegistry: getRegistry(ctx.env),
 		signal: ctx.signal, stdout: ctx.stdout, stderr: ctx.stderr, registry, kernel, globalBinDir: binDir,
-	});
+	}));
 	if (failed.length > 0) return 1;
 	const elapsed = ((Date.now() - startTime) / 1000).toFixed(1);
 	await ctx.stdout.write(`\nadded ${installed} package${installed !== 1 ? 's' : ''} in ${elapsed}s\n`);
