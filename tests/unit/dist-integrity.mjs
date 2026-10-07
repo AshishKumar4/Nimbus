@@ -19,7 +19,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
-import { mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { chmodSync, existsSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 
@@ -31,6 +31,7 @@ import {
   runBuildFixpoint,
   snapshotBuildOutputs,
 } from '../../scripts/dist-integrity.mjs';
+import { assertGeneratedSourcesAreCurrent } from './lib/generated-freshness.mjs';
 
 // ── [1] THE INVARIANT, over the real repo ────────────────────────────
 // No rebuild here: this half needs none. It reads the compiled artifact
@@ -344,6 +345,208 @@ process.exit(1);
   assert.match(await refused(), /tsc is .* \(typescript 5\.4\.5\), but bun\.lock pins typescript 5\.9\.3/);
   assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), bytesBefore, 'a refused build touches nothing');
   console.log('  ok  [12] a workspace without node_modules, or with a tsc other than the pinned one, is refused before building');
+}
+
+// ── The rollback itself can fail ─────────────────────────────────────
+// A failed build is rolled back from copies held outside the tree (every
+// output git cannot give back) and from HEAD. Each case below breaks one
+// part of that rollback; the gate must still try every other path, throw
+// BuildFailure, keep the copies, and say where they are.
+
+const git = (root, ...args) => spawnSync('git', ['-c', 'user.email=t@t', '-c', 'user.name=t', ...args], { cwd: root, encoding: 'utf8' });
+
+/** A fixture at its fixpoint, committed, with two uncommitted outputs the gate must hold copies of. */
+async function committedFixture() {
+  const { root, pkg } = await fixtureAtFixpoint();
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'at the fixpoint');
+  writeFileSync(join(pkg, 'dist', 'held-a.js'), 'export const A = 1;\n');
+  writeFileSync(join(pkg, 'dist', 'held-b.js'), 'export const B = 1;\n');
+  return { root, pkg };
+}
+
+/** Run `fn` with recovery copies kept under a directory of this case's own. */
+async function withPrivateTmp(fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'dist-integrity-tmp-'));
+  process.on('exit', () => rmSync(dir, { recursive: true, force: true }));
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = dir;
+  try {
+    return await fn(dir);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+  }
+}
+
+/** The gate's error over a failing build: it must be a BuildFailure. */
+async function buildFailure(root) {
+  try {
+    await assertDistMatchesSource({ root, roots: ROOTS, steps: STEPS });
+  } catch (error) {
+    assert.ok(error instanceof BuildFailure, `a failed build must throw BuildFailure, got: ${error?.stack}`);
+    return error.message;
+  }
+  throw new assert.AssertionError({ message: 'the gate accepted a failed build' });
+}
+
+/** The recovery directory the error names, which must still be there. */
+function namedRecoveryDir(message) {
+  const match = /copies the build needs are kept in (\S+)/.exec(message);
+  assert.ok(match, `the error must name where the recovery copies are kept:\n${message}`);
+  assert.ok(existsSync(match[1]), `the named recovery directory ${match[1]} must still exist`);
+  return match[1];
+}
+
+// ── [13] RED: a recovery copy is gone; the rest are still restored ───
+{
+  await withPrivateTmp(async (tmp) => {
+    const { root, pkg } = await committedFixture();
+    // The failing build removes dist, and the copy held of held-a.js.
+    writeFileSync(join(pkg, 'build.mjs'), `
+import { readFileSync, readdirSync, rmSync, statSync } from 'node:fs';
+import { join } from 'node:path';
+rmSync('dist', { recursive: true, force: true });
+const walk = (dir) => readdirSync(dir).flatMap((name) => {
+  const path = join(dir, name);
+  return statSync(path).isDirectory() ? walk(path) : [path];
+});
+const tmp = process.env.TMPDIR;
+for (const held of readdirSync(tmp).filter((name) => name.startsWith('dist-integrity-held-'))) {
+  for (const copy of walk(join(tmp, held))) {
+    if (readFileSync(copy, 'utf8') === 'export const A = 1;\\n') rmSync(copy);
+  }
+}
+process.exit(1);
+`);
+    const before = snapshotBuildOutputs({ root, roots: ROOTS });
+    const message = await buildFailure(root);
+    const after = snapshotBuildOutputs({ root, roots: ROOTS });
+    const missing = [...before.keys()].filter((path) => after.get(path) !== before.get(path));
+    assert.deepEqual(missing, ['packages/worker/dist/held-a.js'], 'exactly the output whose copy was lost stays missing');
+    assert.match(message, /could NOT be put back/);
+    assert.ok(message.includes(missing[0]), 'the error names the file it could not restore');
+    assert.match(message, /ENOENT/, 'the error says why');
+    const kept = namedRecoveryDir(message);
+    assert.ok(kept.startsWith(tmp));
+    const keptCopies = spawnSync('find', [kept, '-type', 'f'], { encoding: 'utf8' }).stdout.split('\n').filter(Boolean)
+      .map((copy) => readFileSync(copy, 'utf8'));
+    assert.ok(keptCopies.includes('export const B = 1;\n'), 'the copies that were not lost are still kept');
+  });
+  console.log('  ok  [13] a lost recovery copy fails one file: the rest are restored, the copies kept and named');
+}
+
+// ── [14] RED: an added file cannot be removed ────────────────────────
+// Directory permissions do not bind root, so the refusal cannot be staged there.
+if (process.getuid?.() === 0) {
+  console.log('  ok  [14] skipped: running as root, which a read-only directory does not stop');
+} else {
+  await withPrivateTmp(async () => {
+    const { root, pkg } = await committedFixture();
+    writeFileSync(join(pkg, 'build.mjs'), `
+import { chmodSync, mkdirSync, rmSync, writeFileSync } from 'node:fs';
+rmSync('dist', { recursive: true, force: true });
+mkdirSync('dist/locked', { recursive: true });
+writeFileSync('dist/locked/out.js', 'half-written');
+chmodSync('dist/locked', 0o555);
+process.exit(1);
+`);
+    const before = snapshotBuildOutputs({ root, roots: ROOTS });
+    let message;
+    try {
+      message = await buildFailure(root);
+    } finally {
+      chmodSync(join(pkg, 'dist', 'locked'), 0o755);
+    }
+    const after = snapshotBuildOutputs({ root, roots: ROOTS });
+    for (const [path, digest] of before) assert.equal(after.get(path), digest, `${path} is restored though another file could not be removed`);
+    assert.match(message, /could NOT be put back/);
+    assert.match(message, /packages\/worker\/dist\/locked\/out\.js/);
+    assert.match(message, /EACCES/);
+    namedRecoveryDir(message);
+  });
+  console.log('  ok  [14] an added file that cannot be removed fails alone: every other file is restored');
+}
+
+// ── [15] RED: the copies cannot be made at all ───────────────────────
+// Nothing may run then: a build with no way back is not started.
+{
+  const { root, pkg } = await committedFixture();
+  const notADirectory = join(root, 'not-a-directory');
+  writeFileSync(notADirectory, '');
+  writeFileSync(join(pkg, 'build.mjs'), "import { writeFileSync } from 'node:fs'; writeFileSync('../../ran', ''); process.exit(1);\n");
+  const before = snapshotBuildOutputs({ root, roots: ROOTS });
+  const saved = process.env.TMPDIR;
+  process.env.TMPDIR = join(notADirectory, 'tmp');
+  let message;
+  try {
+    message = await buildFailure(root);
+  } finally {
+    if (saved === undefined) delete process.env.TMPDIR;
+    else process.env.TMPDIR = saved;
+  }
+  assert.match(message, /^refusing to build — could not hold copies of the build outputs/);
+  assert.ok(!existsSync(join(root, 'ran')), 'no build step ran');
+  assert.deepEqual(snapshotBuildOutputs({ root, roots: ROOTS }), before);
+  console.log('  ok  [15] when the recovery copies cannot be made, nothing is built');
+}
+
+// ── [16] RED: permissions come back too ──────────────────────────────
+// A committed output chmodded 0600 is restored from HEAD, which knows only
+// 0644 and 0755. And cli's build ends in `chmod +x dist/bin.js`: a build
+// that dies after tsc rewrote bin.js byte for byte but before the chmod
+// changed only its mode.
+{
+  await withPrivateTmp(async () => {
+    const { root, pkg } = await fixtureAtFixpoint();
+    writeFileSync(join(pkg, 'src', 'bin.js'), '#!/usr/bin/env node\n');
+    writeFileSync(join(pkg, 'build.mjs'), BUILD_MJS + "import { chmodSync as chmod } from 'node:fs';\nchmod('dist/bin.js', 0o755);\n");
+    runBuildFixpoint({ root, steps: STEPS });
+    git(root, 'add', '-A');
+    git(root, 'commit', '-qm', 'at the fixpoint, bin.js executable');
+    chmodSync(join(pkg, 'dist', 'payload.js'), 0o600);
+    assert.equal(git(root, 'status', '--porcelain').stdout, '', 'git does not see a 0600 mode, so nothing is held');
+    // tsc wrote the outputs again; the build died before its chmod +x.
+    writeFileSync(join(pkg, 'build.mjs'), BUILD_MJS + 'process.exit(1);\n');
+    const message = await buildFailure(root);
+    const mode = (rel) => statSync(join(pkg, rel)).mode & 0o777;
+    assert.equal(mode('dist/payload.js').toString(8), '600', 'restored from HEAD, with its own mode');
+    assert.equal(mode('dist/bin.js').toString(8), '755', 'a mode-only change is put back');
+    assert.match(message, /The tree is as it was before the build/);
+    assert.match(message, /packages\/worker\/dist\/bin\.js/);
+  });
+  console.log('  ok  [16] a restore puts every mode back, from HEAD or a copy, and a mode-only change too');
+}
+
+// ── [17] A narrow regeneration holds copies of its own roots only ────
+// generated-freshness regenerates packages/worker/src with one step. Its
+// rollback must cover what that step can write, not hold a copy of every
+// build output in the workspace (dist and staged WASM included).
+{
+  await withPrivateTmp(async () => {
+    const root = mkdtempSync(join(tmpdir(), 'dist-integrity-freshness-'));
+    process.on('exit', () => rmSync(root, { recursive: true, force: true }));
+    const worker = join(root, 'packages', 'worker');
+    mkdirSync(join(worker, 'src'), { recursive: true });
+    writeFileSync(join(worker, 'src', 'facet.generated.ts'), 'export const FACET = 1;\n');
+    writeFileSync(join(worker, 'facets.mjs'), `
+import { readdirSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const tmp = process.env.TMPDIR;
+const held = readdirSync(tmp).filter((name) => name.startsWith('dist-integrity-held-'));
+writeFileSync('../../held-copies', String(held.reduce((n, dir) => n + readdirSync(join(tmp, dir)).length, 0)));
+`);
+    writeFileSync(join(worker, 'package.json'), JSON.stringify({ name: 'w', type: 'module', scripts: { 'bundle:facets': 'node facets.mjs' } }));
+    git(root, 'init', '-q');
+    git(root, 'add', '-A');
+    git(root, 'commit', '-qm', 'generated sources current');
+    // An uncommitted build output elsewhere in the workspace.
+    mkdirSync(join(root, 'packages', 'core', 'dist'), { recursive: true });
+    writeFileSync(join(root, 'packages', 'core', 'dist', 'big.wasm'), 'not the regeneration\'s');
+    assertGeneratedSourcesAreCurrent({ root });
+    assert.equal(readFileSync(join(root, 'held-copies'), 'utf8'), '0', 'nothing under packages/worker/src needed a copy, and nothing else may be held');
+  });
+  console.log('  ok  [17] the generated-sources guard holds copies only of what its step can write');
 }
 
 console.log('dist-integrity: all cases passed');

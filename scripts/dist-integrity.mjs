@@ -374,9 +374,17 @@ export class BuildFailure extends Error {
 /**
  * Run `steps` in order, as one transaction over `roots`: if a step fails,
  * every file under `roots` is put back as `before` (the snapshot taken when
- * the build began) had it, and BuildFailure is thrown. A failed build
- * therefore never leaves a cleaned or half-written dist behind for anyone
- * to read as drift, or to commit.
+ * the build began) had it, mode included, and BuildFailure is thrown. A
+ * failed build therefore never leaves a cleaned or half-written dist behind
+ * for anyone to read as drift, or to commit.
+ *
+ * The rollback has two sources: HEAD, for every file git can give back as
+ * it was, and copies held outside the tree for the rest. If the copies
+ * cannot be made, nothing is built. If part of the rollback fails, every
+ * other file is still put back, the copies are kept, and BuildFailure names
+ * each file left wrong, why, and where the copies are.
+ *
+ * `roots` must cover everything `steps` can write.
  *
  * @param {{ root?: string, steps?: Array<{ cwd: string, script: string, why: string }>, log?: (line: string) => void,
  *   roots?: string[], before?: Map<string, string> }} [options]
@@ -387,6 +395,7 @@ export function runBuildFixpoint({
   assertWorkspaceToolchain({ root, steps });
   before ??= snapshotBuildOutputs({ root, roots });
   const held = holdOutputs({ root, roots, before });
+  let keep = false;
   try {
     for (const step of steps) {
       log(`${step.cwd} → ${step.script} (${step.why})`);
@@ -401,11 +410,14 @@ export function runBuildFixpoint({
         const how = result.error ? `could not start (${result.error.message})`
           : result.status === null ? `was killed by ${result.signal}` : `exited ${result.status}`;
         const { restored, unrestored } = restoreOutputs({ root, roots, before, held });
-        throw new BuildFailure(buildFailureReason(`\`bun run --cwd ${step.cwd} ${step.script}\` ${how}`, restored, unrestored));
+        keep = unrestored.length > 0;
+        throw new BuildFailure(buildFailureReason({
+          step: `\`bun run --cwd ${step.cwd} ${step.script}\` ${how}`, restored, unrestored, held: held.dir,
+        }));
       }
     }
   } finally {
-    rmSync(held.dir, { recursive: true, force: true });
+    if (!keep) rmSync(held.dir, { recursive: true, force: true });
   }
 }
 
@@ -478,20 +490,29 @@ function lockedTypescript(root) {
   return match[1];
 }
 
+const fileMode = (path) => statSync(path).mode & 0o7777;
+
 /**
- * What a failed build must be able to put back: a copy of every file under
- * `roots` that git cannot give back as it is (one that differs from HEAD,
- * or that HEAD does not have). Every other file is HEAD's, byte for byte.
+ * What a failed build must be able to put back: the mode of every file
+ * under `roots`, and a copy (in a directory under the system tmpdir,
+ * mirroring the repo's paths) of every file git cannot give back as it is:
+ * one that differs from HEAD, or that HEAD does not have. Every other file
+ * is HEAD's, byte for byte. Throws BuildFailure, before anything is built,
+ * if any of it cannot be made.
  */
 function holdOutputs({ root, roots, before }) {
-  const dir = mkdtempSync(join(tmpdir(), 'dist-integrity-held-'));
-  /** @type {Map<string, { copy: string, mode: number }>} */
-  const copies = new Map();
+  let dir;
   try {
+    dir = mkdtempSync(join(tmpdir(), 'dist-integrity-held-'));
+    /** @type {Map<string, number>} */
+    const modes = new Map();
+    for (const path of before.keys()) modes.set(path, fileMode(join(root, path)));
     const status = spawnSync('git', ['status', '--porcelain=v1', '-z', '--untracked-files=all', '--', ...roots], {
       cwd: root, encoding: 'buffer', maxBuffer: 1 << 28,
     });
-    if (status.status !== 0) throw new BuildFailure(`refusing to build — git status failed in ${root}: ${status.stderr}`);
+    if (status.status !== 0) throw new Error(`git status failed: ${status.stderr || status.error?.message}`);
+    /** @type {Map<string, string>} */
+    const copies = new Map();
     const entries = status.stdout.toString('utf8').split('\0');
     for (let i = 0; i < entries.length; i++) {
       const entry = entries[i];
@@ -500,64 +521,106 @@ function holdOutputs({ root, roots, before }) {
       if (entry[0] === 'R' || entry[0] === 'C') i++;
       const path = entry.slice(3);
       if (!before.has(path)) continue;
-      const copy = join(dir, String(copies.size));
+      const copy = join(dir, path);
+      mkdirSync(dirname(copy), { recursive: true });
       copyFileSync(join(root, path), copy, constants.COPYFILE_FICLONE);
-      copies.set(path, { copy, mode: statSync(join(root, path)).mode & 0o7777 });
+      copies.set(path, copy);
     }
+    return { dir, copies, modes };
   } catch (error) {
-    rmSync(dir, { recursive: true, force: true });
-    throw error;
+    if (dir) rmSync(dir, { recursive: true, force: true });
+    throw new BuildFailure(
+      'refusing to build — could not hold copies of the build outputs, so a failed build could not be rolled back: '
+      + `${error.message}${dir ? '' : ` (the system tmpdir is ${tmpdir()})`}`,
+    );
   }
-  return { dir, copies };
 }
 
 /**
  * Put every file under `roots` back as `before` had it: remove what the
- * build added, and restore what it changed or removed, from the held copy
- * or from HEAD. Returns what was put back and what could not be.
+ * build added, restore what it changed or removed (from the held copy, or
+ * HEAD), and give every file its mode back. Each path is attempted on its
+ * own, so one that cannot be restored never stops the rest.
+ *
+ * @returns {{ restored: string[], unrestored: Array<{ path: string, why: string }> }}
  */
 function restoreOutputs({ root, roots, before, held }) {
+  /** @type {Map<string, string>} */
+  const failed = new Map();
+  const attempt = (path, fn) => {
+    try {
+      fn();
+    } catch (error) {
+      failed.set(path, error.code ? `${error.code}: ${error.message}` : error.message);
+    }
+  };
   const { changed, added, removed } = diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
-  for (const path of added) rmSync(join(root, path), { force: true });
+  for (const path of added) attempt(path, () => rmSync(join(root, path)));
   const fromHead = [];
   for (const path of [...changed, ...removed]) {
-    const kept = held.copies.get(path);
-    if (!kept) {
+    const copy = held.copies.get(path);
+    if (!copy) {
       fromHead.push(path);
       continue;
     }
-    const target = join(root, path);
-    mkdirSync(dirname(target), { recursive: true });
-    copyFileSync(kept.copy, target);
-    chmodSync(target, kept.mode);
-  }
-  if (fromHead.length > 0) {
-    spawnSync('git', ['restore', '--source=HEAD', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], {
-      cwd: root, input: fromHead.join('\0'), encoding: 'utf8',
+    attempt(path, () => {
+      mkdirSync(dirname(join(root, path)), { recursive: true });
+      copyFileSync(copy, join(root, path));
     });
   }
+  if (fromHead.length > 0) {
+    const restored = spawnSync('git', ['restore', '--source=HEAD', '--worktree', '--pathspec-from-file=-', '--pathspec-file-nul'], {
+      cwd: root, input: fromHead.join('\0'), encoding: 'utf8',
+    });
+    if (restored.status !== 0) {
+      const why = `git restore failed: ${(restored.stderr || restored.error?.message || '').trim()}`;
+      for (const path of fromHead) failed.set(path, why);
+    }
+  }
+  // HEAD knows only 0644 and 0755, a copy takes the mode of its target, and
+  // a build can change a file's mode without its bytes: every mode back.
+  const remoded = new Set();
+  for (const [path, mode] of held.modes) {
+    attempt(path, () => {
+      const target = join(root, path);
+      if (!existsSync(target) || fileMode(target) === mode) return;
+      chmodSync(target, mode);
+      remoded.add(path);
+    });
+  }
+
+  // What is still wrong is judged against the snapshot, not the attempts.
   const left = diffSnapshots(before, snapshotBuildOutputs({ root, roots }));
-  return {
-    restored: [...changed, ...removed, ...added].sort(),
-    unrestored: [...left.changed, ...left.added, ...left.removed].sort(),
-  };
+  const stillWrong = new Set([...left.changed, ...left.added, ...left.removed]);
+  for (const [path, mode] of held.modes) {
+    const target = join(root, path);
+    if (existsSync(target) && fileMode(target) !== mode) stillWrong.add(path);
+  }
+  const unrestored = [...stillWrong].sort().map((path) => ({
+    path, why: failed.get(path) ?? 'differs from before the build after the rollback',
+  }));
+  const restored = [...new Set([...changed, ...removed, ...added, ...remoded])].filter((path) => !stillWrong.has(path)).sort();
+  return { restored, unrestored };
 }
 
-function buildFailureReason(step, restored, unrestored) {
-  const list = (paths) => `${paths.slice(0, 20).map((p) => `  ${p}`).join('\n')}${paths.length > 20 ? `\n  … and ${paths.length - 20} more` : ''}`;
+function buildFailureReason({ step, restored, unrestored, held }) {
+  const list = (lines) => `${lines.slice(0, 20).map((line) => `  ${line}`).join('\n')}${lines.length > 20 ? `\n  … and ${lines.length - 20} more` : ''}`;
   if (unrestored.length > 0) {
     return (
-      `BUILD FAILED — ${step}. This is a failed build, not drift.\n\n` +
-      `The tree could NOT be put back as it was before the build; these files still differ (do not commit them):\n${list(unrestored)}\n\n` +
-      'Fix the build (its output is above), then rebuild.'
+      `BUILD FAILED — ${step}. This is a failed build, not drift.\n\n`
+      + `The tree could NOT be put back as it was before the build; ${unrestored.length} file${unrestored.length === 1 ? '' : 's'} still differ${unrestored.length === 1 ? 's' : ''} (do not commit ${unrestored.length === 1 ? 'it' : 'them'}):\n`
+      + `${list(unrestored.map(({ path, why }) => `${path} — ${why}`))}\n\n`
+      + `The copies the build needs are kept in ${held} (paths as in the repo; a file not there is HEAD's).\n`
+      + (restored.length > 0 ? `${restored.length} other file${restored.length === 1 ? ' was' : 's were'} put back.\n` : '')
+      + 'Restore the files above from those copies or HEAD, fix the build (its output is above), then rebuild.'
     );
   }
   return (
-    `BUILD FAILED — ${step}. This is a failed build, not drift: it says nothing about whether dist matches src.\n\n` +
-    (restored.length > 0
-      ? `The tree is as it was before the build: ${restored.length} file${restored.length === 1 ? '' : 's'} the failed build removed, rewrote or added ${restored.length === 1 ? 'was' : 'were'} put back:\n${list(restored)}\n\n`
-      : 'The failed build had changed no file.\n\n') +
-    'There is nothing to commit. Fix the build (its output is above) and run again.'
+    `BUILD FAILED — ${step}. This is a failed build, not drift: it says nothing about whether dist matches src.\n\n`
+    + (restored.length > 0
+      ? `The tree is as it was before the build: ${restored.length} file${restored.length === 1 ? '' : 's'} the failed build removed, rewrote, added or re-moded ${restored.length === 1 ? 'was' : 'were'} put back:\n${list(restored)}\n\n`
+      : 'The failed build had changed no file.\n\n')
+    + 'There is nothing to commit. Fix the build (its output is above) and run again.'
   );
 }
 
