@@ -690,6 +690,11 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   assert.equal(redriven.restart, 'on-failure', 'so is the policy');
   await waitFor(async () => processes.get(redriven.pid)?.state === 'running' && self.portRegistry.get(20740)?.pid === redriven.pid, 5_000);
   assert.equal(world.boots.length, boots + 1, 'one boot for the restart');
+  // A crash restart says it is one, not a session restart.
+  assert.deepEqual(processes.get(redriven.pid).restartedFrom, { pid: a.pid, cause: 'exited', exitCode: 1 });
+  const restartLine = processes.allLogs(redriven.pid).map((chunk) => chunk.data).join('').split('\n')[0];
+  assert.match(restartLine, new RegExp(`"node crashy\\.js" exited with code 1, so it was restarted \\(restart on-failure\\); it was pid ${a.pid}`));
+  assert.doesNotMatch(restartLine, /session restarted/);
   assert.equal(await rowFor(ctx, a.pid), undefined, 'the crashed row is superseded');
   assert.equal(fm.launchJournal.has(a.pid), false, 'a same-instance restart releases journal lifetime bookkeeping');
   assert.ok(notices.some((line) => /exited with code 1 — restarting in 1s \(FencedWork attempt 1/.test(line)), JSON.stringify(notices));
