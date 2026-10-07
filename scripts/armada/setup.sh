@@ -10,6 +10,8 @@
 # the workstation's node 22 and bun 1.4.0 (the version .github/workflows
 # pins), ahead of the base image's node on PATH.
 set -eu
+# root's PATH: armada runs setup under its tasks' PATH, which lacks sbin.
+export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 NODE_VERSION=22.22.3
 BUN_VERSION=1.4.0
 export DEBIAN_FRONTEND=noninteractive
