@@ -151,12 +151,18 @@ export interface PrefetchResult {
   /** A dependency closure's `import()` deferrals, which it does not walk: phase 2's queue order. */
   deferred?: DeferredImport[];
   /**
-   * What each staged module loads: its static dependencies, and in phase 2
-   * the \`import()\` targets it defers, each by the file it resolved to. The
-   * planner reads ancestry from it (which modules an \`import()\` of a
-   * target evaluates).
+   * What each staged module loads statically, each by the file it resolved
+   * to: what evaluating it evaluates. The planner reads ancestry from it
+   * (which modules an \`import()\` of a target evaluates); an \`import()\` a
+   * module only defers is not an edge, since importing the module does not
+   * evaluate the target.
    */
   edges?: ReadonlyMap<string, readonly string[]>;
+  /**
+   * The optional learned roots that landed (RequiredModuleRoot.optional),
+   * each with every cell it staged: one unit, kept or evicted whole.
+   */
+  units?: ReadonlyArray<{ root: string; members: readonly string[] }>;
 }
 
 /** An `import()` a module defers, and how many its module defers (phase 2's order). */
@@ -166,8 +172,6 @@ export interface DeferredImport {
   alternatives: number;
   /** The file, when the walk resolved it already (a tool config and what it names). */
   path?: string;
-  /** The module that defers it (PrefetchResult.edges). */
-  from?: string;
 }
 
 /**
@@ -289,6 +293,8 @@ export async function prefetchForRequire(
   // The phase-2 unit staged whole or not at all (an optional learned root):
   // what it staged, and whether the bound cut its closure.
   let unit: { staged: Array<[string, number]>; cut: boolean } | null = null;
+  /** The optional learned roots that landed, each with what it staged (PrefetchResult.units). */
+  const units: Array<{ root: string; members: string[] }> = [];
 
   function fits(path: string, bytes: number): boolean {
     if (!policy || policy.held[path] !== undefined) return true;
@@ -352,11 +358,11 @@ export async function prefetchForRequire(
   // that defers hundreds (Shiki's grammar table, one `import()` per language)
   // loads the few its input names. Walking a table first spent the bound on
   // grammars the program never loads, and cut the deferral it does.
-  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string; from?: string }>>();
-  function defer({ specifier, fromDir, alternatives, path, from }: DeferredImport): void {
+  const deferredDynamic = new Map<number, Array<{ specifier: string; fromDir: string; path?: string }>>();
+  function defer({ specifier, fromDir, alternatives, path }: DeferredImport): void {
     let queue = deferredDynamic.get(alternatives);
     if (queue === undefined) deferredDynamic.set(alternatives, queue = []);
-    queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}), ...(from !== undefined ? { from } : {}) });
+    queue.push({ specifier, fromDir, ...(path !== undefined ? { path } : {}) });
   }
   function nextDeferred(): DeferredImport | undefined {
     let fewest = Infinity;
@@ -557,12 +563,9 @@ export async function prefetchForRequire(
       if (!entry) { deferrals.add(specifier); continue; }
       const resolved = (await resolveDynamicImport(specifier, fromDir));
       if (closureExceeded) break;
-      if (resolved) {
-        edge(fromFile, resolved);
-        await addFile(resolved);
-      }
+      if (resolved) await addFile(resolved);
     }
-    for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size, ...(fromFile !== undefined ? { from: fromFile } : {}) });
+    for (const specifier of deferrals) defer({ specifier, fromDir, alternatives: deferrals.size });
   }
 
   // A dynamic `import()` loads what Node's ESM resolver names (the process's
@@ -672,21 +675,32 @@ export async function prefetchForRequire(
     for (let next = nextDeferred(); next !== undefined && bytesSeen < maxBundleBytes; next = nextDeferred()) {
       const resolved = next.path ?? await resolveDynamicImport(next.specifier, next.fromDir);
       if (!resolved) continue;
-      edge(next.from, resolved);
       // An optional learned root is staged whole or not at all: a module in
       // the map without what it imports fails where the module's late load
       // would have worked.
+      // What it cut is taken back with its traversal: the paths it visited
+      // and the deferrals it queued, so a root after it that shares a
+      // dependency walks that dependency again rather than skipping it.
       unit = optionalRoots.has(resolved) ? { staged: [], cut: false } : null;
+      const visitedBefore = visited.size;
+      const queuedBefore = new Map([...deferredDynamic].map(([alternatives, queue]) => [alternatives, queue.length]));
       try { await addFile(resolved); } finally {
         if (unit?.cut) {
           for (const [path, size] of unit.staged) { delete bundle[path]; speculative.delete(path); bytesSeen -= size; }
+          let at = 0;
+          const walked: string[] = [];
+          for (const path of visited) if (at++ >= visitedBefore) walked.push(path);
+          for (const path of walked) visited.delete(path);
+          for (const [alternatives, queue] of deferredDynamic) queue.length = queuedBefore.get(alternatives) ?? 0;
+        } else if (unit !== null && unit.staged.length > 0) {
+          units.push({ root: resolved, members: unit.staged.map(([path]) => path) });
         }
         unit = null;
       }
       if (configRoots.has(resolved) && typeof bundle[resolved] === 'string') await deferConfigNames(resolved);
     }
 
-    return { bundle, speculative, entryPaths, edges };
+    return { bundle, speculative, entryPaths, edges, ...(units.length > 0 ? { units } : {}) };
   }
   try { return await walk(); }
   catch (error) {
