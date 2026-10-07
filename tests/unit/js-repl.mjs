@@ -63,6 +63,17 @@ const LINES = [
   // A function in a block is hoisted within it, and is a global after (Annex B).
   'if (true) { var viaBlock = blockFn(); function blockFn() { return 1 } } viaBlock',
   'blockFn()',
+  // ... without a binding of the line's own for a later assignment to miss.
+  'if (true) { function bf() { return 1 } } bf = () => 2',
+  'bf()',
+  'if (true) function direct() { return "d" }; 0',
+  'direct()',
+  'switch (1) { case 1: function sf() { return "s" } }; 0',
+  'sf()',
+  '{ function twice() { return 1 } function twice() { return 2 } }; 0',
+  'twice()',
+  // In strict code a function in a block is the block's alone.
+  '"use strict"; { function strictBlock() {} } typeof strictBlock',
   "class C { m() { return 'm' } }",
   'new C().m()',
   '{ a: 1 }',

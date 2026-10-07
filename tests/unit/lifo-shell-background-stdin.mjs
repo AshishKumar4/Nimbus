@@ -1,10 +1,12 @@
 #!/usr/bin/env bun
-// A job started with `&` does not read the terminal: its stdin, before any
-// redirection of its own, is the empty file /dev/null, as POSIX has an
-// asynchronous list's stdin (bash's for a job of a shell without job
+// A job started with `&` does not read the terminal by default: its stdin,
+// before any redirection of its own, is the empty file /dev/null, as POSIX
+// has an asynchronous list's stdin (bash's for a job of a shell without job
 // control). So only the foreground job owns the terminal and its modes: a
 // background REPL (`node &`) that turned the terminal's signal keys off
-// used to take the Ctrl-C meant for the foreground job.
+// used to take the Ctrl-C meant for the foreground job. It keeps its
+// controlling terminal, though: `cmd < /dev/tty &` reads it and
+// `echo hi > /dev/tty &` writes it, as in bash.
 //
 // Each case starts `probe &` beside a foreground job: probe records what it
 // was given for stdin and, given the terminal, turns its signal keys off as
@@ -17,7 +19,7 @@ import { memoryFiles } from './lib/test-box.mjs';
 
 const settle = () => new Promise((resolve) => setTimeout(resolve, 20));
 
-function makeShell() {
+function makeShell(written = []) {
   const { files: vfs, root } = memoryFiles();
   root.mkdir('home/user', { recursive: true });
   root.writeFile('home/user/in.txt', 'from the file\n');
@@ -35,7 +37,7 @@ function makeShell() {
     ctx.signal.addEventListener('abort', () => resolve(130), { once: true });
   }));
   const shell = new Shell(
-    { write() {}, writeln() {}, onData() {}, cols: 80, rows: 24, focus() {}, clear() {} },
+    { write(text) { written.push(text); }, writeln(text) { written.push(`${text}\n`); }, onData() {}, cols: 80, rows: 24, focus() {}, clear() {} },
     vfs,
     registry,
     { HOME: '/home/user', USER: 'user', HOSTNAME: 'nimbus' },
@@ -63,6 +65,26 @@ function makeShell() {
   await shell.executeLine('probe < in.txt &');
   await settle();
   assert.equal(seen[0].read, 'from the file\n', 'a redirection of the job is its stdin');
+}
+
+// ── an explicit /dev/tty is the controlling terminal, read and written ─────
+{
+  const written = [];
+  const { shell, seen } = makeShell(written);
+  const line = shell.executeLine('probe < /dev/tty & fg-job');
+  await settle();
+  shell.handleInput('typed');
+  shell.handleInput('\r');
+  await settle();
+  assert.equal(seen[0].read, 'typed\n', 'the background job reads /dev/tty');
+  assert.equal(seen[0].terminal, false, 'it does not own the terminal');
+  shell.handleInput('\x03');
+  await line;
+  assert.equal(shell.running, false, 'Ctrl-C still reaches the foreground job');
+  await shell.executeLine('echo hi > /dev/tty &');
+  await settle();
+  assert.match(written.join(''), /hi\r?\n/, 'the background job writes /dev/tty');
+  assert.doesNotMatch(written.join(''), /no controlling terminal/);
 }
 
 // ── a foreground job still has the terminal ────────────────────────────────

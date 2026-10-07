@@ -140,8 +140,9 @@ Nimbus already has a real base:
   top-level `await`, `import()` from the working directory, Ctrl-C and the
   `.break`, `.clear`, `.exit` and `.help` commands follow Node's REPL.
   `.editor`, `.load`, `.save`, tab completion, history and preview are not
-  supported; a `const` stays assignable, and redeclaring a `let` does not
-  throw.
+  supported; a `const` stays assignable, redeclaring a `let` does not
+  throw, and a line ending in a statement other than an expression prints
+  `undefined`, not the statement's completion value.
 - Real Request/Response preview routing through `PortRegistry` without JSON
   serialization. Some current runtime adapters still buffer internally; the
   final socket/preview adapters should stream end to end.
