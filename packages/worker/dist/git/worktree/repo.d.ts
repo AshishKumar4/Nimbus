@@ -2,10 +2,11 @@
  * git/worktree/repo.ts — one repository as the worktree commands see it:
  * its object store, its worktree, its exclude rules and its index file.
  *
- * Objects go through cf-git (loose objects) and the ranged pack store the
- * repository's filesystem carries, and a command that writes many (add's
- * blobs) writes them in the shared wave writer's waves, straight into the
- * engine (objectWriter); the worktree through the command's view of the
+ * Objects are read through cf-git (loose objects) and the ranged pack store
+ * the repository's filesystem carries, and written as git writes a loose
+ * object, by one flow (objectWriter): one at a time, or for a command that
+ * writes many (add's blobs) in the shared wave writer's waves, straight into
+ * the engine. The worktree goes through the command's view of the
  * namespace. Configuration is cf-git's reading of .git/config, and for
  * core.excludesFile the global files git reads as well.
  */
@@ -28,13 +29,6 @@ export interface RepoGit {
         type: string;
         object: unknown;
     }>;
-    writeObject(args: {
-        fs: unknown;
-        dir: string;
-        type: 'blob' | 'tree' | 'commit';
-        object: Uint8Array;
-        format: 'content';
-    }): Promise<string>;
     getConfig(args: {
         fs: unknown;
         dir?: string;
@@ -63,7 +57,7 @@ export interface ObjectEngine {
     key(path: string): Promise<string | null>;
     writeStream(stream: ReadableStream<Uint8Array>): Promise<WriteBatchStreamResult>;
 }
-/** Objects written by one command, in waves: each `write`'s object is there once `flush` has settled. */
+/** Objects written by one command: each `write`'s object is there once `flush` has settled. */
 export interface ObjectWriter {
     write(type: 'blob' | 'tree' | 'commit', data: Uint8Array): Promise<string>;
     flush(): Promise<void>;
@@ -88,17 +82,27 @@ export declare class WorktreeRepo {
     /** `root` the worktree's top and `gitdir` its git directory, both absolute; `env` the command's. */
     constructor(vfs: ProjectFs, git: RepoGit, gitFs: GitFs, root: string, gitdir: string, env: Record<string, string>, counters?: WalkCounters, engine?: ObjectEngine | null);
     /**
-     * A writer for the many objects one command writes (add's blobs): each is
-     * hashed and, when the repository lacks it, deflated (git's loose
-     * compression) and written as its loose object in the shared wave
-     * writer's waves, straight into the engine: no write, existence check or
-     * directory walk an object (as cf-git's took: 17 lookups and a write a
-     * file, half of add -A's time at Linux's size). `flush` publishes what is
-     * buffered: call it before writing what names the objects (the index). A
-     * repository on a mount, which the waves cannot reach, has each object
-     * written alone (store.write).
+     * The one flow every object is written by: hashed, and, when the
+     * repository lacks it (and `sink` holds it back for no wave), its loose
+     * bytes put into `sink`.
+     */
+    private writeObject;
+    /** Each object written as it comes, through the command's view (which follows links into mounts). */
+    private singleSink;
+    /**
+     * A writer for the many objects one command writes (add's blobs): in the
+     * shared wave writer's waves, straight into the engine, with no write,
+     * existence check or directory walk an object (as cf-git's took: 17
+     * lookups and a write a file, half of add -A's time at Linux's size).
+     * `flush` publishes what is buffered: call it before writing what names
+     * the objects (the index). An object put but not yet published is not put
+     * again. The waves go to the objects directory where it really is (a
+     * linked .git or objects resolved), and publish nothing above it; one
+     * holding a link of its own, or on a mount the waves cannot reach, has
+     * its objects written one at a time.
      */
     objectWriter(): Promise<ObjectWriter>;
+    private waveSink;
     config(path: string): Promise<unknown>;
     /** The worktree with the settings its comparisons take. */
     worktree(): Promise<Worktree>;
