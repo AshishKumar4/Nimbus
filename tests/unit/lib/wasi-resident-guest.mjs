@@ -21,6 +21,7 @@ import { FILESYSTEM_RPC_METHODS } from '../../../packages/core/src/runtime/vfs-s
 import { CRED_KERNEL } from '../../../packages/core/src/runtime/os-contracts.ts';
 import { SessionProcessSupervisor } from '../../../packages/core/src/runtime/session-process-supervisor.ts';
 import { createSupervisorBridgeStore, createSupervisorOpHandler } from '../../../packages/core/src/workspace/supervisor-op.ts';
+import { SupervisorDeliveries } from '../../../packages/core/src/workspace/supervisor-delivery.ts';
 import { createSqliteVfsTestHarness } from './sqlite-vfs-test-harness.mjs';
 import { makeImportsWithoutJSPI } from './wasi-imports.mjs';
 import { acrossRpc } from './rpc-error.mjs';
@@ -48,7 +49,9 @@ export async function residentGuest({ refuse = () => false } = {}) {
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
   const authority = new ProcessFiles(raw);
   const bridge = createSupervisorBridgeStore({ vfs: raw, processes, filesystem: authority });
-  const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {} });
+  // Fenced waves, as a process's binding sends them: a refusal answers its own op.
+  const deliveries = new SupervisorDeliveries();
+  const dispatch = createSupervisorOpHandler({ vfs: raw, filesystem: authority, processes, bridge, host: {}, deliveries });
   const own = authority.bind({ pid, cred: USER });
   const refusedHandles = new Set();
   const supervisor = { synchronous: () => { throw new Error('rpc stubs have no synchronous view'); } };
@@ -67,12 +70,17 @@ export async function residentGuest({ refuse = () => false } = {}) {
   }
   // What session/rpc.ts answers itself rather than through the op table.
   supervisor.fsAcquire = async (epoch, cursor, options) => own.acquire(epoch, cursor, options);
-  // The process's waves (its filesystem client's): in process, unfenced, as a session that loses no call.
-  supervisor.openWaveWriter = async () => null;
-  supervisor.retireWaveWriter = async () => {};
-  supervisor.writeBatchStream = async (stream, _fence, owner) => {
-    try { return await dispatch({ op: 'writeBatchStream', args: [], pid, stream, ...(owner === undefined ? {} : { mutationOwner: owner }) }); }
-    catch (error) { throw acrossRpc(error); }
+  // The process's waves (its filesystem client's), fenced as SupervisorRPC fences them.
+  supervisor.openWaveWriter = async () => (await dispatch({ op: 'openWaveWriter', args: [], pid })).writer;
+  supervisor.retireWaveWriter = async (writer) => { await dispatch({ op: 'retireWaveWriter', args: [writer], pid }); };
+  supervisor.writeBatchStream = async (stream, fence, owner) => {
+    try {
+      return await dispatch({
+        op: 'writeBatchStream', args: [], pid, stream,
+        ...(fence === undefined ? {} : { waveFence: { ...fence, hostIncarnation: deliveries.incarnation } }),
+        ...(owner === undefined ? {} : { mutationOwner: owner }),
+      });
+    } catch (error) { throw acrossRpc(error); }
   };
   supervisor.fsList = async (...args) => own.list(...args);
   supervisor.fsReadBatch = async (requests) => {
