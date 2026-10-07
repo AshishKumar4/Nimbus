@@ -6,7 +6,7 @@
 # and the locked install with its postinstall bundles.
 set -eu
 git config --global user.name 'Nimbus CI'
-git config --global user.email ci@nimbus-ci.invalid
+git config --global user.email ci@nimbus.invalid
 git config --global init.defaultBranch main
 curl -fsSL https://raw.githubusercontent.com/leanprover/elan/master/elan-init.sh \
   | sh -s -- -y --no-modify-path --default-toolchain "$(cat lean/lean-toolchain)"

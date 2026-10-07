@@ -109,7 +109,7 @@ export function armadaClient({ dir = process.env.ARMADA_DIR || ARMADA_DIR, repo 
  * keeps a job's spec while the job lives, so a credential put here must be
  * one minted for this run and short-lived. Interrupting the process cancels
  * the job. The commit made for it is held by a ref of its own
- * (refs/nimbus-ci/) until the job is done, so no prune can take it while
+ * (refs/nimbus-armada/) until the job is done, so no prune can take it while
  * armada packs it. Resolves to that commit, each outcome in item order and
  * each task's {out} text (null when it wrote none); throws when the job
  * could not be started.
@@ -134,7 +134,7 @@ export async function mapOnArmada({ repo, sha, files, setup, items, command, env
       { path: joined, bytes: text });
   }
   const commit = overlayCommit(repo, sha, overlay);
-  const ref = `refs/nimbus-ci/${randomUUID()}`;
+  const ref = `refs/nimbus-armada/${randomUUID()}`;
   git(repo, ['update-ref', ref, commit]);
   // An interrupt exits from the cancel handler, past the finally below.
   const dropRef = () => spawnSync('git', ['update-ref', '-d', ref], { cwd: repo });

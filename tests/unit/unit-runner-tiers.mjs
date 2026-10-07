@@ -17,6 +17,7 @@
 //     with a nested runner inside leaves no group behind, and a file that
 //     could not be started is reported as never started.
 import assert from 'node:assert/strict';
+import { spawnSync } from 'node:child_process';
 import { copyFileSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, rmdirSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -185,6 +186,16 @@ try {
     console.log(`  skipped: cgroup isolation (cannot create a group under ${own}: ${error.code})`);
   }
   if (delegated) {
+    // The runner copy starts here directly: launched through runBoundedProcess
+    // from a process that is itself in a case group (armada's task, a CI
+    // case), it would be handed a nested group of its own in place of the
+    // NIMBUS_TEST_CGROUP this block names.
+    const direct = (root, args, env) => {
+      const r = spawnSync(process.execPath, [join(root, 'tests/unit/run-all.mjs'), ...args], {
+        cwd: root, encoding: 'utf8', timeout: 60_000, env: { ...inherited, NIMBUS_UNIT_JOBS: '2', ...env },
+      });
+      return { code: r.status, stdout: r.stdout, stderr: r.stderr };
+    };
     try {
       const cgroupEnv = { NIMBUS_TEST_PID_ISOLATION: '', NIMBUS_TEST_CGROUP: groups, ...odd };
       const sawEnv = join(scratch, 'saw-env.json');
@@ -193,7 +204,7 @@ try {
         'env.mjs': `require('node:fs').writeFileSync(${JSON.stringify(sawEnv)}, JSON.stringify(Object.fromEntries(${JSON.stringify(Object.keys(odd))}.map((k) => [k, process.env[k]]))));\n`,
       });
       const cgReport = join(scratch, 'cgroup.json');
-      const cgRun = await runner(cg, ['--json', cgReport], cgroupEnv);
+      const cgRun = direct(cg, ['--json', cgReport], cgroupEnv);
       assert.equal(cgRun.code, 0, cgRun.stdout);
       const cgJson = JSON.parse(readFileSync(cgReport, 'utf8'));
       assert.equal(cgJson.isolation, 'cgroup');
@@ -207,14 +218,14 @@ try {
       const nested = tree('nested', {
         'outer.mjs': `require('node:child_process').spawnSync(process.execPath, [${JSON.stringify(join(inner, 'tests/unit/run-all.mjs'))}], { stdio: 'inherit' });\n`,
       });
-      const killed = await runner(nested, ['--timeout', '3000'], cgroupEnv);
+      const killed = direct(nested, ['--timeout', '3000'], cgroupEnv);
       assert.equal(killed.code, 1, killed.stdout);
       assert.match(killed.stdout, /outer\.mjs: file exceeded --timeout 3000ms/);
       assert.deepEqual(readdirSync(groups, { withFileTypes: true }).filter((entry) => entry.isDirectory()).map((entry) => entry.name), [], 'no case group outlives its run');
 
       // No group to create cases in: the file never started, and the
       // report says so apart from a test that failed.
-      const unstartable = await runner(tree('unstartable', { 'any.mjs': pass }), ['--json', cgReport], { ...cgroupEnv, NIMBUS_TEST_CGROUP: join(groups, 'missing') });
+      const unstartable = direct(tree('unstartable', { 'any.mjs': pass }), ['--json', cgReport], { ...cgroupEnv, NIMBUS_TEST_CGROUP: join(groups, 'missing') });
       assert.equal(unstartable.code, 1);
       const refused = JSON.parse(readFileSync(cgReport, 'utf8')).files[0];
       assert.match(refused.launchError, /cgroup isolation unavailable/);
