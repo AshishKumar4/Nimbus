@@ -186,8 +186,11 @@ try {
   const perPack = idxNames.map(idsOf);
   const wanted = [];
   for (let round = 0; round < 40; round++) for (let p = idxNames.length - 1; p >= 0; p--) wanted.push(perPack[p][round]);
+  // Listed once, before the searches race.
+  assert.ok(await concurrent.read(perPack[0][1999]));
+  listings = 0;
   await Promise.all(wanted.map(async (oid) => assert.ok(await concurrent.read(oid), oid)));
-  assert.equal(listings, 1, 'no search missed an object it should have found (each miss re-lists the packs)');
+  assert.equal(listings, 0, 'no search missed an object it should have found (each miss re-lists the packs)');
   for (const [p, ids] of perPack.entries()) assert.equal(await concurrent.has(ids[1000]), true, `pack ${p} is still searched after concurrent promotions`);
   console.log(`  ok  ${wanted.length} concurrent searches across 8 packs: every pack still searched`);
 
