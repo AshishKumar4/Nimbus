@@ -9,8 +9,8 @@
  * decoded for the one release that rolls v4 out: delete it with W7_MAGIC_V3.
  * Fields added to v4 since (each deploys with both ends, so the magic stays):
  * a create call's `umask`; the `open` and `close` calls (a write
- * description's), and a description's `description` on its write, append
- * and ftruncate calls.
+ * description's), an `open`'s `ino`, and a description's `description` on
+ * its write, append and ftruncate calls.
  */
 
 import { crc32 } from './crc32.js';
@@ -144,9 +144,10 @@ export type W7Call =
    * (ELOOP). Its answer is the file's stat. With `description` (an id the
    * process chose), the session keeps the open description under it, its
    * access fixed now; the description's write, append and ftruncate calls
-   * name it, and its `close` ends it.
+   * name it, and its `close` ends it. `ino`: the number a name it makes is
+   * given (a delegation's, as a mkdir's).
    */
-  | { call: 'open'; path: string; mode: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string }
+  | { call: 'open'; path: string; mode: number; ino?: number; umask?: number; read?: true; create?: true; truncate?: true; exclusive?: true; nofollow?: true; description?: string }
   /** close(2) of the session's open description `description` (an `open` call's). */
   | { call: 'close'; path: string; description: string };
 
@@ -1134,13 +1135,14 @@ function parsePathCall(value: Record<string, unknown>, path: (value: unknown, la
     case 'open': {
       const flags = ['create', 'exclusive', 'nofollow', 'read', 'truncate'] as const;
       let required = keys;
-      for (const flag of ['create', 'description', 'exclusive', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
+      for (const flag of ['create', 'description', 'exclusive', 'ino', 'nofollow', 'read', 'truncate', 'umask']) required = required.replace(`,${flag}`, '');
       if (required !== 'call,mode,path') break;
       for (const flag of flags) {
         if (value[flag] !== undefined && value[flag] !== true) throw new Error(`w7-frame: open ${flag} is true or absent`);
       }
       return {
         call: 'open', path: path(value.path, 'open path'), mode: u32(value.mode, 'open mode'),
+        ...(value.ino === undefined ? {} : { ino: inodeNumber(value.ino, 'open ino') }),
         ...(value.umask === undefined ? {} : { umask: umaskOf(value.umask, 'open umask') }),
         ...(value.create === true ? { create: true as const } : {}),
         ...(value.truncate === true ? { truncate: true as const } : {}),

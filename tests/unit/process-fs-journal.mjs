@@ -40,6 +40,7 @@ function session() {
   const s = {
     engine,
     files,
+    harness,
     sql: harness.sql,
     kernel,
     fault: null,
@@ -170,6 +171,53 @@ function mortalPort(s, live = Infinity) {
   assert.ok(cursors(PID) > 0, "another pid's forget took this one's cursors");
   s.engine.forgetSequences(PID);
   assert.equal(cursors(PID), 0, 'its cursors outlived its drain');
+}
+
+// ── Review D (41b-1): a description's write logged after its open was answered lands in the drain ──
+// Its open was answered and forgotten from the log; the write after it was
+// logged and never sent. The drain (in the session, under a fresh scope,
+// and after a restart of the session) writes it through the description
+// the session kept: its file, with the access its open decided, whatever
+// was renamed or chmodded since. Red before: the description lived only in
+// the process's scope, the drain's had none (EBADF), and the write was
+// reported refused and dropped.
+for (const restarted of [false, true]) {
+  const s = session();
+  s.kernel.writeFile('home/user/out/d.txt', enc.encode('old!'));
+  s.kernel.chown('home/user/out/d.txt', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const sql = facetSql();
+  let dead = false;
+  const never = new Promise(() => {});
+  const port = {
+    openWriter: (first) => (dead ? never : s.port.openWriter(first)),
+    writeBatchStream: (stream, fence) => (dead ? never : s.port.writeBatchStream(stream, fence)),
+  };
+  const c = processFsClient({ session: port, journal: sqlJournal(sql), retry: RETRY });
+  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/out/d.txt', mode: 0o644, description: 'w1' } }, { acknowledged: true });
+  assert.equal(sqlJournal(sql).entries().length, 0, 'the answered open stayed in the log');
+  dead = true;
+  c.submit({ type: 'call', call: { call: 'write', path: 'home/user/out/d.txt', description: 'w1', offset: 0, data: enc.encode('new!') } }, { acknowledged: true });
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  assert.equal(sqlJournal(sql).entries().length, 1);
+  // Since its open: renamed, and its mode no longer lets the process write.
+  s.kernel.rename('home/user/out/d.txt', 'home/user/out/moved.txt');
+  s.kernel.chmod('home/user/out/moved.txt', 0o444);
+  let files = s.files;
+  let engine = s.engine;
+  if (restarted) {
+    engine = new SqliteVFS(s.sql, s.harness.ctx);
+    files = new ProcessFiles(engine);
+  }
+  const lease = files.openHost(CRED_SESSION_USER);
+  const drained = await drainProcessFsJournal({ journal: journalSource(sqlJournal(sql)), session: journalDrainSession(lease.fs, PID), retry: RETRY });
+  await lease.dispose();
+  assert.deepEqual(drained.failures, [], `${restarted ? 'after a restart, ' : ''}the drain refused a write its description allows`);
+  assert.equal(drained.landed, 1);
+  assert.equal(dec.decode(engine.as(CRED_KERNEL).readFile('home/user/out/moved.txt')), 'new!', 'the drained write did not land on its description\'s file');
+  const kept = () => [...s.sql.exec('SELECT id FROM vfs_wave_descriptions WHERE pid = ?', PID)].length;
+  assert.equal(kept(), 1);
+  engine.forgetSequences(PID);
+  assert.equal(kept(), 0, 'what the session kept of its descriptions outlived the process');
 }
 
 // ── The effect gate: an effect waits for every change ahead of it to be answered, durable log or not ──

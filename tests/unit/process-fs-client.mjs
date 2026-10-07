@@ -149,6 +149,32 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(c.stats().resends, 1);
 }
 
+// ── Review D (41b-4): an open whose answer was lost is answered again, with its descriptor ──
+// Red before: the cursor skipped the re-sent open and nothing answered it,
+// so the client had no descriptor (the holder's openThrough: EIO) and the
+// description stayed open with nothing able to close it.
+{
+  const s = session();
+  const c = client(s);
+  s.kernel.writeFile('home/user/o.txt', enc.encode('before'));
+  s.kernel.chown('home/user/o.txt', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  let lost = 1;
+  let first = null;
+  s.fault = async (deliver) => {
+    const answer = await deliver();
+    if (lost-- > 0) { first = answer; throw Object.assign(new Error('Network connection lost.'), { retryable: true }); }
+    return answer;
+  };
+  const opened = await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/o.txt', mode: 0o644, read: true, description: 'r1' } });
+  assert.equal(c.stats().resends, 1);
+  const handle = first?.receipts?.[0]?.handle;
+  assert.equal(typeof handle, 'number', 'the lost answer carried no descriptor');
+  assert.equal(opened.receipt?.handle, handle, 'the re-sent open was not answered with its descriptor');
+  assert.equal(dec.decode(await s.op({ op: 'fsRead', args: [handle, 0, 6], pid: PID })), 'before');
+  await c.submit({ type: 'call', call: { call: 'close', path: 'home/user/o.txt', description: 'r1' } });
+  await assert.rejects(async () => s.op({ op: 'fsRead', args: [handle, 0, 6], pid: PID }), (error) => error.code === 'EBADF', 'the close left its descriptor open');
+}
+
 // ── A refusal answers its op; the log goes on; an acknowledged one is reported ──
 {
   const s = session();

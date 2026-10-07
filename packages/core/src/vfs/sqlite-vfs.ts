@@ -127,7 +127,7 @@ const RETIRED_STORE_TABLES = [
 export const STORE_TABLES = [
   'vfs_state', 'vfs_inodes', 'vfs_chunks',
   'vfs_contents', 'vfs_content_chunks', 'vfs_inode_history', 'vfs_tombstones', 'vfs_cold_trash',
-  'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs', 'vfs_wave_cursors',
+  'vfs_gc_queue', 'vfs_snapshots', 'vfs_jobs', 'vfs_wave_cursors', 'vfs_wave_descriptions',
 ] as const;
 /** The root directory has no row; this is what it is. */
 export const ROOT_DIRECTORY_MODE = 0o40755;
@@ -543,6 +543,8 @@ export interface WaveSequence {
   writer: string;
   first: number;
   ack: number;
+  /** The process whose writer it is: what the session keeps of the process (its waves' open descriptions) is kept under it. */
+  pid: number;
 }
 
 /**
@@ -711,11 +713,27 @@ export interface WriteStreamOptions {
  * lives until its last close.
  */
 export interface WaveDescriptions {
-  /** Open the file at `path` under `id`, its access checked now; the session's descriptor of it. */
-  open(path: string, rights: { read: boolean; write: boolean }, id: string, cred: VfsCred): number;
+  /**
+   * Open `id`, a description of the file `ino` numbers with `rights`, its
+   * access decided already (SqliteVFS.describeInode): the session's
+   * descriptor of it, or null when no file has that number any more.
+   */
+  adopt(id: string, ino: number, rights: { read: boolean; write: boolean }, path: string, cred: VfsCred): number | null;
   /** The description `id` names, or undefined (never opened, or closed). */
   node(id: string): VfsOpenDescription | undefined;
+  /** The session's descriptor of `id`, or undefined. */
+  handle(id: string): number | undefined;
   close(id: string): void;
+}
+
+/**
+ * The descriptions a wave's calls name: its binding's (WaveDescriptions),
+ * and for a process's sequenced wave (`pid`) the ones the session kept for
+ * the process (vfs_wave_descriptions).
+ */
+interface DescribedBy {
+  readonly descriptions: WaveDescriptions | undefined;
+  readonly pid: number | null;
 }
 
 export type WriteBatchStreamFailurePhase = 'decode' | 'stage' | 'validation' | 'publish';
@@ -2229,6 +2247,18 @@ export class SqliteVFS {
         refused_message TEXT,
         touched_at INTEGER NOT NULL
       )`);
+      // Each open description a process's sequenced waves opened (W7Call
+      // open): its file and the access its open decided (4 read, 2 write),
+      // stored with the op's cursor, so a re-sent open and a drain of the
+      // process's log after it is gone find it. Gone with its close or its
+      // process (forgetSequences).
+      this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_wave_descriptions (
+        pid INTEGER NOT NULL,
+        id TEXT NOT NULL,
+        ino INTEGER NOT NULL,
+        rights INTEGER NOT NULL,
+        PRIMARY KEY (pid, id)
+      ) WITHOUT ROWID`);
       this.sql.exec(`CREATE TABLE IF NOT EXISTS vfs_gc_queue (
         kind INTEGER NOT NULL,
         id INTEGER NOT NULL,
@@ -2506,9 +2536,6 @@ export class SqliteVFS {
     holds?: () => ReadonlySet<string>,
   ): VfsOpenDescription {
     const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
-    // Its calls are its opener's: as its principal, and as the delegations its process holds then.
-    const asOpener = <A extends unknown[], R>(call: (...args: A) => R) => (...args: A): R =>
-      this.asOrigin(origin, () => (holds === undefined ? call(...args) : this.withHolds(holds(), () => call(...args))));
     // Opened to write, it revokes a delegation it meets, rather than sharing
     // it; opened by a holder, it recalls none of the holder's own.
     const priorWrite = this.activeWrite;
@@ -2523,10 +2550,51 @@ export class SqliteVFS {
       this.activeHolds = priorHolds;
     }
     if (!resolved.inode) throw vfsKeyError('ENOENT', path);
+    return this.describe(resolved.inode, resolved.path, path, cred, rights, origin, holds);
+  }
+
+  /**
+   * A description of the file `ino` numbers, its access decided already: by
+   * the open that made it (creat(2) of a mode without write still writes),
+   * or by an open a process's wave made and the session kept
+   * (vfs_wave_descriptions). The inode an open description of it holds,
+   * else the one a name has; null once neither does (an unlinked file whose
+   * last description closed: its bytes went with it). `path` names it in
+   * errors.
+   */
+  describeInode(
+    ino: number,
+    path: string,
+    cred: VfsCred,
+    rights: { read: boolean; write: boolean },
+    principal?: Principal,
+    holds?: () => ReadonlySet<string>,
+  ): VfsOpenDescription | null {
+    const origin: Principal = principal ?? this.activeOrigin ?? Object.freeze({ cred });
+    for (const opened of this.openNodes) {
+      if (opened.inode.ino === ino) return this.describe(opened.inode, opened.path, path, cred, rights, origin, holds);
+    }
+    const row = [...this.sql.exec('SELECT path FROM vfs_inodes WHERE ino = ? LIMIT 1', ino)][0];
+    const inode = row === undefined ? undefined : this.inodes.get(String(row.path));
+    return inode === undefined ? null : this.describe(inode, inode.path, path, cred, rights, origin, holds);
+  }
+
+  private describe(
+    inode: INode,
+    key: string | null,
+    path: string,
+    cred: VfsCred,
+    rights: { read: boolean; write: boolean; sync?: boolean },
+    origin: Principal,
+    holds: (() => ReadonlySet<string>) | undefined,
+  ): VfsOpenDescription {
+    // Its calls are its opener's: as its principal, and as the delegations its process holds then.
+    const asOpener = <A extends unknown[], R>(call: (...args: A) => R) => (...args: A): R =>
+      this.asOrigin(origin, () => (holds === undefined ? call(...args) : this.withHolds(holds(), () => call(...args))));
     // Descriptions share the canonical inode object: a second descriptor
     // sees chmod/chown/utimes instantly, and unlink leaves every holder
     // pointing at the same retired inode rather than diverging copies.
-    const opened: OpenedNode = { inode: resolved.inode, path: resolved.path, closed: false };
+    const opened: OpenedNode = { inode, path: key, closed: false };
     this.openNodes.add(opened);
     const live = (): INode => {
       if (opened.closed) throw vfsKeyError('EBADF', path);
@@ -8374,7 +8442,7 @@ export class SqliteVFS {
        */
       placeSync: (kind: 'directory' | 'file' | 'delete', named: string) => string | null | undefined;
       /** The process's open descriptions: a call through one is applied by it, wherever its file is named now. */
-      descriptions: WaveDescriptions | undefined;
+      described: DescribedBy;
       /** A name placed on this filesystem: rechecked right before its commit. */
       placedHere: (kind: 'directory' | 'file' | 'delete', named: string, resolved: string, epoch: number) => void;
       /** The delegations the wave's writer holds: its lookups recall none of them. */
@@ -8454,7 +8522,7 @@ export class SqliteVFS {
       case 'call': {
         const call = record.call;
         // A description's call is the description's: its file is this filesystem's (a mount keeps none).
-        if (call.call === 'close' || ('description' in call && call.description !== undefined && at.descriptions?.node(call.description) !== undefined)) return false;
+        if (call.call === 'close' || ('description' in call && call.description !== undefined && this.isDescribed(at.described, call.description))) return false;
         if (call.call !== 'mkdir') at.routes.clear();
         const placed = await mountOf(
           call.call === 'mkdir' ? 'directory'
@@ -8504,7 +8572,7 @@ export class SqliteVFS {
         return true;
       }
       case 'file-begin': {
-        if (record.inode.description !== undefined && at.descriptions?.node(record.inode.description) !== undefined) return false;
+        if (record.inode.description !== undefined && this.isDescribed(at.described, record.inode.description)) return false;
         const placed = await mountOf('file', record.inode.path);
         if (placed === null) return false;
         if (record.inode.kind === 'symlink') at.routes.clear();
@@ -8640,13 +8708,14 @@ export class SqliteVFS {
     file: { path: string; call: W7DataCall; mode: number; ino?: number; offset?: number; umask?: number; description?: string },
     bytes: Uint8Array,
     caller: VfsCred,
-    descriptions: WaveDescriptions | undefined,
+    described: DescribedBy,
   ): VfsStat | null {
     // The umask the process made the call under, when it says (W7Call umask).
     const cred = withUmask(caller, file.umask);
     // Through an open description: its file, by its inode, as its open authorized it.
     if (file.description !== undefined && (file.call === 'write' || file.call === 'append')) {
-      const node = this.describedBy(descriptions, file.description, file.path);
+      const node = this.describedBy(described, file.description, file.path, cred);
+      if (node === null) return null;
       node.write(file.call === 'write' ? file.offset! : node.end?.() ?? node.stat().size, bytes);
       return node.stat();
     }
@@ -8680,7 +8749,7 @@ export class SqliteVFS {
    * write permission; a name made empty with `mode` less the call's umask, or
    * an existing file emptied when `truncate`. Its answer is the file's stat.
    */
-  private openToWrite(call: Extract<W7PathCall, { call: 'open' }>, caller: VfsCred, descriptions: WaveDescriptions | undefined): VfsStat {
+  private openToWrite(call: Extract<W7PathCall, { call: 'open' }>, caller: VfsCred, described: DescribedBy): VfsStat {
     const cred = withUmask(caller, call.umask);
     const follow = call.nofollow !== true;
     const name = this.checkAccess(call.path, 0, cred, { followLeaf: false, allowMissingLeaf: true }).inode;
@@ -8690,7 +8759,7 @@ export class SqliteVFS {
     if (there === undefined && call.create !== true) throw vfsError('ENOENT', call.path);
     if (there?.kind === 'directory') throw vfsError('EISDIR', call.path);
     if (there === undefined) {
-      this.writeFile(call.path, new Uint8Array(0), { mode: call.mode }, cred);
+      this.writeFile(call.path, new Uint8Array(0), { mode: call.mode, ...(call.ino === undefined ? {} : { ino: call.ino }) }, cred);
     } else {
       // Every access asked, decided now: an O_RDWR of a write-only file is EACCES here, not at its first read.
       this.checkAccess(call.path, (call.read === true ? 4 : 0) | 2, cred);
@@ -8698,16 +8767,75 @@ export class SqliteVFS {
     }
     const stat = this.stat(call.path, cred, true);
     if (call.description === undefined) return stat;
-    if (descriptions === undefined) throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
-    const handle = descriptions.open(call.path, { read: call.read === true, write: true }, call.description, cred);
+    if (described.descriptions === undefined) throw vfsError('ENOTSUP', call.path, 'no binding keeps open descriptions for this wave');
+    // Its access, decided above: the open that made the file writes it whatever its mode, as creat(2) does.
+    const rights = { read: call.read === true, write: true };
+    const handle = described.descriptions.adopt(call.description, stat.ino, rights, call.path, cred);
+    if (handle === null) throw vfsError('ENOENT', call.path);
+    // Kept with the op's cursor, in its transaction: a re-sent open, or a drain of the process's log, finds it.
+    if (described.pid !== null) {
+      this.sql.exec(
+        'INSERT OR REPLACE INTO vfs_wave_descriptions (pid, id, ino, rights) VALUES (?, ?, ?, ?)',
+        described.pid, call.description, stat.ino, (rights.read ? 4 : 0) | 2,
+      );
+    }
     return Object.assign(stat, { handle });
   }
 
-  /** The open description a process's call names (W7Call description): EBADF when none is open under it. */
-  private describedBy(descriptions: WaveDescriptions | undefined, id: string, path: string): VfsOpenDescription {
-    const node = descriptions?.node(id);
+  /**
+   * The open description a process's call names (W7Call description): its
+   * binding's; else, for a process's sequenced wave, the one the session
+   * kept for it (vfs_wave_descriptions), adopted into the binding with the
+   * access its open decided (the session restarted since, or the process is
+   * gone and its log is drained). Null when no file has its inode any more;
+   * undefined when none is open under `id`.
+   */
+  private described(by: DescribedBy, id: string, path: string, cred: VfsCred): VfsOpenDescription | null | undefined {
+    const live = by.descriptions?.node(id);
+    if (live !== undefined || by.descriptions === undefined || by.pid === null) return live;
+    const kept = [...this.sql.exec('SELECT ino, rights FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id)][0];
+    if (kept === undefined) return undefined;
+    const rights = Number(kept.rights);
+    const handle = by.descriptions.adopt(id, Number(kept.ino), { read: (rights & 4) !== 0, write: (rights & 2) !== 0 }, path, cred);
+    return handle === null ? null : by.descriptions.node(id);
+  }
+
+  /** Whether `id` names an open description of the wave's process (described): its file is this filesystem's. */
+  private isDescribed(by: DescribedBy, id: string): boolean {
+    if (by.descriptions === undefined) return false;
+    if (by.descriptions.node(id) !== undefined) return true;
+    return by.pid !== null && [...this.sql.exec('SELECT 1 FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id)].length > 0;
+  }
+
+  /** The open description a process's call names (described): EBADF when none is open under it; null when its file is gone. */
+  private describedBy(by: DescribedBy, id: string, path: string, cred: VfsCred): VfsOpenDescription | null {
+    const node = this.described(by, id, path, cred);
     if (node === undefined) throw vfsError('EBADF', path, `no open description '${id}'`);
     return node;
+  }
+
+  /** A W7 `close`: the description goes, and what the session kept of it. */
+  private closeDescribed(by: DescribedBy, id: string): void {
+    by.descriptions?.close(id);
+    if (by.pid !== null) this.sql.exec('DELETE FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id);
+  }
+
+  /**
+   * A re-sent `open` the writer's cursor passed: its answer again, as a
+   * receipt (the description's descriptor and its file's stat), adopted
+   * from what the session kept when the binding has it no more. Null when
+   * it is closed since, or its file is gone.
+   */
+  private reopened(by: DescribedBy, call: Extract<W7PathCall, { call: 'open' }>, cred: VfsCred): WriteStreamReceipt | null {
+    const node = this.described(by, call.description!, call.path, cred);
+    if (node === null || node === undefined) return null;
+    const stat = node.stat();
+    const handle = by.descriptions!.handle(call.description!);
+    return {
+      path: call.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
+      uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this.revision(call.path, cred),
+      ...(handle === undefined ? {} : { handle }),
+    };
   }
 
   /**
@@ -8725,11 +8853,13 @@ export class SqliteVFS {
 
   /**
    * Process `pid` is over and its write log drained: its writers' cursors
-   * (`${pid}:${writer}`, processWaveSequence) go. They live exactly that long, so
+   * (`${pid}:${writer}`, processWaveSequence) go, and the open descriptions
+   * the session kept for it (vfs_wave_descriptions). They live exactly that long, so
    * a drain after a restart still finds them, and nothing else keeps them.
    */
   forgetSequences(pid: number): void {
     this.sql.exec("DELETE FROM vfs_wave_cursors WHERE writer >= ? AND writer < ?", `${pid}:`, `${pid};`);
+    this.sql.exec('DELETE FROM vfs_wave_descriptions WHERE pid = ?', pid);
   }
 
   /** The op numbered `seq` committed: in its own transaction, the writer's cursor moves to it. */
@@ -8875,6 +9005,8 @@ export class SqliteVFS {
       placedHere[kind].set(named, { resolved: path, epoch });
       return null;
     };
+    // The descriptions its calls name: its binding's, and what the session kept of its process's.
+    const described: DescribedBy = { descriptions: options.descriptions, pid: options.sequence?.pid ?? null };
     /**
      * A record that lands on this filesystem, decided without an await: a
      * file (not a link) or directory placed here by placeSync, a chunk or end
@@ -8890,7 +9022,7 @@ export class SqliteVFS {
           return true;
         case 'file-begin':
           // A description's write is its file's, wherever that is named now.
-          if (record.inode.description !== undefined && options.descriptions?.node(record.inode.description) !== undefined) return true;
+          if (record.inode.description !== undefined && this.isDescribed(described, record.inode.description)) return true;
           return record.inode.kind !== 'symlink' && placeSync('file', record.inode.path) === null;
         case 'directory':
           return placeSync('directory', record.inode.path) === null;
@@ -9425,6 +9557,12 @@ export class SqliteVFS {
             const seq = sequence.spec.first + recordIndex;
             if (seq <= sequence.cursor) {
               if (record.type === 'file-begin') skipping = record.streamContentId;
+              // An open the cursor passed is answered again as it was (its
+              // reply was lost): its description's descriptor and file.
+              else if (record.type === 'call' && record.call.call === 'open' && record.call.description !== undefined) {
+                const receipt = this.withHolds(holds, () => this.reopened(described, record.call as Extract<W7PathCall, { call: 'open' }>, cred));
+                if (receipt !== null) progress.receipts.push(receipt);
+              }
               continue;
             }
             applying = seq;
@@ -9439,7 +9577,7 @@ export class SqliteVFS {
           holds,
           view: viewEpoch,
           placeSync,
-          descriptions: options.descriptions,
+          described,
           placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
           signal: options.signal,
           reach: options.mountReach,
@@ -9524,7 +9662,7 @@ export class SqliteVFS {
           const lease = file.credit.lease;
           queueCall(file.path, () => {
             try {
-              return this.applyDataCall(file, bytes, cred, options.descriptions);
+              return this.applyDataCall(file, bytes, cred, described);
             } finally {
               if (lease !== null && callLeases.delete(lease)) lease.release();
             }
@@ -9727,7 +9865,7 @@ export class SqliteVFS {
                 else if (call.call === 'rmdir') this.rmdir(call.path, cred);
                 else if (call.call === 'ftruncate') {
                   // Through its description when it names one: authorized at its open.
-                  if (call.description !== undefined) this.describedBy(options.descriptions, call.description, call.path).truncate(call.size);
+                  if (call.description !== undefined) this.describedBy(described, call.description, call.path, cred)?.truncate(call.size);
                   else {
                     const at = this.describedFile(call.path, call.ino, cred);
                     if (at !== null) this.truncate(at, call.size, cred);
@@ -9744,9 +9882,9 @@ export class SqliteVFS {
                 }
                 else if (call.call === 'lchown') this.chown(call.path, call.uid, call.gid, cred, false);
                 else if (call.call === 'lutimes') this.utimes(call.path, call.atime, call.mtime, cred, false);
-                else if (call.call === 'open') return this.openToWrite(call, cred, options.descriptions);
+                else if (call.call === 'open') return this.openToWrite(call, cred, described);
                 // Closing a description already gone (a mount's open keeps none) closes nothing.
-                else if (call.call === 'close') options.descriptions?.close(call.description);
+                else if (call.call === 'close') this.closeDescribed(described, call.description);
                 else this.symlink(call.target, call.path, cred, call.ino);
               }, { alone: call.call !== 'mkdir', receipt: call.call === 'open' });
               break;
