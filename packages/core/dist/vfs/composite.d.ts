@@ -340,6 +340,21 @@ export declare class CompositeVFS implements VFS {
         follow?: boolean;
     }): Promise<VfsRoute>;
     /**
+     * Where a mutation of `path` lands: the namespace path its lookup resolves
+     * (links on the way followed, the last only with `follow`), the mount
+     * point it is on ('/' for the root), and whether that mount is read-only.
+     * The lookup is the mutations' own (onMutation's), so a writer that asks
+     * before it writes lands where the operation would. Rejects as that
+     * lookup does: ENOENT, ENOTDIR, EACCES, ELOOP, ENXIO.
+     */
+    mutationRoute(path: string, options?: {
+        follow?: boolean;
+    }): Promise<{
+        readonly path: string;
+        readonly point: string;
+        readonly readOnly: boolean;
+    }>;
+    /**
      * Whether the namespace answers `path` itself rather than the root
      * backend alone: a path on another mount, a directory above a mount point
      * (whose listing includes the mount's name), or a path under such a

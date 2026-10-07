@@ -225,7 +225,7 @@ export declare function gateSyncLaunch(gate: {
 export declare function launchNamedPaths(cwd: string, program: string | null, argv: readonly string[]): string[];
 /** A live view sharing namespace, credentials and descriptor state. */
 export type RuntimeSynchronousFs = {
-    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
+    [K in Exclude<keyof RuntimeFsBridge, 'synchronous' | 'subscribe' | 'writeStream' | 'writeBatch' | 'writeFileFrom' | 'acquire' | 'copyTree' | 'gateLaunch'>]: RuntimeFsBridge[K] extends (...args: infer A) => infer R ? (...args: A) => Awaited<R> : never;
 };
 /**
  * The path's revision immediately before and after one mutation, read in
@@ -397,12 +397,7 @@ export interface RuntimeFsBridge {
      * later one; it throws to refuse them (a fenced write wave its writer has
      * since re-sent: SupervisorDeliveries.admitWave).
      */
-    writeStream(stream: ReadableStream<Uint8Array>, options?: {
-        signal?: AbortSignal;
-        mutationOwner?: string;
-        decodeDrainStartedAt?: number;
-        admit?: () => void;
-    }): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
+    writeStream(stream: ReadableStream<Uint8Array>, options?: import('../vfs/sqlite-vfs.js').WriteStreamOptions): Promise<import('../vfs/sqlite-vfs.js').WriteBatchStreamResult>;
     acquireExclusiveMutation(path: RuntimeFsPath, options?: {
         includeMissingAncestors?: boolean;
     }): Awaitable<{
