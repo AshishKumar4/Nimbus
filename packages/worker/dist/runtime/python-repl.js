@@ -204,11 +204,11 @@ class PythonReplAdapter {
         };
         const pid = this.deps.pid;
         this.pool = typeof pid === 'number' && pid > 0
-            ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID() }) })
+            ? new IsolatePool(host.env, host.ctx, { ...base, supervisorPid: pid, network: host.network, processSupervisor: supervisorBindingProps(host.ctx, pid, { writerId: crypto.randomUUID(), network: host.network }) })
             // The install-time warm-up has no invoking process. It boots the
             // interpreter and never touches a file, so it asks for no supervisor
             // rather than binding one it cannot authenticate to.
-            : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true });
+            : new IsolatePool(host.env, host.ctx, { ...base, omitSupervisor: true, network: host.network });
     }
     active = null;
     async submit(userCode, signal) {

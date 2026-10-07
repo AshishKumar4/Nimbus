@@ -111,7 +111,7 @@ async function putObjects(puts, persist, work) {
 /**
  * Boot apps/probe on workerd with `runtimes` installable, and `vars` over
  * its config vars (`wrangler dev --var`).
- * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number }>}
+ * @returns {Promise<{ base: string, token: string, stop: () => Promise<void>, log: () => string, pid: number, inspectorBase: string | null }>}
  */
 export async function startLocalProbe({ runtimes = ['bash'], bootTimeoutMs = 180_000, vars = {}, inspector = false } = {}) {
   const work = mkdtempSync(join(tmpdir(), 'workerd-probe-'));
