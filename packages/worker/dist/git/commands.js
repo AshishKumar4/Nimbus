@@ -12,6 +12,7 @@ import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
 import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
+import { generation } from '@nimbus-sh/fabric/generation.js';
 import { cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob } from './clone-job.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
@@ -2860,7 +2861,6 @@ network = ISOLATE_NETWORK) {
                     ctx.stderr.write('[git] clone requires DO ctx + env (internal configuration error)\n');
                     return 1;
                 }
-                progress.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
                 // A clone's closed-world filesystem view is correct only while no
                 // other session surface can mutate its destination subtree. Acquire
                 // the lease before the facet performs its lstat/readdir emptiness
@@ -2874,22 +2874,10 @@ network = ISOLATE_NETWORK) {
                 // A piece of the clone that hung may still write: the facet runner
                 // hands the lease to a new owner before it runs the piece again.
                 let mutationOwner = mutationLease.owner;
-                // The clone's durable record (git/clone-job.ts), under the lease and
-                // before it writes anything: what its cleanup removes, and as whom,
-                // if it fails, or the session restarts before it is done.
-                const job = {
-                    version: 1,
-                    jobId: crypto.randomUUID(),
-                    dir: target,
-                    cred: ctx.cred,
-                    rootExisted: vfs.as(ctx.cred).exists(target),
-                    phase: 'transport',
-                    startedAt: Date.now(),
-                };
-                await writeCloneJob(doCtx.storage, job);
                 // Delegate to git-network-facet: heavy packfile processing runs in
                 // a dynamic worker with its own CPU budget, not the supervisor DO.
-                const doClone = async () => {
+                // It owns the lease from when it is called, and releases it.
+                const doClone = async (job) => {
                     try {
                         let result;
                         try {
@@ -2957,14 +2945,51 @@ network = ISOLATE_NETWORK) {
                         vfs.releaseExclusiveMutation(mutationOwner);
                     }
                 };
-                if (isBg) {
-                    const task = doClone();
-                    doCtx.waitUntil(task);
-                    progress.write('[git] clone running in background...\n');
-                    return 0;
+                // Until doClone owns the lease, this does: a refusal or a failed record releases it.
+                let handedOff = false;
+                try {
+                    // The destination is absent or an empty directory, proven under the
+                    // lease before the record is written: a cleanup removes only what
+                    // the clone made. git's refusal otherwise.
+                    const user = vfs.as(ctx.cred);
+                    const rootExisted = user.exists(target);
+                    if (rootExisted && (user.lstat(target).type !== 'directory' || user.readdir(target).length > 0)) {
+                        await ctx.stderr.write(`fatal: destination path '${destArg || dest.slice(dest.lastIndexOf('/') + 1)}' already exists and is not an empty directory.\n`);
+                        return 128;
+                    }
+                    // The clone's durable record (git/clone-job.ts), under the lease and
+                    // before it writes anything: what its cleanup removes, and as whom,
+                    // if it fails, or the session restarts before it is done.
+                    const job = {
+                        version: 1,
+                        jobId: crypto.randomUUID(),
+                        dir: target,
+                        cred: ctx.cred,
+                        rootExisted,
+                        phase: 'transport',
+                        generation: generation(doCtx),
+                        startedAt: Date.now(),
+                    };
+                    try {
+                        await writeCloneJob(doCtx.storage, job);
+                    }
+                    catch (error) {
+                        await ctx.stderr.write(`fatal: could not record the clone: ${String(error?.message ?? error)}\n`);
+                        return 128;
+                    }
+                    progress.write(`Cloning into '${dest}'...${depth ? ' (shallow, depth=' + depth + ')' : ''}\n`);
+                    const task = doClone(job);
+                    handedOff = true;
+                    if (isBg) {
+                        doCtx.waitUntil(task);
+                        progress.write('[git] clone running in background...\n');
+                        return 0;
+                    }
+                    return (await task) ? 0 : 1;
                 }
-                else {
-                    return (await doClone()) ? 0 : 1;
+                finally {
+                    if (!handedOff)
+                        vfs.releaseExclusiveMutation(mutationOwner);
                 }
             }
             case 'status':

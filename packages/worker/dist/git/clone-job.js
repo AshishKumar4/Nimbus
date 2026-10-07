@@ -22,10 +22,14 @@
  *              temporary packs and the job marker; the repository and what
  *              was checked out stay, as git leaves them ("Clone succeeded,
  *              but checkout failed.")
- * Each slice walks afresh, so a cleanup cut short (a reset) is finished by
- * the next: a session finishes, at start, every record whose clone is not
- * running. A destination whose marker names another job is not the
- * record's to touch: only the record goes.
+ * Each slice walks what is left, so a cleanup cut short (a reset) is
+ * finished by the next generation of the session: it lists the records of
+ * earlier generations before it serves anything, reserves each destination
+ * (its lease) before the filesystem takes a write, and cleans them up in the
+ * background. A destination whose marker names another job is not the
+ * record's to touch: only the record goes. The clone proves its
+ * destination absent or empty before it writes the record, so a cleanup
+ * removes only what the clone made.
  */
 export const CLONE_JOB_PREFIX = 'git-clone-job:';
 /** The marker a clone writes first in its .git (network-facet.ts GIT_CLONE_JOB_MARKER). */
@@ -92,14 +96,15 @@ export async function cleanUpClone(fs, storage, record, options = {}) {
     // far as removing it: only what comes after the marker is left to do.
     if (job !== null) {
         const marker = dir + '/.git/' + MARKER;
-        const targets = record.phase === 'transport'
+        let targets = record.phase === 'transport'
             ? [dir]
             : [dir + '/' + STAGE_DIR, ...tmpPacks(fs, dir)];
         for (;;) {
             const done = removeSlice(fs, targets, marker, record.phase === 'transport' ? dir : null, sliceEntries);
             removed += done.removed;
             slices++;
-            if (done.complete)
+            targets = done.remaining;
+            if (targets.length === 0)
                 break;
             await yieldBetween();
         }
@@ -128,32 +133,48 @@ function removeIfEmpty(fs, path) {
         throw error;
     }
 }
+/** The records of clones an earlier generation of the session ran (than `current`): none of them is running. */
+export async function listInterruptedClones(storage, current) {
+    return (await listCloneJobs(storage)).filter((record) => !(record.generation >= current));
+}
 /**
- * The cleanup of every clone a previous generation of the session left
- * (records from before `generationStartedAt`: no clone of this generation
- * wrote them, so none is running), each under its own lease while it runs.
- * One whose destination another holds the lease on is left for the next
- * generation.
+ * Each record's destination reserved (its lease taken, as the record's
+ * credential), before anything else can write there: the session does this
+ * as its filesystem comes up. One that cannot be reserved (another lease
+ * overlaps it) is left for the next generation.
  */
-export async function finishInterruptedClones(vfs, storage, generationStartedAt) {
-    const outcomes = [];
-    for (const record of await listCloneJobs(storage)) {
-        if (record.startedAt >= generationStartedAt)
-            continue;
-        let owner;
+export function reserveInterruptedClones(vfs, records) {
+    const reserved = [];
+    for (const record of records) {
         try {
-            owner = vfs.as(record.cred).acquireExclusiveMutation(record.dir, { includeMissingAncestors: true }).owner;
+            reserved.push({ record, owner: vfs.as(record.cred).acquireExclusiveMutation(record.dir, { includeMissingAncestors: true }).owner });
         }
         catch {
-            continue;
+            // Left for the next generation.
         }
+    }
+    return reserved;
+}
+/**
+ * The cleanup of each reserved clone, in slices, its lease released when it
+ * is done (or has failed: its record stays for the next generation).
+ */
+export async function finishReservedClones(vfs, storage, reserved, options = {}) {
+    const outcomes = [];
+    let failure = null;
+    for (const { record, owner } of reserved) {
         try {
-            outcomes.push(await cleanUpClone(vfs.as(record.cred, { mutationOwner: owner }), storage, record));
+            outcomes.push(await cleanUpClone(vfs.as(record.cred, { mutationOwner: owner }), storage, record, options));
+        }
+        catch (error) {
+            failure ??= error;
         }
         finally {
             vfs.releaseExclusiveMutation(owner);
         }
     }
+    if (failure !== null)
+        throw failure;
     return outcomes;
 }
 /** The clone's temporary packs, by name. */
@@ -170,13 +191,16 @@ function tmpPacks(fs, dir) {
 /**
  * One slice: up to `limit` removals under `targets` (each a file or a
  * directory taken whole), files before the directories that held them,
- * never `marker`; a target that is `keep` is emptied, not removed. Complete
+ * never `marker`; a target that is `keep` is emptied, not removed. What is
+ * already gone costs nothing. `remaining` is the targets not yet done: none
  * when nothing but the marker (and the kept target) is left.
  */
 function removeSlice(fs, targets, marker, keep, limit) {
     let removed = 0;
     // Depth first: a directory goes once it is empty.
     const visit = (path, type) => {
+        if (type === 'missing')
+            return true;
         if (removed >= limit)
             return false;
         if (type === 'directory') {
@@ -205,29 +229,29 @@ function removeSlice(fs, targets, marker, keep, limit) {
                 return false;
             try {
                 fs.rmdir(path);
+                removed++;
             }
             catch (error) {
                 if (!isAbsent(error))
                     throw error;
             }
-            removed++;
             return true;
         }
         try {
             fs.unlink(path);
+            removed++;
         }
         catch (error) {
             if (!isAbsent(error))
                 throw error;
         }
-        removed++;
         return true;
     };
-    for (const target of targets) {
+    for (const [i, target] of targets.entries()) {
         if (!visit(target, kindOf(fs, target)))
-            return { removed, complete: false };
+            return { removed, remaining: targets.slice(i) };
     }
-    return { removed, complete: true };
+    return { removed, remaining: [] };
 }
 function kindOf(fs, path) {
     const slash = path.lastIndexOf('/');

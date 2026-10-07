@@ -655,8 +655,8 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
     } | null;
     _diagSampleMemory(): void;
     ensureSqliteFs(): SqliteVFS;
-    /** When this generation of the session began: clone records older than it are a previous generation's. */
-    private readonly generationStartedAt;
+    /** The records of clones an earlier generation ran, listed as this one began: reserved when the filesystem comes up. */
+    private interruptedClones;
     /** Track when we last persisted to avoid redundant writes. */
     _w5LastPersistAt: number;
     /** Track ring size at last persist; skip write if unchanged. */

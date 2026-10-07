@@ -22,10 +22,14 @@
  *              temporary packs and the job marker; the repository and what
  *              was checked out stay, as git leaves them ("Clone succeeded,
  *              but checkout failed.")
- * Each slice walks afresh, so a cleanup cut short (a reset) is finished by
- * the next: a session finishes, at start, every record whose clone is not
- * running. A destination whose marker names another job is not the
- * record's to touch: only the record goes.
+ * Each slice walks what is left, so a cleanup cut short (a reset) is
+ * finished by the next generation of the session: it lists the records of
+ * earlier generations before it serves anything, reserves each destination
+ * (its lease) before the filesystem takes a write, and cleans them up in the
+ * background. A destination whose marker names another job is not the
+ * record's to touch: only the record goes. The clone proves its
+ * destination absent or empty before it writes the record, so a cleanup
+ * removes only what the clone made.
  */
 import type { VfsCred } from '@nimbus-sh/core/vfs/vfs.js';
 /** What a clone's job record says. */
@@ -39,6 +43,8 @@ export interface CloneJobRecord {
     /** The destination existed (empty) before the clone: its cleanup keeps it. */
     rootExisted: boolean;
     phase: 'transport' | 'checkout';
+    /** The session's generation (fabric generation.ts) that ran the clone: an earlier one's clone is not running. */
+    generation: number;
     startedAt: number;
 }
 /** The storage the records live in (DurableObjectStorage's async KV). */
@@ -95,12 +101,26 @@ export interface SessionCleanupFs {
     };
     releaseExclusiveMutation(owner: string): void;
 }
+/** The records of clones an earlier generation of the session ran (than `current`): none of them is running. */
+export declare function listInterruptedClones(storage: CloneJobStorage, current: number): Promise<CloneJobRecord[]>;
+/** A clone's record, and the lease its cleanup holds on its destination. */
+export interface ReservedClone {
+    record: CloneJobRecord;
+    owner: string;
+}
 /**
- * The cleanup of every clone a previous generation of the session left
- * (records from before `generationStartedAt`: no clone of this generation
- * wrote them, so none is running), each under its own lease while it runs.
- * One whose destination another holds the lease on is left for the next
- * generation.
+ * Each record's destination reserved (its lease taken, as the record's
+ * credential), before anything else can write there: the session does this
+ * as its filesystem comes up. One that cannot be reserved (another lease
+ * overlaps it) is left for the next generation.
  */
-export declare function finishInterruptedClones(vfs: SessionCleanupFs, storage: CloneJobStorage, generationStartedAt: number): Promise<CleanupOutcome[]>;
+export declare function reserveInterruptedClones(vfs: SessionCleanupFs, records: readonly CloneJobRecord[]): ReservedClone[];
+/**
+ * The cleanup of each reserved clone, in slices, its lease released when it
+ * is done (or has failed: its record stays for the next generation).
+ */
+export declare function finishReservedClones(vfs: SessionCleanupFs, storage: CloneJobStorage, reserved: readonly ReservedClone[], options?: {
+    sliceEntries?: number;
+    yieldBetween?: () => Promise<void>;
+}): Promise<CleanupOutcome[]>;
 //# sourceMappingURL=clone-job.d.ts.map
