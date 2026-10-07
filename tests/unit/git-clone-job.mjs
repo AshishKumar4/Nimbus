@@ -17,6 +17,11 @@
 //     lands and stays), one another lease holds left for later;
 //   - slices of one entry over targets that are partly gone: absent ones
 //     cost nothing, done ones are not walked again, and it ends;
+//   - a generation that cannot list the records (CloneRecovery) serves no
+//     write on a guess: every write is refused, named, nothing is lost, and
+//     once a retry lists them the hold goes, the destinations are reserved
+//     and cleaned up, and writes are served; a listing that keeps failing
+//     keeps the hold;
 //   - as the record's credential: what it may not remove refuses, and the
 //     record stays.
 
@@ -24,7 +29,9 @@ import assert from 'node:assert/strict';
 
 import { CRED_KERNEL, CRED_SESSION_USER } from '../../packages/core/src/runtime/os-contracts.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
-import { cleanUpClone, finishReservedClones, listCloneJobs, listInterruptedClones, reserveInterruptedClones, writeCloneJob } from '../../packages/worker/src/git/clone-job.ts';
+import {
+  CloneRecovery, RECOVERY_FENCE_REASON, cleanUpClone, finishReservedClones, listCloneJobs, listInterruptedClones, reserveInterruptedClones, writeCloneJob,
+} from '../../packages/worker/src/git/clone-job.ts';
 import { memoryStorage } from './lib/do-storage.mjs';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
@@ -185,6 +192,46 @@ const list = (user, dir) => user.readdir(dir).map(({ name }) => name).sort();
   assert.equal(done.slices, 5, `one slice per removal (${JSON.stringify(done)})`);
   assert.deepEqual(list(user, 'home/user/repo/.git/objects/pack'), ['pack-1.idx', 'pack-1.pack'], 'every temporary pack went');
   console.log(`  ok  slices of one entry over targets partly gone: ${done.slices} slices, absent ones free`);
+}
+
+// ── a listing that fails: every write held, named, until a retry lists the records ──
+{
+  const { vfs, user, storage } = session();
+  cloneTree(user, 'home/user/repo', 'job-20');
+  user.writeFile('home/user/notes.txt', 'mine');
+  await writeCloneJob(storage, record('home/user/repo', 'job-20', { generation: 1 }));
+  const list = storage.list;
+  // The three attempts as the session starts fail, and the first background retry; the next succeeds.
+  let failures = 4;
+  storage.list = async (options) => {
+    if (failures-- > 0) throw new Error('storage unavailable');
+    return await list.call(storage, options);
+  };
+  const recovery = new CloneRecovery(storage, 2, { attempts: 3, delayMs: 1, maxDelayMs: 1, backgroundMs: 10_000 });
+  assert.equal(await recovery.discover(), false, 'no listing: discovery says so');
+  const tasks = [];
+  recovery.start(vfs, (task) => tasks.push(task));
+  assert.throws(() => user.writeFile('home/user/new.txt', 'x'),
+    (error) => error?.code === 'EBUSY' && error.message.includes(RECOVERY_FENCE_REASON), 'a public write is refused, named');
+  assert.throws(() => user.unlink('home/user/notes.txt'), (error) => error?.code === 'EBUSY', 'and a removal');
+  assert.equal(user.readFileString('home/user/notes.txt'), 'mine', 'nothing is lost');
+  await Promise.all(tasks);
+  assert.equal(failures, -1, 'the retry listed the records');
+  assert.equal(user.exists('home/user/repo'), false, 'and the cut-short clone was cleaned up');
+  user.writeFile('home/user/new.txt', 'x');
+  assert.equal(user.readFileString('home/user/new.txt'), 'x', 'writes are served again');
+  assert.deepEqual(await listCloneJobs(storage), []);
+
+  // A listing that keeps failing past the background retries: the hold stays.
+  storage.list = async () => { throw new Error('storage unavailable'); };
+  const { vfs: vfs2, user: user2 } = session();
+  const stuck = new CloneRecovery(storage, 3, { attempts: 2, delayMs: 1, maxDelayMs: 1, backgroundMs: 5 });
+  assert.equal(await stuck.discover(), false);
+  const stuckTasks = [];
+  stuck.start(vfs2, (task) => stuckTasks.push(task));
+  await Promise.all(stuckTasks);
+  assert.throws(() => user2.writeFile('home/user/late.txt', 'x'), (error) => error?.code === 'EBUSY', 'still held');
+  console.log('  ok  a listing that fails: every write refused (named), nothing lost; served again once a retry lists the records, held while none does');
 }
 
 // ── as the record's credential ──

@@ -1716,6 +1716,8 @@ export class SqliteVFS {
   }
 
   private readonly exclusiveMutationLeases = new Map<string, string>();
+  /** Why a lease holds what it holds, where its holder said: what a write it refuses is told. */
+  private readonly exclusiveMutationReasons = new Map<string, string>();
   private activeMutationOwner: string | null = null;
 
   /** Shared by every concurrent stream targeting this session's VFS. */
@@ -3660,18 +3662,24 @@ export class SqliteVFS {
     return { root, owner };
   }
 
-  acquireGlobalExclusiveMutation(): ExclusiveMutationLease {
+  /**
+   * Hold the whole session for one owner. `reason`, when given, is what a
+   * write it refuses is told (EBUSY's detail), instead of the lease's root.
+   */
+  acquireGlobalExclusiveMutation(reason?: string): ExclusiveMutationLease {
     this.settleAppends();
     if (this.exclusiveMutationLeases.size > 0) {
       throw vfsError('EBUSY', 'session has an active exclusive filesystem mutation');
     }
     const owner = crypto.randomUUID();
     this.exclusiveMutationLeases.set(owner, '');
+    if (reason !== undefined) this.exclusiveMutationReasons.set(owner, reason);
     return { root: '', owner };
   }
 
   releaseExclusiveMutation(owner: string): void {
     this.exclusiveMutationLeases.delete(owner);
+    this.exclusiveMutationReasons.delete(owner);
   }
 
   /**
@@ -3686,6 +3694,11 @@ export class SqliteVFS {
     this.exclusiveMutationLeases.delete(owner);
     const next = crypto.randomUUID();
     this.exclusiveMutationLeases.set(next, root);
+    const reason = this.exclusiveMutationReasons.get(owner);
+    if (reason !== undefined) {
+      this.exclusiveMutationReasons.delete(owner);
+      this.exclusiveMutationReasons.set(next, reason);
+    }
     return next;
   }
 
@@ -3731,11 +3744,14 @@ export class SqliteVFS {
     if (this.activeMutationOwner === null &&
         normalized === LEGACY_SYMLINK_REGISTRY_PATH &&
         this.exclusiveMutationLeases.size > 0) {
-      return { code: 'EBUSY', detail: 'locked while an exclusive mutation is active' };
+      // A session-wide hold that says why says it here too.
+      const global = [...this.exclusiveMutationLeases].find(([, root]) => root === '');
+      const reason = global === undefined ? undefined : this.exclusiveMutationReasons.get(global[0]);
+      return { code: 'EBUSY', detail: reason ?? 'locked while an exclusive mutation is active' };
     }
     for (const [owner, root] of this.exclusiveMutationLeases) {
       if (!pathsOverlap(normalized, root) || owner === this.activeMutationOwner) continue;
-      return { code: 'EBUSY', detail: `locked by an exclusive mutation at /${root}` };
+      return { code: 'EBUSY', detail: this.exclusiveMutationReasons.get(owner) ?? `locked by an exclusive mutation at /${root}` };
     }
     if (this.activeMutationOwner !== null) {
       const ownedRoot = this.exclusiveMutationLeases.get(this.activeMutationOwner);
