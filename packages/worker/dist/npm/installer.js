@@ -57,7 +57,7 @@ import { PRE_BUNDLE_CONCURRENCY, PRE_BUNDLE_SLICE_CAP_BYTES, } from '@nimbus-sh/
 import { acquireSupervisorAllocation } from '@nimbus-sh/platform/heavy-alloc-coord.js';
 import { countPackageFiles, BARREL_PKG_FILE_THRESHOLD, packageNameFromSpecifier, splitBareSpecifier } from '@nimbus-sh/core/runtime/barrel-detect.js';
 import { packageRangeSeparator, parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
-import { scanProjectImports, transformParser, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, } from '../runtime/barrel-synthesizer.js';
+import { scanProjectImports, transformParser, namedImportSignature, buildSyntheticEntry, buildScopedSliceForSynthetic, syntheticEntryPath, PROJECT_SCAN, } from '../runtime/barrel-synthesizer.js';
 import { enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { createNpmBinManifest, createNpmBinShim, npmBinManifestPath, declaredPackageBins, packageBinEntries, parseNpmBinManifest, } from './bin-links.js';
 // ── NpmInstaller ────────────────────────────────────────────────────────
@@ -1788,7 +1788,16 @@ export class NpmInstaller {
             return existing.bundleHash === await prebundleCacheKey(prebundleRequest(specifier, manifestsOf(existing.sources, read)));
         };
         const parse = transformParser(this.esbuild);
-        const { bareSpecifiers: usedSpecifiers, namedImports } = await scanProjectImports(fs, projDir, parse);
+        // Within PROJECT_SCAN, as the dev server scans it: the same decision for
+        // the same project, so one bundle row per specifier serves both. A scan
+        // that left files unread synthesizes no barrel (each is pre-bundled
+        // whole, as the dev server then serves it); the specifiers it found are
+        // pre-bundled, and any it missed are bundled on demand.
+        const projectScan = await scanProjectImports(fs, projDir, parse, PROJECT_SCAN);
+        const { bareSpecifiers: usedSpecifiers, namedImports } = projectScan;
+        if (projectScan.unread !== null) {
+            progress(`  the scan of the project for its imports left ${projectScan.unread} unread: barrel packages are pre-bundled whole, not from the names it found`);
+        }
         // Vite plugins / postcss plugins / build-time tools NEVER ship to the
         // browser — they're invoked server-side by vite's own plugin
         // pipeline. Pre-bundling them as browser modules is wasted work
@@ -1853,7 +1862,7 @@ export class NpmInstaller {
             const pkgName = packageNameFromSpecifier(specifier);
             const fileCount = countPackageFiles(fs, nmDir + '/' + pkgName);
             const isBarrel = fileCount > BARREL_PKG_FILE_THRESHOLD;
-            if (isBarrel && specifier === pkgName) {
+            if (isBarrel && specifier === pkgName && projectScan.unread === null) {
                 // Top-level barrel import. Synthesize.
                 const names = namedImports.get(pkgName);
                 const inputHash = namedImportSignature(pkgName, names);
@@ -2020,11 +2029,41 @@ export class NpmInstaller {
         // others when investigating supervisor crashes. Bounded by
         // pending.length.
         const errorsByModule = {};
+        // The pre-bundles not attempted because node_modules went away under
+        // the phase: its session destroyed (its storage deleted) or the
+        // directory removed. Each would only fail on a store that is gone.
+        let abandoned = 0;
+        const nodeModulesGone = () => {
+            // Listed, not looked up: a lookup can be answered from the VFS's
+            // cache of the store, a listing reads the store. Gone only when it
+            // is confirmed so: node_modules not there (ENOENT), or the store
+            // itself deleted. Any other failure (a node_modules that may be
+            // searched but not listed, mode 0311) is not a disappearance: each
+            // pre-bundle goes on, and fails with its own error if it must.
+            try {
+                fs.readdir(nmDir);
+                return false;
+            }
+            catch (error) {
+                return Reflect.get(Object(error), 'code') === 'ENOENT' || this.store.storeDeleted();
+            }
+        };
+        const abandonRest = (current) => {
+            if (abandoned > 0)
+                return;
+            abandoned = current + queue.length;
+            queue.length = 0;
+            safeProgress(`  pre-bundle stopped: ${nmDir} is gone (the session destroyed, or node_modules removed); ${abandoned} not pre-bundled`);
+        };
         const runSlot = async (slotIndex) => {
             while (true) {
                 const next = queue.shift();
                 if (!next)
                     return;
+                if (nodeModulesGone()) {
+                    abandonRest(1);
+                    return;
+                }
                 // Hold the slice's worst-case supervisor footprint until its facet
                 // RPC and cache write settle. FIFO byte credit prevents VFS reads,
                 // streamed install writes, or cirrus boot from independently claiming
@@ -2080,6 +2119,11 @@ export class NpmInstaller {
                         }
                     }
                     catch (e) {
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         const msg = e?.message || String(e);
                         safeProgress(`  pre-bundle slice walk threw for ${next.specifier}: ${msg}`);
                         errorCount++;
@@ -2141,6 +2185,11 @@ export class NpmInstaller {
                     }
                     if (!result || !result.ok) {
                         const why = result?.errorText || 'pool returned null';
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         if (result) {
                             safeProgress(`  pre-bundle failed for ${next.specifier}: ${why}`);
                             errorCount++;
@@ -2158,6 +2207,11 @@ export class NpmInstaller {
                     // stored under the manifests the slice read (the next install, or
                     // the dev server on demand, bundles what is there now).
                     if (!stillCurrent(request.manifests, read)) {
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         safeProgress(`  pre-bundle of ${next.specifier} not cached: its package changed while it was bundled`);
                         result = null;
                         continue;
@@ -2182,6 +2236,11 @@ export class NpmInstaller {
                         okCount++;
                     }
                     catch (e) {
+                        if (nodeModulesGone()) {
+                            attempted--;
+                            abandonRest(1);
+                            return;
+                        }
                         const msg = e?.message || String(e);
                         safeProgress(`  pre-bundle cache-write failed for ${next.specifier}: ${msg}`);
                         errorCount++;
@@ -2240,7 +2299,7 @@ export class NpmInstaller {
             try {
                 const memAfter = this._estimateSupervisorHeapMiB();
                 const delta = memAfter - memBefore;
-                safeProgress(`Pre-bundle complete: ${okCount}/${attempted} succeeded. (supervisor heap ${memAfter.toFixed(1)} MiB, Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} MiB)`);
+                safeProgress(`Pre-bundle complete: ${okCount}/${attempted} succeeded${abandoned > 0 ? `, ${abandoned} stopped` : ''}. (supervisor heap ${memAfter.toFixed(1)} MiB, Δ${delta >= 0 ? '+' : ''}${delta.toFixed(1)} MiB)`);
             }
             catch (e) {
                 try {

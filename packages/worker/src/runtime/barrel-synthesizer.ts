@@ -94,6 +94,12 @@ export interface ProjectImports {
   bareSpecifiers: string[];
   /** Per package, the names imported from its root: `import { A, B as C } from 'pkg'`. */
   namedImports: NamedImportMap;
+  /**
+   * Null when every source file was read. Otherwise (a `budget` was given
+   * and the walk left files unread) what was not read, for a caller to say
+   * so: the imports above then may miss names some source asks for.
+   */
+  unread: string | null;
 }
 
 /**
@@ -125,7 +131,9 @@ export interface ProjectImports {
  *
  * With a `budget`, the walk reads at most what it allows, checked with a
  * stat before each read: a file past the per-file or the remaining total
- * bytes is skipped, and the walk ends after `files` candidate files.
+ * bytes is skipped, and the walk ends at the first candidate file past
+ * `files`. What it left unread is reported (`unread`), never dropped
+ * silently.
  */
 export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, parse: SourceParser, budget?: ScanBudget): Promise<ProjectImports> {
   const bare = new Set<string>();
@@ -150,9 +158,12 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
 
   // Files the lexer cannot decide, read with the parser once the walk is done.
   const undecided: { source: string; path: string; ext: string }[] = [];
-  // What the budget has left.
+  // What the budget has left, and what it kept from being read.
   let filesLeft = budget?.files ?? Infinity;
   let bytesLeft = budget?.totalBytes ?? Infinity;
+  const tooLarge: string[] = [];
+  const pastTotal: string[] = [];
+  let stoppedAt: string | null = null;
 
   const scan = (code: string, ext: string): void => {
     for (const specifier of importedSpecifiers(code)) {
@@ -183,7 +194,7 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
   };
 
   const walk = (dir: string, depth: number): void => {
-    if (depth > 6 || filesLeft <= 0) return;
+    if (depth > 6 || stoppedAt !== null) return;
     let entries: { name: string; type: string }[];
     try { entries = vfs.readdir(dir); } catch { return; }
     for (const entry of entries) {
@@ -200,11 +211,21 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
       const ext = entry.name.substring(dot);
       if (!scanExts.has(ext)) continue;
       if (budget) {
-        if (filesLeft <= 0) return;
+        if (filesLeft <= 0) {
+          stoppedAt = path;
+          return;
+        }
         filesLeft--;
         let size: number;
         try { size = vfs.stat(path).size; } catch { continue; }
-        if (size > budget.fileBytes || size > bytesLeft) continue;
+        if (size > budget.fileBytes) {
+          tooLarge.push(path);
+          continue;
+        }
+        if (size > bytesLeft) {
+          pastTotal.push(path);
+          continue;
+        }
         bytesLeft -= size;
       }
       let source: string;
@@ -217,8 +238,23 @@ export async function scanProjectImports(vfs: CredentialedVfs, projDir: string, 
 
   walk(projDir, 0);
   for (const { source, path, ext } of undecided) scan(await parsedImportView(source, path, parse), ext);
-  return { bareSpecifiers: [...bare], namedImports };
+  const unread = [
+    tooLarge.length > 0 && budget ? `${tooLarge.length} file(s) over ${budget.fileBytes} bytes (${tooLarge.slice(0, 3).join(', ')}${tooLarge.length > 3 ? ', …' : ''})` : '',
+    pastTotal.length > 0 && budget ? `${pastTotal.length} file(s) past ${budget.totalBytes} bytes in all (${pastTotal.slice(0, 3).join(', ')}${pastTotal.length > 3 ? ', …' : ''})` : '',
+    stoppedAt !== null && budget ? `the files from ${stoppedAt} on, past ${budget.files} files` : '',
+  ].filter(Boolean).join('; ');
+  return { bareSpecifiers: [...bare], namedImports, unread: unread || null };
 }
+
+/**
+ * What every scan of a project for a barrel's names reads, at most: the
+ * installer's (pre-bundling a barrel from a synthesized entry) and the Vite
+ * dev server's (serving one) alike, so that both reach one decision for an
+ * unchanged project, and one bundle row serves both. A scan that leaves
+ * files unread (`unread`) synthesizes nothing: every barrel is bundled
+ * whole, from its own entry.
+ */
+export const PROJECT_SCAN: ScanBudget = { files: 2048, fileBytes: 1024 * 1024, totalBytes: 16 * 1024 * 1024 };
 
 /** What a source scan may read, at most. */
 export interface ScanBudget {
