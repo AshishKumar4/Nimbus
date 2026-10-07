@@ -1838,10 +1838,11 @@ type FacetVfsBundle = Record<string, string | Uint8Array | FacetVfsDenial>;
  * __residentCellCost, which this must match): its bytes (a text cell's UTF-8
  * length) plus 1%, a row per chunk and head, and a page of slack.
  */
-/** What a module map costs the facet's store that adopts it (N18). A denial is a head row only. */
-function moduleMapStorageBytes(bundle: FacetVfsBundle): number {
+/** What a module map costs the facet's store that adopts it (N18). A denial is a head row only; a code-only file is none. */
+function moduleMapStorageBytes(bundle: FacetVfsBundle, codeOnly?: ReadonlySet<string>): number {
   let bytes = 0;
-  for (const cell of Object.values(bundle)) {
+  for (const [path, cell] of Object.entries(bundle)) {
+    if (codeOnly?.has(path)) continue;
     bytes += typeof cell === 'string' || cell instanceof Uint8Array ? residentCellCost(cell) : 2 * LEDGER_ROW_BYTES;
   }
   return bytes;
@@ -1868,18 +1869,28 @@ interface FacetVfsState {
   // for the canonical 256→512 byte demo.
   bundle: FacetVfsBundle;
   /**
-   * The executable form of each TypeScript source in `bundle`, by the
-   * source's path: esbuild's emit, which becomes the path's module cell while
-   * `bundle` keeps the source a program reads. A JavaScript cell needs none —
-   * its transformed text replaces it in `bundle` and serves both.
+   * The module of each cell a transform changed, by its path: esbuild's emit
+   * for a TypeScript source or an ES module, a CommonJS file with its
+   * dynamic import() calls rewritten, a diagnostic shim. It becomes the
+   * path's module cell, while `bundle` keeps the file a program reads (a
+   * code-only file's cell holds the emit: the file is not carried). A cell
+   * with none is its own module.
    */
   emits?: Map<string, string>;
   /**
-   * The JavaScript cells lowered from ESM (transformEsmInBundle), whose
-   * module wraps them in the block scope (commonjs-cell.ts, THE WRAPPER).
-   * Every other code cell is CommonJS as Node would run it.
+   * The cells lowered from ESM or compiled from TypeScript
+   * (transformEsmInBundle), whose module wraps them in the block scope
+   * (commonjs-cell.ts, THE WRAPPER). Every other code cell is CommonJS as
+   * Node would run it.
    */
   lowered?: Set<string>;
+  /**
+   * The files staged only to run whose module is an emit: the map carries the
+   * emit and not the file, which no read asked for. A synchronous read of one
+   * is a miss the next launch stages, unless a data plan holds the file. Kept
+   * past serialization, for the data plans.
+   */
+  codeOnly?: Set<string>;
   /** What the module map costs the facet's store, taken before its cells are released (N18). */
   moduleStorageBytes?: number;
   /**
@@ -2029,7 +2040,7 @@ async function facetVfsBundleSourceFor(
   return vfsState.bundleSource
     ?? await buildFacetVfsBundleSource(
       vfsState.bundle, vfsState.bundleSideModulesRequired, pacer,
-      { emits: vfsState.emits, lowered: vfsState.lowered },
+      { emits: vfsState.emits, lowered: vfsState.lowered, codeOnly: vfsState.codeOnly },
     );
 }
 
@@ -2143,6 +2154,7 @@ function retainedVfsStateBytes(state: FacetVfsState): number {
   }
   for (const [path, emit] of state.emits ?? []) bytes += path.length + emit.length;
   for (const path of state.lowered ?? []) bytes += path.length;
+  for (const path of state.codeOnly ?? []) bytes += path.length;
   const source = state.bundleSource;
   if (source) {
     bytes += source.expression.length + source.imports.length + source.codeCells.length + source.runtimeCode.length;
@@ -2406,11 +2418,13 @@ function isCodeCellPath(path: string): boolean {
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Every code cell becomes its own `{ cjs }` module (commonjs-cell.ts), which
- * the guest's registry compiles the first time the program requires it. Its
- * text is the one copy the map carries: the process's store adopts the file
- * by reading that module back, so a cell is never also data — except where
- * the read-back cannot name it (commonJsCellReadsBack) and for a TypeScript
- * source, whose file is the source and whose module is the emit.
+ * the guest's registry compiles the first time the program requires it. A
+ * file that is its own module is carried once, as that module: the process's
+ * store adopts the file by reading the module back, so the cell is never also
+ * data — except where the read-back cannot name it (commonJsCellReadsBack).
+ * A cell whose module is an emit (a transform changed it) is never read back,
+ * since the emit is not the file: its file is data when it was staged to be
+ * read, or is not carried at all (`codeOnly`).
  *
  * The data cells stay one bundle. Small bundles remain inline. Large bundles
  * are partitioned into side modules below the existing per-module encoded
@@ -2426,17 +2440,21 @@ export async function buildFacetVfsBundleSource(
     consume = false,
     emits,
     lowered,
+    codeOnly,
     runtimeCode,
   }: {
     consume?: boolean;
+    /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
-    /** Cells lowered from ESM, wrapped in the block scope. */
+    /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
     lowered?: ReadonlySet<string>;
+    /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
+    codeOnly?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
   } = {},
 ): Promise<FacetVfsBundleSource> {
-  const storageBytes = moduleMapStorageBytes(bundle);
+  const storageBytes = moduleMapStorageBytes(bundle, codeOnly);
   const codeModules: Record<string, string> = {};
   const rows: CommonJsCellRow[] = [];
   for (const [key, text] of runtimeCode ?? []) codeModules[runtimeCodeModuleName(key)] = text;
@@ -2450,13 +2468,13 @@ export async function buildFacetVfsBundleSource(
     const code = emit ?? (typeof cell === 'string' && isCodeCellPath(path) ? cell : undefined);
     const adopt = code !== undefined && emit === undefined && commonJsCellReadsBack(path);
     if (code !== undefined) {
-      const wrapped = wrapCommonJsCell(code, emit !== undefined || lowered?.has(path) ? 'block' : 'function');
+      const wrapped = wrapCommonJsCell(code, lowered?.has(path) ? 'block' : 'function');
       const name = commonJsCellModuleName(path);
       codeModules[name] = wrapped.text;
       rows.push([path, name, wrapped.head, wrapped.tail, wrapped.hashbang ? 1 : 0, adopt ? 1 : 0]);
       if (pacer) await pacer.spend(code.length);
     }
-    if (adopt) {
+    if (adopt || codeOnly?.has(path)) {
       if (consume) delete bundle[path];
     } else if (!consume) {
       data[path] = cell;
@@ -3731,15 +3749,28 @@ function binPackageRelativePath(pkgRoot: string, path: string): string {
   return path.startsWith(pkgRoot + '/') ? path.slice(pkgRoot.length + 1) : path;
 }
 
+/** Directories the project snapshot never enters: dependencies, VCS, Nimbus's own state. */
+const CWD_PROJECT_SKIP_DIRS = new Set(['node_modules', '.git', '.nimbus']);
+
+/** The project tree a launch in `cwd` stages its working files from, as a key. */
+function cwdProjectRoot(cwd: string): string {
+  return (cwd || '/home/user').replace(/^\/+/, '').replace(/\/+$/, '') || 'home/user';
+}
+
+/** Whether the file at `path` is in the project tree at `root`, as the snapshot walks it. */
+function inCwdProject(root: string, path: string): boolean {
+  if (!path.startsWith(root + '/')) return false;
+  return !path.slice(root.length + 1).split('/').slice(0, -1).some((name) => CWD_PROJECT_SKIP_DIRS.has(name));
+}
+
 async function addCwdProjectFiles(
   vfs: LaunchFs,
   cwd: string,
   bundle: Record<string, string | Uint8Array>,
   budgetState: { totalBytes: number; fileCount: number },
 ): Promise<{ added: number }> {
-  const root = (cwd || '/home/user').replace(/^\/+/, '').replace(/\/+$/, '') || 'home/user';
+  const root = cwdProjectRoot(cwd);
   const MAX_PROJECT_FILES = 512;
-  const SKIP_DIRS = new Set(['node_modules', '.git', '.nimbus']);
   let added = 0;
   let visited = 0;
   const queue: string[] = [root];
@@ -3753,7 +3784,7 @@ async function addCwdProjectFiles(
       visited++;
       if (e.name === '.' || e.name === '..') continue;
       const isDirectory = (await launchEntryType(vfs, dir, e)) === 'directory';
-      if (isDirectory && SKIP_DIRS.has(e.name)) continue;
+      if (isDirectory && CWD_PROJECT_SKIP_DIRS.has(e.name)) continue;
       const child = dir + '/' + e.name;
       if (isDirectory) {
         queue.push(child);
@@ -3881,17 +3912,17 @@ async function addEntryAbsPathReads(
 /**
  * framework-fixes-F4 (2026-05-12): helper for the "esbuild unavailable
  * or fatally errored" paths. Walks the bundle for ESM-shaped files and
- * replaces each with a JS-valid diagnostic shim that throws an
- * informative Error at require-time. Mirrors the per-file catch in
- * transformEsmInBundle so the user gets the same actionable error
- * surface regardless of whether transform failed for the whole batch
- * or for one file.
+ * gives each a JS-valid diagnostic shim as its module (`placeEmit`), which
+ * throws an informative Error at require-time.
+ * Mirrors the per-file catch in transformEsmInBundle so the user gets the
+ * same actionable error surface regardless of whether transform failed for
+ * the whole batch or for one file.
  *
  * Does NOT touch non-ESM files, which run as the CommonJS they are.
  */
 function _markBundleEsmAsFailed(
   bundle: Record<string, string | Uint8Array>,
-  emits: Map<string, string>,
+  placeEmit: (path: string, code: string) => void,
   reason: string,
 ): void {
   for (const path of Object.keys(bundle)) {
@@ -3900,28 +3931,27 @@ function _markBundleEsmAsFailed(
     if (typeof src !== 'string') continue;
     // A TypeScript source is never runnable as staged, so it always needs
     // the emit it cannot get; a JavaScript file only if it is ESM.
-    if (bundleTypescriptLoader(path) !== null) emits.set(path, esbuildDiagnosticShim(path, reason));
-    else if (looksLikeEsm(path, src)) bundle[path] = esbuildDiagnosticShim(path, reason);
+    if (bundleTypescriptLoader(path) !== null || looksLikeEsm(path, src)) placeEmit(path, esbuildDiagnosticShim(path, reason));
   }
 }
 
 /**
  * Transform every cell of the bundle that needs it (needsBundleCellTransform)
- * to CommonJS, in place: transformBundleCells, over the bundle's cells, with
- * the launch's store and pacer. A module esbuild rejects becomes a diagnostic
+ * to CommonJS: transformBundleCells, over the bundle's cells, with the
+ * launch's store and pacer. A module esbuild rejects becomes a diagnostic
  * shim that throws the reason when required (esbuildDiagnosticShim).
  *
- * A JavaScript cell is rewritten in place. A TypeScript source keeps its
- * bytes — they are what a program reads, tsc compiling its own project — and
- * its emit goes to `emits`, to become the path's module cell.
+ * Each result is the path's emit (`placeEmit`), to become its module cell,
+ * and never the file: what a program reads is the file on disk, never the
+ * launch's CommonJS rendering of it (tsc compiling its own project's
+ * sources; a script patching an installed ES module and writing it back).
  *
- * Every JavaScript cell lowered from ESM is added to `lowered` (its module's
- * block scope, commonjs-cell.ts THE WRAPPER); a TypeScript source's emit
- * always is.
+ * Every cell lowered from ESM or compiled from TypeScript is added to
+ * `lowered` (its module's block scope, commonjs-cell.ts THE WRAPPER).
  */
 async function transformEsmInBundle(
   bundle: Record<string, string | Uint8Array>,
-  emits: Map<string, string>,
+  placeEmit: (path: string, code: string) => void,
   lowered: Set<string>,
   esbuild: EsbuildService,
   pacer?: TurnBudget,
@@ -3935,8 +3965,7 @@ async function transformEsmInBundle(
     if (typeof source === 'string' && needsBundleCellTransform(path, source)) cells.push({ path, source });
   }
   return transformBundleCells(cells, { host: esbuild, store, pacer }, (path, result) => {
-    if (bundleTypescriptLoader(path) !== null) emits.set(path, result.code);
-    else bundle[path] = result.code;
+    placeEmit(path, result.code);
     if (result.lowered) lowered.add(path);
   });
 }
@@ -4123,6 +4152,9 @@ async function _buildPrefetchBundle(
   const independentBeforeGroups = new Set(Object.keys(bundle));
   const greedy = (await greedyAddMainEntries(vfs, cwd, bundle, budgetState, prefetch.entryPaths ?? closurePaths, { maxBundleBytes, pacer }));
   await paceAfterPass();
+  // What the passes so far staged to run. Every pass below stages files to
+  // be read, and so do the observed reads above.
+  const stagedToRun = new Set(Object.keys(bundle));
 
   // 2.25 X.5-Z3: static-readFileSync asset prefetch. Scans every
   //      bundle .js/.mjs/.cjs source for the canonical jsdom shape:
@@ -4198,40 +4230,60 @@ async function _buildPrefetchBundle(
 
   // 2.5 W3.5 Fix B: ESM→CJS transform pass. Walks `bundle`, sniffs each
   //     .js/.mjs for top-level import/export, runs esbuild's CJS transform
-  //     on the matches, and replaces the value in-place. Every cell reaches
-  //     the guest as CommonJS (commonjs-cell.ts says why the registry cannot
-  //     take the ES module itself).
+  //     on the matches, and keeps each result as the path's emit. Every cell
+  //     reaches the guest as CommonJS (commonjs-cell.ts says why the registry
+  //     cannot take the ES module itself).
   const emits = new Map<string, string>();
   const lowered = new Set<string>();
+  // A file staged only to run carries its emit and not itself
+  // (FacetVfsState.codeOnly): installed code is most of a map, and each ES
+  // module carried twice would halve the closure the bound admits. One staged
+  // to be read is carried as itself beside its emit: by a pass after the
+  // module walk, because a run read it, or as a file of the working tree, the
+  // project that tools read their sources and configs from (Vite bundling
+  // vite.config.ts, tsc, a linter).
+  const projectRoot = cwdProjectRoot(cwd);
+  const codeOnly = new Set<string>();
+  const runOnly = (path: string) =>
+    stagedToRun.has(path) && !observedPaths.has(path) && !learnedPaths.has(path) && !inCwdProject(projectRoot, path);
+  // A code-only file's cell is given its emit, the one string, the moment it
+  // has one: the build never holds the file's bytes and its module both, and
+  // what reads the cells for their code (bundleUsesNodeSqlite, the wasm and
+  // binding scans) reads the module, which is all the map carries.
+  const placeEmit = (path: string, code: string) => {
+    emits.set(path, code);
+    if (!runOnly(path)) return;
+    bundle[path] = code;
+    codeOnly.add(path);
+  };
   let transforms: BundleCellTransformStats | undefined;
   if (esbuild) {
     // Transient failures propagate through the launch failure path before
     // serialization/cache/LOADER publication. Per-source verdicts still use
     // the lazy diagnostic cells installed by transformEsmInBundle.
-    transforms = await transformEsmInBundle(bundle, emits, lowered, esbuild, pacer, transformStore);
+    transforms = await transformEsmInBundle(bundle, placeEmit, lowered, esbuild, pacer, transformStore);
   } else {
     // No esbuild service was given: the ESM cells stage as diagnostics that
     // say so, rather than as source the registry rejects without a reason.
-    _markBundleEsmAsFailed(bundle, emits, 'no esbuild service was given to this launch');
+    _markBundleEsmAsFailed(bundle, placeEmit, 'no esbuild service was given to this launch');
   }
+  // Each module's bundled records of the runtime's provided packages are
+  // bound to them: the emit's, or the file's own when it is its module (a
+  // TypeScript source never is). A file that changes has the result as its emit.
   for (const path of Object.keys(bundle)) {
-    if (!isBundleModuleCandidate(path) || bundleTypescriptLoader(path) !== null) continue;
-    const source = bundle[path];
-    if (typeof source !== 'string') continue;
-    await pacer?.spend(source.length);
+    const cell = bundle[path];
+    const code = emits.get(path) ?? (isBundleModuleCandidate(path) && bundleTypescriptLoader(path) === null ? cell : undefined);
+    if (typeof code !== 'string') continue;
+    await pacer?.spend(code.length);
+    let bound: string;
     try {
-      bundle[path] = rewriteProvidedCommonJsModules(source);
+      bound = rewriteProvidedCommonJsModules(code);
     } catch {
-      // Unparseable, so not a module and no bundled records to bind: data such as a LICENSE.
+      // Unparseable: an emit stays as esbuild wrote it, and its require says
+      // why; a file is not a module and has no records to bind (a LICENSE).
+      continue;
     }
-  }
-  for (const [path, emit] of emits) {
-    await pacer?.spend(emit.length);
-    try {
-      emits.set(path, rewriteProvidedCommonJsModules(emit));
-    } catch {
-      // Unparseable: it stays as esbuild wrote it, and its require says why.
-    }
+    if (bound !== code) placeEmit(path, bound);
   }
   await paceAfterPass();
   // 4. The snapshot's size guard, in the unit the session DO's memory was
@@ -4249,11 +4301,11 @@ async function _buildPrefetchBundle(
   const rawBytes = new Map<string, number>();
   let rawTotal = 0;
   for (const [path, cell] of Object.entries(bundle)) {
-    const bytes = _bundleCellRawBytes(cell);
+    const bytes = codeOnly.has(path) ? 0 : _bundleCellRawBytes(cell);
     rawBytes.set(path, bytes);
     rawTotal += bytes;
   }
-  // A TypeScript source's emit is part of what it costs.
+  // A module's emit is part of what its path costs, beside its file when that is carried.
   for (const [path, emit] of emits) {
     const bytes = _encodedSourceBytes(emit);
     rawBytes.set(path, (rawBytes.get(path) ?? 0) + bytes);
@@ -4347,6 +4399,7 @@ async function _buildPrefetchBundle(
       delete bundle[k];
       emits.delete(k);
       lowered.delete(k);
+      codeOnly.delete(k);
       size.remove(k);
     }
     if (evicted.length > 0) {
@@ -4372,6 +4425,7 @@ async function _buildPrefetchBundle(
     bundle,
     ...(emits.size > 0 ? { emits } : {}),
     ...(lowered.size > 0 ? { lowered } : {}),
+    ...(codeOnly.size > 0 ? { codeOnly } : {}),
     cursor,
     reachableCount: fileCount,
     truncated,
@@ -5403,6 +5457,7 @@ export class FacetManager {
       cwd,
       home: home || '/home/user',
       closure: vfsState.bundlePaths ?? [],
+      codeOnly: vfsState.codeOnly,
       refs,
       learned,
       spend: (units) => pacer.spend(units),
@@ -5415,7 +5470,7 @@ export class FacetManager {
     const rows = plan.paths.length * 2 + Math.ceil(plan.bytes / RESIDENT_CHUNK_BYTES) + names;
     // And the module map, which the store adopts at boot: the process's code,
     // costed when the map was built (its cells are released once serialized).
-    const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle);
+    const moduleBytes = vfsState.moduleStorageBytes ?? moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
     const storageBytes = Math.ceil(plan.bytes * 1.01) + rows * LEDGER_ROW_BYTES + moduleBytes + 65_536;
     return { paths: plan.paths, storageBytes };
   }
@@ -5435,6 +5490,7 @@ export class FacetManager {
     if (!this.filesystem) return [];
     const vfs = this.filesystem.bind({ pid: entry.pid, cred: entry.cred });
     const held = new Set(vfsState.bundlePaths ?? []);
+    for (const path of vfsState.codeOnly ?? []) held.delete(path);
     const dir = stripLeadingSlashes(cwd).replace(/\/+$/, '');
     const reads = new Set<string>();
     for (const refs of await this._closureStaticRefs(vfs, vfsState.bundlePaths ?? [], pacer)) {
@@ -5651,7 +5707,7 @@ export class FacetManager {
     // And what the module map costs the facet's store, which adopts it at boot
     // (N18): taken now, while the cells exist, for every launch this state
     // serves (a cache hit included).
-    vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle);
+    vfsState.moduleStorageBytes = moduleMapStorageBytes(vfsState.bundle, vfsState.codeOnly);
     vfsState.bundleSource = await buildFacetVfsBundleSource(
       vfsState.bundle,
       vfsState.bundleSideModulesRequired,
@@ -5660,6 +5716,7 @@ export class FacetManager {
         consume: true,
         emits: vfsState.emits,
         lowered: vfsState.lowered,
+        codeOnly: vfsState.codeOnly,
         runtimeCode: await this._stagedRuntimeCode(learning, pacer),
       },
     );
@@ -5761,16 +5818,17 @@ export class FacetManager {
       const path = entry.path.replace(/^\/+/, '');
       const file: Record<string, string> = { [path]: entry.text };
       const emits = new Map<string, string>();
+      const placeEmit = (at: string, code: string) => { emits.set(at, code); };
       const lowered = new Set<string>();
-      if (this.esbuild) await transformEsmInBundle(file, emits, lowered, this.esbuild, pacer, this._transformStore());
-      else _markBundleEsmAsFailed(file, emits, 'no esbuild service was given to this launch');
+      if (this.esbuild) await transformEsmInBundle(file, placeEmit, lowered, this.esbuild, pacer, this._transformStore());
+      else _markBundleEsmAsFailed(file, placeEmit, 'no esbuild service was given to this launch');
       let code = emits.get(path) ?? file[path];
       try {
         code = rewriteProvidedCommonJsModules(code);
       } catch {
         // Unparseable: it stays as written, and requiring it says why.
       }
-      const scope = emits.has(path) || lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
+      const scope = lowered.has(path) || declaresWrapperBinding(code) ? 'block' : 'function';
       modules.set(codeKey, wrapCommonJsCell(code, scope).text);
     }
     return modules.size > 0 ? modules : undefined;

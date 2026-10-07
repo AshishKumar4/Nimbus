@@ -27,8 +27,10 @@
  *                  each with readFileSync), and the process never loads them
  *   learned        paths earlier launches of the same package versions missed
  *
- * Code the closure loads is in the module map already; the store adopts it,
- * so it is readable as data too.
+ * Code the closure loads is in the module map already; the store adopts a
+ * file that is its own module, so it is readable as data too. A file whose
+ * module is an emit and that the map does not carry (`codeOnly`: an ES module
+ * staged only to run) is planned as any other file is.
  */
 import { resolveFile, type RequireFs } from '@nimbus-sh/core/runtime/require-resolution.js';
 import type { RuntimeFsBridge } from '@nimbus-sh/core/runtime/os-contracts.js';
@@ -56,6 +58,8 @@ export interface DataPlanInput {
   home: string;
   /** Module map paths. */
   closure: Iterable<string>;
+  /** Of those, the files the map carries only as their emit, not as themselves. */
+  codeOnly?: Iterable<string>;
   refs: readonly StaticFsRefs[];
   /** Paths learned from earlier misses (absolute or keys). */
   learned?: Iterable<string>;
@@ -303,8 +307,10 @@ export async function planFacetData(source: DataPlanSource, input: DataPlanInput
   }
   const conventionDirs = new Set<string>([joinKey(cwd, 'node_modules')]);
   for (let d = cwd; ; d = parentOf(d)) { conventionDirs.add(d); if (d === '') break; }
+  // What the map holds as the file itself: its paths but the code-only ones.
   const closure = new Set<string>();
   for (const path of input.closure) closure.add(key(path));
+  for (const path of input.codeOnly ?? []) closure.delete(key(path));
 
   // Static references, as keys: each exact path, and whether any site reads
   // it synchronously.

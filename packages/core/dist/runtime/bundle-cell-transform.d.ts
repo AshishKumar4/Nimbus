@@ -20,10 +20,12 @@
  */
 import { type EsbuildTransformOutcome, type EsbuildTransformRequest } from './esbuild-service.js';
 /**
- * Bundled ESM this large is lowered by the bounded declaration rewrite in the
- * session rather than by esbuild: esbuild's Go heap grows with the module and
- * is never released. Its named imports are bound once, not live: at this size
- * there is no AST to find their uses in.
+ * Bundled ESM this large is lowered in the session (esbuild-service.ts
+ * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
+ * grows with the module and is never given back (Oxc's wasm reaches 105 MB
+ * for workerd's 4.7 MB worker.mjs). The session reads it a statement at a
+ * time (async-module-lowering.ts readEsmRecords), in bounded memory, its
+ * imports live as everywhere else.
  */
 export declare const BUNDLED_ESM_REWRITE_MIN_BYTES: number;
 /**
@@ -80,7 +82,10 @@ export type BundleCell = {
     readonly path: string;
     /** A TypeScript source: its emit becomes the module cell, and the source keeps its bytes. */
     readonly typescript: boolean;
-    /** Lowered from ESM, so its module's block scope applies (commonjs-cell.ts THE WRAPPER). */
+    /**
+     * Lowered from ESM or compiled from TypeScript, so its module's block scope
+     * applies (commonjs-cell.ts THE WRAPPER); a CommonJS cell is only rewritten.
+     */
     readonly lowered: boolean;
     readonly absUrl: string;
 } & (
@@ -108,8 +113,8 @@ export interface BundleCellResult {
  * Run the session's steps of the pipeline on `source`, staged at `path`.
  *
  * This is computation in the caller's isolate proportional to the source —
- * the provided-module pre-pass and, for large bundled ESM, the bounded
- * declaration rewrite — so a paced caller accounts the source before it.
+ * the provided-module pre-pass and, for large bundled ESM, its lowering to
+ * CommonJS — so a paced caller accounts the source before it.
  */
 export declare function prepareBundleCell(path: string, source: string): BundleCell;
 /**

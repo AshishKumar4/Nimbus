@@ -232,18 +232,28 @@ interface FacetVfsState {
     };
     bundle: FacetVfsBundle;
     /**
-     * The executable form of each TypeScript source in `bundle`, by the
-     * source's path: esbuild's emit, which becomes the path's module cell while
-     * `bundle` keeps the source a program reads. A JavaScript cell needs none —
-     * its transformed text replaces it in `bundle` and serves both.
+     * The module of each cell a transform changed, by its path: esbuild's emit
+     * for a TypeScript source or an ES module, a CommonJS file with its
+     * dynamic import() calls rewritten, a diagnostic shim. It becomes the
+     * path's module cell, while `bundle` keeps the file a program reads (a
+     * code-only file's cell holds the emit: the file is not carried). A cell
+     * with none is its own module.
      */
     emits?: Map<string, string>;
     /**
-     * The JavaScript cells lowered from ESM (transformEsmInBundle), whose
-     * module wraps them in the block scope (commonjs-cell.ts, THE WRAPPER).
-     * Every other code cell is CommonJS as Node would run it.
+     * The cells lowered from ESM or compiled from TypeScript
+     * (transformEsmInBundle), whose module wraps them in the block scope
+     * (commonjs-cell.ts, THE WRAPPER). Every other code cell is CommonJS as
+     * Node would run it.
      */
     lowered?: Set<string>;
+    /**
+     * The files staged only to run whose module is an emit: the map carries the
+     * emit and not the file, which no read asked for. A synchronous read of one
+     * is a miss the next launch stages, unless a data plan holds the file. Kept
+     * past serialization, for the data plans.
+     */
+    codeOnly?: Set<string>;
     /** What the module map costs the facet's store, taken before its cells are released (N18). */
     moduleStorageBytes?: number;
     /**
@@ -392,11 +402,13 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * Serialize a VFS bundle for Worker Loader without dropping required files.
  *
  * Every code cell becomes its own `{ cjs }` module (commonjs-cell.ts), which
- * the guest's registry compiles the first time the program requires it. Its
- * text is the one copy the map carries: the process's store adopts the file
- * by reading that module back, so a cell is never also data — except where
- * the read-back cannot name it (commonJsCellReadsBack) and for a TypeScript
- * source, whose file is the source and whose module is the emit.
+ * the guest's registry compiles the first time the program requires it. A
+ * file that is its own module is carried once, as that module: the process's
+ * store adopts the file by reading the module back, so the cell is never also
+ * data — except where the read-back cannot name it (commonJsCellReadsBack).
+ * A cell whose module is an emit (a transform changed it) is never read back,
+ * since the emit is not the file: its file is data when it was staged to be
+ * read, or is not carried at all (`codeOnly`).
  *
  * The data cells stay one bundle. Small bundles remain inline. Large bundles
  * are partitioned into side modules below the existing per-module encoded
@@ -404,11 +416,14 @@ export declare function encodedBundleSize(bundle: FacetVfsBundle): {
  * split into ordered fragments; the merge expression concatenates those
  * fragments back to the original string or Uint8Array.
  */
-export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, lowered, runtimeCode, }?: {
+export declare function buildFacetVfsBundleSource(bundle: FacetVfsBundle, forceSideModules?: boolean, pacer?: TurnBudget, { consume, emits, lowered, codeOnly, runtimeCode, }?: {
     consume?: boolean;
+    /** The module of each cell a transform changed (FacetVfsState.emits). */
     emits?: ReadonlyMap<string, string>;
-    /** Cells lowered from ESM, wrapped in the block scope. */
+    /** Cells lowered from ESM or compiled from TypeScript, wrapped in the block scope. */
     lowered?: ReadonlySet<string>;
+    /** Files whose emit the map carries and not the file (FacetVfsState.codeOnly). */
+    codeOnly?: ReadonlySet<string>;
     /** Runtime code staged for this launch: `{ cjs }` module text by key. */
     runtimeCode?: ReadonlyMap<string, string>;
 }): Promise<FacetVfsBundleSource>;
