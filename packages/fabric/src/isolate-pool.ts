@@ -31,7 +31,7 @@ import { supervisorEntrypoint, hostRoute, type HostRoute } from './composition.j
 import { supervisorLoaderKey } from './supervisor-props.js';
 import { supervisorDeliveryProps } from '@nimbus-sh/core/workspace/supervisor-delivery.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { djb2, serializeFunction, hashSource } from './vendor/serialize.js';
+import { hashBytes, serializeFunction, hashSource } from './vendor/serialize.js';
 import {
   beginLoaderFetch,
   beginLoaderFetchWhenFree,
@@ -247,7 +247,7 @@ export interface IsolateCallOptions {
    * never crosses structured-clone, never executes user-eval.
    *
    * Cache key impact: per-call bytes are fingerprinted as
-   * constructor bytes are (name, length, djb2 of every byte) and
+   * constructor bytes are (name, length, a hash of every byte) and
    * folded into the loader cache key. Identical bytes on the same
    * slot → warm reuse; different bytes → fresh isolate. The pool's
    * `wasmHash` field captures CONSTRUCTOR-time bytes only; per-call
@@ -415,11 +415,11 @@ export function assembleLoaderWorkerModuleSource(
 
 /**
  * A wasm image's identity in a loader cache key: its name, its length and
- * the djb2 of every byte, so a warm slot never runs other bytes than the
- * ones it was built from.
+ * a hash of every byte, so a warm slot never runs other bytes than the ones
+ * it was built from.
  */
 function wasmContentFingerprint(name: string, wasm: ArrayBuffer): string {
-  return `${name}:${wasm.byteLength}:${djb2(new Uint8Array(wasm)).toString(36)}`;
+  return `${name}:${wasm.byteLength}:${hashBytes(wasm).toString(36)}`;
 }
 
 /**
