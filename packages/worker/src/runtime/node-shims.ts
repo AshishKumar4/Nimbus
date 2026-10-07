@@ -11366,7 +11366,8 @@ function __nimbusImportStager(budget) {
           if (typeof text !== "string") continue;
           if (fetched.has(round[i])) budget.bytes(text.length);
           if (!/\\.[cm]?js$/.test(round[i])) continue;
-          for (const request of __nimbusModuleRequests(round[i], text)) wanted.push([request, round[i]]);
+          // An import() in the closure is its own: it prefetches when it runs.
+          for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
         }
         const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), budget);
         const next = new Set();
