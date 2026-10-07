@@ -27,6 +27,7 @@ import { PID_GEN_STRIDE } from '../../packages/core/src/runtime/process-table.ts
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { CRED_KERNEL } from '../../packages/core/src/runtime/os-contracts.ts';
 import { readSupervisorAllocationBudget } from '../../packages/platform/src/heavy-alloc-coord.ts';
+import { handleProcessesListRequest } from '../../packages/worker/src/runtime/process-logs-api.ts';
 import { launchManager, launchSession } from './lib/facet-launch-harness.mjs';
 
 adoptCtxExports({
@@ -174,6 +175,23 @@ const settle = async (predicate, tries = 400) => {
   );
   assert.equal(gen2.world.configs.size, 1, 'the re-driven launch built its module map and booted');
 
+  // The restart is visible where the process is, not only in a terminal that
+  // the reset disconnected: the process's own output says the session
+  // restarted and which pid it was, and the process list reports it.
+  const redrivenPid = gen2.spawns[0].pid;
+  const firstOutput = gen2.processes.allLogs(redrivenPid).map((chunk) => chunk.data).join('');
+  assert.match(
+    firstOutput.split('\n')[0],
+    new RegExp(`the session restarted while "pi" was starting, so this process restarted; it was pid ${started.pid}`),
+    'the process\'s first line of output says the session restarted, and the pid it was',
+  );
+  const listed = await handleProcessesListRequest(gen2.processes).json();
+  assert.deepEqual(
+    listed.processes.find((entry) => entry.pid === redrivenPid)?.restartedFrom,
+    { pid: started.pid, cause: 'session-restart' },
+    'the process list says it is a restart of the lost pid, and why',
+  );
+
   // The launch settled, but the RESIDENT is still running — and the resets
   // measured live strike exactly there, seconds after settle. A row therefore
   // outlives the launch: an instance that replaces gen2 owes the user the
@@ -190,6 +208,11 @@ const settle = async (predicate, tries = 400) => {
   assert.equal(
     gen3.processes.get(gen3.spawns[0].pid)?.state, 'running',
     'back to a live process on the replacement instance',
+  );
+  assert.deepEqual(
+    gen3.processes.get(gen3.spawns[0].pid)?.restartedFrom,
+    { pid: redrivenPid, cause: 'session-restart' },
+    'a second restart names the pid it replaced, the one the first restart started',
   );
 
   // The process ends ON PURPOSE: the row is released with it, so a later
