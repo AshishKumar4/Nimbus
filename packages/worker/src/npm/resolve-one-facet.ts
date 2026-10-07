@@ -25,6 +25,7 @@
  *       PARSE_SEMVER(v) → [maj, min, patch] | null
  *       COMPARE_SEMVER(a, b) → number
  *       RESOLVE_VERSION(versions, range) → string | null
+ *       PARSE_REGISTRY_REQUEST(name, range) → the registry request a spec makes
  *
  * What the task does NOT do (supervisor responsibility)
  * ─────────────────────────────────────────────────────
@@ -54,9 +55,10 @@ import type { ResolvedPackage } from './resolver.js';
 import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickPackumentVersion, resolveVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
-import { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
+import type { parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
 
 declare const RESOLVE_VERSION: typeof resolveVersion;
+declare const PARSE_REGISTRY_REQUEST: typeof parseRegistryRequest;
 declare const IS_SEMVER_RANGE: typeof isSemverRange;
 declare const PICK_VERSION: typeof pickPackumentVersion;
 declare const PARSE_SEMVER: typeof parseSemver;
@@ -221,7 +223,7 @@ export const resolveOnePackumentInFacet = async function resolveOnePackumentInFa
   const messages: string[] = [];
   const events: FacetRegistryEvent[] = [];
   const cacheWrites: any[] = [];
-  const request = parseRegistryRequest(spec.name, spec.range);
+  const request = PARSE_REGISTRY_REQUEST(spec.name, spec.range);
   // cache-obs-2: per-resolve cache events. Filled by the L2/L3 path
   // (spliced from supervisor RPC return.events) and the L4 path
   // (post-network-fetch). Threaded through `out()` into the result.

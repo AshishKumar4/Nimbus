@@ -116,8 +116,9 @@ function* varNames(value: unknown, sloppy: boolean, top = true): Generator<strin
 
 /**
  * The scope `node`'s children are in, given the one it is in. A function's
- * parameters are in a scope of their own, its body's `var`s in its body's
- * (a parameter's default value does not see them).
+ * parameters are in a scope of their own, with `arguments` unless it is an
+ * arrow, its body's `var`s in its body's (a parameter's default value does
+ * not see them).
  */
 function scopeOf(node: EsNode, scope: Scope, sloppy: boolean, functionBody: boolean): Scope {
   const within = (names: Iterable<string>): Scope => ({ names: new Set(names), parent: scope });
@@ -130,6 +131,7 @@ function scopeOf(node: EsNode, scope: Scope, sloppy: boolean, functionBody: bool
     case 'ArrowFunctionExpression':
       return within([
         ...(node.type === 'FunctionExpression' ? patternNames(child(node, 'id')) : []),
+        ...(node.type === 'ArrowFunctionExpression' ? [] : ['arguments']),
         ...list(node, 'params').flatMap((parameter) => [...patternNames(parameter)]),
       ]);
     case 'BlockStatement':

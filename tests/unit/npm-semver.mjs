@@ -29,8 +29,13 @@ import { NPM_RESOLVE_NODE_IMPORTS, NPM_RESOLVE_SRC } from '../../packages/worker
 import { parseRegistryRequest, splitPackageSpec } from '../../packages/core/src/_shared/npm-spec.ts';
 import { FACET_GLOBALS, freeNames } from '../../packages/worker/scripts/free-names.mjs';
 import { importResolvePreamble } from './lib/npm-resolve-preamble-module.mjs';
+import { assembleLoaderWorkerModuleSource } from '../../packages/fabric/src/isolate-pool.ts';
+import { build } from 'esbuild';
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { pathToFileURL } from 'node:url';
 
-const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'PICK_VERSION', 'parseRegistryRequest']);
+const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 'SATISFIES_RANGE', 'RESOLVE_VERSION', 'IS_SEMVER_RANGE', 'PICK_VERSION', 'PARSE_REGISTRY_REQUEST']);
 
 // ── parse + compare: prerelease identifiers are part of the order ───────────
 {
@@ -105,16 +110,40 @@ const embedded = await importResolvePreamble(['PARSE_SEMVER', 'COMPARE_SEMVER', 
   const imported = new Set([...NPM_RESOLVE_NODE_IMPORTS.matchAll(/import \* as (\w+) from/g)].map((m) => m[1]));
   const stray = [...freeNames(NPM_RESOLVE_SRC)].filter((name) => !FACET_GLOBALS.has(name) && !imported.has(name) && name !== '__nimbusNpmResolve');
   assert.deepEqual(stray, [], 'the bundle reads nothing a facet lacks');
-  assert.deepEqual([...freeNames('var g = (() => { const a = 1; function f(b) { return a + b + c + Math.max(d.e, f.g); } return f; })(); try {} catch ({ h }) { h + i; } label: for (const j of k) { break label; }')].sort(), ['Math', 'c', 'd', 'i', 'k'], 'the guard finds free names, and only those');
+  assert.deepEqual([...freeNames('var g = (() => { const a = 1; function f(b) { return a + b + c + Math.max(d.e, f.g, arguments); } return f; })(); try {} catch ({ h }) { h + i; } label: for (const j of k) { break label; } function m(n = missing) { var missing = 1; return n; } (() => arguments)')].sort(), ['Math', 'arguments', 'c', 'd', 'i', 'k', 'missing'], 'the guard finds free names, and only those (a default does not see the body\'s vars; an arrow has no arguments)');
   console.log('  parity: the preamble bundles core _shared/npm-semver.ts, reading only its imports and a facet\'s globals');
 }
 
 // ── the preamble's spec parsing is the supervisor's ─────────────────────────
 {
   for (const [name, range] of [['a', '^1.0.0'], ['alias', 'npm:@scope/pkg@^1.2.0'], ['alias', 'npm:lodash'], ['alias', 'npm:@scope/pkg'], ['x', ''], ['g', 'github:u/r'], ['bad', 'npm:']]) {
-    assert.deepEqual(embedded.parseRegistryRequest(name, range), parseRegistryRequest(name, range), `${name} ${range}`);
+    assert.deepEqual(embedded.PARSE_REGISTRY_REQUEST(name, range), parseRegistryRequest(name, range), `${name} ${range}`);
   }
   console.log('  parity: embedded parseRegistryRequest matches npm-spec.ts');
+}
+
+// ── the module a resolver facet runs reads nothing a facet lacks ────────────
+// The facet function as the Worker's bundler emits it (esbuild, keepNames),
+// assembled with the preamble into the module the Worker Loader runs.
+{
+  const bundled = await build({
+    entryPoints: [new URL('../../packages/worker/src/npm/resolve-one-facet.ts', import.meta.url).pathname],
+    bundle: true, format: 'esm', platform: 'neutral', target: 'esnext', keepNames: true, write: false, logLevel: 'silent',
+  });
+  const dir = mkdtempSync(join(tmpdir(), 'resolve-facet-'));
+  let fnSource;
+  try {
+    const file = join(dir, 'facet.mjs');
+    writeFileSync(file, bundled.outputFiles[0].text);
+    fnSource = (await import(pathToFileURL(file).href)).resolveOnePackumentInFacet.toString();
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
+  assert.match(fnSource, /PARSE_REGISTRY_REQUEST\(/, 'the facet reaches the spec parser through the preamble\'s global');
+  const module = assembleLoaderWorkerModuleSource({ fnSource, preamble: NPM_RESOLVE_PREAMBLE, hasBindings: true });
+  const stray = [...freeNames(module, { sourceType: 'module' })].filter((name) => !FACET_GLOBALS.has(name));
+  assert.deepEqual(stray, [], 'the assembled resolver module reads nothing a facet lacks');
+  console.log('  the assembled, bundled resolver module reads only what it declares and a facet\'s globals');
 }
 
 // ── the preamble's version pick is the module's ─────────────────────────────
