@@ -252,7 +252,8 @@ export async function switchTrees(ctx, head, target, force) {
             continue;
         }
         if (stageType === 'commit') {
-            ops.push({ method: 'rmdir-index', path });
+            // A gitlink that goes takes its directory with it when that is empty (git leaves a populated one).
+            ops.push({ method: workType === 'tree' ? 'rmdir-gitlink' : 'rmdir-index', path });
             continue;
         }
         if (stageType === 'tree') {
@@ -402,10 +403,13 @@ export async function switchTrees(ctx, head, target, force) {
         unindex(op.path);
     }
     // A directory goes after what is in it: deepest first.
-    const directories = ops.filter((op) => op.method === 'rmdir' || op.method === 'rmdir-index' || op.method === 'update-dir-to-blob');
+    const directories = ops.filter((op) => op.method === 'rmdir' || op.method === 'rmdir-index' || op.method === 'rmdir-gitlink' || op.method === 'update-dir-to-blob');
     directories.sort((a, b) => comparePaths(b.path, a.path));
     for (const op of directories) {
         try {
+            // The gitlink goes from the index whether or not its directory can.
+            if (op.method === 'rmdir-gitlink')
+                unindex(op.path);
             if (op.method !== 'rmdir-index')
                 await writer.rmdir(file(op.path));
             unindex(op.path);
