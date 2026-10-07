@@ -130,6 +130,36 @@ function parseMetadataOverlayStats(value) {
         maxAccountedBytes: nonNegativeCounter(stats.maxAccountedBytes),
     };
 }
+/**
+ * A request body that carries options and a stream: a u32 (big-endian)
+ * length, the options' JSON, then the stream's bytes as they come (the
+ * facet's framedRequest reads it).
+ */
+function framedBody(options, stream) {
+    const json = new TextEncoder().encode(JSON.stringify(options));
+    const head = new Uint8Array(4 + json.byteLength);
+    new DataView(head.buffer).setUint32(0, json.byteLength);
+    head.set(json, 4);
+    const reader = stream.getReader();
+    let sentHead = false;
+    return new ReadableStream({
+        async pull(controller) {
+            if (!sentHead) {
+                sentHead = true;
+                controller.enqueue(head);
+                return;
+            }
+            const { done, value } = await reader.read();
+            if (done)
+                controller.close();
+            else
+                controller.enqueue(value);
+        },
+        async cancel(reason) {
+            await reader.cancel(reason);
+        },
+    });
+}
 function addSupervisorRpcCounters(total, value) {
     const counters = parseSupervisorRpcCounters(value);
     for (const key of Object.keys(total)) {
@@ -618,7 +648,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 metadataOverlay: { ...EMPTY_METADATA_OVERLAY_STATS },
             };
         }
-        const { mutationOwner, rotateMutationOwner, ...facetOpts } = opts;
+        const { mutationOwner, rotateMutationOwner, remotePushPack, ...facetOpts } = opts;
         const ctxExports = getCtxExports();
         // One run for every binding this operation mints, a fence's included.
         const writerId = crypto.randomUUID();
@@ -821,34 +851,58 @@ export async function execGitNetwork(ctx, env, opts, /**
                     };
                 }
             }
-            const invocationId = crypto.randomUUID();
             const startedAt = Date.now();
-            const remaining = outerDeadline - startedAt;
-            if (remaining <= 0) {
-                throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
-            }
-            let timeoutHandle;
-            const timeout = new Promise((_, reject) => {
-                timeoutHandle = setTimeout(() => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)), remaining);
-            });
-            const call = entrypoint.fetch(new Request('http://git/op', {
-                method: 'POST',
-                body: JSON.stringify({ ...facetOpts, invocationId }),
-            })).then(async (response) => {
+            const facet = entrypoint;
+            /** One invocation of the facet, within what is left of the operation's time. */
+            const invoke = async (body, framed) => {
+                const remaining = outerDeadline - Date.now();
+                if (remaining <= 0) {
+                    throw new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`);
+                }
+                let timeoutHandle;
+                const timeout = new Promise((_, reject) => {
+                    timeoutHandle = setTimeout(() => reject(new Error(`git ${opts.op} timed out after ${timeoutMs / 1000}s`)), remaining);
+                });
+                const call = facet.fetch(new Request('http://git/op', {
+                    method: 'POST',
+                    body,
+                    ...(framed ? { headers: { 'x-nimbus-git-framed': '1' }, duplex: 'half' } : {}),
+                })).then(async (response) => {
+                    try {
+                        return await response.json();
+                    }
+                    finally {
+                        disposeRpcResource(response);
+                    }
+                });
                 try {
-                    return await response.json();
+                    return await Promise.race([call, timeout]);
                 }
                 finally {
-                    disposeRpcResource(response);
+                    if (timeoutHandle !== undefined)
+                        clearTimeout(timeoutHandle);
                 }
-            });
-            let result;
-            try {
-                result = await Promise.race([call, timeout]);
-            }
-            finally {
-                if (timeoutHandle !== undefined)
-                    clearTimeout(timeoutHandle);
+            };
+            const invocationId = crypto.randomUUID();
+            let result = opts.op === 'remote-push' && remotePushPack
+                // The push's pack, streamed to the facet behind its options (framedRequest).
+                ? await invoke(framedBody({ ...facetOpts, invocationId }, remotePushPack), true)
+                : await invoke(JSON.stringify({ ...facetOpts, invocationId }), false);
+            if (opts.op === 'remote-fetch') {
+                // A pack past one invocation's decoding budget: the same facet goes on with it.
+                let files = nonNegativeCounter(result.filesWritten);
+                let bytes = nonNegativeCounter(result.bytesWritten);
+                const rpc = parseSupervisorRpcCounters(result.supervisorRpc);
+                for (;;) {
+                    const pending = result.success === true ? result.remote?.pending : null;
+                    if (pending === null || pending === undefined)
+                        break;
+                    result = await invoke(JSON.stringify({ ...facetOpts, invocationId: crypto.randomUUID(), remoteFetch: { ...facetOpts.remoteFetch, resume: pending } }), false);
+                    files += nonNegativeCounter(result.filesWritten);
+                    bytes += nonNegativeCounter(result.bytesWritten);
+                    addSupervisorRpcCounters(rpc, result.supervisorRpc);
+                }
+                result = { ...result, filesWritten: files, bytesWritten: bytes, supervisorRpc: rpc };
             }
             const endedAt = Date.now();
             const diagnostic = parsePhaseDiagnostic(result.diagnostic, {
@@ -873,6 +927,7 @@ export async function execGitNetwork(ctx, env, opts, /**
                 fetchedObjects: result.fetched && typeof result.fetched === 'object' && 'fetched' in result.fetched
                     ? nonNegativeCounter(result.fetched.fetched)
                     : undefined,
+                ...(result.remote !== undefined ? { remote: result.remote } : {}),
             };
         }
         finally {
@@ -962,6 +1017,41 @@ function requirePositiveMetadataNumber(value, label) {
   const number = requireMetadataNumber(value, label);
   if (number === 0) throw protocolError(label + ' is invalid');
   return number;
+}
+
+/**
+ * The request's options, and for a framed request (the DO's framedBody: a
+ * u32 length, the options' JSON, then a stream, a push's pack) the rest of
+ * its body as an async iterable, read only as fast as it is pulled.
+ */
+async function facetRequest(request) {
+  if (request.headers.get('x-nimbus-git-framed') !== '1') return await request.json();
+  const reader = request.body.getReader();
+  let held = new Uint8Array(0);
+  const fill = async (needed) => {
+    while (held.byteLength < needed) {
+      const { done, value } = await reader.read();
+      if (done) throw new Error('a framed request ended inside its options');
+      const merged = new Uint8Array(held.byteLength + value.byteLength);
+      merged.set(held);
+      merged.set(value, held.byteLength);
+      held = merged;
+    }
+  };
+  await fill(4);
+  const length = new DataView(held.buffer, held.byteOffset, 4).getUint32(0);
+  await fill(4 + length);
+  const opts = JSON.parse(new TextDecoder().decode(held.subarray(4, 4 + length)));
+  const rest = held.subarray(4 + length);
+  opts.__stream = (async function* () {
+    if (rest.byteLength > 0) yield rest;
+    for (;;) {
+      const { done, value } = await reader.read();
+      if (done) return;
+      yield value;
+    }
+  })();
+  return opts;
 }
 
 function cloneJobMarkerPath(dir) {
@@ -1835,7 +1925,7 @@ export default {
 
     let opts;
     try {
-      opts = await request.json();
+      opts = await facetRequest(request);
     } catch (e) {
       return Response.json({
         success: false, error: 'Invalid request body: ' + (e && e.message),
@@ -2179,6 +2269,24 @@ export default {
         await flushWave();
         for (const dir of directories.reverse()) await fs.promises.rmdir(dir, { recursive: true });
         await flushWave();
+      } else if (opts.op === 'remote-list') {
+        // A remote helper's refs (git/engine.ts): nothing is written.
+        const remote = await __nimbusGitPack.listRefs({ url: opts.url, auth: opts.auth }, { forPush: opts.forPush === true });
+        return respond(true, { remote, metadataOverlay: overlayStats() });
+      } else if (opts.op === 'remote-fetch') {
+        // A remote helper's fetch (git/engine.ts): its pack, .idx, .rev and .git/shallow, below the repository only.
+        const root = normalizePath(opts.dir);
+        const context = gitPackContext(supervisor, stats, opts, null, null, log, root);
+        context.onProgress = undefined;
+        const request = opts.remoteFetch || {};
+        const remote = request.resume
+          ? await __nimbusGitPack.fetchPackResume(context, { pending: request.resume, budgetUnits: opts.historyBudgetUnits })
+          : await __nimbusGitPack.fetchPack(context, { ...request, jobId: invocationId, budgetUnits: opts.historyBudgetUnits });
+        return respond(true, { remote, metadataOverlay: overlayStats() });
+      } else if (opts.op === 'remote-push') {
+        // A remote helper's push (git/engine.ts): the caller's pack, as it streams in.
+        const remote = await __nimbusGitPack.pushPack({ url: opts.url, auth: opts.auth }, opts.remotePush || {}, opts.__stream || null);
+        return respond(true, { remote, metadataOverlay: overlayStats() });
       } else if (opts.op === 'fetch-objects') {
         // A partial clone's missing objects (git/promisor.ts): one request,
         // stored as a promisor pack. Writes land below the repository only.

@@ -14,8 +14,8 @@ runs: `armada run` on the commit, which packs it, plans the suite into
 parts (`scripts/ci/unit.mjs`) and runs them on Cloudflare Containers. The
 job first checks out the armada client at the commit
 `scripts/ci/lib/armada.mjs` pins. It needs the `ARMADA_URL` and
-`ARMADA_TOKEN` repo secrets (the `url` and `token` of
-`~/.config/armada/connection.json`). Exit 1 is a failing test; exit 2
+`ARMADA_TOKEN` repo secrets: the `url` and `token` of Nimbus's own armada
+deployment, `nimbus-armada` (`~/.config/armada/nimbus-armada.json`). Exit 1 is a failing test; exit 2
 means the run could not grade the commit. On one GitHub runner the suite
 did not fit the job's 15 minutes: of the 20 runs from 2026-10-03 to
 2026-10-06 none passed; 19 were cancelled, most at that timeout, and one

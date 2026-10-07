@@ -392,9 +392,12 @@ again.
   `scripts/ci/lib/armada.mjs`): a clean checkout at
   `/mnt/local/nimbus/armada-client`, or at `ARMADA_DIR`. A run on any other
   client is refused, with the commands that make one, and so is a pin no
-  longer on that repository's main (a rewritten history). The connection is
-  `~/.config/armada/connection.json`, or `ARMADA_URL` and `ARMADA_TOKEN`
-  (the GitHub unit job reads both from repo secrets).
+  longer on that repository's main (a rewritten history). It runs on
+  Nimbus's own armada deployment, `nimbus-armada` (its own Worker, bucket
+  and fleet cap), through `~/.config/armada/nimbus-armada.json`
+  (`ARMADA_CONNECTION` in `scripts/ci/lib/armada.mjs`). `ARMADA_URL` and
+  `ARMADA_TOKEN` override it; the GitHub unit job reads both from repo
+  secrets. Never print the token.
 
 **Tiers.** A file's leading comment block may carry one marker:
 
@@ -687,7 +690,24 @@ the upload's own receipt (the ids wrangler returned to that upload), and a
 run whose environment changed under it is not graded. `release.mjs` seals `staged.json` with the digest of the
 whole release manifest: the commit, every module, the docs, every asset.
 `promote.mjs` uploads only a release whose matrix was green and whose
-manifest still has that digest. It checks every file against the manifest
+manifest still has that digest.
+
+The matrix is graded row by row (`scripts/ci/lib/matrix.mjs`). It is green
+if and only if every red row is a probe in `tests/behavioral/_deferred.mjs`,
+the user's record of what a release may ship with, that failed exactly as
+approved. Each entry names the probe, the one assertion that may fail (its
+exact label), the reason, the user's dated approval, the owner and the
+tracking item, plus the approved failure itself: the HTTP status and page
+title its ✗ detail must show. A deferred probe's row is covered only if
+the probe reached its asserter's summary and that assertion failed exactly
+so, and every other assertion passed, setup and cleanup included. Any
+other ✗, any other detail on that assertion, or an exception is red.
+The hosted-demo checks, the production-only checks and the session ledger
+can never be deferred: the record refuses to load an entry for them. A deferred probe still runs, and its output is kept in `staged.json`.
+If it passes, or does not run, the matrix is red, so a deferral ends when
+its fix lands. `promote.mjs` prints every deferral that graded the
+release. Nothing is added to that record without a new approval from the
+user. It checks every file against the manifest
 and runs deploy-isolation's preflight first. On a failed
 check it prints the rollback:
 `bun run --cwd apps/hosted-demo wrangler versions deploy --name nimbus <previous-version-id>@100% -e production`.
