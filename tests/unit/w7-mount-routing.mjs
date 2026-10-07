@@ -599,4 +599,78 @@ function scripted(overrides) {
   assert.deepEqual(s.sqliteNames('shared'), []);
 }
 
+// ── P4b review B ──
+/** Ops (a process's v4 records) as its binding sends them. */
+const ops = (...list) => ({ inodes: [], chunks: [], ops: list });
+
+// 4: a rename, truncate or attribute change under a mount is the mount's.
+// Red before: each was applied to SQLite, under the mount point (ENOENT, or a
+// change the mount hides), whatever the namespace has there.
+{
+  const s = session();
+  s.shared.writeFile('/t', enc.encode('abcdef'));
+  s.shared.writeFile('/m', enc.encode('m'));
+  s.shared.writeFile('/a', enc.encode('moved'));
+  const result = await s.send(ops(
+    { type: 'truncate', path: 'shared/t', size: 2 },
+    { type: 'setattr', path: 'shared/m', attrs: { mode: 0o600 } },
+    { type: 'rename', from: 'shared/a', to: 'shared/b' },
+  ));
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.equal(s.inMount(s.shared, '/t'), 'ab', 'the truncate was not the mount\'s');
+  assert.equal(s.shared.stat('/m').mode & 0o777, 0o600, 'the mode change was not the mount\'s');
+  assert.equal(s.inMount(s.shared, '/a'), null);
+  assert.equal(s.inMount(s.shared, '/b'), 'moved', 'the rename was not the mount\'s');
+  assert.deepEqual(s.sqliteNames('shared'), [], 'a change was written under the mount point');
+}
+// A rename between this filesystem and a mount is EXDEV, as rename(2) across mounts is; nothing moves.
+{
+  const s = session();
+  const seeded = await s.send(wave(file('home/user/x', 'x')));
+  assert.equal(seeded.ok, true);
+  const result = await s.send(ops({ type: 'rename', from: 'home/user/x', to: 'shared/x' }));
+  assert.equal(result.ok, false);
+  assert.equal(result.error.errno, 'EXDEV', JSON.stringify(result.error));
+  assert.equal(s.inSqlite('home/user/x'), 'x');
+  assert.equal(s.inMount(s.shared, '/x'), null);
+}
+
+// 5: rm -r of a mounted directory is checked: what it kept or failed on is the call's error.
+// Red before: the call answered as done, with names still there.
+{
+  const s = session();
+  const stubborn = scripted({
+    removeRecursive: (_self, path) => ({ removed: [], kept: [path + '/locked'], failures: [] }),
+  });
+  s.files.vfs.mount('/stubborn', stubborn);
+  stubborn.mkdir('/d');
+  const result = await s.send(ops({ type: 'call', call: { call: 'rm', path: 'stubborn/d', recursive: true } }));
+  assert.equal(result.ok, false, 'an rm -r that kept a name was answered as done');
+  assert.match(result.error.message, /kept 1 \(\/stubborn\/d\/locked\)/);
+}
+
+// 10: a data call's bytes stay charged while it is gathered, and a call past DATA_CALL_MAX is refused before its bytes are read.
+// Red before: each chunk's credit was given back as it was copied out, so
+// gathered calls held memory no credit covered; any size was gathered whole.
+{
+  const s = session();
+  const { DATA_CALL_MAX } = await import('../../packages/core/src/vfs/sqlite-vfs.ts');
+  const credits = s.engine.writeStreamCredits;
+  let peak = 0;
+  const bytes = new Uint8Array(3 * 1024 * 1024).fill(7);
+  const watch = setInterval(() => { peak = Math.max(peak, credits.stats.current); }, 0);
+  const sent = sendSplit(s, ops({ type: 'call', call: { call: 'writeFile', path: 'home/user/big', mode: 0o644, data: bytes } }), () => {
+    peak = Math.max(peak, credits.stats.current);
+  });
+  const result = await sent;
+  clearInterval(watch);
+  assert.equal(result.ok, true, JSON.stringify(result.error));
+  assert.ok(peak >= bytes.byteLength, `a data call of ${bytes.byteLength} bytes was gathered under ${peak} bytes of credit`);
+  assert.equal(credits.stats.current, 0, 'a made call kept its credit');
+  const big = await s.send(ops({ type: 'call', call: { call: 'writeFile', path: 'home/user/huge', mode: 0o644, data: new Uint8Array(DATA_CALL_MAX + 1) } }));
+  assert.equal(big.ok, false);
+  assert.equal(big.error.errno, 'EINVAL', JSON.stringify(big.error));
+  assert.equal(s.inSqlite('home/user/huge'), null);
+}
+
 console.log('w7-mount-routing: ok');

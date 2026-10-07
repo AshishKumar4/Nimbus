@@ -421,6 +421,15 @@ export declare const ROUTED_LINK_TARGET_MAX = 4096;
  */
 export declare const ROUTED_FILE_MAX: number;
 /**
+ * The most bytes one data call (W7DataCall: a writeFile, appendFile or
+ * write at an offset) carries. Its bytes are held until the call is made,
+ * under credit its record reserves whole when it begins, as a routed
+ * file's are; a client splits a larger write into pieces of this size
+ * (process-fs-client's DATA_PIECE_BYTES, WAVE_BYTES). A larger call is
+ * refused (EINVAL) before any of its bytes are read.
+ */
+export declare const DATA_CALL_MAX: number;
+/**
  * A wave's record that the namespace places on a mount (WaveRouter.apply),
  * each the single call a program would make there. Paths are where the
  * namespace's lookup placed them ('/'-rooted, the directory's links

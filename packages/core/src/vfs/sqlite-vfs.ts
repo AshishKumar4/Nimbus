@@ -65,6 +65,7 @@ import {
   type BatchInodeEntry,
   type BatchWritePayload,
   type VfsInodeKind,
+  type W7Attrs,
   type W7DataCall,
   type W7DecodedRecord,
   type W7PathCall,
@@ -616,7 +617,11 @@ export type RoutedWaveRecord =
   | { readonly type: 'symlink'; readonly path: string; readonly target: string; readonly slot: string }
   /** A process's call (W7Call), made by the namespace's operation of that name, its data whole. */
   | { readonly type: 'call'; readonly call: W7PathCall }
-  | { readonly type: 'data-call'; readonly call: W7DataCall; readonly path: string; readonly mode: number; readonly bytes: Uint8Array; readonly offset?: number };
+  | { readonly type: 'data-call'; readonly call: W7DataCall; readonly path: string; readonly mode: number; readonly bytes: Uint8Array; readonly offset?: number }
+  /** A process's rename, truncate or attribute change (W7 v4), made by the namespace's operation of that name. */
+  | { readonly type: 'rename'; readonly from: string; readonly to: string }
+  | { readonly type: 'truncate'; readonly path: string; readonly size: number }
+  | { readonly type: 'setattr'; readonly path: string; readonly attrs: W7Attrs };
 
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
@@ -8432,6 +8437,38 @@ export class SqliteVFS {
         at.settleBefore();
         reached();
         await router.apply({ type: 'call', call: { ...call, path: placed } }, cred, at.guard);
+        at.committed(null);
+        return true;
+      }
+      case 'rename': {
+        // Both names placed: on one filesystem, the rename is that one's;
+        // between this filesystem and a mount (or two mounts), EXDEV, as
+        // rename(2) across mounts is. A directory above a mount point is
+        // EBUSY to move, as one is to remove.
+        at.routes.clear();
+        const from = await mountOf('delete', record.from);
+        const to = await mountOf('file', record.to);
+        if (from === null && to === null) return false;
+        if (from === null || to === null || router.placement(from) !== router.placement(to)) {
+          throw vfsError('EXDEV', record.from, `a rename to '${record.to}' crosses a mount`);
+        }
+        at.setPhase('publish');
+        at.settleBefore();
+        reached();
+        await router.apply({ type: 'rename', from, to }, cred, at.guard);
+        at.committed(null);
+        return true;
+      }
+      case 'truncate':
+      case 'setattr': {
+        // A mode changes who may search a directory: later names resolve again.
+        if (record.type === 'setattr') at.routes.clear();
+        const placed = await mountOf('file', record.path);
+        if (placed === null) return false;
+        at.setPhase('publish');
+        at.settleBefore();
+        reached();
+        await router.apply(record.type === 'truncate' ? { type: 'truncate', path: placed, size: record.size } : { type: 'setattr', path: placed, attrs: record.attrs }, cred, at.guard);
         at.committed(null);
         return true;
       }
