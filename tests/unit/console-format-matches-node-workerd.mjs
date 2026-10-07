@@ -111,10 +111,10 @@ try {
     };
     const actual = { stdout: await read('out.txt'), stderr: await read('err.txt') };
     const stdoutLines = actual.stdout.split('\n');
-    const expectedLines = expected.stdout.split('\n');
-    for (let i = 0; i < expectedLines.length; i++) {
-      assert.equal(stdoutLines[i], expectedLines[i], `stdout line ${i + 1} is node's\n--- node:\n${expected.stdout}\n--- session:\n${actual.stdout}`);
-    }
+    const differing = expected.stdout.split('\n').flatMap((line, i) => (stdoutLines[i] === line ? [] : [
+      `line ${i + 1}\n  node:    ${JSON.stringify(line)}\n  session: ${JSON.stringify(stdoutLines[i])}`,
+    ]));
+    assert.deepEqual(differing, [], `stdout differs from node's:\n${differing.join('\n')}\n--- session:\n${actual.stdout}`);
     assert.equal(actual.stdout, expected.stdout, 'stdout is node\'s, byte for byte');
     assert.equal(actual.stderr, expected.stderr, 'stderr is node\'s, byte for byte');
     // At the terminal: colours, as util.inspect's.
