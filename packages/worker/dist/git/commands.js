@@ -11,15 +11,17 @@
 import { ISOLATE_NETWORK } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { engineKey } from '@nimbus-sh/core/runtime/process-files.js';
 import { projectFs } from '../runtime/project-fs.js';
-import { execGitNetwork, GIT_CLONE_JOB_MARKER } from './network-facet.js';
+import { execGitNetwork, GIT_CLONE_JOB_MARKER, runGraphFilters } from './network-facet.js';
 import { generation } from '@nimbus-sh/fabric/generation.js';
 import { cleanUpClone, deleteCloneJob, setCloneJobPhase, writeCloneJob } from './clone-job.js';
 import { packsSeam } from './pack/store.js';
 import { fetchMissingObjects } from './promisor.js';
 import { normalizeVfsPath } from '@nimbus-sh/core/vfs/path.js';
+import { isVfsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 import { dec, enc } from '@nimbus-sh/core/_shared/bytes.js';
 import { DEFAULT_CONTEXT, DEFAULT_RENAME_SCORE, absentSpec, binaryPath, bytesFromBinary, detectRenames, formatNameOnly, formatNameStatus, formatPatch, formatStat, parseRenameScore, pathLine, statFile, StatList, } from './unified-diff.js';
 import { CheckoutRefused, UnmergedIndex, switchTrees } from './worktree/checkout.js';
+import { sparseCheckout } from './sparse-checkout.js';
 import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList } from './worktree/pairs.js';
@@ -289,7 +291,7 @@ function getFlag(args, flag) {
     const prefix = `${flag}=`;
     return args.find((arg) => arg.startsWith(prefix))?.slice(prefix.length) || undefined;
 }
-export const CLONE_USAGE = 'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--branch <name> | -b <name>] [--bg] <url> [dir]';
+export const CLONE_USAGE = 'usage: git clone [-q | --quiet] [--depth <n>] [--no-shallow] [--filter=<spec>] [--sparse] [--branch <name> | -b <name>] [--bg] <url> [dir]';
 const SIZE_SUFFIX = { '': 1, k: 1024, m: 1024 ** 2, g: 1024 ** 3 };
 const FETCH_DEPTH_FLAGS = ['--depth', '--deepen', '--unshallow'];
 /** git's INFINITE_DEPTH (shallow.h): --unshallow asks for this much. */
@@ -457,6 +459,7 @@ export function parseCloneArgs(args) {
     let isBg = false;
     let quiet = false;
     let filter;
+    let sparse = false;
     const positionals = [];
     for (let i = 0; i < args.length; i++) {
         const arg = args[i];
@@ -485,6 +488,10 @@ export function parseCloneArgs(args) {
         else if (arg === '-v' || arg === '--verbose') { /* accepted */ }
         else if (name === '--filter')
             filter = parseCloneFilter(takeValue());
+        else if (arg === '--sparse')
+            sparse = true;
+        else if (arg === '--no-sparse')
+            sparse = false;
         else if (arg.startsWith('-')) {
             throw new Error(`unknown option '${arg}'\n${CLONE_USAGE}`);
         }
@@ -501,6 +508,7 @@ export function parseCloneArgs(args) {
         branch,
         quiet,
         filter,
+        sparse,
     };
 }
 /** fetch, pull and push: `-q`/`--quiet` wherever it appears; the other words keep their order. */
@@ -636,10 +644,14 @@ async function stageTracked(ctx, wrepo, git) {
     const scan = await scanWorktree(await wrepo.worktree(), dc, { untracked: 'no', excludes: null, uncleanIsDirty: true, unmerged: true });
     for (const line of scan.errors.tracked)
         await ctx.stderr.write(`${line}\n`);
+    // add_files_to_cache without include_sparse: what is outside a sparse checkout's cone is not staged.
+    const sparse = await wrepo.sparseMatcher();
     const removed = new Set();
     const added = new NewEntries();
     const objects = await wrepo.objectWriter();
     for (const [i, dirty] of scan.dirty) {
+        if (sparse !== null && !sparse.includes(dc.path(i)))
+            continue;
         const entry = dirty.change === 'D' ? null : await indexEntryFor(wrepo, git, dc, dc.path(i), objects);
         if (entry)
             added.add(entry);
@@ -648,6 +660,8 @@ async function stageTracked(ctx, wrepo, git) {
     }
     // An unmerged path is resolved as add -u resolves it: with what the worktree holds, or by its removal.
     for (const { path, lo, hi, stat } of scan.unmerged) {
+        if (sparse !== null && !sparse.includes(path))
+            continue;
         const entry = stat === null || stat.type === 'directory' ? null : await indexEntryFor(wrepo, git, dc, path, objects);
         if (entry)
             added.add(entry);
@@ -665,9 +679,11 @@ async function stageTracked(ctx, wrepo, git) {
  * reset, a merge), fetch what a partial clone lacks in two requests, as git
  * prefetches a checkout's blobs: the commits' root trees with their subtrees
  * (a tree:<depth> clone has neither), then every blob of those trees the
- * repository does not hold. Nothing is walked outside a partial clone.
+ * repository does not hold. In a sparse checkout (`sparse`), only the blobs
+ * the cone writes: git prefetches the entries it updates, never a
+ * skip-worktree one. Nothing is walked outside a partial clone.
  */
-async function prefetchCommits(git, fs, gitdir, commits, partial) {
+async function prefetchCommits(git, fs, gitdir, commits, partial, sparse = null) {
     if (commits.length === 0 || !await partial(gitdir))
         return;
     const cache = {};
@@ -676,18 +692,24 @@ async function prefetchCommits(git, fs, gitdir, commits, partial) {
         roots.push((await git.readCommit({ fs, gitdir, oid, cache })).commit.tree);
     await fs.packs.prefetch(gitdir, roots);
     const blobs = new Set();
-    const pending = [...roots];
+    const pending = roots.map((oid) => ({ oid, prefix: '' }));
     const seen = new Set();
     while (pending.length > 0) {
-        const tree = pending.pop();
-        if (seen.has(tree))
+        const { oid: tree, prefix } = pending.pop();
+        // A tree seen at one path is seen at another only outside a sparse checkout: its cone is by path.
+        const key = sparse === null ? tree : prefix + '\0' + tree;
+        if (seen.has(key))
             continue;
-        seen.add(tree);
+        seen.add(key);
         for (const entry of (await git.readTree({ fs, gitdir, oid: tree, cache })).tree) {
-            if (entry.type === 'tree')
-                pending.push(entry.oid);
-            else if (entry.type === 'blob')
+            const path = prefix + entry.path;
+            if (entry.type === 'tree') {
+                if (sparse === null || sparse.directory(path))
+                    pending.push({ oid: entry.oid, prefix: path + '/' });
+            }
+            else if (entry.type === 'blob' && (sparse === null || sparse.includes(path))) {
                 blobs.add(entry.oid);
+            }
         }
     }
     await fs.packs.prefetch(gitdir, blobs);
@@ -900,11 +922,22 @@ function* trackedChanges(scan, all) {
     yield* resolved(Infinity);
 }
 const ADD_USAGE = 'usage: git add [-n | --dry-run] [-v | --verbose] [-f | --force] [-A | --all | --no-all] '
-    + '[-u | --update] [--] <pathspec>...\n';
+    + '[-u | --update] [--sparse] [--] <pathspec>...\n';
 /** git add's options this git does not do: they are git's, so they are refused as unsupported, not unknown. */
 const ADD_UNSUPPORTED = new Set(['i', 'p', 'e', 'N', 'U', '--interactive', '--patch', '--edit', '--intent-to-add',
-    '--unified', '--inter-hunk-context', '--renormalize', '--refresh', '--ignore-errors', '--ignore-missing', '--sparse',
+    '--unified', '--inter-hunk-context', '--renormalize', '--refresh', '--ignore-errors', '--ignore-missing',
     '--chmod', '--pathspec-from-file', '--pathspec-file-nul']);
+/** advise_on_updating_sparse_paths: the paths or pathspecs left alone outside a sparse checkout's cone. */
+function sparsePathsAdvice(paths) {
+    return 'The following paths and/or pathspecs matched paths that exist\n'
+        + 'outside of your sparse-checkout definition, so will not be\n'
+        + 'updated in the index:\n'
+        + paths.map((path) => `${path}\n`).join('')
+        + 'hint: If you intend to update such entries, try one of the following:\n'
+        + 'hint: * Use the --sparse option.\n'
+        + 'hint: * Disable or modify the sparsity rules.\n'
+        + 'hint: Disable this message with "git config set advice.updateSparsePath false"\n';
+}
 /**
  * `git add`: what git 2.x stages for its pathspecs. A pathspec takes the
  * changes, deletions and new files below it (as -A does); -u only tracked
@@ -913,6 +946,9 @@ const ADD_UNSUPPORTED = new Set(['i', 'p', 'e', 'N', 'U', '--interactive', '--pa
  * first, then new ones) and stages nothing; -v prints it and stages. A
  * pathspec that matches nothing fails before anything is staged; one that
  * names an ignored path is reported (exit 1) unless -f, the rest still added.
+ * In a sparse checkout, a path outside the cone (or skip-worktree) is left
+ * alone, and named (exit 1) if a pathspec or a new file reaches it, unless
+ * --sparse.
  */
 async function addCommand(ctx, git, vfs, fs, args) {
     let dryRun = false;
@@ -920,6 +956,7 @@ async function addCommand(ctx, git, vfs, fs, args) {
     let force = false;
     let all = null;
     let update = false;
+    let includeSparse = false;
     let dashdash = false;
     const pathArgs = [];
     for (const arg of args) {
@@ -959,6 +996,9 @@ async function addCommand(ctx, git, vfs, fs, args) {
                 case '--update':
                     update = true;
                     break;
+                case '--sparse':
+                    includeSparse = true;
+                    break;
                 default:
                     if (ADD_UNSUPPORTED.has(flag)) {
                         await ctx.stderr.write(`fatal: git add ${flag.length === 1 ? `-${flag}` : flag} is not supported here\n`);
@@ -992,6 +1032,9 @@ async function addCommand(ctx, git, vfs, fs, args) {
     return await wrepo.withIndexLock(async () => {
         const dc = await wrepo.readIndex();
         const excludes = await wrepo.excludes(dc);
+        // Outside a sparse checkout's cone nothing is added or updated, but with --sparse.
+        const sparse = await wrepo.sparseMatcher();
+        const outside = (path) => sparse !== null && !sparse.includes(path);
         // -u updates what the index holds and nothing else; -f takes the ignored files below each pathspec as well.
         const scan = await scanWorktree(await wrepo.worktree(), dc, {
             specs, untracked: update ? 'no' : 'all', excludes, ignoredToo: force, uncleanIsDirty: true, unmerged: true,
@@ -999,13 +1042,35 @@ async function addCommand(ctx, git, vfs, fs, args) {
         // A nested repository stays 'dir/' here, as git prints it; it is added as a gitlink.
         const untracked = scan.untracked.sort(comparePaths);
         const ignored = [];
+        // The pathspecs that reach only what the cone leaves out (find_pathspecs_matching_skip_worktree).
+        const sparseSpecs = [];
         for (const [i, spec] of specs.entries()) {
             if (spec === '')
                 continue;
-            // A pathspec matches what the index holds there, or (but for -u) what is untracked there.
-            const [lo, hi] = dc.rangeUnder(spec);
-            if (dc.find(spec) >= 0 || hi > lo || untracked.some((path) => inSpecs([spec], path.replace(/\/$/, ''))))
+            // A pathspec matches what the index holds there in the cone, or (but for -u) what is untracked there.
+            const matching = function* () {
+                const at = dc.find(spec);
+                if (at >= 0)
+                    yield at;
+                const [lo, hi] = dc.rangeUnder(spec);
+                for (let k = lo; k < hi; k++)
+                    yield k;
+            };
+            let held = false;
+            let leftOut = false;
+            for (const k of matching()) {
+                if (!dc.skipWorktree(k) && !outside(dc.path(k))) {
+                    held = true;
+                    break;
+                }
+                leftOut = true;
+            }
+            if (held || untracked.some((path) => inSpecs([spec], path.replace(/\/$/, ''))))
                 continue;
+            if (!includeSparse && leftOut) {
+                sparseSpecs.push(pathArgs[i]);
+                continue;
+            }
             if (update) {
                 // "Known to git" is the index; git names the first pathspec it holds nothing under.
                 await ctx.stderr.write(`error: pathspec '${pathArgs[i]}' did not match any file(s) known to git\n`);
@@ -1027,8 +1092,12 @@ async function addCommand(ctx, git, vfs, fs, args) {
                 }
             }
         }
-        // read_directory's warnings, then diff-files' lstat failures, then add_files' advice.
-        for (const line of [...scan.errors.untracked, ...scan.errors.tracked])
+        // read_directory's warnings, the pathspecs left out of the cone, diff-files' lstat failures, then add_files' advice.
+        for (const line of scan.errors.untracked)
+            await ctx.stderr.write(`${line}\n`);
+        if (sparseSpecs.length)
+            await ctx.stderr.write(sparsePathsAdvice(sparseSpecs));
+        for (const line of scan.errors.tracked)
             await ctx.stderr.write(`${line}\n`);
         if (ignored.length) {
             await ctx.stderr.write(`The following paths are ignored by one of your .gitignore files:\n${ignored.map((p) => `${p}\n`).join('')}`
@@ -1047,6 +1116,9 @@ async function addCommand(ctx, git, vfs, fs, args) {
         // Tracked paths first, in index order, then the new ones, as git's add_files_to_cache and add_files go.
         for (const { at: i, end, action, stat: st, unmerged } of trackedChanges(scan, all)) {
             const path = dc.path(i);
+            // update_callback: outside the cone a tracked path is not touched (and not named).
+            if (!includeSparse && outside(path))
+                continue;
             if (action === 'remove') {
                 if (show)
                     out += `remove '${path}'\n`;
@@ -1075,8 +1147,14 @@ async function addCommand(ctx, git, vfs, fs, args) {
                     removed.add(k);
         }
         let advised = false;
+        // add_files: a new file outside the cone is named, not added.
+        const sparseFiles = [];
         for (const path of untracked) {
             const repository = path.endsWith('/');
+            if (!includeSparse && outside(repository ? path.slice(0, -1) : path)) {
+                sparseFiles.push(path);
+                continue;
+            }
             let entry = null;
             if (repository || !dryRun) {
                 try {
@@ -1116,11 +1194,13 @@ async function addCommand(ctx, git, vfs, fs, args) {
         }
         if (show)
             await writeBinary(ctx.stdout, binaryPath(out));
+        if (sparseFiles.length)
+            await ctx.stderr.write(sparsePathsAdvice(sparseFiles));
         await objects.flush();
         // Its stat refreshes ride in the one index write that stages (git add writes once).
         if (!dryRun && (removed.size || added.count || dc.refreshed))
             await wrepo.writeIndex(dc, { removed, added });
-        return ignored.length ? 1 : 0;
+        return ignored.length || sparseSpecs.length || sparseFiles.length ? 1 : 0;
     });
 }
 const TAG_USAGE = 'usage: git tag [-a] [-f] [-m <msg> | -F <file>] <tagname> [<commit>]\n'
@@ -1873,6 +1953,9 @@ async function moveWorktree(ctx, git, vfs, fs, repo, oid, { force = false, opera
             root: repo.worktree,
             writer: checkoutWriter(vfs, repo.worktree),
             operation,
+            sparse: await wrepo.sparseMatcher(),
+            // A checkout shows unpack-trees' warnings; a reset does not.
+            warn: force ? undefined : async (text) => { await ctx.stderr.write(text); },
         }, head === EMPTY_TREE ? null : head, await treeOf(wrepo.store, oid), force);
         await wrepo.writeIndex(dc, edit);
     });
@@ -1929,9 +2012,11 @@ async function switchBranch(ctx, git, vfs, fs, dir, ref) {
  * pathspecs name, from the index, or from <tree-ish> into the index as well
  * (overlay mode: a path the tree lacks stays). A pathspec naming nothing fails
  * the command before any file is written, as in git. The files are written as
- * git's checkout writes them: see createGitFs's worktree rule.
+ * git's checkout writes them: see createGitFs's worktree rule. A
+ * skip-worktree entry is not checked out (nor one from the tree that is the
+ * same), but with --ignore-skip-worktree-bits (`ignoreSkipWorktree`).
  */
-async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
+async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs, ignoreSkipWorktree = false) {
     const repo = await discoverRepo(vfs, ctx.cwd);
     if (!repo) {
         await ctx.stderr.write(NOT_A_REPOSITORY);
@@ -1950,7 +2035,8 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
         const dc = await wrepo.readIndex();
         const files = [];
         const matched = new Set();
-        const take = (path, oid, mode) => {
+        // An entry checked out with --ignore-skip-worktree-bits keeps its bit (checkout_entry writes the file only).
+        const take = (path, oid, mode, skipWorktree = false) => {
             // A gitlink is never checked out.
             if ((mode & 0o170000) === 0o160000)
                 return;
@@ -1959,12 +2045,14 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
                 return;
             for (const i of matching)
                 matched.add(i);
-            files.push({ path, oid, mode });
+            files.push({ path, oid, mode, skipWorktree });
         };
+        // mark_ce_for_checkout_overlay: a skip-worktree entry is not matched.
+        const skipped = (i) => !ignoreSkipWorktree && dc.skipWorktree(i);
         if (source === null) {
             for (const i of entriesInSpecs(dc, specs))
-                if (dc.stage(i) === 0)
-                    take(dc.path(i), dc.oid(i), dc.mode(i));
+                if (dc.stage(i) === 0 && !skipped(i))
+                    take(dc.path(i), dc.oid(i), dc.mode(i), dc.skipWorktree(i));
         }
         else {
             const oid = await resolveRevision(git, wrepo.gitFs, repo.gitdir, source, {});
@@ -1974,8 +2062,14 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
             }
             const within = (dir) => inSpecs(specs, dir) || specs.some((spec) => spec.startsWith(`${dir}/`));
             for await (const leaf of treeLeaves(wrepo.store, await treeOf(wrepo.store, oid), '', within)) {
-                if (inSpecs(specs, leaf.path))
-                    take(leaf.path, leaf.oid, leaf.mode);
+                if (!inSpecs(specs, leaf.path))
+                    continue;
+                // update_some: the tree's entry the same as the index's keeps the index's, skip-worktree and all.
+                const i = dc.find(leaf.path);
+                const same = i >= 0 && dc.stage(i) === 0 && dc.oid(i) === leaf.oid && dc.mode(i) === leaf.mode && !dc.intentToAdd(i);
+                if (same && skipped(i))
+                    continue;
+                take(leaf.path, leaf.oid, leaf.mode, same && dc.skipWorktree(i));
             }
         }
         let unmatched = '';
@@ -1990,7 +2084,7 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
         const writer = checkoutWriter(vfs, root);
         await wrepo.store.prefetch(files.map(({ oid }) => oid));
         const added = new NewEntries();
-        for (const { path, oid, mode } of files) {
+        for (const { path, oid, mode, skipWorktree } of files) {
             const file = `${root}/${path}`;
             const { data } = await wrepo.store.read(oid);
             if (mode === 0o120000) {
@@ -2000,7 +2094,7 @@ async function checkoutPaths(ctx, git, vfs, fs, source, pathArgs) {
                 await writer.writeFile(file, data);
                 await writer.chmod(file, mode === 0o100755 ? 0o755 : 0o644);
             }
-            added.add({ path, mode, oid, stat: await wrepo.fs.lstat(path) });
+            added.add({ path, mode, oid, stat: await wrepo.fs.lstat(path), skipWorktree });
         }
         // The index takes each file's fresh stat data (and, from a tree, its blob). An entry a
         // restored path replaces goes, as add_index_entry_with_check replaces it: a file at
@@ -2490,10 +2584,13 @@ async function mergeCommand(ctx, git, fs, vfs, dir, theirs, quiet, partial) {
         await ctx.stderr.write(NOT_A_WORK_TREE);
         return 128;
     }
-    if ((await worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree).readIndex()).unmergedPaths().length) {
+    const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree);
+    if ((await wrepo.readIndex()).unmergedPaths().length) {
         await ctx.stderr.write(unmergedRefusal('Merging'));
         return 128;
     }
+    if (await sparseMergeRefused(ctx, wrepo))
+        return 128;
     const idents = await commitIdents(ctx, git, fs, dir);
     if ('error' in idents) {
         await ctx.stderr.write(idents.error);
@@ -2518,6 +2615,17 @@ async function mergeCommand(ctx, git, fs, vfs, dir, theirs, quiet, partial) {
     if (!quiet)
         await ctx.stdout.write(`Merged ${theirs}\n`);
     return 0;
+}
+/**
+ * A merge in a sparse checkout, refused (true) before anything is touched or
+ * fetched: the merge (isomorphic-git's) reads neither skip-worktree entries
+ * nor the index version they need, until it does.
+ */
+async function sparseMergeRefused(ctx, wrepo) {
+    if (!await wrepo.isSparse())
+        return false;
+    await ctx.stderr.write('fatal: merging in a sparse checkout is not supported yet; nothing was changed\n');
+    return true;
 }
 /** What git's remove_junk says of a clone whose checkout failed after its objects were in (builtin/clone.c junk_leave_repo_msg). */
 const JUNK_LEAVE_REPO_WARNING = "warning: Clone succeeded, but checkout failed.\nYou can inspect what was checked out with 'git status'\nand retry with 'git restore --source=HEAD :/'\n\n";
@@ -2580,27 +2688,42 @@ async function resetIndex(ctx, wrepo, tree, specs, quiet) {
 }
 /**
  * read_from_tree: the index with `tree`'s entries for `specs`, an unchanged
- * one keeping its stat. The index read is dropped here, so a reset holds one
- * index, not two.
+ * one keeping its stat. A changed entry keeps its skip-worktree bit, and a
+ * new one takes it outside a sparse checkout's cone (update_index_from_diff).
+ * The index read is dropped here, so a reset holds one index, not two.
  */
 async function indexFromTree(wrepo, tree, specs) {
     const old = await wrepo.readIndex();
     const removed = new Set();
     const added = new NewEntries();
-    await walkTreeAndIndex(wrepo.store, tree, old, specs, (path, leaf, lo, hi) => {
+    // Read only for a new path: the cone of a sparse checkout, or null.
+    let sparse;
+    await walkTreeAndIndex(wrepo.store, tree, old, specs, async (path, leaf, lo, hi) => {
         if (leaf && hi - lo === 1 && old.stage(lo) === 0 && old.oid(lo) === leaf.oid && old.mode(lo) === leaf.mode)
             return;
         for (let i = lo; i < hi; i++)
             removed.add(i);
-        if (leaf)
-            added.add({ path, mode: leaf.mode, oid: leaf.oid, stat: null });
+        if (!leaf)
+            return;
+        let skipWorktree;
+        if (hi > lo && old.stage(lo) === 0) {
+            skipWorktree = old.skipWorktree(lo);
+        }
+        else {
+            if (sparse === undefined)
+                sparse = await wrepo.sparseMatcher();
+            skipWorktree = sparse !== null && !sparse.includes(path);
+        }
+        added.add({ path, mode: leaf.mode, oid: leaf.oid, stat: null, skipWorktree });
     }, { cacheTree: old.cacheTree() });
     return removed.size || added.count ? DirCache.parse(old.encode({ removed, added }), old.timestamp) : old;
 }
 const RESET_USAGE = 'usage: git reset [--mixed | --soft | --hard] [-q] [<commit>]\n'
     + '   or: git reset [-q] [<tree-ish>] [--] <pathspec>...\n';
 /** `git reset`: --soft moves HEAD, --mixed (the default) the index with it, --hard the worktree too; paths reset index entries. */
-async function resetCommand(ctx, git, vfs, fs, args, prefetch) {
+async function resetCommand(ctx, git, vfs, fs, args, 
+/** Fetch what a partial clone lacks of `commits`, as the worktree at `worktree` (null: bare) checks it out. */
+prefetch) {
     let mode = 'mixed';
     let quiet = false;
     const dashdash = args.indexOf('--');
@@ -2665,7 +2788,7 @@ async function resetCommand(ctx, git, vfs, fs, args, prefetch) {
     }
     // The index and worktree become the target's (a forced checkout, type changes included) before the branch moves.
     if (mode === 'hard') {
-        await prefetch(repo.gitdir, [oid]);
+        await prefetch(repo.gitdir, repo.worktree ?? null, [oid]);
         await moveWorktree(ctx, git, vfs, fs, repo, oid, { force: true });
     }
     else if (mode === 'mixed') {
@@ -2834,7 +2957,7 @@ network = ISOLATE_NETWORK) {
                 return 0;
             }
             case 'clone': {
-                const { url, dest: destArg, depth, isBg, branch, quiet, filter } = parseCloneArgs(subArgs);
+                const { url, dest: destArg, depth, isBg, branch, quiet, filter, sparse } = parseCloneArgs(subArgs);
                 const progress = quiet ? { write() { } } : ctx.stdout;
                 if (!url) {
                     ctx.stderr.write(CLONE_USAGE + '\n');
@@ -2878,6 +3001,7 @@ network = ISOLATE_NETWORK) {
                 // a dynamic worker with its own CPU budget, not the supervisor DO.
                 // It owns the lease from when it is called, and releases it.
                 const doClone = async (job) => {
+                    let cloned = false;
                     try {
                         let result;
                         try {
@@ -2889,6 +3013,7 @@ network = ISOLATE_NETWORK) {
                                 ref: branch,
                                 depth,
                                 filter,
+                                sparse,
                                 quiet,
                                 exclusiveDestination: true,
                                 exclusiveMutationRoot: mutationLease.root,
@@ -2919,6 +3044,7 @@ network = ISOLATE_NETWORK) {
                             await deleteCloneJob(doCtx.storage, job.dir);
                             progress.write(`\n[git] clone complete (${result.filesWritten} files, ` +
                                 `${(result.bytesWritten / 1024).toFixed(1)}KB in ${(result.elapsed / 1000).toFixed(1)}s)\n`);
+                            cloned = true;
                             return true;
                         }
                         ctx.stderr.write(`\n[git] clone failed: ${result.error}\n`);
@@ -2943,6 +3069,24 @@ network = ISOLATE_NETWORK) {
                     }
                     finally {
                         vfs.releaseExclusiveMutation(mutationOwner);
+                        // A full clone's changed-path filters, once it has answered
+                        // (git/pack/graph-filters.ts): in the background, never the
+                        // clone's to wait for or to fail on.
+                        if (cloned && depth === undefined) {
+                            doCtx.waitUntil(runGraphFilters(doCtx, doEnv, {
+                                pid: ctx.pid,
+                                dir: target,
+                                pieceCommits: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_COMMITS) || undefined,
+                                pieceBudgetMs: Number(ctx.env.NIMBUS_GIT_GRAPH_FILTER_PIECE_BUDGET_MS) || undefined,
+                            }, network).then((outcome) => {
+                                // Nothing waits for it: why it left the chain as it is goes to the session's log.
+                                if (outcome.skipped === 'locked' || outcome.skipped === 'moved') {
+                                    console.warn('[git] commit-graph after clone', JSON.stringify({ dir: target, skipped: outcome.skipped }));
+                                }
+                            }, (error) => {
+                                console.warn('[git] commit-graph after clone', JSON.stringify({ dir: target, error: String(error?.message ?? error) }));
+                            }));
+                        }
                     }
                 };
                 // Until doClone owns the lease, this does: a refusal or a failed record releases it.
@@ -3050,6 +3194,38 @@ network = ISOLATE_NETWORK) {
                 return await revParse(ctx, git, fs, repoVfs, subArgs);
             case 'ls-files':
                 return await lsFiles(ctx, git, repoVfs, fs, subArgs);
+            case 'sparse-checkout': {
+                const repo = await discoverRepo(repoVfs, dir);
+                if (!repo) {
+                    await ctx.stderr.write(NOT_A_REPOSITORY);
+                    return 128;
+                }
+                if (!repo.worktree) {
+                    await ctx.stderr.write(NOT_A_WORK_TREE);
+                    return 128;
+                }
+                const root = normalizeVfsPath(repo.worktree);
+                const here = normalizeVfsPath(dir);
+                return await sparseCheckout({
+                    wrepo: worktreeRepo(ctx, git, repoVfs, fs, repo.gitdir, repo.worktree),
+                    root: repo.worktree,
+                    // git's prefix: the command's directory below the top.
+                    prefix: here.startsWith(`${root}/`) ? `${here.slice(root.length + 1)}/` : '',
+                    writer: checkoutWriter(repoVfs, repo.worktree),
+                    realpath: async (path) => {
+                        try {
+                            return await ctx.vfs.realpath(path);
+                        }
+                        catch (error) {
+                            if (isVfsError(error, 'ENOENT') || isVfsError(error, 'ENOTDIR'))
+                                return null;
+                            throw error;
+                        }
+                    },
+                    stdout: async (text) => { await ctx.stdout.write(text); },
+                    stderr: async (text) => { await ctx.stderr.write(text); },
+                }, subArgs);
+            }
             case 'log': {
                 const maxCount = parseInt(getFlag(subArgs, '-n') || getFlag(subArgs, '--max-count') || '10');
                 const oneline = subArgs.includes('--oneline');
@@ -3115,7 +3291,7 @@ network = ISOLATE_NETWORK) {
                 const options = dashdash >= 0 ? subArgs.slice(0, dashdash) : subArgs;
                 if (dashdash >= 0 && dashdash < subArgs.length - 1) {
                     const source = options.find(a => !a.startsWith('-'));
-                    return await checkoutPaths(ctx, git, repoVfs, fs, source ?? null, subArgs.slice(dashdash + 1));
+                    return await checkoutPaths(ctx, git, repoVfs, fs, source ?? null, subArgs.slice(dashdash + 1), options.includes('--ignore-skip-worktree-bits'));
                 }
                 const quiet = options.includes('-q') || options.includes('--quiet');
                 const ref = options.find(a => !a.startsWith('-'));
@@ -3131,8 +3307,10 @@ network = ISOLATE_NETWORK) {
                     await git.branch({ fs, dir, ref });
                 try {
                     const target = await resolveRevision(git, fs, `${dir}/.git`, ref, {});
-                    if (target !== null)
-                        await prefetchCommits(git, fs, `${dir}/.git`, [target], partial);
+                    if (target !== null) {
+                        const sparse = await worktreeRepo(ctx, git, repoVfs, fs, `${dir}/.git`, dir).sparseMatcher();
+                        await prefetchCommits(git, fs, `${dir}/.git`, [target], partial, sparse);
+                    }
                     await switchBranch(ctx, git, repoVfs, fs, dir, ref);
                 }
                 catch (e) {
@@ -3224,6 +3402,10 @@ network = ISOLATE_NETWORK) {
                     await ctx.stderr.write(pullIdents.error);
                     return 128;
                 }
+                // Its merge would be refused: nothing is fetched either.
+                const pullRepo = await discoverRepo(repoVfs, dir);
+                if (pullRepo?.worktree && await sparseMergeRefused(ctx, worktreeRepo(ctx, git, repoVfs, fs, pullRepo.gitdir, pullRepo.worktree)))
+                    return 128;
                 if (!quiet)
                     ctx.stdout.write(`Pulling from ${remote}/${branch}...\n`);
                 const started = Date.now();
@@ -3293,7 +3475,7 @@ network = ISOLATE_NETWORK) {
                 return await mergeCommand(ctx, git, fs, repoVfs, dir, theirs, quiet, partial);
             }
             case 'reset':
-                return await resetCommand(ctx, git, repoVfs, fs, subArgs, (gitdir, commits) => prefetchCommits(git, fs, gitdir, commits, partial));
+                return await resetCommand(ctx, git, repoVfs, fs, subArgs, async (gitdir, worktree, commits) => await prefetchCommits(git, fs, gitdir, commits, partial, worktree === null ? null : await worktreeRepo(ctx, git, repoVfs, fs, gitdir, worktree).sparseMatcher()));
             case 'tag':
                 return await tagCommand(ctx, git, fs, repoVfs, subArgs);
             case 'config': {
