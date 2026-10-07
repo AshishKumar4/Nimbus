@@ -51,6 +51,7 @@
  */
 
 import type { ResolvedPackage } from './resolver.js';
+import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 import type { FacetCachedEntry, FacetRegistryEvent } from './resolve-facet.js';
 import type { PackageStagedArtifactEntry } from '@nimbus-sh/core/runtime/os-contracts.js';
 import type { compareSemver, isSemverRange, ParsedSemver, parseSemver, pickPackumentVersion, resolveVersion } from '@nimbus-sh/core/_shared/npm-semver.js';
@@ -155,10 +156,7 @@ export interface ResolveOneResult {
    * Optional in the type so the supervisor defaults to [] when a facet
    * return omits it.
    */
-  cacheStatEvents?: Array<
-    | { kind: 'hit'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'packument'; bytes: number }
-    | { kind: 'miss'; tier: 'L2' | 'L3' | 'L4'; cacheKind: 'packument' }
-  >;
+  cacheStatEvents?: Array<CacheStatEvent & { cacheKind: 'packument' }>;
   /**
    * Why this task produced no package.
    *

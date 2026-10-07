@@ -3,6 +3,7 @@
 import assert from 'node:assert/strict';
 import {
   buildPreviewHost,
+  buildPublicPreviewHost,
   isPreviewHostRequest,
   isPreviewHostSafeSid,
   parsePreviewHost,
@@ -132,5 +133,25 @@ for (const host of [
   );
 }
 assert.equal(isPreviewHostRequest(new URL(`https://3000--a.${suffix}/`), {}), false);
+
+// build and parse are inverses on all four forms: every (target, sid,
+// capability) has exactly one host, and that host parses back to it. A sid
+// may hold `--`; a port and a name never do.
+{
+  const capability = '0123456789abcdef01234567';
+  for (const sid of ['nimble-otter-4271', 'team--sandbox']) {
+    for (const target of [3000, 'api']) {
+      const named = typeof target === 'number' ? { port: target } : { name: target };
+      assert.deepEqual(parsePreviewHost(buildPreviewHost(sid, target, suffix), suffix), { ...named, sid });
+      assert.deepEqual(
+        parsePreviewHost(buildPublicPreviewHost(sid, target, capability, suffix), suffix),
+        { ...named, sid, capability },
+      );
+    }
+  }
+  // A host the builders never make is not a preview host: a port has one spelling.
+  assert.equal(parsePreviewHost(`03000--nimble-otter-4271.${suffix}`, suffix), null);
+  assert.equal(parsePreviewHost(`${capability}--03000--nimble-otter-4271.${suffix}`, suffix), null);
+}
 
 console.log('preview-host-scheme: ok');

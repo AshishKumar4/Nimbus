@@ -29,7 +29,13 @@
  *
  * Caller-controlled `conditions` lets the same impl serve:
  *   - install/ESM/browser  →  ['import', 'module', 'browser', 'default']
- *   - runtime CJS          →  ['require', 'node', 'default']
+ *   - runtime CJS          →  ['require', 'node', 'default'], and the
+ *     program's own (`node --conditions`), as Node adds them
+ *
+ * `conditions` is the set of active conditions, not an order: a condition
+ * map's own key order decides, the first key that is active (or
+ * `default`) whose target resolves wins, as Node's PACKAGE_TARGET_RESOLVE
+ * (and every bundler's) takes it.
  */
 /** Default conditions for ESM/install/browser resolution. */
 export declare const DEFAULT_ESM_CONDITIONS: string[];
@@ -63,7 +69,7 @@ export declare function parseResolvablePackageJson(text: string): ResolvablePack
  *
  * @param exportsField  Raw value from package.json#exports or #imports
  * @param subpath       '.' for root, './foo' for subpath, '#name' for imports
- * @param conditions    Active conditions, in priority order
+ * @param conditions    The active conditions (the map's key order decides among them)
  * @returns             Relative path target string, or null if not found / forbidden
  */
 export declare function resolveExports(exportsField: ExportsField | undefined, subpath?: string, conditions?: string[]): string | null;

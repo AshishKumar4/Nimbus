@@ -145,7 +145,7 @@ for (const [label, source] of Object.entries(CASES)) {
       'export { "*" as again } from': 'export { "*" as again } from "./dep.mjs"; export const own = 1;',
       'export * as ns beside a "*" re-export': 'export * as ns from "./dep.mjs"; export { "*" as star, default as d } from "./dep.mjs";',
       'import * as and import { "*" as }': 'import * as all from "./dep.mjs"; import { "*" as one } from "./dep.mjs"; export const seen = [Object.keys(all).sort(), one];',
-      // The shape a bundle prints, which the bounded rewrite takes.
+      // The shape a bundle prints.
       'a bundle importing "*"': 'import * as all from "./dep.mjs"; import { "*" as one } from "./dep.mjs"; var seen = [Object.keys(all).sort(), one]; export { seen };',
     };
     /** A module's exports as plain data: a namespace's sorted entries, so Node's and ours compare. */
@@ -184,7 +184,9 @@ for (const [label, source] of Object.entries(CASES)) {
         assert.deepEqual(plain(module.exports), node[label], `${label} (${body}) exports what Node's module does`);
       }
     }
-    assert.deepEqual(bundled, ['a bundle importing "*"'], 'the bundle shape takes the bounded rewrite');
+    // Every module the bounded rewrite can run synchronously takes it: one
+    // without top-level await.
+    assert.deepEqual(bundled, Object.keys(MODULES).filter((label) => !MODULES[label].includes('await')), 'the bounded rewrite takes every synchronous module');
   } finally {
     rmSync(dir, { recursive: true, force: true });
   }
