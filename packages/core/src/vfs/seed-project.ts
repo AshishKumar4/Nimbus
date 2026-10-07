@@ -972,6 +972,8 @@ export function shouldSeedProject(vfs: SqliteVFS): boolean {
     // mount (each placed by the namespace's dispatcher), and none is read
     // from beneath one.
     if (!vfs.placesHere(seedPaths())) return false;
+    // Read as exists reads them: a link at either name followed.
+    if (!vfs.placesHere([SEED_SENTINEL_PATH, SEED_PROJECT_DIR], CRED_KERNEL, { follow: true })) return false;
     if (view.exists(SEED_SENTINEL_PATH)) return false;
     if (view.exists(SEED_PROJECT_DIR)) return false;
     return true;
