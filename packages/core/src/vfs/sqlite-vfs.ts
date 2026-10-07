@@ -573,6 +573,15 @@ export interface WriteStreamReceipt {
   revision?: number;
 }
 
+/**
+ * A wave's consecutive calls that commit together, in one transaction (the
+ * stream's call group): at most this many, or this many bytes of their
+ * data. Measured in process: a writeFile call alone cost 177 us, most of it
+ * its own commit (2026-10-07, apply-prof); a group pays that once.
+ */
+const CALL_GROUP_OPS = 512;
+const CALL_GROUP_BYTES = 1024 * 1024;
+
 /** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
 export const ROUTED_LINK_TARGET_MAX = 4096;
 
@@ -9604,28 +9613,103 @@ export class SqliteVFS {
       applying = null;
     };
     /**
-     * Commit `apply`, the op at the wave's current place, made at `path`: in
-     * a sequenced wave in one transaction with its cursor's move, and either
-     * way answered with the path's revision before it and the session's
-     * after (WaveMutation), read in the turn it commits.
+     * The wave's calls not yet committed: consecutive ones commit together,
+     * in one transaction with their cursor's moves (flushCalls), at the next
+     * record that is no call, or once the group is full. Each is applied by
+     * the namespace's own operation, in order, and answered with its path's
+     * revision right before it and the session's after (WaveMutation); a
+     * data call with its file's stat.
      */
-    const committing = <T>(path: string, apply: () => T): T => {
-      const index = recordIndex;
-      const before = this.revision(path, cred);
-      let value: T;
-      if (sequence === null || applying === null) {
-        value = apply();
-      } else {
-        const seq = applying;
-        value = this.publishedTransaction(() => {
-          const result = apply();
-          this.advanceSequence(sequence.spec.writer, seq);
-          return result;
-        }, (error) => error);
-        advanced(seq);
+    type PendingCall = {
+      index: number;
+      seq: number | null;
+      path: string;
+      paths: number;
+      apply: () => VfsStat | null | void;
+      receipt: boolean;
+    };
+    const pendingCalls: PendingCall[] = [];
+    let pendingCallBytes = 0;
+    /** Apply `calls` in one transaction; the index of the one that threw, and its error, or null. */
+    const applyCalls = (calls: readonly PendingCall[]): { at: number; error: unknown } | { befores: number[]; results: (VfsStat | null | void)[] } => {
+      const befores: number[] = [];
+      const results: (VfsStat | null | void)[] = [];
+      let failed: { at: number; error: unknown } | null = null;
+      try {
+        this.withHolds(holds, () => this.publishedTransaction(() => {
+          for (const [at, call] of calls.entries()) {
+            befores.push(this.revision(call.path, cred));
+            try {
+              results.push(asCaller(call.apply));
+            } catch (error) {
+              failed = { at, error };
+              throw error;
+            }
+            if (sequence !== null && call.seq !== null) this.advanceSequence(sequence.spec.writer, call.seq);
+          }
+        }, (error) => error));
+      } catch (error) {
+        return failed ?? { at: 0, error };
       }
-      (progress.mutations ??= []).push({ index, before, after: this._revision });
-      return value;
+      return { befores, results };
+    };
+    const flushCalls = (): void => {
+      if (pendingCalls.length === 0) return;
+      // The op being decoded now (a routed one settling what came before it) stays the one being applied.
+      const current = applying;
+      const calls = pendingCalls.splice(0);
+      pendingCallBytes = 0;
+      phase = 'publish';
+      options.admit?.();
+      let applied = applyCalls(calls);
+      let refused: { call: PendingCall; error: unknown } | null = null;
+      if ('error' in applied) {
+        // Rolled back whole: the calls before the one refused commit
+        // together again (they did, before it), and its refusal is its answer.
+        const at = applied.at;
+        refused = { call: calls[at]!, error: applied.error };
+        applied = at === 0 ? { befores: [], results: [] } : applyCalls(calls.slice(0, at));
+        if ('error' in applied) {
+          applying = calls[applied.at]!.seq;
+          throw applied.error;
+        }
+      }
+      const after = this._revision;
+      for (const [at, result] of applied.results.entries()) {
+        const call = calls[at]!;
+        progress.committedGroupSequence++;
+        progress.committedPathCount += call.paths;
+        progress.committedOps++;
+        (progress.mutations ??= []).push({ index: call.index, before: applied.befores[at]!, after });
+        if (call.receipt && result) {
+          // The revision its file was published at, as its path reports it.
+          progress.receipts.push({
+            path: call.path, ino: result.ino, mode: result.mode, size: result.size, mtimeMs: result.mtime, ctimeMs: result.ctime,
+            uid: result.uid, gid: result.gid, dev: this.deviceId, revision: this.revision(call.path, cred),
+          });
+        }
+        if (call.seq !== null) advanced(call.seq);
+      }
+      if (refused !== null) {
+        applying = refused.call.seq;
+        throw refused.error;
+      }
+      applying = current;
+    };
+    /**
+     * Queue the call at the wave's current place, made at `path` by `apply`.
+     * `alone`: it may change where later names resolve (a removal, a link,
+     * a rename, an attribute change), so it commits now, after the ones
+     * before it.
+     */
+    const queueCall = (path: string, apply: PendingCall['apply'], options: { bytes?: number; paths?: number; receipt?: boolean; alone?: boolean } = {}): void => {
+      endLeading();
+      flushGroup();
+      flushDirectories();
+      pendingCalls.push({ index: recordIndex, seq: applying, path, paths: options.paths ?? 1, apply, receipt: options.receipt === true });
+      applying = null;
+      pendingCallBytes += options.bytes ?? 0;
+      if (options.alone === true || pendingCalls.length >= CALL_GROUP_OPS || pendingCallBytes >= CALL_GROUP_BYTES) flushCalls();
     };
 
     try {
@@ -9669,6 +9753,10 @@ export class SqliteVFS {
         if (this.exclusiveMutationLeases.size > 0) {
           for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, holds);
         }
+        // A record that is no call: the calls before it commit first.
+        const partOfCall = record.type === 'call' || (record.type === 'file-begin' && record.inode.call !== undefined)
+          || (callFile !== null && (record.type === 'file-chunk' || record.type === 'file-end'));
+        if (!partOfCall) flushCalls();
         if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end') recordIndex++;
         if (sequence !== null && record.type !== 'batch-end') {
           if (record.type === 'file-chunk' || record.type === 'file-end') {
@@ -9708,6 +9796,7 @@ export class SqliteVFS {
           },
           // Whatever the wave wrote here before the record commits first.
           settleBefore: () => {
+            flushCalls();
             endLeading();
             flushDirectories();
             flushGroup();
@@ -9762,21 +9851,8 @@ export class SqliteVFS {
           if (record.streamContentId !== file.streamContentId) throw vfsError('EINVAL', `streamed file-end ownership mismatch: ${record.path}`);
           if (file.received !== file.size) throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
           phase = 'publish';
-          endLeading();
-          flushGroup();
-          flushDirectories();
-          options.admit?.();
           const bytes = concatBytes(file.parts);
-          const stat = this.withHolds(holds, () => committing(file.path, () => asCaller(() => this.applyDataCall(file, bytes, cred))));
-          if (stat !== null) {
-            progress.receipts.push({
-              path: file.path, ino: stat.ino, mode: stat.mode, size: stat.size, mtimeMs: stat.mtime, ctimeMs: stat.ctime,
-              uid: stat.uid, gid: stat.gid, dev: this.deviceId, revision: this._revision,
-            });
-          }
-          progress.committedGroupSequence++;
-          progress.committedPathCount++;
-          progress.committedOps++;
+          queueCall(file.path, () => this.applyDataCall(file, bytes, cred), { bytes: bytes.byteLength, receipt: true });
           continue;
         }
         // A name a delegation's holder made is the caller's, as a create of
@@ -9943,31 +10019,22 @@ export class SqliteVFS {
             case 'setattr': {
               // Like a delete, it observes everything the stream wrote before it.
               phase = 'publish';
-              endLeading();
-              flushGroup();
-              flushDirectories();
-              options.admit?.();
-              committing(record.type === 'rename' ? record.from : record.path, () => asCaller(() => {
+              queueCall(record.type === 'rename' ? record.from : record.path, () => {
                 if (record.type === 'rename') this.rename(record.from, record.to, cred);
                 else if (record.type === 'truncate') this.truncate(record.path, record.size, cred);
                 else if ('mode' in record.attrs) this.chmod(record.path, record.attrs.mode, cred);
                 else if ('uid' in record.attrs) this.chown(record.path, record.attrs.uid, record.attrs.gid, cred, true);
                 else this.utimes(record.path, record.attrs.atime, record.attrs.mtime, cred, true);
-              }));
-              progress.committedGroupSequence++;
-              progress.committedPathCount += record.type === 'rename' ? 2 : 1;
-              progress.committedOps++;
+              }, { paths: record.type === 'rename' ? 2 : 1, alone: true });
               break;
             }
             case 'call': {
               // A call observes everything the stream wrote before it.
               phase = 'publish';
-              endLeading();
-              flushGroup();
-              flushDirectories();
-              options.admit?.();
               const call = record.call;
-              committing(call.path, () => asCaller(() => {
+              // A mkdir commits with the calls beside it; any other may change
+              // where later names resolve, and commits now.
+              queueCall(call.path, () => {
                 if (call.call === 'mkdir') {
                   // mkdir(2): a name that is there, whatever it is, is EEXIST
                   // (the engine's mkdir keeps an existing directory as made);
@@ -9987,10 +10054,7 @@ export class SqliteVFS {
                   if (at !== null) this.truncate(at, call.size, cred);
                 }
                 else this.symlink(call.target, call.path, cred, call.ino);
-              }));
-              progress.committedGroupSequence++;
-              progress.committedPathCount++;
-              progress.committedOps++;
+              }, { alone: call.call !== 'mkdir' });
               break;
             }
             case 'batch-end':
@@ -10011,7 +10075,13 @@ export class SqliteVFS {
           return { ok: true, ...progress };
         }
       }
-    } catch (error) {
+    } catch (caught) {
+      let error = caught;
+      // The calls decoded before a stream that failed (cut, malformed) commit
+      // as they would have: a re-send then carries only what came after them.
+      if (pendingCalls.length > 0) {
+        try { flushCalls(); } catch (refusal) { error = refusal; }
+      }
       const errno = errnoOf(error);
       // The op being applied was refused: its answer, kept for a re-send; nothing after it applies.
       if (sequence !== null && applying !== null && errno !== undefined && SYSCALL_VERDICTS.has(errno as VfsErrorCode)) {

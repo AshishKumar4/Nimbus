@@ -183,6 +183,44 @@ async function cut(ops, keep) {
   assert.equal(file.error.errno, 'EEXIST');
 }
 
+// ── Consecutive calls commit together; a refusal among them commits the ones before it ──
+{
+  const harness = createSqliteVfsTestHarness();
+  const engine = new SqliteVFS(harness.sql, harness.ctx);
+  const kernel = engine.as(CRED_KERNEL);
+  kernel.mkdir('home/user/g', { recursive: true });
+  kernel.chown('home/user', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  kernel.chown('home/user/g', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  // Outermost commits only: a nested transactionSync is a savepoint of its parent.
+  const storage = harness.ctx.storage;
+  const nested = storage.transactionSync.bind(storage);
+  let depth = 0;
+  let commits = 0;
+  storage.transactionSync = (callback) => {
+    if (depth === 0) commits++;
+    depth++;
+    try { return nested(callback); } finally { depth--; }
+  };
+  const user = engine.as(CRED_SESSION_USER);
+  const ops = Array.from({ length: 200 }, (_, i) => write(`home/user/g/f${i}`, `${i}`));
+  const before = commits;
+  const grouped = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops }), { sequence: { writer: 'g', first: 1, ack: 0 } });
+  assert.equal(grouped.ok, true, JSON.stringify(grouped.error));
+  assert.deepEqual(grouped.sequence, { cursor: 200 });
+  assert.ok(commits - before <= 4, `200 writeFile calls took ${commits - before} commits`);
+  assert.equal(new TextDecoder().decode(kernel.readFile('home/user/g/f199')), '199');
+  // A refusal in the middle of a group: those before it land, it and those after it do not.
+  kernel.mkdir('home/user/g/taken');
+  const mixed = [write('home/user/g/m0', 'a'), write('home/user/g/m1', 'b'), mkdir('home/user/g/taken'), write('home/user/g/m2', 'c')];
+  const refused = await user.writeStream(encodeWriteBatchStream({ inodes: [], chunks: [], ops: mixed }), { sequence: { writer: 'g', first: 201, ack: 200 } });
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error.errno, 'EEXIST');
+  assert.equal(refused.sequence.refused.seq, 203);
+  assert.equal(refused.committedOps, 2);
+  assert.equal(kernel.exists('home/user/g/m1'), true);
+  assert.equal(kernel.exists('home/user/g/m2'), false, 'a call after the refused one landed');
+}
+
 // ── Through the supervisor op: the writer is the process's epoch; on a mount too ──
 {
   const s = session();

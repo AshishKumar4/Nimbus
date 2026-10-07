@@ -153,12 +153,13 @@ await differential('rmdir of a file is ENOTDIR', [{ call: 'rmdir', path: 'home/u
 
 // ── Receipts: each call's file, with the revision its writeFile answers ──
 {
-  const { result } = await asWave([
+  const { result, raw } = await asWave([
     { call: 'writeFile', path: 'home/user/r1', mode: 0o644, data: enc.encode('1') },
     { call: 'writeFile', path: 'home/user/r2', mode: 0o644, data: enc.encode('22') },
   ]);
   assert.deepEqual(result.receipts.map((receipt) => [receipt.path, receipt.size]), [['home/user/r1', 1], ['home/user/r2', 2]]);
-  assert.ok(result.receipts[1].revision > result.receipts[0].revision, 'each receipt carries its own revision');
+  // Consecutive calls commit together: each receipt is the revision its file was published at, as its path reports it.
+  for (const receipt of result.receipts) assert.equal(receipt.revision, raw.revision(receipt.path), `${receipt.path}'s receipt is the revision it was published at`);
 }
 
 // ── The wire: calls round-trip, with their fields exactly ───────────────
