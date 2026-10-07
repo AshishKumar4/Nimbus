@@ -23,13 +23,7 @@
  * mechanism, one step instead of the fixpoint, so a unit test pays ~1s
  * rather than a full build.
  */
-import {
-  REPO_ROOT,
-  diffSnapshots,
-  runBuildFixpoint,
-  snapshotBuildOutputs,
-  withCheckoutLock,
-} from '../../../scripts/dist-integrity.mjs';
+import { REPO_ROOT, rebuildDrift } from '../../../scripts/dist-integrity.mjs';
 
 /**
  * Everything `bundle:facets` can write, without naming its outputs: the
@@ -48,15 +42,9 @@ const REGENERATE = [{
 }];
 
 export function assertGeneratedSourcesAreCurrent({ root = REPO_ROOT } = {}) {
-  // One lock from the first snapshot to the last: no other gate on this
-  // checkout can move the tree in between.
-  const { before, after } = withCheckoutLock(root, () => {
-    const before = snapshotBuildOutputs({ root, roots: ROOTS });
-    runBuildFixpoint({ root, steps: REGENERATE, roots: ROOTS, before });
-    return { before, after: snapshotBuildOutputs({ root, roots: ROOTS }) };
-  });
-
-  const { changed, added, removed } = diffSnapshots(before, after);
+  // The gate's own drift over these roots: under one checkout lock from the
+  // first snapshot to the last, and rolled back if the regeneration fails.
+  const { changed, added, removed } = rebuildDrift({ root, roots: ROOTS, steps: REGENERATE });
   const moved = [...changed, ...added, ...removed];
   if (moved.length > 0) {
     throw new Error(

@@ -20,7 +20,7 @@ import assert from 'node:assert/strict';
 import { spawn, spawnSync } from 'node:child_process';
 import { createHash } from 'node:crypto';
 import { chmodSync, existsSync, lstatSync, mkdirSync, mkdtempSync, readFileSync, readdirSync, readlinkSync, rmSync, statSync, symlinkSync, writeFileSync } from 'node:fs';
-import { hostname, tmpdir } from 'node:os';
+import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 
@@ -28,9 +28,11 @@ import {
   BuildFailure,
   assertDistMatchesSource,
   checkStagedAssets,
+  fingerprintBuildInputs,
   rebuildDrift,
   runBuildFixpoint,
   snapshotBuildOutputs,
+  withCheckoutLock,
 } from '../../scripts/dist-integrity.mjs';
 import { assertGeneratedSourcesAreCurrent } from './lib/generated-freshness.mjs';
 
@@ -535,7 +537,8 @@ import { readdirSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
 const tmp = process.env.TMPDIR;
 const held = readdirSync(tmp).filter((name) => name.startsWith('dist-integrity-held-'));
-writeFileSync('../../held-copies', String(held.reduce((n, dir) => n + readdirSync(join(tmp, dir)).length, 0)));
+// The copies, not the manifest every hold writes beside them.
+writeFileSync('../../held-copies', String(held.reduce((n, dir) => n + readdirSync(join(tmp, dir)).filter((name) => name !== '.dist-integrity-held.json').length, 0)));
 `);
     writeFileSync(join(worker, 'package.json'), JSON.stringify({ name: 'w', type: 'module', scripts: { 'bundle:facets': 'node facets.mjs' } }));
     git(root, 'init', '-q');
@@ -668,7 +671,7 @@ process.exit(1);
     symlinkSync('payload.js', join(pkg, 'dist', 'link.js'));
     writeFileSync(join(pkg, 'build.mjs'), BUILD_MJS + 'process.exit(1);\n');
     const before = snapshotBuildOutputs({ root, roots: ROOTS });
-    assert.equal(before.get('packages/worker/dist/link.js'), 'link:payload.js', 'a symlink is recorded by its target, not followed');
+    assert.match(before.get('packages/worker/dist/link.js'), /^link:payload\.js:[0-9a-f]{64}$/, 'a symlink is recorded by its target and the bytes behind it');
     const message = await buildFailure(root);
     const link = join(pkg, 'dist', 'link.js');
     assert.ok(lstatSync(link).isSymbolicLink(), 'dist/link.js is a symlink again');
@@ -705,16 +708,146 @@ process.exit(1);
   console.log('  ok  [21] a symlink planted by a failed build is replaced; nothing is written or chmodded through it');
 }
 
-// ── [22] A lock left by a process that is gone is broken ─────────────
+// ── The checkout lock is the kernel's ────────────────────────────────
+// flock(2) on a file in the git dir: released when its process ends,
+// however it ends, the same in every PID namespace, and held by no process
+// the gate starts.
+
+/** A fixture whose one step marks that it runs, then waits (bounded) for `go` beside it. */
+async function blockingFixture() {
+  const { root, pkg } = await fixtureAtFixpoint();
+  const manifest = JSON.parse(readFileSync(join(pkg, 'package.json'), 'utf8'));
+  manifest.scripts['blocking-build'] = 'node blocking-build.mjs';
+  writeFileSync(join(pkg, 'package.json'), JSON.stringify(manifest));
+  writeFileSync(join(pkg, 'blocking-build.mjs'), `
+import { existsSync, writeFileSync } from 'node:fs';
+writeFileSync('../../started', String(process.pid));
+const until = Date.now() + 120_000;
+while (!existsSync('../../go') && Date.now() < until) Atomics.wait(new Int32Array(new SharedArrayBuffer(4)), 0, 0, 20);
+`);
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'a blocking build');
+  const gateModule = new URL('../../scripts/dist-integrity.mjs', import.meta.url).href;
+  writeFileSync(join(root, 'gate.mjs'), `
+import { runBuildFixpoint } from ${JSON.stringify(gateModule)};
+runBuildFixpoint({ root: process.argv[2], roots: ['packages/worker'], steps: [{ cwd: 'packages/worker', script: 'blocking-build', why: 'blocks' }] });
+console.log('RESULT ok');
+`);
+  return { root, pkg };
+}
+
+/** Resolve once `predicate` holds, polling; fail loudly after a minute. */
+async function until(what, predicate) {
+  for (const deadline = Date.now() + 60_000; !predicate();) {
+    if (Date.now() > deadline) throw new assert.AssertionError({ message: `timed out waiting for ${what}` });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+  }
+}
+
+/** The lock, taken from this process with a short wait: the BuildFailure it throws when held, or null. */
+function lockRefusal(root, waitMs) {
+  try {
+    withCheckoutLock(root, () => {}, { waitMs });
+    return null;
+  } catch (error) {
+    assert.ok(error instanceof BuildFailure, String(error?.stack));
+    return error.message;
+  }
+}
+
+// ── [22] RED: a gate killed mid-build leaves no lock, and its build step none ─
+// Its step outlives it, as an orphan; the lock goes with the gate.
+// The killed gate's held copies stay, as a dead gate's do, in this case's own tmpdir.
 {
-  const { root } = await fixtureAtFixpoint();
-  const gone = spawnSync(process.execPath, ['-e', 'process.exit(0)']).pid;
-  const gitDir = spawnSync('git', ['rev-parse', '--absolute-git-dir'], { cwd: root, encoding: 'utf8' }).stdout.trim();
-  const lock = join(gitDir, 'nimbus-dist-integrity.lock');
-  writeFileSync(lock, JSON.stringify({ pid: gone, start: null, host: hostname(), root, since: '2026-01-01T00:00:00.000Z' }));
-  await assertDistMatchesSource({ root, roots: ROOTS, steps: STEPS });
-  assert.ok(!existsSync(lock), 'the gate broke the stale lock, ran, and released its own');
-  console.log('  ok  [22] a checkout lock whose process is gone is broken, and the gate runs');
+  await withPrivateTmp(async () => {
+    const { root } = await blockingFixture();
+    const gate = spawn(process.execPath, [join(root, 'gate.mjs'), root], { cwd: root, stdio: 'ignore' });
+    await until('the gate to start its step', () => existsSync(join(root, 'started')));
+    assert.match(lockRefusal(root, 500) ?? '', /has held the checkout lock .* for longer than/, 'the running gate holds the lock');
+    gate.kill('SIGKILL');
+    await new Promise((resolve) => gate.on('exit', resolve));
+    const orphan = Number(readFileSync(join(root, 'started'), 'utf8'));
+    try {
+      assert.ok(existsSync(`/proc/${orphan}`), 'the killed gate\'s build step is still running');
+      assert.equal(lockRefusal(root, 5_000), null, 'the next gate takes the lock at once: nothing to break, and the orphaned step does not hold it');
+    } finally {
+      writeFileSync(join(root, 'go'), '');
+    }
+  });
+  console.log('  ok  [22] a gate killed mid-build releases the lock; the build step it left running does not hold it');
+}
+
+// ── [23] RED: a gate in another PID namespace is waited for, not broken ─
+// run-bounded runs every gate under bwrap --unshare-pid: a pid written there
+// names nothing outside it.
+{
+  assert.ok(existsSync('/usr/bin/bwrap'), 'this case needs bubblewrap (run-bounded and the CI image have it)');
+  const { root } = await blockingFixture();
+  const gate = spawn('/usr/bin/bwrap', [
+    '--unshare-user', '--unshare-pid', '--die-with-parent', '--bind', '/', '/', '--proc', '/proc', '--dev-bind', '/dev', '/dev',
+    '--', process.execPath, join(root, 'gate.mjs'), root,
+  ], { cwd: root, stdio: ['ignore', 'pipe', 'pipe'] });
+  let out = '';
+  gate.stdout.on('data', (chunk) => { out += chunk; });
+  gate.stderr.on('data', (chunk) => { out += chunk; });
+  const done = new Promise((resolve) => gate.on('exit', resolve));
+  await until('the namespaced gate to start its step', () => existsSync(join(root, 'started')));
+  const refused = lockRefusal(root, 1_500);
+  writeFileSync(join(root, 'go'), '');
+  assert.match(refused ?? '', /has held the checkout lock .* for longer than/, 'a gate in another PID namespace holds the lock for as long as it runs');
+  await done;
+  assert.match(out, /RESULT ok/, `the namespaced gate finishes:\n${out}`);
+  assert.equal(lockRefusal(root, 5_000), null, 'and once it ends, the lock is free');
+  console.log('  ok  [23] a gate in another PID namespace holds the lock until it ends, and is never broken');
+}
+
+// ── [24] RED: new bytes behind an unchanged input symlink are a change ─
+// The fixpoint record skips the rebuild when the inputs fingerprint the same.
+{
+  const root = mkdtempSync(join(tmpdir(), 'dist-integrity-input-link-'));
+  process.on('exit', () => rmSync(root, { recursive: true, force: true }));
+  mkdirSync(join(root, 'packages', 'worker', 'src'), { recursive: true });
+  mkdirSync(join(root, 'shared'));
+  writeFileSync(join(root, 'shared', 'real.ts'), 'export const REAL = 1;\n');
+  symlinkSync('../../../shared/real.ts', join(root, 'packages', 'worker', 'src', 'linked.ts'));
+  git(root, 'init', '-q');
+  git(root, 'add', '-A');
+  git(root, 'commit', '-qm', 'a source symlink');
+  const first = fingerprintBuildInputs({ root }).fingerprint;
+  writeFileSync(join(root, 'shared', 'real.ts'), 'export const REAL = 2;\n');
+  assert.notEqual(fingerprintBuildInputs({ root }).fingerprint, first, 'the build reads the new bytes, so the fingerprint moves');
+  console.log('  ok  [24] new bytes behind an unchanged source symlink move the input fingerprint');
+}
+
+// ── [25] RED: what a build that dies mid-way leaves is enough to recover ─
+// The copies are in place before the first step: a dirty symlink as the same
+// link, and a manifest of every path's mode or link and the HEAD.
+{
+  await withPrivateTmp(async () => {
+    const { root, pkg } = await committedFixture();
+    symlinkSync('payload.js', join(pkg, 'dist', 'link.js'));
+    chmodSync(join(pkg, 'dist', 'held-a.js'), 0o640);
+    // What the build sees of its held copies, as a process that died now would leave them.
+    writeFileSync(join(pkg, 'build.mjs'), `
+import { lstatSync, readFileSync, readdirSync, readlinkSync, writeFileSync } from 'node:fs';
+import { join } from 'node:path';
+const tmp = process.env.TMPDIR;
+const [held] = readdirSync(tmp).filter((name) => name.startsWith('dist-integrity-held-'));
+const link = join(tmp, held, 'packages/worker/dist/link.js');
+writeFileSync('../../held-seen.json', JSON.stringify({
+  link: lstatSync(link).isSymbolicLink() ? readlinkSync(link) : null,
+  manifest: JSON.parse(readFileSync(join(tmp, held, '.dist-integrity-held.json'), 'utf8')),
+}));
+process.exit(1);
+`);
+    await buildFailure(root);
+    const seen = JSON.parse(readFileSync(join(root, 'held-seen.json'), 'utf8'));
+    assert.equal(seen.link, 'payload.js', 'the dirty symlink is held as the same link');
+    assert.equal(seen.manifest.head, git(root, 'rev-parse', 'HEAD').stdout.trim(), 'the manifest names the HEAD the other files are');
+    assert.deepEqual(seen.manifest.entries['packages/worker/dist/link.js'], { link: 'payload.js' });
+    assert.deepEqual(seen.manifest.entries['packages/worker/dist/held-a.js'], { mode: 0o640 });
+  });
+  console.log('  ok  [25] before the first step, the held copies carry dirty symlinks as links, and a manifest of every mode and link');
 }
 
 console.log('dist-integrity: all cases passed');
