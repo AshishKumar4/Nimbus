@@ -160,14 +160,21 @@ export async function prefetchForRequire(vfs, entryCode, cwd, entryFile, maxBund
     function unitClosure(root, staged) {
         const members = new Set(staged);
         const optional = (path) => speculative.has(path) && bundle[path] !== undefined;
+        // Walked by its own seen-set: a cell the unit staged is a member already,
+        // and the walk still goes through it to what it reaches (B → C → S, C
+        // staged by B, S by an earlier root).
+        const seen = new Set();
         const queue = optional(root) ? [root] : [];
-        if (queue.length > 0)
-            members.add(root);
+        for (const path of queue) {
+            seen.add(path);
+            members.add(path);
+        }
         while (queue.length > 0) {
             const at = queue.pop();
             for (const to of edges.get(at) ?? []) {
-                if (members.has(to) || !optional(to))
+                if (seen.has(to) || !optional(to))
                     continue;
+                seen.add(to);
                 members.add(to);
                 queue.push(to);
             }
