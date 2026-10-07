@@ -505,6 +505,12 @@ export class NimbusWrangler {
 
   private buildInnerEnv(): Record<string, any> {
     const env: Record<string, any> = {};
+    // Every binding phase after vars claims its name here, so a name a
+    // vars entry or an earlier binding already took is overwritten loudly.
+    const claim = (kind: string, name: string, value: unknown): void => {
+      if (name in env) this.onLog(`  \x1b[33mwarning: ${kind} binding '${name}' overwrites a previous key\x1b[0m\n`);
+      env[name] = value;
+    };
 
     // ── vars ──
     // Straight string copy. Collisions with synthesized binding names
@@ -556,17 +562,14 @@ export class NimbusWrangler {
       } else if (!doId) {
         this.onLog(`  \x1b[33mwarning: supervisor DO id unavailable; env.${binding} will not work\x1b[0m\n`);
       } else {
-        if (binding in env) {
-          this.onLog(`  \x1b[33mwarning: assets binding '${binding}' overwrites a vars/services key with the same name\x1b[0m\n`);
-        }
-        env[binding] = ctxExports.NimbusAssetsRPC({
+        claim('assets', binding, ctxExports.NimbusAssetsRPC({
           props: {
             vfsRoot: this.root,
             assetsDir,
             doId,
             route: hostRoute() ?? undefined,
           },
-        });
+        }));
       }
     }
 
@@ -590,12 +593,9 @@ export class NimbusWrangler {
         for (const wl of this.config.worker_loaders) {
           const binding = wl.binding;
           if (!binding) continue;
-          if (binding in env) {
-            this.onLog(`  \x1b[33mwarning: worker_loaders binding '${binding}' overwrites a previous key\x1b[0m\n`);
-          }
-          env[binding] = ctxExports.NimbusLoaderRPC({
+          claim('worker_loaders', binding, ctxExports.NimbusLoaderRPC({
             props: { depth: nextDepth },
-          });
+          }));
         }
       }
     }
@@ -619,16 +619,13 @@ export class NimbusWrangler {
         }
       } else {
         for (const bindingName of doBindingNames) {
-          if (bindingName in env) {
-            this.onLog(`  \x1b[33mwarning: durable_objects binding '${bindingName}' overwrites a previous key\x1b[0m\n`);
-          }
-          env[bindingName] = ctxExports.NimbusDurableObjectNamespace({
+          claim('durable_objects', bindingName, ctxExports.NimbusDurableObjectNamespace({
             props: {
               bindingName,
               supervisorDoId: doId,
               route: hostRoute() ?? undefined,
             },
-          });
+          }));
         }
       }
     }
@@ -643,15 +640,12 @@ export class NimbusWrangler {
     if (this.config?.kv_namespaces?.length) {
       for (const kv of this.config.kv_namespaces) {
         if (!kv.binding) continue;
-        if (kv.binding in env) {
-          this.onLog(`  \x1b[33mwarning: kv_namespaces binding '${kv.binding}' overwrites a previous key\x1b[0m\n`);
-        }
-        env[kv.binding] = new KvEmulator({
+        claim('kv_namespaces', kv.binding, new KvEmulator({
           vfs: this.vfs,
           root: this.root,
           binding: kv.binding,
           onLog: this.onLog,
-        });
+        }));
       }
     }
 
@@ -673,9 +667,6 @@ export class NimbusWrangler {
       } else {
         for (const d1 of this.config.d1_databases) {
           if (!d1.binding) continue;
-          if (d1.binding in env) {
-            this.onLog(`  \x1b[33mwarning: d1_databases binding '${d1.binding}' overwrites a previous key\x1b[0m\n`);
-          }
           const emu = new D1Emulator({
             sqlStorage,
             binding: d1.binding,
@@ -684,7 +675,7 @@ export class NimbusWrangler {
             migrationsDir: d1.migrations_dir,
             onLog: this.onLog,
           });
-          env[d1.binding] = emu;
+          claim('d1_databases', d1.binding, emu);
           // Fire migrations in the background. They're idempotent so
           // racing rebuilds is safe.
           if (d1.migrations_dir) {
@@ -711,15 +702,12 @@ export class NimbusWrangler {
     if (this.config?.r2_buckets?.length) {
       for (const r2 of this.config.r2_buckets) {
         if (!r2.binding) continue;
-        if (r2.binding in env) {
-          this.onLog(`  \x1b[33mwarning: r2_buckets binding '${r2.binding}' overwrites a previous key\x1b[0m\n`);
-        }
-        env[r2.binding] = new R2Emulator({
+        claim('r2_buckets', r2.binding, new R2Emulator({
           vfs: this.vfs,
           root: this.root,
           binding: r2.binding,
           onLog: this.onLog,
-        });
+        }));
       }
     }
 
