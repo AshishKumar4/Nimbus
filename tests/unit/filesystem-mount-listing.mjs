@@ -26,7 +26,7 @@ const ws = await NimbusWorkspace.create({ sql, transactions: harness.ctx });
 /** A backend that says what it is, as Kinu's adapters do. */
 const described = (description, usage) => Object.assign(new MemoryVFS(), { describe: () => description, usage });
 const table = ws.filesystem.vfs;
-table.mount('/mnt/scratch', described(
+table.mount('/mnt/work', described(
   { source: 'tmpfs', type: 'tmpfs', options: ['rw', 'noexec'] },
   async () => ({ size: 64 * 2 ** 20, used: 2 ** 20, available: 63 * 2 ** 20 }),
 ));
@@ -52,7 +52,7 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   const df = await run('df');
   assert.equal(df.exitCode, 0, df.stderr);
   assert.equal(df.lines[0], 'Filesystem       1K-blocks      Used Available Use% Mounted on');
-  assert.deepEqual(df.lines.slice(1).map((line) => columns(line).at(-1)), ['/', '/mnt/scratch', '/pc/laptop']);
+  assert.deepEqual(df.lines.slice(1).map((line) => columns(line).at(-1)), ['/', '/mnt/work', '/pc/laptop']);
   const root = columns(df.lines[1]);
   // The session's storage ledger (N18): Used is everything it counts, and
   // Available leaves the kernel's reserve out, as ext4 leaves root's out.
@@ -67,7 +67,7 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
     `${Math.ceil((used * 100) / (used + available))}%`,
     '/',
   ]);
-  assert.equal(df.lines[2], 'tmpfs                65536      1024     64512   2% /mnt/scratch');
+  assert.equal(df.lines[2], 'tmpfs                65536      1024     64512   2% /mnt/work');
   assert.equal(df.lines[3], 'laptop:/Users/me 524288000 128974848 395313152  25% /pc/laptop');
 }
 
@@ -77,7 +77,7 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   assert.equal(df.exitCode, 0, df.stderr);
   assert.deepEqual(
     df.lines.slice(1).map((line) => columns(line).at(-1)),
-    ['/', '/proc', '/dev', '/mnt/scratch', '/pc/laptop', '/context'],
+    ['/', '/proc', '/dev', '/mnt/work', '/pc/laptop', '/context'],
   );
   assert.deepEqual(columns(df.lines[2]), ['proc', '-', '-', '-', '-', '/proc']);
   assert.deepEqual(columns(df.lines[6]), ['kinu', '-', '-', '-', '-', '/context']);
@@ -122,7 +122,7 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
   assert.equal(df.exitCode, 0, df.stderr);
   assert.match(df.lines[0], /^Filesystem\s+Type\s+Size\s+Used\s+Avail\s+Use%\s+Mounted on$/);
   assert.deepEqual(columns(df.lines[5]), ['laptop:/Users/me', 'kinu-pc', '500G', '123G', '377G', '25%', '/pc/laptop']);
-  assert.deepEqual(columns(df.lines[4]), ['tmpfs', 'tmpfs', '64M', '1.0M', '63M', '2%', '/mnt/scratch']);
+  assert.deepEqual(columns(df.lines[4]), ['tmpfs', 'tmpfs', '64M', '1.0M', '63M', '2%', '/mnt/work']);
   assert.equal(columns(df.lines[1])[2], '9.4G', 'the 10 GB store limit in binary units, rounded up');
 }
 
@@ -134,7 +134,7 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
     'nimbus on / type nimbus-sqlite (rw)',
     'proc on /proc type proc (ro)',
     'devtmpfs on /dev type devtmpfs (rw)',
-    'tmpfs on /mnt/scratch type tmpfs (rw,noexec)',
+    'tmpfs on /mnt/work type tmpfs (rw,noexec)',
     'laptop:/Users/me on /pc/laptop type kinu-pc (rw,nosuid)',
     'kinu on /context type kinu-context (ro)',
     '',
@@ -155,7 +155,7 @@ const kib = (bytes) => Math.ceil(bytes / 1024);
     'nimbus / nimbus-sqlite rw 0 0',
     'proc /proc proc ro 0 0',
     'devtmpfs /dev devtmpfs rw 0 0',
-    'tmpfs /mnt/scratch tmpfs rw,noexec 0 0',
+    'tmpfs /mnt/work tmpfs rw,noexec 0 0',
     'laptop:/Users/me /pc/laptop kinu-pc rw,nosuid 0 0',
     'kinu /context kinu-context ro 0 0',
     '',

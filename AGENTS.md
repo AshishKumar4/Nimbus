@@ -389,8 +389,8 @@ again.
   `scripts/ci/lib/armada.mjs` is the only file that knows armada.
 - The armada client is pinned to one commit of
   github.com/AshishKumar4/armada (`ARMADA_CLIENT` in
-  `scripts/ci/lib/armada.mjs`): a clean checkout at
-  `/mnt/local/nimbus/armada-client`, or at `ARMADA_DIR`. A run on any other
+  `scripts/ci/lib/armada.mjs`): a clean checkout at `ARMADA_DIR`, by
+  default `~/.local/share/nimbus/armada-client`. A run on any other
   client is refused, with the commands that make one, and so is a pin no
   longer on that repository's main (a rewritten history). It runs on
   Nimbus's own armada deployment, `nimbus-armada` (its own Worker, bucket
@@ -407,16 +407,13 @@ again.
 - `// @tier quiet-cpu — <reason>`: asserts timing that foreign load breaks.
   It runs alone, in the serial phase.
 
-No marker is the fast tier. `bun tests/unit/run-all.mjs --tier fast` is the
-local check before CI: 755 files, none of which starts a workerd, in about
-2.5 minutes at `--jobs 8`. `--list` prints the selection. A malformed marker
-stops the runner with exit 2, naming the file.
+No marker is the fast tier: the files that start no workerd.
+`bun scripts/ci/remote-unit.mjs --tier fast` runs it on armada, and
+`--only a.mjs,b.mjs` runs a few files while you debug.
+`bun tests/unit/run-all.mjs --list` prints the selection. A malformed
+marker stops the runner with exit 2, naming the file.
 
 A marker belongs in the commit that made the file slow.
-
-`bun tests/unit/run-all.mjs` runs files on this machine, under
-`/mnt/scratch/nimbus/run-bounded`. Use it for one file or a few while you
-debug. The full suite runs on CI.
 
 ### Probe targets
 

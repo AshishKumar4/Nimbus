@@ -31,8 +31,10 @@ INC="-I$HERE/include"   # Nimbus termios.h overlay
 
 cd "$BASH_SRC"
 if [ ! -f config.status ]; then
-  # Retain target answers, never another machine's configure environment.
-  sed -E '/^ac_cv_(env_|prog_|build=)/d' "$HERE/cross.cache" > nimbus-cross.cache
+  # cross.cache holds target answers only, never a machine's configure
+  # environment (its CC, its build triple). configure writes its cache
+  # back, so it gets a copy.
+  cp "$HERE/cross.cache" nimbus-cross.cache
   CC="$CC" \
   CFLAGS="-std=gnu17 -D_WASI_EMULATED_SIGNAL -D_WASI_EMULATED_PROCESS_CLOCKS -D_WASI_EMULATED_MMAN -O2" \
   CPPFLAGS="-D_GNU_SOURCE" LDFLAGS="$TARGET_LDFLAGS" \
