@@ -160,8 +160,15 @@ const trapping = { get(t, key, receiver) { seenThis.push(receiver); return Refle
 const innerPlain = new Proxy(plainTarget, trapping);
 const innerHooked = new Proxy(hooked, {});
 const proxies = [new Proxy(hooked, trapping), new Proxy(plainTarget, trapping), new Proxy(innerPlain, trapping), new Proxy(innerHooked, {})];
-const own = new Set([hooked, plainTarget, innerPlain, innerHooked, ...proxies]);
-for (const holder of [Promise.resolve(proxies[0]), Promise.resolve(proxies[2]), new Set(proxies).values(), new Map([[proxies[1], proxies[3]]]).entries()]) {
+// A class whose instanceof check is a program's callback too.
+class Checked {
+  [util.inspect.custom]() { seenThis.push(this); return 'custom'; }
+  static [Symbol.hasInstance](value) { seenThis.push(value); return true; }
+}
+const checked = new Checked();
+proxies.push(new Proxy(checked, {}));
+const own = new Set([hooked, plainTarget, innerPlain, innerHooked, checked, ...proxies]);
+for (const holder of [Promise.resolve(proxies[0]), Promise.resolve(proxies[2]), Promise.resolve(proxies[4]), new Set(proxies).values(), new Map([[proxies[1], proxies[3]]]).entries()]) {
   for (const options of [{}, { showProxy: true }, { getters: true }, { customInspect: false }, { showProxy: true, getters: true }]) util.inspect(holder, options);
 }
 console.log('callbacks given only their own objects', seenThis.every((value) => own.has(value)));
