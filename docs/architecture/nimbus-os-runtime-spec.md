@@ -829,8 +829,13 @@ what a death can cost.
   (`nimbus_process_journals`). When the process is released (it exited, was
   killed, or ran out of memory or CPU), the session drains whatever the log
   still holds. It numbers each change exactly as the process did, so a change
-  that already landed is answered and is not applied twice. Only after the
-  drain is the store deleted and the exit status reported. A log that a reset
+  that already landed is answered and is not applied twice. A change made
+  through an open description (a WASI process's descriptor that writes
+  through) lands through the description the session kept for the process:
+  its file and the access its open decided, stored with the open's number
+  (`vfs_wave_descriptions`). That holds even if the open was answered and
+  dropped from the log long before, and even if the session restarted.
+  Only after the drain is the store deleted and the exit status reported. A log that a reset
   left behind is drained at the next start, before anything runs. A log that
   cannot be read is reported by name and kept. It is never dropped silently.
   One limit is measured. The facet's SQLite commits only when its isolate

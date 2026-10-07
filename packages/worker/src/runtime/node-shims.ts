@@ -4611,11 +4611,30 @@ const __fsMod = (() => {
     return new Uint8Array(0);
   }
 
-  async function _fsyncAsync(absPath, p) {
+  // A change the program was told succeeded that the session has refused
+  // since (its client's recorded refusals, each reported once): what a sync
+  // or a close of a descriptor reports, with the session's errno, as
+  // fsync(2) and close(2) report a deferred write's failure (and a WASI
+  // process's do).
+  function _recordedRefusal(syscall, p) {
+    if (!_supervisor()) return;
+    const taken = __nimbusProcessFs().takeFailures();
+    if (taken.length === 0) return;
+    const error = _fsErr(taken[0].errno, syscall, p);
+    error.message += " (the session refused what this process wrote: " + taken.map((failure) => failure.op + " " + failure.path + ": " + failure.message).join("; ") + ")";
+    throw error;
+  }
+
+  // Synced means in the session: the path's own writes sent, everything the
+  // process logged before it answered, and what the session refused of it
+  // reported here.
+  async function _fsyncAsync(absPath, p, syscall = "fsync") {
     const supervisor = _supervisor();
     if (supervisor) {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       await _awaitStructuralOrder(absPath);
+      await __nimbusProcessFs().flush();
+      _recordedRefusal(syscall, p);
     }
     _markVfsStale();
   }
@@ -4833,8 +4852,8 @@ const __fsMod = (() => {
     // Durability here means: every byte parked for this path has reached
     // the authority and every mutation queued for it has landed. The bridge
     // itself is synchronously durable, so no further RPC is owed.
-    async sync() { this._assertOpen("fsync"); await _fsyncAsync(this._abs, this._path); }
-    async datasync() { this._assertOpen("fdatasync"); await _fsyncAsync(this._abs, this._path); }
+    async sync() { this._assertOpen("fsync"); await _fsyncAsync(this._abs, this._path, "fsync"); }
+    async datasync() { this._assertOpen("fdatasync"); await _fsyncAsync(this._abs, this._path, "fdatasync"); }
     // Scatter/gather over the ranged read/write: one sequential pass per
     // buffer, stopping at the first short read, positions advanced by hand
     // when an explicit one was given so the file position stays untouched.
@@ -4861,7 +4880,7 @@ const __fsMod = (() => {
       }
       return { bytesWritten, buffers };
     }
-    async close() { this._assertOpen("close"); this._closed = true; __fileHandles.delete(this.fd); }
+    async close() { this._assertOpen("close"); this._closed = true; __fileHandles.delete(this.fd); _recordedRefusal("close", this._path); }
     [Symbol.asyncDispose]() { return this.close(); }
   }
 
@@ -4990,6 +5009,8 @@ const __fsMod = (() => {
     const handle = _fdHandle(fd, "close");
     handle._closed = true;
     __fileHandles.delete(handle.fd);
+    // Closed either way; a refusal recorded since is close's to report.
+    _recordedRefusal("close", handle._path);
   }
 
   function readSync(fd, buffer, offsetOrOptions, length, position) {
@@ -5030,8 +5051,9 @@ const __fsMod = (() => {
   // Sync writes buffer into __vfsWrites and are drained by the existing
   // VFS write-back path — a facet cannot block on durability, so these
   // validate the fd and mark the VFS stale rather than pretending to sync.
-  function fsyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fsync"); _markVfsStale(); }
-  function fdatasyncSync(fd) { if (!_isStdioFd(fd)) _fdHandle(fd, "fdatasync"); _markVfsStale(); }
+  // A sync form cannot wait for the session: it reports what it refused already.
+  function fsyncSync(fd) { if (!_isStdioFd(fd)) _recordedRefusal("fsync", _fdHandle(fd, "fsync")._path); _markVfsStale(); }
+  function fdatasyncSync(fd) { if (!_isStdioFd(fd)) _recordedRefusal("fdatasync", _fdHandle(fd, "fdatasync")._path); _markVfsStale(); }
 
   // Descriptor metadata, sync: the path forms on the handle's path, so the
   // local overlay (times, modes, ownership) and the parked write-through are
@@ -5176,7 +5198,7 @@ const __fsMod = (() => {
     // it here rather than let an EBADF vanish.
     if (typeof cb !== "function") { if (err) throw err; _markVfsStale(); return; }
     if (err || !handle) { _markVfsStale(); queueMicrotask(() => cb(err)); return; }
-    _fsyncAsync(handle._abs, handle._path).then(() => cb(null)).catch((e) => cb(e));
+    _fsyncAsync(handle._abs, handle._path, syscall).then(() => cb(null)).catch((e) => cb(e));
   }
   function fsync(fd, cb) { _fsyncCb(fd, "fsync", cb); }
   function fdatasync(fd, cb) { _fsyncCb(fd, "fdatasync", cb); }
