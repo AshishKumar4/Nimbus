@@ -3931,12 +3931,12 @@ export class SqliteVFS {
     return this.activeMutationOwner === owner || this.activeHolds?.has(owner) === true;
   }
 
-  /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
-  private async recallDelegationsAt(key: string, owner: string | undefined): Promise<void> {
+  /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked); `holds`: the writer's own. */
+  private async recallDelegationsAt(key: string, holds: ReadonlySet<string> | null): Promise<void> {
     for (;;) {
       const normalized = normalizeVfsPath(key);
       const met = [...this.exclusiveMutationLeases].find(([id, lease]) => (
-        lease.delegation !== null && id !== owner && pathsOverlap(normalized, lease.root)));
+        lease.delegation !== null && holds?.has(id) !== true && pathsOverlap(normalized, lease.root)));
       if (met === undefined) return;
       await this.recallRequired(met[0], met[1], 'revoke', normalized).recall();
     }
@@ -9640,7 +9640,7 @@ export class SqliteVFS {
         // be given up first, here between records, where the stream may wait:
         // its group's commit would otherwise be refused.
         if (this.exclusiveMutationLeases.size > 0) {
-          for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, options.mutationOwner);
+          for (const lands of recordPaths(record)) await this.recallDelegationsAt(lands, holds);
         }
         if (record.type !== 'file-chunk' && record.type !== 'file-end' && record.type !== 'batch-end') recordIndex++;
         if (sequence !== null && record.type !== 'batch-end') {
