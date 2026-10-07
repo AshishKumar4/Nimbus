@@ -2740,6 +2740,7 @@ export async function runGitCommand(
               quiet,
               exclusiveDestination: true,
               exclusiveMutationRoot: mutationLease.root,
+              onMount: place.mount,
               cloneJobId: job.jobId,
               onCloneCheckoutPhase: () => setCloneJobPhase(doCtx.storage, job, 'checkout'),
               mutationOwner,

@@ -100,6 +100,11 @@ export async function createFacetSession(work, { realGit = false, mounts = {} } 
         return refused(async () => bridge.writeRange(path, offset, bytes, { createParents: true, ...lease }));
       },
       async fsTruncate(path, size) { return refused(async () => bridge.truncate(path, size, lease)); },
+      // The session's file API: an open for writing presents the lease (supervisor-op.ts fsOpen).
+      async fsOpen(path, flags) { return refused(async () => bridge.open(path, { ...flags, sync: true }, lease)); },
+      async fsWrite(id, offset, bytes) { return refused(async () => bridge.write(id, offset, bytes)); },
+      async fsFstat(id) { return bridge.fstat(id); },
+      async fsClose(id) { return bridge.close(id); },
       async rename(from, to) {
         const result = await refused(async () => bridge.rename(from, to, lease));
         // loseRename: the step that made this rename never answers (its tmp pack's name goes to withhold).
