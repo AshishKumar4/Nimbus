@@ -167,10 +167,10 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
 //
 // Nimbus writes `node_modules/.bin/<name>` as a real file holding a CJS
 // require of the bin target (npm writes a symlink, which Node realpaths into
-// the target package). Under a `type: module` project the nearest
-// package.json is the user's, so this file now takes the ESM arm — which is
-// what Node does too. esbuild's CJS emit is a no-op on CJS input, so the
-// require has to come out the far side intact.
+// the target package). A file under node_modules with no package.json of
+// its own belongs to no package: Node's scope walk stops at node_modules,
+// so the `type: module` project above it does not reach it, and it runs as
+// the CommonJS it is (real node 22.22.3: `typeof require` is 'function').
 {
   const shim = 'require("/home/user/node_modules/genpkg/bin/genpkg");\n';
   const r = await runScript({
@@ -178,7 +178,7 @@ const CJS_PKG = JSON.stringify({ name: 'typescript', bin: { tsc: './bin/tsc' } }
     'home/user/node_modules/.bin/genpkg': `#!/usr/bin/env node\n${shim}`,
   }, '/home/user/node_modules/.bin/genpkg');
   assert.equal(r.exitCode, 0, r.stderr);
-  assert.match(r.transforms[0].code, /require\("\/home\/user\/node_modules\/genpkg\/bin\/genpkg"\)/);
+  assert.equal(r.transforms.length, 0, 'the shim is no package\'s: CommonJS, untransformed');
   assert.match(r.code, /require\("\/home\/user\/node_modules\/genpkg\/bin\/genpkg"\)/);
 }
 
