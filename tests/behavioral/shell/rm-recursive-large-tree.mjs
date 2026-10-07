@@ -31,7 +31,10 @@ const token = Math.random().toString(36).slice(2, 10);
  */
 async function expect(t, marker, timeoutMs, label) {
   try {
-    await t.waitFor((b) => b.includes(marker), timeoutMs, label);
+    // The echoed command contains the marker too. Require its actual output
+    // line and the returned shell prompt, never merely an echoed substring.
+    const line = new RegExp(`(?:^|\\n)${marker}\\r?(?:\\n|$)`);
+    await t.waitFor((b) => line.test(b) && /(?:^|\n)[^\r\n]*@[^:\r\n]+:[^\r\n]*[$#][ \t]*$/.test(b), timeoutMs, label);
     return stripAnsi(t.buf);
   } catch (error) {
     return { failure: String(error?.message ?? error), closed: t.closed, detail: t.closeDetail };

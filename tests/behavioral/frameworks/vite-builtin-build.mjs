@@ -51,7 +51,9 @@ try {
   // The dev server still serves, through /port/<n>/ (not a loopback listener).
   t.reset();
   t.cmd('npm run dev');
-  await t.waitFor((b) => /Preview:|pid=\d+|Local:/.test(b), 60_000, 'dev server banner');
+  // A start/pid or Preview line may arrive before the port line. Reading a
+  // partial banner selected fallback 5173 even when the server bound 3000.
+  await t.waitFor((b) => /port=\d+|Port:\s*\d+/.test(b), 60_000, 'dev server bound port');
   const banner = stripAnsi(t.buf);
   const port = Number((banner.match(/port=(\d+)/) || banner.match(/Port:\s*(\d+)/) || [])[1] ?? 5173);
   let page = null;
