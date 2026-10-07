@@ -110,6 +110,22 @@ function normalizePath(path: string): string | null {
 }
 
 /**
+ * prefix_path: `path` as the repository names it, given from the directory
+ * `prefix` below the top `root`: a relative one joined to the prefix, an
+ * absolute one with the top taken off (abspath_part_inside_repo, by name: the
+ * top is the worktree's own path, every link resolved); null when it is
+ * outside the repository.
+ */
+function prefixPath(prefix: string, root: string, path: string): string | null {
+  if (!path.startsWith('/')) return normalizePath(prefix + path);
+  const absolute = normalizePath(path);
+  const top = root.replace(/\/+$/, '');
+  if (absolute === null) return null;
+  if (absolute === top || top === '') return absolute.slice(top.length).replace(/^\/+/, '');
+  return absolute.startsWith(top + '/') ? absolute.slice(top.length + 1) : null;
+}
+
+/**
  * sanitize_paths in cone mode: each directory given below the command's
  * directory, then (but with --skip-checks) refused when it is a pattern or a
  * file the index holds.
@@ -117,9 +133,9 @@ function normalizePath(path: string): string | null {
 function sanitize(dirs: readonly string[], prefix: string, root: string, skipChecks: boolean, dc: DirCache): string[] {
   const out = dirs.map((dir) => {
     if (!prefix) return dir;
-    const joined = normalizePath(dir.startsWith('/') ? dir : prefix + dir);
-    if (joined === null) throw new Fatal(`fatal: '${dir}' is outside repository at '${root}'\n`);
-    return joined;
+    const inside = prefixPath(prefix, root, dir);
+    if (inside === null) throw new Fatal(`fatal: '${dir}' is outside repository at '${root}'\n`);
+    return inside;
   });
   if (skipChecks) return out;
   for (const dir of out) {
@@ -259,8 +275,9 @@ async function cleanSparseDirectories(ctx: SparseCheckoutContext, sparse: Sparse
 
 /**
  * update_working_directory: `sparse` applied to the index and worktree,
- * under the index lock, unless the index is unborn; then, for a cone, the
- * directories it left emptied of anything tracked cleaned up.
+ * unless the index is unborn; then, for a cone, the directories it left
+ * emptied of anything tracked cleaned up. Under the index lock the
+ * subcommand holds (sparseCheckout).
  */
 async function updateWorkingDirectory(ctx: SparseCheckoutContext, sparse: SparseMatcher, cone: boolean): Promise<void> {
   const { wrepo, root, writer } = ctx;
@@ -298,8 +315,25 @@ function byBytes(a: string, b: string): number {
   return compareBytes(encoder.encode(a), encoder.encode(b));
 }
 
-/** `git sparse-checkout <subcommand> [<options>]`. */
+/** The subcommands that change the sparse checkout: each holds the repository's lock throughout. */
+const CHANGES = new Set(['set', 'add', 'reapply', 'disable', 'init']);
+
+/**
+ * `git sparse-checkout <subcommand> [<options>]`. One that changes the
+ * sparse checkout holds the repository's index lock from its first read of
+ * the configuration to the publication of its patterns, as git holds
+ * info/sparse-checkout.lock across write_patterns_and_update: two run at
+ * once, the second sees the first's whole result, never its patterns over
+ * the other's worktree.
+ */
 export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly string[]): Promise<number> {
+  const sub = args[0];
+  return sub !== undefined && CHANGES.has(sub)
+    ? await ctx.wrepo.withIndexLock(() => runSubcommand(ctx, args))
+    : await runSubcommand(ctx, args);
+}
+
+async function runSubcommand(ctx: SparseCheckoutContext, args: readonly string[]): Promise<number> {
   const [sub, ...rest] = args;
   const { wrepo } = ctx;
   const unknown = async (option: string) => {

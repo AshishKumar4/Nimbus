@@ -8,7 +8,7 @@
 import assert from 'node:assert/strict';
 import { spawnSync } from 'node:child_process';
 import {
-  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, rmSync, symlinkSync, writeFileSync,
+  chmodSync, lstatSync, mkdirSync, mkdtempSync, readdirSync, readFileSync, readlinkSync, realpathSync, rmSync, symlinkSync, writeFileSync,
 } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
@@ -70,7 +70,8 @@ export const branchNotes = (text) => text.split('\n').filter((line) => !/^(Switc
 
 /** A scratch directory and a session's VFS, as the session user, for one test file. */
 export function createMirror(label) {
-  const scratch = mkdtempSync(join(tmpdir(), `nimbus-${label}-`));
+  // Its real path: git names the worktree by it.
+  const scratch = realpathSync(mkdtempSync(join(tmpdir(), `nimbus-${label}-`)));
   process.on('exit', () => rmSync(scratch, { recursive: true, force: true }));
   const harness = createSqliteVfsTestHarness();
   const vfs = new SqliteVFS(harness.sql, harness.ctx);
@@ -111,9 +112,15 @@ export function createMirror(label) {
     }
   };
 
-  const nimbusGit = async (cwd, args) => {
+  /** `beforeWrite(path)`: awaited before each whole-file write the command makes (a gate). */
+  const nimbusGit = async (cwd, args, { beforeWrite } = {}) => {
     let stdout = '';
     let stderr = '';
+    const view = files.view({ pid: 1, cred: CRED_SESSION_USER });
+    if (beforeWrite) {
+      const write = view.writeFile.bind(view);
+      view.writeFile = async (path, ...rest) => { await beforeWrite(path); return await write(path, ...rest); };
+    }
     const code = await runGitCommand({
       pid: 1,
       cred: CRED_SESSION_USER,
@@ -122,7 +129,7 @@ export function createMirror(label) {
       env: { USER: 'a', GIT_AUTHOR_NAME: 'a', GIT_AUTHOR_EMAIL: 'a@example.com', GIT_COMMITTER_NAME: 'a', GIT_COMMITTER_EMAIL: 'a@example.com' },
       stdout: { write(s) { stdout += s; }, writeBytes(bytes) { stdout += Buffer.from(bytes).toString('utf8'); } },
       stderr: { write(s) { stderr += s; } },
-      vfs: files.view({ pid: 1, cred: CRED_SESSION_USER }),
+      vfs: view,
     }, vfs);
     return { code, stdout, stderr };
   };
@@ -137,15 +144,16 @@ export function createMirror(label) {
     }
 
     /**
-     * `args` in both, in the repository or `sub` below it: the same exit code;
-     * git's stderr (but what `branchNotes` drops), and stdout, where asked.
+     * `args` in both, in the repository or `sub` below it, `{root}` in an
+     * argument each one's own top: the same exit code; git's stderr (but what
+     * `branchNotes` drops, its top named as ours), and stdout, where asked.
      */
     async run(args, { stderr = true, stdout = false, sub = '' } = {}) {
       const label = `${this.name}: git ${args.join(' ')}`;
-      const host = realGit(sub ? join(this.disk, sub) : this.disk, args);
-      const ours = await nimbusGit(sub ? `${this.virtual}/${sub}` : this.virtual, args);
+      const host = realGit(sub ? join(this.disk, sub) : this.disk, args.map((arg) => arg.replaceAll('{root}', this.disk)));
+      const ours = await nimbusGit(sub ? `${this.virtual}/${sub}` : this.virtual, args.map((arg) => arg.replaceAll('{root}', this.virtual)));
       assert.equal(ours.code, host.code, `${label}: exit code (ours: ${ours.stderr}; git's: ${host.stderr})`);
-      if (stderr) assert.equal(branchNotes(ours.stderr), branchNotes(host.stderr), `${label}: stderr`);
+      if (stderr) assert.equal(branchNotes(ours.stderr), branchNotes(host.stderr.replaceAll(this.disk, this.virtual)), `${label}: stderr`);
       if (stdout) assert.equal(ours.stdout, host.stdout, `${label}: stdout`);
       counts.checks++;
       return ours;

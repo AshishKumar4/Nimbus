@@ -19,6 +19,11 @@
 //   - Refused as git refuses them: a leading slash, a pattern, a '!', a
 //     file named as a directory (taken with --skip-checks), an unknown
 //     subcommand or option, none at all.
+//   - From a subdirectory, an absolute path inside the repository is its
+//     directory (with --skip-checks too), and one outside is refused.
+//   - Two sets at once: the second sees the first's whole result (one lock
+//     from the configuration to the patterns), never one's patterns over
+//     the other's worktree.
 //   - Not cone mode (--no-cone) and a sparse index are refused, named.
 
 import assert from 'node:assert/strict';
@@ -28,6 +33,7 @@ import { join } from 'node:path';
 import { createMirror, realGit, sh } from './lib/git-mirror.mjs';
 
 const { scratch, nimbusGit, Pair, counts } = createMirror('sparse-checkout');
+const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
 
 /** A repository: files at the top, in a/, in b/ (b/d a directory below it), and c/e/f deep. */
 function seed(name) {
@@ -130,6 +136,44 @@ try {
     p.same('set --skip-checks top.txt');
     sameFiles(p, 'set --skip-checks top.txt');
     console.log('  ok  refusals: a leading slash, a pattern, a \'!\', a file, an unknown subcommand or option, none');
+  }
+
+  {
+    // From a subdirectory: an absolute path inside the repository is its directory; one outside is refused.
+    const p = new Pair('absolute', seed('absolute'));
+    await p.run(['sparse-checkout', 'set', 'a', 'b']);
+    await p.run(['sparse-checkout', 'set', '{root}/c/e'], { sub: 'b' });
+    p.same('set of an absolute path inside, from b/');
+    sameFiles(p, 'set of an absolute path inside, from b/');
+    await p.run(['sparse-checkout', 'set', '--skip-checks', '{root}/b/d'], { sub: 'b' });
+    p.same('set --skip-checks of an absolute path inside, from b/');
+    sameFiles(p, 'set --skip-checks of an absolute path inside, from b/');
+    for (const outside of ['/', '{root}/../elsewhere', '{root}x/a']) {
+      await p.run(['sparse-checkout', 'set', outside], { sub: 'b' });
+      await p.run(['sparse-checkout', 'set', '--skip-checks', outside], { sub: 'b' });
+    }
+    p.same('refused paths outside, from b/');
+    console.log('  ok  from a subdirectory: an absolute path inside is the repository\'s, one outside refused, --skip-checks or not');
+  }
+
+  {
+    // Two sets at once: `set a` reaches its patterns' publication, `set b` starts then; host git, one after the other.
+    const p = new Pair('concurrent', seed('concurrent'));
+    sh(p.disk, ['sparse-checkout', 'set', 'a'], ['sparse-checkout', 'set', 'b']);
+    let second = null;
+    const first = nimbusGit(p.virtual, ['sparse-checkout', 'set', 'a'], {
+      beforeWrite: async (path) => {
+        if (!path.endsWith('/info/sparse-checkout') || second !== null) return;
+        second = nimbusGit(p.virtual, ['sparse-checkout', 'set', 'b']);
+        // Until the second is done, or long enough that it would be, unless it waits for this one.
+        await Promise.race([second, sleep(500)]);
+      },
+    });
+    const [a, b] = [await first, await second];
+    assert.deepEqual([a.code, b.code], [0, 0], `${a.stderr}${b.stderr}`);
+    p.same('two sets at once');
+    sameFiles(p, 'two sets at once');
+    console.log('  ok  two sets at once: the second sees the first\'s whole result');
   }
 
   {
