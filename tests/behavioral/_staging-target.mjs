@@ -85,7 +85,7 @@ const {
   createSession,
   deployAndVerify,
   parseFlags,
-  putSecret,
+  withSecretsFile,
   randomSecret,
   readState,
   requireAccountPin,
@@ -256,22 +256,22 @@ async function deployTarget(target, { account, state, config, leaseFd }) {
   const secret = state[key]?.secret ?? randomSecret();
   const isNewSecret = !state[key]?.secret;
 
-  log(`deploying ${target.configPath}${target.envName ? ` (env.${target.envName})` : ''} as ${target.name}`);
-  const { base, versionId } = deployAndVerify({
+  log(`deploying ${target.configPath}${target.envName ? ` (env.${target.envName})` : ''} as ${target.name}${isNewSecret ? ', with a new JWT_SECRET' : ''}`);
+  // A new secret travels with the upload, so the upload is one version and
+  // the receipt is the version that serves (withSecretsFile).
+  const deploy = (secretsArgs) => deployAndVerify({
     cwd: target.dir,
     account,
     name: target.name,
     envName: target.envName,
-    args: ['--config', config, ...target.deployArgs],
+    args: ['--config', config, ...secretsArgs, ...target.deployArgs],
     leaseFd,
   });
+  const { base, versionId } = isNewSecret
+    ? withSecretsFile({ JWT_SECRET: secret }, (path) => deploy(['--secrets-file', path]))
+    : deploy([]);
   if (!base) throw new Error(`deploy of ${target.name} printed no workers.dev URL`);
   log(`${target.name} → version ${versionId} live at ${base}`);
-
-  if (isNewSecret) {
-    log(`setting JWT_SECRET on ${target.name}`);
-    putSecret({ cwd: target.dir, account, name: target.name, key: 'JWT_SECRET', value: secret, leaseFd });
-  }
   state[key] = { name: target.name, base, secret };
   writeState(STATE_PATH, state);
   return { base, versionId };

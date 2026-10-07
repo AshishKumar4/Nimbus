@@ -71,8 +71,7 @@
 //   session, which is how the shared anon pool got exhausted. Self-minted
 //   tokens make that failure mode structurally impossible.
 
-import { mkdtempSync, readdirSync, rmSync, writeFileSync } from 'node:fs';
-import { tmpdir } from 'node:os';
+import { readdirSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 
 import { mintProbeToken } from './_mint-probe-token.mjs';
@@ -95,6 +94,7 @@ const {
   readState,
   requireAccountPin,
   waitForTarget,
+  withSecretsFile,
   wrangle,
   writeState,
 } = await import('./_deploy-target.mjs');
@@ -332,18 +332,10 @@ async function ensurePreviewParent({ account, token }) {
 async function deployPreview({ account, token, preview, secret, before, config = null }) {
   // The secret travels with the deployment: each Preview deployment
   // carries its own env, so every deploy uploads it again.
-  const dir = mkdtempSync(join(tmpdir(), 'nimbus-preview-secrets-'));
-  const secretsFile = join(dir, 'secrets.json');
-  let result;
-  try {
-    writeFileSync(secretsFile, JSON.stringify({ JWT_SECRET: secret }), { mode: 0o600 });
-    result = wrangle(WRANGLER, [
-      'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
-      '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides, ...(config ? ['--config', config] : []),
-    ], { cwd: PROBE_APP, account, allowFail: true });
-  } finally {
-    rmSync(dir, { recursive: true, force: true });
-  }
+  const result = withSecretsFile({ JWT_SECRET: secret }, (secretsFile) => wrangle(WRANGLER, [
+    'preview', '--name', preview, '--worker-name', PREVIEW_PARENT,
+    '--ignore-base-config', '--json', '--secrets-file', secretsFile, ...varOverrides, ...(config ? ['--config', config] : []),
+  ], { cwd: PROBE_APP, account, allowFail: true }));
   const stdout = result.stdout || '';
   let printed = null;
   try {

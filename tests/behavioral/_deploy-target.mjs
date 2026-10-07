@@ -19,9 +19,9 @@
 // not change it; the throwaway reads its Preview's latest deployment back
 // the same way.
 
-import { mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { mkdirSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { spawnSync } from 'node:child_process';
-import { homedir } from 'node:os';
+import { homedir, tmpdir } from 'node:os';
 import { dirname, join } from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { Terminal, stripAnsi } from './_driver.mjs';
@@ -152,9 +152,29 @@ export function workersDevSubdomain(base) {
   return base?.match(/^https:\/\/[^.]+\.([^.]+)\.workers\.dev$/)?.[1] ?? null;
 }
 
-export function putSecret({ cwd, account, name, key, value, leaseFd = null }) {
-  wrangle(WRANGLER, ['secret', 'put', key, '--name', name], { cwd, account, input: value, leaseFd });
+/**
+ * Run `fn` with the path of a JSON file holding `secrets`, for wrangler's
+ * --secrets-file: created 0600 in a private directory of its own, and
+ * removed, with the directory, when `fn` returns or throws. A secret that
+ * travels with the upload is in the version the upload creates, so one
+ * upload is one version.
+ *
+ * @template T
+ * @param {Record<string, string>} secrets
+ * @param {(path: string) => T} fn
+ * @returns {T}
+ */
+export function withSecretsFile(secrets, fn) {
+  const dir = mkdtempSync(join(tmpdir(), 'nimbus-secrets-'));
+  try {
+    const path = join(dir, 'secrets.json');
+    writeFileSync(path, JSON.stringify(secrets), { mode: 0o600 });
+    return fn(path);
+  } finally {
+    rmSync(dir, { recursive: true, force: true });
+  }
 }
+
 
 // ── Cloudflare API ───────────────────────────────────────────────────
 //
