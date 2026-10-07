@@ -22,7 +22,7 @@ const __streamMod = (() => {
 
   /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
   function _destroyedError(method) {
-    return Object.assign(new Error('Cannot call ' + method + ' after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
+    return nodeError(Error, 'ERR_STREAM_DESTROYED', 'Cannot call ' + method + ' after a stream was destroyed');
   }
 
   /**
@@ -448,7 +448,7 @@ const __streamMod = (() => {
       // A destroyed stream reports nothing further; the write's callback is
       // still answered.
       const err = state.ending
-        ? Object.assign(new Error('write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' })
+        ? nodeError(Error, 'ERR_STREAM_WRITE_AFTER_END', 'write after end')
         : _destroyedError('write');
       if (state.destroyed) { if (callback) queueMicrotask(() => callback(err)); return false; }
       if (callback) callback(err);

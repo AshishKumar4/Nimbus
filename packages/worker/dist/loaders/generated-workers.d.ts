@@ -5,6 +5,7 @@
  *   - @nimbus-sh/core src/_shared/tarball-stream.ts (streaming tar primitives)
  *   - @nimbus-sh/platform src/w7-frame.ts (W7 streaming bulk-write encoder)
  *   - @nimbus-sh/platform src/wave-writer.ts (the W7 wave writer, as an IIFE)
+ *   - @nimbus-sh/core src/_shared/node-error.ts (Node's internal errors, for the node shims)
  *   - @nimbus-sh/core src/_shared/esm-resolver.ts (Node's ESM resolver, for the node shims)
  *   - @nimbus-sh/core src/_shared/http2-module.ts (node:http2, for the node shims)
  *   - @nimbus-sh/core src/_shared/node-shim-resolution.ts (resolution and credential rules, for the node shims)
@@ -26,6 +27,14 @@ export declare const TAR_STREAM_PREAMBLE: string;
 export declare const W7_FRAME_PREAMBLE: string;
 /** Binds `__nimbusWaveWriter` (createWaveWriter, WaveFailure, …) in the module that splices it. */
 export declare const WAVE_WRITER_PREAMBLE: string;
+/**
+ * Declares `function nodeError(Base, code, message, props)`,
+ * `function nodeSystemError(code, prefix, context)`,
+ * `function invalidArgType(name, expected, actual)` and
+ * `function useNodeErrorInspect(inspect)`: the node shims declare them
+ * first, for themselves and the preambles below, which use them by name.
+ */
+export declare const NODE_ERROR_PREAMBLE: string;
 /** Declares `function createEsmResolver(host)`; the node shims call it. */
 export declare const ESM_RESOLVER_PREAMBLE: string;
 /** Declares `function createHttp2Module(host)`; the node shims call it. */

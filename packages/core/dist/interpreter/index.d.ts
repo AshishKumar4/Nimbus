@@ -56,5 +56,16 @@ export interface ModuleRequest {
  * The import() prefetch (node-shims.ts) finds what to fetch with it.
  */
 export declare function moduleRequests(path: string, text: string): ModuleRequest[];
+/**
+ * Where V8 would place a fatal error's report in `text`, a module's whole
+ * text (a `{ cjs }` cell's wrapper included) as `goal` parses it, for the
+ * process's fatal report (node-shims.ts __nimbusFatalArrow), which has a
+ * frame's offset and not V8's message:
+ *   - `offset` given: the innermost `throw` statement whose argument holds
+ *     it, as [start, start + 1], V8's location of a throw; null for none;
+ *   - `offset` -1: the syntax error that stops the parse, as [start, end]
+ *     of the token it stops at; null when the text parses.
+ */
+export declare function fatalLocation(text: string, goal: 'script' | 'module', offset: number): [number, number] | null;
 export declare function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter;
 //# sourceMappingURL=index.d.ts.map

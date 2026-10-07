@@ -9,9 +9,10 @@
  * javascript-string-literal.ts).
  *
  * Node's own functions are ported: lib/internal/util.js join, removeColors
- * and isError; lib/internal/errors.js isStackOverflowError and the message
- * of ERR_INVALID_ARG_TYPE; lib/internal/validators.js validateObject and
- * validateString; src/node_i18n.cc GetStringWidth. Of the util binding, the
+ * and isError; lib/internal/errors.js isStackOverflowError;
+ * lib/internal/validators.js validateObject and validateString; src/
+ * node_i18n.cc GetStringWidth. Its errors are the shims' (core _shared/
+ * node-error.ts), which the text calls by name. Of the util binding, the
  * property and constructor-name readers are JavaScript, and every brand
  * check is intrinsic (util.types), never the prototype chain.
  *
@@ -47,52 +48,9 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
   const primordials = {};
   platform.primordialsOf(primordials, globalThis);
   const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
-  let lazyInspect;
 
-  // lib/internal/errors.js: the errors inspect.js and its validators raise.
-  function nodeError(Base, code, message) {
-    const error = new Base(message);
-    Object.defineProperty(error, "code", { value: code, enumerable: true, writable: true, configurable: true });
-    Object.defineProperty(error, "toString", {
-      value() { return this.name + " [" + code + "]: " + this.message; }, writable: true, configurable: true,
-    });
-    return error;
-  }
-  function determineSpecificType(value) {
-    if (value === null) return "null";
-    if (value === undefined) return "undefined";
-    switch (typeof value) {
-      case "bigint": return "type bigint (" + value + "n)";
-      case "number":
-        if (value === 0) return 1 / value === -Infinity ? "type number (-0)" : "type number (0)";
-        if (value !== value) return "type number (NaN)";
-        if (value === Infinity) return "type number (Infinity)";
-        if (value === -Infinity) return "type number (-Infinity)";
-        return "type number (" + value + ")";
-      case "boolean": return value ? "type boolean (true)" : "type boolean (false)";
-      case "symbol": return "type symbol (" + String(value) + ")";
-      case "function": return "function " + value.name;
-      case "object":
-        if (value.constructor && "name" in value.constructor) return "an instance of " + value.constructor.name;
-        return lazyInspect.inspect(value, { depth: -1 });
-      case "string": {
-        const text = value.length > 28 ? value.slice(0, 25) + "..." : value;
-        if (text.indexOf("'") === -1) return "type string ('" + text + "')";
-        return "type string (" + JSON.stringify(text) + ")";
-      }
-      default: {
-        let inspected = lazyInspect.inspect(value, { colors: false });
-        if (inspected.length > 28) inspected = inspected.slice(0, 25) + "...";
-        return "type " + typeof value + " (" + inspected + ")";
-      }
-    }
-  }
-  // ERR_INVALID_ARG_TYPE for the one type each validator here expects.
-  function invalidArgType(name, type, actual) {
-    const kind = name.includes(".") ? "property" : "argument";
-    return nodeError(TypeError, "ERR_INVALID_ARG_TYPE",
-      "The \"" + name + "\" " + kind + " must be of type " + type + ". Received " + determineSpecificType(actual));
-  }
+  // lib/internal/errors.js: the errors inspect.js and its validators raise
+  // are the shims' (core _shared/node-error.ts nodeError, invalidArgType).
   let maxStackErrorName;
   let maxStackErrorMessage;
   function isStackOverflowError(err) {
@@ -246,9 +204,7 @@ export const NODE_INSPECT_HOST_SOURCE = String.raw `function createNodeInspect(p
   const inspectPrimordials = Object.create(null);
   for (const key of Reflect.ownKeys(primordials)) inspectPrimordials[key] = primordials[key];
   inspectPrimordials.globalThis = bootGlobal;
-  const nodeInspect = evaluate();
-  lazyInspect = nodeInspect;
-  return nodeInspect;
+  return evaluate();
 }`;
 /**
  * Source of `createWorkerdSlots(util)`: Node's util binding's V8 slot

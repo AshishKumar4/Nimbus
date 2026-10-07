@@ -1,4 +1,186 @@
 
+// Node's internal errors (core _shared/node-error.ts), first: the shims, the
+// preambles below and the code they load make them by name, and the cell
+// runtime and generated code reach them as __nimbusNodeError and
+// __nimbusNodeSystemError.
+var nodeErrorClasses =   new Map();
+function nodeError(Base, code, message, props) {
+  return made(Base, code, message, props, nodeError);
+}
+function made(Base, code, message, props, above) {
+  const NodeError = nodeErrorClass(Base, code);
+  const error = new NodeError(message);
+  headStack(error, `${error.name} [${code}]`, above);
+  if (props !== void 0) Object.assign(error, props);
+  return error;
+}
+function nodeErrorClass(Base, code) {
+  let classes = nodeErrorClasses.get(Base);
+  if (classes === void 0) nodeErrorClasses.set(Base, classes =   new Map());
+  let NodeError = classes.get(code);
+  if (NodeError === void 0) {
+    NodeError = class extends Base {
+      constructor(text) {
+        super(text);
+        Reflect.deleteProperty(this, "message");
+        Object.defineProperty(this, "code", { value: code, enumerable: true, writable: true, configurable: true });
+        Object.defineProperty(this, "message", { value: text, enumerable: false, writable: true, configurable: true });
+      }
+      toString() {
+        return `${this.name} [${code}]: ${this.message}`;
+      }
+    };
+    Object.defineProperty(NodeError.prototype, "constructor", { get: () => Base, enumerable: false, configurable: true });
+    classes.set(code, NodeError);
+  }
+  return NodeError;
+}
+function reshapeAsNodeError(error, Base, code) {
+  const message = error.message;
+  let stack;
+  try {
+    stack = error.stack;
+  } catch {
+    stack = void 0;
+  }
+  const NodeError = nodeErrorClass(Base, code);
+  const stackDescriptor = Object.getOwnPropertyDescriptor(error, "stack");
+  for (const key of ["stack", "code", "message", "name", "toString"]) Reflect.deleteProperty(error, key);
+  Object.setPrototypeOf(error, NodeError.prototype);
+  if (stackDescriptor !== void 0) Object.defineProperty(error, "stack", stackDescriptor);
+  Object.defineProperty(error, "code", { value: code, enumerable: true, writable: true, configurable: true });
+  Object.defineProperty(error, "message", { value: message, enumerable: false, writable: true, configurable: true });
+  if (typeof stack === "string") {
+    const frames = stack.indexOf("\n    at ");
+    const header = message === "" ? `${Base.name} [${code}]` : `${Base.name} [${code}]: ${message}`;
+    Reflect.set(error, "stack", header + (frames === -1 ? "" : stack.slice(frames)));
+  }
+  return error;
+}
+var inspectValue = (value) => String(value);
+function useNodeErrorInspect(inspect) {
+  inspectValue = inspect;
+}
+var ARG_TYPES = ["string", "function", "number", "object", "Function", "Object", "boolean", "bigint", "symbol"];
+var CLASS_NAME = /^[A-Z][a-zA-Z0-9]*$/;
+function formatList(items, type) {
+  if (items.length < 3) return items.join(` ${type} `);
+  return `${items.slice(0, -1).join(", ")}, ${type} ${items[items.length - 1]}`;
+}
+function determineSpecificType(value) {
+  if (value === null) return "null";
+  if (value === void 0) return "undefined";
+  switch (typeof value) {
+    case "bigint":
+      return `type bigint (${value}n)`;
+    case "number":
+      if (value === 0) return 1 / value === -Infinity ? "type number (-0)" : "type number (0)";
+      return `type number (${value})`;
+    case "boolean":
+      return `type boolean (${value})`;
+    case "symbol":
+      return `type symbol (${String(value)})`;
+    case "function":
+      return `function ${value.name}`;
+    case "object": {
+      const ctor = Reflect.get(value, "constructor");
+      if ((typeof ctor === "function" || typeof ctor === "object" && ctor !== null) && "name" in ctor) {
+        return `an instance of ${String(Reflect.get(ctor, "name"))}`;
+      }
+      return inspectValue(value, { depth: -1 });
+    }
+    case "string": {
+      const shown = value.length > 28 ? `${value.slice(0, 25)}...` : value;
+      return shown.includes("'") ? `type string (${JSON.stringify(shown)})` : `type string ('${shown}')`;
+    }
+    default: {
+      let shown = inspectValue(value, { colors: false });
+      if (shown.length > 28) shown = `${shown.slice(0, 25)}...`;
+      return `type ${typeof value} (${shown})`;
+    }
+  }
+}
+function invalidArgType(name, expected, actual) {
+  const types = [];
+  const instances = [];
+  const other = [];
+  for (const value of typeof expected === "string" ? [expected] : expected) {
+    if (ARG_TYPES.includes(value)) types.push(value.toLowerCase());
+    else if (CLASS_NAME.test(value)) instances.push(value);
+    else other.push(value);
+  }
+  if (instances.length > 0 && types.includes("object")) {
+    types.splice(types.indexOf("object"), 1);
+    instances.push("Object");
+  }
+  let message = name.endsWith(" argument") ? `The ${name} must be ` : `The "${name}" ${name.includes(".") ? "property" : "argument"} must be `;
+  if (types.length > 0) {
+    message += `${types.length > 1 ? "one of type" : "of type"} ${formatList(types, "or")}`;
+    if (instances.length > 0 || other.length > 0) message += " or ";
+  }
+  if (instances.length > 0) {
+    message += `an instance of ${formatList(instances, "or")}`;
+    if (other.length > 0) message += " or ";
+  }
+  if (other.length > 1) message += `one of ${formatList(other, "or")}`;
+  else if (other.length === 1) message += `${other[0].toLowerCase() !== other[0] ? "an " : ""}${other[0]}`;
+  return made(TypeError, "ERR_INVALID_ARG_TYPE", `${message}. Received ${determineSpecificType(actual)}`, void 0, invalidArgType);
+}
+var SystemErrorClass;
+function nodeSystemError(code, prefix, context) {
+  let message = `${prefix}: ${context.syscall} returned ${context.code} (${context.message})`;
+  if (context.path !== void 0) message += ` ${context.path}`;
+  if (context.dest !== void 0) message += ` => ${context.dest}`;
+  SystemErrorClass ??= class SystemError extends Error {
+    constructor(errorCode, text, info) {
+      super(text);
+      Reflect.deleteProperty(this, "message");
+      this.code = errorCode;
+      const through = (key) => ({
+        get: () => info[key],
+        set: (value) => {
+          info[key] = value;
+        },
+        enumerable: true,
+        configurable: true
+      });
+      Object.defineProperties(this, {
+        name: { value: "SystemError", enumerable: false, writable: true, configurable: true },
+        message: { value: text, enumerable: false, writable: true, configurable: true },
+        info: { value: info, enumerable: true, writable: false, configurable: true },
+        errno: through("errno"),
+        syscall: through("syscall")
+      });
+      if (info.path !== void 0) Object.defineProperty(this, "path", through("path"));
+      if (info.dest !== void 0) Object.defineProperty(this, "dest", through("dest"));
+    }
+    toString() {
+      return `${this.name} [${this.code}]: ${this.message}`;
+    }
+    [  Symbol.for("nodejs.util.inspect.custom")](_depth, options, inspect) {
+      return inspect(this, { ...options, getters: true, customInspect: false });
+    }
+  };
+  const error = new SystemErrorClass(code, message, context);
+  headStack(error, `SystemError [${code}]`, nodeSystemError);
+  return error;
+}
+function headStack(error, name, above) {
+  const own = Object.getOwnPropertyDescriptor(error, "name");
+  const capture = Reflect.get(Error, "captureStackTrace");
+  if (typeof capture === "function") Reflect.apply(capture, Error, [error, above]);
+  Object.defineProperty(error, "name", { value: name, enumerable: false, writable: true, configurable: true });
+  void error.stack;
+  if (own === void 0) Reflect.deleteProperty(error, "name");
+  else Object.defineProperty(error, "name", own);
+}
+Object.defineProperties(globalThis, {
+  __nimbusNodeError: { value: nodeError, configurable: true },
+  __nimbusNodeSystemError: { value: nodeSystemError, configurable: true },
+});
+// What the shims call a program's functions with, captured before any
+// program runs: a program may replace Reflect's.
+const __nimbusReflectApply = Reflect.apply;
 // The runner's stop and replay (runtime/stop-replay.ts), private to its
 // module: null in a runner without one.
 const __nimbusReplay = typeof __nimbusStopReplay !== "undefined" ? __nimbusStopReplay : null;
@@ -2652,6 +2834,13 @@ const __fsMod = (() => {
     if (_isBytes(v)) return _dec.decode(v);
     return "";
   }
+  // A file's content as the string an `encoding` option asks for: UTF-8
+  // text, or its bytes in base64, hex, latin1, … (Buffer#toString).
+  function _decodeAs(v, encoding) {
+    const name = String(encoding).toLowerCase();
+    if (name === "utf8" || name === "utf-8") return _asString(v);
+    return __BufferMod.from(_isBytes(v) ? v : _asString(v)).toString(encoding);
+  }
 
   // ── helpers ──
   function _strip(p) { return String(p).replace(/^\/+/, ""); }
@@ -5026,7 +5215,7 @@ const __fsMod = (() => {
         if (typeof reached === "string" && _nsLandingKey(asked) !== _strip(reached)) await _acquireBarrier(supervisor);
         const kept = first !== null && first.stat !== undefined && total <= READ_STREAM_CHUNK_BYTES && _noteLearnedStat(absPath, first.stat, fill);
         if (!kept) await _learnLive(absPath, supervisor);
-        return encoding ? _asString(bytes) : __BufferMod.from(bytes);
+        return encoding ? _decodeAs(bytes, encoding) : __BufferMod.from(bytes);
       }
 
       if (typeof supervisor.readFile === "function") {
@@ -5035,7 +5224,7 @@ const __fsMod = (() => {
         if (text !== null && text !== undefined) {
           _installResident(absPath, text, fill);
           await _learnLive(absPath, supervisor);
-          return encoding ? _asString(text) : __BufferMod.from(text);
+          return encoding ? _decodeAs(text, encoding) : __BufferMod.from(text);
         }
       }
     } finally {
@@ -5662,8 +5851,8 @@ const __fsMod = (() => {
     _residencySatisfied(absPath);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     if (encoding) {
-      // text encoding requested — produce a string regardless of cell shape.
-      return _asString(content);
+      // An encoding requested: a string, whatever the cell's shape.
+      return _decodeAs(content, encoding);
     }
     // No encoding requested — produce a Buffer-shaped Uint8Array.
     const bytes = __BufferMod.from(content);
@@ -6123,7 +6312,7 @@ const __fsMod = (() => {
       if (sync && !o.force) throw _fsErr("ENOENT", "rm", p);
     }
     if (st !== undefined && st.isDirectory() && !o.recursive) {
-      throw _fsErr("ERR_FS_EISDIR", "rm", p);
+      throw nodeSystemError("ERR_FS_EISDIR", "Path is a directory", { code: "EISDIR", message: "is a directory", path: String(p), syscall: "rm", errno: Number(__constantsMod.EISDIR) });
     }
     const prefix = k + "/";
     // A parked write is content the authority may never have seen: the
@@ -6176,13 +6365,19 @@ const __fsMod = (() => {
       const destSt = statSync(dest, { throwIfNoEntry: false });
       if (destSt !== undefined) {
         if (destSt.isDirectory()) throw _fsErr("EISDIR", "cp", dest);
-        if (o.errorOnExist) throw _fsErr("ERR_FS_CP_EEXIST", "cp", dest);
+        if (o.errorOnExist) {
+          throw nodeSystemError("ERR_FS_CP_EEXIST", "Target already exists", { message: String(dest) + " already exists", path: String(dest), syscall: "cp", errno: Number(__constantsMod.EEXIST), code: "EEXIST" });
+        }
         if (o.force === false) return;
       }
       copyFileSync(src, dest);
       return;
     }
-    if (!o.recursive) throw _fsErr("ERR_FS_EISDIR", "cp", src);
+    // Node's cpSync refuses this in C++: a plain Error with the code.
+    if (!o.recursive) {
+      const named = String(src).endsWith("/") ? String(src) : String(src) + "/";
+      throw Object.assign(new Error("Recursive option not enabled, cannot copy a directory: " + named), { code: "ERR_FS_EISDIR" });
+    }
     mkdirSync(dest, { recursive: true });
     for (const ent of readdirSync(src, { withFileTypes: true })) {
       cpSync(__pathMod.join(String(src), ent.name), __pathMod.join(String(dest), ent.name), o);
@@ -6957,9 +7152,7 @@ const __fsMod = (() => {
     }
     _assertOpen() {
       if (this._closed) {
-        const err = new Error("Directory handle was closed");
-        err.code = "ERR_DIR_CLOSED";
-        throw err;
+        throw nodeError(Error, "ERR_DIR_CLOSED", "Directory handle was closed");
       }
     }
     readSync() {
@@ -7077,24 +7270,13 @@ const __fsMod = (() => {
   // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
   // matching with the minimatch Node vendors (node-minimatch-source.ts),
   // which is evaluated the first time a program globs.
-  // Node's ERR_INVALID_ARG_TYPE, as its validators word it.
-  function _argTypeError(name, expected, value) {
-    const got = value === undefined || value === null ? String(value)
-      : typeof value === "function" ? "function " + (value.name || "<anonymous>")
-      : typeof value === "object" ? "an instance of " + ((value.constructor && value.constructor.name) || "Object")
-      : "type " + typeof value + " (" + (typeof value === "string" ? "'" + value + "'" : String(value)) + ")";
-    const e = new TypeError('The "' + name + '" ' + (name.includes(".") ? "property" : "argument") + " must be " + expected + ". Received " + got);
-    e.code = "ERR_INVALID_ARG_TYPE";
-    return e;
-  }
   const _Glob = (() => {
     let minimatch = null;
     const mm = () => minimatch ??= __nimbusMinimatch();
     const { join, resolve, basename, isAbsolute, dirname } = __pathMod;
-    const argType = _argTypeError;
     const validateStringArray = (value, name) => {
-      if (!Array.isArray(value)) throw argType(name, "an instance of Array", value);
-      for (let i = 0; i < value.length; i++) if (typeof value[i] !== "string") throw argType(name + "[" + i + "]", "of type string", value[i]);
+      if (!Array.isArray(value)) throw invalidArgType(name, "Array", value);
+      for (let i = 0; i < value.length; i++) if (typeof value[i] !== "string") throw invalidArgType(name + "[" + i + "]", "string", value[i]);
     };
     const createMatcher = (pattern) => new (mm().Minimatch)(pattern, {
       __proto__: null, nocase: false, windowsPathsNoEscape: true, nonegate: true, nocomment: true,
@@ -7221,19 +7403,19 @@ const __fsMod = (() => {
       #isExcluded = () => false;
       constructor(pattern, options) {
         if (options === undefined) options = {};
-        if (options === null || typeof options !== "object" || Array.isArray(options)) throw argType("options", "of type object", options);
+        if (options === null || typeof options !== "object" || Array.isArray(options)) throw invalidArgType("options", "object", options);
         const { exclude, cwd, withFileTypes } = options;
         this.#root = (cwd && typeof cwd === "object" && typeof cwd.href === "string" && typeof cwd.protocol === "string")
           ? builtins.url.fileURLToPath(cwd) : (cwd ?? ".");
         this.#withFileTypes = !!withFileTypes;
         if (exclude != null) {
           if (Array.isArray(exclude)) {
-            for (let i = 0; i < exclude.length; i++) if (typeof exclude[i] !== "string") throw argType("options.exclude[" + i + "]", "of type string", exclude[i]);
+            for (let i = 0; i < exclude.length; i++) if (typeof exclude[i] !== "string") throw invalidArgType("options.exclude[" + i + "]", "string", exclude[i]);
             const matchers = exclude.map((p) => resolve(this.#root, p)).map((p) => createMatcher(p));
             this.#isExcluded = (value) => matchers.some((matcher) => matcher.match(value));
             this.#results.setup(this.#root, this.#isExcluded);
           } else if (typeof exclude !== "function") {
-            throw argType("options.exclude", "of type function or string[]", exclude);
+            throw invalidArgType("options.exclude", ["function", "string[]"], exclude);
           } else {
             this.#exclude = exclude;
           }
@@ -7243,7 +7425,7 @@ const __fsMod = (() => {
           validateStringArray(pattern, "patterns");
           patterns = pattern;
         } else {
-          if (typeof pattern !== "string") throw argType("patterns", "of type string", pattern);
+          if (typeof pattern !== "string") throw invalidArgType("patterns", "string", pattern);
           patterns = [pattern];
         }
         this.matchers = patterns.map((p) => createMatcher(p));
@@ -7617,7 +7799,7 @@ const __fsMod = (() => {
       callback = options;
       options = undefined;
     }
-    if (typeof callback !== "function") throw _argTypeError("cb", "of type function", callback);
+    if (typeof callback !== "function") throw invalidArgType("cb", "function", callback);
     (async () => {
       try {
         const res = [];
@@ -8504,7 +8686,7 @@ const __streamMod = (() => {
 
   /** Node's ERR_STREAM_DESTROYED, for a write or end() a destroyed stream refuses. */
   function _destroyedError(method) {
-    return Object.assign(new Error('Cannot call ' + method + ' after a stream was destroyed'), { code: 'ERR_STREAM_DESTROYED' });
+    return nodeError(Error, 'ERR_STREAM_DESTROYED', 'Cannot call ' + method + ' after a stream was destroyed');
   }
 
   /**
@@ -8930,7 +9112,7 @@ const __streamMod = (() => {
       // A destroyed stream reports nothing further; the write's callback is
       // still answered.
       const err = state.ending
-        ? Object.assign(new Error('write after end'), { code: 'ERR_STREAM_WRITE_AFTER_END' })
+        ? nodeError(Error, 'ERR_STREAM_WRITE_AFTER_END', 'write after end')
         : _destroyedError('write');
       if (state.destroyed) { if (callback) queueMicrotask(() => callback(err)); return false; }
       if (callback) callback(err);
@@ -10115,52 +10297,9 @@ function __nimbusNodeInspect() {
   const primordials = {};
   platform.primordialsOf(primordials, globalThis);
   const customInspectSymbol = Symbol.for("nodejs.util.inspect.custom");
-  let lazyInspect;
 
-  // lib/internal/errors.js: the errors inspect.js and its validators raise.
-  function nodeError(Base, code, message) {
-    const error = new Base(message);
-    Object.defineProperty(error, "code", { value: code, enumerable: true, writable: true, configurable: true });
-    Object.defineProperty(error, "toString", {
-      value() { return this.name + " [" + code + "]: " + this.message; }, writable: true, configurable: true,
-    });
-    return error;
-  }
-  function determineSpecificType(value) {
-    if (value === null) return "null";
-    if (value === undefined) return "undefined";
-    switch (typeof value) {
-      case "bigint": return "type bigint (" + value + "n)";
-      case "number":
-        if (value === 0) return 1 / value === -Infinity ? "type number (-0)" : "type number (0)";
-        if (value !== value) return "type number (NaN)";
-        if (value === Infinity) return "type number (Infinity)";
-        if (value === -Infinity) return "type number (-Infinity)";
-        return "type number (" + value + ")";
-      case "boolean": return value ? "type boolean (true)" : "type boolean (false)";
-      case "symbol": return "type symbol (" + String(value) + ")";
-      case "function": return "function " + value.name;
-      case "object":
-        if (value.constructor && "name" in value.constructor) return "an instance of " + value.constructor.name;
-        return lazyInspect.inspect(value, { depth: -1 });
-      case "string": {
-        const text = value.length > 28 ? value.slice(0, 25) + "..." : value;
-        if (text.indexOf("'") === -1) return "type string ('" + text + "')";
-        return "type string (" + JSON.stringify(text) + ")";
-      }
-      default: {
-        let inspected = lazyInspect.inspect(value, { colors: false });
-        if (inspected.length > 28) inspected = inspected.slice(0, 25) + "...";
-        return "type " + typeof value + " (" + inspected + ")";
-      }
-    }
-  }
-  // ERR_INVALID_ARG_TYPE for the one type each validator here expects.
-  function invalidArgType(name, type, actual) {
-    const kind = name.includes(".") ? "property" : "argument";
-    return nodeError(TypeError, "ERR_INVALID_ARG_TYPE",
-      "The \"" + name + "\" " + kind + " must be of type " + type + ". Received " + determineSpecificType(actual));
-  }
+  // lib/internal/errors.js: the errors inspect.js and its validators raise
+  // are the shims' (core _shared/node-error.ts nodeError, invalidArgType).
   let maxStackErrorName;
   let maxStackErrorMessage;
   function isStackOverflowError(err) {
@@ -10314,9 +10453,7 @@ function __nimbusNodeInspect() {
   const inspectPrimordials = Object.create(null);
   for (const key of Reflect.ownKeys(primordials)) inspectPrimordials[key] = primordials[key];
   inspectPrimordials.globalThis = bootGlobal;
-  const nodeInspect = evaluate();
-  lazyInspect = nodeInspect;
-  return nodeInspect;
+  return evaluate();
 })({
     util: __realUtil,
     // V8's slots, as workerd's inspect reaches them (node-inspect-host.ts THE BINDING).
@@ -14117,6 +14254,9 @@ module.exports = {
   });
   return __nimbusNodeInspectExports;
 }
+// Node's errors describe a value only inspect can (a null-prototype
+// object) with it, as Node's do.
+useNodeErrorInspect((value, options) => __nimbusNodeInspect().inspect(value, options));
 // util.inspect, which loads Node's the first time it formats: its custom
 // symbol is Node's registered one, its options and styles Node's own.
 function __nimbusInspect(value, options) {
@@ -14259,12 +14399,12 @@ const __utilMod = {
     const allowNegative = !!cfg.allowNegative;
     const values = {};
     const positionals = [];
-    const err = (code, message) => { const e = new TypeError(message); e.code = code; return e; };
+    const err = (code, message) => nodeError(TypeError, code, message);
     const shortToLong = {};
     for (const [name, spec] of Object.entries(options)) {
-      if (!spec || (spec.type !== "string" && spec.type !== "boolean")) {
-        throw err("ERR_INVALID_ARG_TYPE", "The \"options." + name + ".type\" property must be one of: 'string', 'boolean'.");
-      }
+      if (spec === null || typeof spec !== "object" || Array.isArray(spec)) throw invalidArgType("options." + name, "object", spec);
+      const type = Object.hasOwn(spec, "type") ? spec.type : undefined;
+      if (type !== "string" && type !== "boolean") throw invalidArgType("options." + name + ".type", "('string|boolean')", type);
       if (spec.short) shortToLong[spec.short] = name;
       if (spec.default !== undefined) values[name] = spec.default;
     }
@@ -14280,7 +14420,7 @@ const __utilMod = {
     const optionValue = (name, inlineValue, next, raw) => {
       const spec = options[name];
       if (!spec) {
-        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'." + (allowPositionals ? " To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- \"" + raw + "\"'." : ""));
+        if (strict) throw err("ERR_PARSE_ARGS_UNKNOWN_OPTION", "Unknown option '" + raw + "'" + (allowPositionals ? ". To specify a positional argument starting with a '-', place it at the end of the command after '--', as in '-- " + JSON.stringify(raw) : ""));
         if (inlineValue !== undefined) return { value: inlineValue, consumed: 0 };
         return { value: true, consumed: 0 };
       }
@@ -14531,9 +14671,7 @@ const __cryptoMod = (() => {
   // randomUUID throws a NIMBUS-flavoured error.
   function _unavail(name) {
     return () => {
-      const e = new Error('crypto.' + name + ': workerd node:crypto not available. Check facet compat date >= 2025-04-08.');
-      e.code = 'ERR_CRYPTO_UNAVAILABLE';
-      throw e;
+      throw nodeError(Error, 'ERR_CRYPTO_UNAVAILABLE', 'crypto.' + name + ': workerd node:crypto not available. Check facet compat date >= 2025-04-08.');
     };
   }
   return {
@@ -14753,13 +14891,10 @@ const __vmMod = (() => {
   const apply = Reflect.apply;
   const scriptThis = globalThis;
   function honestError(method, originalErr) {
-    const e = new Error(
-      'vm.' + method + ': workerd does not implement runtime eval. ' +
+    const e = nodeError(Error, 'ERR_VM_DYNAMIC_EVAL_DISALLOWED', 'vm.' + method + ': workerd does not implement runtime eval. ' +
       'Pre-bundle vm-using scripts at install time, or wait for W3.5 ' +
       'parser-based fallback. (Original: ' +
-      ((originalErr && originalErr.message) || 'no underlying error') + ')'
-    );
-    e.code = 'ERR_VM_DYNAMIC_EVAL_DISALLOWED';
+      ((originalErr && originalErr.message) || 'no underlying error') + ')');
     return e;
   }
   function wrapRuntimeEval(method) {
@@ -14842,34 +14977,7 @@ const __vmMod = (() => {
 // scripts/bundle-facet-workers.mjs, declares createHttp2Module; the
 // substrate's node-compat imports the same function.
 function createHttp2Module(host) {
-  const nodeError = (Base, code, message, props = {}) => Object.assign(new Base(message), { code }, props);
   const notSupported = (op) => nodeError(Error, "ERR_HTTP2_NOT_SUPPORTED", `http2.${op}: not implemented in Nimbus. Use fetch() or HTTP/1.1.`);
-  const describe = (value) => {
-    if (value === null) return "null";
-    if (value === void 0) return "undefined";
-    switch (typeof value) {
-      case "bigint":
-        return `type bigint (${value}n)`;
-      case "number":
-        if (Object.is(value, -0)) return "type number (-0)";
-        return `type number (${value})`;
-      case "boolean":
-        return `type boolean (${value})`;
-      case "symbol":
-        return `type symbol (${String(value)})`;
-      case "function":
-        return `function ${value.name}`;
-      case "string": {
-        const shown = value.length > 28 ? `${value.slice(0, 25)}...` : value;
-        return shown.includes("'") ? `type string (${JSON.stringify(shown)})` : `type string ('${shown}')`;
-      }
-      default: {
-        const ctor = Reflect.get(Object(value), "constructor");
-        return typeof ctor === "function" && ctor.name ? `an instance of ${ctor.name}` : String(value);
-      }
-    }
-  };
-  const invalidArgType = (name, expected, value) => nodeError(TypeError, "ERR_INVALID_ARG_TYPE", `The "${name}" argument must be ${expected}. Received ${describe(value)}`);
   const invalidSetting = (Base, name, actual, min, max) => nodeError(
     Base,
     "ERR_HTTP2_INVALID_SETTING_VALUE",
@@ -14894,7 +15002,7 @@ function createHttp2Module(host) {
   };
   const validate = (settings) => {
     if (settings === void 0) return;
-    if (!isObjectArg(settings.customSettings)) throw invalidArgType("customSettings", "an instance of Number", settings.customSettings);
+    if (!isObjectArg(settings.customSettings)) throw invalidArgType("customSettings", "Number", settings.customSettings);
     if (settings.customSettings) {
       const entries = Object.entries(settings.customSettings);
       if (entries.length > MAX_ADDITIONAL_SETTINGS) {
@@ -14928,7 +15036,7 @@ function createHttp2Module(host) {
     return settings;
   }
   function getPackedSettings(settings) {
-    if (!isObjectArg(settings)) throw invalidArgType("settings", "of type object", settings);
+    if (!isObjectArg(settings)) throw invalidArgType("settings", "object", settings);
     validate(settings);
     const given = { ...settings };
     const slots = [
@@ -15012,7 +15120,7 @@ function createHttp2Module(host) {
   }
   function getUnpackedSettings(buf, options = {}) {
     if (!ArrayBuffer.isView(buf) || Reflect.get(buf, "length") === void 0) {
-      throw invalidArgType("buf", "an instance of Buffer or TypedArray", buf);
+      throw invalidArgType("buf", ["Buffer", "TypedArray"], buf);
     }
     if (buf.length % 6 !== 0) {
       throw nodeError(RangeError, "ERR_HTTP2_INVALID_PACKED_SETTINGS_LENGTH", "Packed settings length must be a multiple of six");
@@ -15461,9 +15569,7 @@ const __tlsMod = (() => {
   const notes = new WeakMap();
   let startTlsPatched = false;
   const notImplemented = (option, why) => {
-    const e = new Error('The ' + option + ' option is not implemented: ' + why);
-    e.code = 'ERR_OPTION_NOT_IMPLEMENTED';
-    return e;
+    return nodeError(Error, 'ERR_OPTION_NOT_IMPLEMENTED', 'The ' + option + ' option is not implemented: ' + why);
   };
   const patchStartTls = (native) => {
     if (startTlsPatched || !native) return;
@@ -15583,8 +15689,7 @@ const __tlsMod = (() => {
     // around it. The refusal names the limit; HTTPS by fetch is unaffected.
     if (globalThis.__nimbusEgress === true) {
       const refused = realNet ? new realNet.Socket() : null;
-      const error = new Error("Nimbus: TLS sockets are not available when the workspace's network goes through an egress (a Fetcher's connect() carries plain TCP only); use fetch() or https for HTTPS");
-      error.code = 'ERR_NIMBUS_EGRESS_TLS';
+      const error = nodeError(Error, 'ERR_NIMBUS_EGRESS_TLS', "Nimbus: TLS sockets are not available when the workspace's network goes through an egress (a Fetcher's connect() carries plain TCP only); use fetch() or https for HTTPS");
       if (!refused) throw error;
       queueMicrotask(() => refused.destroy(error));
       return refused;
@@ -15619,9 +15724,7 @@ const __tlsMod = (() => {
       if (p === 'connect') return connect;
       if (p === 'createServer') {
         return () => {
-          const e = new Error('tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
-          e.code = 'ERR_NET_SERVER_NOT_AVAILABLE';
-          throw e;
+          throw nodeError(Error, 'ERR_NET_SERVER_NOT_AVAILABLE', 'tls.createServer: not supported in Nimbus facet. Use http.createServer for routing.');
         };
       }
       const value = t[p];
@@ -15631,9 +15734,7 @@ const __tlsMod = (() => {
           apply(target, self, args) { __nimbusReplay?.effect('tls.' + p); return Reflect.apply(target, self, args); },
           construct(target, args, newTarget) {
             if (globalThis.__nimbusEgress === true) {
-              const error = new Error("Nimbus: TLS sockets are not available when the workspace's network goes through an egress (a Fetcher's connect() carries plain TCP only); use fetch() or https for HTTPS");
-              error.code = 'ERR_NIMBUS_EGRESS_TLS';
-              throw error;
+              throw nodeError(Error, 'ERR_NIMBUS_EGRESS_TLS', "Nimbus: TLS sockets are not available when the workspace's network goes through an egress (a Fetcher's connect() carries plain TCP only); use fetch() or https for HTTPS");
             }
             if (__nimbusReplay && __nimbusReplay.outbound) {
               throw notImplemented('tls.' + p, 'a TLS socket the program builds itself is not made in a program whose network goes through Nimbus (one started with its stdin open); use tls.connect');
@@ -15825,7 +15926,7 @@ const __childProcessMod = (() => {
       child._pendingStdin.push(data);
       return Promise.resolve();
     }
-    if (!HAS_SUPERVISOR) return Promise.reject(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"));
+    if (!HAS_SUPERVISOR) return Promise.reject(nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children"));
     const prior = child._stdinChain || Promise.resolve();
     const next = prior.then(_releaseToChild).then(() => _writeStdinWhenRoom(child, data));
     child._stdinChain = next.catch(() => {});
@@ -16273,9 +16374,7 @@ const __childProcessMod = (() => {
 
     if (!HAS_SUPERVISOR) {
       queueMicrotask(() => {
-        const err = Object.assign(new Error("ERR_CHILD_PROCESS_UNAVAILABLE"), {
-          code: "ERR_CHILD_PROCESS_UNAVAILABLE", cmd,
-        });
+        const err = nodeError(Error, "ERR_CHILD_PROCESS_UNAVAILABLE", "child_process: no supervisor runs this process's children", { cmd });
         try { child.emit("error", err); } catch {}
         child._exitFired = true;
         try { child.emit("exit", 1, null); } catch {}
@@ -16523,14 +16622,11 @@ const __childProcessMod = (() => {
    * only honest answer left.
    */
   function _refuseSyncExec(api, command) {
-    const err = new Error(
-      "child_process." + api + " is not supported in a Nimbus node facet: a facet " +
+    const err = nodeError(Error, "ERR_NIMBUS_SYNC_CHILD_PROCESS", "child_process." + api + " is not supported in a Nimbus node facet: a facet " +
       "has no synchronous I/O primitive, so a child process cannot be run to completion " +
       "without yielding to the event loop. Returning early would report success for a " +
       "command that has not run. Use the asynchronous form instead — exec/execFile/spawn, " +
-      "or await util.promisify(child_process.exec)(...). Command: " + command,
-    );
-    err.code = "ERR_NIMBUS_SYNC_CHILD_PROCESS";
+      "or await util.promisify(child_process.exec)(...). Command: " + command,);
     err.command = command;
     throw err;
   }
@@ -16772,20 +16868,12 @@ function __nimbusHasColors(count, env) {
     env = count;
     count = 16;
   } else if (typeof count !== "number") {
-    throw Object.assign(new TypeError("The \"count\" argument must be of type number." + __nimbusReceived(count)), { code: "ERR_INVALID_ARG_TYPE" });
+    throw invalidArgType("count", "number", count);
   } else if (!Number.isInteger(count) || count < 2 || count > Number.MAX_SAFE_INTEGER) {
     const range = Number.isInteger(count) ? ">= 2 && <= 9007199254740991" : "an integer";
-    throw Object.assign(new RangeError("The value of \"count\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count)), { code: "ERR_OUT_OF_RANGE" });
+    throw nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \"count\" is out of range. It must be " + range + ". Received " + __utilMod.inspect(count));
   }
   return count <= 2 ** __nimbusColorDepth(env);
-}
-function __nimbusReceived(value) {
-  if (value === null || value === undefined) return " Received " + value;
-  if (typeof value === "function") return " Received function " + value.name;
-  if (typeof value === "object") return value.constructor?.name ? " Received an instance of " + value.constructor.name : " Received " + __utilMod.inspect(value, { depth: -1 });
-  let shown = __utilMod.inspect(value, { colors: false });
-  if (shown.length > 28) shown = shown.slice(0, 25) + "...";
-  return " Received type " + typeof value + " (" + shown + ")";
 }
 function __nimbusShouldColorize(stream) {
   if (__processMod.env.FORCE_COLOR !== undefined) return __nimbusColorDepth() > 2;
@@ -16857,9 +16945,7 @@ class __NimbusConsole {
     const { stdout: out, stderr: err = out, ignoreErrors: ignore = true, colorMode = "auto", inspectOptions, groupIndentation = 2 } = options;
     for (const [name, stream] of [["stdout", out], ["stderr", err]]) {
       if (!stream || typeof stream.write !== "function") {
-        const e = new TypeError("The \"" + name + "\" argument must be an instance of a writable stream.");
-        e.code = "ERR_CONSOLE_WRITABLE_STREAM";
-        throw e;
+        throw nodeError(TypeError, "ERR_CONSOLE_WRITABLE_STREAM", "Console expects a writable stream instance for " + name);
       }
     }
     this.#stdout = () => out;
@@ -16981,9 +17067,7 @@ class __NimbusConsole {
   // consuming it, which only its internals can.
   table(data, properties) {
     if (properties !== undefined && !Array.isArray(properties)) {
-      const e = new TypeError("The \"properties\" argument must be an instance of Array.");
-      e.code = "ERR_INVALID_ARG_TYPE";
-      throw e;
+      throw invalidArgType("properties", "Array", properties);
     }
     if (data === null || typeof data !== "object") return this.log(data);
     const options = this.#optionsFor(this.#stdout());
@@ -17206,10 +17290,9 @@ function __nimbusSyncStdinError(api, why) {
   // The whole message before the Error is built: its stack, which is what an
   // uncaught error prints, captures the message at construction.
   const file = __nimbusStdinFileSource();
-  const err = new Error(file !== null && __nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended
-    ? "ERR_NIMBUS_SYNC_STDIN: stdin is a file larger than 16 MiB, and synchronous reads of it are served from its first 16 MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
-    : "ERR_NIMBUS_SYNC_STDIN: fs." + api + "(0) has to wait for stdin, which is still open. Nimbus waits by running the program again from its start once the input is there, but this program " + why + ". Read process.stdin instead: it takes the input as it arrives");
-  err.code = "ERR_NIMBUS_SYNC_STDIN";
+  const err = nodeError(Error, "ERR_NIMBUS_SYNC_STDIN", file !== null && __nimbusQueuedStdin !== null && !__nimbusQueuedStdin.ended
+    ? "stdin is a file larger than 16 MiB, and synchronous reads of it are served from its first 16 MiB only, so a large redirect is never held whole. Read process.stdin, which streams the file"
+    : "fs." + api + "(0) has to wait for stdin, which is still open. Nimbus waits by running the program again from its start once the input is there, but this program " + why + ". Read process.stdin instead: it takes the input as it arrives");
   err.syscall = "read";
   return err;
 }
@@ -17762,14 +17845,12 @@ function __nimbusProcessEmitWarning(warning, type, code, ctor) {
     code = undefined;
     type = "Warning";
   }
-  const invalid = (name, expected, value) => Object.assign(
-    new TypeError("The \"" + name + "\" argument must be " + expected + "." + __nimbusReceived(value)), { code: "ERR_INVALID_ARG_TYPE" });
-  if (type !== undefined && typeof type !== "string") throw invalid("type", "of type string", type);
+  if (type !== undefined && typeof type !== "string") throw invalidArgType("type", "string", type);
   if (typeof code === "function") {
     ctor = code;
     code = undefined;
   } else if (code !== undefined && typeof code !== "string") {
-    throw invalid("code", "of type string", code);
+    throw invalidArgType("code", "string", code);
   }
   if (typeof warning === "string") {
     const limit = Error.stackTraceLimit;
@@ -17781,7 +17862,7 @@ function __nimbusProcessEmitWarning(warning, type, code, ctor) {
     if (detail !== undefined) warning.detail = detail;
     Error.captureStackTrace(warning, ctor || __processMod.emitWarning);
   } else if (!(warning instanceof Error)) {
-    throw invalid("warning", "of type string or an instance of Error", warning);
+    throw invalidArgType("warning", ["string", "Error"], warning);
   }
   if (warning.name === "DeprecationWarning") {
     if (__processMod.noDeprecation) return;
@@ -17803,12 +17884,19 @@ const __processMod = {
   env: env || {},
   cwd: () => cwd || "/home/user",
   chdir: (d) => { cwd = __pathMod.resolve(cwd || "/home/user", d); },
-  exit: (code) => {
-    exitCode = code ?? 0;
-    __nimbusEmitExit(exitCode);
+  // Node's: the code given (or process.exitCode), 'exit' once, with it,
+  // and whatever code its listeners leave.
+  exit: function exit(code) {
+    if (arguments.length !== 0) __processMod.exitCode = code;
+    if (!__processMod._exiting) {
+      __processMod._exiting = true;
+      __nimbusEmitExit(__processMod.exitCode || 0);
+    }
+    exitCode = __processMod.exitCode || 0;
     __nimbusReportProcessExit(exitCode, "");
     throw new __ProcessExit(exitCode);
   },
+  _exiting: false,
   platform: "linux", arch: "x64",
   version: "v22.22.3", versions: {"node":"22.22.3","v8":"12.4.254.21-node.56","modules":"127"},
   features: Object.freeze({
@@ -17899,8 +17987,7 @@ const __processMod = {
     if (mask === undefined) return previous;
     const next = typeof mask === "string" ? parseInt(mask, 8) : Number(mask);
     if (!Number.isInteger(next) || next < 0 || next > 0o777) {
-      const error = new TypeError("The value of mask is out of range");
-      error.code = "ERR_INVALID_ARG_VALUE";
+      const error = nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The value of mask is out of range");
       throw error;
     }
     __processUmask = next;
@@ -17920,8 +18007,8 @@ const __processMod = {
     if (name === "constants") {
       return { fs: __constantsMod, os: { errno: __constantsMod, signals: __constantsMod }, crypto: {} };
     }
+    // Node's process.binding names no code.
     const err = new Error("No such module: " + name);
-    err.code = "ERR_UNKNOWN_BUILTIN_MODULE";
     throw err;
   },
 };
@@ -17934,51 +18021,356 @@ if (__processMod.env.NODE_NO_WARNINGS !== "1" && !String(__processMod.env.NODE_O
 // paths (axios: its http adapter rather than its fetch one). As Node defines
 // it: an own property, writable, not enumerable, not configurable.
 Object.defineProperty(__processMod, Symbol.toStringTag, { value: "process", writable: true, enumerable: false, configurable: false });
-
-function __nimbusRuntimeErrorTrace(error) {
-  if (error && typeof error === "object") {
-    return error.stack || error.message || String(error);
+// process.exitCode as Node keeps it (lib/internal/bootstrap/node.js): an
+// integer, or a string of one, held as the int32 the process exits with;
+// null and undefined unset it.
+let __nimbusExitCodeField;
+Object.defineProperty(__processMod, "exitCode", {
+  get() { return __nimbusExitCodeField; },
+  set(code) {
+    if (code === null || code === undefined) {
+      __nimbusExitCodeField = undefined;
+      return;
+    }
+    if (!(typeof code === "string" && code !== "" && Number.isInteger(+code))) {
+      // validateInteger(code, "code")
+      if (typeof code !== "number") throw invalidArgType("code", "number", code);
+      if (!Number.isInteger(code)) throw __nimbusOutOfRange("code", "an integer", code);
+      if (code < Number.MIN_SAFE_INTEGER || code > Number.MAX_SAFE_INTEGER) {
+        throw __nimbusOutOfRange("code", ">= " + Number.MIN_SAFE_INTEGER + " && <= " + Number.MAX_SAFE_INTEGER, code);
+      }
+    }
+    __nimbusExitCodeField = Number(code) | 0;
+  },
+  enumerable: true,
+  configurable: false,
+});
+// Node's ERR_OUT_OF_RANGE for `name` (lib/internal/errors.js): an integer
+// past 2 ** 32 with its digits grouped, anything else as inspect shows it.
+function __nimbusOutOfRange(name, range, input) {
+  let received;
+  if (Number.isInteger(input) && Math.abs(input) > 2 ** 32) {
+    const digits = String(input);
+    const start = digits[0] === "-" ? 1 : 0;
+    let grouped = "";
+    let i = digits.length;
+    for (; i >= start + 4; i -= 3) grouped = "_" + digits.slice(i - 3, i) + grouped;
+    received = digits.slice(0, i) + grouped;
+  } else {
+    received = __utilMod.inspect(input);
   }
-  return String(error);
+  return nodeError(RangeError, "ERR_OUT_OF_RANGE", "The value of \"" + name + "\" is out of range. It must be " + range + ". Received " + received);
+}
+// The natural end: 'exit' with process.exitCode, once, and the code its
+// listeners leave (Node's EmitProcessExit).
+function __nimbusExitAtEnd() {
+  if (!__processMod._exiting) {
+    __processMod._exiting = true;
+    __nimbusEmitExit(__processMod.exitCode || 0);
+  }
+  return __processMod.exitCode || 0;
 }
 
-function __nimbusFailUnhandledAsync(error, kind) {
+// ── What nothing caught ──
+// Node 22.22.3's fatal exception (lib/internal/process/execution.js
+// createOnGlobalUncaughtException; lib/internal/process/promises.js
+// throwUnhandledRejectionsMode; src/node_errors.cc TriggerUncaughtException,
+// ReportFatalException, GetErrorSource): 'uncaughtExceptionMonitor' sees it,
+// an 'uncaughtException' listener may take it and the program goes on;
+// otherwise 'exit' is emitted with process.exitCode 1, the report goes to
+// fd 2 — where it was thrown, the error as util.inspect shows it, Node's
+// version — and the process exits with process.exitCode. What an
+// 'uncaughtException' listener throws is reported as it is, its stack, and
+// the process exits 7. A rejection nothing handles is one, with its reason,
+// or Node's UnhandledPromiseRejection for a reason that is not an error.
+//
+// Where it was thrown is V8's message, which Node reads and a Worker's
+// JavaScript cannot: here it is read off the error's stack, as V8 places
+// it — for a rejection, its first frame; for an exception, the innermost
+// `throw` statement around one of its frames, else its first frame — in a
+// module of the program (__nimbusFrameModule), from the text the module was
+// compiled from. Named limits (fine-print capabilities): an error thrown
+// inside a builtin, which Node reports at its own library's source line,
+// and a value that is not an error or an error thrown away from where it
+// was made (`throw e`), have no such line or the line it was made at.
+let __nimbusFatalStderr = null;
+// Node writes its report to fd 2 itself, past whatever a program put in
+// process.stderr.write's place: the write the runner installed.
+function __nimbusWriteFatal(text) {
+  try { (__nimbusFatalStderr ?? ((t) => __processMod.stderr.write(t)))(text); } catch {}
+}
+// V8's NoSideEffectsToString (objects.cc), for the reason Node names.
+function __nimbusNoSideEffectsToString(value) {
+  if (typeof value === "string") return value;
+  if (typeof value === "symbol") return value.toString();
+  if (typeof value === "function") {
+    try { return Function.prototype.toString.call(value); } catch { return "function () { [native code] }"; }
+  }
+  if (value === null || typeof value !== "object") return String(value);
+  if (__utilMod.types.isProxy(value)) return "#<Object>";
+  // A data property, own or inherited, never a getter.
+  const dataProperty = (key) => {
+    for (let o = value; o !== null; o = Object.getPrototypeOf(o)) {
+      const d = Object.getOwnPropertyDescriptor(o, key);
+      if (d) return "value" in d ? d.value : undefined;
+      if (__utilMod.types.isProxy(o)) return undefined;
+    }
+    return undefined;
+  };
+  const toString = dataProperty("toString");
+  if (__utilMod.types.isNativeError(value) || toString === Error.prototype.toString) {
+    const name = dataProperty("name");
+    const message = dataProperty("message");
+    const n = typeof name === "string" ? name : "Error";
+    const m = typeof message === "string" ? message : "";
+    return n === "" ? m : m === "" ? n : n + ": " + m;
+  }
+  if (toString === Object.prototype.toString) {
+    const ctor = dataProperty("constructor");
+    if (typeof ctor === "function" && typeof ctor.name === "string" && ctor.name !== "") return "#<" + ctor.name + ">";
+  }
+  const types = __utilMod.types;
+  const builtin = Array.isArray(value) ? "Array" : types.isArgumentsObject(value) ? "Arguments"
+    : types.isNativeError(value) ? "Error" : types.isDate(value) ? "Date" : types.isRegExp(value) ? "RegExp"
+    : types.isBooleanObject(value) ? "Boolean" : types.isNumberObject(value) ? "Number"
+    : types.isStringObject(value) ? "String" : "Object";
+  const tag = dataProperty(Symbol.toStringTag);
+  return "[object " + (typeof tag === "string" ? tag : builtin) + "]";
+}
+const __NimbusUnhandledPromiseRejection = class UnhandledPromiseRejection extends Error {
+  code = "ERR_UNHANDLED_REJECTION";
+  constructor(reason) {
+    super("This error originated either by throwing inside of an async function without a catch block, or by rejecting a promise which was not handled with .catch(). The promise rejected with the reason \"" + __nimbusNoSideEffectsToString(reason) + "\".");
+    this.name = "UnhandledPromiseRejection";
+  }
+};
+// A frame of a stack's text: [url, line, column], or null for one without a
+// place (a builtin's).
+function __nimbusFrameAt(line) {
+  if (!line.startsWith("    at ")) return null;
+  let at = line.slice(7);
+  if (at.endsWith(")")) {
+    const open = at.indexOf(" (");
+    if (open !== -1) at = at.slice(open + 2, -1);
+  }
+  // eval code: `eval at f (url:1:2), <anonymous>:1:1`.
+  const comma = at.lastIndexOf(", ");
+  if (comma !== -1) at = at.slice(comma + 2);
+  const place = /^(.*):(\d+):(\d+)$/.exec(at);
+  return place === null ? null : [place[1], Number(place[2]), Number(place[3])];
+}
+// What a frame module's file is called in a report: Node's name for it.
+function __nimbusFrameFile(module) {
+  if (module.path !== null) return module.esModule ? builtins.url.pathToFileURL(module.path).href : module.path;
+  const named = module.file;
+  if (named === "<eval>" || named === "[stdin]") {
+    return module.esModule ? builtins.url.pathToFileURL(__pathMod.resolve(String(cwd || "/home/user"), "[eval1]")).href
+      : named === "<eval>" ? "[eval]" : "[stdin]";
+  }
+  return module.esModule ? builtins.url.pathToFileURL(named).href : named;
+}
+// GetErrorSource: `file:line`, the line, and under it the place, `^` from
+// start to end. As Node does, the columns, which are V8's (UTF-16), count
+// the line's UTF-8 bytes.
+function __nimbusArrowOf(module, text, start, end) {
+  let lineStart = 0;
+  let line = 1;
+  for (;;) {
+    const next = text.slice(lineStart).search(/\r\n|[\n\r\u2028\u2029]/);
+    if (next === -1 || lineStart + next >= start) break;
+    lineStart += next + (text.startsWith("\r\n", lineStart + next) ? 2 : 1);
+    line++;
+  }
+  const rest = text.slice(lineStart);
+  const lineEnd = rest.search(/[\n\r\u2028\u2029]/);
+  let source = lineEnd === -1 ? rest : rest.slice(0, lineEnd);
+  let from = start - lineStart;
+  let to = end - lineStart;
+  if (line === 1) {
+    source = source.slice(module.head);
+    if (module.hashbang && source.startsWith("//")) source = "#!" + source.slice(2);
+    from -= module.head;
+    to -= module.head;
+  }
+  let arrow = __nimbusFrameFile(module) + ":" + line + "\n" + source + "\n";
+  const bytes = new TextEncoder().encode(source);
+  if (from > to || from < 0 || to > bytes.length) return arrow;
+  let underline = "";
+  for (let i = 0; i < from; i++) underline += bytes[i] === 9 ? "\t" : " ";
+  for (let i = from; i < to; i++) underline += "^";
+  return arrow + underline + "\n";
+}
+// The offset of 1-based (line, column) in a module's text.
+function __nimbusTextOffset(text, line, column) {
+  let offset = 0;
+  for (let n = 1; n < line; n++) {
+    const next = text.slice(offset).search(/\r\n|[\n\r\u2028\u2029]/);
+    if (next === -1) return -1;
+    offset += next + (text.startsWith("\r\n", offset + next) ? 2 : 1);
+  }
+  return offset + column - 1;
+}
+// Where V8 places what was thrown, as Node prints it above the error, or null.
+function __nimbusFatalArrow(error, fromPromise) {
+  // Node's own error for a reason that is not one: its library's line.
+  if (error instanceof __NimbusUnhandledPromiseRejection) {
+    return "node:internal/process/promises:392\n      new UnhandledPromiseRejection(reason);\n      ^\n";
+  }
+  if (typeof __nimbusFrameModule !== "function") return null;
+  if (error === null || (typeof error !== "object" && typeof error !== "function")) return null;
+  let stack;
+  try { stack = error.stack; } catch { return null; }
+  if (typeof stack !== "string") return null;
+  const frames = [];
+  for (const line of stack.split("\n")) {
+    const frame = __nimbusFrameAt(line);
+    if (frame !== null) frames.push(frame);
+  }
+  // Thrown by the program, or by a builtin it called: its first frame with a place.
+  const top = frames.length === 0 ? null : __nimbusFrameModule(frames[0][0]);
+  if (top === null) return null;
+  const texts = new Map();
+  const textOf = (module) => {
+    if (!texts.has(module.name)) texts.set(module.name, __nimbusFrameModuleText(module));
+    return texts.get(module.name);
+  };
+  if (!fromPromise) {
+    for (const [url, line, column] of frames) {
+      const module = __nimbusFrameModule(url);
+      const text = module === null ? null : textOf(module);
+      if (text === null) continue;
+      const offset = __nimbusTextOffset(text, line, column);
+      const thrown = offset < 0 ? null : __nimbusFatalLocation(text, "script", offset);
+      if (thrown !== null) return __nimbusArrowOf(module, text, thrown[0], thrown[1]);
+    }
+  }
+  const text = textOf(top);
+  if (text === null) return null;
+  const offset = __nimbusTextOffset(text, frames[0][1], frames[0][2]);
+  return offset < 0 ? null : __nimbusArrowOf(top, text, offset, offset + 1);
+}
+// Where a module that does not compile stops, for its stack (commonjs-cell.ts
+// __nimbusDecorateSyntaxError), or null.
+globalThis.__nimbusSyntaxErrorArrow = function __nimbusSyntaxErrorArrow(module) {
+  const text = module === null ? null : __nimbusFrameModuleText(module);
+  const place = text === null ? null : __nimbusFatalLocation(text, "script", -1);
+  return place === null ? null : __nimbusArrowOf(module, text, place[0], place[1]);
+};
+// ReportFatalException: the text Node prints for `error`. `enhance`: the
+// error as inspect shows it (an 'uncaughtException' listener's error is its
+// stack).
+function __nimbusFatalReport(error, fromPromise, enhance) {
+  const isObject = error !== null && (typeof error === "object" || typeof error === "function");
+  const decorated = isObject && typeof __nimbusDecorated !== "undefined" && __nimbusDecorated.has(error);
+  const arrow = decorated ? null : __nimbusFatalArrow(error, fromPromise);
+  let report = "";
+  let attached = null;
+  // AppendExceptionLine: an error keeps its arrow for below; for anything
+  // else it is printed at once.
+  if (arrow !== null) {
+    if (isObject && __utilMod.types.isNativeError(error)) attached = arrow;
+    else report += "\n" + arrow;
+  }
+  let trace;
+  if (isObject) {
+    try { trace = error.stack; } catch {}
+    if (enhance) {
+      try {
+        const inspect = __utilMod.inspect;
+        const colors = __nimbusShouldColorize(__processMod.stderr) || inspect.defaultOptions.colors;
+        trace = inspect(error, { colors, customInspect: false, depth: Math.max(inspect.defaultOptions.depth, 5) });
+      } catch {}
+    }
+  }
+  let text = "";
+  if (trace !== undefined) {
+    try { text = String(trace); } catch {}
+  }
+  if (text.length > 0) {
+    report += attached === null ? text + "\n" : attached + "\n" + text + "\n";
+  } else {
+    let message;
+    let name;
+    if (isObject) {
+      try { message = error.message; } catch {}
+      try { name = error.name; } catch {}
+    }
+    if (message === undefined || name === undefined) {
+      let shown = "";
+      try { shown = String(error); } catch {}
+      report += shown + "\n";
+    } else {
+      let shownName = "";
+      let shownMessage = "";
+      try { shownName = String(name); } catch {}
+      try { shownMessage = String(message); } catch {}
+      report += (attached === null ? "" : attached + "\n") + shownName + ": " + shownMessage + "\n";
+    }
+    const argv0 = __pathMod.basename(String(__processMod.argv[0] || "node")).replace(/(.)\.[^.]*$/, "$1");
+    report += "(Use `" + argv0 + " --trace-uncaught ...` to show where the exception was thrown)\n";
+  }
+  return report + "\nNode.js " + __processMod.version + "\n";
+}
+// An exception nothing caught (`fromPromise`: a rejection, or an ES
+// module's evaluation): whether a listener took it.
+function __nimbusUncaughtException(error, fromPromise = false) {
   if (error instanceof __ProcessExit) {
     __nimbusReportProcessExit(error.code, "");
+    return true;
+  }
+  const type = fromPromise ? "unhandledRejection" : "uncaughtException";
+  try {
+    __processEvents.emit("uncaughtExceptionMonitor", error, type);
+    if (__processEvents.emit("uncaughtException", error, type)) return true;
+  } catch (thrown) {
+    if (thrown instanceof __ProcessExit) {
+      __nimbusReportProcessExit(thrown.code, "");
+      return true;
+    }
+    const report = __nimbusFatalReport(thrown, false, false);
+    __nimbusWriteFatal(report);
+    __nimbusReportProcessExit(7, report);
+    return false;
+  }
+  try {
+    if (!__processMod._exiting) {
+      __processMod._exiting = true;
+      __processMod.exitCode = 1;
+      __nimbusEmitExit(1);
+    }
+  } catch {}
+  const report = __nimbusFatalReport(error, fromPromise, true);
+  __nimbusWriteFatal(report);
+  __nimbusReportProcessExit(__processMod.exitCode ?? 1, report);
+  return false;
+}
+// A rejection nothing handles: 'unhandledRejection', then, unhandled, an
+// uncaught exception: the reason if it is an error (it has its own stack),
+// else Node's UnhandledPromiseRejection.
+function __nimbusUnhandledRejection(reason, promise) {
+  let handled;
+  try {
+    handled = __processEvents.emit("unhandledRejection", reason, promise);
+  } catch (thrown) {
+    __nimbusUncaughtException(thrown, false);
     return;
   }
-  const label = kind === "rejection"
-    ? "Unhandled promise rejection: "
-    : "Uncaught exception: ";
-  const line = label + __nimbusRuntimeErrorTrace(error) + "\n";
-  stderr += line;
-  if (__supervisor && typeof __supervisor.stderr === "function") {
-    try { __nimbusUseRpcResult(__supervisor.stderr(__nimbusOutEnc.encode(line)), () => undefined).catch(() => {}); } catch {}
-  }
-  __nimbusReportProcessExit(1, line);
+  if (handled) return;
+  const errorLike = typeof reason === "object" && reason !== null && Object.hasOwn(reason, "stack");
+  __nimbusUncaughtException(errorLike ? reason : new __NimbusUnhandledPromiseRejection(reason), true);
 }
 
 if (typeof globalThis.addEventListener === "function") {
   globalThis.addEventListener("unhandledrejection", (event) => {
     const reason = event && typeof event === "object" && "reason" in event ? event.reason : event;
     const promise = event && typeof event === "object" && "promise" in event ? event.promise : undefined;
-    let handled = false;
-    try { handled = __processEvents.emit("unhandledRejection", reason, promise); } catch {}
-    if (!handled) __nimbusFailUnhandledAsync(reason, "rejection");
+    __nimbusUnhandledRejection(reason, promise);
     try { event.preventDefault?.(); } catch {}
   });
   globalThis.addEventListener("error", (event) => {
     __nimbusUncaughtException(event && typeof event === "object" && "error" in event ? event.error : event);
     try { event.preventDefault?.(); } catch {}
   });
-}
-
-// An exception no code caught: the process's 'uncaughtException' listeners
-// have it, or it ends the program.
-function __nimbusUncaughtException(error) {
-  let handled = false;
-  try { handled = __processEvents.emit("uncaughtException", error); } catch {}
-  if (!handled) __nimbusFailUnhandledAsync(error, "exception");
 }
 
 // ═══════════════════════════════════════════════════════════════════════
@@ -18137,9 +18529,7 @@ Object.defineProperty(builtins, "http", {
         const ctx = activeContext;
         const [options, callback] = net._normalizeArgs(args);
         if (this.listening || owners.get(this)?.pending) {
-          const err = new Error("Listen method has been called more than once without closing.");
-          err.code = "ERR_SERVER_ALREADY_LISTEN";
-          throw err;
+          throw nodeError(Error, "ERR_SERVER_ALREADY_LISTEN", "Listen method has been called more than once without closing.");
         }
         const state = { ctx, pending: false, cancelled: false, port: null };
         owners.set(this, state);
@@ -18410,7 +18800,7 @@ Object.defineProperty(builtins, "https", {
 
   /** A frame the client should not have sent: the connection fails with `closeCode` (1002, or 1007 for text that is not UTF-8). */
   function protocolError(message, closeCode = 1002) {
-    return Object.assign(new Error("Nimbus: WebSocket protocol error from the client: " + message), { code: "ERR_NIMBUS_WEBSOCKET_PROTOCOL", closeCode });
+    return nodeError(Error, "ERR_NIMBUS_WEBSOCKET_PROTOCOL", "Nimbus: WebSocket protocol error from the client: " + message, { closeCode });
   }
 
   /** `bytes` as UTF-8 text, or the connection fails with 1007. */
@@ -18658,7 +19048,7 @@ Object.defineProperty(builtins, "https", {
     write(chunk, encoding, callback) {
       if (typeof encoding === "function") callback = encoding;
       if (chunk !== undefined && chunk !== null && chunk.length > 0) {
-        this.destroy(Object.assign(new Error("Nimbus: a WebSocket upgrade request carries no body"), { code: "ERR_NIMBUS_WEBSOCKET_UPGRADE_BODY" }));
+        this.destroy(nodeError(Error, "ERR_NIMBUS_WEBSOCKET_UPGRADE_BODY", "Nimbus: a WebSocket upgrade request carries no body"));
         return false;
       }
       if (callback) queueMicrotask(callback);
@@ -18874,11 +19264,8 @@ builtins.net = (() => {
       this.remotePort = port;
       const self = this;
       queueMicrotask(() => {
-        const err = new Error(
-          "net.Socket: outbound TCP from Nimbus facet not yet supported. " +
-          "Use fetch() for HTTP/HTTPS. (W8 will route via supervisor RPC.)"
-        );
-        err.code = "ERR_NET_SOCKET_NOT_AVAILABLE";
+        const err = nodeError(Error, "ERR_NET_SOCKET_NOT_AVAILABLE", "net.Socket: outbound TCP from Nimbus facet not yet supported. " +
+          "Use fetch() for HTTP/HTTPS. (W8 will route via supervisor RPC.)");
         self.destroyed = true;
         self.emit("error", err);
         if (cb) cb(err);
@@ -18920,8 +19307,7 @@ builtins.dgram = (() => {
   class Socket extends __eventsMod {
     constructor(opts) { super(); this.type = (opts && opts.type) || (typeof opts === "string" ? opts : "udp4"); }
     bind(_port, _addr, cb) {
-      const err = new Error("UDP sockets are not supported in this runtime");
-      err.code = "ERR_SOCKET_BAD_PORT";
+      const err = nodeError(Error, "ERR_SOCKET_BAD_PORT", "UDP sockets are not supported in this runtime");
       queueMicrotask(() => this.emit("error", err));
       if (typeof cb === "function") queueMicrotask(cb);
       return this;
@@ -18990,9 +19376,9 @@ function __NodeModule(id = "", parent) {
 }
 __NodeModule.prototype.require = function require(request) {
   if (typeof request !== "string" || request === "") {
-    const e = new TypeError('The "id" argument must be of type string. Received ' + (request === "" ? "''" : typeof request));
-    e.code = request === "" ? "ERR_INVALID_ARG_VALUE" : "ERR_INVALID_ARG_TYPE";
-    throw e;
+    throw request === ""
+      ? nodeError(TypeError, "ERR_INVALID_ARG_VALUE", "The argument 'id' must be a non-empty string. Received ''")
+      : invalidArgType("id", "string", request);
   }
   return __requireFrom(request, __pathMod.dirname(this.filename || this.id || (cwd || "/home/user") + "/[module]").replace(/^\/+/, ""));
 };
@@ -19009,8 +19395,7 @@ __NodeModule.prototype._compile = function _compile(content, filename) {
       wrapper = Function("exports", "require", "module", "__filename", "__dirname", text);
     } catch (e) {
       if (__nimbusIsCodegenRefusal(e)) {
-        const err = new Error("Nimbus: Module._compile(" + file + "): a Worker compiles code only while a launch's modules load, and this text arrived after launch.");
-        err.code = "ERR_NIMBUS_CODE_NEXT_LAUNCH";
+        const err = nodeError(Error, "ERR_NIMBUS_CODE_NEXT_LAUNCH", "Nimbus: Module._compile(" + file + "): a Worker compiles code only while a launch's modules load, and this text arrived after launch.");
         throw err;
       }
       throw e;
@@ -19130,8 +19515,7 @@ builtins.zlib = (() => {
     return __BufferMod.from(_concat(chunks));
   }
   function _syncRefusal(name, asyncName) {
-    const e = new Error("zlib." + name + ": synchronous compression is not available on this runtime (no native node:zlib in scope). Use the async zlib." + asyncName + "(data, callback) form.");
-    e.code = "ERR_ZLIB_SYNC_UNAVAILABLE";
+    const e = nodeError(Error, "ERR_ZLIB_SYNC_UNAVAILABLE", "zlib." + name + ": synchronous compression is not available on this runtime (no native node:zlib in scope). Use the async zlib." + asyncName + "(data, callback) form.");
     throw e;
   }
   // Node accepts strings, ArrayBuffers, and any ArrayBufferView; one funnel
@@ -19169,19 +19553,7 @@ builtins.zlib = (() => {
   }
   function _decompressFailure(e) { return _isUnexpectedEnd(e) ? _zbuf(e) : _zdata(e); }
   function _destroyedWrite() {
-    const e = new Error("Cannot call write after a stream was destroyed");
-    e.code = "ERR_STREAM_DESTROYED";
-    return e;
-  }
-  // Node throws synchronously rather than deferring a callback that is not
-  // there; this surface has no promise form to fall back on.
-  function _invalidCallback(v) {
-    const got = v === undefined ? "undefined"
-      : v === null ? "null"
-      : typeof v === "object" ? "an instance of " + ((v.constructor && v.constructor.name) || "Object")
-      : "type " + typeof v + " (" + String(v) + ")";
-    const e = new TypeError('The "callback" argument must be of type function. Received ' + got);
-    e.code = "ERR_INVALID_ARG_TYPE";
+    const e = nodeError(Error, "ERR_STREAM_DESTROYED", "Cannot call write after a stream was destroyed");
     return e;
   }
   // Node's Unzip contract sniffs the wrapper itself: gzip magic or zlib.
@@ -19201,7 +19573,9 @@ builtins.zlib = (() => {
   function _async(mode, fmt) {
     return (d, o, cb) => {
       const callback = typeof o === "function" ? o : cb;
-      if (typeof callback !== "function") throw _invalidCallback(callback);
+      // Node throws synchronously rather than deferring a callback that is
+      // not there; this surface has no promise form to fall back on.
+      if (typeof callback !== "function") throw invalidArgType("callback", "function", callback);
       // Two arms, not .then().catch(): a callback that throws on success must
       // not be handed its own exception as a second, failed invocation.
       _process(mode, fmt, _u8(d)).then(
@@ -19555,15 +19929,13 @@ const __BroadcastChannel = (() => {
   const open = new Map();
   const state = new WeakMap();
   const missing = (name) => {
-    const error = new TypeError('The "' + name + '" argument must be specified');
-    error.code = "ERR_MISSING_ARGS";
+    const error = nodeError(TypeError, "ERR_MISSING_ARGS", 'The "' + name + '" argument must be specified');
     return error;
   };
   const own = (channel) => {
     const s = state.get(channel);
     if (s === undefined) {
-      const error = new TypeError('Value of "this" must be of type BroadcastChannel');
-      error.code = "ERR_INVALID_THIS";
+      const error = nodeError(TypeError, "ERR_INVALID_THIS", 'Value of "this" must be of type BroadcastChannel');
       throw error;
     }
     return s;
@@ -19820,6 +20192,113 @@ builtins["node:util/types"] = builtins["util/types"];
 // No "node:undici" alias — it is not a node builtin, and the prefetch walker
 // skips it via the same FACET_PROVIDED_PACKAGES list.
 builtins.undici = __undiciMod;
+
+// ── The builtins workerd provides: their errors, Node's ──
+// workerd's own builtins (src/node/internal/internal_errors.ts) fail with
+// its NodeError: an error with its code and its name as own properties, a
+// toString of its own (TypeError, RangeError) or its class's, and a stack
+// headed `TypeError: …`, not Node's `TypeError [CODE]: …`. Where such an
+// error leaves a builtin — thrown, a rejection, a callback's first argument
+// — it takes Node's shape in place (node-error.ts reshapeAsNodeError):
+// Node's class for its base and code, `code` its one own enumerable
+// property, its stack headed with the code. What the builtins say and which
+// they throw is theirs (node-builtin-errors-match-node-workerd records
+// where that differs from Node). Named limit: the methods of a Buffer, an
+// EventEmitter or an AsyncLocalStorage, hot paths a wrapper would slow
+// (measured 9x on readUInt8), keep workerd's shape.
+function __nimbusIsWorkerdNodeError(e) {
+  if (e === null || typeof e !== "object" || !__realUtil.types.isNativeError(e)) return false;
+  const code = Object.getOwnPropertyDescriptor(e, "code");
+  const name = Object.getOwnPropertyDescriptor(e, "name");
+  if (!code || !name || typeof code.value !== "string" || typeof name.value !== "string") return false;
+  for (let o = e; o !== null && o !== Error.prototype; o = Object.getPrototypeOf(o)) {
+    const toString = Object.getOwnPropertyDescriptor(o, "toString");
+    if (!toString || typeof toString.value !== "function") continue;
+    const text = Function.prototype.toString.call(toString.value);
+    return text.includes("this.code") && text.includes("this.name");
+  }
+  return false;
+}
+function __nimbusNodeShaped(e) {
+  if (!__nimbusIsWorkerdNodeError(e)) return e;
+  const Base = e instanceof TypeError ? TypeError : e instanceof RangeError ? RangeError
+    : e instanceof SyntaxError ? SyntaxError : e instanceof URIError ? URIError : Error;
+  return reshapeAsNodeError(e, Base, e.code);
+}
+// `fn`, its errors Node's; `callbacks`: a last function argument is a
+// callback, whose first argument is the error.
+function __nimbusNodeErrorsOf(fn, callbacks) {
+  const shaped = function (...args) {
+    const last = args.length - 1;
+    if (callbacks && last >= 0 && typeof args[last] === "function") {
+      const callback = args[last];
+      args[last] = function (...results) {
+        if (results.length > 0) __nimbusNodeShaped(results[0]);
+        return __nimbusReflectApply(callback, this, results);
+      };
+    }
+    let result;
+    try {
+      result = __nimbusReflectApply(fn, this, args);
+    } catch (e) {
+      throw __nimbusNodeShaped(e);
+    }
+    return result instanceof Promise ? result.then(undefined, (e) => { throw __nimbusNodeShaped(e); }) : result;
+  };
+  Object.defineProperty(shaped, "name", { value: fn.name, configurable: true });
+  Object.defineProperty(shaped, "length", { value: fn.length, configurable: true });
+  return shaped;
+}
+// A class, its constructor's errors Node's (its statics and prototype
+// reached through, so `instanceof` and subclassing hold), and with
+// `prototypes` its methods'.
+function __nimbusNodeErrorsOfClass(C, prototypes) {
+  if (prototypes && C.prototype) {
+    for (const key of Object.getOwnPropertyNames(C.prototype)) {
+      const d = Object.getOwnPropertyDescriptor(C.prototype, key);
+      if (key === "constructor" || !d || typeof d.value !== "function" || !d.configurable) continue;
+      Object.defineProperty(C.prototype, key, { ...d, value: __nimbusNodeErrorsOf(d.value, false) });
+    }
+  }
+  const construct = Reflect.construct;
+  return new Proxy(C, {
+    construct(target, args, newTarget) {
+      try { return construct(target, args, newTarget); } catch (e) { throw __nimbusNodeShaped(e); }
+    },
+    apply(target, self, args) {
+      try { return __nimbusReflectApply(target, self, args); } catch (e) { throw __nimbusNodeShaped(e); }
+    },
+  });
+}
+// A module's functions and classes with their errors Node's: a copy of it,
+// or with `inPlace` (a class that is the module) its own functions
+// replaced. A global (URL, Blob, Buffer) stays itself.
+function __nimbusNodeErrorsAt(mod, { callbacks = false, prototypes = false, inPlace = false } = {}) {
+  if (mod === null || (typeof mod !== "object" && typeof mod !== "function")) return mod;
+  const target = inPlace ? mod : Object.create(Object.getPrototypeOf(mod));
+  for (const key of Reflect.ownKeys(mod)) {
+    const d = Object.getOwnPropertyDescriptor(mod, key);
+    if (!d) continue;
+    const v = d.value;
+    if (v === mod && !inPlace) {
+      // A module that names itself (default, posix) names its copy.
+      Object.defineProperty(target, key, { ...d, value: target });
+    } else if (typeof key === "string" && typeof v === "function" && globalThis[key] !== v && v !== mod) {
+      const isClass = /^[A-Z]/.test(key) && typeof v.prototype === "object" && v.prototype !== null;
+      if (isClass && inPlace) continue;
+      if (inPlace && !d.configurable && !d.writable) continue;
+      Object.defineProperty(target, key, { ...d, value: isClass ? __nimbusNodeErrorsOfClass(v, prototypes) : __nimbusNodeErrorsOf(v, callbacks) });
+    } else if (!inPlace) {
+      Object.defineProperty(target, key, d);
+    }
+  }
+  return target;
+}
+// Those whose functions throw workerd's NodeError (node-builtin-errors-match-node-workerd).
+for (const name of ["zlib", "crypto"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name], { callbacks: true, prototypes: true });
+for (const name of ["url", "path", "vm"]) builtins[name] = __nimbusNodeErrorsAt(builtins[name]);
+__nimbusNodeErrorsAt(builtins.events, { inPlace: true });
+__nimbusNodeErrorsAt(__BufferMod, { inPlace: true });
 
 // ═══════════════════════════════════════════════════════════════════════
 // ──  require() — full Node.js module resolution ─────────────────────
@@ -20381,6 +20860,8 @@ function __nimbusFileImportMeta(filename, url = builtins.url.pathToFileURL(filen
   });
 }
 
+// Errors a known Workers-incompatible package's load threw, advised once.
+const __nimbusAdvised = new WeakSet();
 // `required`: loaded by a require() call, not by an ES module's static
 // import, which the lowering makes a call of the module's own require.
 function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = true) {
@@ -20441,7 +20922,8 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       cell = __nimbusRuntimeModule(normalizedPath, text);
       globalThis.__nimbusModuleMisses.delete(normalizedPath);
     }
-    const evaluation = cell(mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir);
+    // A CommonJS module's `this` is its exports, as Node calls its wrapper.
+    const evaluation = __nimbusReflectApply(cell, esModule ? undefined : mod.exports, [mod.exports, scopedRequire, mod, "/" + resolvedPath, "/" + modDir]);
     // A module with top-level await completes later. require() returns its
     // exports now (static imports lowered to require cannot wait); import()
     // waits for it (__esmLoad).
@@ -20455,17 +20937,20 @@ function __loadModule(resolvedPath, evaluationKey = resolvedPath, required = tru
       if (required && esModule) __nimbusExplainCommonJSGlobalLike(e, moduleUrl, false);
       throw e;
     }
-    if (e && typeof e === "object" && !e.__nimbusModulePath) {
+    // What escapes a module is the program's own error, as Node leaves it;
+    // only a package Nimbus knows has no Workers build says so, once.
+    if (e && typeof e === "object" && !__nimbusAdvised.has(e)) {
       try {
-        Object.defineProperty(e, "__nimbusModulePath", { value: resolvedPath, configurable: true, writable: true });
         const at = resolvedPath.lastIndexOf("node_modules/");
         const parts = at < 0 ? [] : resolvedPath.slice(at + 13).split("/");
         const pkg = parts[0] && parts[0].startsWith("@") ? parts[0] + "/" + parts[1] : parts[0];
         const advisory = pkg ? __nimbusAbiAdvisories.get(pkg) : undefined;
-        const note = "\nNimbus module: " + resolvedPath
-          + (advisory ? "\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory : "");
-        if (typeof e.message === "string") e.message += note;
-        if (typeof e.stack === "string" && !e.stack.includes("Nimbus module:")) e.stack += note;
+        if (advisory) {
+          __nimbusAdvised.add(e);
+          const note = "\nNimbus: " + pkg + " has no Workers-compatible build: " + advisory;
+          if (typeof e.message === "string") e.message += note;
+          if (typeof e.stack === "string") e.stack += note;
+        }
       } catch {}
     }
     throw e;
@@ -20576,9 +21061,6 @@ function createEsmResolver(host, options = {}) {
       return typeof found === "string" ? found : null;
     }
   };
-  function codedError(Ctor, code, message) {
-    return Object.assign(new Ctor(message), { code });
-  }
   const codeOf = (error) => error !== null && typeof error === "object" && "code" in error ? error.code : void 0;
   const filePath = (url) => decodeURIComponent(new URL(String(url)).pathname);
   const fileUrl = (path) => {
@@ -20599,7 +21081,7 @@ function createEsmResolver(host, options = {}) {
     try {
       parsed = JSON.parse(text);
     } catch {
-      throw codedError(
+      throw nodeError(
         Error,
         "ERR_INVALID_PACKAGE_CONFIG",
         `Invalid package config ${pjsonPath}` + (base ? ` while importing ${JSON.stringify(specifier)} from ${base}` : "") + "."
@@ -20631,7 +21113,7 @@ function createEsmResolver(host, options = {}) {
     const pkgPath = filePath(new URL(".", pjsonUrl));
     const related = !internal && text.length > 0 && !text.startsWith("./");
     const tail = `in the package config ${pkgPath}package.json imported from ${base}${related ? '; targets must start with "./"' : ""}`;
-    return codedError(
+    return nodeError(
       Error,
       "ERR_INVALID_PACKAGE_TARGET",
       key === "." ? `Invalid "exports" main target ${JSON.stringify(text)} defined ${tail}` : `Invalid "${internal ? "imports" : "exports"}" target ${JSON.stringify(text)} defined for '${key}' ${tail}`
@@ -20668,7 +21150,7 @@ function createEsmResolver(host, options = {}) {
     if (subpath === "") return resolved;
     if (invalidSegment.test(subpath) && deprecatedInvalidSegment.test(subpath) && !isPathMap) {
       const request = pattern ? match.replace("*", () => subpath) : match + subpath;
-      throw codedError(
+      throw nodeError(
         TypeError,
         "ERR_INVALID_MODULE_SPECIFIER",
         `Invalid module "${request}" request is not a valid match in pattern "${match}" for the "${internal ? "imports" : "exports"}" resolution of ${filePath(pjsonUrl)} imported from ${base}`
@@ -20707,7 +21189,7 @@ function createEsmResolver(host, options = {}) {
       const keys = Object.getOwnPropertyNames(target);
       for (const condition of keys) {
         if (/^\d+$/.test(condition) && String(Number(condition)) === condition && Number(condition) < 4294967295) {
-          throw codedError(
+          throw nodeError(
             Error,
             "ERR_INVALID_PACKAGE_CONFIG",
             `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain numeric property keys.`
@@ -20763,7 +21245,7 @@ function createEsmResolver(host, options = {}) {
   }
   function exportsNotFound(subpath, pjsonUrl, base) {
     const pkgPath = filePath(new URL(".", pjsonUrl));
-    return codedError(
+    return nodeError(
       Error,
       "ERR_PACKAGE_PATH_NOT_EXPORTED",
       subpath === "." ? `No "exports" main defined in ${pkgPath}package.json imported from ${base}` : `Package subpath '${subpath}' is not defined by "exports" in ${pkgPath}package.json imported from ${base}`
@@ -20780,7 +21262,7 @@ function createEsmResolver(host, options = {}) {
         const current = key === "" || key[0] !== ".";
         if (i++ === 0) sugar = current;
         else if (sugar !== current) {
-          throw codedError(
+          throw nodeError(
             Error,
             "ERR_INVALID_PACKAGE_CONFIG",
             `Invalid package config ${filePath(pjsonUrl)} while importing ${fileUrl(base).href}. "exports" cannot contain some keys starting with '.' and some not. The exports object must either be an object of package subpath keys or an object of main entry condition name keys only.`
@@ -20807,7 +21289,7 @@ function createEsmResolver(host, options = {}) {
   function* packageImportsResolve(name, baseUrl) {
     const base = filePath(baseUrl);
     if (name === "#" || name.startsWith("#/") || name.endsWith("/")) {
-      throw codedError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
+      throw nodeError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${name}" is not a valid internal imports specifier name imported from ${base}`);
     }
     const config = yield* packageScopeConfig(new URL(baseUrl));
     let pjsonUrl;
@@ -20828,7 +21310,7 @@ function createEsmResolver(host, options = {}) {
       }
     }
     const where = pjsonUrl ? ` in package ${filePath(new URL(".", pjsonUrl))}package.json` : "";
-    throw codedError(TypeError, "ERR_PACKAGE_IMPORT_NOT_DEFINED", `Package import specifier "${name}" is not defined${where} imported from ${base}`);
+    throw nodeError(TypeError, "ERR_PACKAGE_IMPORT_NOT_DEFINED", `Package import specifier "${name}" is not defined${where} imported from ${base}`);
   }
   function* legacyMainResolve(pjsonUrl, config, base) {
     const tries = [];
@@ -20842,7 +21324,7 @@ function createEsmResolver(host, options = {}) {
     }
     const dir = fileUrl(filePath(new URL(".", pjsonUrl)).replace(/\/+/g, "/"));
     const missing = filePath(new URL(config.main ?? "index.js", dir));
-    throw codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
+    throw nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${missing}' imported from ${base}`);
   }
   function* packageResolve(specifier, baseUrl) {
     if (host.isBuiltin(specifier)) return new URL("node:" + specifier);
@@ -20858,7 +21340,7 @@ function createEsmResolver(host, options = {}) {
     const name = separator === -1 ? specifier : specifier.slice(0, separator);
     if (/^\.|%|\\/.test(name)) valid = false;
     if (!valid) {
-      throw codedError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
+      throw nodeError(TypeError, "ERR_INVALID_MODULE_SPECIFIER", `Invalid module "${specifier}" is not a valid package name imported from ${base}`);
     }
     const subpath = "." + (separator === -1 ? "" : specifier.slice(separator));
     const self = yield* packageScopeConfig(new URL(baseUrl));
@@ -20880,7 +21362,7 @@ function createEsmResolver(host, options = {}) {
       if (subpath === ".") return yield* legacyMainResolve(pjsonUrl, config, base);
       return new URL(subpath, pjsonUrl);
     } while (pjsonPath.length !== lastPath.length);
-    throw codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${name}' imported from ${base}`);
+    throw nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find package '${name}' imported from ${base}`);
   }
   function* formatOf(url, path) {
     const base = path.slice(path.lastIndexOf("/") + 1);
@@ -20895,12 +21377,12 @@ function createEsmResolver(host, options = {}) {
       if (type === "commonjs") return "commonjs";
       return "detect";
     }
-    throw codedError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", `Unknown file extension "${ext}" for ${path}`);
+    throw nodeError(TypeError, "ERR_UNKNOWN_FILE_EXTENSION", `Unknown file extension "${ext}" for ${path}`);
   }
   function* finalizeResolution(resolved, baseUrl) {
     const base = filePath(baseUrl);
     if (/%2f|%5c/i.test(resolved.pathname)) {
-      throw codedError(
+      throw nodeError(
         TypeError,
         "ERR_INVALID_MODULE_SPECIFIER",
         `Invalid module "${resolved.pathname}" must not include encoded "/" or "\\" characters imported from ${base}`
@@ -20910,13 +21392,13 @@ function createEsmResolver(host, options = {}) {
     const kind = path.endsWith("/") ? "directory" : yield* ask.kind(path);
     if (kind === "directory") {
       throw Object.assign(
-        codedError(Error, "ERR_UNSUPPORTED_DIR_IMPORT", `Directory import '${path}' is not supported resolving ES modules imported from ${base}`),
+        nodeError(Error, "ERR_UNSUPPORTED_DIR_IMPORT", `Directory import '${path}' is not supported resolving ES modules imported from ${base}`),
         { url: resolved.href }
       );
     }
     if (kind !== "file") {
       throw Object.assign(
-        codedError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find module '${path}' imported from ${base}`),
+        nodeError(Error, "ERR_MODULE_NOT_FOUND", `Cannot find module '${path}' imported from ${base}`),
         { url: resolved.href }
       );
     }
@@ -20944,13 +21426,13 @@ function createEsmResolver(host, options = {}) {
   function* loadable(resolved) {
     if (resolved.builtin !== void 0) {
       if (!host.isBuiltin("node:" + resolved.builtin)) {
-        throw codedError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", `No such built-in module: node:${resolved.builtin}`);
+        throw nodeError(Error, "ERR_UNKNOWN_BUILTIN_MODULE", `No such built-in module: node:${resolved.builtin}`);
       }
       return { url: resolved.url, builtin: resolved.builtin, format: "builtin" };
     }
     if (resolved.url.startsWith("data:")) return { url: resolved.url, format: "data" };
     if (resolved.path === void 0) {
-      throw codedError(
+      throw nodeError(
         Error,
         "ERR_UNSUPPORTED_ESM_URL_SCHEME",
         `Only URLs with a scheme in: file and data are supported by the default ESM loader. Received protocol '${new URL(resolved.url).protocol}'`
@@ -21036,25 +21518,25 @@ Did you mean to import ${JSON.stringify(found)}?`;
     validateAttributes(url, format, attributes) {
       for (const key of Object.keys(attributes)) {
         if (key !== "type") {
-          throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
+          throw nodeError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "${key}" with value "${attributes[key]}" is not supported in ${url}`);
         }
       }
       const type = attributes.type;
       if (format === "json" || format === "data" && /^data:application\/json(?:;[^,]*)?,/.test(url)) {
         if (type === "json") return;
         if (!("type" in attributes)) {
-          throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_MISSING", `Module "${url}" needs an import attribute of "type: json"`);
+          throw nodeError(TypeError, "ERR_IMPORT_ATTRIBUTE_MISSING", `Module "${url}" needs an import attribute of "type: json"`);
         }
       } else if (type == null) {
         return;
       }
       if (typeof type !== "string") {
-        throw codedError(TypeError, "ERR_INVALID_ARG_TYPE", `The "type" argument must be of type string. Received ${typeof type}`);
+        throw invalidArgType("type", "string", type);
       }
       if (type !== "json") {
-        throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "type" with value "${type}" is not supported in ${url}`);
+        throw nodeError(TypeError, "ERR_IMPORT_ATTRIBUTE_UNSUPPORTED", `Import attribute "type" with value "${type}" is not supported in ${url}`);
       }
-      throw codedError(TypeError, "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE", `Module "${url}" is not of type "json"`);
+      throw nodeError(TypeError, "ERR_IMPORT_ATTRIBUTE_TYPE_INCOMPATIBLE", `Module "${url}" is not of type "json"`);
     }
   };
 }
@@ -21125,7 +21607,7 @@ function __esmLoad(resolution) {
         const resolved = __esmResolver.resolveSync(String(id), resolution.url);
         if (resolved.format === "builtin") return __requireFrom("node:" + resolved.builtin, "");
         if (resolved.path) return __loadModule(resolved.path.replace(/^\/+/, ""), resolved.url);
-        throw Object.assign(new Error("Synchronous nested data-module import is unsupported"), { code: "ERR_REQUIRE_ASYNC_MODULE" });
+        throw nodeError(Error, "ERR_REQUIRE_ASYNC_MODULE", "Synchronous nested data-module import is unsupported");
       };
       let result;
       try {
@@ -21146,7 +21628,7 @@ function __esmLoad(resolution) {
       }
       ns = namespace();
     } else {
-      throw Object.assign(new TypeError("Unsupported data module MIME type: " + mediaType), { code: "ERR_UNKNOWN_MODULE_FORMAT" });
+      throw nodeError(TypeError, "ERR_UNKNOWN_MODULE_FORMAT", "Unsupported data module MIME type: " + mediaType);
     }
   } else {
     const key = resolution.path.replace(/^\/+/, "");
@@ -21233,9 +21715,8 @@ function __nimbusPrefetchQuota(specifier, limits) {
   let bytes = 0;
   let error = null;
   const exceed = (what) => {
-    error = new Error("import() of '" + specifier + "' would fetch more than " + what
+    error = nodeError(Error, "ERR_NIMBUS_PREFETCH_BOUND", "import() of '" + specifier + "' would fetch more than " + what
       + " ahead (the bound on one import()'s prefetch); it is not loaded on a closure fetched in part");
-    error.code = "ERR_NIMBUS_PREFETCH_BOUND";
     return false;
   };
   return {
@@ -21284,15 +21765,13 @@ async function __nimbusHydrated(step, quota) {
     }
     const given = [...speculation.misses].filter((k) => !speculation.issued.has(k));
     if (given.length > 0) {
-      const unread = new Error("import() prefetch: could not fetch " + given.slice(0, 3).map((k) => "/" + k).join(", ")
+      const unread = nodeError(Error, "ERR_NIMBUS_PREFETCH_UNREADABLE", "import() prefetch: could not fetch " + given.slice(0, 3).map((k) => "/" + k).join(", ")
         + (given.length > 3 ? " and " + (given.length - 3) + " more" : "") + "; its fetches did not land");
-      unread.code = "ERR_NIMBUS_PREFETCH_UNREADABLE";
       throw unread;
     }
     if (round >= __IMPORT_HYDRATE_ROUNDS) {
-      const bound = new Error("import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching ("
+      const bound = nodeError(Error, "ERR_NIMBUS_PREFETCH_BOUND", "import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching ("
         + [...speculation.misses].slice(0, 3).join(", ") + ")");
-      bound.code = "ERR_NIMBUS_PREFETCH_BOUND";
       throw bound;
     }
   }
@@ -21530,7 +22009,12 @@ function __nimbusEntryImport(id) {
 // own, its require its static imports, and what escapes its evaluation
 // explained (__nimbusExplainCommonJSGlobalLike).
 function __nimbusEvaluateEntry(wrapper, mod, filename, dirname, esModule) {
-  if (!esModule) return wrapper(mod.exports, __require, mod, filename, dirname);
+  // A file's `this` is its exports, as Node's wrapper is called; -e and
+  // stdin code is a script, whose `this` is the global object.
+  if (!esModule) {
+    const self = filename === "<eval>" || filename === "[stdin]" ? globalThis : mod.exports;
+    return __nimbusReflectApply(wrapper, self, [mod.exports, __require, mod, filename, dirname]);
+  }
   const url = builtins.url.pathToFileURL(filename).href;
   let result;
   try {
