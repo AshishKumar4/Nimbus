@@ -22,6 +22,8 @@ import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { createSupervisorOpHandler } from '../../packages/core/src/workspace/supervisor-op.ts';
 import { encodeWriteBatchStream } from '../../packages/platform/src/w7-frame.ts';
 import { createWaveWriter } from '../../packages/platform/src/wave-writer.ts';
+import { SupervisorDeliveries } from '../../packages/core/src/workspace/supervisor-delivery.ts';
+import { HELD_FILE_BYTES } from '../../packages/core/src/runtime/wave-router.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 
 const enc = new TextEncoder();
@@ -174,6 +176,131 @@ function wave(...parts) {
   await writer.flush();
   for (let index = 0; index < 300; index++) assert.equal(s.inMount(s.shared, `/node_modules/p${index % 20}/f${index}.js`), `module ${index}`);
   assert.equal(s.shared.readlink('/node_modules/.bin/tool'), '../p0/f0.js');
+  assert.deepEqual(s.sqliteNames('shared'), []);
+}
+
+// ── Review: receipts, removal reports, guards, links, spooling, re-sends, writeBatch ──
+
+/** A MemoryVFS whose chosen operations refuse or report as `overrides` says. */
+function scripted(overrides) {
+  const inner = new MemoryVFS();
+  return new Proxy(inner, {
+    get(target, name) {
+      if (Object.hasOwn(overrides, name)) return overrides[name] === undefined ? undefined : overrides[name].bind(target, target);
+      const value = Reflect.get(target, name);
+      return typeof value === 'function' ? value.bind(target) : value;
+    },
+  });
+}
+
+// A routed file has a receipt, as one on SQLite does: what stat reports of it.
+{
+  const s = session();
+  const result = await s.send(wave(file('home/user/here', 'h'), file('shared/there', 'there!', 0o640)));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  const receipts = Object.fromEntries(result.receipts.map((receipt) => [receipt.path, receipt]));
+  assert.ok(receipts['home/user/here'], 'the SQLite file lost its receipt');
+  assert.ok(receipts['shared/there'], 'the routed file has no receipt');
+  assert.equal(receipts['shared/there'].size, 6);
+}
+
+// A removal that keeps something is refused with what it kept, and the wave stops there.
+{
+  const s = session();
+  const stubborn = scripted({
+    removeRecursive: (_self, _target, path) => ({ removed: [], kept: [path + '/locked'], failures: [] }),
+  });
+  s.files.vfs.mount('/stubborn', stubborn);
+  stubborn.mkdir('/d');
+  const result = await s.send({ ...wave(file('home/user/after', 'a')), deletePaths: ['stubborn/d'] });
+  assert.equal(result.ok, false, 'a removal that kept a name was reported as made');
+  assert.match(result.error.message, /kept 1 \(\/stubborn\/d\/locked\)/);
+  assert.equal(s.inSqlite('home/user/after'), null, 'the wave went on past a removal it did not make');
+}
+
+// Admission and cancellation are checked right before the backend, after a routed file's chunks.
+{
+  const s = session();
+  let admits = 0;
+  const big = new Uint8Array(150_000).fill(9);
+  const result = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(wave(file('shared/late', big))), {
+    // Admitted while the file begins and its three chunks are written; overtaken at its publication (the rename).
+    admit: () => { if (++admits >= 6) throw Object.assign(new Error('ESTALE: overtaken'), { code: 'ESTALE' }); },
+  });
+  assert.equal(result.ok, false);
+  assert.match(result.error.message, /ESTALE/);
+  assert.equal(s.inMount(s.shared, '/late'), null, 'an overtaken wave published its routed file');
+  assert.deepEqual(s.shared.readdir('/').map((entry) => entry.name).filter((name) => name.startsWith('.')), [], 'a staged name was left behind');
+}
+
+// A link replaces what is there only once the backend has made it.
+{
+  const s = session();
+  const linkless = scripted({ symlink: () => { throw Object.assign(new Error('ENOTSUP: no links here'), { code: 'ENOTSUP' }); } });
+  s.files.vfs.mount('/nolinks', linkless);
+  linkless.writeFile('/name', enc.encode('kept'));
+  const target = enc.encode('elsewhere');
+  const result = await s.send({
+    inodes: [{ path: 'nolinks/name', parentPath: 'nolinks', kind: 'symlink', isDir: false, size: target.byteLength, mtime: 1, mode: 0o777, chunkCount: 1 }],
+    chunks: [{ path: 'nolinks/name', chunkId: 0, data: target }],
+  });
+  assert.equal(result.ok, false);
+  assert.equal(result.error.errno, 'ENOTSUP');
+  assert.equal(dec.decode(linkless.readFile('/name')), 'kept', 'the old entry went before the link was made');
+}
+
+// A large file is written to a mount chunk by chunk, never held whole.
+{
+  const s = session();
+  const large = new Uint8Array(20 * 1024 * 1024).map((_, index) => index & 255);
+  const result = await s.send(wave(file('shared/large.bin', large)));
+  assert.equal(result.ok, true, JSON.stringify(result));
+  assert.deepEqual(new Uint8Array(s.shared.readFile('/large.bin')), large);
+  // A backend that cannot write in place takes a file whole, up to HELD_FILE_BYTES.
+  const whole = scripted({ writeRange: undefined });
+  s.files.vfs.mount('/whole', whole);
+  assert.equal((await s.send(wave(file('whole/small', new Uint8Array(1024 * 1024).fill(1))))).ok, true);
+  const refused = await s.send(wave(file('whole/huge', new Uint8Array(HELD_FILE_BYTES + 1))));
+  assert.equal(refused.ok, false);
+  assert.equal(refused.error.errno, 'ENOTSUP');
+  assert.match(refused.error.message, new RegExp(`up to ${HELD_FILE_BYTES} bytes`));
+}
+
+// A re-sent wave applies no mounted record an earlier attempt may have applied.
+{
+  const s = session();
+  const deliveries = new SupervisorDeliveries();
+  const writer = deliveries.openWaveWriter(7, 60_000);
+  // Attempt 1 removes the mounted name, then is refused (its next record).
+  s.shared.writeFile('/peer', enc.encode('old'));
+  const first = deliveries.admitWave(7, writer, 1, 1);
+  const payload = { ...wave(file('ro/x', 'x')), deletePaths: ['shared/peer'] };
+  const one = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(payload), { admit: first.check, mountReach: first.reach });
+  assert.equal(one.ok, false);
+  // A peer makes the name again; the re-send must not remove it.
+  s.shared.writeFile('/peer', enc.encode('new'));
+  const second = deliveries.admitWave(7, writer, 1, 2);
+  const two = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(payload), { admit: second.check, mountReach: second.reach });
+  assert.equal(two.ok, false);
+  assert.match(two.error.message, /outcome unknown/);
+  assert.equal(s.inMount(s.shared, '/peer'), 'new', 'the re-send removed what a peer made since');
+  // A wave whose earlier attempt never reached its mounted record applies it.
+  const third = deliveries.admitWave(7, writer, 2, 1);
+  void third;
+  const fourth = deliveries.admitWave(7, writer, 2, 2);
+  const applied = await s.engine.as(CRED_SESSION_USER).writeStream(encodeWriteBatchStream(wave(file('shared/fresh', 'f'))), { admit: fourth.check, mountReach: fourth.reach });
+  assert.equal(applied.ok, true, JSON.stringify(applied));
+  assert.equal(s.inMount(s.shared, '/fresh'), 'f');
+}
+
+// writeBatch lands where the namespace puts it: on a mount, record by record.
+{
+  const s = session();
+  const host = s.files.openHost(CRED_SESSION_USER);
+  await host.fs.writeBatch(wave(file('shared/batched', 'b'), file('home/user/batched', 'h')));
+  await host.dispose();
+  assert.equal(s.inMount(s.shared, '/batched'), 'b');
+  assert.equal(s.inSqlite('home/user/batched'), 'h');
   assert.deepEqual(s.sqliteNames('shared'), []);
 }
 

@@ -16,7 +16,8 @@
  */
 
 import { isPendingChunkError, listPageBudget } from '../vfs/sqlite-vfs.js';
-import type { RoutedWaveRecord, SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult } from '../vfs/sqlite-vfs.js';
+import type { SqliteVFS, VfsExportChunk, VfsExportPage, WriteBatchStreamResult, WriteStreamOptions } from '../vfs/sqlite-vfs.js';
+import { namespaceWaveRouter } from './wave-router.js';
 import { Hydrator, type HydratorOptions } from './hydration.js';
 import type { VfsEvent } from '../vfs/events.js';
 import type { BatchWritePayload } from '@nimbus-sh/platform/w7-frame.js';
@@ -226,10 +227,10 @@ class GuardedProcessBridge implements RuntimeFsBridge {
     this.guard(); this.ownPid(pid);
     return this.target.acknowledgeAppend(pid, writerId, moduleId, operationId);
   }
-  writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number } { this.guard(); return this.target.writeBatch(payload); }
+  writeBatch(payload: BatchWritePayload) { this.guard(); return this.target.writeBatch(payload); }
   writeStream(
     stream: ReadableStream<Uint8Array>,
-    options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number },
+    options?: WriteStreamOptions,
   ): Promise<WriteBatchStreamResult> {
     this.guard();
     // Closing the scope cancels the commit, so a released process cannot keep
@@ -277,14 +278,11 @@ export class ProcessFiles implements NimbusFilesystemAuthority {
     this.proc.register('mounts', (cred) => formatProcMounts(this.mounts(cred ?? CRED_KERNEL)));
     this.vfs.mount('/proc', this.proc);
     this.vfs.mount('/dev', new DevVFS());
-    // A wave's records the namespace answers itself (a mount, a directory
-    // above one, or a name whose parent resolves into one) are applied by
-    // its own operations, whoever streams the wave: a process's binding, or
-    // a command holding the engine.
-    engine.setWaveRouter({
-      composes: (path) => this.vfs.composes(path),
-      apply: (record, cred) => applyRoutedRecord(this.vfs.as(immutableCredential(cred)), record),
-    });
+    // Every wave's records, whoever streams it (a process's binding, or a
+    // command holding the engine), are placed by this namespace's mutation
+    // lookup, and those it places on a mount are applied there by its own
+    // operations (wave-router.ts).
+    engine.setWaveRouter(namespaceWaveRouter(this.vfs, immutableCredential));
   }
 
   /**
@@ -603,10 +601,10 @@ class AwaitingProcessBridge implements RuntimeFsBridge {
   acknowledgeAppend(pid: number, writerId: string, moduleId: string, operationId: number): void {
     return this.bridge.acknowledgeAppend(pid, writerId, moduleId, operationId);
   }
-  writeBatch(payload: BatchWritePayload): { inodes: number; chunks: number } { return this.bridge.writeBatch(payload); }
+  writeBatch(payload: BatchWritePayload) { return this.bridge.writeBatch(payload); }
   writeStream(
     stream: ReadableStream<Uint8Array>,
-    options?: { signal?: AbortSignal; mutationOwner?: string; decodeDrainStartedAt?: number },
+    options?: WriteStreamOptions,
   ): Promise<WriteBatchStreamResult> { return this.bridge.writeStream(stream, options); }
   acquireExclusiveMutation(path: RuntimeFsPath, options?: { includeMissingAncestors?: boolean }): { root: string; owner: string } {
     return this.bridge.acquireExclusiveMutation(path, options);
@@ -1087,31 +1085,6 @@ export async function engineKey(
     // No link is left on `real`, so the device holding it holds the names below it too.
     if ((await view.stat(real, { follow: false }))?.dev !== engine.deviceId) return null;
     return normalizeVfsPath(below === '' ? real : `${real}/${below}`);
-  }
-}
-
-/**
- * A wave's record on the namespace, by the operation a program would use:
- * a directory is made with its parents, as the wave's directories are, and
- * one already there is kept; a file is written whole (its mode, less the
- * umask, when it creates it); a link replaces what is at its name; a
- * removal takes the subtree, and a name already gone is not an error.
- */
-async function applyRoutedRecord(namespace: CompositeVFS, record: RoutedWaveRecord): Promise<void> {
-  switch (record.type) {
-    case 'directory':
-      await namespace.mkdir(record.path, { recursive: true, mode: record.mode });
-      return;
-    case 'file':
-      await namespace.writeFile(record.path, record.bytes, { mode: record.mode });
-      return;
-    case 'symlink':
-      if ((await namespace.stat(record.path, { follow: false })) !== null) await namespace.unlink(record.path);
-      await namespace.symlink(record.target, record.path);
-      return;
-    case 'delete':
-      if ((await namespace.stat(record.path, { follow: false })) !== null) await namespace.removeRecursive(record.path);
-      return;
   }
 }
 
