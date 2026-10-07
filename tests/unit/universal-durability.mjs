@@ -505,6 +505,8 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
     [`my-api-2--${SID}`, { name: 'my-api-2', sid: SID }],
     [`${CAP}--3000--${SID}`, { port: 3000, sid: SID, capability: CAP }],
     [`${CAP}--api--${SID}`, { name: 'api', sid: SID, capability: CAP }],
+    // A sid may hold `--`; a name never does, so the name is the first label.
+    [`a--b--${SID}`, { name: 'a', sid: `b--${SID}` }],
   ];
   for (const [label, expected] of cases) {
     assert.deepEqual(parsePreviewHost(`${label}.${SUFFIX}`, SUFFIX), expected, label);
@@ -512,7 +514,6 @@ const SERVER = 'const http = require("http"); http.createServer(() => {}).listen
   for (const bad of [
     `03000--${SID}`,             // a non-canonical port is not a name either
     `${CAP}--${SID}`,            // a 24-hex label is never a name
-    `a--b--${SID}`,              // three labels without a capability
     `${CAP}--0--${SID}`,
     `api.x--${SID}`,
     `-api--${SID}`,

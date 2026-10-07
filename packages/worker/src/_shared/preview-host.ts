@@ -18,19 +18,23 @@
  * (its reservation records); the public name form through the directory.
  */
 
-const PREVIEW_HOST_SAFE_SID_RE = /^[a-z0-9]([a-z0-9-]*[a-z0-9])?$/;
-/** Canonical port form only: no leading zeros, so `03000--x` is not a host. */
-const PREVIEW_HOST_LABEL_RE = /^(0|[1-9]\d*)--(.+)$/;
-/** The scoped name form: a non-numeric DNS label in the port's place. */
-const PREVIEW_NAME_HOST_LABEL_RE = /^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)--([a-z0-9-]{1,63})$/;
-
-// The public capability form: the bearer is the capability itself, no
-// attach token and no embedder credential ever crosses this hostname.
-// The label carries everything a request needs — which port, which
-// session, and which token — so it works with no server-side lookup.
-const PREVIEW_CAPABILITY_HOST_LABEL_RE = /^([a-f0-9]{24})--(\d{1,5})--([a-z0-9-]{1,63})$/;
-/** The public name form: the capability names the session in the directory, the name is verified there. */
-const PREVIEW_CAPABILITY_NAME_HOST_LABEL_RE = /^([a-f0-9]{24})--([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)--([a-z0-9-]{1,63})$/;
+/**
+ * The host label's grammar is `[<capability>--]<port|name>--<sid>`. A
+ * capability, a port and a name never hold `--`, so the label splits at its
+ * first separators and the sid is the rest; a sid may hold `--` itself.
+ */
+const HOST_LABEL_SEPARATOR = '--';
+/** One DNS label: lowercase letters, digits and inner hyphens, 63 at most. */
+const DNS_LABEL_RE = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/;
+/** A port's one spelling: no leading zeros, so `03000--x` is not a host. */
+const PORT_LABEL_RE = /^[1-9]\d{0,4}$/;
+/**
+ * The public capability: 24 lowercase hex, the shape the port registry
+ * mints. On the public forms it is the bearer: no attach token and no
+ * embedder credential ever crosses that hostname, and the label carries
+ * everything a request needs with no server-side lookup.
+ */
+const CAPABILITY_LABEL_RE = /^[a-f0-9]{24}$/;
 /** Binding that carries the deployment's preview-host suffix. */
 const PREVIEW_HOST_SUFFIX_BINDING = 'NIMBUS_PREVIEW_HOST_SUFFIX';
 
@@ -70,7 +74,7 @@ export function buildPublicPreviewHost(
 }
 
 export function isPreviewHostSafeSid(sid: string): boolean {
-  return sid.length <= 56 && PREVIEW_HOST_SAFE_SID_RE.test(sid);
+  return sid.length <= 56 && DNS_LABEL_RE.test(sid);
 }
 
 /**
@@ -101,39 +105,19 @@ export function parsePreviewHost(
   const label = normalizedHost.slice(0, -suffixWithDot.length);
   if (!label || label.includes('.')) return null;
 
-  // The capability form is checked first: its leading 24-hex run would
-  // otherwise parse as the port of the legacy form's widest match.
-  const capabilityMatch = label.match(PREVIEW_CAPABILITY_HOST_LABEL_RE);
-  if (capabilityMatch) {
-    const capability = capabilityMatch[1];
-    const port = Number(capabilityMatch[2]);
-    const sid = capabilityMatch[3];
-    if (port < 1 || port > 65535 || !isPreviewHostSafeSid(sid)) return null;
-    return { port, sid, capability };
+  // A 24-hex first part can only be a capability: it is neither a port nor
+  // a name (isPreviewHostName refuses that shape).
+  const parts = label.split(HOST_LABEL_SEPARATOR);
+  const capability = parts.length > 2 && CAPABILITY_LABEL_RE.test(parts[0]) ? parts.shift() : undefined;
+  const [target, ...sidParts] = parts;
+  const sid = sidParts.join(HOST_LABEL_SEPARATOR);
+  if (sidParts.length === 0 || !isPreviewHostSafeSid(sid)) return null;
+  const bearer = capability === undefined ? {} : { capability };
+  if (PORT_LABEL_RE.test(target)) {
+    const port = Number(target);
+    return port <= 65535 ? { port, sid, ...bearer } : null;
   }
-  const capabilityNameMatch = label.match(PREVIEW_CAPABILITY_NAME_HOST_LABEL_RE);
-  if (capabilityNameMatch) {
-    const capability = capabilityNameMatch[1];
-    const name = capabilityNameMatch[2];
-    const sid = capabilityNameMatch[4];
-    if (!isPreviewHostName(name) || !isPreviewHostSafeSid(sid)) return null;
-    return { name, sid, capability };
-  }
-
-  const match = label.match(PREVIEW_HOST_LABEL_RE);
-  if (match) {
-    const port = Number(match[1]);
-    const sid = match[2];
-    if (port < 1 || port > 65535 || !isPreviewHostSafeSid(sid)) return null;
-    return { port, sid };
-  }
-
-  const nameMatch = label.match(PREVIEW_NAME_HOST_LABEL_RE);
-  if (!nameMatch) return null;
-  const name = nameMatch[1];
-  const sid = nameMatch[3];
-  if (!isPreviewHostName(name) || !isPreviewHostSafeSid(sid)) return null;
-  return { name, sid };
+  return isPreviewHostName(target) ? { name: target, sid, ...bearer } : null;
 }
 
 /**
@@ -143,10 +127,10 @@ export function parsePreviewHost(
  * name on a reservation, so every name it accepts is a host it can parse.
  */
 export function isPreviewHostName(label: string): boolean {
-  return /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?$/.test(label)
-    && !label.includes('--')
+  return DNS_LABEL_RE.test(label)
+    && !label.includes(HOST_LABEL_SEPARATOR)
     && !/^\d+$/.test(label)
-    && !/^[a-f0-9]{24}$/.test(label);
+    && !CAPABILITY_LABEL_RE.test(label);
 }
 
 /**
