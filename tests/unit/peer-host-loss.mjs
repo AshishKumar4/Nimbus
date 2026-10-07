@@ -8,7 +8,9 @@
 // listed as running. Every later request waited 30 s and failed with "peer
 // hosts no process", and nothing restarted it. The held host leg stayed
 // open through that reset; only calls to the sibling failed. Both are
-// covered: `reset` is what Cloudflare did, `die` severs the held leg. A facet-hosted process that
+// covered: `reset` is what Cloudflare did, `die` severs the held leg. And
+// with no call at all, the sibling's own alarm, run by its next
+// incarnation, finds the process it was hosting gone and says so. A facet-hosted process that
 // ends is reported, its port says so, and its restart policy applies; a
 // peer-hosted one must be the same.
 
@@ -21,6 +23,7 @@ import { ProcessFiles } from '../../packages/core/src/runtime/process-files.ts';
 import { SqliteVFS } from '../../packages/core/src/vfs/sqlite-vfs.ts';
 import { adoptCtxExports } from '../../packages/fabric/src/composition.ts';
 import { routeToSessionPort } from '../../packages/worker/src/session/port-capability.ts';
+import { _rpcHostLost, hostingWatchFired, HOSTING_WATCH_MS } from '../../packages/worker/src/session/rpc.ts';
 import { createSqliteVfsTestHarness } from './lib/sqlite-vfs-test-harness.mjs';
 import { createFacetCtx, createFacetWorld, createPeerNamespace } from './facet-host-harness.mjs';
 import { stagedAssets } from './lib/staged-assets.mjs';
@@ -38,7 +41,16 @@ function setup() {
     async handleHttpRequest() { return new Response('served'); },
   }), { resolveConfig: false });
   const hostEnv = { LOADER: world.loader, ASSETS: stagedAssets };
-  const { ns, peers } = createPeerNamespace(world, hostEnv);
+  // The session a sibling reports back to: its supervisorOp, as NimbusSession forwards one.
+  let session = null;
+  const coordinator = {
+    doId: SID,
+    supervisorOp: ({ op, args }) => {
+      if (op !== 'hostLost') throw new Error(`coordinator stub: unserved op ${op}`);
+      return _rpcHostLost(session, ...args);
+    },
+  };
+  const { ns, peers } = createPeerNamespace(world, hostEnv, { coordinator });
   const ctx = createFacetCtx(world, SID);
   const env = { ...hostEnv, NIMBUS_SESSION: ns, NIMBUS_PROCESS_HOST: 'peer' };
   const processes = new SessionProcessSupervisor();
@@ -52,6 +64,7 @@ function setup() {
     onExternalExit: (pid, code, reason) => exits.push({ pid, code, reason }),
   });
   fm.setVfs(vfs, new ProcessFiles(vfs));
+  session = { facetManager: fm };
   const host = { ctx, portRegistry, ensureDurableAppOnPort: (port) => fm.ensureDurableAppOnPort(port) };
   return { peers, ctx, fm, processes, portRegistry, notices, exits, host };
 }
@@ -134,6 +147,33 @@ const rows = async (ctx) => [...(await ctx.storage.list({ prefix: 'resident-laun
     5_000, 'the left-stopped notice',
   );
   assert.deepEqual(processes.getRunning().filter((p) => p.command === 'node crashy.js'), [], 'nothing restarts it a second time');
+}
+
+// ── 5. with no request at all, the sibling reports its own reset ────────────
+// While it hosts a process the sibling keeps a hosting record and its alarm
+// armed within HOSTING_WATCH_MS. Its next incarnation's alarm finds the
+// record and no process, and tells the session at once.
+{
+  const { peers, fm, processes, exits } = setup();
+  const { pid } = await fm.spawnNode(SERVER, { command: 'node quiet.js', argv: ['/home/user/app/quiet.js'], cwd: '/home/user/app', port: 20902 });
+  await waitFor(() => processes.get(pid)?.state === 'running', 5_000, 'the quiet server running');
+  const peer = peerOf(peers, pid);
+  const armedAt = Date.now();
+  await waitFor(() => peer.ctx.storage.alarmAt !== null, 2_000, 'the sibling to arm its alarm while hosting');
+  assert.ok(peer.ctx.storage.alarmAt <= armedAt + HOSTING_WATCH_MS, `armed within ${HOSTING_WATCH_MS} ms: ${peer.ctx.storage.alarmAt - armedAt}`);
+
+  // A live process: the alarm finds it, says nothing, and re-arms.
+  assert.equal(typeof await hostingWatchFired(peer), 'number', 'a sibling still hosting re-arms');
+  assert.equal(processes.get(pid).state, 'running');
+
+  // The platform resets the sibling; nothing calls it. Its next incarnation
+  // has the storage and none of the memory, and its alarm runs.
+  peer.reset(new Error(RESET));
+  const next = { ...peer, _hostedProcesses: new Map(), _hostedProcessWaiters: new Map() };
+  assert.equal(await hostingWatchFired(next), null, 'nothing left to watch');
+  await waitFor(() => processes.get(pid)?.state === 'exited', 1_000, 'the process to end when its host reports its reset');
+  assert.equal(processes.get(pid).exitCode, 137);
+  assert.match(exits.find((e) => e.pid === pid)?.reason ?? '', /its host was reset by the platform/);
 }
 
 console.log('peer-host-loss: ok');

@@ -273,9 +273,12 @@ export function createProcessHost(mode, world, disk, {
  * exactly as a Durable Object reset severs an inbound call.
  *
  * `colocated: true` makes every peer report the COORDINATOR's isolate;
- * `peerWithoutFacets: true` gives each peer no `ctx.facets`.
+ * `peerWithoutFacets: true` gives each peer no `ctx.facets`. `coordinator`
+ * (`{ doId, supervisorOp }`) is the session a peer reaches back to through
+ * the same namespace. Each peer's storage records the alarm it arms
+ * (`ctx.storage.alarmAt`).
  */
-export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false } = {}) {
+export function createPeerNamespace(world, hostEnv, { colocated = false, peerWithoutFacets = false, coordinator } = {}) {
   const calls = [];
   const stubs = [];
   // Every `ns.get()` for one name reaches one peer, exactly as a DO namespace
@@ -288,9 +291,11 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
       // A hosting sibling that cannot host: the failure a peer suffers where a
       // coordinator would have thrown before any handle existed.
       if (peerWithoutFacets) delete ctx.facets;
+      ctx.storage.alarmAt = null;
+      ctx.storage.setAlarm = async (at) => { ctx.storage.alarmAt = at; };
       peer = {
         ctx,
-        env: hostEnv,
+        env: { ...hostEnv, NIMBUS_SESSION: ns },
         _hostedProcesses: new Map(),
         _hostedProcessWaiters: new Map(),
         // A peer is a DIFFERENT Durable Object, so it reports a different
@@ -318,6 +323,9 @@ export function createPeerNamespace(world, hostEnv, { colocated = false, peerWit
     idFromName: (name) => name,
     idFromString: (id) => id,
     get(name) {
+      if (coordinator !== undefined && name === coordinator.doId) {
+        return { supervisorOp: (envelope) => Promise.resolve().then(() => coordinator.supervisorOp(envelope)) };
+      }
       const peer = peerFor(name);
       calls.push(name);
       // Stubs carry a disposer, as RPC stubs do, so a leg that forgets to
