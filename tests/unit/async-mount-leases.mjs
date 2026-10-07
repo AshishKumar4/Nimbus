@@ -526,18 +526,20 @@ assert.deepEqual([cat.exitCode, cat.stdout, cat.stderr], [0, 'through a director
   await fs.rmdir('/o/held/d', { mutationOwner });
   assert.deepEqual((await owned.readdir('/held')).map((entry) => entry.name), [], 'unlinked and removed under the lease');
 
-  /** Run `write` until the mount is asked for `path`, `revoke` there, then let it go on. */
+  /** Run `write` until the mount is asked for `path`, `revoke` there, then let it go on; within 10 s. */
   const revokedDuring = async (path, write, revoke) => {
     let reached; let release;
     const isReached = new Promise((resolve) => { reached = resolve; });
     gate = { path, reached, released: new Promise((resolve) => { release = resolve; }) };
     const outcome = Promise.resolve().then(write).then(() => 'ok', (error) => (typeof error.code === 'string' ? error.code : error.name));
-    await isReached;
+    const late = new Promise((_, reject) => setTimeout(() => reject(new Error(`the mount was never asked for ${path}`)), 10_000));
+    await Promise.race([isReached, late]);
     await revoke();
     release();
     return outcome;
   };
-  assert.equal(await revokedDuring('/held/late', () => fs.mkdir('/o/held/late', { mutationOwner }), () => host.dispose()), 'EBADF', 'a leased mkdir of a disposed host lease');
+  // A mkdir looks up its parent (it makes the last name), so it is held at the parent's search.
+  assert.equal(await revokedDuring('/held', () => fs.mkdir('/o/held/late', { mutationOwner }), () => host.dispose()), 'EBADF', 'a leased mkdir of a disposed host lease');
   const killed = files.bind({ pid: 701, cred });
   assert.equal(await revokedDuring('/held/late.txt', () => killed.open('/o/held/late.txt', { write: true, create: true }, { mutationOwner }), () => files.killProcess(701)), 'EBADF', 'a leased open of a killed process');
   assert.deepEqual((await owned.readdir('/held')).map((entry) => entry.name), [], 'nothing landed');

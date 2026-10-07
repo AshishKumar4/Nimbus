@@ -239,14 +239,16 @@ try {
 
     // An asynchronous mount: the clone's own writes there present its lease, and it matches host git.
     {
-      const host = join(work, 'host-shallow');
+      // The served repository as it is now (fetched and pushed to above), cloned by host git too.
+      const host = join(work, 'host-async');
+      hostGit(work, ['clone', '-q', '--depth', '1', 'file://' + join(served, 'repo.git'), host]);
       const cloned = await session.git('/home/user', ['clone', '--depth', '1', server.url + '/repo.git', '/mnt/async/repo']);
       assert.equal(cloned.code, 0, `async: ${cloned.stderr}`);
       const ours = await session.materializeAt('/mnt/async/repo', join(work, 'ours-async'));
       assert.deepEqual(worktreeOf(ours), worktreeOf(host), 'async: the worktree');
       assert.equal(hostGit(ours, ['ls-files', '-s']), hostGit(host, ['ls-files', '-s']), 'async: the index');
       assert.equal(hostGit(ours, ['status', '--porcelain']), '', 'async: clean');
-      console.log('  ok  clone onto an asynchronous mount: host git\'s worktree and index, a 6 MiB file included');
+      console.log('  ok  clone onto an asynchronous mount: host git\'s worktree and index, files over 4 MiB included');
     }
 
     // A write that fails: host git under a file size limit, ours on a mount with the same limit.
