@@ -8,7 +8,7 @@ import { writeTarballStream, type TarballWriteResult } from '../../../../_shared
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
-import { packageRangeSeparator, parseRegistryRequest } from '../../../../_shared/npm-spec.js';
+import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import {
 	RegistryPackumentSchema,
@@ -105,12 +105,6 @@ export function npmRegistryOrigin(configured: string | undefined): string {
 
 function getRegistry(env: Record<string, string>): string {
 	return npmRegistryOrigin(env.NPM_REGISTRY);
-}
-
-/** `name[@range]` split where npm's npa splits it (core _shared/npm-spec.ts). */
-function parsePackageSpec(spec: string): { name: string; version: string | null } {
-	const at = packageRangeSeparator(spec);
-	return at === -1 ? { name: spec, version: null } : { name: spec.slice(0, at), version: spec.slice(at + 1) };
 }
 
 // ─── Registry fetch ───
@@ -460,7 +454,7 @@ async function npmInstall(
 		await ctx.stdout.write('Installing packages...\n');
 		const seen = new Set<string>();
 		for (const spec of packages) {
-			const { name, version } = parsePackageSpec(spec);
+			const { name, range: version } = splitPackageSpec(spec);
 			try {
 				installed += await installSinglePackage(
 					name, version, targetBase, ctx.vfs, npmRegistry, ctx.signal,
@@ -735,7 +729,7 @@ async function npmInfo(ctx: CommandContext, network: WorkspaceNetwork): Promise<
 		return 1;
 	}
 
-	const { name, version } = parsePackageSpec(spec);
+	const { name, range: version } = splitPackageSpec(spec);
 	const npmRegistry = getRegistry(ctx.env);
 
 	try {
@@ -1009,7 +1003,7 @@ export function createNpxCommand(
 		// Everything after the spec is passthrough args
 		passthrough.push(...rawArgs.slice(i + 1));
 
-		const { name: parsedName, version } = parsePackageSpec(explicitPkg || spec);
+		const { name: parsedName, range: version } = splitPackageSpec(explicitPkg || spec);
 		// The bin name to look for: if --package was used, spec is the bin name; otherwise derive from package name
 		const binName = explicitPkg ? spec : parsedName.split('/').pop()!;
 
