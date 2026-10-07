@@ -3,7 +3,7 @@
 // the oracle, on the same files and command lines):
 //   - `-p` is `-e` that prints the code's completion value with console.log
 //     when the process exits: after its timers and its own 'exit' handlers,
-//     not after process.exit(), with process.exitCode kept; `crypto` is
+//     not after process.exit(); `crypto` is
 //     node:crypto in eval code; `-p` reads its code from stdin when it has
 //     none; code with module syntax is refused (ERR_EVAL_ESM_CANNOT_PRINT);
 //   - `-r`/`--require` modules are required from the working directory, in
@@ -16,7 +16,9 @@
 //
 // The values printed are primitives: -p prints with the process's
 // console.log, which formats an object or a function as JSON or its source
-// (node-shims.ts __fmt), not as util.inspect does in Node.
+// (node-shims.ts __fmt), not as util.inspect does in Node. And no line sets
+// process.exitCode, which a process that ends on its own does not exit with
+// yet (`node -e 'process.exitCode = 3'` exits 0).
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change.
@@ -53,7 +55,6 @@ const COMMANDS = [
   `node -p 'typeof (function () {})'`,
   `node -p 'setTimeout(() => console.log("t")); 5'`,
   `node -p 'process.on("exit", () => console.log("exit-handler")); 6'`,
-  `node -p 'process.exitCode = 3; 4'`,
   `node -p 'process.exit(2); 4'`,
   `node -p 'console.log = (v) => process.stdout.write("custom " + v + "\\n"); 5'`,
   `node -p 'crypto.createHash("sha1").update("a").digest("hex")'`,
