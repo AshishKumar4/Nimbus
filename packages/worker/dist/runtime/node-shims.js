@@ -9900,9 +9900,12 @@ const __nimbusAbiAdvisories = new Map(${ABI_ADVISORIES_LITERAL});
 const __nimbusCommonJSGlobalLike = ${JSON.stringify([...COMMONJS_WRAPPER_NAMES])};
 Object.defineProperty(globalThis, ${JSON.stringify(ES_MODULE_SCOPE_GLOBAL)}, { configurable: true, value: Object.freeze(Object.create(null, Object.fromEntries(
   __nimbusCommonJSGlobalLike.map((name) => {
-    const unbound = function () {
+    const unbound = function __nimbusUnbound() {
       const error = new ReferenceError(name + " is not defined");
       Error.captureStackTrace(error, unbound);
+      // An engine that keeps the accessor's own frame (JSC: the shims' tests
+      // in Bun) names it; V8 has cut it already.
+      if (typeof error.stack === "string") error.stack = error.stack.replace(/\\n {4}at (?:get )?__nimbusUnbound \\([^\\n]*/, "");
       throw error;
     };
     return [name, { get: unbound, set: unbound }];
