@@ -141,8 +141,10 @@ export function createFacetCtx(world, doId = 'do-test', storage = new Map(), { c
     storage: {
       rows: storage,
       async get(key) { return view().get(key); },
-      async put(key, value) {
-        pending.set(key, { deleted: false, value });
+      // Both of DO storage's forms; a multi-key put lands whole.
+      async put(keyOrEntries, value) {
+        const entries = typeof keyOrEntries === 'string' ? { [keyOrEntries]: value } : keyOrEntries;
+        for (const [key, entry] of Object.entries(entries)) pending.set(key, { deleted: false, value: entry });
         if (!crashable) flush();
       },
       async delete(key) {

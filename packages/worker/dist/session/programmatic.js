@@ -23,7 +23,7 @@ import { z } from 'zod/v4';
 import { SESSION_DESTROYED_KEY, SHELL_STATE_KEY_PREFIX, VITE_CONFIG_KEY } from './keys.js';
 import { clearPortCapability, isValidAppName, persistPortCapability, portRecordKey, readPortReservation, readPortReservationByName, readPortReservationByOwner, reservePort, rotatePortCapability } from './port-capability.js';
 import { bindPublicPortCapability, unbindPublicPortCapability } from '../router/public-directory.js';
-import { buildPreviewHost, buildPublicPreviewHost, isPreviewHostSafeSid, readPreviewHostSuffix } from '../_shared/preview-host.js';
+import { isPreviewHostSafeSid, previewHostUrl, readPreviewHostSuffix } from '../_shared/preview-host.js';
 import { RESTART_POLICY_ENV } from '../facets/manager.js';
 import { GENERATION_KEY, assumeGeneration, generation } from '@nimbus-sh/fabric/generation.js';
 import { timers } from '@nimbus-sh/fabric/timers.js';
@@ -537,13 +537,8 @@ export async function rpcListPorts(self) {
 export function appUrl(self, app) {
     const sid = sessionIdOf(self);
     const suffix = readPreviewHostSuffix(self.env);
-    if (suffix !== null && sid !== null && isPreviewHostSafeSid(sid)) {
-        const label = app.name ?? app.port;
-        if (app.visibility === 'public' && typeof app.capability === 'string') {
-            return `https://${buildPublicPreviewHost(sid, label, app.capability, suffix)}/`;
-        }
-        return `https://${buildPreviewHost(sid, label, suffix)}/`;
-    }
+    if (suffix !== null && sid !== null && isPreviewHostSafeSid(sid))
+        return previewHostUrl(sid, app, suffix);
     const origin = self.sessionOrigin;
     if (!origin || sid === null)
         return null;

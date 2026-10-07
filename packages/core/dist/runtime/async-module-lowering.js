@@ -1,44 +1,4 @@
-/**
- * ES module to CommonJS: the one emitter of the import/export interop every
- * Nimbus lowering shares, and its two module readers.
- *
- * A module's imports and exports are read into records (readEsmRecords, by
- * acorn's module parse; the bounded bundle rewrite builds its own from the
- * declarations it found, esbuild-service.ts), and emitCommonJs writes the
- * CommonJS for them, as esbuild's and TypeScript's CommonJS output behave:
- *   - every module the source requests is required in source order, before
- *     the body; an import's bindings are read off its module at each use, so
- *     they are live as Node's are (an `export let` its module reassigns later
- *     reads as reassigned): a default import through `__esModule` interop, a
- *     call with `this` undefined, and a namespace of a module not marked
- *     `__esModule` with that module as its `default`;
- *   - `__esModule` is a non-enumerable `true`, and each export is a live,
- *     enumerable getter installed in name order before the body runs, so a
- *     binding the body assigns later (`export let db; db = await connect()`)
- *     reads as assigned; and before the modules it requests are required, as
- *     esbuild installs them, so a module in a cycle with it finds them (a
- *     function it declares is there while the cycle evaluates, as Node
- *     hoists it); `export default <expression>` evaluates where it stands,
- *     into a binding its getter reads;
- *   - `export *` copies the source module's names after the module's own,
- *     skipping `default` and any name already exported: the module's own
- *     names, and an earlier `export *`'s, win.
- *
- * Two bodies: `async` runs the module in an async IIFE, the body the
- * CommonJS cell gives a module with top-level await (the transform refuses
- * `format: 'cjs'` for it, so it emits ESM and this lowers that); `sync` is
- * the module's own statements at the wrapper's top level.
- *
- * Acorn's parse gives the declarations: esbuild prints an import or export
- * clause across several lines when it is long (serve 14's `import {\n
- * resolve as resolvePath, ... } from "node:path"`), so no line or text
- * pattern can stand in for it.
- *
- * Runs in the transform facet (installed by oxc-facet/preamble.ts), in
- * esbuild-service.ts, and in the shell's `node` command.
- */
-import { Parser } from 'acorn';
-import { applySourceEdits } from './javascript-ast.js';
+import { applySourceEdits, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 import { bindingScope, list, namesBinding, scoped, stringOf } from './javascript-scope.js';
 /**
  * Names for code generated around `source`: a prefix its text does not hold
@@ -55,18 +15,107 @@ export function generatedNames(source) {
 export function lowerAsyncModule(esm) {
     return emitCommonJs(esm, readEsmRecords(esm), { body: 'async' });
 }
-/** The import and export declarations of ES module `source`, in source order. Throws on a syntax error. */
+/**
+ * The import and export declarations of ES module `source`, in source order,
+ * each named import binding with where the module uses it (EsmReference).
+ * Throws on a syntax error.
+ *
+ * A use is an identifier no scope inside the module binds again: not a
+ * member's, a key's or a label's name, or a declaration's own (an import
+ * name cannot be redeclared at the top level). Each function is analyzed as
+ * the parse finishes it, its uses of the names imported so far kept (those
+ * its own scopes leave free) and its body dropped; a top-level statement's
+ * uses are resolved the same way, through its functions' free uses. Imports
+ * come first in nearly every module, so one parse does; a module importing
+ * a name after code that may use it is parsed again, every name known.
+ */
 export function readEsmRecords(source) {
-    const program = Parser.parse(source, { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true });
+    const first = readModule(source, null);
+    return first.importsAfterCode ? readModule(source, first.imported).records : first.records;
+}
+function readModule(source, known) {
     // ModuleExportName: an identifier, or a string such as `export { a as "b-c" }`.
     const nameOf = (node) => node.type === 'Identifier' ? String(node.name) : String(node.value);
+    const imported = new Set(known ?? []);
     const records = [];
-    const references = importReferences(program, program.body.flatMap((node) => node.type !== 'ImportDeclaration' ? [] : node.specifiers
-        .filter((specifier) => specifier.type !== 'ImportNamespaceSpecifier')
-        .map((specifier) => specifier.local.name)));
-    for (const node of program.body) {
+    const uses = new Map();
+    let code = false;
+    let importsAfterCode = false;
+    const outside = { names: new Set(), parent: null };
+    // Where an identifier spelled as an imported name starts, in order: code
+    // with none in it uses no import, and is not walked.
+    const mentions = [];
+    const mentioned = (start, end) => {
+        let low = 0;
+        let high = mentions.length;
+        while (low < high) {
+            const middle = (low + high) >>> 1;
+            if (mentions[middle] < start)
+                low = middle + 1;
+            else
+                high = middle;
+        }
+        return low < mentions.length && mentions[low] < end;
+    };
+    // Each function's uses its own scopes leave free.
+    const freeIn = new WeakMap();
+    const freeUses = (root) => {
+        const own = freeIn.get(root);
+        if (own)
+            return own;
+        const free = [];
+        if (!mentioned(root.start, root.end))
+            return free;
+        // A pattern's properties, as the walk reaches them: a value there is written.
+        const patternProperties = new Set();
+        for (const [node, scope, parent, key] of scoped(root, outside, false, false, null, '', (n) => n !== root && freeIn.has(n))) {
+            const inner = node === root ? undefined : freeIn.get(node);
+            if (inner) {
+                for (const use of inner)
+                    if (bindingScope(scope, use.name) === null)
+                        free.push(use);
+                continue;
+            }
+            if (node.type === 'ObjectPattern')
+                for (const property of list(node, 'properties'))
+                    patternProperties.add(property);
+            const name = node.type === 'Identifier' ? stringOf(node, 'name') : null;
+            if (name === null || !imported.has(name) || parent === null || !namesBinding(parent, key))
+                continue;
+            if (bindingScope(scope, name) !== null)
+                continue;
+            free.push({ name, start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
+        }
+        return free;
+    };
+    const onIdentifier = (identifier) => {
+        const name = stringOf(identifier, 'name');
+        if (name === null || !imported.has(name))
+            return;
+        // Identifiers finish in source order; one out of it is put in its place.
+        let at = mentions.length;
+        while (at > 0 && mentions[at - 1] > identifier.start)
+            at--;
+        mentions.splice(at, 0, identifier.start);
+    };
+    const onStatement = (node) => {
+        if (node.type !== 'ImportDeclaration') {
+            // A top-level statement's free uses are its imports' (none redeclares one).
+            for (const { name, start, end, use } of freeUses(node)) {
+                const found = uses.get(name) ?? [];
+                uses.set(name, found);
+                found.push({ start, end, use });
+            }
+        }
         switch (node.type) {
-            case 'ImportDeclaration':
+            case 'ImportDeclaration': {
+                for (const specifier of node.specifiers) {
+                    if (specifier.type === 'ImportNamespaceSpecifier')
+                        continue;
+                    if (code && !imported.has(specifier.local.name))
+                        importsAfterCode = true;
+                    imported.add(specifier.local.name);
+                }
                 records.push({
                     kind: 'import', start: node.start, end: node.end, source: String(node.source.value),
                     bindings: node.specifiers.map((specifier) => (specifier.type === 'ImportNamespaceSpecifier'
@@ -75,10 +124,12 @@ export function readEsmRecords(source) {
                             kind: 'named',
                             local: specifier.local.name,
                             imported: specifier.type === 'ImportDefaultSpecifier' ? 'default' : nameOf(specifier.imported),
-                            references: references.get(specifier.local.name) ?? [],
+                            // Filled in below, once every statement has been read.
+                            references: [],
                         })),
                 });
-                break;
+                return;
+            }
             case 'ExportNamedDeclaration':
                 if (node.declaration) {
                     records.push({
@@ -123,36 +174,23 @@ export function readEsmRecords(source) {
             default:
                 break;
         }
-    }
-    return records;
-}
-/**
- * Where `program` uses each binding its imports name (not a namespace): the
- * identifiers its own scope resolves to that binding. Not a member's, a
- * key's or a label's name, an import or export declaration's own names, or a
- * name a nested scope binds again.
- */
-function importReferences(program, names) {
-    const references = new Map(names.map((name) => [name, []]));
-    if (references.size === 0)
-        return references;
-    const outside = { names: new Set(), parent: null };
-    // A pattern's properties, as its walk reaches them: a value there is written.
-    const patternProperties = new Set();
-    for (const [node, scope, parent, key] of scoped(program, outside, false)) {
-        if (node.type === 'ObjectPattern')
-            for (const property of list(node, 'properties'))
-                patternProperties.add(property);
-        const name = node.type === 'Identifier' ? stringOf(node, 'name') : null;
-        const found = name === null ? undefined : references.get(name);
-        if (!found || name === null || parent === null || !namesBinding(parent, key))
-            continue;
-        // The program's own scope is the one directly inside `outside`.
-        if (bindingScope(scope, name)?.parent !== outside)
-            continue;
-        found.push({ start: node.start, end: node.end, use: useOf(parent, key, patternProperties) });
-    }
-    return references;
+        code = true;
+    };
+    parseStatements(source, MODULE_PARSE_OPTIONS, {
+        onStatement: (statement) => onStatement(statement),
+        onNode: (node) => {
+            if (node.type === 'Identifier')
+                onIdentifier(node);
+            // A function, once finished: its free uses, before its body is dropped.
+            else if (node.type === 'FunctionDeclaration' || node.type === 'FunctionExpression' || node.type === 'ArrowFunctionExpression')
+                freeIn.set(node, freeUses(node));
+        },
+    });
+    const withUses = records.map((record) => record.kind !== 'import' ? record : {
+        ...record,
+        bindings: record.bindings.map((binding) => binding.kind === 'namespace' ? binding : { ...binding, references: uses.get(binding.local) ?? [] }),
+    });
+    return { records: withUses, imported, importsAfterCode };
 }
 /** How an identifier under `parent` by `key` uses the binding it names. */
 function useOf(parent, key, patternProperties) {
@@ -219,7 +257,7 @@ export function emitCommonJs(source, records, options) {
                 continue;
             const read = binding.imported === 'default' ? `${interop}.default` : `${mod}${key(binding.imported)}`;
             reads.set(binding.local, read);
-            for (const { start, end, use } of binding.references ?? []) {
+            for (const { start, end, use } of binding.references) {
                 if (use === 'write')
                     continue;
                 uses.push({ start, end, text: use === 'call' ? `(0, ${read})` : use === 'shorthand' ? `${binding.local}: ${read}` : read });
@@ -229,9 +267,9 @@ export function emitCommonJs(source, records, options) {
     const defaultExpressionUses = new Set();
     // In the body's scope, before it: a getter per export name in name order;
     // then, in source order, each requested module; then the bindings an
-    // import declares (a namespace; a binding read once, where the reader saw
-    // no scopes; a const a write to the import throws on, as the language's
-    // assignment to an import does); then each `export *`'s names.
+    // import declares (a namespace; a const a write to the import throws on,
+    // as the language's assignment to an import does); then each `export *`'s
+    // names.
     const requires = [];
     const imported = [];
     const getters = [];
@@ -259,8 +297,6 @@ export function emitCommonJs(source, records, options) {
                     const { local } = binding;
                     if (binding.kind === 'namespace')
                         imported.push(`const ${local} = ${namespace(mod)};`);
-                    else if (binding.references === null)
-                        imported.push(`const ${local} = ${reads.get(local)};`);
                     else if (binding.references.some(({ use }) => use === 'write'))
                         imported.push(`const ${local} = void 0;`);
                 }

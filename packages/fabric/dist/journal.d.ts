@@ -72,13 +72,10 @@ export declare class Journal<P> {
     private readonly ctx;
     private readonly table;
     private schemaReady;
-    private lastId;
-    private seq;
+    private readonly ids;
     private leaseSeq;
     constructor(ctx: JournalContext, name: string);
     private ensureSchema;
-    /** Same shape as the outbox's: time-ordered, forced above every stored id. */
-    private mintId;
     /**
      * Append one event. A dedupe key that already exists — pending, done, or
      * dismissed — refuses the append and names the existing id.

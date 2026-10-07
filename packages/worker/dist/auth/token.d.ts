@@ -37,6 +37,8 @@ export interface NimbusAuthEnv {
      */
     JWT_SECRET_PREVIOUS?: string;
 }
+/** Whether `env` carries a signing secret: a non-empty `JWT_SECRET`. */
+export declare function hasJwtSecret(env: unknown): env is NimbusAuthEnv;
 /**
  * Mint a Nimbus JWT.
  *

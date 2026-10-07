@@ -37,6 +37,8 @@
  *   - the shared VFS write ledger source evaluated in the same scope
  *   - cwd: string
  *   - argv, env, filename, dirname: from args
+ *   - nodeCommandLine: from args, the NodeLaunch (core runtime/node-cli.ts),
+ *     or undefined where a host passes none
  *   - stdout, stderr, exitCode: capture variables
  */
 import { generateStreamsCode } from '@nimbus-sh/core/runtime/streams.js';
@@ -64,6 +66,8 @@ import {
 import { PACKAGE_ABI_POLICY } from '../facets/wasm-swap-registry.js';
 import { NATIVE_HTTP_SOURCE } from './native-http.js';
 import { NODE_WS_UPGRADE_SOURCE } from './node-ws-upgrade.js';
+import { NODE_MINIMATCH_SOURCE } from './node-minimatch-source.js';
+import { RUNTIME_INTERPRETER_MODULE } from '@nimbus-sh/core/_shared/commonjs-cell.js';
 
 const STREAMS_CODE = generateStreamsCode();
 const SQLITE_SHIM_CODE = generateSqliteShimCode();
@@ -224,6 +228,16 @@ function __nimbusHoldSocket() {
   };
   hold(true);
   return hold;
+}
+
+// Node's minimatch (node-minimatch-source.ts), the matcher fs.glob uses, as
+// Node loads it: a CommonJS module, evaluated the first time a program globs.
+function __nimbusMinimatch() {
+  const module = { exports: {} };
+  (function (exports, module, process) {
+${NODE_MINIMATCH_SOURCE}
+  })(module.exports, module, builtins.process);
+  return module.exports;
 }
 
 async function __nimbusUseRpcResult(promise, use) {
@@ -1306,8 +1320,24 @@ const __fsMod = (() => {
   const _residencyMisses = globalThis.__nimbusVfsResidencyMisses
     || (globalThis.__nimbusVfsResidencyMisses = new Set());
 
+  /**
+   * A speculative read: the import() prefetch (__nimbusHydrated) reads ahead
+   * of the program, as its loader will, so that what it reads is held when
+   * the program needs it. While it runs, globalThis.__nimbusVfsSpeculation is
+   * set: a miss is faulted in like any other, but it is the prefetch's, kept
+   * in the speculation's own set, and the program's ledger is neither added
+   * to nor answered: the exit report and the next launch's learning see only
+   * the program's own accesses.
+   */
+  function _speculation() {
+    return globalThis.__nimbusVfsSpeculation || null;
+  }
+
   function _recordMiss(k) {
-    if (k === "" || _residencyMisses.has(k)) return;
+    if (k === "") return;
+    const speculation = _speculation();
+    if (speculation) { speculation.misses.add(k); return; }
+    if (_residencyMisses.has(k)) return;
     _residencyMisses.add(k);
     if (typeof __nimbusNotifyRuntimeCode === "function") __nimbusNotifyRuntimeCode();
     _stats.misses++;
@@ -1355,11 +1385,15 @@ const __fsMod = (() => {
   function _recordResidencyMiss(absPath) {
     const k = _strip(absPath);
     _recordMiss(k);
-    _faultIn(_nsLandingKey(k) ?? k);
+    const landing = _nsLandingKey(k) ?? k;
+    _faultIn(landing);
+    // A speculation's miss through a link is fetched as the file it names.
+    const speculation = _speculation();
+    if (speculation && speculation.issued.has(landing)) speculation.issued.add(k);
   }
 
   function _residencySatisfied(absPath) {
-    if (_residencyMisses.size === 0) return;
+    if (_residencyMisses.size === 0 || _speculation()) return;
     const k = _strip(absPath);
     _residencyMisses.delete(k);
     // A descriptor opened through a link misses under the file it names.
@@ -1376,21 +1410,72 @@ const __fsMod = (() => {
    * reading the same data: all of those are refused a second time for a
    * reason that was already repairable after the first.
    *
-   * One round trip per path, ever: the ledger above is the dedupe, so a read
-   * loop over a non-resident file costs one fetch rather than one per turn.
+   * One round trip per path while it is out: the ledger above is the
+   * dedupe, so a read loop over a non-resident file costs one fetch rather
+   * than one per turn. A fetch whose bytes did not land (its fill was spoiled
+   * by a barrier that could not date them, or the store refused them) is not
+   * an answer: the path is asked for again by the next read that misses it,
+   * up to _FAULT_ATTEMPTS times. Once asked for good, it was answered.
    *
    * Nothing awaits the fill, but it rides the same RPC accounting every other
    * read does, so the drain settles it before teardown. That is the behaviour
    * to want: an isolate torn down mid-fetch leaves the repair undone, and the
    * cost of not doing so is one read the program was going to need anyway.
    */
+  const _repairOf = new Map();
+  const _FAULT_ATTEMPTS = 4;
+  const _faultAttempts = new Map();
   function _faultIn(k) {
-    if (!_supervisor() || !_faultOnce("content", k)) return;
+    if (!_supervisor()) return;
+    const speculation = _speculation();
+    if (_faulted.has("content:" + k)) {
+      // Asked for already: a speculation waits on that same fill, and reads
+      // again after it as the one that issued it does.
+      const pending = _repairOf.get(k);
+      if (speculation && pending) { speculation.repairs.push(pending); speculation.issued.add(k); }
+      return;
+    }
+    // A speculation's fetch is charged to its quota before it is issued, and
+    // past the quota is not issued at nor marked asked: the program's own
+    // read of it later still faults it in.
+    if (speculation && speculation.quota && !speculation.quota.file()) return;
+    _faultOnce("content", k);
+    const attempt = (_faultAttempts.get(k) || 0) + 1;
+    _faultAttempts.set(k, attempt);
     // Swallowed here rather than at the settle: a repair nobody asked for
     // must not surface as an unhandled rejection, and a failed one is simply
     // a path that stays unanswered and stays in the ledger.
-    try { _repairs.push(_observeThenFill(k).catch(() => {})); }
-    catch { /* the fill is speculative */ }
+    try {
+      const repair = _observeThenFill(k, speculation && speculation.quota).catch(() => {}).finally(() => {
+        _repairOf.delete(k);
+        // Not landed and not proven absent: the next miss may ask again.
+        const landed = (__vfsBundle && k in __vfsBundle) || _observedAbsent.has(k);
+        if (!landed && attempt < _FAULT_ATTEMPTS) _faulted.delete("content:" + k);
+      });
+      _repairs.push(repair);
+      _repairOf.set(k, repair);
+      if (speculation) { speculation.repairs.push(repair); speculation.issued.add(k); }
+    } catch { /* the fill is speculative */ }
+  }
+
+  /**
+   * A quota's charge for one read: the stat's size was admitted before it
+   * began; every byte the read can reach past it is charged before the range
+   * that reaches it is issued. The first range asks for one byte past the
+   * admitted size, so a file that grew is seen to have grown, and the rest
+   * is planned (and charged) from a fresh stat; a refusal ends the read
+   * there. \`through\` is the offset the read is about to reach.
+   */
+  function _rangeCharge(quota, admitted) {
+    let charged = admitted;
+    const charge = (through) => {
+      if (through <= charged) return true;
+      if (!quota.bytes(through - charged)) return false;
+      charged = through;
+      return true;
+    };
+    charge.admitted = admitted;
+    return charge;
   }
 
   /**
@@ -1402,9 +1487,14 @@ const __fsMod = (() => {
    * have failed, and it is the one observation that settles whether the run
    * was denied anything.
    */
-  async function _observeThenFill(k) {
+  async function _observeThenFill(k, quota) {
     const supervisor = _supervisor();
     const absPath = "/" + k;
+    // A quota's charge is the file's size, so a fetch under one is issued
+    // only once a stat has given it, and not at all past the quota; and the
+    // read is charged in ranges, as it plans them.
+    if (quota && (typeof supervisor.stat !== "function" || typeof supervisor.fsReadRange !== "function")) { _faulted.delete("content:" + k); return; }
+    let charge = null;
     if (typeof supervisor.stat === "function") {
       let meta;
       // A thrown stat is the authority failing to answer, not an answer:
@@ -1415,8 +1505,15 @@ const __fsMod = (() => {
       catch { return; }
       if (meta === null || meta === undefined) { _observedAbsent.add(k); return; }
       if (meta.type === "directory") return;
+      if (quota && !quota.bytes(Number(meta.size) || 0)) { _faulted.delete("content:" + k); return; }
+      if (quota) charge = _rangeCharge(quota, Number(meta.size) || 0);
+      // A store at its budget refuses a fill, and asks for room only then.
+      // The repair can wait, so it reserves the room first, and the bytes it
+      // fetches land in it; where none is to be had, they are not fetched.
+      if (typeof meta.size === "number" && typeof __residentReserve === "function" && !(await __residentReserve(k, __residentFileCost(meta.size)))) return;
     }
-    await _liveReadFile(absPath, undefined);
+    try { await _liveReadFile(absPath, undefined, undefined, charge); }
+    finally { if (typeof __residentRelease === "function") __residentRelease(k); }
   }
 
   /**
@@ -3016,9 +3113,11 @@ const __fsMod = (() => {
   // comes back short or missing still ends the file, exactly as taking them
   // one at a time did, so a file that shrank under the reader is read short
   // rather than read wrong.
-  async function _readChunksFrom(absPath, displayPath, supervisor, from) {
+  async function _readChunksFrom(absPath, displayPath, supervisor, from, charge) {
     const meta = await _fsRpc(supervisor.stat(absPath), "stat", displayPath, (result) => result);
     const end = meta ? Number(meta.size) || 0 : 0;
+    // A charged read pays for the remainder it plans before issuing it.
+    if (charge && !charge(end)) throw _fsErr("EFBIG", "read", displayPath);
     const offsets = [];
     for (let off = from; off < end; off += READ_STREAM_CHUNK_BYTES) offsets.push(off);
     const chunks = await Promise.all(offsets.map((off) => _readRangeAt(
@@ -3033,7 +3132,7 @@ const __fsMod = (() => {
     return parts;
   }
 
-  async function _liveReadFile(p, opts, refetch) {
+  async function _liveReadFile(p, opts, refetch, charge) {
     const absPath = _resolve(p);
     const encoding = typeof opts === "string" ? opts : opts?.encoding;
     const supervisor = _supervisor();
@@ -3050,13 +3149,17 @@ const __fsMod = (() => {
     let fill = refetch || null;
     let reachedFill = null;
     let first = null;
+    // A charged read's first range: one byte past what was admitted, charged
+    // before it is issued (_rangeCharge).
+    const firstLength = charge ? Math.min(READ_STREAM_CHUNK_BYTES, charge.admitted + 1) : READ_STREAM_CHUNK_BYTES;
+    if (charge && !charge(firstLength)) throw _fsErr("EFBIG", "read", p);
     if (!refetch && _servesFsAcquired(supervisor) && typeof supervisor.fsReadRange === "function") {
       await _flushLocalPathToSupervisor(absPath, supervisor);
       fill = _beginFill(_strip(absPath));
       try {
         const entries = await _acquiredRead(
           supervisor, "fsReadBatch",
-          [[{ path: absPath, offset: 0, length: READ_STREAM_CHUNK_BYTES }, { path: absPath, lstat: true }]],
+          [[{ path: absPath, offset: 0, length: firstLength }, { path: absPath, lstat: true }]],
           (promise) => _fsReadRpc(promise, "read", p, (result) => result), "read", p, fill,
         );
         const [read, learned] = Array.isArray(entries) ? entries : [];
@@ -3100,13 +3203,15 @@ const __fsMod = (() => {
         const parts = [];
         let total = 0;
         for (;;) {
-          const chunk = first !== null && total === 0 ? first.chunk : await _readRangeAt(absPath, p, total, READ_STREAM_CHUNK_BYTES);
+          const want = total === 0 ? firstLength : READ_STREAM_CHUNK_BYTES;
+          if (charge && !charge(total + want)) throw _fsErr("EFBIG", "read", p);
+          const chunk = first !== null && total === 0 ? first.chunk : await _readRangeAt(absPath, p, total, want);
           if (chunk === null) break;
           parts.push(chunk);
           total += chunk.byteLength;
-          if (chunk.byteLength < READ_STREAM_CHUNK_BYTES) break;
+          if (chunk.byteLength < want) break;
           if (typeof supervisor.stat !== "function") continue;
-          for (const rest of await _readChunksFrom(absPath, p, supervisor, total)) {
+          for (const rest of await _readChunksFrom(absPath, p, supervisor, total, charge)) {
             parts.push(rest);
             total += rest.byteLength;
           }
@@ -5172,6 +5277,565 @@ const __fsMod = (() => {
   realpath.native = realpath;
   function lchmod(p, mode, cb) { chmod(p, mode, cb); }
 
+  // ── fs.glob ── Node 22's fs.glob, fs.globSync and fs.promises.glob: its
+  // Glob, ported from lib/internal/fs/glob.js (v22.22.3; the Linux paths),
+  // matching with the minimatch Node vendors (node-minimatch-source.ts),
+  // which is evaluated the first time a program globs.
+  // Node's ERR_INVALID_ARG_TYPE, as its validators word it.
+  function _argTypeError(name, expected, value) {
+    const got = value === undefined || value === null ? String(value)
+      : typeof value === "function" ? "function " + (value.name || "<anonymous>")
+      : typeof value === "object" ? "an instance of " + ((value.constructor && value.constructor.name) || "Object")
+      : "type " + typeof value + " (" + (typeof value === "string" ? "'" + value + "'" : String(value)) + ")";
+    const e = new TypeError('The "' + name + '" ' + (name.includes(".") ? "property" : "argument") + " must be " + expected + ". Received " + got);
+    e.code = "ERR_INVALID_ARG_TYPE";
+    return e;
+  }
+  const _Glob = (() => {
+    let minimatch = null;
+    const mm = () => minimatch ??= __nimbusMinimatch();
+    const { join, resolve, basename, isAbsolute, dirname } = __pathMod;
+    const argType = _argTypeError;
+    const validateStringArray = (value, name) => {
+      if (!Array.isArray(value)) throw argType(name, "an instance of Array", value);
+      for (let i = 0; i < value.length; i++) if (typeof value[i] !== "string") throw argType(name + "[" + i + "]", "of type string", value[i]);
+    };
+    const createMatcher = (pattern) => new (mm().Minimatch)(pattern, {
+      __proto__: null, nocase: false, windowsPathsNoEscape: true, nonegate: true, nocomment: true,
+      optimizationLevel: 2, platform: "linux", nocaseMagicOnly: true,
+    });
+    const direntOf = (path, st) => new __Dirent(basename(path), _direntTypeOfStats(st), dirname(path));
+    const getDirentSync = (path) => {
+      let st;
+      try { st = lstatSync(path); } catch { return null; }
+      return direntOf(path, st);
+    };
+    const getDirent = async (path) => {
+      let st;
+      try { st = await promises.lstat(path); } catch { return null; }
+      return direntOf(path, st);
+    };
+
+    class Cache {
+      #cache = new Map();
+      #statsCache = new Map();
+      #readdirCache = new Map();
+      stat(path) {
+        const cached = this.#statsCache.get(path);
+        if (cached) return cached;
+        const promise = getDirent(path);
+        this.#statsCache.set(path, promise);
+        return promise;
+      }
+      statSync(path) {
+        const cached = this.#statsCache.get(path);
+        if (cached && !(cached instanceof Promise)) return cached;
+        const val = getDirentSync(path);
+        this.#statsCache.set(path, val);
+        return val;
+      }
+      addToStatCache(path, val) { this.#statsCache.set(path, val); }
+      readdir(path) {
+        const cached = this.#readdirCache.get(path);
+        if (cached) return cached;
+        const promise = promises.readdir(path, { withFileTypes: true }).then(null, () => []);
+        this.#readdirCache.set(path, promise);
+        return promise;
+      }
+      readdirSync(path) {
+        const cached = this.#readdirCache.get(path);
+        if (cached) return cached;
+        let val;
+        try { val = readdirSync(path, { withFileTypes: true }); } catch { val = []; }
+        this.#readdirCache.set(path, val);
+        return val;
+      }
+      add(path, pattern) {
+        let cache = this.#cache.get(path);
+        if (!cache) {
+          cache = new Set();
+          this.#cache.set(path, cache);
+        }
+        const originalSize = cache.size;
+        pattern.indexes.forEach((index) => cache.add(pattern.cacheKey(index)));
+        return cache.size !== originalSize + pattern.indexes.size;
+      }
+      seen(path, pattern, index) { return this.#cache.get(path)?.has(pattern.cacheKey(index)); }
+    }
+
+    class Pattern {
+      #pattern;
+      #globStrings;
+      constructor(pattern, globStrings, indexes, symlinks) {
+        this.#pattern = pattern;
+        this.#globStrings = globStrings;
+        this.indexes = indexes;
+        this.symlinks = symlinks;
+        this.last = pattern.length - 1;
+      }
+      isLast(isDirectory) {
+        return this.indexes.has(this.last) ||
+          (this.at(-1) === "" && isDirectory && this.indexes.has(this.last - 1) && this.at(-2) === mm().GLOBSTAR);
+      }
+      isFirst() { return this.indexes.has(0); }
+      get hasSeenSymlinks() { return Array.from(this.indexes).some((i) => !this.symlinks.has(i)); }
+      at(index) { return this.#pattern.at(index); }
+      child(indexes, symlinks = new Set()) { return new Pattern(this.#pattern, this.#globStrings, indexes, symlinks); }
+      test(index, path) {
+        if (index > this.#pattern.length) return false;
+        const pattern = this.#pattern[index];
+        if (pattern === mm().GLOBSTAR) return true;
+        if (typeof pattern === "string") return pattern === path;
+        if (typeof pattern?.test === "function") return pattern.test(path);
+        return false;
+      }
+      cacheKey(index) {
+        let key = "";
+        for (let i = index; i < this.#globStrings.length; i++) {
+          key += this.#globStrings[i];
+          if (i !== this.#globStrings.length - 1) key += "/";
+        }
+        return key;
+      }
+    }
+
+    class ResultSet extends Set {
+      #root = ".";
+      #isExcluded = () => false;
+      setup(root, isExcludedFn) {
+        this.#root = root;
+        this.#isExcluded = isExcludedFn;
+      }
+      add(value) {
+        if (this.#isExcluded(resolve(this.#root, value))) return false;
+        super.add(value);
+        return true;
+      }
+    }
+
+    class Glob {
+      #root;
+      #exclude;
+      #cache = new Cache();
+      #results = new ResultSet();
+      #queue = [];
+      #subpatterns = new Map();
+      #patterns;
+      #withFileTypes;
+      #isExcluded = () => false;
+      constructor(pattern, options) {
+        if (options === undefined) options = {};
+        if (options === null || typeof options !== "object" || Array.isArray(options)) throw argType("options", "of type object", options);
+        const { exclude, cwd, withFileTypes } = options;
+        this.#root = (cwd && typeof cwd === "object" && typeof cwd.href === "string" && typeof cwd.protocol === "string")
+          ? builtins.url.fileURLToPath(cwd) : (cwd ?? ".");
+        this.#withFileTypes = !!withFileTypes;
+        if (exclude != null) {
+          if (Array.isArray(exclude)) {
+            for (let i = 0; i < exclude.length; i++) if (typeof exclude[i] !== "string") throw argType("options.exclude[" + i + "]", "of type string", exclude[i]);
+            const matchers = exclude.map((p) => resolve(this.#root, p)).map((p) => createMatcher(p));
+            this.#isExcluded = (value) => matchers.some((matcher) => matcher.match(value));
+            this.#results.setup(this.#root, this.#isExcluded);
+          } else if (typeof exclude !== "function") {
+            throw argType("options.exclude", "of type function or string[]", exclude);
+          } else {
+            this.#exclude = exclude;
+          }
+        }
+        let patterns;
+        if (typeof pattern === "object") {
+          validateStringArray(pattern, "patterns");
+          patterns = pattern;
+        } else {
+          if (typeof pattern !== "string") throw argType("patterns", "of type string", pattern);
+          patterns = [pattern];
+        }
+        this.matchers = patterns.map((p) => createMatcher(p));
+        this.#patterns = this.matchers.flatMap((matcher) => matcher.set.map((p, i) =>
+          new Pattern(p, matcher.globParts[i], new Set().add(0), new Set())));
+      }
+
+      globSync() {
+        this.#queue.push({ __proto__: null, path: ".", patterns: this.#patterns });
+        while (this.#queue.length > 0) {
+          const item = this.#queue.pop();
+          for (let i = 0; i < item.patterns.length; i++) this.#addSubpatterns(item.path, item.patterns[i]);
+          this.#subpatterns.forEach((patterns, path) => this.#queue.push({ __proto__: null, path, patterns }));
+          this.#subpatterns.clear();
+        }
+        return Array.from(this.#results,
+          this.#withFileTypes ? (path) => this.#cache.statSync(isAbsolute(path) ? path : join(this.#root, path)) : undefined);
+      }
+      #addSubpattern(path, pattern) {
+        if (this.#isExcluded(path)) return;
+        const fullpath = resolve(this.#root, path);
+        // If path is a directory, add trailing slash and test patterns again.
+        if (this.#isExcluded(fullpath + "/") && this.#cache.statSync(fullpath).isDirectory()) return;
+        if (this.#exclude) {
+          if (this.#withFileTypes) {
+            const stat = this.#cache.statSync(path);
+            if (stat !== null && this.#exclude(stat)) return;
+          } else if (this.#exclude(path)) {
+            return;
+          }
+        }
+        if (!this.#subpatterns.has(path)) this.#subpatterns.set(path, [pattern]);
+        else this.#subpatterns.get(path).push(pattern);
+      }
+      #addSubpatterns(path, pattern) {
+        const seen = this.#cache.add(path, pattern);
+        if (seen) return;
+        const fullpath = resolve(this.#root, path);
+        const stat = this.#cache.statSync(fullpath);
+        const last = pattern.last;
+        const isDirectory = stat?.isDirectory() || (stat?.isSymbolicLink() && pattern.hasSeenSymlinks);
+        const isLast = pattern.isLast(isDirectory);
+        const isFirst = pattern.isFirst();
+
+        if (this.#isExcluded(fullpath)) return;
+        if (isFirst && pattern.at(0) === "") {
+          // Absolute path, go to root
+          this.#addSubpattern("/", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === "..") {
+          // Start with .., go to parent
+          this.#addSubpattern("../", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === ".") {
+          // Start with ., proceed
+          this.#addSubpattern(".", pattern.child(new Set().add(1)));
+          return;
+        }
+
+        if (isLast && typeof pattern.at(-1) === "string") {
+          // Add result if it exists
+          const p = pattern.at(-1);
+          const stat = this.#cache.statSync(join(fullpath, p));
+          if (stat && (p || isDirectory)) this.#results.add(join(path, p));
+          if (pattern.indexes.size === 1 && pattern.indexes.has(last)) return;
+        } else if (isLast && pattern.at(-1) === mm().GLOBSTAR &&
+          (path !== "." || pattern.at(0) === "." || (last === 0 && stat))) {
+          // If pattern ends with **, add to results
+          // if path is ".", add it only if pattern starts with "." or pattern is exactly "**"
+          this.#results.add(path);
+        }
+
+        if (!isDirectory) return;
+
+        let children;
+        const firstPattern = pattern.indexes.size === 1 && pattern.at(pattern.indexes.values().next().value);
+        if (typeof firstPattern === "string") {
+          const stat = this.#cache.statSync(join(fullpath, firstPattern));
+          if (stat) {
+            stat.name = firstPattern;
+            children = [stat];
+          } else {
+            return;
+          }
+        } else {
+          children = this.#cache.readdirSync(fullpath);
+        }
+
+        for (let i = 0; i < children.length; i++) {
+          const entry = children[i];
+          const entryPath = join(path, entry.name);
+          this.#cache.addToStatCache(join(fullpath, entry.name), entry);
+
+          const subPatterns = new Set();
+          const nSymlinks = new Set();
+          for (const index of pattern.indexes) {
+            // For each child, check potential patterns
+            if (this.#cache.seen(entryPath, pattern, index) || this.#cache.seen(entryPath, pattern, index + 1)) return;
+            const current = pattern.at(index);
+            const nextIndex = index + 1;
+            const next = pattern.at(nextIndex);
+            const fromSymlink = pattern.symlinks.has(index);
+
+            if (current === mm().GLOBSTAR) {
+              const isDot = entry.name[0] === ".";
+              const nextMatches = pattern.test(nextIndex, entry.name);
+              let nextNonGlobIndex = nextIndex;
+              while (pattern.at(nextNonGlobIndex) === mm().GLOBSTAR) nextNonGlobIndex++;
+              const matchesDot = isDot && pattern.test(nextNonGlobIndex, entry.name);
+              if ((isDot && !matchesDot) || (this.#exclude && this.#exclude(this.#withFileTypes ? entry : entry.name))) continue;
+              if (!fromSymlink && entry.isDirectory()) {
+                // If directory, add ** to its potential patterns
+                subPatterns.add(index);
+              } else if (!fromSymlink && index === last) {
+                // If ** is last, add to results
+                this.#results.add(entryPath);
+              }
+
+              // Any pattern after ** is also a potential pattern
+              // so we can already test it here
+              if (nextMatches && nextIndex === last && !isLast) {
+                // If next pattern is the last one, add to results
+                this.#results.add(entryPath);
+              } else if (nextMatches && entry.isDirectory()) {
+                // Pattern matched, meaning two patterns forward
+                // are also potential patterns
+                // e.g **/b/c when entry is a/b - add c to potential patterns
+                subPatterns.add(index + 2);
+              }
+              if ((nextMatches || pattern.at(0) === ".") &&
+                (entry.isDirectory() || entry.isSymbolicLink()) && !fromSymlink) {
+                // If pattern after ** matches, or pattern starts with "."
+                // and entry is a directory or symlink, add to potential patterns
+                subPatterns.add(nextIndex);
+              }
+
+              if (entry.isSymbolicLink()) nSymlinks.add(index);
+
+              if (next === ".." && entry.isDirectory()) {
+                // In case pattern is "**/..",
+                // both parent and current directory should be added to the queue
+                // if this is the last pattern, add to results instead
+                const parent = join(path, "..");
+                if (nextIndex < last) {
+                  if (!this.#subpatterns.has(path) && !this.#cache.seen(path, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(path, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                  if (!this.#subpatterns.has(parent) && !this.#cache.seen(parent, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(parent, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                } else {
+                  if (!this.#cache.seen(path, pattern, nextIndex)) {
+                    this.#cache.add(path, pattern.child(new Set().add(nextIndex)));
+                    this.#results.add(path);
+                  }
+                  if (!this.#cache.seen(path, pattern, nextIndex) || !this.#cache.seen(parent, pattern, nextIndex)) {
+                    this.#cache.add(parent, pattern.child(new Set().add(nextIndex)));
+                    this.#results.add(parent);
+                  }
+                }
+              }
+            }
+            if (typeof current === "string") {
+              if (pattern.test(index, entry.name) && index !== last) {
+                // If current pattern matches entry name
+                // the next pattern is a potential pattern
+                subPatterns.add(nextIndex);
+              } else if (current === "." && pattern.test(nextIndex, entry.name)) {
+                // If current pattern is ".", proceed to test next pattern
+                if (nextIndex === last) this.#results.add(entryPath);
+                else subPatterns.add(nextIndex + 1);
+              }
+            }
+            if (typeof current === "object" && pattern.test(index, entry.name)) {
+              // If current pattern is a regex that matches entry name (e.g *.js)
+              // add next pattern to potential patterns, or to results if it's the last pattern
+              if (index === last) this.#results.add(entryPath);
+              else if (entry.isDirectory()) subPatterns.add(nextIndex);
+            }
+          }
+          if (subPatterns.size > 0) {
+            // If there are potential patterns, add to queue
+            this.#addSubpattern(entryPath, pattern.child(subPatterns, nSymlinks));
+          }
+        }
+      }
+
+      async* glob() {
+        this.#queue.push({ __proto__: null, path: ".", patterns: this.#patterns });
+        while (this.#queue.length > 0) {
+          const item = this.#queue.pop();
+          for (let i = 0; i < item.patterns.length; i++) yield* this.#iterateSubpatterns(item.path, item.patterns[i]);
+          this.#subpatterns.forEach((patterns, path) => this.#queue.push({ __proto__: null, path, patterns }));
+          this.#subpatterns.clear();
+        }
+      }
+      async* #iterateSubpatterns(path, pattern) {
+        const seen = this.#cache.add(path, pattern);
+        if (seen) return;
+        const fullpath = resolve(this.#root, path);
+        const stat = await this.#cache.stat(fullpath);
+        const last = pattern.last;
+        const isDirectory = stat?.isDirectory() || (stat?.isSymbolicLink() && pattern.hasSeenSymlinks);
+        const isLast = pattern.isLast(isDirectory);
+        const isFirst = pattern.isFirst();
+
+        if (this.#isExcluded(fullpath)) return;
+        if (isFirst && pattern.at(0) === "") {
+          // Absolute path, go to root
+          this.#addSubpattern("/", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === "..") {
+          // Start with .., go to parent
+          this.#addSubpattern("../", pattern.child(new Set().add(1)));
+          return;
+        }
+        if (isFirst && pattern.at(0) === ".") {
+          // Start with ., proceed
+          this.#addSubpattern(".", pattern.child(new Set().add(1)));
+          return;
+        }
+
+        if (isLast && typeof pattern.at(-1) === "string") {
+          // Add result if it exists
+          const p = pattern.at(-1);
+          const stat = await this.#cache.stat(join(fullpath, p));
+          if (stat && (p || isDirectory)) {
+            const result = join(path, p);
+            if (!this.#results.has(result) && this.#results.add(result)) yield this.#withFileTypes ? stat : result;
+          }
+          if (pattern.indexes.size === 1 && pattern.indexes.has(last)) return;
+        } else if (isLast && pattern.at(-1) === mm().GLOBSTAR &&
+          (path !== "." || pattern.at(0) === "." || (last === 0 && stat))) {
+          // If pattern ends with **, add to results
+          // if path is ".", add it only if pattern starts with "." or pattern is exactly "**"
+          if (!this.#results.has(path) && this.#results.add(path)) yield this.#withFileTypes ? stat : path;
+        }
+
+        if (!isDirectory) return;
+
+        let children;
+        const firstPattern = pattern.indexes.size === 1 && pattern.at(pattern.indexes.values().next().value);
+        if (typeof firstPattern === "string") {
+          const stat = await this.#cache.stat(join(fullpath, firstPattern));
+          if (stat) {
+            stat.name = firstPattern;
+            children = [stat];
+          } else {
+            return;
+          }
+        } else {
+          children = await this.#cache.readdir(fullpath);
+        }
+
+        for (let i = 0; i < children.length; i++) {
+          const entry = children[i];
+          const entryPath = join(path, entry.name);
+          this.#cache.addToStatCache(join(fullpath, entry.name), entry);
+
+          const subPatterns = new Set();
+          const nSymlinks = new Set();
+          for (const index of pattern.indexes) {
+            // For each child, check potential patterns
+            if (this.#cache.seen(entryPath, pattern, index) || this.#cache.seen(entryPath, pattern, index + 1)) return;
+            const current = pattern.at(index);
+            const nextIndex = index + 1;
+            const next = pattern.at(nextIndex);
+            const fromSymlink = pattern.symlinks.has(index);
+
+            if (current === mm().GLOBSTAR) {
+              const isDot = entry.name[0] === ".";
+              const nextMatches = pattern.test(nextIndex, entry.name);
+              let nextNonGlobIndex = nextIndex;
+              while (pattern.at(nextNonGlobIndex) === mm().GLOBSTAR) nextNonGlobIndex++;
+              const matchesDot = isDot && pattern.test(nextNonGlobIndex, entry.name);
+              if ((isDot && !matchesDot) || (this.#exclude && this.#exclude(this.#withFileTypes ? entry : entry.name))) continue;
+              if (!fromSymlink && entry.isDirectory()) {
+                // If directory, add ** to its potential patterns
+                subPatterns.add(index);
+              } else if (!fromSymlink && index === last) {
+                // If ** is last, add to results
+                if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+              }
+
+              // Any pattern after ** is also a potential pattern
+              // so we can already test it here
+              if (nextMatches && nextIndex === last && !isLast) {
+                // If next pattern is the last one, add to results
+                if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+              } else if (nextMatches && entry.isDirectory()) {
+                // Pattern matched, meaning two patterns forward
+                // are also potential patterns
+                // e.g **/b/c when entry is a/b - add c to potential patterns
+                subPatterns.add(index + 2);
+              }
+              if ((nextMatches || pattern.at(0) === ".") &&
+                (entry.isDirectory() || entry.isSymbolicLink()) && !fromSymlink) {
+                // If pattern after ** matches, or pattern starts with "."
+                // and entry is a directory or symlink, add to potential patterns
+                subPatterns.add(nextIndex);
+              }
+
+              if (entry.isSymbolicLink()) nSymlinks.add(index);
+
+              if (next === ".." && entry.isDirectory()) {
+                // In case pattern is "**/..",
+                // both parent and current directory should be added to the queue
+                // if this is the last pattern, add to results instead
+                const parent = join(path, "..");
+                if (nextIndex < last) {
+                  if (!this.#subpatterns.has(path) && !this.#cache.seen(path, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(path, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                  if (!this.#subpatterns.has(parent) && !this.#cache.seen(parent, pattern, nextIndex + 1)) {
+                    this.#subpatterns.set(parent, [pattern.child(new Set().add(nextIndex + 1))]);
+                  }
+                } else {
+                  if (!this.#cache.seen(path, pattern, nextIndex)) {
+                    this.#cache.add(path, pattern.child(new Set().add(nextIndex)));
+                    if (!this.#results.has(path) && this.#results.add(path)) {
+                      yield this.#withFileTypes ? this.#cache.statSync(fullpath) : path;
+                    }
+                  }
+                  if (!this.#cache.seen(path, pattern, nextIndex) || !this.#cache.seen(parent, pattern, nextIndex)) {
+                    this.#cache.add(parent, pattern.child(new Set().add(nextIndex)));
+                    if (!this.#results.has(parent) && this.#results.add(parent)) {
+                      yield this.#withFileTypes ? this.#cache.statSync(join(this.#root, parent)) : parent;
+                    }
+                  }
+                }
+              }
+            }
+            if (typeof current === "string") {
+              if (pattern.test(index, entry.name) && index !== last) {
+                // If current pattern matches entry name
+                // the next pattern is a potential pattern
+                subPatterns.add(nextIndex);
+              } else if (current === "." && pattern.test(nextIndex, entry.name)) {
+                // If current pattern is ".", proceed to test next pattern
+                if (nextIndex === last) {
+                  if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+                } else {
+                  subPatterns.add(nextIndex + 1);
+                }
+              }
+            }
+            if (typeof current === "object" && pattern.test(index, entry.name)) {
+              // If current pattern is a regex that matches entry name (e.g *.js)
+              // add next pattern to potential patterns, or to results if it's the last pattern
+              if (index === last) {
+                if (!this.#results.has(entryPath) && this.#results.add(entryPath)) yield this.#withFileTypes ? entry : entryPath;
+              } else if (entry.isDirectory()) {
+                subPatterns.add(nextIndex);
+              }
+            }
+          }
+          if (subPatterns.size > 0) {
+            // If there are potential patterns, add to queue
+            this.#addSubpattern(entryPath, pattern.child(subPatterns, nSymlinks));
+          }
+        }
+      }
+    }
+    return Glob;
+  })();
+  function glob(pattern, options, callback) {
+    if (typeof options === "function") {
+      callback = options;
+      options = undefined;
+    }
+    if (typeof callback !== "function") throw _argTypeError("cb", "of type function", callback);
+    (async () => {
+      try {
+        const res = [];
+        for await (const entry of new _Glob(pattern, options).glob()) res.push(entry);
+        callback(null, res);
+      } catch (err) {
+        callback(err);
+      }
+    })();
+  }
+  function globSync(pattern, options) {
+    return new _Glob(pattern, options).globSync();
+  }
+
   // ── promises namespace (W3: full surface, VFS-backed) ──
   // We can't forward to workerd's node:fs/promises because that operates
   // on a real-host filesystem, not our VFS. So every method is shim'd
@@ -5266,32 +5930,8 @@ const __fsMod = (() => {
         }
       }
     },
-    glob: async function* (pattern, opts) {
-      // Minimal — yield matching files via prefix scan. Not full glob.
-      // Sufficient for "**/*.js" style patterns; documented limitation.
-      const root = (opts && opts.cwd) ? _strip(_resolve(opts.cwd)) : _strip(_resolve('.'));
-      const re = (() => {
-        // Convert simple glob to regex: ** -> .*, * -> [^/]*, ? -> .
-        let r = '^' + (root ? root + '/' : '');
-        let g = pattern.replace(/\\\\/g, '/');
-        for (let i = 0; i < g.length; i++) {
-          const c = g[i];
-          if (c === '*') {
-            if (g[i+1] === '*') { r += '.*'; i++; if (g[i+1] === '/') i++; }
-            else r += '[^/]*';
-          } else if (c === '?') r += '.';
-          else if (/[.+^$(){}|[\\]\\\\]/.test(c)) r += '\\\\' + c;
-          else r += c;
-        }
-        r += '$';
-        return new RegExp(r);
-      })();
-      const seen = new Set();
-      // The pattern is anchored at the root, so nothing outside that subtree
-      // can match and nothing outside it needs visiting.
-      if (__vfsBundle) for (const bk of __residentUnder(root ? root + "/" : "")) if (re.test(bk)) seen.add(bk);
-      if (__vfsWrites) for (const wk in __vfsWrites) if (re.test(wk)) seen.add(wk);
-      for (const m of [...seen].sort()) yield '/' + m;
+    glob: async function* (pattern, options) {
+      yield* new _Glob(pattern, options).glob();
     },
   };
 
@@ -5409,6 +6049,7 @@ const __fsMod = (() => {
     open, close, read, write, fstat, ftruncate, fsync, fdatasync, fchmod, futimes, readv, writev,
     readFile, writeFile, appendFile, stat, lstat, readdir, exists, mkdir, unlink, rmdir, rename, utimes, lutimes, chmod, lchmod, chown, lchown, fchown, access,
     rm, cp, truncate, copyFile, mkdtemp, link, symlink, readlink, realpath, opendir, statfs,
+    glob, globSync,
     Dirent: __Dirent,
     Dir: __Dir,
     promises, constants,
@@ -7933,7 +8574,18 @@ const __childProcessMod = (() => {
     // so a corresponding fork-aware runtime in the child knows to listen
     // on stdin for IPC frames.
     const childEnv = { ...(__processMod.env || {}), ...(opts.env || {}), NIMBUS_FORK_IPC: "1" };
-    const child = _spawn("node", [modulePath, ...args], { ...opts, env: childEnv });
+    // Node's fork (lib/child_process.js): the child takes options.execArgv,
+    // else the parent's process.execArgv, but its -e and the code after it
+    // (an eval's own, which would fork the eval again).
+    let execArgv = opts.execArgv || __processMod.execArgv;
+    if (execArgv === __processMod.execArgv && __processMod._eval != null) {
+      const index = execArgv.lastIndexOf(__processMod._eval);
+      if (index > 0) {
+        execArgv = execArgv.slice();
+        execArgv.splice(index - 1, 2);
+      }
+    }
+    const child = _spawn("node", [...execArgv, modulePath, ...args], { ...opts, env: childEnv });
     child.connected = true;
     child.send = function(msg) {
       if (!child.connected) return false;
@@ -8776,6 +9428,14 @@ function __nimbusSignalSelf(signal) {
 
 const __processEvents = new __eventsMod();
 let __processUmask = Number(cred.umask) & 0o777;
+// Node's command line, as core runtime/node-cli.ts read it: the options
+// before the program are process.execArgv (argv is the program's own), the
+// program's own conditions are its resolvers', and -e's code is
+// process._eval. A host that passes none runs without them.
+const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefined : nodeCommandLine;
+const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
+const __nimbusConditions = Array.isArray(__nimbusNodeCommandLine?.conditions) ? __nimbusNodeCommandLine.conditions.map(String) : [];
+const __nimbusEval = typeof __nimbusNodeCommandLine?.eval === "string" ? __nimbusNodeCommandLine.eval : undefined;
 const __processMod = {
   argv: ["node", ...(argv || [])],
   env: env || {},
@@ -8805,7 +9465,9 @@ const __processMod = {
     return Object.prototype.hasOwnProperty.call(builtins, key) ? builtins[key] : undefined;
   },
   execPath: "/usr/local/bin/node",
-  execArgv: [],
+  execArgv: __nimbusExecArgv,
+  // -e's code, as Node keeps it (fork leaves the -e out of a child's execArgv by it).
+  ...(__nimbusEval !== undefined ? { _eval: __nimbusEval } : {}),
   // The pid belongs to the supervisor, not to the host isolate. A constant 1
   // made every new Vinext process claim its predecessor's stale lock.
   get pid() { return typeof __nimbusProcessId === "number" ? __nimbusProcessId : Number(env?.NIMBUS_CP_CHILD_PID || 1); },
@@ -9700,6 +10362,87 @@ builtins.v8 = {
   deserialize: (b) => JSON.parse(__BufferMod.from(b).toString()),
   writeHeapSnapshot: () => "",
 };
+// node:worker_threads BroadcastChannel, which workerd lacks. A process has one
+// thread, so a message reaches the other open channels of its name in this
+// process, as in Node: never the poster, after the poster's microtasks, each
+// as a MessageEvent of its own structured clone. An open channel keeps the
+// process alive until it is closed or unref'd, as its handle does in Node.
+const __BroadcastChannel = (() => {
+  const open = new Map();
+  const state = new WeakMap();
+  const missing = (name) => {
+    const error = new TypeError('The "' + name + '" argument must be specified');
+    error.code = "ERR_MISSING_ARGS";
+    return error;
+  };
+  const own = (channel) => {
+    const s = state.get(channel);
+    if (s === undefined) {
+      const error = new TypeError('Value of "this" must be of type BroadcastChannel');
+      error.code = "ERR_INVALID_THIS";
+      throw error;
+    }
+    return s;
+  };
+  const deliver = (channel, data) => {
+    if (state.get(channel).open) channel.dispatchEvent(new MessageEvent("message", { data: structuredClone(data) }));
+  };
+  class BroadcastChannel extends EventTarget {
+    constructor(name) {
+      if (arguments.length === 0) throw missing("name");
+      super();
+      const s = { name: String(name), open: true, hold: null, handlers: { message: null, messageerror: null } };
+      state.set(this, s);
+      for (const type of ["message", "messageerror"]) {
+        this.addEventListener(type, (event) => {
+          if (typeof s.handlers[type] === "function") s.handlers[type].call(this, event);
+        });
+      }
+      if (!open.has(s.name)) open.set(s.name, new Set());
+      open.get(s.name).add(this);
+      s.hold = __nimbusHoldSocket();
+    }
+    get name() { return own(this).name; }
+    get onmessage() { return own(this).handlers.message; }
+    set onmessage(handler) { own(this).handlers.message = typeof handler === "function" ? handler : null; }
+    get onmessageerror() { return own(this).handlers.messageerror; }
+    set onmessageerror(handler) { own(this).handlers.messageerror = typeof handler === "function" ? handler : null; }
+    postMessage(message) {
+      const s = own(this);
+      if (arguments.length === 0) throw missing("message");
+      if (!s.open) throw new DOMException("BroadcastChannel is closed.", "InvalidStateError");
+      const data = structuredClone(message);
+      const schedule = globalThis.__nimbusRawSetTimeout || globalThis.setTimeout;
+      for (const peer of open.get(s.name) || []) {
+        if (peer !== this) schedule(() => deliver(peer, data), 0);
+      }
+    }
+    close() {
+      const s = own(this);
+      if (!s.open) return;
+      s.open = false;
+      s.hold(false);
+      const peers = open.get(s.name);
+      peers.delete(this);
+      if (peers.size === 0) open.delete(s.name);
+    }
+    ref() {
+      const s = own(this);
+      if (s.open) s.hold(true);
+      return this;
+    }
+    unref() {
+      const s = own(this);
+      if (s.open) s.hold(false);
+      return this;
+    }
+  }
+  return BroadcastChannel;
+})();
+// The global is worker_threads' own, as in Node, and this process's: a facet
+// that runs process after process keeps its globals, and a constructor left
+// by an earlier one would join channels this process can never reach.
+Object.defineProperty(globalThis, "BroadcastChannel", { value: __BroadcastChannel, writable: true, configurable: true, enumerable: false });
 const __workerThreadsUntransferable = new WeakSet();
 const __workerThreadsUncloneable = new WeakSet();
 builtins.worker_threads = {
@@ -9715,7 +10458,7 @@ builtins.worker_threads = {
   },
   MessageChannel: globalThis.MessageChannel,
   MessagePort: globalThis.MessagePort,
-  BroadcastChannel: globalThis.BroadcastChannel,
+  BroadcastChannel: __BroadcastChannel,
   receiveMessageOnPort: () => undefined,
   markAsUntransferable(value) {
     if (value && (typeof value === "object" || typeof value === "function")) {
@@ -10027,8 +10770,10 @@ function __resolveFile(base) {
 // so the fetch patch above can call it).
 ${NODE_SHIM_RESOLUTION_PREAMBLE}
 
-/** Conditions for runtime CJS resolution (user-shell node). */
-const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default"];
+/** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */
+const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default", ...__nimbusConditions];
+/** The fallback for a map whose entry is only under import: import's conditions, and the program's own. */
+const __NIMBUS_IMPORT_FALLBACK_CONDITIONS = [...DEFAULT_ESM_CONDITIONS, ...__nimbusConditions];
 
 /**
  * Read and parse a package.json from VFS. Returns null on miss/parse-fail.
@@ -10066,7 +10811,7 @@ function __resolvePkgSubpath(pkgDir, pkg, subpath) {
   // back when the package actually declares an exports map (so we
   // don't shadow legit "package not installed" misses).
   if (entry == null && pkg.exports != null) {
-    entry = resolvePackageEntry(pkg, subpath, DEFAULT_ESM_CONDITIONS);
+    entry = resolvePackageEntry(pkg, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
   }
   if (entry != null) {
     // Strip leading ./ from the resolver result
@@ -10222,7 +10967,7 @@ function __resolvePackageSelf(name, fromDir) {
   const subpath = packageSelfReferenceSubpath(scope.pkg, name);
   if (subpath === null) return null;
   let entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_CJS_CONDITIONS);
-  if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, DEFAULT_ESM_CONDITIONS);
+  if (entry == null) entry = resolveExports(scope.pkg.exports, subpath, __NIMBUS_IMPORT_FALLBACK_CONDITIONS);
   if (entry == null) return { resolved: null };
   return { resolved: __resolveFile((scope.dir ? scope.dir + "/" : "") + entry.replace(/^\\.\\/+/, "")) };
 }
@@ -10485,7 +11230,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\\/+/, "") : null;
     } catch { return null; }
   },
-});
+}, { conditions: __nimbusConditions });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {
@@ -10579,8 +11324,178 @@ function __esmLoad(resolution) {
   __esmNamespaces.set(resolution.url, ns);
   return ns;
 }
+// import() may reach installed files the launch did not stage. A launch's
+// store holds its closure and its data plan; anything else on disk is named
+// by the namespace but not held, and the synchronous load that import()
+// ends in (__esmLoad, __loadModule, resolution's package.json reads) cannot
+// fetch it. import() is asynchronous, so it reads ahead first, as the load
+// will read: the files its resolution reads, then the target and every
+// module it requests, breadth first, each read that misses faulted in and
+// made again. Vite's runtime-bundled config (node_modules/.vite-temp, a
+// fresh name each run) and its SSR runner's externalised imports reach
+// installed packages this way. Bounded: past the bound the import() fails,
+// naming it, rather than load on a closure it only half fetched.
+const __IMPORT_STAGE_FILES = 4096;
+const __IMPORT_STAGE_BYTES = 64 * 1024 * 1024;
+// Rounds of fault-in one step may take; each round is a level of a path's
+// links or listings the namespace did not hold.
+const __IMPORT_HYDRATE_ROUNDS = 32;
+
+// What one import() may fetch ahead: one quota of files and raw bytes, which
+// the fs charges at the repair and read boundary, before any data I/O
+// (_faultIn admits the file, _observeThenFill its size from the stat): a
+// module's text and a manifest or link a resolution read alike. Once a charge
+// does not fit, nothing more is issued under it, and the import() fails with
+// the bound once the fills already admitted have landed. \`limits\` is for
+// tests: the bound itself is fixed.
+function __nimbusPrefetchQuota(specifier, limits) {
+  const maxFiles = (limits && limits.files) || __IMPORT_STAGE_FILES;
+  const maxBytes = (limits && limits.bytes) || __IMPORT_STAGE_BYTES;
+  let files = 0;
+  let bytes = 0;
+  let error = null;
+  const exceed = (what) => {
+    error = new Error("import() of '" + specifier + "' would fetch more than " + what
+      + " ahead (the bound on one import()'s prefetch); it is not loaded on a closure fetched in part");
+    error.code = "ERR_NIMBUS_PREFETCH_BOUND";
+    return false;
+  };
+  return {
+    get error() { return error; },
+    // One more file fetched: whether it may be.
+    file() {
+      if (error) return false;
+      if (files + 1 > maxFiles) return exceed(maxFiles + " files");
+      files++;
+      return true;
+    },
+    // Its size, before its bytes are read: whether they may be.
+    bytes(size) {
+      if (error) return false;
+      if (bytes + size > maxBytes) return exceed(maxBytes + " bytes");
+      bytes += size;
+      return true;
+    },
+  };
+}
+
+// Run a synchronous step (resolutions, reads) until it stops missing. Its
+// reads of files that exist but are not held are faulted in: under a
+// speculation (the fs's __nimbusVfsSpeculation), so they are the prefetch's
+// own and never the program's ledger, and charged to the quota as they are
+// issued. The step waits for every fill it issued or joined, whatever comes
+// next, so none outlives it, and then runs again. A miss with no fetch
+// behind it (the fs gave the file up: its fetches did not land, after
+// every attempt) fails the import(), named: the step's answer would rest
+// on a read that did not happen (a resolver falling back past an unread
+// manifest).
+async function __nimbusHydrated(step, quota) {
+  for (let round = 1; ; round++) {
+    const speculation = { misses: new Set(), repairs: [], issued: new Set(), quota };
+    const outer = globalThis.__nimbusVfsSpeculation;
+    globalThis.__nimbusVfsSpeculation = speculation;
+    let value;
+    let error;
+    let threw = false;
+    try { value = step(); } catch (e) { error = e; threw = true; } finally { globalThis.__nimbusVfsSpeculation = outer; }
+    await Promise.allSettled(speculation.repairs);
+    if (quota.error) throw quota.error;
+    if (speculation.misses.size === 0) {
+      if (threw) throw error;
+      return value;
+    }
+    const given = [...speculation.misses].filter((k) => !speculation.issued.has(k));
+    if (given.length > 0) {
+      const unread = new Error("import() prefetch: could not fetch " + given.slice(0, 3).map((k) => "/" + k).join(", ")
+        + (given.length > 3 ? " and " + (given.length - 3) + " more" : "") + "; its fetches did not land");
+      unread.code = "ERR_NIMBUS_PREFETCH_UNREADABLE";
+      throw unread;
+    }
+    if (round >= __IMPORT_HYDRATE_ROUNDS) {
+      const bound = new Error("import() prefetch: a resolution still misses after " + __IMPORT_HYDRATE_ROUNDS + " rounds of fetching ("
+        + [...speculation.misses].slice(0, 3).join(", ") + ")");
+      bound.code = "ERR_NIMBUS_PREFETCH_BOUND";
+      throw bound;
+    }
+  }
+}
+
+// What a module's text requests (import and export-from sources, import()
+// and require() of a string), as the runtime-code interpreter's parser reads
+// it (core/interpreter moduleRequests): a request in a comment is none, one
+// in a template or with escapes is read as the language reads it.
+function __nimbusModuleRequests(path, text) {
+  if (typeof __nimbusRegistryRequire !== "function") return [];
+  try { return __nimbusRegistryRequire("./${RUNTIME_INTERPRETER_MODULE}").moduleRequests(path, text); }
+  catch { return []; }
+}
+
+// Where a request from the module at importer leads, by the loader's own
+// rule, the one place it is decided: import() resolves under import's
+// conditions (__nimbusDynamicImport); a static import or export-from is
+// evaluated through the module's scoped require (core/interpreter
+// modules.ts, and esbuild's lowering of a cell), so it resolves as require
+// does, under require's conditions (__requireFrom), as require() itself.
+function __nimbusRequestTarget(kind, specifier, importer) {
+  if (kind === "dynamic") {
+    const resolution = __esmResolver.resolveSync(specifier, builtins.url.pathToFileURL("/" + importer).href);
+    return resolution && resolution.path ? resolution.path : null;
+  }
+  if (Object.prototype.hasOwnProperty.call(builtins, specifier) || (specifier.startsWith("node:") && Object.prototype.hasOwnProperty.call(builtins, specifier.slice(5)))) return null;
+  if (__stagedBinding(specifier)) return null;
+  return __resolveFrom(specifier, importer.includes("/") ? importer.slice(0, importer.lastIndexOf("/")) : "");
+}
+
+function __nimbusImportStager(quota) {
+  // The fill a synchronous read's miss starts (the fs's residency fault-in),
+  // which only a process with a supervisor has.
+  const supervisor = typeof __supervisor !== "undefined" ? __supervisor : null;
+  if (!supervisor) return null;
+  const strip = (path) => String(path).replace(/^\\/+/, "");
+  const target = (request, importer) => {
+    try {
+      const found = __nimbusRequestTarget(request.kind, request.specifier, importer);
+      return found ? strip(found) : null;
+    } catch { return null; }
+  };
+  return {
+    // The target and what it requests, and theirs, each read as the load
+    // will read it, through the fs: its lookup follows links component by
+    // component, and a miss is faulted in (ranged, any size) and read again.
+    async closure(root) {
+      const visited = new Set();
+      let frontier = [strip(root)];
+      while (frontier.length > 0) {
+        const round = frontier.filter((k) => !visited.has(k) && !(typeof __nimbusCodeCells !== "undefined" && __nimbusCodeCells.has(k)));
+        for (const k of round) visited.add(k);
+        const texts = await __nimbusHydrated(() => round.map((k) => __readFileOr(k, null)), quota);
+        const wanted = [];
+        for (let i = 0; i < round.length; i++) {
+          const text = texts[i];
+          if (typeof text !== "string") continue;
+          if (!/\\.[cm]?js$/.test(round[i])) continue;
+          // An import() in the closure is its own: it prefetches when it runs.
+          for (const request of __nimbusModuleRequests(round[i], text)) if (request.kind !== "dynamic") wanted.push([request, round[i]]);
+        }
+        const found = await __nimbusHydrated(() => wanted.map(([request, k]) => target(request, k)), quota);
+        const next = new Set();
+        for (const path of found) if (path !== null && !visited.has(path)) next.add(path);
+        frontier = [...next];
+      }
+    },
+  };
+}
+async function __nimbusStageImport(specifier, parentUrl) {
+  const quota = __nimbusPrefetchQuota(specifier);
+  const stager = __nimbusImportStager(quota);
+  if (stager === null) return __esmResolver.resolveSync(specifier, parentUrl);
+  const resolution = await __nimbusHydrated(() => __esmResolver.resolveSync(specifier, parentUrl), quota);
+  // A module this process has loaded already brought what it requests.
+  if (resolution.path && !__esmNamespaces.has(resolution.url)) await stager.closure(resolution.path);
+  return resolution;
+}
 globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, specifier, options) {
-  return Promise.resolve().then(() => {
+  return Promise.resolve().then(async () => {
     const text = String(specifier);
     const attributes = {};
     // V8's own checks and messages (node 22), which run before resolution.
@@ -10595,11 +11510,36 @@ globalThis.__nimbusDynamicImport = function __nimbusDynamicImport(parentUrl, spe
         }
       }
     }
-    const resolution = __esmResolver.resolveSync(text, parentUrl);
+    // Counted as the program's own work: a floating import(...).then(...) keeps
+    // the process while it fetches, as Node's loader keeps it while it reads.
+    const resolution = await __nimbusTrackOp(__nimbusStageImport(text, parentUrl));
     __esmResolver.validateAttributes(resolution.url, resolution.format, attributes);
     return __esmLoad(resolution);
   });
 };
+
+// The command line's preloads, before the program, as Node runs them
+// (pre_execution.js loadPreloadModules, then run_main.js
+// runEntryPointWithESMLoader): \`-r\` modules required from the working
+// directory in order, then \`--import\` ones imported from it, each awaited.
+async function __nimbusPreload() {
+  const fromDir = String(cwd || "/home/user").replace(/^\\/+/, "");
+  for (const specifier of __nimbusNodeCommandLine?.require ?? []) __requireFrom(String(specifier), fromDir);
+  const imports = __nimbusNodeCommandLine?.import ?? [];
+  if (imports.length === 0) return;
+  const parentUrl = builtins.url.pathToFileURL("/" + fromDir + "/").href;
+  for (const specifier of imports) await globalThis.__nimbusDynamicImport(parentUrl, String(specifier));
+}
+
+// \`node -p\`: its code returns the eval's completion value (core
+// runtime/node-eval.ts), printed when the process exits by the console.log the
+// code left in place (Node's runScriptInContext). Otherwise the entry's own result.
+function __nimbusEntryOutcome(result) {
+  if (__nimbusNodeCommandLine?.print !== true) return result;
+  const log = __consoleMod.log;
+  __processMod.on("exit", () => { log(result); });
+  return undefined;
+}
 
 // Node's import.meta.resolve, synchronous as in Node: the URL a specifier
 // names, even for a file or directory that will not load.
@@ -10710,7 +11650,8 @@ __require.resolve = (id) => {
   return "/" + r;
 };
 __require.cache = __moduleCache;
-__require.main = null;
+// Node's process.mainModule: none until the entry runs, so a \`-r\` module's is undefined.
+__require.main = undefined;
 
 // ═══════════════════════════════════════════════════════════════════════
 // ── END OF GENERATED SHIMS — closing marker ─────────────────────────

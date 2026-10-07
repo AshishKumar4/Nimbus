@@ -268,7 +268,8 @@ function isNimbusAgentOAuthCookie(value: unknown): value is NimbusAgentOAuthCook
   return NimbusAgentOAuthCookieSchema.safeParse(value).success;
 }
 
-function envString(env: Record<string, unknown>, key: string): string {
+/** A var of the Worker's env, trimmed; '' when it is unset or not a string. */
+export function envString(env: Record<string, unknown>, key: string): string {
   const value = env?.[key];
   return typeof value === 'string' ? value.trim() : '';
 }

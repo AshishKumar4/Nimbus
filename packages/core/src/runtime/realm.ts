@@ -61,6 +61,7 @@ import type * as V8 from 'node:v8';
 import type * as WorkerThreads from 'node:worker_threads';
 import type { MessagePort } from 'node:worker_threads';
 import { isVfsErrorCode, VfsError } from '../vfs/vfs-error.js';
+import { exitCodeForSignal, parseSignalName } from '../substrate/lifo/shell/signals.js';
 
 // ── The protocol ──────────────────────────────────────────────────────────────
 
@@ -432,9 +433,6 @@ async function startThreadLink(options: RealmOptions, onCall: (call: RealmCall) 
 
 // ── A process ─────────────────────────────────────────────────────────────────
 
-/** The signals a process realm may end by, by number, for its exit code. */
-const SIGNAL_NUMBERS: Readonly<Record<string, number>> = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGSEGV: 11, SIGTERM: 15, SIGABRT: 6 };
-
 /**
  * The engine's arguments before the guest's module: under Bun, no .env file
  * and no config (so no preload) from where the guest runs; Node loads
@@ -517,7 +515,9 @@ async function startProcessLink(options: RealmOptions, onCall: (call: RealmCall)
     // Never started (the engine is gone, too many processes): no exit will come.
     if (child.pid === undefined) exit({ code: 127, failure });
   });
-  child.once('exit', (code, signal) => exit({ code: code ?? 128 + (signal ? SIGNAL_NUMBERS[signal] ?? 0 : 0), failure }));
+  // Ended by a signal: 128 + its number, as a shell reports it (signals.ts);
+  // one the table does not know counts as 0.
+  child.once('exit', (code, signal) => exit({ code: code ?? exitCodeForSignal(parseSignalName(signal ?? '') ?? '0'), failure }));
   const drained = fromGuest === null ? Promise.resolve()
     : new Promise<void>((resolve) => { fromGuest.once('close', () => resolve()); });
   return {

@@ -231,6 +231,7 @@ export async function launchResident({
   dataPlan,
   startArgs = {},
   argv,
+  node,
 }) {
   const vfsState = {
     bundle,
@@ -243,7 +244,7 @@ export async function launchResident({
   const generated = await generateLongRunningNodeCode(
     program,
     vfsState,
-    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, env: processEnv, ...(argv ? { argv } : {}) },
+    { cred: CRED, cwd, filename: `${cwd}/main.js`, dirname: cwd, env: processEnv, ...(argv ? { argv } : {}), ...(node ? { node } : {}) },
     false,
     nodeFacetSources(generateShimsCode()),
   );

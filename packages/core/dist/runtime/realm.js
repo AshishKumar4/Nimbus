@@ -55,6 +55,7 @@
  * isolates of its own.
  */
 import { isVfsErrorCode, VfsError } from '../vfs/vfs-error.js';
+import { exitCodeForSignal, parseSignalName } from '../substrate/lifo/shell/signals.js';
 const record = (value) => typeof value === 'object' && value !== null;
 export function isRealmStart(value) {
     return record(value) && 'payload' in value && value.wake instanceof SharedArrayBuffer && record(value.calls) && record(value.events);
@@ -344,8 +345,6 @@ async function startThreadLink(options, onCall) {
     };
 }
 // ── A process ─────────────────────────────────────────────────────────────────
-/** The signals a process realm may end by, by number, for its exit code. */
-const SIGNAL_NUMBERS = { SIGHUP: 1, SIGINT: 2, SIGKILL: 9, SIGSEGV: 11, SIGTERM: 15, SIGABRT: 6 };
 /**
  * The engine's arguments before the guest's module: under Bun, no .env file
  * and no config (so no preload) from where the guest runs; Node loads
@@ -444,7 +443,9 @@ async function startProcessLink(options, onCall) {
         if (child.pid === undefined)
             exit({ code: 127, failure });
     });
-    child.once('exit', (code, signal) => exit({ code: code ?? 128 + (signal ? SIGNAL_NUMBERS[signal] ?? 0 : 0), failure }));
+    // Ended by a signal: 128 + its number, as a shell reports it (signals.ts);
+    // one the table does not know counts as 0.
+    child.once('exit', (code, signal) => exit({ code: code ?? exitCodeForSignal(parseSignalName(signal ?? '') ?? '0'), failure }));
     const drained = fromGuest === null ? Promise.resolve()
         : new Promise((resolve) => { fromGuest.once('close', () => resolve()); });
     return {

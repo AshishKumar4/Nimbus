@@ -94,4 +94,34 @@ export declare const VFS_DESCRIPTION: Readonly<Record<VfsErrorCode, string>>;
 export declare const ERRNO_DESCRIPTION: Readonly<Record<string, string>>;
 /** {@link ERRNO_DESCRIPTION} of `code`, undefined for a code libuv does not name. */
 export declare function errnoDescription(code: string): string | undefined;
+/** `code`'s errno, negative as libuv reports it; undefined for a code this table does not name. */
+export declare function errnoOf(code: string): number | undefined;
+/**
+ * Node's message for a failed system call, as its uvException words it: the
+ * code, what was said of it (`no such file or directory, open`), then the
+ * path quoted and a second path after an arrow. The one template: VfsError
+ * and {@link fsError} both print it.
+ */
+export declare function systemErrorMessage(code: string, said: string, path?: string, dest?: string): string;
+/** An error carrying the fields Node's `fs` puts on a failed syscall. */
+export interface FsError extends Error {
+    code: string;
+    errno?: number;
+    syscall: string;
+    path?: string;
+    /** The second path of a call that names two (rename, symlink's link). */
+    dest?: string;
+}
+/**
+ * Node's error for `syscall` failing on `path` with any code, as a plain
+ * Error, as Node's fs throws it (where VfsError, for the VFS's own codes, is
+ * a class callers test for): `ENOENT: no such file or directory, open 'x'`,
+ * `rename 'a' -> 'b'` for a call naming `dest` too, no path for a call on a
+ * descriptor (`EBADF: bad file descriptor, read`). Its errno is the code's.
+ * `detail` stands in the description where Nimbus knows the reason.
+ */
+export declare function fsError(code: string, syscall: string, path?: string, dest?: string, options?: {
+    detail?: string;
+    cause?: unknown;
+}): FsError;
 //# sourceMappingURL=vfs-error.d.ts.map

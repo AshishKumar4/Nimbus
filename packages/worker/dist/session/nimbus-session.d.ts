@@ -413,7 +413,6 @@ export declare class NimbusSession extends CloudflareDurableObject<SessionEnv> {
         written: number;
         failed: number;
     }>;
-    _rpcRecordCacheStats(events: any[]): Promise<void>;
     _rpcStdout(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcStderr(pid: number, data: Uint8Array, at?: number, run?: number): Promise<void>;
     _rpcReportExit(pid: number, code: number, tail: string, dataReads?: string[], profileUnread?: string[] | null, runtimeCode?: unknown[], executedModules?: string[]): Promise<void>;

@@ -79,7 +79,9 @@ async function build(files, store, { calls = [], host = recordingHost(calls), pa
   return {
     calls,
     stats: state.transforms,
-    cells: Object.fromEntries(Object.entries(state.bundle).filter(([path]) => path.startsWith(APP)).sort()),
+    // What each path runs: its emit, or the file when no transform changed it.
+    cells: Object.fromEntries(Object.keys(state.bundle).filter((path) => path.startsWith(APP)).sort()
+      .map((path) => [path, state.emits?.get(path) ?? state.bundle[path]])),
     emits: Object.fromEntries([...(state.emits ?? new Map())].sort()),
     lowered: [...(state.lowered ?? new Set())].sort(),
   };
@@ -125,7 +127,7 @@ try {
       const files = { 'home/user/package.json': '{}', [`${APP}/tok.mjs`]: source };
       const esbuild = new EsbuildService(undefined, { transformHost: recordingHost(calls) });
       const state = await buildPrefetchBundle(launchFs(files).fs, { scriptPath: `/${APP}/tok.mjs`, cwd: 'home/user', entryCode: source, esbuild, pacer: pacer(), transformStore: store });
-      return state.bundle[`${APP}/tok.mjs`];
+      return state.emits?.get(`${APP}/tok.mjs`);
     };
     const firstCalls = [];
     assert.match(await launch(first, firstCalls), /00001unw/);

@@ -32,6 +32,7 @@
  */
 
 import { z } from 'zod/v4';
+import { fabricTableName, TableIds } from './table-ids.js';
 
 /** Synchronous DO SQLite, as the journal uses it. */
 export interface JournalSqlExec {
@@ -79,8 +80,6 @@ const ClaimRowSchema = z.object({
   received_at: z.number(),
 });
 
-const NAME_PATTERN = /^[a-z][a-z0-9_]{0,40}$/;
-
 /** One named journal on one hosting actor. Cheap accessor, like `timers()`. */
 export function journal<P>(ctx: JournalContext, name: string): Journal<P> {
   return new Journal(ctx, name);
@@ -89,15 +88,11 @@ export function journal<P>(ctx: JournalContext, name: string): Journal<P> {
 export class Journal<P> {
   private readonly table: string;
   private schemaReady = false;
-  private lastId = '';
-  private seq = 0;
+  private readonly ids = new TableIds();
   private leaseSeq = 0;
 
   constructor(private readonly ctx: JournalContext, name: string) {
-    if (!NAME_PATTERN.test(name)) {
-      throw new Error(`fabric: journal name '${name}' must match ${NAME_PATTERN}`);
-    }
-    this.table = `journal_${name}`;
+    this.table = fabricTableName('journal', name);
   }
 
   private ensureSchema(): void {
@@ -123,17 +118,8 @@ export class Journal<P> {
     // grows without bound and must never be what recovery reads through.
     sql.exec(`CREATE INDEX IF NOT EXISTS idx_${this.table}_pending
       ON ${this.table} (priority DESC, id) WHERE state = 'pending'`);
-    const rows = [...sql.exec(`SELECT MAX(id) AS id FROM ${this.table}`)] as Array<{ id: string | null }>;
-    this.lastId = rows[0]?.id ?? '';
+    this.ids.adopt(sql, this.table);
     this.schemaReady = true;
-  }
-
-  /** Same shape as the outbox's: time-ordered, forced above every stored id. */
-  private mintId(now: number): string {
-    let id = `${now.toString(36).padStart(9, '0')}-${(this.seq++).toString(36).padStart(6, '0')}`;
-    if (this.lastId !== '' && id <= this.lastId) id = `${this.lastId}0`;
-    this.lastId = id;
-    return id;
   }
 
   /**
@@ -150,7 +136,7 @@ export class Journal<P> {
       )] as Array<{ id: string }>;
       if (existing.length > 0) return { id: existing[0].id, admitted: false };
     }
-    const id = this.mintId(now);
+    const id = this.ids.mint(now);
     sql.exec(
       `INSERT INTO ${this.table} (id, payload, dedupe_key, priority, received_at, not_before)
        VALUES (?, ?, ?, ?, ?, 0)`,

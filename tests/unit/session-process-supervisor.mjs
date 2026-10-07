@@ -87,6 +87,15 @@ import { SessionProcessSupervisor } from '../../packages/core/src/runtime/sessio
   assert.deepEqual(terminal, [booting.pid]);
   assert.equal(processes.hasInput(booting.pid), false, 'nothing is left queued for a program that never ran');
 
+  // Every signal whose default action ends a process ends it now (Linux's dispositions).
+  for (const [signal, code] of [['SIGUSR1', 138], ['SIGPIPE', 141], ['SIGALRM', 142]]) {
+    const early = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
+    processes.openInput(early.pid);
+    assert.deepEqual(processes.signal(early.pid, signal), { ok: true });
+    assert.equal(processes.get(early.pid)?.state, 'exited', `${signal} terminates by default`);
+    assert.equal(processes.get(early.pid)?.exitCode, code);
+  }
+
   // A non-terminating signal before the first read still waits for the program.
   const other = processes.spawn('pi', ['pi'], '/home/user', { longRunning: true, attachedTty: true });
   processes.openInput(other.pid);

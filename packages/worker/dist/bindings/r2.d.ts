@@ -127,8 +127,6 @@ export declare class R2Emulator {
     private _normalizeEtag;
     private _applyRange;
     private _normalizeHash;
-    private _encodeCursor;
-    private _decodeCursor;
 }
 export {};
 //# sourceMappingURL=r2.d.ts.map

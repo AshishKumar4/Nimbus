@@ -65,14 +65,6 @@ export function extractBearerToken(request) {
     }
     return null;
 }
-/**
- * Verify a token from a Request. Convenience wrapper around
- * {@link extractBearerToken} + {@link verifyNimbusToken}.
- *
- * @throws {NimbusTokenMalformedError} when no token is present and
- *         `requireToken` is true (default).
- * @throws Any error from {@link verifyNimbusToken}.
- */
 export async function verifyRequestToken(request, env, opts = {}) {
     const token = extractBearerToken(request);
     if (!token) {
@@ -81,6 +73,19 @@ export async function verifyRequestToken(request, env, opts = {}) {
         throw new NimbusTokenMalformedError('no Bearer token in Authorization header, nimbus_token query, or cookie');
     }
     return verifyNimbusToken(env, token);
+}
+/**
+ * Authorize a request for a route: verify its token, require every scope in
+ * `scopes`, and, on a route that addresses a session, require the token's
+ * pin to match it. Throws the NimbusAuthError of the first check that fails;
+ * each route keeps its own legacy policy and error envelope.
+ */
+export async function authorizeRequest(request, env, required) {
+    const verified = await verifyRequestToken(request, env);
+    requireScopes(verified, required.scopes);
+    if (required.sessionId !== undefined)
+        requireSessionPin(verified, required.sessionId);
+    return verified;
 }
 /**
  * Assert that the verified token carries every required scope.

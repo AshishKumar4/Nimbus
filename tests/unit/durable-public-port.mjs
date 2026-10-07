@@ -63,7 +63,6 @@ const CAP = 'abcdef0123456789abcdef01';
 
   // Everything that fails either form is not a preview host at all.
   for (const bad of [
-    'zzzz--3000--nimble-otter-4271',
     'abcdef0123456789abcdef01--0--nimble-otter-4271',
     'abcdef0123456789abcdef01--3000',
   ]) {

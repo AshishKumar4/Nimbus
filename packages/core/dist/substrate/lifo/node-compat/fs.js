@@ -3,27 +3,33 @@ import { encode, decode } from '../utils/encoding.js';
 import { Readable, Writable } from './stream.js';
 import { EventEmitter } from './events.js';
 import { Buffer } from './buffer.js';
-import { isVfsError } from '../../../vfs/vfs-error.js';
+import { fsError, isVfsError } from '../../../vfs/vfs-error.js';
 import { DIRENT_TYPES, direntTypeOfStat } from '../../../vfs/dirent-type.js';
+import { S_IFMT } from '../../../vfs/vfs.js';
+/**
+ * Node's Stats for a filesystem stat: its identity, links, owner, mode and
+ * times as the filesystem has them (no birth time is kept: ctime stands in),
+ * the mode with its type's format bits where the filesystem's has none.
+ */
 function toNodeStat(stat) {
-    const isDir = stat.type === 'directory';
-    const holds = DIRENT_TYPES[direntTypeOfStat(stat)].node;
+    const type = DIRENT_TYPES[direntTypeOfStat(stat)];
+    const holds = type.node;
     return {
-        dev: 0,
-        ino: 0,
-        mode: stat.mode,
-        nlink: isDir ? 2 : 1,
-        uid: 1000,
-        gid: 1000,
+        dev: stat.dev,
+        ino: stat.ino,
+        mode: stat.mode & S_IFMT ? stat.mode : type.format | stat.mode,
+        nlink: stat.nlink,
+        uid: stat.uid,
+        gid: stat.gid,
         rdev: 0,
         size: stat.size,
         blksize: 4096,
         blocks: Math.ceil(stat.size / 512),
-        atimeMs: stat.mtime,
+        atimeMs: stat.atime,
         mtimeMs: stat.mtime,
         ctimeMs: stat.ctime,
         birthtimeMs: stat.ctime,
-        atime: new Date(stat.mtime),
+        atime: new Date(stat.atime),
         mtime: new Date(stat.mtime),
         ctime: new Date(stat.ctime),
         birthtime: new Date(stat.ctime),
@@ -35,31 +41,6 @@ function toNodeStat(stat) {
         isFIFO: () => holds === 'isFIFO',
         isSocket: () => holds === 'isSocket',
     };
-}
-function toNodeError(e, syscall, path) {
-    const err = new Error(e.message);
-    err.code = e.code;
-    err.errno = -2;
-    err.syscall = syscall;
-    err.path = path;
-    err.name = 'Error';
-    return err;
-}
-function makeEnoent(syscall, path) {
-    const err = new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`);
-    err.code = 'ENOENT';
-    err.errno = -2;
-    err.syscall = syscall;
-    err.path = path;
-    return err;
-}
-function makeEbadf(syscall) {
-    const err = new Error(`EBADF: bad file descriptor, ${syscall}`);
-    err.code = 'EBADF';
-    err.errno = -9;
-    err.syscall = syscall;
-    err.path = '';
-    return err;
 }
 function resolvePath(cwd, p) {
     const str = typeof p === 'string' ? p : p.pathname;
@@ -104,10 +85,11 @@ export function createFs(vfs, cwd, stdin) {
     // ─── File descriptor table ───
     const fdTable = new Map();
     let nextFd = 10; // start above stdin/stdout/stderr
-    function getFd(fd) {
+    /** The open file `fd` names, for `syscall`; EBADF, as `syscall`'s, when none. */
+    function getFd(fd, syscall) {
         const entry = fdTable.get(fd);
         if (!entry || entry.closed)
-            throw makeEbadf('fd');
+            throw fsError('EBADF', syscall);
         return entry;
     }
     // ─── Sync API ───
@@ -118,16 +100,25 @@ export function createFs(vfs, cwd, stdin) {
             return encoding ? new TextDecoder().decode(bytes) : Buffer.from(bytes);
         }
         if (typeof path === 'number')
-            return readFileSync(getFd(path).path, options);
+            return readFileSync(getFd(path, 'read').path, options);
         const abs = resolvePath(cwd, path);
-        if (encoding) {
-            return vfs.readFileString(abs);
+        try {
+            if (encoding) {
+                return vfs.readFileString(abs);
+            }
+            // Return Buffer (not raw Uint8Array) so .toString() yields UTF-8 text.
+            // Many packages do JSON.parse(fs.readFileSync('package.json')) without
+            // encoding, expecting Buffer.toString() to return the file contents.
+            const raw = vfs.readFile(abs);
+            return Buffer.from(raw);
         }
-        // Return Buffer (not raw Uint8Array) so .toString() yields UTF-8 text.
-        // Many packages do JSON.parse(fs.readFileSync('package.json')) without
-        // encoding, expecting Buffer.toString() to return the file contents.
-        const raw = vfs.readFile(abs);
-        return Buffer.from(raw);
+        catch (e) {
+            // Node opens a directory, then fails to read it: the error is read's,
+            // on the descriptor, with no path.
+            if (e.code === 'EISDIR')
+                throw fsError('EISDIR', 'read');
+            throw e;
+        }
     }
     function writeFileSync(path, data, _options) {
         const abs = resolvePath(cwd, path);
@@ -207,20 +198,21 @@ export function createFs(vfs, cwd, stdin) {
     function accessSync(path, _mode) {
         const abs = resolvePath(cwd, path);
         if (!vfs.exists(abs)) {
-            throw makeEnoent('access', abs);
+            throw fsError('ENOENT', 'access', abs);
         }
     }
     const realpathSync = Object.assign(function realpathSync(path) {
         const abs = resolvePath(cwd, path);
+        // Node's realpathSync lstats the path's components: a missing one is lstat's.
         if (!vfs.exists(abs)) {
-            throw makeEnoent('realpath', abs);
+            throw fsError('ENOENT', 'lstat', abs);
         }
         return abs;
     }, {
         native: function realpathSyncNative(path) {
             const abs = resolvePath(cwd, path);
             if (!vfs.exists(abs)) {
-                throw makeEnoent('realpath', abs);
+                throw fsError('ENOENT', 'realpath', abs);
             }
             return abs;
         },
@@ -248,7 +240,7 @@ export function createFs(vfs, cwd, stdin) {
             vfs.writeFile(abs, '');
         }
         if (!vfs.exists(abs)) {
-            throw makeEnoent('open', abs);
+            throw fsError('ENOENT', 'open', abs);
         }
         const fd = nextFd++;
         fdTable.set(fd, {
@@ -260,12 +252,12 @@ export function createFs(vfs, cwd, stdin) {
         return fd;
     }
     function closeSync(fd) {
-        const entry = getFd(fd);
+        const entry = getFd(fd, 'close');
         entry.closed = true;
         fdTable.delete(fd);
     }
     function readSync(fd, buffer, offset, length, position) {
-        const entry = getFd(fd);
+        const entry = getFd(fd, 'read');
         const data = vfs.readFile(entry.path);
         const pos = position !== null ? position : entry.position;
         const available = Math.max(0, data.length - pos);
@@ -279,7 +271,7 @@ export function createFs(vfs, cwd, stdin) {
         return bytesToRead;
     }
     function writeSync(fd, bufferOrString, offsetOrPosition, lengthOrEncoding, position) {
-        const entry = getFd(fd);
+        const entry = getFd(fd, 'write');
         let data;
         let pos;
         if (typeof bufferOrString === 'string') {
@@ -303,11 +295,11 @@ export function createFs(vfs, cwd, stdin) {
         return data.length;
     }
     function fstatSync(fd) {
-        const entry = getFd(fd);
+        const entry = getFd(fd, 'fstat');
         return toNodeStat(vfs.stat(entry.path));
     }
     function ftruncateSync(fd, len) {
-        const entry = getFd(fd);
+        const entry = getFd(fd, 'ftruncate');
         truncateSync(entry.path, len);
     }
     function fsyncSync(_fd) {
@@ -335,10 +327,8 @@ export function createFs(vfs, cwd, stdin) {
                 cb(null, result);
             }
             catch (e) {
-                if (isVfsError(e)) {
-                    cb(toNodeError(e, '', ''));
-                }
-                else if (e.code) {
+                // The filesystem's errors and this module's are Node's already.
+                if (isVfsError(e) || e.code) {
                     cb(e);
                 }
                 else {

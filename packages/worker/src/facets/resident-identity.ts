@@ -19,6 +19,17 @@
 
 export const DERIVED_OWNER_PREFIX = 'auto:';
 
+/**
+ * A launch's whole argv after the runtime's name: a node program's options
+ * (its execArgv, `node -C development`) and then its own argv. What the user
+ * typed, so what the process table lists and the identity is derived from:
+ * `node -C development server.mjs` is not `node server.mjs`. The program's
+ * `process.argv` is its own.
+ */
+export function launchArgv(opts: { execArgv?: readonly string[]; argv?: readonly string[] }): string[] {
+  return [...opts.execArgv ?? [], ...opts.argv ?? []];
+}
+
 /** `auto:` + the first 24 hex of sha256(cwd ++ NUL ++ argv.join(NUL)). */
 export async function deriveResidentOwner(cwd: string, argv: readonly string[]): Promise<string> {
   const material = new TextEncoder().encode(`${cwd}\0${argv.join('\0')}`);

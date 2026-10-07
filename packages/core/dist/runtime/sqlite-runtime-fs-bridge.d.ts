@@ -145,10 +145,13 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
     copyTree(from: RuntimeFsPath, to: RuntimeFsPath, options?: {
         preserve?: boolean;
     }): Promise<number>;
-    writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0]): {
+    /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */
+    writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0], options?: {
+        signal?: AbortSignal;
+    }): Promise<{
         inodes: number;
         chunks: number;
-    };
+    }>;
     writeStream(stream: ReadableStream<Uint8Array>, options?: Parameters<CredentialedVfs['writeStream']>[1]): Promise<import("../vfs/sqlite-vfs.js").WriteBatchStreamResult>;
     acquireExclusiveMutation(path: RuntimeFsPath, options?: {
         includeMissingAncestors?: boolean;

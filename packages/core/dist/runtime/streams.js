@@ -681,15 +681,16 @@ const __streamMod = (() => {
       return streams[0];
     }
     let error = null;
-    // Adapt non-Node sources (web ReadableStream from fetch, async
-    // iterables) to a Node Readable so \`.pipe\` exists. Node's pipeline
-    // performs the same normalization via Readable.from/fromWeb.
-    for (let i = 0; i < streams.length; i++) {
-      const s = streams[i];
-      if (s && typeof s.pipe !== 'function') {
-        if (typeof s.getReader === 'function') streams[i] = Readable.fromWeb(s);
-        else if (s[Symbol.asyncIterator] || s[Symbol.iterator]) streams[i] = Readable.from(s);
-      }
+    // Adapt a non-Node source (a web ReadableStream from fetch, an async
+    // iterable) to a Node Readable so \`.pipe\` exists, as Node's pipeline
+    // does with Readable.from/fromWeb. Only the source: the streams after it
+    // are written to, and one that is only written to may have no pipe and
+    // still be async-iterable (streamx's Writable: tar-fs's extract), which
+    // a Readable in its place would never write to.
+    const source = streams[0];
+    if (source && typeof source.pipe !== 'function') {
+      if (typeof source.getReader === 'function') streams[0] = Readable.fromWeb(source);
+      else if (source[Symbol.asyncIterator] || source[Symbol.iterator]) streams[0] = Readable.from(source);
     }
     for (let i = 0; i < streams.length - 1; i++) {
       const src = streams[i];

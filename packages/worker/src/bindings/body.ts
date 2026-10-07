@@ -12,6 +12,7 @@ export async function coerceBindingBody(value: BindingBody): Promise<Uint8Array>
   if (value instanceof Uint8Array) return value;
   if (value instanceof ArrayBuffer) return new Uint8Array(value);
   if (ArrayBuffer.isView(value)) return new Uint8Array(value.buffer, value.byteOffset, value.byteLength);
+  if (value instanceof Blob) return new Uint8Array(await value.arrayBuffer());
   if (typeof value === 'object' && 'getReader' in value && typeof value.getReader === 'function') {
     const chunks: Uint8Array[] = [];
     let total = 0;
@@ -29,4 +30,15 @@ export async function coerceBindingBody(value: BindingBody): Promise<Uint8Array>
     return out;
   }
   return new TextEncoder().encode(String(value));
+}
+
+/** A stored body as a byte stream of one chunk. */
+export function bodyStream(body: Uint8Array): ReadableStream<Uint8Array> {
+  return new ReadableStream({
+    type: 'bytes',
+    start(controller) {
+      controller.enqueue(body);
+      controller.close();
+    },
+  });
 }

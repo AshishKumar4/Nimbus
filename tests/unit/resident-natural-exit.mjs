@@ -10,7 +10,8 @@
 // WebSocket or tls client), with the one-shot's accounting, and reports its exit
 // as process.exit does. One that finishes during its boot reports before the
 // boot answers, so the shell prints its exit instead of "started".
-// `--watch` still holds a process with nothing left.
+// `--watch` still holds a process with nothing left, in its argv or as one
+// of node's options (execArgv).
 //
 // This is the acceptance for the server-launch prediction: a program wrongly
 // predicted resident still ends exactly as in Node (only a server predicted
@@ -263,6 +264,15 @@ await runScenarios(import.meta.filename, {
     const { log } = await launch('console.log("done");', { argv: ['--watch', '/home/user/app/main.js'] });
     await sleep(300);
     assert.equal(log.exit, null, '--watch waits for a change');
+  },
+
+  // `node --watch main.js`: node's options are its execArgv (core
+  // runtime/node-cli.ts), not its argv, and --watch there holds it too.
+  async watchAsNodesOptionHoldsAFinishedProgram() {
+    const node = { execArgv: ['--watch'], conditions: [], require: [], import: [], print: false };
+    const { log } = await launch('console.log("done");', { argv: ['/home/user/app/main.js'], node });
+    await sleep(300);
+    assert.equal(log.exit, null, 'node --watch waits for a change');
   },
 });
 console.log('resident-natural-exit: ok');

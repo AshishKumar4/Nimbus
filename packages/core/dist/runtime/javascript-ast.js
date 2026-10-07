@@ -1,10 +1,16 @@
-import { parse, tokenizer, tokTypes } from 'acorn';
+import { Parser, parse, tokenizer, tokTypes } from 'acorn';
+/** How an ES module is parsed. */
+export const MODULE_PARSE_OPTIONS = { ecmaVersion: 'latest', sourceType: 'module', allowHashBang: true };
+/** How a program Node would run is parsed (as a module, else as a CommonJS script): what either allows. */
+export const PROGRAM_PARSE_OPTIONS = {
+    ecmaVersion: 'latest',
+    allowHashBang: true,
+    allowReturnOutsideFunction: true,
+    allowAwaitOutsideFunction: true,
+    allowImportExportEverywhere: true,
+};
 export function parseJavaScriptModule(source) {
-    const program = parse(source, {
-        ecmaVersion: 'latest',
-        sourceType: 'module',
-        allowHashBang: true,
-    });
+    const program = parse(source, MODULE_PARSE_OPTIONS);
     // Program declares no index signature; the guard gives it AstNode's keyed view.
     if (!isAstNode(program))
         throw new TypeError(`acorn parsed a ${program.type}, not a node`);
@@ -15,24 +21,63 @@ export function parseJavaScriptModule(source) {
  * top level may `return`); null when it is neither.
  */
 export function parseJavaScriptProgram(source) {
-    const options = {
-        ecmaVersion: 'latest',
-        allowHashBang: true,
-        allowReturnOutsideFunction: true,
-        allowAwaitOutsideFunction: true,
-        allowImportExportEverywhere: true,
-    };
     try {
-        return parse(source, { ...options, sourceType: 'module' });
+        return parse(source, { ...PROGRAM_PARSE_OPTIONS, sourceType: 'module' });
     }
     catch {
         try {
-            return parse(source, { ...options, sourceType: 'script' });
+            return parse(source, { ...PROGRAM_PARSE_OPTIONS, sourceType: 'script' });
         }
         catch {
             return null;
         }
     }
+}
+const AcornParserClass = Parser;
+const FUNCTION_TYPES = new Set(['FunctionDeclaration', 'FunctionExpression', 'ArrowFunctionExpression']);
+/** acorn, keeping no tree of the whole program (parseStatements). */
+class StatementParser extends AcornParserClass {
+    hooks = {};
+    parseTopLevel(node) {
+        const exports = Object.create(null);
+        while (this.type !== tokTypes.eof) {
+            const statement = this.parseStatement(null, true, exports);
+            if (isAstNode(statement))
+                this.hooks.onStatement?.(statement);
+        }
+        if (this.inModule) {
+            for (const name of Object.keys(this.undefinedExports))
+                this.raiseRecoverable(this.undefinedExports[name].start, `Export '${name}' is not defined`);
+        }
+        this.next();
+        return this.finishNode(node, 'Program');
+    }
+    finishNode(node, type) {
+        const finished = super.finishNode(node, type);
+        if (isAstNode(finished)) {
+            this.hooks.onNode?.(finished);
+            if (FUNCTION_TYPES.has(type)) {
+                const body = finished.body;
+                if (isAstNode(body) && body.type === 'BlockStatement')
+                    Reflect.set(body, 'body', []);
+            }
+        }
+        return finished;
+    }
+}
+/**
+ * acorn's parse of `source` with no tree of the whole program held: each
+ * top-level statement goes to the hooks as it is parsed and is not kept,
+ * and each function's body is dropped once the function is finished (its
+ * parameters stay, which acorn checks after). What is held at once is the
+ * chain of functions being parsed and their code outside functions, so a
+ * multi-MiB bundle parses in bounded memory (acorn's whole tree is 17 to 24
+ * times its source). Throws acorn's SyntaxError, as `parse` does.
+ */
+export function parseStatements(source, options, hooks) {
+    const parser = new StatementParser(options, source);
+    parser.hooks = hooks;
+    parser.parse();
 }
 /** Parentheses, `(0, f)`, `await` and `?.` do not change what is called. */
 export function unwrapCallee(node) {

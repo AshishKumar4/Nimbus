@@ -62,22 +62,11 @@
 
 import { ISOLATE_NETWORK, type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
-import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
+import type { CacheKind, CacheStatEvent, CacheTier } from '@nimbus-sh/core/_shared/cache-stats.js';
 import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { retryingRegistryFetch } from './registry-retry.js';
 import { sriDigestOf, sriDigestsEqual, sriEntries, type SriEntry } from '@nimbus-sh/core/_shared/tarball-integrity.js';
 
-/**
- * Per-call cache-stat event (cache metrics support). R2CacheClient
- * accumulates these in instance state so the SupervisorRPC caller can
- * drain + forward to the DO isolate (where /api/_diag/cache reads from).
- * The local-singleton-write approach would be invisible to the DO's
- * diag endpoint because WorkerEntrypoint instances live in a separate
- * isolate. See src/session/supervisor-rpc.ts for the flush.
- */
-export type R2CacheStatEvent =
-  | { kind: 'hit'; tier: CacheTier; cacheKind: CacheKind; bytes: number }
-  | { kind: 'miss'; tier: CacheTier; cacheKind: CacheKind };
 
 /** Schema version baked into every cache key. Bump to invalidate
  *  everything atomically (e.g. if the storage shape changes or a bug
@@ -393,7 +382,7 @@ export class R2CacheClient {
    * drain. Public field so the caller in supervisor-rpc.ts can drain
    * without an explicit method call (saves an indirection).
    */
-  public _cacheEvents: R2CacheStatEvent[] = [];
+  public _cacheEvents: CacheStatEvent[] = [];
 
   constructor(
     private readonly tarballBucket: R2BucketLike,

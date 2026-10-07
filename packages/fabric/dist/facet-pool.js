@@ -25,10 +25,10 @@
  *     in-memory facet state is never safe to assume between two RPCs.
  *   - 65,536 facet ids per DO lifetime (`do.facet.count`), append-only and
  *     never reclaimed — the binding constraint for the leak, reached an
- *     order of magnitude before the byte quota. The pool counts first-use
- *     names in the durable ledger (budgets.ts) and refuses a NEW name at the
- *     wall by name, instead of letting the platform fail opaquely. Refusal
- *     at the wall is exact, not a threshold: the ledger never overcounts.
+ *     order of magnitude before the byte quota. The pool charges each name's
+ *     first use to the durable ledger (budgets.ts), which refuses a NEW name
+ *     at the wall by name, instead of letting the platform fail opaquely.
+ *     The refusal compares against the budget itself, not a threshold.
  *
  * A failed reclaim stays loud (facet-spawn's `runOnceAndReclaim`): storage
  * that was not given back is a permanent charge against the root's quota,
@@ -39,12 +39,11 @@
  * the same assumption from the other side — it owns facet naming and runs
  * its own cleanup — so the two are mutually exclusive on one actor:
  * whichever acts second aborts or retires facets the other still tracks,
- * and the facet-id ledger here counts only the names this pool minted.
+ * and the facet-id ledger counts only the names fabric minted.
  */
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { forgetFacetStorage } from '@nimbus-sh/core/runtime/storage-ledger.js';
-import { FACET_ID_LIFETIME_BUDGET, facetNameCount, recordFacetNameMinted, withFacetBudgetNamed, } from './budgets.js';
-/** Names this ctx's pool has already charged to the lifetime ledger. */
-const chargedNames = new WeakMap();
+import { chargeFacetName } from './budgets.js';
 /** The facet pool of one hosting actor. Cheap accessor, like `timers()`. */
 export function facetPool(ctx) {
     return new FacetPool(ctx);
@@ -64,19 +63,7 @@ export class FacetPool {
         if (!facets || typeof facets.get !== 'function') {
             throw new Error('fabric: ctx.facets is unavailable in this Durable Object; facets cannot be leased');
         }
-        let charged = chargedNames.get(this.ctx);
-        if (!charged) {
-            charged = new Set();
-            chargedNames.set(this.ctx, charged);
-        }
-        if (!charged.has(name)) {
-            const consumed = facetNameCount(this.ctx);
-            if (consumed >= FACET_ID_LIFETIME_BUDGET) {
-                throw withFacetBudgetNamed(consumed, new Error(`facet '${name}' refused before creation: no lifetime ids remain`));
-            }
-            recordFacetNameMinted(this.ctx, consumed + 1);
-            charged.add(name);
-        }
+        await chargeFacetName(this.ctx, name, { refuseAtWall: true });
         const stub = facets.get(name, start);
         let settled = false;
         let keepStorage = false;
@@ -110,7 +97,4 @@ export class FacetPool {
             [Symbol.asyncDispose]: retire,
         };
     }
-}
-function errorText(error) {
-    return error instanceof Error ? error.message : String(error);
 }

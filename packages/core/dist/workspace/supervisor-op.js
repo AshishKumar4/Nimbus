@@ -315,14 +315,17 @@ const NATIVE_OPS = {
             throw new Error('supervisor op writeBatchStream: no stream');
         const fence = e.waveFence;
         let admit;
+        let mountReach;
         if (fence !== undefined) {
             if (t.deliveries === undefined || fence.hostIncarnation !== t.deliveries.incarnation || e.pid === undefined) {
                 throw Object.assign(new Error('ESTALE: writeBatchStream was sent through a binding another instance of this host minted'), { code: 'ESTALE' });
             }
             t.bridge(e.pid, e.cred);
-            admit = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt).check;
+            const admission = t.deliveries.admitWave(e.pid, fence.writer, fence.wave, fence.attempt);
+            admit = admission.check;
+            mountReach = admission.reach;
         }
-        return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit });
+        return fsFor(e, t).writeStream(e.stream, { decodeDrainStartedAt, mutationOwner: e.mutationOwner, admit, mountReach });
     },
     // A write-wave epoch for the live process that asks, on this instance:
     // the only writer identity a fenced writeBatchStream is admitted under.

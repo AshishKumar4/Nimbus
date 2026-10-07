@@ -421,10 +421,30 @@ function answerClose(ws, code, reason) {
 export async function wsClose(self, ws, code, reason, _wasClean) {
     // Every kind below: whatever it tears down, the peer is waiting on this.
     answerClose(ws, code, reason);
-    // Audit F1: discriminate by socket kind. Previously BOTH parameters
-    // were absent and every close — including preview-iframe HMR sockets
-    // closed by `vite stop` / navigation — nulled the session's
-    // shell/terminal/kernel, silently freezing the user's terminal tab.
+    if (!endSocket(self, ws, 'ws-close'))
+        return;
+    // Reset the one-shot "wrangler alias" banner so a reconnecting user
+    // sees it again — terminal-lifetime state, not session-lifetime.
+    self.wranglerAliasBannerShown = false;
+}
+export async function wsError(self, ws, error) {
+    // wsError is a different physical trigger (workerd cancelled the WS
+    // handler — typically the 5-s setHibernatableWebSocketEventTimeout cap)
+    // but the recovery shape is identical.
+    endSocket(self, ws, 'ws-error', error);
+}
+/**
+ * A socket's end, by close or by error. Answers whether it was a shell
+ * socket, whose session it drained.
+ *
+ * Audit F1: discriminate by socket kind. Previously every close — including
+ * preview-iframe HMR sockets closed by `vite stop` / navigation — nulled the
+ * session's shell/terminal/kernel, silently freezing the user's terminal tab.
+ * Dev servers (vite, wrangler dev) and long-running facets survive a shell
+ * socket's end too (see 607e472 — do NOT kill running processes here); only
+ * per-tab state is reaped.
+ */
+function endSocket(self, ws, trigger, error) {
     const att = wsKind(ws);
     // file-tree-watch (2026-05-15): drop any fs-watch subscriptions on
     // this WS regardless of kind. Shell WS is the canonical carrier in
@@ -434,19 +454,15 @@ export async function wsClose(self, ws, code, reason, _wasClean) {
         cleanupFsWatchOnClose(self, ws);
     }
     catch { /* best-effort */ }
-    // W9: process-logs sockets close routinely (user closes a log tab).
-    // Don't touch shell/terminal — and don't bother flushing here either
-    // because process-logs ws close doesn't imply session lifecycle.
-    if (att.kind === 'process-logs') {
-        return;
-    }
-    if (att.kind === 'fs-watch') {
-        return;
-    }
+    // W9: process-logs sockets end routinely (user closes a log tab), and
+    // their end does not imply session lifecycle. Don't touch
+    // shell/terminal, and don't flush.
+    if (att.kind === 'process-logs' || att.kind === 'fs-watch')
+        return false;
     if (att.kind === 'cirrus-hmr') {
-        // HMR socket closed. Detach from the bridge + drop from the map.
+        // HMR socket ended. Detach from the bridge + drop from the map.
         // Do NOT touch shell/terminal/kernel — the user's terminal tab
-        // is still alive and has nothing to do with this HMR close.
+        // is still alive and has nothing to do with this HMR socket.
         try {
             const clientId = att.clientId || self._cirrusHmrWsClients?.get(ws);
             self._cirrusHmrWsClients?.delete(ws);
@@ -454,34 +470,31 @@ export async function wsClose(self, ws, code, reason, _wasClean) {
                 self.cirrusReal?.detachHmrClient(clientId);
         }
         catch { /* best-effort */ }
-        return;
+        return false;
     }
-    // Shell (or unknown legacy) socket close. Dev servers (vite,
-    // wrangler dev) + long-running facets must still survive the
-    // terminal reconnect (see 607e472 — do NOT kill running processes
-    // here). Only reap per-tab state.
     // The runtime says this socket is finished, so it no longer holds the
     // terminal. Drop its liveness stamp before anything else: the frame
-    // that triggered this close stamped it moments ago, and leaving that
-    // behind would make the reconnect look like a second tab.
+    // that triggered this end stamped it moments ago (on an error, the
+    // handler that just blew the 5-s cap), and leaving that behind would
+    // make the reconnect look like a second tab.
     clearShellSocketStamp(ws);
     // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
     // The Track B' state-machine transition. Persist final shell
-    // state + record a recovery_event BEFORE we null the in-memory
-    // Shell instance. The next /ws upgrade reads the SQL row and
-    // rebuilds the Shell with cwd + env intact — that's what makes
+    // state + record a recovery_event. The next /ws upgrade reads the SQL
+    // row and rebuilds the Shell with cwd + env intact — that's what makes
     // recovery transparent.
     //
     // Order matters: snapshot first (so SQL has the latest cwd),
     // then record the lifecycle event (so the C'.2 ring shows the
-    // transition AFTER the persist completed).
+    // transition AFTER the persist completed). The trigger label tells a
+    // close from an error in the recovery_event ring.
     snapshotShellState(self);
     try {
         recordRecoveryEvent({
             at: Date.now(),
             fromState: 'active',
             toState: 'drained',
-            trigger: 'ws-close',
+            trigger,
             isolateGen: generation(self.ctx),
             dataLoss: false,
             snapshotKeysRehydrated: 0,
@@ -492,13 +505,30 @@ export async function wsClose(self, ws, code, reason, _wasClean) {
     // is the legacy ring entry (active→drained); the field assignment
     // surfaces the live phase via /api/_diag/session.phase.
     self._b4Phase = 'drained';
-    // W5 Lever 5: persist the OOM ring on close so cf-tail-style
-    // forensics survive DO hibernation. Gated on ctx.waitUntil so
-    // the close handler doesn't hang on storage. Skipped if ring
-    // is empty / unchanged.
+    // An error synthesizes a DiagFailure for itself: it helps when a
+    // session vanishes without ever recording an explicit failure.
+    if (error) {
+        try {
+            recordFailure({
+                at: Date.now(),
+                phase: 'ws',
+                cause: 'unknown',
+                rssEstimateBytes: self._diagPeakRss,
+                heapUsedBytes: self._diagPeakHeapUsed,
+                lruBytes: 0, inFlightBytes: 0,
+                lastRpcFrame: getLastRpcFrame(),
+                lastFacetId: getLastFacetId(),
+                message: errorText(error),
+            });
+        }
+        catch { /* fail-soft */ }
+    }
+    // W5 Lever 5: persist the OOM ring so cf-tail-style forensics survive
+    // DO hibernation. Gated on ctx.waitUntil so the handler doesn't hang
+    // on storage. Skipped if ring is empty / unchanged.
     safePersistRing(self);
     // W9: flush any pending log writes so a hibernation cycle right
-    // after this close doesn't strand the in-memory ring. Synchronous
+    // after this end doesn't strand the in-memory ring. Synchronous
     // SQL writes wrapped in transactionSync — fast (microseconds for
     // typical buffer sizes); blocking is safer than racing waitUntil
     // because flush() is what makes the logs survive.
@@ -516,90 +546,7 @@ export async function wsClose(self, ws, code, reason, _wasClean) {
     // wiring, which cost every reconnect a full rebuild. The upgrade now
     // reads the sockets instead: a shell socket a peer still holds is the
     // busy session it refuses, and this one is closing.
-    // Reset the one-shot "wrangler alias" banner so a reconnecting user
-    // sees it again — terminal-lifetime state, not session-lifetime.
-    self.wranglerAliasBannerShown = false;
-}
-export async function wsError(self, ws, _error) {
-    // Audit F1: same discriminator as webSocketClose. A socket error
-    // on an HMR WS must not take down the terminal tab.
-    const att = wsKind(ws);
-    // file-tree-watch (2026-05-15): drop fs-watch subscriptions on this
-    // WS. Mirror of the cleanup in wsClose above.
-    try {
-        cleanupFsWatchOnClose(self, ws);
-    }
-    catch { /* best-effort */ }
-    // W9: process-logs error — same drop-and-return policy as close.
-    if (att.kind === 'process-logs') {
-        return;
-    }
-    if (att.kind === 'fs-watch') {
-        return;
-    }
-    if (att.kind === 'cirrus-hmr') {
-        try {
-            const clientId = att.clientId || self._cirrusHmrWsClients?.get(ws);
-            self._cirrusHmrWsClients?.delete(ws);
-            if (clientId)
-                self.cirrusReal?.detachHmrClient(clientId);
-        }
-        catch { /* best-effort */ }
-        return;
-    }
-    // Same reasoning as wsClose: this socket stops holding the terminal
-    // here. It matters more on this path, because the handler that just
-    // blew the 5-s cap is the one that stamped the socket.
-    clearShellSocketStamp(ws);
-    // ── Phase 3 B'.1: transitionTo('drained') ──────────────────────────
-    // Same architectural step as wsClose: persist shell state + record
-    // a drained event before nulling. wsError is a different physical
-    // trigger (workerd cancelled the WS handler — typically the 5-s
-    // setHibernatableWebSocketEventTimeout cap) but the recovery
-    // shape is identical. The trigger label distinguishes them in
-    // the recovery_event ring.
-    snapshotShellState(self);
-    try {
-        recordRecoveryEvent({
-            at: Date.now(),
-            fromState: 'active',
-            toState: 'drained',
-            trigger: 'ws-error',
-            isolateGen: generation(self.ctx),
-            dataLoss: false,
-            snapshotKeysRehydrated: 0,
-        });
-    }
-    catch { /* observability is non-critical */ }
-    // [B'.4] Live phase indicator — same as wsClose path.
-    self._b4Phase = 'drained';
-    // W5 Lever 5: persist OOM ring (same rationale as webSocketClose).
-    // Also synthesize a DiagFailure for the WS error itself if one
-    // hasn't already been recorded. Helps when a session vanishes
-    // without ever recording an explicit failure.
-    if (_error) {
-        try {
-            recordFailure({
-                at: Date.now(),
-                phase: 'ws',
-                cause: 'unknown',
-                rssEstimateBytes: self._diagPeakRss,
-                heapUsedBytes: self._diagPeakHeapUsed,
-                lruBytes: 0, inFlightBytes: 0,
-                lastRpcFrame: getLastRpcFrame(),
-                lastFacetId: getLastFacetId(),
-                message: _error?.message ?? String(_error),
-            });
-        }
-        catch { /* fail-soft */ }
-    }
-    safePersistRing(self);
-    // W9: same flush rationale as webSocketClose. An error on the shell
-    // socket commonly precedes hibernation by milliseconds.
-    self._w9FlushOnClose();
-    // [B'.5] Do NOT null shell/terminal/kernel — same rationale as
-    // wsClose. The Shell stays alive in-memory for the next /ws to
-    // join via the warmJoin path.
+    return true;
 }
 /**
  * W5 Lever 5: bridge between _w5PersistRing (which returns a Promise)

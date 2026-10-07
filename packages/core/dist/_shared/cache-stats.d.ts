@@ -143,15 +143,12 @@ export declare function snapshot(): CacheStatsSnapshot;
  */
 export declare function reset(): void;
 /**
- * cache-obs-2: fold facet-collected per-tier cache events into the
- * DO-side cache-stats singleton. Called from installer.ts after a
- * batch-facet / resolve-facet returns — mirrors recordR2RaceCounters
- * (the facet collects metrics in its result and the supervisor folds
- * them into the DO isolate).
- *
- * Each event has shape:
- *   { kind: 'hit', tier: 'L2'|'L3'|'L4', cacheKind: 'tarball'|'packument'|'asset', bytes: number }
- *   { kind: 'miss', tier: ..., cacheKind: ... }
+ * One per-tier cache hit or miss, as a structured-clone-safe event: what
+ * the R2 cache client records (npm/r2-cache.ts), the supervisor's RPCs
+ * return with their result (session/supervisor-rpc.ts), and the install
+ * and resolve facets return with theirs. Counters bumped where the event
+ * happened would be another isolate's: recordCacheStatEvents folds them
+ * into this one's, where /api/_diag/cache reads them.
  */
 export type CacheStatEvent = {
     kind: 'hit';
@@ -163,5 +160,6 @@ export type CacheStatEvent = {
     tier: CacheTier;
     cacheKind: CacheKind;
 };
+/** Fold `events` into this isolate's counters; an event of another kind is skipped, never thrown on. */
 export declare function recordCacheStatEvents(events: readonly CacheStatEvent[] | undefined): void;
 //# sourceMappingURL=cache-stats.d.ts.map

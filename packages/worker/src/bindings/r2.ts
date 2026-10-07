@@ -29,8 +29,9 @@
  */
 
 import type { CredentialedVfs } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
-import { coerceBindingBody, ensureBindingDir } from './body.js';
-import { decodeJsonBase64Url, encodeJsonBase64Url, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
+import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
+import { cursorPage, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles } from './object-store.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 
 // ── Public types ──────────────────────────────────────────────────────────
 
@@ -95,15 +96,6 @@ interface R2Sidecar {
   v: 1;
 }
 
-// ── Path helpers ────────────────────────────────────────────────────────
-
-function encKey(key: string): string {
-  return encodeURIComponent(key);
-}
-function decKey(encoded: string): string {
-  try { return decodeURIComponent(encoded); } catch { return encoded; }
-}
-
 // ── R2Object / R2ObjectBody ────────────────────────────────────────────
 
 export class R2Object {
@@ -138,14 +130,7 @@ export class R2ObjectBody extends R2Object {
   }
 
   get body(): ReadableStream<Uint8Array> {
-    const bytes = this._body;
-    return new ReadableStream({
-      type: 'bytes',
-      start(controller: any) {
-        controller.enqueue(bytes);
-        controller.close();
-      },
-    } as any);
+    return bodyStream(this._body);
   }
 
   get bodyUsed(): boolean { return false; /* one-shot stream is not tracked */ }
@@ -175,8 +160,7 @@ export class R2Emulator {
 
   constructor(opts: R2EmulatorOptions) {
     this.vfs = opts.vfs;
-    const root = String(opts.root).replace(/^\/+/, '').replace(/\/+$/, '');
-    this.dir = (root ? root + '/' : '') + '.nimbus/r2/' + opts.binding;
+    this.dir = objectStoreDir(opts.root, 'r2', opts.binding);
     this.onLog = opts.onLog || (() => {});
   }
 
@@ -217,8 +201,7 @@ export class R2Emulator {
       }
     }
 
-    const body = typeof Blob !== 'undefined' && value instanceof Blob
-      ? new Uint8Array(await value.arrayBuffer()) : await coerceBindingBody(value);
+    const body = await coerceBindingBody(value);
     const etag = await sha256Hex(body);
 
     // Verify integrity hashes if supplied
@@ -244,7 +227,7 @@ export class R2Emulator {
     if (options?.customMetadata) side.customMetadata = options.customMetadata;
 
     ensureBindingDir(this.vfs, this.dir);
-    const enc = encKey(key);
+    const enc = objectFileName(key);
     this.vfs.writeFile(this.dir + '/' + enc, body);
     this.vfs.writeFile(this.dir + '/' + enc + '.meta', JSON.stringify(side));
 
@@ -253,13 +236,7 @@ export class R2Emulator {
 
   async delete(keys: string | string[]): Promise<void> {
     const list = Array.isArray(keys) ? keys : [keys];
-    for (const k of list) {
-      const enc = encKey(k);
-      const bp = this.dir + '/' + enc;
-      const mp = bp + '.meta';
-      try { if (this.vfs.exists(bp)) this.vfs.unlink(bp); } catch {}
-      try { if (this.vfs.exists(mp)) this.vfs.unlink(mp); } catch {}
-    }
+    for (const k of list) removeObjectFiles(this.vfs, this.dir, objectFileName(k));
   }
 
   async list(options?: R2ListOptions): Promise<{
@@ -269,26 +246,13 @@ export class R2Emulator {
     delimitedPrefixes: string[];
   }> {
     const prefix = options?.prefix || '';
-    const limit = options?.limit ?? 1000;
-    const cursorOff = options?.cursor ? this._decodeCursor(options.cursor) : 0;
     const delimiter = options?.delimiter;
 
     let entries: { key: string; side: R2Sidecar }[] = [];
-    try {
-      const dirents = this.vfs.readdir(this.dir);
-      for (const e of dirents) {
-        if (e.type === 'directory') continue;
-        if (e.name.endsWith('.meta')) continue;
-        const decoded = decKey(e.name);
-        if (!decoded.startsWith(prefix)) continue;
-        const side = this._readSideEnc(e.name);
-        if (!side) continue;
-        entries.push({ key: decoded, side });
-      }
-    } catch {
-      entries = [];
+    for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, prefix)) {
+      const side = this._readSideEnc(fileName);
+      if (side) entries.push({ key, side });
     }
-    entries.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
 
     // Delimiter handling: collect common prefixes that share <prefix><…><delimiter>
     const delimitedPrefixes: string[] = [];
@@ -308,13 +272,11 @@ export class R2Emulator {
       entries = filtered;
     }
 
-    const slice = entries.slice(cursorOff, cursorOff + limit);
-    const next = cursorOff + slice.length;
-    const truncated = next < entries.length;
+    const { page, next } = cursorPage(entries, options?.cursor, options?.limit ?? 1000);
     return {
-      objects: slice.map(e => new R2Object(e.key, e.side)),
-      truncated,
-      ...(truncated ? { cursor: this._encodeCursor(next) } : {}),
+      objects: page.map(e => new R2Object(e.key, e.side)),
+      truncated: next !== undefined,
+      ...(next !== undefined ? { cursor: next } : {}),
       delimitedPrefixes,
     };
   }
@@ -333,7 +295,7 @@ export class R2Emulator {
 
 
   private _readSide(key: string): R2Sidecar | null {
-    return this._readSideEnc(encKey(key));
+    return this._readSideEnc(objectFileName(key));
   }
 
   private _readSideEnc(enc: string): R2Sidecar | null {
@@ -353,7 +315,7 @@ export class R2Emulator {
   }
 
   private _readBody(key: string): Uint8Array {
-    const path = this.dir + '/' + encKey(key);
+    const path = this.dir + '/' + objectFileName(key);
     return this.vfs.readFile(path);
   }
 
@@ -392,14 +354,5 @@ export class R2Emulator {
     if (typeof input === 'string') return input.replace(/^"+|"+$/g, '').toLowerCase();
     const u = new Uint8Array(input);
     return [...u].map(b => b.toString(16).padStart(2, '0')).join('');
-  }
-
-  private _encodeCursor(off: number): string {
-    return encodeJsonBase64Url({ off });
-  }
-  private _decodeCursor(c: string): number {
-    try {
-      return Number(decodeJsonBase64Url<{ off?: unknown }>(String(c)).off) || 0;
-    } catch { return 0; }
   }
 }

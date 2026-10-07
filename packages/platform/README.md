@@ -124,7 +124,7 @@ export function* slices(bytes: Uint8Array): Generator<Uint8Array> {
 | `MAX_TX_LOGICAL_ROWS` / `MAX_TX_SQL_EXECS` | 256 / 64 | rows and execs in that same transaction |
 | `SQLITE_MAX_ROW_BYTES` | 2,000,000 | bytes per ROW, key length included; budget values against the row bound |
 | `SQLITE_MAX_STATEMENT_BYTES` | 100 KiB | SQL text per exec |
-| `SQLITE_MAX_BOUND_PARAMETERS` | 100 | bound parameters per query; a batched insert breaches this first |
+| `SQL_MAX_BOUND_PARAMETERS` | 100 | bound parameters per statement (101 fail); a batched insert breaches this first |
 | `DO_STORAGE_LIMIT_BYTES` | 10,000,000,000 | storage per Durable Object, shared by every facet and clone under it, with no copy-on-write credit |
 | `BLOCK_CONCURRENCY_CANCEL_MS` | 30,000 | how long a `blockConcurrencyWhile()` callback may run before the object is reset |
 | `WS_ATTACHMENT_LIMIT_BYTES` | 16,384 | serialized bytes per hibernatable WebSocket attachment |

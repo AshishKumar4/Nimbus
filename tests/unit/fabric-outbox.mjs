@@ -484,4 +484,23 @@ const T0 = 1_000_000;
   assert.equal(attempts, 3, 'a sent dedupe key never reaches send again, re-ask or not');
 }
 
+// ── 15. A thrown value that is not an Error keeps its message ───────────────
+// A send can throw what its transport hands it: a plain object with a
+// message, or a string. The row records that message, not '[object Object]'.
+
+{
+  const ctx = createCtx();
+  const thrown = [{ message: 'provider 451: mailbox busy', code: 451 }, 'receiver gone'];
+  const box = outbox({}, ctx, 'mail', {
+    maxAttempts: 8,
+    baseMs: 30_000,
+    async send() { throw thrown.shift(); },
+  });
+  await box.queue({ n: 1 }, { dedupeKey: 'busy', now: T0 });
+  await box.drain(T0);
+  assert.equal(box.find('busy').lastError, 'provider 451: mailbox busy');
+  await box.drain(T0 + 30_000);
+  assert.equal(box.find('busy').lastError, 'receiver gone');
+}
+
 console.log('ok - fabric-outbox (write-ahead, dedupe, disposition, backoff, ordering, timers, pacing, recovery)');

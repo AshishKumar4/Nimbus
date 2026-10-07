@@ -12,7 +12,7 @@ import { classifyMessage, isOomCause } from '../../packages/platform/src/oom-cla
 import {
   BLOCK_CONCURRENCY_CANCEL_MS,
   DO_STORAGE_LIMIT_BYTES,
-  SQLITE_MAX_BOUND_PARAMETERS,
+  SQL_MAX_BOUND_PARAMETERS,
   SQLITE_MAX_ROW_BYTES,
   SQLITE_MAX_STATEMENT_BYTES,
   WS_ATTACHMENT_LIMIT_BYTES,
@@ -35,7 +35,7 @@ assert.equal(classifyMessage('out of memory'), 'sqlite_nomem');
 // binary KiB; bound parameters is the cap a batched insert of more than
 // 100/columns rows breaches (100 binds fit, 101 fail).
 assert.ok(SQLITE_MAX_STATEMENT_BYTES <= 100 * 1024);
-assert.ok(SQLITE_MAX_BOUND_PARAMETERS <= 100);
+assert.ok(SQL_MAX_BOUND_PARAMETERS <= 100);
 
 // Size-accounting honesty: the 2 MB bound is per ROW (key included), not per
 // value — the measured single-value ceiling is 2,199,981 bytes, ABOVE this

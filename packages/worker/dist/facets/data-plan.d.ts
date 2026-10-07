@@ -31,6 +31,8 @@ export interface DataPlanInput {
     home: string;
     /** Module map paths. */
     closure: Iterable<string>;
+    /** Of those, the files the map carries only as their emit, not as themselves. */
+    codeOnly?: Iterable<string>;
     refs: readonly StaticFsRefs[];
     /** Paths learned from earlier misses (absolute or keys). */
     learned?: Iterable<string>;

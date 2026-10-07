@@ -211,6 +211,22 @@ const FILES = {
     'const keys = ["w", "r", "t", "d", "p", "instances", "unconstructed", "names"];',
     'setTimeout(() => console.log("LEGACYSTREAMS " + JSON.stringify(Object.fromEntries(keys.map((k) => [k, out[k]])))), 50);',
   ].join('\n'),
+  // pipeline's destination used as it is, a stream that is only written to
+  // (no pipe) and async-iterable as streamx's Writable is (tar-fs's extract,
+  // the end of create-react-router's pipeline(input, gunzip(), extract)).
+  'pipeline-writable.js': [
+    'const { pipeline, Readable } = require("stream");',
+    'const { EventEmitter } = require("events");',
+    'class Sink extends EventEmitter {',
+    '  constructor() { super(); this.got = []; this.writable = true; }',
+    '  write(chunk) { this.got.push(Buffer.from(chunk).toString()); return true; }',
+    '  end() { this.ended = true; queueMicrotask(() => { this.emit("finish"); this.emit("close"); }); return this; }',
+    '  destroy(error) { if (error) this.emit("error", error); return this; }',
+    '  async *[Symbol.asyncIterator]() {}',
+    '}',
+    'const sink = new Sink();',
+    'pipeline(Readable.from(["a", "b"]), sink, (error) => console.log("PIPELINE " + JSON.stringify({ error: error ? error.message : null, got: sink.got, ended: !!sink.ended })));',
+  ].join('\n'),
   'url.js': [
     'const url = require("url");',
     'const pick = (u) => ({ protocol: u.protocol, auth: u.auth, host: u.host, port: u.port, hostname: u.hostname, hash: u.hash, search: u.search, query: u.query, pathname: u.pathname, path: u.path, href: u.href });',
@@ -342,6 +358,13 @@ try {
     assert.match(hostLegacy.stdout, /^LEGACYSTREAMS \{"w":"w1","r":"r1","t":"T1","d":"d1","p":"p1"/m, hostLegacy.stdout);
     assert.equal(/^LEGACYSTREAMS .*$/m.exec(legacyRun.stdout)?.[0], /^LEGACYSTREAMS .*$/m.exec(hostLegacy.stdout)?.[0],
       `a stream constructor called on its subclass's instance answers as node does: ${legacyRun.stdout}`);
+
+    const pipelineRun = await terminal.run(`cd ${W} && node pipeline-writable.js`);
+    const hostPipeline = spawnSync('node', ['-e', FILES['pipeline-writable.js']], { encoding: 'utf8' });
+    assert.equal(hostPipeline.status, 0, hostPipeline.stderr);
+    assert.match(hostPipeline.stdout, /^PIPELINE \{"error":null,"got":\["a","b"\],"ended":true\}$/m, hostPipeline.stdout);
+    assert.equal(/^PIPELINE .*$/m.exec(pipelineRun.stdout)?.[0], /^PIPELINE .*$/m.exec(hostPipeline.stdout)?.[0],
+      `pipeline writes into a destination that has no pipe of its own, as node does: ${pipelineRun.stdout}`);
 
     const pathRun = await terminal.run(`cd ${W} && node path.js`);
     const hostPath = spawnSync('node', ['-e', FILES['path.js']], { encoding: 'utf8' });

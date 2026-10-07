@@ -27,20 +27,9 @@
  * every call (the body is one-shot per real-R2 contract), plus convenience
  * helpers text() / arrayBuffer() / json() / blob().
  */
-import { coerceBindingBody, ensureBindingDir } from './body.js';
-import { decodeJsonBase64Url, encodeJsonBase64Url, sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
-// ── Path helpers ────────────────────────────────────────────────────────
-function encKey(key) {
-    return encodeURIComponent(key);
-}
-function decKey(encoded) {
-    try {
-        return decodeURIComponent(encoded);
-    }
-    catch {
-        return encoded;
-    }
-}
+import { bodyStream, coerceBindingBody, ensureBindingDir } from './body.js';
+import { cursorPage, listObjectFiles, objectFileName, objectStoreDir, removeObjectFiles } from './object-store.js';
+import { sha256Hex } from '@nimbus-sh/core/_shared/crypto.js';
 // ── R2Object / R2ObjectBody ────────────────────────────────────────────
 export class R2Object {
     key;
@@ -70,14 +59,7 @@ export class R2ObjectBody extends R2Object {
         this._body = body;
     }
     get body() {
-        const bytes = this._body;
-        return new ReadableStream({
-            type: 'bytes',
-            start(controller) {
-                controller.enqueue(bytes);
-                controller.close();
-            },
-        });
+        return bodyStream(this._body);
     }
     get bodyUsed() { return false; /* one-shot stream is not tracked */ }
     async text() {
@@ -102,8 +84,7 @@ export class R2Emulator {
     onLog;
     constructor(opts) {
         this.vfs = opts.vfs;
-        const root = String(opts.root).replace(/^\/+/, '').replace(/\/+$/, '');
-        this.dir = (root ? root + '/' : '') + '.nimbus/r2/' + opts.binding;
+        this.dir = objectStoreDir(opts.root, 'r2', opts.binding);
         this.onLog = opts.onLog || (() => { });
     }
     // ── public API ────────────────────────────────────────────────────────
@@ -138,8 +119,7 @@ export class R2Emulator {
                 return null;
             }
         }
-        const body = typeof Blob !== 'undefined' && value instanceof Blob
-            ? new Uint8Array(await value.arrayBuffer()) : await coerceBindingBody(value);
+        const body = await coerceBindingBody(value);
         const etag = await sha256Hex(body);
         // Verify integrity hashes if supplied
         if (options?.md5 || options?.sha1 || options?.sha256 || options?.sha512) {
@@ -164,55 +144,25 @@ export class R2Emulator {
         if (options?.customMetadata)
             side.customMetadata = options.customMetadata;
         ensureBindingDir(this.vfs, this.dir);
-        const enc = encKey(key);
+        const enc = objectFileName(key);
         this.vfs.writeFile(this.dir + '/' + enc, body);
         this.vfs.writeFile(this.dir + '/' + enc + '.meta', JSON.stringify(side));
         return new R2Object(key, side);
     }
     async delete(keys) {
         const list = Array.isArray(keys) ? keys : [keys];
-        for (const k of list) {
-            const enc = encKey(k);
-            const bp = this.dir + '/' + enc;
-            const mp = bp + '.meta';
-            try {
-                if (this.vfs.exists(bp))
-                    this.vfs.unlink(bp);
-            }
-            catch { }
-            try {
-                if (this.vfs.exists(mp))
-                    this.vfs.unlink(mp);
-            }
-            catch { }
-        }
+        for (const k of list)
+            removeObjectFiles(this.vfs, this.dir, objectFileName(k));
     }
     async list(options) {
         const prefix = options?.prefix || '';
-        const limit = options?.limit ?? 1000;
-        const cursorOff = options?.cursor ? this._decodeCursor(options.cursor) : 0;
         const delimiter = options?.delimiter;
         let entries = [];
-        try {
-            const dirents = this.vfs.readdir(this.dir);
-            for (const e of dirents) {
-                if (e.type === 'directory')
-                    continue;
-                if (e.name.endsWith('.meta'))
-                    continue;
-                const decoded = decKey(e.name);
-                if (!decoded.startsWith(prefix))
-                    continue;
-                const side = this._readSideEnc(e.name);
-                if (!side)
-                    continue;
-                entries.push({ key: decoded, side });
-            }
+        for (const { key, fileName } of listObjectFiles(this.vfs, this.dir, prefix)) {
+            const side = this._readSideEnc(fileName);
+            if (side)
+                entries.push({ key, side });
         }
-        catch {
-            entries = [];
-        }
-        entries.sort((a, b) => a.key < b.key ? -1 : a.key > b.key ? 1 : 0);
         // Delimiter handling: collect common prefixes that share <prefix><…><delimiter>
         const delimitedPrefixes = [];
         if (delimiter) {
@@ -233,13 +183,11 @@ export class R2Emulator {
             }
             entries = filtered;
         }
-        const slice = entries.slice(cursorOff, cursorOff + limit);
-        const next = cursorOff + slice.length;
-        const truncated = next < entries.length;
+        const { page, next } = cursorPage(entries, options?.cursor, options?.limit ?? 1000);
         return {
-            objects: slice.map(e => new R2Object(e.key, e.side)),
-            truncated,
-            ...(truncated ? { cursor: this._encodeCursor(next) } : {}),
+            objects: page.map(e => new R2Object(e.key, e.side)),
+            truncated: next !== undefined,
+            ...(next !== undefined ? { cursor: next } : {}),
             delimitedPrefixes,
         };
     }
@@ -252,7 +200,7 @@ export class R2Emulator {
     }
     // ── internals ─────────────────────────────────────────────────────────
     _readSide(key) {
-        return this._readSideEnc(encKey(key));
+        return this._readSideEnc(objectFileName(key));
     }
     _readSideEnc(enc) {
         const mp = this.dir + '/' + enc + '.meta';
@@ -272,7 +220,7 @@ export class R2Emulator {
         }
     }
     _readBody(key) {
-        const path = this.dir + '/' + encKey(key);
+        const path = this.dir + '/' + objectFileName(key);
         return this.vfs.readFile(path);
     }
     _evalConditional(side, c) {
@@ -313,16 +261,5 @@ export class R2Emulator {
             return input.replace(/^"+|"+$/g, '').toLowerCase();
         const u = new Uint8Array(input);
         return [...u].map(b => b.toString(16).padStart(2, '0')).join('');
-    }
-    _encodeCursor(off) {
-        return encodeJsonBase64Url({ off });
-    }
-    _decodeCursor(c) {
-        try {
-            return Number(decodeJsonBase64Url(String(c)).off) || 0;
-        }
-        catch {
-            return 0;
-        }
     }
 }

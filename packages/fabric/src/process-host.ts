@@ -66,8 +66,7 @@
 
 import { networkRef, type WorkspaceNetwork, type WorkspaceNetworkRef } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { disposeRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
-import { classifyDoCall, isRetryableDoCall } from '@nimbus-sh/platform/oom-classify.js';
-import { PEER_RETRY_BACKOFF_MS, PEER_TRANSIENT_RESET_RETRIES } from './fanout.js';
+import { peerRetryDelay } from './fanout.js';
 import { hostNamespaceBinding, hostOpDispatch, type HostNamespaceBinding } from './host-dispatch.js';
 import { z } from 'zod/v4';
 import {
@@ -494,8 +493,9 @@ class PeerProcessHost implements ProcessHost {
 
   /**
    * First contact with a possibly-cold sibling DO: retry transient platform
-   * resets with the same bounded policy the fanout peers ship. Non-transient
-   * failures propagate on the first hit.
+   * resets on the fanout peers' schedule. An overloaded sibling fails the
+   * probe at once, as does any other failure: the spawn then fails fast
+   * rather than wait the overload schedule out.
    */
   private async _probe(stub: ProcessPeerStub, peerName: string): Promise<{ isolateToken: string }> {
     for (let attempt = 0; ; attempt++) {
@@ -506,10 +506,9 @@ class PeerProcessHost implements ProcessHost {
         }
         return probe;
       } catch (err) {
-        if (attempt < PEER_TRANSIENT_RESET_RETRIES && isRetryableDoCall(classifyDoCall(err))) {
-          await new Promise((r) => setTimeout(
-            r, PEER_RETRY_BACKOFF_MS[Math.min(attempt, PEER_RETRY_BACKOFF_MS.length - 1)],
-          ));
+        const backoff = peerRetryDelay(err, attempt, { retryOverloaded: false });
+        if (backoff !== null) {
+          await new Promise((r) => setTimeout(r, backoff));
           continue;
         }
         throw err;

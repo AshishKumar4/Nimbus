@@ -18,7 +18,8 @@
 //
 // Now the source stays verbatim as the file the store holds, the emit is the
 // path's `{ cjs }` module (and never also data), declaration files are never
-// transformed, and a JavaScript cell's file is its own module's text.
+// transformed, and a JavaScript file no transform changed is its own module's
+// text (one-shot-module-file-reads covers one that a transform did change).
 
 import assert from 'node:assert/strict';
 import { mkdtempSync, rmSync } from 'node:fs';

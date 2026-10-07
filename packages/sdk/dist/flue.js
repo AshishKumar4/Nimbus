@@ -5,6 +5,7 @@
  * `NimbusSandbox` handle to Flue's `SandboxFactory`/`SandboxApi` contract
  * without making `@flue/runtime` a hard dependency of the core SDK.
  */
+import { fsError } from '@nimbus-sh/core/vfs/vfs-error.js';
 export function nimbusFlue(sandbox, options = {}) {
     return {
         async createSessionEnv({ cwd }) {
@@ -21,13 +22,13 @@ export class NimbusFlueApi {
     async readFile(path) {
         const content = await this.sandbox.files.read(path);
         if (content == null)
-            throw enoent('open', path);
+            throw fsError('ENOENT', 'open', path);
         return content;
     }
     async readFileBuffer(path) {
         const content = await this.sandbox.files.readBytes(path);
         if (content == null)
-            throw enoent('open', path);
+            throw fsError('ENOENT', 'open', path);
         return content;
     }
     async writeFile(path, content) {
@@ -36,7 +37,7 @@ export class NimbusFlueApi {
     async stat(path) {
         const stat = await this.sandbox.files.stat(path);
         if (!stat)
-            throw enoent('stat', path);
+            throw fsError('ENOENT', 'stat', path);
         return toFlueStat(stat);
     }
     async readdir(path) {
@@ -99,10 +100,6 @@ function secondsToMilliseconds(timeout) {
     if (typeof timeout !== 'number' || !Number.isFinite(timeout) || timeout <= 0)
         return undefined;
     return Math.max(1, Math.round(timeout * 1000));
-}
-/** Node's error for `syscall` finding nothing at `path`: `ENOENT: no such file or directory, open 'x'`. */
-function enoent(syscall, path) {
-    return Object.assign(new Error(`ENOENT: no such file or directory, ${syscall} '${path}'`), { code: 'ENOENT', errno: -2, syscall, path });
 }
 function abortError(signal) {
     return signal.reason instanceof Error

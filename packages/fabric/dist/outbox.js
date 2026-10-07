@@ -45,7 +45,9 @@
  * `outbox_email` — deployed live without a migration, its pending mail would
  * never send and every sent key would deliver a second time.
  */
+import { errorText } from '@nimbus-sh/core/_shared/error-text.js';
 import { z } from 'zod/v4';
+import { fabricTableName, TableIds } from './table-ids.js';
 import { timers } from './timers.js';
 const PendingRowSchema = z.object({
     id: z.string(),
@@ -69,7 +71,6 @@ const RecordRowSchema = z.object({
     attempt_count: z.number(),
     last_error: z.string().nullable(),
 });
-const NAME_PATTERN = /^[a-z][a-z0-9_]{0,40}$/;
 export function outbox(...args) {
     if (args.length === 4) {
         const [host, ctx, name, policy] = args;
@@ -87,17 +88,13 @@ export class Outbox {
     table;
     schemaReady = false;
     draining = false;
-    /** Largest id ever seen, so a replacement instance mints above it. */
-    lastId = '';
-    seq = 0;
+    /** Ids order the drain, so they must grow. */
+    ids = new TableIds();
     constructor(ctx, name, policy, scheduling) {
         this.ctx = ctx;
         this.policy = policy;
         this.scheduling = scheduling;
-        if (!NAME_PATTERN.test(name)) {
-            throw new Error(`fabric: outbox name '${name}' must match ${NAME_PATTERN}`);
-        }
-        this.table = `outbox_${name}`;
+        this.table = fabricTableName('outbox', name);
         this.reason = `outbox:${name}`;
     }
     ensureSchema() {
@@ -124,21 +121,8 @@ export class Outbox {
         // exactly this partial index.
         sql.exec(`CREATE INDEX IF NOT EXISTS idx_${this.table}_pending
       ON ${this.table} (next_attempt_at) WHERE state = 'pending'`);
-        const rows = [...sql.exec(`SELECT MAX(id) AS id FROM ${this.table}`)];
-        this.lastId = rows[0]?.id ?? '';
+        this.ids.adopt(sql, this.table);
         this.schemaReady = true;
-    }
-    /**
-     * Ids order the drain, so they must grow: time-prefixed, tie-broken by a
-     * per-instance counter, and forced above the largest stored id so a
-     * replacement instance with a lagging clock cannot mint into the past.
-     */
-    mintId(now) {
-        let id = `${now.toString(36).padStart(9, '0')}-${(this.seq++).toString(36).padStart(6, '0')}`;
-        if (this.lastId !== '' && id <= this.lastId)
-            id = `${this.lastId}0`;
-        this.lastId = id;
-        return id;
     }
     /**
      * Write the intent ahead of any send. Returns `admitted: false` with the
@@ -169,7 +153,7 @@ export class Outbox {
                 return { id: existing[0].id, admitted: false };
             }
         }
-        const id = this.mintId(now);
+        const id = this.ids.mint(now);
         sql.exec(`INSERT INTO ${this.table} (id, dedupe_key, order_key, message, next_attempt_at, created_at)
        VALUES (?, ?, ?, ?, ?, ?)`, id, opts.dedupeKey ?? null, this.policy.orderBy?.(message) ?? null, JSON.stringify(message), now, now);
         await this.arm(now);
@@ -349,7 +333,4 @@ export class Outbox {
             return next === null ? undefined : { rearmAt: next };
         };
     }
-}
-function errorText(error) {
-    return error instanceof Error ? error.message : String(error);
 }

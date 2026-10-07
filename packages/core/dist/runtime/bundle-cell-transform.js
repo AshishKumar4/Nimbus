@@ -23,12 +23,14 @@ import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
 import { rewriteBundledEsmToCjs, rewriteProvidedCommonJsModules, transformSlices, } from './esbuild-service.js';
-import { hasTopLevelModuleSyntax, parseJavaScriptModule } from './javascript-ast.js';
+import { hasTopLevelModuleSyntax, MODULE_PARSE_OPTIONS, parseStatements } from './javascript-ast.js';
 /**
- * Bundled ESM this large is lowered by the bounded declaration rewrite in the
- * session rather than by esbuild: esbuild's Go heap grows with the module and
- * is never released. Its named imports are bound once, not live: at this size
- * there is no AST to find their uses in.
+ * Bundled ESM this large is lowered in the session (esbuild-service.ts
+ * rewriteBundledEsmToCjs) rather than by the transform host, whose memory
+ * grows with the module and is never given back (Oxc's wasm reaches 105 MB
+ * for workerd's 4.7 MB worker.mjs). The session reads it a statement at a
+ * time (async-module-lowering.ts readEsmRecords), in bounded memory, its
+ * imports live as everywhere else.
  */
 export const BUNDLED_ESM_REWRITE_MIN_BYTES = 512 * 1024;
 /**
@@ -80,9 +82,10 @@ export function looksLikeEsm(path, src) {
         return false;
     if (vfsPathExtension(path) !== '')
         return true;
-    // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse tells them apart.
+    // No extension: a bin script, or data such as a LICENSE whose prose says "import". Only a parse
+    // tells them apart: one keeping no tree, as a bin can be a multi-MiB bundle.
     try {
-        parseJavaScriptModule(src);
+        parseStatements(src, MODULE_PARSE_OPTIONS, {});
         return true;
     }
     catch {
@@ -115,8 +118,8 @@ export function esbuildDiagnosticShim(path, reason) {
  * Run the session's steps of the pipeline on `source`, staged at `path`.
  *
  * This is computation in the caller's isolate proportional to the source —
- * the provided-module pre-pass and, for large bundled ESM, the bounded
- * declaration rewrite — so a paced caller accounts the source before it.
+ * the provided-module pre-pass and, for large bundled ESM, its lowering to
+ * CommonJS — so a paced caller accounts the source before it.
  */
 export function prepareBundleCell(path, source) {
     const loader = bundleTypescriptLoader(path);
@@ -145,7 +148,7 @@ export function prepareBundleCell(path, source) {
     }
     // CommonJS already: only its dynamic import() calls change.
     const rewriteOnly = path.endsWith('.cjs') || (!typescript && !looksLikeEsm(path, src));
-    const cell = { path, typescript, lowered: !rewriteOnly && !typescript, absUrl };
+    const cell = { path, typescript, lowered: !rewriteOnly, absUrl };
     if (!rewriteOnly && !typescript && src.length >= BUNDLED_ESM_REWRITE_MIN_BYTES) {
         let rewritten;
         try {

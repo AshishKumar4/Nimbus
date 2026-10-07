@@ -67,13 +67,16 @@ export declare const BUNDLER_VERSION = "v12";
  * doesn't need it).
  */
 export declare function getSharedRuntimeExternals(specifier: string): string[];
-/**
- * Converts bundler-emitted ESM without constructing an AST or loading
- * esbuild-wasm. Returns null for module declarations that are not the compact,
- * semicolon-terminated shapes emitted by current JS bundlers.
- */
 /** Bind canonical esbuild/Bun CommonJS records to the runtime's provided packages. */
 export declare function rewriteProvidedCommonJsModules(source: string): string;
+/**
+ * A large ES module (bundle-cell-transform.ts BUNDLED_ESM_REWRITE_MIN_BYTES)
+ * lowered to CommonJS in the session, without the transform host: read a
+ * statement at a time (readEsmRecords, bounded memory, imports live) and
+ * emitted by the one emitter. Null for what it leaves to the host: top-level
+ * await (its body is synchronous), an import.meta member it does not bind, a
+ * module acorn cannot parse, and a source with no module syntax.
+ */
 export declare function rewriteBundledEsmToCjs(source: string, absoluteUrl: string, moduleFactory?: boolean): TransformResult | null;
 import type * as esbuild from 'esbuild-wasm/esm/browser.js';
 /** What an in-isolate engine offers: esbuild's transform and build, ready to call. */

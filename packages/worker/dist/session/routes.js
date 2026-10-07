@@ -640,38 +640,11 @@ async function routeFetch(self, request) {
         //   - process.memoryUsage() if nodejs_compat exposes it (else zeros)
         //   - performance.memory when present (Chromium-style heap info)
         self.ensureSqliteFs();
-        let nodeMem = null;
-        try {
-            const g = globalThis;
-            if (g.process && typeof g.process.memoryUsage === 'function') {
-                const mu = g.process.memoryUsage();
-                nodeMem = {
-                    rss: mu.rss | 0,
-                    heapTotal: mu.heapTotal | 0,
-                    heapUsed: mu.heapUsed | 0,
-                    external: mu.external | 0,
-                    arrayBuffers: mu.arrayBuffers | 0,
-                };
-            }
-        }
-        catch { /* ignore */ }
-        let perfMem = null;
-        try {
-            const g = globalThis;
-            if (g.performance && g.performance.memory) {
-                perfMem = {
-                    jsHeapSizeLimit: g.performance.memory.jsHeapSizeLimit | 0,
-                    totalJSHeapSize: g.performance.memory.totalJSHeapSize | 0,
-                    usedJSHeapSize: g.performance.memory.usedJSHeapSize | 0,
-                };
-            }
-        }
-        catch { /* ignore */ }
         const vfs = self.sqliteFs.getStats();
         return Response.json({
             vfs: { files: vfs.files, usedBytes: vfs.usedBytes },
-            nodeMem,
-            perfMem,
+            nodeMem: self._diagReadNodeMem(),
+            perfMem: self._diagReadPerfMem(),
             ts: Date.now(),
         });
     }

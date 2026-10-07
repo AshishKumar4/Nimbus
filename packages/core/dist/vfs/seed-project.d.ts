@@ -38,12 +38,6 @@ export interface SeedFile {
     content: string;
 }
 export declare const SEED_FILES: SeedFile[];
-/**
- * Should we run the starter-project seed?
- * Returns false if:
- *   - Sentinel exists (already seeded; user can `rm ~/.nimbus-seeded` to opt in again)
- *   - Project dir already exists (user has their own ~/example-app we must not clobber)
- */
 export declare function shouldSeedProject(vfs: SqliteVFS): boolean;
 /**
  * Returns true if the sentinel is present (seed has completed at least once).

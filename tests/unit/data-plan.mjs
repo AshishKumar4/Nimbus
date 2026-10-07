@@ -290,6 +290,50 @@ assert.equal(noTs.rules.typescript.files, 0);
   assert.equal(entries.rules.entries.files, 4);
 }
 
+// And the entries of their own dependencies: what a framework asks the dev
+// server to pre-bundle on its own behalf. Astro's dev toolbar sets Vite's
+// optimizeDeps.include to "astro > aria-query", "astro > axobject-query" and
+// "astro > html-escaper"; Vite's optimizer reads their entries with
+// readFileSync, which failed astro dev's first run whenever no earlier
+// session's miss had been learned for them (astro-real, 2 of 15). Each is
+// found from where the framework is installed, so its own nested copy
+// before the hoisted one; not its dev dependencies, which are not installed,
+// and not a level further.
+{
+  const ns = namespace({
+    'home/user/app/package.json': JSON.stringify({ dependencies: { astro: '7' } }),
+    'home/user/app/node_modules/astro/package.json': JSON.stringify({
+      name: 'astro', main: 'dist/index.js',
+      dependencies: { 'aria-query': '5', 'html-escaper': '3', escaper: '1' }, peerDependencies: { peer: '1' }, devDependencies: { devonly: '1' },
+    }),
+    'home/user/app/node_modules/astro/dist/index.js': 'x',
+    'home/user/app/node_modules/aria-query/package.json': JSON.stringify({ name: 'aria-query', main: 'lib/index.js', dependencies: { deeper: '1' } }),
+    'home/user/app/node_modules/aria-query/lib/index.js': 'x',
+    'home/user/app/node_modules/html-escaper/package.json': JSON.stringify({ name: 'html-escaper', exports: { import: './esm/index.js', default: './cjs/index.js' } }),
+    'home/user/app/node_modules/html-escaper/esm/index.js': 'x',
+    'home/user/app/node_modules/html-escaper/cjs/index.js': 'x',
+    'home/user/app/node_modules/escaper/package.json': JSON.stringify({ name: 'escaper', version: '2.0.0', main: 'hoisted.js' }),
+    'home/user/app/node_modules/escaper/hoisted.js': 'x',
+    'home/user/app/node_modules/astro/node_modules/escaper/package.json': JSON.stringify({ name: 'escaper', version: '1.0.0', main: 'nested.js' }),
+    'home/user/app/node_modules/astro/node_modules/escaper/nested.js': 'x',
+    'home/user/app/node_modules/peer/package.json': JSON.stringify({ name: 'peer', main: 'peer.js' }),
+    'home/user/app/node_modules/peer/peer.js': 'x',
+    'home/user/app/node_modules/devonly/package.json': JSON.stringify({ name: 'devonly', main: 'dev.js' }),
+    'home/user/app/node_modules/devonly/dev.js': 'x',
+    'home/user/app/node_modules/deeper/package.json': JSON.stringify({ name: 'deeper', main: 'deep.js' }),
+    'home/user/app/node_modules/deeper/deep.js': 'x',
+  });
+  const entries = await planFacetData(ns, { cwd: '/home/user/app', home: '/home/user', closure: [], refs: [] });
+  const planned = new Set(entries.paths);
+  for (const path of ['astro/dist/index.js', 'aria-query/lib/index.js', 'html-escaper/esm/index.js', 'html-escaper/cjs/index.js',
+    'astro/node_modules/escaper/nested.js', 'peer/peer.js']) {
+    assert.ok(planned.has(`home/user/app/node_modules/${path}`), `entry held: ${path}`);
+  }
+  for (const path of ['escaper/hoisted.js', 'devonly/dev.js', 'deeper/deep.js']) {
+    assert.ok(!planned.has(`home/user/app/node_modules/${path}`), `left out: ${path}`);
+  }
+}
+
 // An entry is the file Node's resolver loads for it, as the module-map walk
 // resolves it (require-resolution.ts): a `main` naming a directory goes
 // through that directory's own package.json `main`, and an extensionless

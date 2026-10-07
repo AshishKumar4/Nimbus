@@ -1,4 +1,5 @@
 import { resolve } from './path.js';
+import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
 const enc = new TextEncoder();
 const CHUNK = 65536;
 /** An operand's bytes in bounded chunks; `-` or undefined is standard input. */
@@ -28,7 +29,7 @@ export async function* inputChunks(ctx, operand, { readSize = CHUNK, fileReadSiz
         throw Object.assign(new Error(`${operand}: No such file or directory`), { code: 'ENOENT' });
     if (stat.type === 'directory')
         throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
-    const characterDevice = ((stat.mode ?? 0) & 0o170000) === 0o020000;
+    const characterDevice = direntTypeOfStat(stat) === 'character';
     if (stat.size === 0 && (!characterDevice || !slice)) {
         // Empty, a file whose size says nothing (a synthesized /proc entry), or a
         // device read to its end: read whole.

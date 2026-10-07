@@ -355,4 +355,5 @@ export declare class NimbusWorkspace {
  * user, and /etc/passwd names it.
  */
 export declare function seedBaseFilesystem(vfs: SqliteVFS, home?: string): void;
+export declare function seedBaseFilesystem(filesystem: ProcessFiles, home?: string): Promise<void>;
 //# sourceMappingURL=nimbus-workspace.d.ts.map

@@ -6,20 +6,11 @@
  * exactly the code the authority walks with (sqlite-runtime-fs-bridge.ts).
  */
 import type { RuntimeFsPath } from './os-contracts.js';
+import { type FsError } from '../vfs/vfs-error.js';
+export type { FsError };
 /** Links followed before ELOOP (Linux MAXSYMLINKS). */
 export declare const MAX_LINK_HOPS = 40;
-/** An error carrying the fields Node's `fs` puts on a failed syscall. */
-export interface FsError extends Error {
-    code: string;
-    syscall: string;
-    path: string;
-    /** The second path of a call that names two (rename, symlink's link). */
-    dest?: string;
-}
-/**
- * Node's error for `syscall` failing on `path`: `ENOENT: no such file or
- * directory, open 'x'`, and `rename 'a' -> 'b'` for a call naming `dest` too.
- */
+/** vfs-error.ts's fsError for a call on a runtime path, named by its path. */
 export declare function fsError(code: string, syscall: string, path: RuntimeFsPath, dest?: RuntimeFsPath, options?: {
     detail?: string;
     cause?: unknown;
@@ -71,5 +62,4 @@ export declare function walkBeneath(root: string, path: RuntimeFsPath, follow: b
     gid: number;
     groups: readonly number[];
 }, handedOver: (path: string, to: string) => boolean): Generator<BeneathLookup, string | null, BeneathAnswer>;
-export {};
 //# sourceMappingURL=beneath-walk.d.ts.map

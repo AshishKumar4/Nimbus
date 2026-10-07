@@ -88,7 +88,7 @@ value is SQLite's compile-time `SQLITE_MAX_SQL_LENGTH` rather than a billing
 quantity. That reading is unverified. The parameter cap is the easiest to hit
 by accident. A batched insert of more than 100/columns rows in one statement
 breaches it. Yours: bound generated statements; hand-written SQL never gets
-there. `SQLITE_MAX_STATEMENT_BYTES` and `SQLITE_MAX_BOUND_PARAMETERS` carry
+there. `SQLITE_MAX_STATEMENT_BYTES` and `SQL_MAX_BOUND_PARAMETERS` carry
 the numbers.
 
 **Storage per SQLite-backed object is 10 GB (10^10 bytes), shared by the root

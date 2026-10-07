@@ -5,7 +5,7 @@
  *
  *   <project>/
  *   ├── package.json       — deps: @nimbus-sh/sdk, @nimbus-sh/worker
- *   ├── wrangler.jsonc     — the canonical 28-LOC embedder snippet
+ *   ├── wrangler.jsonc     — built by @nimbus-sh/config's buildNimbusWranglerConfig
  *   ├── src/
  *   │   └── index.ts       — 6 LOC default-export
  *   ├── README.md          — install + deploy instructions
@@ -17,6 +17,7 @@
  */
 import { mkdirSync, writeFileSync, existsSync } from 'node:fs';
 import { resolve, join, basename, relative } from 'node:path';
+import { buildNimbusWranglerConfig } from '@nimbus-sh/config';
 import manifest from '@nimbus-sh/cli/package.json' with { type: 'json' };
 /**
  * Scaffold a new Nimbus project at the given directory.
@@ -137,66 +138,14 @@ function renderPackageJson(name) {
         },
     }, null, 2) + '\n';
 }
+/** The template's config: the builder's, with the public directory and the session Agent on. */
 function renderWranglerJsonc(name) {
-    return `{
-  "$schema": "./node_modules/wrangler/config-schema.json",
-  "name": "${name}",
-  "main": "src/index.ts",
-  "compatibility_date": "2026-09-26",
-  "placement": { "mode": "smart" },
-  "vars": {
-    "NIMBUS_AGENT_MODEL": "@cf/moonshotai/kimi-k2.6",
-    "NIMBUS_AGENT_GATEWAY_ID": "default"
-  },
-
-  "assets": {
-    "directory": "node_modules/@nimbus-sh/worker/public",
-    "binding": "ASSETS",
-    "run_worker_first": ["/api/*", "/s/*", "/new"]
-  },
-
-  // The Node-compat shims isomorphic-git + the npm installer need. Do
-  // not omit any of these — \`git clone\` will fail at runtime if any
-  // are missing.
-  "alias": {
-    "clean-git-ref": "clean-git-ref/lib/index.js",
-    "is-git-ref-name-valid": "is-git-ref-name-valid/index.js",
-    "crc-32": "crc-32",
-    "sha.js": "sha.js",
-    "pako": "pako",
-    "pify": "pify",
-    "diff": "diff",
-    "diff3": "diff3",
-    "ignore": "ignore",
-    "readable-stream": "readable-stream",
-    "simple-get": "simple-get",
-    "minimisted": "minimisted"
-  },
-
-  "durable_objects": {
-    "bindings": [
-      { "name": "NIMBUS_SESSION", "class_name": "NimbusSession" },
-      { "name": "NIMBUS_PUBLIC_DIRECTORY", "class_name": "NimbusPublicDirectory" }
-    ]
-  },
-  "migrations": [
-    { "tag": "nimbus-v1", "new_sqlite_classes": ["NimbusSession"] },
-    { "tag": "nimbus-v2", "new_sqlite_classes": ["NimbusPublicDirectory"] }
-  ],
-
-  "worker_loaders": [{ "binding": "LOADER" }],
-
-  "r2_buckets": [
-    { "binding": "NPM_TARBALL_CACHE",    "bucket_name": "${name}-npm-cache" },
-    { "binding": "NPM_PACKUMENT_CACHE",  "bucket_name": "${name}-npm-packument-cache" },
-    { "binding": "NIMBUS_RUNTIME_CACHE", "bucket_name": "nimbus-runtime-cache-public" }
-  ]
-  // \`nimbus install\` reads the runtime catalog in NIMBUS_RUNTIME_CACHE by its
-  // digest: after \`nimbus runtime sync\` fills the bucket, add the value it
-  // prints here and redeploy:
-  //   "vars": { "NIMBUS_RUNTIME_CATALOG_SHA256": "<the 64-hex digest>" }
-}
-`;
+    const config = buildNimbusWranglerConfig({
+        name,
+        nimbusPublicDirectory: true,
+        agent: { model: '@cf/moonshotai/kimi-k2.6', gatewayId: 'default' },
+    });
+    return JSON.stringify(config, null, 2) + '\n';
 }
 function renderIndexTs() {
     return `import {
@@ -277,11 +226,13 @@ A Nimbus-powered Cloudflare Worker.
 \`\`\`bash
 npm install
 CLOUDFLARE_ACCOUNT_ID=<account-id> npx @nimbus-sh/cli setup cloudflare --name ${wranglerName}
+# add the NIMBUS_RUNTIME_CATALOG_SHA256 that setup prints to "vars" in wrangler.jsonc
 npx wrangler secret put JWT_SECRET      # paste a 32+ char hex secret
 npx wrangler deploy
 \`\`\`
 
-Then visit the URL wrangler prints.
+\`nimbus install\` reads the runtime catalog by that digest. Then visit the URL
+wrangler prints.
 
 If setup reports Cloudflare R2 error 10042, enable R2 in the Cloudflare
 Dashboard once for this account, then rerun the setup command.

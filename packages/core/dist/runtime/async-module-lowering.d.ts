@@ -4,10 +4,7 @@ import { type SourceEdit } from './javascript-ast.js';
  * by name (`default` included, which `import d from` binds too). A string
  * name is any string, `"*"` included: only `namespace` is the namespace.
  *
- * A named binding's `references` are where the module uses it. Null where
- * the reader saw no scopes (the bounded bundle rewrite, which must not build
- * a multi-MiB bundle's tree): the binding is then read once, when its module
- * is required, as Node binds a builtin's or a CommonJS module's names.
+ * A named binding's `references` are where the module uses it.
  */
 export type EsmImportBinding = {
     readonly kind: 'namespace';
@@ -16,7 +13,7 @@ export type EsmImportBinding = {
     readonly kind: 'named';
     readonly local: string;
     readonly imported: string;
-    readonly references: readonly EsmReference[] | null;
+    readonly references: readonly EsmReference[];
 };
 /**
  * A use of an imported binding: a read, a call (`this` stays undefined), a
@@ -99,7 +96,20 @@ export interface CommonJsEmitOptions {
 }
 /** `esm` lowered to the CommonJS function body of an async module. */
 export declare function lowerAsyncModule(esm: string): string;
-/** The import and export declarations of ES module `source`, in source order. Throws on a syntax error. */
+/**
+ * The import and export declarations of ES module `source`, in source order,
+ * each named import binding with where the module uses it (EsmReference).
+ * Throws on a syntax error.
+ *
+ * A use is an identifier no scope inside the module binds again: not a
+ * member's, a key's or a label's name, or a declaration's own (an import
+ * name cannot be redeclared at the top level). Each function is analyzed as
+ * the parse finishes it, its uses of the names imported so far kept (those
+ * its own scopes leave free) and its body dropped; a top-level statement's
+ * uses are resolved the same way, through its functions' free uses. Imports
+ * come first in nearly every module, so one parse does; a module importing
+ * a name after code that may use it is parsed again, every name known.
+ */
 export declare function readEsmRecords(source: string): EsmRecord[];
 /** The CommonJS for ES module `source`, whose import and export declarations are `records`. */
 export declare function emitCommonJs(source: string, records: readonly EsmRecord[], options: CommonJsEmitOptions): string;

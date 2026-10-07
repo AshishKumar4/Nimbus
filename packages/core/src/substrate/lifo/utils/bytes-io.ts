@@ -6,6 +6,7 @@
 import type { ProcessView } from '../../../runtime/process-files.js';
 import type { CommandInputStream } from '../commands/types.js';
 import { resolve } from './path.js';
+import { direntTypeOfStat } from '../../../vfs/dirent-type.js';
 
 export interface ByteInputContext {
   cwd: string;
@@ -67,7 +68,7 @@ export async function* inputChunks(
   const stat = await ctx.vfs.stat(path);
   if (stat === null) throw Object.assign(new Error(`${operand}: No such file or directory`), { code: 'ENOENT' });
   if (stat.type === 'directory') throw Object.assign(new Error(`${operand}: Is a directory`), { code: 'EISDIR' });
-  const characterDevice = ((stat.mode ?? 0) & 0o170000) === 0o020000;
+  const characterDevice = direntTypeOfStat(stat) === 'character';
   if (stat.size === 0 && (!characterDevice || !slice)) {
     // Empty, a file whose size says nothing (a synthesized /proc entry), or a
     // device read to its end: read whole.

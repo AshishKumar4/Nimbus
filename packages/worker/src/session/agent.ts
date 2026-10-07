@@ -18,6 +18,7 @@ import {
   type ToolSet,
 } from 'ai';
 import { BASE_PATH_HEADER, TENANT_HEADER } from '../_shared/session-router.js';
+import { isValidSessionId } from '../_shared/session-id.js';
 import {
   base64Url,
   base64UrlDecode,
@@ -143,8 +144,8 @@ export async function handleAgentRequest(self: Host, request: Request, url: URL)
     // The browser copy goes too: it is the transport that would otherwise
     // re-seed the session on the very next request.
     const headers = new Headers();
-    appendCookie(headers, clearAuthCookie(request));
-    appendCookie(headers, clearStateCookie());
+    headers.append('Set-Cookie', clearAuthCookie(request));
+    headers.append('Set-Cookie', clearStateCookie());
     return json({ ok: true }, 200, headers);
   }
 
@@ -187,7 +188,7 @@ export async function parseAgentOAuthStateParam(
   const payload = await decodeState(state, secret);
   if (!payload || payload.v !== 1) return null;
   if (!Number.isSafeInteger(payload.exp) || payload.exp <= now) return null;
-  if (!isSessionId(payload.sessionId)) return null;
+  if (!isValidSessionId(payload.sessionId)) return null;
   if (!isNimbusTenantSegment(payload.tenantSegment)) return null;
   if (!isNonce(payload.nonce)) return null;
   return payload;
@@ -245,7 +246,7 @@ async function oauthStart(self: Host, request: Request, url: URL): Promise<Respo
   const basePath = request.headers.get(BASE_PATH_HEADER) || '';
   const sessionId = basePath.startsWith('/s/') ? basePath.slice(3) : '';
   const tenantSegment = request.headers.get(TENANT_HEADER) || 'legacy:public:_';
-  if (!isSessionId(sessionId) || !isNimbusTenantSegment(tenantSegment)) {
+  if (!isValidSessionId(sessionId) || !isNimbusTenantSegment(tenantSegment)) {
     return json({ error: 'invalid session route', code: 'E_AGENT_SESSION' }, 400);
   }
 
@@ -279,7 +280,7 @@ async function oauthStart(self: Host, request: Request, url: URL): Promise<Respo
 
   const headers = new Headers();
   try {
-    appendCookie(headers, await sealStateCookie(self, stored));
+    headers.append('Set-Cookie', await sealStateCookie(self, stored));
   } catch (e: any) {
     return json({
       error: e?.message || String(e),
@@ -323,11 +324,11 @@ async function oauthCallback(self: Host, request: Request, url: URL): Promise<Re
       expiresAt: token.expires_in ? Date.now() + Math.max(0, Number(token.expires_in) - 30) * 1000 : null,
     });
     const headers = new Headers();
-    appendCookie(headers, clearStateCookie());
+    headers.append('Set-Cookie', clearStateCookie());
     return oauthResultHtml(true, 'Cloudflare connected.', payload.sessionId, headers);
   } catch (e: any) {
     const headers = new Headers();
-    appendCookie(headers, clearStateCookie());
+    headers.append('Set-Cookie', clearStateCookie());
     return oauthResultHtml(false, e?.message || String(e), payload.sessionId, headers);
   }
 }
@@ -540,57 +541,9 @@ function agentChatStream(
             appendTextPart(parts, 'reasoning', chunk.text);
             emit({ type: 'reasoning-delta', delta: chunk.text });
             await scheduleTextFlush(chunk.text);
-          } else if (chunk.type === 'tool-call') {
-            upsertToolPart(parts, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              status: 'running',
-              startedAt: Date.now(),
-            });
-            emit({
-              type: 'tool-call',
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-            });
-            await flushStreamingTurn();
-          } else if (chunk.type === 'tool-result') {
-            const output = compactStreamValue(chunk.output);
-            const status = isToolOutputFailure(output) ? 'error' : 'done';
-            upsertToolPart(parts, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              output,
-              status,
-            });
-            emit({
-              type: 'tool-result',
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              output,
-              status,
-            });
-            await flushStreamingTurn();
-          } else if (chunk.type === 'tool-error') {
-            const error = stringifyError(chunk.error);
-            upsertToolPart(parts, {
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              output: { error },
-              error,
-              status: 'error',
-            });
-            emit({
-              type: 'tool-error',
-              toolCallId: chunk.toolCallId,
-              toolName: chunk.toolName,
-              input: chunk.input,
-              error,
-            });
+          } else if (chunk.type === 'tool-call' || chunk.type === 'tool-result' || chunk.type === 'tool-error') {
+            // A call is seen as it starts here, so it settles with a duration.
+            emit(recordToolEvent(parts, chunk, chunk.type === 'tool-call' ? Date.now() : undefined));
             await flushStreamingTurn();
           } else if (chunk.type === 'finish-step') {
             emit({
@@ -802,37 +755,56 @@ function collectTurnParts(result: { text?: string; steps?: Array<{ content?: any
         appendTextPart(parts, 'text', String(part.text || ''));
       } else if (part?.type === 'reasoning') {
         appendTextPart(parts, 'reasoning', String(part.text || ''));
-      } else if (part?.type === 'tool-call') {
-        upsertToolPart(parts, {
+      } else if (part?.type === 'tool-call' || part?.type === 'tool-result' || part?.type === 'tool-error') {
+        recordToolEvent(parts, {
+          type: part.type,
           toolCallId: String(part.toolCallId || crypto.randomUUID()),
           toolName: String(part.toolName || 'tool'),
           input: part.input,
-          status: 'running',
-        });
-      } else if (part?.type === 'tool-result') {
-        const output = compactStreamValue(part.output);
-        upsertToolPart(parts, {
-          toolCallId: String(part.toolCallId || crypto.randomUUID()),
-          toolName: String(part.toolName || 'tool'),
-          input: part.input,
-          output,
-          status: isToolOutputFailure(output) ? 'error' : 'done',
-        });
-      } else if (part?.type === 'tool-error') {
-        const error = stringifyError(part.error);
-        upsertToolPart(parts, {
-          toolCallId: String(part.toolCallId || crypto.randomUUID()),
-          toolName: String(part.toolName || 'tool'),
-          input: part.input,
-          output: { error },
-          error,
-          status: 'error',
+          output: part.output,
+          error: part.error,
         });
       }
     }
   }
   if (parts.length === 0 && result.text) appendTextPart(parts, 'text', String(result.text));
   return parts;
+}
+
+/** A tool's call, result or error, from the model stream or a finished step's content. */
+interface ToolEvent {
+  type: 'tool-call' | 'tool-result' | 'tool-error';
+  toolCallId: string;
+  toolName: string;
+  input: unknown;
+  output?: unknown;
+  error?: unknown;
+}
+
+/**
+ * Record a tool event in `parts`, as a streamed turn and a finished one both
+ * record it, and answer the stream event it is. A call recorded with
+ * `startedAt` gets a duration when it settles.
+ */
+function recordToolEvent(
+  parts: StoredTurnPart[],
+  event: ToolEvent,
+  startedAt?: number,
+): Extract<AgentStreamEvent, { type: 'tool-call' | 'tool-result' | 'tool-error' }> {
+  const { toolCallId, toolName, input } = event;
+  if (event.type === 'tool-call') {
+    upsertToolPart(parts, { toolCallId, toolName, input, status: 'running', ...(startedAt !== undefined && { startedAt }) });
+    return { type: 'tool-call', toolCallId, toolName, input };
+  }
+  if (event.type === 'tool-result') {
+    const output = compactStreamValue(event.output);
+    const status = isToolOutputFailure(output) ? 'error' : 'done';
+    upsertToolPart(parts, { toolCallId, toolName, input, output, status });
+    return { type: 'tool-result', toolCallId, toolName, input, output, status };
+  }
+  const error = stringifyError(event.error);
+  upsertToolPart(parts, { toolCallId, toolName, input, output: { error }, error, status: 'error' });
+  return { type: 'tool-error', toolCallId, toolName, input, error };
 }
 
 function appendAssistantModelMessages(modelMessages: ModelMessage[], message: StoredMessage): void {
@@ -1030,7 +1002,7 @@ async function loadStateCookie(self: Host, request: Request): Promise<OAuthState
   if (!value) return null;
   const state = await unsealCookie<OAuthStateCookie>(self, value, STATE_COOKIE_PURPOSE).catch(() => null);
   if (!state || state.v !== 1 || !isNonce(state.nonce)) return null;
-  if (!isSessionId(state.sessionId) || !isNimbusTenantSegment(state.tenantSegment)) return null;
+  if (!isValidSessionId(state.sessionId) || !isNimbusTenantSegment(state.tenantSegment)) return null;
   if (!state.codeVerifier || !state.redirectUri) return null;
   return state;
 }
@@ -1048,10 +1020,6 @@ function clearStateCookie(): string {
 
 function clearAuthCookie(request: Request): string {
   return clearNimbusAgentOAuthCookie(request);
-}
-
-function appendCookie(headers: Headers, cookie: string): void {
-  headers.append('Set-Cookie', cookie);
 }
 
 async function sealCookie(self: Host, value: unknown, purpose: string): Promise<string> {
@@ -1165,7 +1133,7 @@ function oauthResultHtml(
   sessionId?: string,
   headers?: HeadersInit,
 ): Response {
-  const sessionPath = sessionId && isSessionId(sessionId) ? `/s/${sessionId}/?agent=1` : '/';
+  const sessionPath = sessionId && isValidSessionId(sessionId) ? `/s/${sessionId}/?agent=1` : '/';
   const result: AgentOAuthResultMessage = { type: AGENT_OAUTH_RESULT_CHANNEL, ok };
   const safeMessage = escapeHtml(message);
   const safePath = escapeHtml(sessionPath);
@@ -1235,19 +1203,6 @@ function trimTrailingSlash(value: string): string {
   let end = value.length;
   while (end > 0 && value[end - 1] === '/') end--;
   return value.slice(0, end);
-}
-
-function isSessionId(value: string): boolean {
-  if (value.length < 1 || value.length > 128) return false;
-  for (let i = 0; i < value.length; i++) {
-    const ch = value.charCodeAt(i);
-    const ok =
-      (ch >= 48 && ch <= 57) ||
-      (ch >= 97 && ch <= 122) ||
-      ch === 45;
-    if (!ok) return false;
-  }
-  return true;
 }
 
 function isNonce(value: string): boolean {

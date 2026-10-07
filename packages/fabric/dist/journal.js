@@ -31,13 +31,13 @@
  * other query here repeats on a hot path.
  */
 import { z } from 'zod/v4';
+import { fabricTableName, TableIds } from './table-ids.js';
 const ClaimRowSchema = z.object({
     id: z.string(),
     payload: z.string(),
     priority: z.number(),
     received_at: z.number(),
 });
-const NAME_PATTERN = /^[a-z][a-z0-9_]{0,40}$/;
 /** One named journal on one hosting actor. Cheap accessor, like `timers()`. */
 export function journal(ctx, name) {
     return new Journal(ctx, name);
@@ -46,15 +46,11 @@ export class Journal {
     ctx;
     table;
     schemaReady = false;
-    lastId = '';
-    seq = 0;
+    ids = new TableIds();
     leaseSeq = 0;
     constructor(ctx, name) {
         this.ctx = ctx;
-        if (!NAME_PATTERN.test(name)) {
-            throw new Error(`fabric: journal name '${name}' must match ${NAME_PATTERN}`);
-        }
-        this.table = `journal_${name}`;
+        this.table = fabricTableName('journal', name);
     }
     ensureSchema() {
         if (this.schemaReady)
@@ -80,17 +76,8 @@ export class Journal {
         // grows without bound and must never be what recovery reads through.
         sql.exec(`CREATE INDEX IF NOT EXISTS idx_${this.table}_pending
       ON ${this.table} (priority DESC, id) WHERE state = 'pending'`);
-        const rows = [...sql.exec(`SELECT MAX(id) AS id FROM ${this.table}`)];
-        this.lastId = rows[0]?.id ?? '';
+        this.ids.adopt(sql, this.table);
         this.schemaReady = true;
-    }
-    /** Same shape as the outbox's: time-ordered, forced above every stored id. */
-    mintId(now) {
-        let id = `${now.toString(36).padStart(9, '0')}-${(this.seq++).toString(36).padStart(6, '0')}`;
-        if (this.lastId !== '' && id <= this.lastId)
-            id = `${this.lastId}0`;
-        this.lastId = id;
-        return id;
     }
     /**
      * Append one event. A dedupe key that already exists — pending, done, or
@@ -105,7 +92,7 @@ export class Journal {
             if (existing.length > 0)
                 return { id: existing[0].id, admitted: false };
         }
-        const id = this.mintId(now);
+        const id = this.ids.mint(now);
         sql.exec(`INSERT INTO ${this.table} (id, payload, dedupe_key, priority, received_at, not_before)
        VALUES (?, ?, ?, ?, ?, 0)`, id, JSON.stringify(payload), opts.dedupeKey ?? null, opts.priority ?? 0, now);
         return { id, admitted: true };

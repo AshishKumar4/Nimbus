@@ -36,9 +36,12 @@ export interface Scope {
  * Every node under `value`, each before its children, with the scope it is
  * in, the node it is under and the key it is under that node by (null and
  * '' for `value` itself). A program's own scope is the one whose parent is
- * `scope`.
+ * `scope`. A node `opaque` says is yielded, but not what is under it.
+ *
+ * Walked with a stack of its own, not a generator per node: a yield passes
+ * through no frames, whatever the depth.
  */
-export declare function scoped(value: unknown, scope: Scope, sloppy: boolean, functionBody?: boolean, parent?: EsNode | null, key?: string): Generator<[EsNode, Scope, EsNode | null, string]>;
+export declare function scoped(value: unknown, scope: Scope, sloppy: boolean, functionBody?: boolean, parent?: EsNode | null, key?: string, opaque?: (node: EsNode) => boolean): Generator<[EsNode, Scope, EsNode | null, string]>;
 /** The innermost scope from `scope` out that binds `name`, or null where none does. */
 export declare function bindingScope(scope: Scope | null, name: string): Scope | null;
 /**

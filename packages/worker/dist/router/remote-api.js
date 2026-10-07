@@ -2,7 +2,10 @@ import { LEGACY_PUBLIC_DO_SEGMENT, parseSessionRoute, } from '../_shared/session
 import { isValidSessionId } from '../_shared/session-id.js';
 import { z } from 'zod/v4';
 import { WireEncoder, WireDecoder } from '@nimbus-sh/core/_shared/wire-codec.js';
-import { requireScopes, requireSessionPin, verifyRequestToken, NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
+import { DEFAULT_HOME } from '@nimbus-sh/core/constants.js';
+import { NimbusAuthError, isNimbusIdComponent, } from '../auth/index.js';
+import { authorizeRequest } from '../auth/middleware.js';
+import { hasJwtSecret } from '../auth/token.js';
 import { useRpcResource } from '@nimbus-sh/platform/rpc-dispose.js';
 import { EXEC_STREAM_CONTENT_TYPE, collectExecStream, decodeExecStream } from '@nimbus-sh/core/runtime/exec-stream.js';
 import { parseExecId } from '@nimbus-sh/core/runtime/process-table.js';
@@ -61,7 +64,7 @@ export async function handleNimbusRemoteApi(request, env, sdk) {
     const profile = sdk?.config?.sandboxes?.[profileName]
         ?? sdk?.config?.sandboxes?.default
         ?? {};
-    const root = body.root ?? profile.root ?? '/home/user';
+    const root = body.root ?? profile.root ?? DEFAULT_HOME;
     const doName = `${remoteAuth.tenantSegment}:${match.sandboxId}`;
     const id = env.NIMBUS_SESSION.idFromName(doName);
     const stub = env.NIMBUS_SESSION.get(id);
@@ -140,6 +143,13 @@ function matchRemoteRpc(pathname, basePath) {
         return null;
     }
 }
+/**
+ * The remote API's tenant for a request. It authorizes as the session router
+ * does (authorizeRequest), with two differences on purpose: it is legacy only
+ * when no JWT_SECRET exists and the embedder set `allowLegacy`
+ * (NIMBUS_LEGACY_PUBLIC does not open it), and it answers in the remote
+ * envelope.
+ */
 async function resolveRemoteAuth(request, env, remote, sandboxId) {
     if (!hasJwtSecret(env)) {
         if (remote.allowLegacy) {
@@ -155,9 +165,7 @@ async function resolveRemoteAuth(request, env, remote, sandboxId) {
         }, 500);
     }
     try {
-        const verified = await verifyRequestToken(request, env);
-        requireScopes(verified, remote.requiredScopes);
-        requireSessionPin(verified, sandboxId);
+        const verified = await authorizeRequest(request, env, { scopes: remote.requiredScopes, sessionId: sandboxId });
         return {
             tenantSegment: verified.doInstanceName,
             verified,
@@ -461,9 +469,6 @@ function remoteError(value) {
 }
 function errorMessage(value) {
     return value instanceof Error ? value.message : String(value);
-}
-function hasJwtSecret(env) {
-    return typeof env.JWT_SECRET === 'string' && env.JWT_SECRET.length > 0;
 }
 function normalizeBasePath(path) {
     const trimmed = trimSlashes(String(path || DEFAULT_REMOTE_BASE_PATH));

@@ -29,6 +29,7 @@ import {
   type NimbusSessionState,
   NimbusTerminalError,
 } from './types.js';
+import { nimbusAttachUrl } from './NimbusTerminal.js';
 
 export interface UseNimbusSessionOptions {
   endpoint: string;
@@ -47,12 +48,10 @@ export function useNimbusSession(opts: UseNimbusSessionOptions): NimbusSessionSt
   const [ready, setReady] = useState(false);
   const [error, setError] = useState<NimbusTerminalError | null>(null);
 
-  const attachUrl = useMemo(() => {
-    if (!endpoint || !token) return null;
-    const base = endpoint.replace(/\/+$/, '');
-    const path = sessionId ? `/s/${encodeURIComponent(sessionId)}/` : '/new';
-    return `${base}${path}?nimbus_token=${encodeURIComponent(token)}`;
-  }, [endpoint, token, sessionId]);
+  const attachUrl = useMemo(
+    () => (endpoint && token ? nimbusAttachUrl(endpoint, token, sessionId) : null),
+    [endpoint, token, sessionId],
+  );
 
   useEffect(() => {
     if (!endpoint) return;

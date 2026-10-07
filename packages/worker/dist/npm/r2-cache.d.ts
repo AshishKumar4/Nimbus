@@ -61,25 +61,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import { NPM_REGISTRY_ORIGIN, npmRegistryOrigin } from '@nimbus-sh/core/substrate/lifo/commands/system/npm.js';
-import type { CacheTier, CacheKind } from '@nimbus-sh/core/_shared/cache-stats.js';
-/**
- * Per-call cache-stat event (cache metrics support). R2CacheClient
- * accumulates these in instance state so the SupervisorRPC caller can
- * drain + forward to the DO isolate (where /api/_diag/cache reads from).
- * The local-singleton-write approach would be invisible to the DO's
- * diag endpoint because WorkerEntrypoint instances live in a separate
- * isolate. See src/session/supervisor-rpc.ts for the flush.
- */
-export type R2CacheStatEvent = {
-    kind: 'hit';
-    tier: CacheTier;
-    cacheKind: CacheKind;
-    bytes: number;
-} | {
-    kind: 'miss';
-    tier: CacheTier;
-    cacheKind: CacheKind;
-};
+import type { CacheStatEvent } from '@nimbus-sh/core/_shared/cache-stats.js';
 /** Schema version baked into every cache key. Bump to invalidate
  *  everything atomically (e.g. if the storage shape changes or a bug
  *  poisoned a class of keys).
@@ -268,7 +250,7 @@ export declare class R2CacheClient {
      * drain. Public field so the caller in supervisor-rpc.ts can drain
      * without an explicit method call (saves an indirection).
      */
-    _cacheEvents: R2CacheStatEvent[];
+    _cacheEvents: CacheStatEvent[];
     constructor(tarballBucket: R2BucketLike, packumentBucket: R2BucketLike, readOnly?: boolean);
     private _recordHit;
     private _recordMiss;

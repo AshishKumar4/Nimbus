@@ -62,5 +62,7 @@ export declare function serializeNimbusCookie(name: string, value: string, opts:
 export declare function readNimbusCookie(request: Request, name: string): string | null;
 export declare function isNimbusCloudflareAccountId(value: string): boolean;
 export declare function isNimbusTenantSegment(value: string): boolean;
+/** A var of the Worker's env, trimmed; '' when it is unset or not a string. */
+export declare function envString(env: Record<string, unknown>, key: string): string;
 export {};
 //# sourceMappingURL=agent-oauth.d.ts.map

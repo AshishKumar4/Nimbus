@@ -159,6 +159,7 @@ export function reset() {
     }
     _lastResetAt = Date.now();
 }
+/** Fold `events` into this isolate's counters; an event of another kind is skipped, never thrown on. */
 export function recordCacheStatEvents(events) {
     if (!events || events.length === 0)
         return;
@@ -166,7 +167,7 @@ export function recordCacheStatEvents(events) {
         if (e.kind === 'hit') {
             recordHit(e.tier, e.cacheKind, e.bytes);
         }
-        else {
+        else if (e.kind === 'miss') {
             recordMiss(e.tier, e.cacheKind);
         }
     }

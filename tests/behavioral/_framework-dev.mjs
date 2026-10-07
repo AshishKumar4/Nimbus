@@ -5,10 +5,21 @@ import { BASE, connectProcessTerminal, requestHeaders, sleep, stripAnsi } from '
 
 export const frameworkProxyHost = new URL(BASE).hostname;
 
+const LONG_RUNNING = /\[(?:bin|facet) started \(long-running\): pid=(\d+)/;
+
 export async function launchFrameworkDev({ terminal, sid, cwd, command, port, accepts, budgetMs = 180_000 }) {
-  const start = await terminal.run(`cd ${cwd} && __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=${frameworkProxyHost} ${command}`, 180_000);
-  const text = stripAnsi(start.output);
-  const pid = Number(text.match(/\[(?:bin|facet) started \(long-running\): pid=(\d+)/)?.[1] || 0);
+  // The server's start line names its pid, and the shell's prompt comes back
+  // once it runs in the background. Its own output goes on reaching the
+  // terminal, and its first lines can arrive in the same frame as the prompt
+  // ("…/mvp$ 08:01:15 [vite] connected."), so the buffer need never end with
+  // the prompt that Terminal.run waits for: astro-real timed out "waiting for
+  // new prompt" on a server that was up. So the start line ends the wait; a
+  // command that never goes long-running ends it with its prompt.
+  terminal.reset();
+  terminal.cmd(`cd ${cwd} && __VITE_ADDITIONAL_SERVER_ALLOWED_HOSTS=${frameworkProxyHost} ${command}`);
+  await terminal.waitFor((b) => LONG_RUNNING.test(b) || (b.length > 0 && /[$#>]\s*$/.test(b.trimEnd().slice(-3))), 180_000, 'the server start line or the prompt');
+  const text = stripAnsi(terminal.buf);
+  const pid = Number(text.match(LONG_RUNNING)?.[1] || 0);
   if (!pid) return { ok: false, pid: 0, output: text, last: 'no resident process was launched', process: null, response: null };
   const proc = await connectProcessTerminal(sid, pid);
   let response = null;
