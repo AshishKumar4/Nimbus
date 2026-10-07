@@ -60,6 +60,34 @@ External platform constraints checked for this spec:
 - ruby.wasm is a CRuby port for WASI and edge/browser runtimes, not a Linux
   native Ruby.
 
+## Facet Resource Contract
+
+On Cloudflare, an embedder's hosting Worker must set `limits.cpu_ms >= 300000`.
+The pure config builder and deployment validation reject a smaller value,
+reporting both the host's configured CPU ceiling and the facet policy maximum.
+`packages/fabric/src/facet-limits.ts` is the single policy source; the config
+package's constant is generated from it, not a runtime dependency on fabric.
+
+Each fabric-created Loader worker and its entrypoint or Durable Object class
+receive explicit limits from that table. CPU is currently `300000` milliseconds
+for every kind. Subrequest ceilings are `1000000000` for resident processes,
+`1000000` for git, and `100000` for build, esbuild, transform, generic isolate,
+fanout, and hosted Worker kinds. Task wall time is a separate policy value:
+awaited filesystem I/O does not consume only CPU time, so Wasm dispatch uses the
+hosting facet's task default rather than an independent 30-second deadline.
+
+Resident filesystem transport retains its subrequest charging scope across
+incoming HTTP calls. Native tail telemetry showed separate HTTP invocations
+while a default `10000` budget failed on the tenth 1000-write call to one
+resident process. The deliberately generous but finite process ceiling permits
+long-lived servers; CPU and per-operation bounds still constrain runaway work.
+The injected guest budget reserves 64 requests for reporting and must not reset
+on HTTP entry or charge the same actual transport twice.
+
+Resource ceilings and filesystem delivery are separate contracts. Raising a
+ceiling does not establish that a deferred or batched write has reached its
+owner, and must not be presented as a fix for lost writes.
+
 ## Current State
 
 ### Implemented And Substantial
