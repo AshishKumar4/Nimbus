@@ -26,7 +26,7 @@
  */
 import { type WorkspaceNetwork } from '@nimbus-sh/core/_shared/workspace-network.js';
 import type { WaveStats } from '@nimbus-sh/platform/wave-writer.js';
-export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects';
+export type GitNetworkOp = 'clone' | 'fetch' | 'push' | 'fetch-objects' | 'remote-list' | 'remote-fetch' | 'remote-push';
 /**
  * The clone's job marker, in its git directory from prepare until the clone
  * is whole: the proof an abort needs that the destination is the clone's,
@@ -99,6 +99,30 @@ export interface GitNetworkOpts {
     pieceTimeoutMs?: number;
     /** fetch-objects: the promisor remote's url and the ids to fetch from it. */
     oids?: string[];
+    /** remote-list (git/engine.ts): the receive-pack side's refs. */
+    forPush?: boolean;
+    /** remote-fetch (git/engine.ts): what to fetch into the repository at `dir` (pack/remote.ts FetchPackRequest). */
+    remoteFetch?: {
+        wants: string[];
+        depth?: number;
+        deepenSince?: number;
+        deepenNot?: string[];
+        deepenRelative?: boolean;
+        filter?: string;
+        includeTag: boolean;
+        updateShallow: boolean;
+    };
+    /** remote-push (git/engine.ts): the ref updates (pack/remote.ts PushPackRequest), and the pack, streamed to the facet. */
+    remotePush?: {
+        commands: Array<{
+            ref: string;
+            old: string;
+            new: string;
+        }>;
+        atomic: boolean;
+        pushOptions: string[];
+    };
+    remotePushPack?: ReadableStream<Uint8Array> | null;
     /** Fast clone: blobs per batch (tuning; git/pack/clone.ts BLOBS_PER_BATCH by default). */
     blobsPerBatch?: number;
     /** Fast clone: batches in flight at once (tuning; CLONE_BATCH_CONCURRENCY by default). */
@@ -162,6 +186,8 @@ export interface GitNetworkResult {
     cleanupError?: string;
     /** fetch-objects: objects the promisor pack holds. */
     fetchedObjects?: number;
+    /** remote-list, remote-fetch, remote-push: the operation's answer (pack/remote.ts). */
+    remote?: unknown;
 }
 export interface GitCloneBudgetDiagnostic {
     phase: GitCloneInvocationPhase;

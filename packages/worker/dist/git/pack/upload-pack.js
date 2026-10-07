@@ -22,21 +22,21 @@ export class UploadPackError extends Error {
 const AGENT = 'agent=git/nimbus';
 const encoder = new TextEncoder();
 const decoder = new TextDecoder();
-function pktLine(text) {
+export function pktLine(text) {
     const body = encoder.encode(text);
     const out = new Uint8Array(body.byteLength + 4);
     out.set(encoder.encode((body.byteLength + 4).toString(16).padStart(4, '0')));
     out.set(body, 4);
     return out;
 }
-function headers(options, extra) {
+export function headers(options, extra) {
     const result = { 'user-agent': 'git/nimbus', ...extra };
     if (options.auth && (options.auth.username || options.auth.password)) {
         result.authorization = 'Basic ' + btoa(options.auth.username + ':' + options.auth.password);
     }
     return result;
 }
-function repoUrl(url) {
+export function repoUrl(url) {
     return url.endsWith('/') ? url.slice(0, -1) : url;
 }
 /** A request whose transient failures are retried before any byte is read (transport.ts). */
@@ -73,7 +73,7 @@ async function send(options, path, init) {
 }
 export { STALL_MS };
 /** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
-class PktReader {
+export class PktReader {
     reader;
     stallMs;
     buffer = new Uint8Array(0);
@@ -146,13 +146,14 @@ class PktReader {
         return this.reader.cancel();
     }
 }
-function text(payload) {
+export function text(payload) {
     const line = decoder.decode(payload);
     return line.endsWith('\n') ? line.slice(0, -1) : line;
 }
-export async function discover(options) {
-    const response = await send(options, '/info/refs?service=git-upload-pack', {
-        headers: headers(options, { accept: 'application/x-git-upload-pack-advertisement' }),
+/** The refs and capabilities `service` (upload-pack for a fetch, receive-pack for a push) advertises. */
+export async function discover(options, service = 'git-upload-pack') {
+    const response = await send(options, '/info/refs?service=' + service, {
+        headers: headers(options, { accept: 'application/x-' + service + '-advertisement' }),
     });
     if (response.status === 401 || response.status === 403) {
         await response.body?.cancel();
@@ -164,7 +165,7 @@ export async function discover(options) {
     }
     const reader = new PktReader(response.body.getReader(), options.stallMs);
     const first = await reader.next();
-    if (!first || text(first) !== '# service=git-upload-pack')
+    if (!first || text(first) !== '# service=' + service)
         throw new UploadPackError('not a smart HTTP server');
     if (await reader.next() !== null)
         throw new UploadPackError('advertisement header lacks its flush');
@@ -205,15 +206,29 @@ export async function discover(options) {
 /** Capabilities to ask for, from those the server offers. */
 function requestCapabilities(advertised, request) {
     // include-tag: annotated tags of the objects sent come with them, as git asks (clone follows them).
-    const capabilities = ['side-band-64k', 'ofs-delta', 'include-tag'].filter((capability) => advertised.has(capability));
+    const capabilities = ['side-band-64k', 'ofs-delta', ...(request.includeTag === false ? [] : ['include-tag'])]
+        .filter((capability) => advertised.has(capability));
     if (!advertised.has('side-band-64k'))
         throw new UploadPackError('the server does not offer side-band-64k');
     if (request.thin && advertised.has('thin-pack'))
         capabilities.push('thin-pack');
-    if (request.depth !== undefined || (request.shallows?.length ?? 0) > 0) {
+    const deepens = request.depth !== undefined || request.deepenSince !== undefined || (request.deepenNot?.length ?? 0) > 0;
+    if (deepens || (request.shallows?.length ?? 0) > 0) {
         if (!advertised.has('shallow'))
             throw new UploadPackError('the server does not support shallow fetches');
         capabilities.push('shallow');
+    }
+    // fetch-pack.c: the server must offer each deepen option the request uses.
+    for (const [used, capability] of [
+        [request.deepenSince !== undefined, 'deepen-since'],
+        [(request.deepenNot?.length ?? 0) > 0, 'deepen-not'],
+        [request.deepenRelative === true, 'deepen-relative'],
+    ]) {
+        if (!used)
+            continue;
+        if (!advertised.has(capability))
+            throw new UploadPackError('the server does not support ' + capability);
+        capabilities.push(capability);
     }
     if (request.filter !== undefined) {
         if (!advertised.has('filter'))
@@ -234,6 +249,10 @@ export async function requestPack(options, advertised, request) {
         lines.push(pktLine('shallow ' + oid + '\n'));
     if (request.depth !== undefined)
         lines.push(pktLine('deepen ' + request.depth + '\n'));
+    if (request.deepenSince !== undefined)
+        lines.push(pktLine('deepen-since ' + request.deepenSince + '\n'));
+    for (const ref of request.deepenNot ?? [])
+        lines.push(pktLine('deepen-not ' + ref + '\n'));
     if (request.filter !== undefined)
         lines.push(pktLine('filter ' + request.filter + '\n'));
     lines.push(encoder.encode('0000'));

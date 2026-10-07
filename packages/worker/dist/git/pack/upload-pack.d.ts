@@ -41,7 +41,15 @@ export interface PackRequest {
     /** The receiver's shallow commits (its .git/shallow). */
     shallows?: readonly string[];
     depth?: number;
+    /** deepen-since: history after this time (seconds since the epoch). */
+    deepenSince?: number;
+    /** deepen-not: history not reachable from these refs. */
+    deepenNot?: readonly string[];
+    /** deepen-relative: `depth` counts from the receiver's shallow boundary. */
+    deepenRelative?: boolean;
     filter?: string;
+    /** include-tag: annotated tags of the objects sent come with them (on unless false). */
+    includeTag?: boolean;
     /** Ask for a thin pack: deltas against `haves` the server need not send. */
     thin?: boolean;
 }
@@ -55,8 +63,27 @@ export declare class UploadPackError extends Error {
     readonly status?: number | undefined;
     constructor(message: string, status?: number | undefined);
 }
+export declare function pktLine(text: string): Uint8Array;
+export declare function headers(options: UploadPackOptions, extra: Record<string, string>): Record<string, string>;
+export declare function repoUrl(url: string): string;
 export { STALL_MS };
-export declare function discover(options: UploadPackOptions): Promise<Advertisement>;
+/** pkt-lines off a byte stream, pulled one at a time; null is a flush. */
+export declare class PktReader {
+    private readonly reader;
+    private readonly stallMs;
+    private buffer;
+    private done;
+    constructor(reader: ReadableStreamDefaultReader<Uint8Array>, stallMs?: number);
+    /** The next chunk, or a stall error when none comes in time (the read is cancelled). */
+    private read;
+    private fill;
+    /** The next packet's payload, null for a flush, undefined at the stream's end. */
+    next(): Promise<Uint8Array | null | undefined>;
+    cancel(): Promise<void>;
+}
+export declare function text(payload: Uint8Array): string;
+/** The refs and capabilities `service` (upload-pack for a fetch, receive-pack for a push) advertises. */
+export declare function discover(options: UploadPackOptions, service?: 'git-upload-pack' | 'git-receive-pack'): Promise<Advertisement>;
 /** One request, and the pack it answers with. */
 export declare function requestPack(options: UploadPackOptions, advertised: Set<string>, request: PackRequest): Promise<PackResponse>;
 //# sourceMappingURL=upload-pack.d.ts.map
