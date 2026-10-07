@@ -45,7 +45,7 @@ export { replLineBody } from './repl-line.js';
 export type { ModuleCell } from './modules.js';
 
 export interface InterpreterHost {
-  /** `import(specifier, options)` from code whose module URL is `parentUrl`; undefined for code with no importer. */
+  /** `import(specifier, options)` from code whose module URL is `parentUrl`, for code compiled without an origin. */
   dynamicImport(parentUrl: string | undefined, specifier: unknown, options: unknown): Promise<unknown>;
   /**
    * LAUNCH_PRIMORDIALS of the primordials module the launch loaded at its
@@ -55,19 +55,26 @@ export interface InterpreterHost {
   readonly primordials: object;
 }
 
+/**
+ * Where compiled code comes from (commonjs-cell.ts, RUNTIME CODE): what its
+ * import() calls and what its free `Function` reads. Code compiled without
+ * one imports through the host against its own module URL (none for a
+ * constructor's) and reads the global `Function`.
+ */
+export interface CodeOrigin {
+  import(specifier: unknown, options: unknown): Promise<unknown>;
+  readonly Function: unknown;
+}
+
 export interface Interpreter {
-  /**
-   * The function `new <kind>Function(...params, body)` builds. Its import()
-   * resolves against `importer`, the module that called the constructor, as
-   * Node resolves it; without one the code has no importer, as vm's has not.
-   */
-  compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, importer?: string): NativeFunction;
+  /** The function `new <kind>Function(...params, body)` builds, from `origin`. */
+  compileFunction(kind: RuntimeFunctionKind, params: readonly string[], body: string, origin?: CodeOrigin): NativeFunction;
   /**
    * The module cell for a file's text: Node's wrapper function of
    * (exports, require, module, __filename, __dirname). CommonJS text runs as
    * that function's body; an ES module as esbuild lowers it to one.
    */
-  compileModule(path: string, text: string): ModuleCell;
+  compileModule(path: string, text: string, origin?: CodeOrigin): ModuleCell;
   /**
    * A function returning the value of the script `code` when it is one
    * expression (scriptExpression): vm.runInThisContext's code, as node-shims
@@ -75,7 +82,7 @@ export interface Interpreter {
    * `this` at its top level). Code of any other shape is refused
    * (UnsupportedSyntax).
    */
-  compileExpression(code: string): NativeFunction;
+  compileExpression(code: string, origin?: CodeOrigin): NativeFunction;
   /** Run a script at global scope: its vars and functions become global object properties. */
   runScript(text: string): void;
 }
@@ -163,6 +170,14 @@ function unitContext(source: string, module: boolean, host: UnitHost, moduleScop
   return { source, module, host, imports: new SafeMap(), moduleScope };
 }
 
+/** A unit's host: `origin`'s import() and `Function`, or else the host's import() against `parentUrl` and the global `Function`. */
+function unitHost(host: InterpreterHost, origin: CodeOrigin | undefined, parentUrl: string | undefined): UnitHost {
+  if (origin === undefined) {
+    return { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options), functionBinding: null };
+  }
+  return { dynamicImport: (specifier, options) => origin.import(specifier, options), functionBinding: { value: origin.Function } };
+}
+
 export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Interpreter {
   if (host.primordials !== LAUNCH_PRIMORDIALS) throw new Error('interpreter: its built-ins were not captured at the launch start');
   if (installed !== hostOps) {
@@ -170,7 +185,7 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
     installed = hostOps;
   }
   const interpreter: Interpreter = {
-    compileFunction(kind, params, body, importer) {
+    compileFunction(kind, params, body, origin) {
       // A trailing source map is parsed only when the shortened body fails.
       const short = withoutTrailingLineComments(body);
       let parsed: { readonly node: FunctionExpression; readonly text: string };
@@ -184,20 +199,20 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       const node = ownFunctionExpression(parsed.node);
       const analysis = analyzeFunction(node);
       const root = analysis.functionScopeOf(node);
-      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(importer, specifier, options) }, null);
+      const unit = unitContext(text, false, unitHost(host, origin, undefined), null);
       const fi = new Compiler(analysis, unit, text, 0, root).rootFunction(node, 'anonymous', runtimeFunctionSource(kind, params, body));
       releaseScopes(root);
       return makeFunction(fi, ROOT_ENV, undefined);
     },
 
-    compileModule(path, text) {
+    compileModule(path, text, origin) {
       if (UNPARSED_EXTENSIONS[extensionOf(path)]) throw new UnsupportedSyntax(`${extensionOf(path)} source`);
       const parentUrl = stringSlice(path, 0, 5) === 'data:' ? 'data:text/javascript,' : `file:///${stringSlice(path, leadingSlashes(path))}`;
-      const unitHost: UnitHost = { dynamicImport: (specifier, options) => host.dynamicImport(parentUrl, specifier, options) };
+      const moduleHost = unitHost(host, origin, parentUrl);
       const compileCell = (program: Owned<Program>): ModuleCell => {
         const analysis = analyzeProgram(program, { kind: 'module', strict: true });
         const root = analysis.functionScopeOf(program);
-        const cell = moduleCell(new Compiler(analysis, unitContext(text, true, unitHost, root), text, 0, root).modulePlan(program, root));
+        const cell = moduleCell(new Compiler(analysis, unitContext(text, true, moduleHost, root), text, 0, root).modulePlan(program, root));
         releaseScopes(root);
         return cell;
       };
@@ -218,24 +233,24 @@ export function createInterpreter(hostOps: HostOps, host: InterpreterHost): Inte
       }
       const analysis = analyzeCommonJs(script, WRAPPER_PARAMS);
       const root = analysis.functionScopeOf(script);
-      const fi = new Compiler(analysis, unitContext(text, false, unitHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
+      const fi = new Compiler(analysis, unitContext(text, false, moduleHost, null), text, 0, root).commonJsFunction(script, root, WRAPPER_PARAMS);
       releaseScopes(root);
       // Called as the loader calls a staged cell, so `this` matches the next launch's.
       return makeFunction(fi, ROOT_ENV, undefined);
     },
 
-    compileExpression(code) {
+    compileExpression(code, origin) {
       const at = scriptExpression(code, REALM);
       if (at === null) throw new UnsupportedSyntax('a vm script that is not one expression');
       const body = expressionFunctionBody(stringSlice(code, 0, at.prologueEnd), stringSlice(code, at.start, at.end));
-      return interpreter.compileFunction('function', [], body);
+      return interpreter.compileFunction('function', [], body, origin);
     },
 
     runScript(text) {
       const program = ownProgram(parse(text, SCRIPT_OPTIONS));
       const analysis = analyzeProgram(program, { kind: 'script', strict: false });
       const root = analysis.functionScopeOf(program);
-      const unit = unitContext(text, false, { dynamicImport: (specifier, options) => host.dynamicImport(undefined, specifier, options) }, null);
+      const unit = unitContext(text, false, unitHost(host, undefined, undefined), null);
       const body = new Compiler(analysis, unit, text, 0, root).programBody(program, root);
       releaseScopes(root);
       if (body.g !== null) throw new UnsupportedSyntax('await in a script');

@@ -28,12 +28,12 @@ import {
   RUNTIME_INTERPRETER_OPS_MODULE,
   RUNTIME_INTERPRETER_PRIMORDIALS_MODULE,
   runtimeCodeModuleName,
-  runtimeCodeCompilesNatively,
   runtimeExpressionModule,
   runtimeFunctionModule,
   wrapCommonJsCell,
   type CommonJsCellRow,
 } from '@nimbus-sh/core/_shared/commonjs-cell.js';
+import { moduleImporterUrl } from '@nimbus-sh/core/_shared/module-importer.js';
 import { ReadAheadBudget, STDIN_SYNC_READ_BYTES, type ReadAheadAccount } from '@nimbus-sh/core/runtime/stdin-read.js';
 import { execIdField, type ProcessEntry } from '@nimbus-sh/core/runtime/process-table.js';
 import { SessionProcessSupervisor } from '@nimbus-sh/core/runtime/session-process-supervisor.js';
@@ -176,6 +176,7 @@ import {
 } from '@nimbus-sh/core/runtime/bundle-profile.js';
 import {
   CF_COMPAT_DATE,
+  DEFAULT_HOME,
   GUEST_COMPAT_FLAGS,
   VFS_BUNDLE_MAX_FILES, VFS_BUNDLE_MAX_BYTES, CWD_SNAPSHOT_MAX_FILE_BYTES,
   BUNDLE_MAX_ENCODED_BYTES,
@@ -876,22 +877,38 @@ function interpreterModules(sources: NodeFacetSources): Record<string, string> {
 }
 
 /**
+ * The URL an entry's import() resolves against and its `Function` carries:
+ * the script's own, as Node names it (`-e` code is `<cwd>/[eval]`, stdin
+ * `<cwd>/[stdin]`).
+ */
+export function entryImporterUrl(filename: string | undefined, cwd: string): string {
+  const base = cwd.replace(/\/+$/, '') || '/';
+  const path = filename === undefined || filename === '<eval>'
+    ? `${base}/[eval]`
+    : filename === '[stdin]' ? `${base}/[stdin]` : filename;
+  return moduleImporterUrl(path);
+}
+
+/**
  * The entry code as a module of the map, named for the script it came from so
  * its stack frames carry that path; `-e` code is `[eval]`. The runtime may
  * have lowered it from ESM (runtime-registry.ts), which nothing here records,
- * so its scope is read off the code itself (declaresWrapperBinding).
+ * so its scope is read off the code itself (declaresWrapperBinding). Its
+ * `Function` carries `importer` (entryImporterUrl).
  */
-function entryModule(userCode: string, filename: string | undefined): { name: string; text: string } {
+function entryModule(userCode: string, filename: string | undefined, importer: string): { name: string; text: string; importer: string } {
   const code = rewriteProvidedCommonJsModules(userCode);
   return {
     name: commonJsEntryModuleName(filename || '[eval]'),
     text: wrapCommonJsCell(code, declaresWrapperBinding(code) ? 'block' : 'function').text,
+    importer,
   };
 }
 
 /**
  * Generate one-shot runtime code with a plain fetch handler. `filename`
- * names the entry's module, and so its stack frames.
+ * names the entry's module, and so its stack frames; with `cwd` it is the
+ * entry's importer (entryImporterUrl).
  */
 export async function generateEntrypointCode(
   userCode: string,
@@ -900,8 +917,9 @@ export async function generateEntrypointCode(
   sources: NodeFacetSources,
   wasmImports: readonly FacetWasmImport[] = [],
   filename?: string,
+  cwd: string = DEFAULT_HOME,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, filename);
+  const entry = entryModule(userCode, filename, entryImporterUrl(filename, cwd));
   const bundleSource = await facetVfsBundleSourceFor(vfsState);
   return {
     code: `
@@ -1088,7 +1106,7 @@ ${RESIDENCY_MISS_REPORT}
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
-      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
+      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js", ${JSON.stringify(entry.importer)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       const __drain = await __nimbusRunEntrypointToExit(__entryResult, __entryBudgetMs);
@@ -1320,7 +1338,7 @@ export async function generateLongRunningNodeCode(
   sources: NodeFacetSources,
   pacer?: TurnBudget,
 ): Promise<GeneratedNodeFacetCode> {
-  const entry = entryModule(userCode, opts.filename);
+  const entry = entryModule(userCode, opts.filename, entryImporterUrl(opts.filename, opts.cwd || DEFAULT_HOME));
   const safeArgs = JSON.stringify({
     argv: opts.argv || [],
     env: opts.env || {},
@@ -1629,7 +1647,7 @@ ${RESIDENCY_MISS_REPORT}
       // Compiled here, by the registry, the first time. A SyntaxError in the
       // entry has no location of its own; the wrapper leads its stack with
       // the file, as Node does.
-      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js")(
+      const __entryResult = __nimbusEntryWrapper(${JSON.stringify(entry.name)}, filename || "/home/user/script.js", ${JSON.stringify(entry.importer)})(
         mod.exports, __require, mod, filename || "/home/user/script.js", dirname || "/home/user"
       );
       if (attachedTty) {
@@ -5148,12 +5166,7 @@ export class FacetManager {
   private async _entryDynamicImports(code: string, filename: string | undefined, cwd: string, pacer: TurnBudget): Promise<string> {
     if (!mayHaveDynamicImport(code)) return code;
     if (this.esbuild === null) throw new Error('entry dynamic import requires the transform service');
-    const base = cwd.replace(/\/+$/, '') || '/';
-    const path = filename === undefined || filename === '<eval>'
-      ? `${base}/[eval]`
-      : filename === '[stdin]' ? `${base}/[stdin]` : filename;
-    const parentUrl = 'file:///' + path.replace(/^\/+/, '');
-    return transformEntryScript(code, parentUrl, { host: this.esbuild, store: this._transformStore(), pacer });
+    return transformEntryScript(code, entryImporterUrl(filename, cwd), { host: this.esbuild, store: this._transformStore(), pacer });
   }
 
   /**
@@ -5742,8 +5755,6 @@ export class FacetManager {
   private async _stagedRuntimeCode(learning: LaunchLearning, pacer: TurnBudget): Promise<Map<string, string> | undefined> {
     const modules = new Map<string, string>();
     for (const [codeKey, entry] of learning.code) {
-      // Its import() needs the module that built it, which only its own launch knows: interpreted there.
-      if (!runtimeCodeCompilesNatively(entry)) continue;
       if (entry.kind === 'expression') {
         modules.set(codeKey, runtimeExpressionModule(entry.code));
         continue;
@@ -6808,7 +6819,7 @@ export class FacetManager {
             // own assets, for the same reason.
             const stagedModules = await this._stagedBindingModulesByValue(vfsState.stagedBindings ?? []);
             const entryCode = await this._entryDynamicImports(code, opts.filename, opts.cwd || '/home/user', pacer);
-            const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename);
+            const generatedWorker = await generateEntrypointCode(entryCode, vfsState, usesSqlite, sources, wasmImports, opts.filename, opts.cwd || DEFAULT_HOME);
             const codeModules: Record<string, { cjs: string }> = {};
             for (const [name, text] of Object.entries(generatedWorker.codeModules)) codeModules[name] = { cjs: text };
             if (diagSink) {

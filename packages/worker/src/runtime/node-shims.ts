@@ -6582,45 +6582,10 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
     }
     return found;
   };
-  // The module import() in a constructor's code resolves against, as Node
-  // resolves it: the module that called the constructor, which is the first
-  // of the program's own modules on the stack, a cell (file:///bundle/vfs/
-  // <path>) or the entry (file:///bundle/entry/<path>), whose names
-  // percent-encode the path (commonjs-cell.ts moduleNameUnder). \`-e\` and
-  // stdin code is <cwd>/[eval] and <cwd>/[stdin], as the entry's own
-  // imports are. A frame of code the interpreter runs is its own, so a
-  // constructor called from interpreted code takes the program module that
-  // called into it. Read with V8's own stack format, whatever the program set.
-  const importerOfCaller = () => {
-    const prepare = Error.prepareStackTrace;
-    const limit = Error.stackTraceLimit;
-    let stack;
-    try {
-      Error.prepareStackTrace = undefined;
-      Error.stackTraceLimit = 64;
-      stack = String(new Error().stack);
-    } finally {
-      Error.prepareStackTrace = prepare;
-      Error.stackTraceLimit = limit;
-    }
-    for (const line of stack.split("\\n")) {
-      const at = line.indexOf("file:///bundle/");
-      if (at < 0) continue;
-      let url = line.slice(at);
-      if (url.endsWith(")") && line.lastIndexOf("(", at) >= 0) url = url.slice(0, -1);
-      const own = /^file:\\/\\/\\/bundle\\/(vfs|entry)\\/(.+?):\\d+:\\d+$/.exec(url);
-      if (own === null) continue;
-      let path;
-      try { path = decodeURIComponent(own[2]); } catch { continue; }
-      if (own[1] === "entry" && (path === "[eval]" || path === "[stdin]")) {
-        path = String(globalThis.process.cwd()).replace(/\\/+$/, "") + "/" + path;
-      }
-      return "file:///" + path.replace(/^\\/+/, "");
-    }
-    return undefined;
-  };
-  for (const [kind, Native] of kinds) {
-    if (Native.__nimbusNative) continue;
+  // A constructor routed to the runtime-code service, for code of \`kind\`
+  // from \`origin()\` (commonjs-cell.ts, RUNTIME CODE): native first, so a
+  // context that may compile does.
+  const routedConstructor = (kind, Native, origin) => {
     const routed = function (...args) {
       try {
         return new.target === undefined ? Reflect.apply(Native, undefined, args) : Reflect.construct(Native, args, new.target);
@@ -6630,7 +6595,7 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
         const params = args.slice(0, -1).map(String);
         const body = args.length > 0 ? String(args[args.length - 1]) : "";
         try {
-          const fn = service.compileFunction(kind, params, body, importerOfCaller());
+          const fn = service.compileFunction(kind, params, body, origin());
           // A subclass's \`new\` (\`class F extends Function\`) makes an instance of the subclass.
           if (new.target !== undefined && new.target !== routed) {
             const proto = new.target.prototype;
@@ -6662,9 +6627,42 @@ const __nimbusDecodeStringLiteral = ${DECODE_JAVASCRIPT_STRING_LITERAL_SOURCE};
     Object.defineProperty(routed, "__nimbusNative", { value: Native });
     Object.defineProperty(routed, "toString", { value: () => Reflect.apply(nativeToString, Native, []), configurable: true, writable: true });
     Object.setPrototypeOf(routed, Object.getPrototypeOf(Native));
+    return routed;
+  };
+  const nativeFunction = Function.__nimbusNative ?? Function;
+  for (const [kind, Native] of kinds) {
+    if (Native.__nimbusNative) continue;
+    const routed = routedConstructor(kind, Native, () => unbound);
     Object.defineProperty(Native.prototype, "constructor", { value: routed, writable: true, configurable: true, enumerable: false });
     if (kind === "function") globalThis.Function = routed;
   }
+  // A refusing origin: code whose import() Node refuses (vm's), or whose
+  // importer only its module's own Function carries. Its code sees the
+  // global Function.
+  const refusingOrigin = (code, message) => Object.freeze({
+    import: () => Promise.reject(Object.assign(new TypeError(message), { code })),
+    Function: globalThis.Function,
+  });
+  const unbound = refusingOrigin("ERR_NIMBUS_IMPORT_NO_IMPORTER",
+    "import() in code built by a function constructor that is not its module's own Function (one reached through a "
+    + "prototype, such as AsyncFunction, or through globalThis) has no importer here: Node resolves it against the "
+    + "module that called the constructor, which only that module's own Function carries in a Worker. Build the "
+    + "code with the module's Function, or import outside it.");
+  // Each module's origin (THE WRAPPER): import() against its URL, and a
+  // Function of its own whose code keeps the origin. One per URL, so a
+  // module's Function is one object for as long as the process runs.
+  const origins = new Map();
+  globalThis.__nimbusCodeOrigin = (importer) => {
+    let origin = origins.get(importer);
+    if (origin === undefined) {
+      const Bound = routedConstructor("function", nativeFunction, () => origin);
+      origin = Object.freeze({ import: (specifier, options) => globalThis.__nimbusDynamicImport(importer, specifier, options), Function: Bound });
+      origins.set(importer, origin);
+    }
+    return origin;
+  };
+  globalThis.__nimbusUnboundOrigin = unbound;
+  globalThis.__nimbusVmOrigin = refusingOrigin("ERR_VM_DYNAMIC_IMPORT_CALLBACK_MISSING", "A dynamic import callback was not specified.");
 })();
 
 const __vmMod = (() => {
@@ -6727,7 +6725,8 @@ const __vmMod = (() => {
         if (e?.code !== 'ERR_VM_DYNAMIC_EVAL_DISALLOWED' || !service
           || options?.timeout !== undefined || options?.breakOnSigint
           || options?.importModuleDynamically || options?.cachedData) throw e;
-        return apply(service.compileExpression(String(code)), scriptThis, []);
+        // vm's code has no importer: Node refuses its import() (globalThis.__nimbusVmOrigin).
+        return apply(service.compileExpression(String(code), globalThis.__nimbusVmOrigin), scriptThis, []);
       }
     },
     // A function of \`params\` and \`code\` is what the Function constructor
@@ -6741,7 +6740,7 @@ const __vmMod = (() => {
         const refused = e && e.code === 'ERR_VM_DYNAMIC_EVAL_DISALLOWED';
         const plain = !options || (!options.contextExtensions?.length && !options.parsingContext);
         if (!refused || !service || !plain) throw e;
-        return service.compileFunction("function", Array.from(params, String), String(code));
+        return service.compileFunction("function", Array.from(params, String), String(code), globalThis.__nimbusVmOrigin);
       }
     },
     Script: real?.Script ?? class { constructor() { throw honestError('Script', null); } },

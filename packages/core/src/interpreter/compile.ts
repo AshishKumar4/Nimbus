@@ -80,6 +80,11 @@ const SHORT: object = objectFreeze({ short: true });
 export interface UnitHost {
   /** The unit's `import(specifier, options)`. */
   readonly dynamicImport: ((specifier: unknown, options: unknown) => Promise<unknown>) | null;
+  /**
+   * What the unit's free `Function` reads, as a native cell reads its
+   * module's (commonjs-cell.ts, THE WRAPPER); null where it reads the global.
+   */
+  readonly functionBinding: { readonly value: unknown } | null;
 }
 
 /** An import binding's source: the slot holds the module (named, default) or the namespace object. */
@@ -1419,6 +1424,8 @@ export class Compiler {
   private globalRead(name: string, forTypeof: boolean): Sync {
     // The global object's undefined, NaN and Infinity are read-only and cannot be deleted.
     if (name === 'undefined') return () => undefined;
+    const bound = name === 'Function' ? this.unit.host.functionBinding : null;
+    if (bound !== null) return () => bound.value;
     if (name === 'NaN') return () => NaN;
     if (name === 'Infinity') return () => Infinity;
     const ops = operators();

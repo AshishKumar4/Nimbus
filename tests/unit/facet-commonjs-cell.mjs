@@ -1,8 +1,8 @@
 #!/usr/bin/env bun
 // facet-commonjs-cell — a node process's module cell as the `{ cjs }` module
-// its guest's registry compiles on first require. The module's export is Node's
-// module wrapper function; the shims call it with their own exports, require,
-// module, __filename and __dirname. What must hold is Node's meaning of a
+// its guest's registry compiles on first require. The module's export, given
+// the module's own Function, is Node's module wrapper function; the shims call
+// it with their own exports, require, module, __filename and __dirname. What must hold is Node's meaning of a
 // CommonJS cell, an ES module lowered to CommonJS keeping its own top-level
 // `const require` / `const __dirname`, module names that stay distinct and
 // stable under the registry's URL parsing, and runtime code that builds what
@@ -28,10 +28,19 @@ function load(text) {
   return moduleObject.exports;
 }
 
+/** A stand-in for a module's own Function (THE WRAPPER). */
+const MODULE_FUNCTION = function ModuleFunction() {};
+
 function run(cell, scope = 'function', requireImpl = () => 'required') {
   const mod = { exports: {} };
-  load(wrapCommonJsCell(cell, scope).text)(mod.exports, requireImpl, mod, '/app/cell.js', '/app');
+  load(wrapCommonJsCell(cell, scope).text)(MODULE_FUNCTION)(mod.exports, requireImpl, mod, '/app/cell.js', '/app');
   return mod.exports;
+}
+
+/** A staged constructor's function, from an origin: its import() and its Function. */
+const ORIGIN = { import: (specifier) => Promise.resolve('imported ' + specifier), Function: MODULE_FUNCTION };
+function staged(text, origin = ORIGIN) {
+  return load(text)(origin.import, origin.Function);
 }
 
 // A CommonJS cell is Node's function body: what Node accepts, it accepts —
@@ -45,6 +54,9 @@ function run(cell, scope = 'function', requireImpl = () => 'required') {
   const out = run('const before = typeof require;\nvar require = require;\nvar exports = module.exports = { before, after: require("q") };');
   assert.deepEqual(out, { before: 'function', after: 'required' }, 'var redeclares a parameter and keeps its value');
   assert.equal(run('module.exports = arguments.length;\nreturn;\nmodule.exports = "unreached";'), 5, 'top-level return and the five arguments');
+  assert.equal(run('module.exports = Function;'), MODULE_FUNCTION, 'a cell\'s Function is its module\'s own');
+  assert.equal(run('let Function = 1;\nmodule.exports = Function;'), 1, 'and a cell may declare its own');
+  assert.equal(run('function Function() {}\nmodule.exports = Function.name;'), 'Function');
   console.log('  [1] a CommonJS cell runs as Node\'s own wrapper runs it');
 }
 
@@ -134,15 +146,26 @@ function run(cell, scope = 'function', requireImpl = () => 'required') {
     ['function', Function, [], '"use strict"; return "}"'],
   ];
   for (const [kind, Ctor, params, body] of cases) {
-    const built = load(runtimeFunctionModule(kind, params, body));
+    const built = staged(runtimeFunctionModule(kind, params, body));
     const native = new Ctor(...params, body);
     assert.equal(built.toString(), native.toString(), `${kind}: the source text is the constructor's`);
     assert.equal(built.constructor, Ctor, `${kind}: the same kind of function`);
   }
-  assert.equal(load(runtimeFunctionModule('function', ['a', 'b'], 'return a * b'))(6, 7), 42);
-  assert.equal(load(runtimeFunctionModule('function', [], 'return typeof module + typeof require + typeof exports'))(),
+  assert.equal(staged(runtimeFunctionModule('function', ['a', 'b'], 'return a * b'))(6, 7), 42);
+  assert.equal(staged(runtimeFunctionModule('function', [], 'return typeof module + typeof require + typeof exports'))(),
     'undefinedundefinedundefined', 'the body sees the global scope, not the CommonJS module\'s');
-  console.log('  [7] a Function-constructor module builds the constructor\'s function');
+  // The code's import() is its origin's, and its free Function its origin's
+  // Function; one module serves every origin, each call building a function
+  // of its own, as each constructor call does.
+  const importing = runtimeFunctionModule('function', ['m'], 'return [import(m), Function, "import(m)"]');
+  const [imported, fn, text] = staged(importing)('./x.mjs');
+  assert.equal(await imported, 'imported ./x.mjs', 'import() is the origin\'s');
+  assert.equal(fn, MODULE_FUNCTION, 'the code sees its origin\'s Function');
+  assert.equal(text, 'import(m)', 'text in a string is not a call');
+  const other = { import: (specifier) => Promise.resolve('elsewhere ' + specifier), Function: MODULE_FUNCTION };
+  assert.equal(await staged(importing, other)('./x.mjs')[0], 'elsewhere ./x.mjs', 'another origin, the same module');
+  assert.notEqual(staged(importing), staged(importing), 'each build is a function of its own');
+  console.log('  [7] a Function-constructor module builds the constructor\'s function, from its origin');
 }
 
 // Text the constructor refuses is refused, and never runs.
@@ -160,7 +183,7 @@ function run(cell, scope = 'function', requireImpl = () => 'required') {
     const Ctor = kind === 'async' ? (async () => {}).constructor : Function;
     assert.throws(() => new Ctor(...params, body), SyntaxError, `the premise: V8 refuses ${JSON.stringify([params, body])}`);
     assert.notEqual(runtimeFunctionSyntaxError(kind, params, body), null, `refused: ${JSON.stringify([params, body])}`);
-    assert.throws(() => load(runtimeFunctionModule(kind, params, body)), SyntaxError);
+    assert.throws(() => staged(runtimeFunctionModule(kind, params, body)), SyntaxError);
   }
   assert.equal(globalThis.__nimbusBreakout, undefined, 'no refused text ran');
   console.log('  [8] text the constructor refuses throws its SyntaxError, and does not run');
@@ -194,17 +217,17 @@ console.log('facet-commonjs-cell OK');
 // hold.
 {
   const jiti = '(function (exports, require, module, __filename, __dirname, jitiImport, jitiESMResolve) { module.exports = { answer: 42, args: typeof jitiImport };\n});';
-  const wrapper = load(runtimeExpressionModule(jiti))();
+  const wrapper = staged(runtimeExpressionModule(jiti))();
   const mod = { exports: {} };
   wrapper(mod.exports, () => {}, mod, '/w/nuxt.config.ts', '/w', () => {});
   assert.deepEqual(mod.exports, { answer: 42, args: 'function' }, 'the staged expression is jiti\'s wrapper');
-  assert.equal(load(runtimeExpressionModule('1 + 2 // trailing'))(), 3);
+  assert.equal(staged(runtimeExpressionModule('1 + 2 // trailing'))(), 3);
   // A script of directives alone completes with its last one's value, as V8's vm.runInThisContext answers.
-  assert.equal(load(runtimeExpressionModule('"hello"'))(), 'hello');
-  assert.equal(load(runtimeExpressionModule("'use strict'; 'a';\n'b'"))(), 'b');
-  assert.equal(load(runtimeExpressionModule("'use strict';(() => function () { return this; })"))()()(), undefined, 'vite-node\'s prologue is kept');
-  assert.throws(() => load(runtimeExpressionModule('(function () {')), SyntaxError);
-  assert.throws(() => load(runtimeExpressionModule('var x = 1; x')), /one expression/);
+  assert.equal(staged(runtimeExpressionModule('"hello"'))(), 'hello');
+  assert.equal(staged(runtimeExpressionModule("'use strict'; 'a';\n'b'"))(), 'b');
+  assert.equal(staged(runtimeExpressionModule("'use strict';(() => function () { return this; })"))()()(), undefined, 'vite-node\'s prologue is kept');
+  assert.throws(() => staged(runtimeExpressionModule('(function () {')), SyntaxError);
+  assert.throws(() => staged(runtimeExpressionModule('var x = 1; x')), /one expression/);
   assert.notEqual(runtimeCodeKey({ kind: 'expression', code: jiti }), runtimeCodeKey({ kind: 'function', params: [], body: jiti }));
 }
 console.log('facet-commonjs-cell: vm expressions staged');

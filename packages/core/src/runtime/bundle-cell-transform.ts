@@ -23,6 +23,7 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { errorText } from '../_shared/error-text.js';
 import { vfsPathExtension } from '../vfs/path.js';
 import { mayHaveDynamicImport } from './dynamic-import-rewrite.js';
+import { moduleImporterUrl } from '../_shared/module-importer.js';
 import {
   rewriteBundledEsmToCjs,
   rewriteProvidedCommonJsModules,
@@ -163,7 +164,7 @@ export function prepareBundleCell(path: string, source: string): BundleCell {
   // each evaluation's module object, including its query and fragment.
   // The source URL still supplies the static parent for rewritten dynamic
   // imports and diagnostics.
-  const absUrl = 'file:///' + path.replace(/^\/+/, '');
+  const absUrl = moduleImporterUrl(path);
   // Every cell's dynamic import() is the process's: the transform keeps
   // them, and the facet rewrites each to the process's ESM loader.
   const moduleMetadata = !path.endsWith('.cjs') && (typescript || looksLikeEsm(path, source));
