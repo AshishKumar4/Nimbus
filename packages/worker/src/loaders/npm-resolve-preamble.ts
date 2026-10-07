@@ -18,6 +18,7 @@
  *   - RESOLVE_VERSION(versions, range) → string | null
  *   - IS_SEMVER_RANGE(range)    → boolean
  *   - PICK_VERSION(versions, distTags, range) → string | null
+ *   - PARSE_REGISTRY_REQUEST(name, range) → { installName, registryName, range, alias }
  *
  * The package-ABI policy block is GENERATED at supervisor module-load
  * time: `PACKAGE_ABI_POLICY` is embedded as JSON and the `policy*`
@@ -26,8 +27,11 @@
  * (`tests/unit/package-abi-policy.mjs`) extracts the injected policy and
  * asserts equality with the supervisor module.
  *
- * The semver helpers are embedded from src/npm/semver.ts the same way, so
- * the facet picks versions with the supervisor's own implementation.
+ * Versions and specs are npm's own semver and npm-package-arg behind
+ * @nimbus-sh/core's npm-semver.ts and npm-spec.ts, which the build bundles
+ * into an IIFE (npm/resolve-libs.generated.ts, scripts/bundle-facet-workers.mjs)
+ * whose free names are only the builtin imports spliced ahead of it and a
+ * facet's globals: the facet picks versions with the supervisor's own code.
  *
  * Preamble bytes are part of the loader-cache key for IsolatePool —
  * any edit invalidates the warm slot and forces a re-load on next
@@ -45,18 +49,10 @@ import {
   policyNativePlatformReject,
   STAGED_ARTIFACT_BIN_PREFIX,
 } from '../facets/wasm-swap-registry.js';
-import {
-  compareSemver,
-  isSemverRange,
-  parseSemver,
-  pickPackumentVersion,
-  resolveVersion,
-  satisfiesRange,
-  semverComparators,
-} from '@nimbus-sh/core/_shared/npm-semver.js';
-import { packageRangeSeparator, parseRegistryRequest } from '@nimbus-sh/core/_shared/npm-spec.js';
+import { NPM_RESOLVE_NODE_IMPORTS, NPM_RESOLVE_SRC } from '../npm/resolve-libs.generated.js';
 
 export const NPM_RESOLVE_PREAMBLE: string = `
+${NPM_RESOLVE_NODE_IMPORTS}
 // ── Package ABI policy (serialized from src/facets/wasm-swap-registry.ts) ──
 // Generated — do not edit here. PACKAGE_ABI_POLICY is the single source
 // of truth; tests/unit/package-abi-policy.mjs enforces parity.
@@ -94,27 +90,17 @@ function STAGED_ARTIFACT_APPLY(pkg, entry) {
   __policyApplyStagedArtifact(pkg, entry, STAGED_ARTIFACT_BIN_PREFIX);
 }
 
-// ── Semver (embedded from src/npm/semver.ts) ────────────────────────────
-// Generated — do not edit here. npm/semver.ts is the single implementation;
-// tests/unit/npm-semver.mjs asserts the embedded functions answer exactly as
-// the exported ones do.
-${parseSemver.toString()}
-${compareSemver.toString()}
-${semverComparators.toString()}
-${satisfiesRange.toString()}
-${isSemverRange.toString()}
-${resolveVersion.toString()}
-${pickPackumentVersion.toString()}
-// ── Spec parsing (embedded from @nimbus-sh/core _shared/npm-spec.ts) ─────
-// Generated the same way — the facet body references the bare
-// parseRegistryRequest binding.
-${packageRangeSeparator.toString()}
-${parseRegistryRequest.toString()}
-function PARSE_SEMVER(v) { return parseSemver(v); }
-function COMPARE_SEMVER(a, b) { return compareSemver(a, b); }
-function SATISFIES_RANGE(version, range) { return satisfiesRange(version, range); }
-function RESOLVE_VERSION(versions, range) { return resolveVersion(versions, range); }
-function IS_SEMVER_RANGE(range) { return isSemverRange(range); }
-function PICK_VERSION(versions, distTags, range) { return pickPackumentVersion(versions, distTags, range); }
+// ── Versions and specs (bundled from @nimbus-sh/core npm-semver.ts, npm-spec.ts) ──
+// Generated — do not edit here; tests/unit/npm-semver.mjs asserts the bundle
+// answers exactly as the modules do, and that the module these declarations
+// make with the facet reads nothing a facet lacks.
+${NPM_RESOLVE_SRC}
+function PARSE_SEMVER(v) { return __nimbusNpmResolve.parseSemver(v); }
+function COMPARE_SEMVER(a, b) { return __nimbusNpmResolve.compareSemver(a, b); }
+function SATISFIES_RANGE(version, range) { return __nimbusNpmResolve.satisfiesRange(version, range); }
+function RESOLVE_VERSION(versions, range) { return __nimbusNpmResolve.resolveVersion(versions, range); }
+function IS_SEMVER_RANGE(range) { return __nimbusNpmResolve.isSemverRange(range); }
+function PICK_VERSION(versions, distTags, range) { return __nimbusNpmResolve.pickPackumentVersion(versions, distTags, range); }
+function PARSE_REGISTRY_REQUEST(name, range) { return __nimbusNpmResolve.parseRegistryRequest(name, range); }
 // ── end npm-resolve preamble ────────────────────────────────────────────
 `;

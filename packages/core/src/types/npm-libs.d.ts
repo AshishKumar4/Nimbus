@@ -1,7 +1,8 @@
-// The surface of npm's own libraries the shell's npm runs (pinned to the
-// versions npm 10.9.8 ships): `npm init`'s package.json (npm-init.ts) and
-// npm's configuration (npm-config.ts: nopt and @npmcli/config's definitions,
-// field parsing and validation).
+// The surface of npm's own libraries every npm here runs (pinned to the
+// versions npm 10.9.8 ships): versions and specs (_shared/npm-semver.ts,
+// npm-spec.ts), `npm init`'s package.json (npm-init.ts) and npm's
+// configuration (npm-config.ts: nopt and @npmcli/config's definitions, field
+// parsing and validation).
 
 declare module 'hosted-git-info' {
   interface GitHost {
@@ -26,10 +27,17 @@ declare module 'npm-package-arg' {
     registry?: boolean;
     name: string | null;
     scope: string | null;
+    raw: string;
     rawSpec: string;
     hosted?: { user: string; project: string } | null;
+    /** An alias's target. */
+    subSpec?: Result;
   }
-  function npa(arg: string, where?: string): Result;
+  interface Npa {
+    (arg: string, where?: string): Result;
+    resolve(name: string, spec: string, where?: string): Result;
+  }
+  const npa: Npa;
   export default npa;
 }
 
@@ -49,9 +57,16 @@ declare module 'ini' {
 }
 
 declare module 'semver' {
+  type Options = boolean | { loose?: boolean; includePrerelease?: boolean };
+  interface SemVer { major: number; minor: number; patch: number; prerelease: ReadonlyArray<string | number> }
   const semver: {
-    valid(version: unknown, loose?: boolean): string | null;
-    clean(version: string, loose?: boolean): string | null;
+    valid(version: unknown, options?: Options): string | null;
+    clean(version: string, options?: Options): string | null;
+    parse(version: string, options?: Options): SemVer | null;
+    compare(a: string, b: string, options?: Options): number;
+    satisfies(version: string, range: string, options?: Options): boolean;
+    validRange(range: string, options?: Options): string | null;
+    maxSatisfying(versions: string[], range: string, options?: Options): string | null;
   };
   export default semver;
 }

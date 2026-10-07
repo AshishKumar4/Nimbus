@@ -5,7 +5,7 @@ import { writeTarballStream } from '../../../../_shared/tarball.js';
 import { isNativeBinPath } from '../../../../runtime/os-contracts.js';
 import { npmBinMap } from '../../../../runtime/npm-bin-map.js';
 import { pickPackumentVersion } from '../../../../_shared/npm-semver.js';
-import { packageRangeSeparator, parseRegistryRequest } from '../../../../_shared/npm-spec.js';
+import { parseRegistryRequest, splitPackageSpec } from '../../../../_shared/npm-spec.js';
 import { sriDigestOf, sriDigestsEqual, strongestSriEntry } from '../../../../_shared/tarball-integrity.js';
 import { RegistryPackumentSchema, RegistrySearchResponseSchema, renderSearchTable, } from './registry-schemas.js';
 import { parseNpmInstallInvocation, } from './npm-install-args.js';
@@ -35,11 +35,6 @@ export function npmRegistryOrigin(configured) {
 }
 function getRegistry(env) {
     return npmRegistryOrigin(env.NPM_REGISTRY);
-}
-/** `name[@range]` split where npm's npa splits it (core _shared/npm-spec.ts). */
-function parsePackageSpec(spec) {
-    const at = packageRangeSeparator(spec);
-    return at === -1 ? { name: spec, version: null } : { name: spec.slice(0, at), version: spec.slice(at + 1) };
 }
 // ─── Registry fetch ───
 function encodePackageName(name) {
@@ -334,7 +329,7 @@ async function npmInstall(ctx, registry, kernel, deps) {
         await ctx.stdout.write('Installing packages...\n');
         const seen = new Set();
         for (const spec of packages) {
-            const { name, version } = parsePackageSpec(spec);
+            const { name, range: version } = splitPackageSpec(spec);
             try {
                 installed += await installSinglePackage(name, version, targetBase, ctx.vfs, npmRegistry, ctx.signal, ctx.stdout, ctx.stderr, invocation.global, registry, seen, invocation.global ? globalBinDir : undefined);
                 // Update package.json for local installs
@@ -586,7 +581,7 @@ async function npmInfo(ctx, network) {
         await ctx.stderr.write('Usage: npm info <package>\n');
         return 1;
     }
-    const { name, version } = parsePackageSpec(spec);
+    const { name, range: version } = splitPackageSpec(spec);
     const npmRegistry = getRegistry(ctx.env);
     try {
         const info = await fetchPackageInfo(network, npmRegistry, name, version, ctx.signal);
@@ -834,7 +829,7 @@ export function createNpxCommand(registry, shellExecute) {
         }
         // Everything after the spec is passthrough args
         passthrough.push(...rawArgs.slice(i + 1));
-        const { name: parsedName, version } = parsePackageSpec(explicitPkg || spec);
+        const { name: parsedName, range: version } = splitPackageSpec(explicitPkg || spec);
         // The bin name to look for: if --package was used, spec is the bin name; otherwise derive from package name
         const binName = explicitPkg ? spec : parsedName.split('/').pop();
         // 1. Check local node_modules
