@@ -33,7 +33,7 @@
 // A loose wall-clock ceiling stays as a backstop for a regression that is
 // visible to the user but lands outside the install phases.
 
-import { mintSession, Terminal, makeAsserter, deleteSession, BASE } from '../_driver.mjs';
+import { mintSession, Terminal, makeAsserter, deleteSession, BASE, requestHeaders } from '../_driver.mjs';
 
 if (!process.env.BASE) { console.error('FATAL: BASE env required'); process.exit(2); }
 const a = makeAsserter('perf-regression/install-warm');
@@ -65,9 +65,37 @@ function parsePhaseTotal(output) {
   return { line, total: ms + s };
 }
 
+/**
+ * The session's npm cache counters, as /api/_diag/cache reports them: per
+ * tier, tarball and packument hits and misses, and `isolate`, the isolate's
+ * fingerprint (the counters' module-load time: two sessions in one isolate
+ * share it, and share the counters). Null when the target does not answer.
+ */
+async function cacheCounters(sid) {
+  const r = await fetch(`${BASE}/s/${sid}/api/_diag/cache`, { headers: requestHeaders(), signal: AbortSignal.timeout(10_000) }).catch(() => null);
+  if (!r?.ok) return null;
+  const snapshot = await r.json();
+  const counts = {};
+  for (const [tier, kinds] of Object.entries(snapshot.byTier ?? {})) {
+    for (const kind of ['tarball', 'packument']) counts[`${tier}.${kind}`] = (kinds[kind]?.hits ?? 0) + (kinds[kind]?.misses ?? 0);
+  }
+  return { isolate: snapshot.startedAt, counts };
+}
+
+/** What one install moved, `L2.tarball+1 L3.packument+1 …`, and whether its isolate stayed the same. */
+function cacheDelta(before, after) {
+  if (!before || !after) return 'cache counters unavailable';
+  const moved = Object.keys(after.counts).filter((key) => after.counts[key] !== (before.counts[key] ?? 0))
+    .map((key) => `${key}+${after.counts[key] - (before.counts[key] ?? 0)}`);
+  return `${moved.join(' ') || 'nothing'} (isolate ${after.isolate}${before.isolate === after.isolate ? '' : `, was ${before.isolate}`})`;
+}
+
 let sid;
 try {
   sid = await mintSession();
+  // The session, for Workers Logs: its Durable Object logs each install's
+  // phases as [npm:phases], beside whatever else it ran.
+  console.log(`[install-warm] sid=${sid}`);
   const t = new Terminal(sid);
   await t.connect();
   await t.waitForPrompt(30_000);
@@ -79,9 +107,14 @@ try {
   const totals = [];
   for (let run = 1; run <= WARM_RUNS; run++) {
     if (run > 1) await t.run('rm -rf node_modules', 10_000);
+    const before = await cacheCounters(sid);
+    const startedAt = new Date().toISOString();
     const t0 = performance.now();
     const { output } = await t.run('npm install left-pad@1.3.0', 60_000);
     const wall = performance.now() - t0;
+    // Which tier served it (L2, the colo cache; L3, R2), and whether the
+    // isolate saw other sessions' npm work meanwhile (more than our one op).
+    console.log(`[install-warm] run ${run}: started ${startedAt}; cache ${cacheDelta(before, await cacheCounters(sid))}`);
 
     a.check(`run ${run}: npm install reports a cache hit on the warm session`,
       /from cache|already installed/.test(output),
