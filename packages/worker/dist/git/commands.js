@@ -2503,8 +2503,15 @@ async function mergeCommand(ctx, git, fs, vfs, dir, theirs, quiet, partial) {
         await ctx.stderr.write(NOT_A_WORK_TREE);
         return 128;
     }
-    if ((await worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree).readIndex()).unmergedPaths().length) {
+    const wrepo = worktreeRepo(ctx, git, vfs, fs, repo.gitdir, repo.worktree);
+    if ((await wrepo.readIndex()).unmergedPaths().length) {
         await ctx.stderr.write(unmergedRefusal('Merging'));
+        return 128;
+    }
+    // The merge (isomorphic-git's) reads neither skip-worktree entries nor the
+    // index version they need: refused, before anything is touched, until it does.
+    if (await wrepo.sparseMatcher() !== null) {
+        await ctx.stderr.write(SPARSE_MERGE_REFUSAL);
         return 128;
     }
     const idents = await commitIdents(ctx, git, fs, dir);
@@ -2532,6 +2539,8 @@ async function mergeCommand(ctx, git, fs, vfs, dir, theirs, quiet, partial) {
         await ctx.stdout.write(`Merged ${theirs}\n`);
     return 0;
 }
+/** What `git merge` (and `git pull`'s merge) says in a sparse checkout, which it does not support yet. */
+const SPARSE_MERGE_REFUSAL = 'fatal: merging in a sparse checkout is not supported yet; nothing was changed\n';
 /** die_resolve_conflict: what git says when unmerged entries stop a commit or a merge. */
 function unmergedRefusal(action) {
     return `error: ${action} is not possible because you have unmerged files.\n`
