@@ -1,0 +1,1 @@
+{"version":3,"file":"node-cli-options.generated.d.ts","sourceRoot":"","sources":["../../src/runtime/node-cli-options.generated.ts"],"names":[],"mappings":"AAGA,4EAA4E;AAC5E,eAAO,MAAM,kBAAkB,EAAE,WAAW,CAAC,MAAM,CAqEjD,CAAC;AAEH,4DAA4D;AAC5D,eAAO,MAAM,gBAAgB,EAAE,WAAW,CAAC,MAAM,CA6Q/C,CAAC;AAEH,yCAAyC;AACzC,eAAO,MAAM,mBAAmB,EAAE,WAAW,CAAC,MAAM,EAAE,SAAS,MAAM,EAAE,CA0BrE,CAAC"}

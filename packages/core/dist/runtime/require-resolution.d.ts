@@ -81,5 +81,7 @@ export interface ResolveSubpathResult {
     resolved: string;
 }
 /** The require resolver `prefetchForRequire` walks with. */
-export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress): Promise<ResolveSubpathResult | null>;
+export declare function resolveRequireEx(vfs: RequireFs, id: string, fromDir: string, sink?: PkgJsonSink, progress?: WalkProgress, 
+/** The program's own conditions (`node --conditions`), beside require's. */
+conditions?: readonly string[]): Promise<ResolveSubpathResult | null>;
 //# sourceMappingURL=require-resolution.d.ts.map

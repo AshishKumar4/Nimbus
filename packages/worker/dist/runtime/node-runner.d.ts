@@ -99,6 +99,10 @@ export interface RunFreshOpts {
     signal?: AbortSignal;
     /** Running the program starts a server (RuntimeRunOpts.launchesServer, server-launch.ts). */
     launchesServer?: boolean;
+    /** Node's options before the program (RuntimeRunOpts.execArgv). */
+    execArgv?: string[];
+    /** The program's own conditions (RuntimeRunOpts.conditions). */
+    conditions?: string[];
 }
 /** Dispatch a Node-compatible invocation into a fresh or keyed facet. */
 export declare function runFresh(facetMgr: FacetManager, code: string, opts: RunFreshOpts): Promise<RunFreshResult>;

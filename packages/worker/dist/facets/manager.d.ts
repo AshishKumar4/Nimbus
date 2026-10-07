@@ -199,6 +199,9 @@ export declare function facetWasmImports(named: readonly {
 }[], closure: readonly WasmImageRecord[]): FacetWasmImport[];
 export declare function generateLongRunningNodeCode(userCode: string, vfsState: FacetVfsState, opts: {
     argv?: string[];
+    /** Node's options before the program, and the program's conditions (core runtime/node-cli.ts). */
+    execArgv?: string[];
+    conditions?: string[];
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -447,6 +450,7 @@ export declare function greedyAddMainEntries(vfs: LaunchFs, cwd: string, bundle:
 }, requiredPaths?: ReadonlySet<string>, options?: {
     maxBundleBytes?: number;
     pacer?: TurnBudget;
+    conditions?: readonly string[];
 }): Promise<{
     added: number;
     groups: OptionalModuleGroup[];
@@ -685,6 +689,8 @@ export interface PrefetchBundleOptions {
     executedModules?: readonly RequiredModuleRoot[];
     /** Where the launch's transform results are kept by content. */
     transformStore?: BundleCellResultStore;
+    /** The program's own conditions (`node --conditions`), as the process resolves under them. */
+    conditions?: readonly string[];
 }
 /**
  * The working dir's config files of the tool a launch runs. The tool
@@ -879,6 +885,10 @@ export interface SpawnedWorker {
 /** What `spawnNode` needs to build and boot one resident Node process. */
 export interface ResidentSpawnOptions {
     argv?: string[];
+    /** Node's options before the program (`process.execArgv`; core runtime/node-cli.ts). */
+    execArgv?: string[];
+    /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
+    conditions?: string[];
     env?: Record<string, string>;
     cwd?: string;
     filename?: string;
@@ -1449,6 +1459,10 @@ export declare class FacetManager {
             offset: number;
             syncRead: boolean;
         };
+        /** Node's options before the program (`process.execArgv`; core runtime/node-cli.ts). */
+        execArgv?: string[];
+        /** The program's own conditions (`node --conditions`), for its resolvers and its module map. */
+        conditions?: string[];
     }): Promise<FacetExecResult>;
     /**
      * A process stopped at a synchronous read of stdin that needs input not

@@ -10848,8 +10848,22 @@ function __nimbusSignalSelf(signal) {
 
 const __processEvents = new __eventsMod();
 let __processUmask = Number(cred.umask) & 0o777;
+// Node's command line (core runtime/node-cli.ts): the options before the
+// program are process.execArgv, not process.argv, and the program's own
+// conditions are its resolvers'.
+const __nimbusNodeCommandLine = typeof nodeCommandLine === "undefined" ? undefined : nodeCommandLine;
+const __nimbusExecArgv = Array.isArray(__nimbusNodeCommandLine?.execArgv) ? __nimbusNodeCommandLine.execArgv.map(String) : [];
+const __nimbusConditions = Array.isArray(__nimbusNodeCommandLine?.conditions) ? __nimbusNodeCommandLine.conditions.map(String) : [];
+// A script's (or stdin's) argv carries Node's options before it, and the
+// "--" that ended them (runtime-registry); an eval's carries neither.
+const __nimbusProgramArgv = (() => {
+  const all = argv || [];
+  if (filename === "<eval>" || !__nimbusExecArgv.every((option, i) => all[i] === option)) return all;
+  const rest = all.slice(__nimbusExecArgv.length);
+  return rest[0] === "--" ? rest.slice(1) : rest;
+})();
 const __processMod = {
-  argv: ["node", ...(argv || [])],
+  argv: ["node", ...__nimbusProgramArgv],
   env: env || {},
   cwd: () => cwd || "/home/user",
   chdir: (d) => { cwd = __pathMod.resolve(cwd || "/home/user", d); },
@@ -10877,7 +10891,7 @@ const __processMod = {
     return Object.prototype.hasOwnProperty.call(builtins, key) ? builtins[key] : undefined;
   },
   execPath: "/usr/local/bin/node",
-  execArgv: [],
+  execArgv: __nimbusExecArgv,
   // The pid belongs to the supervisor, not to the host isolate. A constant 1
   // made every new Vinext process claim its predecessor's stale lock.
   get pid() { return typeof __nimbusProcessId === "number" ? __nimbusProcessId : Number(env?.NIMBUS_CP_CHILD_PID || 1); },
@@ -12965,14 +12979,10 @@ function resolveConditionValue(target, conditions) {
     return null;
   }
   if (typeof target !== "object") return null;
-  for (const cond of conditions) {
-    if (cond in target) {
-      const r = resolveConditionValue(target[cond], conditions);
-      if (r) return r;
-    }
-  }
-  if (!conditions.includes("default") && "default" in target) {
-    return resolveConditionValue(target.default, conditions);
+  for (const key of Object.keys(target)) {
+    if (key !== "default" && !conditions.includes(key)) continue;
+    const r = resolveConditionValue(target[key], conditions);
+    if (r) return r;
   }
   return null;
 }
@@ -13014,8 +13024,8 @@ function presentedCredential(value) {
   return /^bearer\s+/i.test(trimmed) ? trimmed.replace(/^bearer\s+/i, "") : trimmed;
 }
 
-/** Conditions for runtime CJS resolution (user-shell node). */
-const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default"];
+/** Conditions for runtime CJS resolution (user-shell node): require's, and the program's own (--conditions). */
+const __NIMBUS_CJS_CONDITIONS = ["require", "node", "default", ...__nimbusConditions];
 
 /**
  * Read and parse a package.json from VFS. Returns null on miss/parse-fail.
@@ -13449,8 +13459,8 @@ function __resolveFrom(id, fromDir) {
 const __ESM_SCHEME_ONLY_BUILTINS = new Set(["test", "test/reporters", "sqlite", "sea"]);
 // Node's ESM resolver (core/_shared/esm-resolver.ts, compiled once by
 // scripts/bundle-facet-workers.mjs): declares createEsmResolver.
-function createEsmResolver(host) {
-  const conditions =   new Set(["node", "import", "module-sync"]);
+function createEsmResolver(host, options = {}) {
+  const conditions =   new Set(["node", "import", "module-sync", ...options.conditions ?? []]);
   const ask = {
     *kind(path) {
       const kind = yield host.kind(path);
@@ -13969,7 +13979,7 @@ const __esmResolver = createEsmResolver({
       return found ? "/" + String(found).replace(/^\/+/, "") : null;
     } catch { return null; }
   },
-});
+}, { conditions: __nimbusConditions });
 const __esmNamespaces = new Map();
 /** A module namespace: its names sorted, read through to the exports. */
 function __esmNamespaceOf(names, read) {

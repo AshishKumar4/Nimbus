@@ -42,6 +42,7 @@ import { typescriptLoader } from '../_shared/typescript-specifiers.js';
 import { parseFacetBundleProfile } from './bundle-profile.js';
 import { errorText } from '../_shared/error-text.js';
 import { programLaunchesServer, SERVER_LAUNCH_MODULE_BYTES } from './server-launch.js';
+import { parseNodeCommandLine } from './node-cli.js';
 /**
  * The nearest directory at or above `dir` that holds a package.json, or null.
  * The first one wins (Node's rule); the filesystem root is not a package.
@@ -181,17 +182,32 @@ export function buildRuntimeHandler(spec, ctx0) {
         // args array, breaking `node /path/to/tsc --version` (the user's
         // --version was misinterpreted as a node flag).
         let flagSpan = 0;
-        // A bare `-` is not a flag: it is the program itself, read from stdin
-        // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
-        while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
-            flagSpan++;
-            const prev = args[flagSpan - 1];
-            // -e / --eval consumes one value; advance past it.
-            if ((prev === '-e' || prev === '--eval') && flagSpan < args.length) {
+        // Node's command line, read as Node reads it: each option's value taken
+        // with it, NODE_OPTIONS beside it, and what the run needs of them.
+        let nodeLine = null;
+        if (spec.nodeCommandLine) {
+            const parsed = parseNodeCommandLine(args, ctx.env?.NODE_OPTIONS ?? '');
+            if ('error' in parsed) {
+                ctx.stderr.write(parsed.error);
+                return parsed.exitCode;
+            }
+            flagSpan = parsed.programIndex;
+            nodeLine = { execArgv: parsed.execArgv, conditions: parsed.conditions };
+        }
+        else {
+            // A bare `-` is not a flag: it is the program itself, read from stdin
+            // (`node - a b <<'EOF' ... EOF`, as installers pipe their helper scripts).
+            while (flagSpan < args.length && args[flagSpan].startsWith('-') && args[flagSpan] !== '-') {
                 flagSpan++;
+                const prev = args[flagSpan - 1];
+                // -e / --eval consumes one value; advance past it.
+                if ((prev === '-e' || prev === '--eval') && flagSpan < args.length) {
+                    flagSpan++;
+                }
             }
         }
         const flagSlice = args.slice(0, flagSpan);
+        const nodeRun = nodeLine === null ? {} : nodeLine;
         // ── --version ──
         if (flagSlice.includes('-v') || flagSlice.includes('--version')) {
             ctx.stdout.write(spec.version + '\n');
@@ -225,6 +241,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: '<eval>',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -e ...`,
+                ...nodeRun,
                 ...programStdin,
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
@@ -263,6 +280,7 @@ export function buildRuntimeHandler(spec, ctx0) {
                 filename: '[stdin]',
                 dirname: ctx.cwd || '/home/user',
                 command: binSpawn?.command || `${name} -`,
+                ...nodeRun,
                 ...reservedProcess,
                 ...(captureOutput ? { captureOutput: true } : {}),
                 ...(bundleProfile ? { bundleProfile } : {}),
@@ -419,6 +437,7 @@ export function buildRuntimeHandler(spec, ctx0) {
             filename,
             dirname,
             command: binSpawn?.command || `${name} ${args.slice(0, scriptIdx + 1).join(' ')}`,
+            ...nodeRun,
             ...programStdin,
             ...reservedProcess,
             ...(captureOutput ? { captureOutput: true } : {}),

@@ -89,6 +89,10 @@ export interface RuntimeRunOpts {
     invokerPid?: number;
     /** Shell abort (Ctrl+C): forwarded to the run so it ends the program. */
     signal?: AbortSignal;
+    /** A Node command line's options before the program (`process.execArgv`; RuntimeSpec.nodeCommandLine). */
+    execArgv?: string[];
+    /** The program's own conditions (`--conditions`, `-C`, NODE_OPTIONS'), for its resolvers. */
+    conditions?: string[];
     /**
      * The pipe or redirect the program's stdin is (`echo hi | node x.js`,
      * `node x.js < in.txt`); absent when stdin is the terminal. A runner
@@ -178,6 +182,12 @@ export interface RuntimeSpec {
      * iff they share the runFresh contract.
      */
     supportsBinSpawn?: boolean;
+    /**
+     * The command line is Node's (node-cli.ts): its options take their values
+     * as Node's table says, NODE_OPTIONS is read (and refused as Node refuses
+     * it), and the program's conditions and execArgv go to the run.
+     */
+    nodeCommandLine?: boolean;
     /**
      * The runner routes a program that starts a server to a resident process
      * (node-runner.ts runFresh), so the handler reports whether it does

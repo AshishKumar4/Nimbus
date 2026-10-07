@@ -125,6 +125,8 @@ export async function runFresh(facetMgr, code, opts) {
             callerPid: opts.callerPid,
             invokerPid: opts.invokerPid,
             bundleProfile: opts.bundleProfile,
+            ...(opts.execArgv ? { execArgv: opts.execArgv } : {}),
+            ...(opts.conditions ? { conditions: opts.conditions } : {}),
         });
     }
     catch (e) {
