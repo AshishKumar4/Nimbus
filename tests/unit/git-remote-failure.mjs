@@ -16,7 +16,7 @@
 // And remoteFailureText's lines, on their own, for each kind.
 
 import assert from 'node:assert/strict';
-import { spawnSync } from 'node:child_process';
+import { spawn } from 'node:child_process';
 import { mkdirSync, mkdtempSync, rmSync } from 'node:fs';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
@@ -61,13 +61,20 @@ const server = createServer((req, res) => {
 await new Promise((resolve) => server.listen(0, '127.0.0.1', resolve));
 const base = `http://127.0.0.1:${server.address().port}`;
 
-/** Host git in `cwd`: no terminal to prompt at, no credential helper. */
-function realGit(cwd, args) {
-  const r = spawnSync('git', args, {
-    cwd, encoding: 'utf8',
+/**
+ * Host git in `cwd`: no terminal to prompt at, no credential helper. Not
+ * spawnSync: the server it talks to answers from this process's loop.
+ */
+async function realGit(cwd, args) {
+  const child = spawn('git', args, {
+    cwd,
     env: { ...hostGitEnv(work), GIT_CONFIG_GLOBAL: '/dev/null', GIT_TERMINAL_PROMPT: '0', GIT_ASKPASS: '', SSH_ASKPASS: '', LC_ALL: 'C' },
+    stdio: ['ignore', 'ignore', 'pipe'],
   });
-  return { code: r.status, stderr: r.stderr };
+  let stderr = '';
+  child.stderr.on('data', (chunk) => { stderr += chunk; });
+  const code = await new Promise((resolve) => child.on('close', resolve));
+  return { code, stderr };
 }
 
 /** git's last line on stderr, its fatal one; for no answer, up to the transport's own words. */
@@ -93,7 +100,7 @@ try {
   for (const { name, url, transport = false, ours: oursUrl = url, env = {} } of cases) {
     n++;
     // clone
-    const host = realGit(work, ['clone', url, join(work, `host-${n}`)]);
+    const host = await realGit(work, ['clone', url, join(work, `host-${n}`)]);
     const ours = await session.git('/home/user', ['clone', oursUrl, `/home/user/ours-${n}`], env);
     assert.deepEqual([ours.code, fatal(ours.stderr, transport)], [host.code, fatal(host.stderr, transport).replace(url, anonymizeUrl(url))], `${name}: clone (git's: ${host.stderr}; ours: ${ours.stderr})`);
     assert.equal(session.kernel.exists(`home/user/ours-${n}`), false, `${name}: the failed clone leaves nothing`);
@@ -102,7 +109,7 @@ try {
     const hostRepo = join(work, `host-repo-${n}`);
     mkdirSync(hostRepo);
     for (const args of [['init', '-q', '-b', 'main'], ['commit', '-q', '--allow-empty', '-m', 'one'], ['remote', 'add', 'origin', url]]) {
-      assert.equal(realGit(hostRepo, args).code, 0);
+      assert.equal((await realGit(hostRepo, args)).code, 0);
     }
     const repo = `/home/user/repo-${n}`;
     assert.equal((await session.git('/home/user', ['init', '-q', '-b', 'main', repo])).code, 0);
@@ -112,7 +119,7 @@ try {
       assert.equal(step.code, 0, `${args[0]}: ${step.stderr}`);
     }
     for (const args of [['fetch'], ['pull', 'origin', 'main'], ['push', 'origin', 'main']]) {
-      const h = realGit(hostRepo, args);
+      const h = await realGit(hostRepo, args);
       const o = await session.git(repo, args, env);
       assert.deepEqual([o.code, fatal(o.stderr, transport)], [h.code, fatal(h.stderr, transport).replace(url, anonymizeUrl(url))], `${name}: ${args[0]} (git's: ${h.stderr}; ours: ${o.stderr})`);
     }
