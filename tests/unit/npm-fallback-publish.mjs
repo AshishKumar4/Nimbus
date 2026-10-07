@@ -11,7 +11,8 @@
  *     a missing target): the next install restores it before it plans, and
  *     leaves alone a retired copy whose target is there;
  *   - two installs into one node_modules at once: each runs whole, one
- *     after the other, and package.json keeps both.
+ *     after the other, and package.json keeps both; also when they name
+ *     the tree by two paths (a global prefix and a symlink to it).
  * Each leaves no staging directory behind.
  */
 
@@ -183,6 +184,18 @@ try {
     assert.deepEqual(ws.tree(), { other: '1.0.0', xa: '1.0.0', xc: '1.0.0' });
     assert.deepEqual(ws.dependencies(), { other: '^1.0.0', xa: '^1.0.0' }, 'package.json keeps both');
     assert.deepEqual(ws.dotEntries(), []);
+    ws.close();
+  }
+
+  // ── Two global installs into one tree, by two paths to it ──────────────
+  {
+    const ws = await workspace();
+    assert.equal((await ws.sh('mkdir -p /home/user/p && ln -s /home/user/p /home/user/l')).exitCode, 0);
+    // The second starts while the first waits on xc, its xa staged.
+    const both = await ws.sh('npm install -g --prefix=/home/user/p xa@1.0.0 > a.log 2>&1 & A=$!; sleep 0.2; npm install -g --prefix=/home/user/l other@1.0.0 > b.log 2>&1 & B=$!; wait $A; echo "a=$?"; wait $B; echo "b=$?"');
+    assert.match(both.stdout, /a=0\s+b=0/, `${both.stdout}\n${ws.fs.readFileString('/home/user/a.log')}\n${ws.fs.readFileString('/home/user/b.log')}`);
+    const modules = (ws.fs.readdir('/home/user/p/lib/node_modules').map(({ name }) => name)).sort();
+    assert.deepEqual(modules, ['other', 'xa', 'xc'], 'one tree holds both installs, and nothing else');
     ws.close();
   }
 } finally {

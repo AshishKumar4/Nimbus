@@ -24,7 +24,12 @@
  *   - an optional dependency (oa→ox) whose own required dependency (oy)
  *     fails: ox is skipped with it, and the install succeeds;
  *   - a name both a dependency and an optional one (ob→oz) that fails: the
- *     optional entry wins, and oz is skipped.
+ *     optional entry wins, and oz is skipped;
+ *   - an optional package already installed (pa→optional px→py) whose
+ *     required child is gone and now fails: the warm install skips px's set,
+ *     and removes px.
+ * npm runs without a package-lock (the fallback keeps none), so it plans
+ * from the tree on disk and the registry, as the fallback does.
  */
 
 import assert from 'node:assert/strict';
@@ -62,7 +67,13 @@ const REGISTRY = {
   oy: { '1.0.0': {} },
   ob: { '1.0.0': { dependencies: { oz: '^1.0.0' }, optionalDependencies: { oz: '^1.0.0' } } },
   oz: { '1.0.0': {} },
+  pa: { '1.0.0': { optionalDependencies: { px: '^1.0.0' } } },
+  px: { '1.0.0': { dependencies: { py: '^1.0.0' } } },
+  py: { '1.0.0': {} },
 };
+// Tarballs a step of a sequence breaks from then on (their integrity names no bytes).
+const brokenNow = new Set();
+const NO_BYTES = await sriOf(new TextEncoder().encode('no tarball has these bytes, broken now'));
 const ROOT = { a: '^1.0.0', b: '^1.0.0', host: '^1.0.0', shared: '1.0.0', user: '^1.0.0' };
 
 const manifest = (name, version) => ({ name, version, ...REGISTRY[name][version] });
@@ -101,7 +112,7 @@ const server = createServer((request, response) => {
     'dist-tags': { latest: names[names.length - 1] },
     versions: Object.fromEntries(names.map((version) => [version, {
       ...manifest(path, version),
-      dist: { tarball: `${base}/${path}-${version}.tgz`, integrity: integrity.get(`${path}-${version}.tgz`) },
+      dist: { tarball: `${base}/${path}-${version}.tgz`, integrity: brokenNow.has(`${path}-${version}.tgz`) ? NO_BYTES : integrity.get(`${path}-${version}.tgz`) },
     }])),
   }));
 });
@@ -129,7 +140,8 @@ function treeOf(readdir, readFile, exists, dir) {
 
 /** `npm <args>` in `dir`, against the local registry (not spawnSync: it is served from this process). */
 const npmIn = (dir, args) => new Promise((resolve) => {
-  const child = spawn('npm', [...args, '--ignore-scripts', '--no-audit', '--no-fund', '--fetch-retries=0', `--registry=${base}/`, `--cache=${join(dir, '.cache')}`], { cwd: dir });
+  const child = spawn('npm', [...args, '--ignore-scripts', '--no-audit', '--no-fund', '--fetch-retries=0', '--no-package-lock', '--prefer-online',
+    `--registry=${base}/`, `--cache=${join(dir, '.cache')}`], { cwd: dir });
   let stderr = '';
   child.stderr.on('data', (d) => { stderr += d; });
   child.on('close', (status) => resolve({ status, stderr }));
@@ -144,6 +156,7 @@ async function fallbackWorkspace() {
   const fs = ws.vfs.as(CRED_KERNEL);
   return {
     run: (args) => ws.exec(`NPM_REGISTRY=${base} npm ${args.join(' ')}`),
+    sh: (line) => ws.exec(line),
     tree: () => treeOf((at) => fs.readdir(at).map(({ name }) => name), (path) => fs.readFileString(path), (path) => fs.exists(path), '/home/user'),
     manifest: () => JSON.parse(fs.readFileString('/home/user/package.json')),
     staged: () => fs.exists('/home/user/node_modules/.nimbus-staging'),
@@ -152,16 +165,24 @@ async function fallbackWorkspace() {
 }
 
 /**
- * `commands` (npm's argument lists) run in order by npm itself and by the
- * fallback, each in a fresh project: each command's exit status (as success
- * or failure), then the tree and package.json's dependencies after it.
+ * `commands` run in order by npm itself and by the fallback, each in a
+ * fresh project: npm's argument lists, and between them changes to the
+ * world (`{ remove, break }`: a package removed from node_modules, a tarball
+ * broken from then on). For each command, its exit status (as success or
+ * failure), then the tree and package.json's dependencies after it.
  */
 async function sequence(commands) {
   const dir = mkdtempSync(join(tmpdir(), 'npm-sequence-'));
   const npm = [];
+  brokenNow.clear();
   try {
     writeFileSync(join(dir, 'package.json'), JSON.stringify({ name: 'app', version: '1.0.0' }));
     for (const args of commands) {
+      if (!Array.isArray(args)) {
+        if (args.remove) rmSync(join(dir, 'node_modules', args.remove), { recursive: true, force: true });
+        if (args.break) brokenNow.add(args.break);
+        continue;
+      }
       const { status } = await npmIn(dir, args);
       npm.push({
         ok: status === 0,
@@ -174,8 +195,14 @@ async function sequence(commands) {
   }
   const ws = await fallbackWorkspace();
   const fallback = [];
+  brokenNow.clear();
   try {
     for (const args of commands) {
+      if (!Array.isArray(args)) {
+        if (args.remove) assert.equal((await ws.sh(`rm -rf node_modules/${args.remove}`)).exitCode, 0);
+        if (args.break) brokenNow.add(args.break);
+        continue;
+      }
       const run = await ws.run(args);
       assert.equal(ws.staged(), false, `${args.join(' ')}: no staging directory is left`);
       fallback.push({ ok: run.exitCode === 0, tree: ws.tree(), dependencies: ws.manifest().dependencies ?? {} });
@@ -276,6 +303,7 @@ try {
     'a replacement that fails its integrity check': [['install', 'bad@1.0.0'], ['install', 'bad@2.0.0']],
     'an optional dependency whose required dependency fails': [['install', 'oa']],
     'a name both a dependency and an optional one': [['install', 'ob']],
+    'an optional package already installed whose required child breaks': [['install', 'pa'], { remove: 'py', break: 'py-1.0.0.tgz' }, ['install']],
   };
   const expected = {
     'several roots named at once': { xa: '1.0.0', 'xa/node_modules/xc': '1.0.0', xc: '2.0.0' },
@@ -283,6 +311,7 @@ try {
     'a replacement that fails its integrity check': { bad: '1.0.0' },
     'an optional dependency whose required dependency fails': { oa: '1.0.0' },
     'a name both a dependency and an optional one': { ob: '1.0.0' },
+    'an optional package already installed whose required child breaks': { pa: '1.0.0' },
   };
   for (const [label, commands] of Object.entries(scenarios)) {
     const { npm: oracle, fallback: steps } = await sequence(commands);
