@@ -274,6 +274,15 @@ export interface ProcessHostParams {
     storageBytes?: number;
 }
 /**
+ * The platform reset the Durable Object a running process was hosted on, and
+ * the process ended with it. Only a host that is not the coordinator can
+ * report this (process-host.ts `peer`); the platform's own words, which may
+ * name a cause that did not happen ("its code was updated"), are the cause.
+ */
+export declare class ProcessHostLost extends Error {
+    constructor(cause: unknown);
+}
+/**
  * One resident process, as its coordinator sees it. Identical in meaning on
  * every substrate — that identity IS the abstraction, so a divergence here is
  * a bug rather than a documented difference.
@@ -283,12 +292,13 @@ export interface HostedProcess {
      * The runner's startProcess payload. The runner is started as part of
      * opening the host, so this is a handle on that one boot — awaiting it twice
      * is safe and never re-starts anything. A `lifetime` runner settles it at
-     * exit; a host that dies before then rejects it.
+     * exit; a host that dies before then rejects it with {@link ProcessHostLost}.
      */
     readonly started: Promise<unknown>;
     /**
-     * Rejects if the HOST dies under a process that is already up — the one
-     * failure a substrate can suffer that the process itself never reports.
+     * Rejects, with {@link ProcessHostLost}, if the HOST dies under a process
+     * that is already up — the one failure a substrate can suffer that the
+     * process itself never reports.
      *
      * It is not symmetric, and pretending otherwise is what leaks a process. A
      * facet dies only with the Durable Object that owns it, which takes the
@@ -495,7 +505,8 @@ export type ProcessHostFactory = (ctx: DurableObjectState, env: unknown, disk: (
  *
  * `done` settles when the process ends: for a `lifetime` runner that is its
  * held-open startProcess settling (resolve on exit, reject on host death);
- * for a `boot` runner it is the kill that releases the host.
+ * for a `boot` runner it is the kill that releases the host. A host that
+ * dies under either rejects it with {@link ProcessHostLost}.
  *
  * The handle is disposable so FacetManager's existing per-pid resource
  * tracking tears a process down exactly the way it releases any other

@@ -1154,6 +1154,8 @@ export declare class FacetManager {
     private ensureInflight;
     /** Per-pid chain of journal-row amendments; see `_amendRow`. */
     private rowAmendments;
+    /** A process whose host the platform reset (_endByHostLoss), until its terminal hook reads why it ended. */
+    private hostLosses;
     /** Each running resident's uptime proof timer (_proveByUptime). */
     private uptimeProofs;
     /**
@@ -1170,6 +1172,13 @@ export declare class FacetManager {
      * or already booted (its resources are released like a kill).
      */
     private _endBySignal;
+    /**
+     * The platform reset the host of a running process (ProcessHostLost): the
+     * process is over, as if killed (137), and says why. Its ports answer with
+     * the cause at once, and its restart policy decides what follows, as for
+     * any process that ends on its own (_onResidentTerminal).
+     */
+    private _endByHostLoss;
     /**
      * The process is over. Every end-of-life passes through here: a clean
      * exit, a kill, a timeout, a crash. Only one of them owes anything more
@@ -1666,7 +1675,13 @@ export declare class FacetManager {
      * was scheduled. The manager logs an opaque description; only the fabric
      * knows what a placement is.
      */
-    private _noteProcessPlacement;
+    /**
+     * A resident process's handle, as it comes back from the fabric: a host
+     * the platform resets under it ends the process (_endByHostLoss). Watched
+     * before any caller's own `done` handler, so the process has ended by name
+     * when they look. The placement goes to the process log under NIMBUS_DEBUG.
+     */
+    private _hosted;
     /**
      * The reader the fabric completes a boot spec's by-path members with.
      *
