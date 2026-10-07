@@ -5,6 +5,20 @@ published independently in the `@nimbus-sh` npm scope.
 
 ## Unreleased
 
+- Fixed: an `import()` that reaches installed files a launch did not stage
+  loads them on the first run. A launch's store holds its static closure and
+  its data plan; any other file on disk was known by name but not held, and the
+  synchronous load an `import()` ends in failed with "Cannot load module '…':
+  it was not in this launch's module map; the next launch of the same command
+  stages it" (or "Cannot find module", when it was a `package.json` that
+  resolution needed). That never helped a file named afresh on each run.
+  `astro dev` failed its first request this way, on `zod/v4` imported by its
+  server code, and so did Vite's own config loading on react-router's
+  template: the config Vite bundles to `node_modules/.vite-temp` imports
+  `@react-router/dev`. Before loading, `import()` now fetches through the
+  store's own fill: the `package.json` files resolution reads, then the
+  target's static import closure outside the launch's map, breadth first and
+  bounded at 4096 files and 64 MiB.
 - Fixed: `node` and `bun` with no script opened a REPL that evaluated
   nothing ("workerd CSP: cannot evaluate JS at request time"). The REPL is
   now a program the runtime runs, as Node's is, and each line compiles
