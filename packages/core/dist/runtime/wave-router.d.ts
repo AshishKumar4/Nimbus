@@ -4,30 +4,34 @@
  * process's binding, or a command holding the engine), and each of its
  * records lands where the namespace puts a mutation of that name: its
  * directory resolved by the mutations' own lookup (CompositeVFS
- * .mutationRoute, links followed into mounts), and the record applied on a
- * mount by the namespace's own operations, so a mount's guard, read-only
- * flag and refusals are the wave's as they are a single call's.
+ * .mutationRoute, links followed into mounts), and the name placed by the
+ * mount table. A record placed on a mount is applied there by the
+ * namespace's own operations, so a mount's guard, read-only flag and
+ * refusals are the record's as they are a single call's.
  *
- * On a mount, a record is applied as an upsert is, by the operations a
- * program would use, each refusal before anything is lost:
+ * A routed record is the single call a program would make on that mount,
+ * at the place the lookup resolved:
  *   - a directory: mkdir -p, a directory already there kept;
- *   - a file: written to a staged name in its directory chunk by chunk as
- *     the wave delivers them (each chunk's credit released once written),
- *     then renamed over its name; on a backend that cannot write a range,
- *     taken whole up to HELD_FILE_BYTES, ENOTSUP past it;
- *   - a link: made at a staged name, then renamed over its name, so a
- *     backend that cannot make it refuses before the old entry goes;
- *   - a removal: rm -r, refused (EIO, naming what stayed) when it kept or
- *     failed to remove anything.
+ *   - a file: one whole-file writeFile (following a link at its name,
+ *     keeping an existing file's mode, owner and inode), its bytes held
+ *     under the wave's credit until that call, up to ROUTED_FILE_MAX;
+ *   - a link: made at the wave's own slot beside its name, then renamed
+ *     over it (as ln -sf does), so a backend that cannot make it refuses
+ *     before the old entry goes;
+ *   - a removal: rm -r, refused (naming what stayed) when it kept or failed
+ *     to remove anything.
+ * Each call first checks that the record's directory still resolves to the
+ * place it was given; one that moved refuses the record (ESTALE).
+ *
+ * A link's slot is `.<name>.nimbus-wave-<wave>-<record>`, the wave's own:
+ * no other operation's slot is touched. A wave that fails between the slot
+ * and the rename removes its slot; a crash in that window leaves it, at
+ * most one per link record in flight (a known leak, by that name pattern).
  */
 import type { CompositeVFS } from '../vfs/composite.js';
 import type { WaveRouter } from '../vfs/sqlite-vfs.js';
 import type { VfsCred } from '../vfs/vfs.js';
-/**
- * The most a wave holds of one file for a mount that cannot write in place:
- * half the session's shared write credit, so a held file never starves the
- * wave of the credit its next chunk needs.
- */
-export declare const HELD_FILE_BYTES: number;
+/** The suffix of a link's slot: `.<name>${LINK_SLOT_SUFFIX}-<wave>-<record>`. */
+export declare const LINK_SLOT_SUFFIX = ".nimbus-wave";
 export declare function namespaceWaveRouter(namespace: CompositeVFS, credential: (cred: VfsCred) => VfsCred): WaveRouter;
 //# sourceMappingURL=wave-router.d.ts.map

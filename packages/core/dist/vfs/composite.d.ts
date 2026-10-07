@@ -356,6 +356,12 @@ export declare class CompositeVFS implements VFS {
         readonly readOnly: boolean;
     }>;
     /**
+     * Whether `path` is a directory above a live mount point (not the root):
+     * one the namespace keeps a directory for its mounts, so removing it is
+     * EBUSY and a file at it EISDIR.
+     */
+    isAboveMount(path: string): boolean;
+    /**
      * Whether the namespace answers `path` itself rather than the root
      * backend alone: a path on another mount, a directory above a mount point
      * (whose listing includes the mount's name), or a path under such a

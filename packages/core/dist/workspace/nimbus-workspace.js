@@ -144,11 +144,13 @@ export class NimbusWorkspace {
         const home = options.env?.HOME ?? DEFAULT_HOME;
         if (!home.startsWith('/'))
             throw new Error(`HOME must be an absolute path, got ${JSON.stringify(home)}`);
-        seedBaseFilesystem(vfs, home);
-        // The namespace (SQLite at `/`, /proc, /dev) and what binds processes to it.
+        // The namespace (SQLite at `/`, /proc, /dev, and an embedder's mounts)
+        // and what binds processes to it. The base is seeded through it, so a
+        // mount over /home or /etc gets what a program writing there would.
         const filesystem = options.filesystem ?? new ProcessFiles(vfs);
         if (filesystem.engine !== vfs)
             throw new Error('The workspace filesystem must be over the workspace SqliteVFS');
+        await seedBaseFilesystem(filesystem, home);
         const kernel = new Kernel();
         kernel.network = workspaceNetwork(options.egress);
         const registry = createDefaultRegistry();
@@ -665,40 +667,32 @@ const WORKSPACE_TABLES = [
     SHELLS_TABLE,
 ];
 /**
- * The directories and account files the shell cannot start without.
- *
- * Idempotent by construction: every write is guarded by an existence check, so
- * a workspace reopened over a populated database keeps whatever the user did
- * to these files. `/etc/passwd` and `/etc/group` are load-bearing rather than
- * decorative — `id`, `chown` and `su` resolve names through them.
- *
- * What a PRODUCT puts in a fresh filesystem — a banner, a welcome file, a
- * starter app — is not here. This is the base an OS needs in order to boot,
- * and it is exported because a host may need the filesystem before it needs a
- * shell: the Nimbus session seeds its starter project for a browser that hits
- * `/preview` without ever opening a terminal.
- *
- * `home` is the session user's home directory: it is made and owned by the
- * user, and /etc/passwd names it.
+ * The base seed's one statement, driven by seedBaseFilesystem: on the
+ * engine directly, or on a namespace, where each step lands where a
+ * program's call would (a mount over /home or /etc included).
  */
-export function seedBaseFilesystem(vfs, home = DEFAULT_HOME) {
-    const fs = vfs.as(CRED_SESSION_USER);
-    const rootFs = vfs.as(CRED_KERNEL);
+function* baseSeed(home) {
+    const exists = function* (as, path) {
+        return (yield { op: 'exists', as, path });
+    };
+    const stat = function* (path) {
+        return (yield { op: 'stat', as: 'kernel', path });
+    };
     // Top-level directories are the kernel's to make (`/` is 0755 root), and
     // handed to the session user, who owns their own tree: seeding them owned
     // by the kernel is what makes a workspace where `.fs` cannot write.
     for (const top of SEEDED_TOP_LEVEL_DIRS) {
-        if (top === 'etc' || rootFs.exists(top))
+        if (top === 'etc' || (yield* exists('kernel', top)))
             continue;
-        rootFs.mkdir(top, { mode: 0o777 & ~CRED_SESSION_USER.umask });
-        rootFs.chown(top, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+        yield { op: 'mkdir', as: 'kernel', path: top, mode: 0o777 & ~CRED_SESSION_USER.umask };
+        yield { op: 'chown', as: 'kernel', path: top, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     }
     // The home is made the way useradd -m makes it: by root, wherever it is,
     // then handed to the user. Its parents stay root's.
     const homeDir = home.replace(/^\/+/, '').replace(/\/+$/, '');
-    if (homeDir !== '' && !rootFs.exists(homeDir)) {
-        rootFs.mkdir(homeDir, { recursive: true, mode: 0o755 });
-        rootFs.chown(homeDir, CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    if (homeDir !== '' && !(yield* exists('kernel', homeDir))) {
+        yield { op: 'mkdir', as: 'kernel', path: homeDir, recursive: true, mode: 0o755 };
+        yield { op: 'chown', as: 'kernel', path: homeDir, uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     }
     // HOME=/ is root's directory, not one Nimbus populates for the user.
     const homeChildren = homeDir === '' ? [] : [`${homeDir}/.config`, `${homeDir}/projects`];
@@ -709,51 +703,53 @@ export function seedBaseFilesystem(vfs, home = DEFAULT_HOME) {
         'usr/share', 'usr/share/pkg', 'usr/share/pkg/node_modules',
         'usr/local', 'usr/local/lib', 'usr/local/lib/node_modules', 'usr/local/bin',
     ]) {
-        if (!fs.exists(dir))
-            fs.mkdir(dir, { recursive: true });
+        if (!(yield* exists('user', dir)))
+            yield { op: 'mkdir', as: 'user', path: dir, recursive: true };
     }
     // /etc belongs to root, and is re-asserted rather than only created: a
     // user-writable /etc is an authority bug, not an untidy directory.
-    if (!rootFs.exists('etc')) {
-        rootFs.mkdir('etc', { mode: 0o755 });
+    if (!(yield* exists('kernel', 'etc'))) {
+        yield { op: 'mkdir', as: 'kernel', path: 'etc', mode: 0o755 };
     }
     else {
-        const etc = rootFs.stat('etc');
+        const etc = yield* stat('etc');
         if (etc.uid !== 0 || etc.gid !== 0)
-            rootFs.chown('etc', 0, 0);
+            yield { op: 'chown', as: 'kernel', path: 'etc', uid: 0, gid: 0 };
         if ((etc.mode & 0o7777) !== 0o755)
-            rootFs.chmod('etc', 0o755);
+            yield { op: 'chmod', as: 'kernel', path: 'etc', mode: 0o755 };
     }
-    if (!rootFs.exists('etc/hostname')) {
-        rootFs.writeFile('etc/hostname', `${DEFAULT_HOSTNAME}\n`);
-        rootFs.chown('etc/hostname', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    if (!(yield* exists('kernel', 'etc/hostname'))) {
+        yield { op: 'writeFile', as: 'kernel', path: 'etc/hostname', content: `${DEFAULT_HOSTNAME}\n` };
+        yield { op: 'chown', as: 'kernel', path: 'etc/hostname', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     }
-    if (!rootFs.exists('etc/os-release')) {
-        rootFs.writeFile('etc/os-release', `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n`
-            + 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n');
-        rootFs.chown('etc/os-release', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    if (!(yield* exists('kernel', 'etc/os-release'))) {
+        yield {
+            op: 'writeFile', as: 'kernel', path: 'etc/os-release',
+            content: `NAME="Nimbus"\nVERSION="${NIMBUS_VERSION}"\nID=nimbus\n` + 'PRETTY_NAME="Nimbus — Cloud Dev Environment"\n',
+        };
+        yield { op: 'chown', as: 'kernel', path: 'etc/os-release', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     }
     // Root-owned 0644, and re-asserted rather than only created: these decide
     // what `id`, `chown` and `su` believe, so a user-writable /etc/passwd would
     // be an authority bug rather than an untidy file.
-    const accountFile = (path, content) => {
-        if (!rootFs.exists(path))
-            rootFs.writeFile(path, content, { mode: 0o644 });
-        const stat = rootFs.stat(path);
-        if (stat.uid !== 0 || stat.gid !== 0)
-            rootFs.chown(path, 0, 0);
-        if ((stat.mode & 0o7777) !== 0o644)
-            rootFs.chmod(path, 0o644);
+    const accountFile = function* (path, content) {
+        if (!(yield* exists('kernel', path)))
+            yield { op: 'writeFile', as: 'kernel', path, content, mode: 0o644 };
+        const current = yield* stat(path);
+        if (current.uid !== 0 || current.gid !== 0)
+            yield { op: 'chown', as: 'kernel', path, uid: 0, gid: 0 };
+        if ((current.mode & 0o7777) !== 0o644)
+            yield { op: 'chmod', as: 'kernel', path, mode: 0o644 };
     };
     const passwdFor = (dir) => `root:x:0:0:root:/root:/bin/sh\nuser:x:1000:1000:Nimbus User:${dir}:/bin/sh\n`;
-    accountFile('etc/passwd', passwdFor(home));
+    yield* accountFile('etc/passwd', passwdFor(home));
     // The passwd every workspace got before its home was configurable named
     // /home/user. Exactly that file is Nimbus's to move to the configured home;
     // any other content is the user's.
-    if (home !== DEFAULT_HOME && rootFs.readFileString('etc/passwd') === passwdFor(DEFAULT_HOME)) {
-        rootFs.writeFile('etc/passwd', passwdFor(home));
+    if (home !== DEFAULT_HOME && (yield { op: 'readText', as: 'kernel', path: 'etc/passwd' }) === passwdFor(DEFAULT_HOME)) {
+        yield { op: 'writeFile', as: 'kernel', path: 'etc/passwd', content: passwdFor(home) };
     }
-    accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
+    yield* accountFile('etc/group', 'root:x:0:\nuser:x:1000:user\n');
     // `$HOME` is expanded when the profile is sourced, so one profile serves
     // whatever home the session has.
     const defaultProfile = `export PATH=${defaultPath('$HOME')}\nexport EDITOR=nano\n`;
@@ -764,14 +760,107 @@ export function seedBaseFilesystem(vfs, home = DEFAULT_HOME) {
         'export PATH=/usr/bin:/bin\nexport EDITOR=nano\n',
         `export PATH=${defaultPath(DEFAULT_HOME)}\nexport EDITOR=nano\n`,
     ];
-    if (!rootFs.exists('etc/profile')) {
-        rootFs.writeFile('etc/profile', defaultProfile);
-        rootFs.chown('etc/profile', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+    if (!(yield* exists('kernel', 'etc/profile'))) {
+        yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
+        yield { op: 'chown', as: 'kernel', path: 'etc/profile', uid: CRED_SESSION_USER.uid, gid: CRED_SESSION_USER.gid };
     }
-    else if (seededProfiles.includes(rootFs.readFileString('etc/profile'))) {
-        rootFs.writeFile('etc/profile', defaultProfile);
+    else if (seededProfiles.includes((yield { op: 'readText', as: 'kernel', path: 'etc/profile' }))) {
+        yield { op: 'writeFile', as: 'kernel', path: 'etc/profile', content: defaultProfile };
     }
-    if (homeDir !== '' && !fs.exists(`${homeDir}/.nimbusrc`)) {
-        fs.writeFile(`${homeDir}/.nimbusrc`, '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n');
+    if (homeDir !== '' && !(yield* exists('user', `${homeDir}/.nimbusrc`))) {
+        yield {
+            op: 'writeFile', as: 'user', path: `${homeDir}/.nimbusrc`,
+            content: '# Nimbus shell config\nalias ll="ls -la"\nalias la="ls -a"\nalias l="ls -1"\n',
+        };
+    }
+}
+export function seedBaseFilesystem(target, home = DEFAULT_HOME) {
+    const steps = baseSeed(home);
+    if (target instanceof ProcessFiles)
+        return seedOnNamespace(steps, target);
+    const views = { kernel: target.as(CRED_KERNEL), user: target.as(CRED_SESSION_USER) };
+    for (let step = steps.next(); !step.done;)
+        step = steps.next(engineStep(views[step.value.as], step.value));
+}
+/**
+ * The base seed on a namespace: each step placed by the namespace's
+ * dispatcher (SqliteVFS.placesHere, as a wave's records are). One placed on
+ * the session's filesystem is the engine's, as the session's own seed makes
+ * it; any other is the call a program would make on the namespace.
+ */
+async function seedOnNamespace(steps, filesystem) {
+    const mounted = { kernel: filesystem.vfs.as(CRED_KERNEL), user: filesystem.vfs.as(CRED_SESSION_USER) };
+    const engine = { kernel: filesystem.engine.as(CRED_KERNEL), user: filesystem.engine.as(CRED_SESSION_USER) };
+    const text = new TextEncoder();
+    for (let step = steps.next(); !step.done;) {
+        const call = step.value;
+        let answer;
+        const cred = call.as === 'kernel' ? CRED_KERNEL : CRED_SESSION_USER;
+        // A directory above a mount point is the root's, as a wave's directory record there is.
+        if (filesystem.engine.placesHere([call.path], cred, { aboveMounts: true })) {
+            answer = engineStep(engine[call.as], call);
+        }
+        else {
+            const view = mounted[call.as];
+            const path = '/' + call.path;
+            switch (call.op) {
+                case 'exists':
+                    answer = (await view.stat(path)) !== null;
+                    break;
+                case 'stat': {
+                    const found = await view.stat(path);
+                    if (found === null)
+                        throw new Error(`seed: ${path} vanished`);
+                    answer = { uid: found.uid ?? 0, gid: found.gid ?? 0, mode: found.mode ?? 0 };
+                    break;
+                }
+                case 'readText':
+                    answer = new TextDecoder().decode(await view.readFile(path));
+                    break;
+                case 'mkdir':
+                    await view.mkdir(path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+                    break;
+                // A mount that keeps no owners or modes (ENOTSUP) has none to hand over.
+                case 'chown':
+                    await unlessUnsupported(view.chown(path, call.uid, call.gid));
+                    break;
+                case 'chmod':
+                    await unlessUnsupported(view.chmod(path, call.mode));
+                    break;
+                case 'writeFile':
+                    await view.writeFile(path, text.encode(call.content), call.mode === undefined ? undefined : { mode: call.mode });
+                    break;
+            }
+        }
+        step = steps.next(answer);
+    }
+}
+/** A seed step on an engine view: its answer. */
+function engineStep(view, call) {
+    switch (call.op) {
+        case 'exists': return view.exists(call.path);
+        case 'stat': return view.stat(call.path);
+        case 'readText': return view.readFileString(call.path);
+        case 'mkdir':
+            view.mkdir(call.path, { ...(call.recursive ? { recursive: true } : {}), ...(call.mode === undefined ? {} : { mode: call.mode }) });
+            return undefined;
+        case 'chown':
+            view.chown(call.path, call.uid, call.gid);
+            return undefined;
+        case 'chmod':
+            view.chmod(call.path, call.mode);
+            return undefined;
+        case 'writeFile':
+            view.writeFile(call.path, call.content, call.mode === undefined ? undefined : { mode: call.mode });
+            return undefined;
+    }
+}
+async function unlessUnsupported(call) {
+    try {
+        await call;
+    }
+    catch (error) {
+        if (error.code !== 'ENOTSUP')
+            throw error;
     }
 }

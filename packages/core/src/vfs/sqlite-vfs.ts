@@ -447,7 +447,7 @@ export interface CredentialedVfs {
    * as a wave, each applied where it lands, in order, refused as a whole
    * call is (its error) at the first refusal.
    */
-  writeBatchPlaced(payload: BatchWritePayload): Promise<{ inodes: number; chunks: number }>;
+  writeBatchPlaced(payload: BatchWritePayload, options?: { signal?: AbortSignal }): Promise<{ inodes: number; chunks: number }>;
   writeStream(
     stream: ReadableStream<Uint8Array>,
     options?: WriteStreamOptions,
@@ -526,26 +526,34 @@ export interface WriteStreamReceipt {
   revision?: number;
 }
 
-/** One chunk of a routed file's bytes, held by the wave's credit until `release`. */
-export interface RoutedChunk {
-  readonly data: Uint8Array;
-  release(): void;
-}
+/** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
+export const ROUTED_LINK_TARGET_MAX = 4096;
 
 /**
- * A wave's record that the namespace places on a mount (WaveRouter.apply).
- * Paths are the namespace's, '/'-rooted, as the wave named them. A file's
- * bytes arrive as the wave delivers them, each chunk held by the wave's
- * credit until the router releases it.
+ * The largest file a wave writes to a mount. A routed file is one
+ * whole-file writeFile, its bytes held under the wave's credit until that
+ * call (half the shared write credit, so a held file never starves the
+ * wave); a larger one is refused (ENOTSUP, naming this) before anything is
+ * touched. A backend that declares an atomic streaming write could take
+ * more; none does yet.
+ */
+export const ROUTED_FILE_MAX = 4 * 1024 * 1024;
+
+/**
+ * A wave's record that the namespace places on a mount (WaveRouter.apply),
+ * each the single call a program would make there. Paths are where the
+ * namespace's lookup placed them ('/'-rooted, the directory's links
+ * resolved). A link is made at `slot` beside its name first: a name the
+ * wave owns (its id and the record's index), renamed over the link's.
  */
 export type RoutedWaveRecord =
   | { readonly type: 'delete'; readonly path: string }
   | { readonly type: 'directory'; readonly path: string; readonly mode: number }
-  | { readonly type: 'file'; readonly path: string; readonly mode: number; readonly size: number; readonly chunks: AsyncIterable<RoutedChunk> }
-  | { readonly type: 'symlink'; readonly path: string; readonly target: string }
-  /** A process's call (W7Call), made by the namespace's operation of that name. */
+  | { readonly type: 'file'; readonly path: string; readonly mode: number; readonly bytes: Uint8Array }
+  | { readonly type: 'symlink'; readonly path: string; readonly target: string; readonly slot: string }
+  /** A process's call (W7Call), made by the namespace's operation of that name, its data whole. */
   | { readonly type: 'call'; readonly call: W7PathCall }
-  | { readonly type: 'data-call'; readonly call: W7DataCall; readonly path: string; readonly mode: number; readonly size: number; readonly chunks: AsyncIterable<RoutedChunk> };
+  | { readonly type: 'data-call'; readonly call: W7DataCall; readonly path: string; readonly mode: number; readonly bytes: Uint8Array };
 
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
@@ -570,12 +578,19 @@ export interface WaveRouter {
    * The namespace path ('/'-rooted) directory `path` resolves to by the
    * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
    * that does not exist yet is kept as named, after the nearest ancestor
-   * that resolves. Synchronous while the lookup stays on this filesystem,
-   * so it reads as the wave's holder does (SqliteVFS.withHolds).
+   * that resolves. Synchronous while the lookup stays on synchronous
+   * backends, so a commit can recheck a placement in its own turn, and the
+   * engine runs it as the wave's holder (SqliteVFS.withHolds).
    */
   resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
   /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
   placement(path: string): string | null;
+  /**
+   * Whether resolved namespace path `path` is a directory the namespace
+   * composes (one above a mount point): a removal of it is EBUSY and a file
+   * or link at it EISDIR, before anything commits.
+   */
+  composes(path: string): boolean;
   /**
    * Apply `record` on the namespace as `cred`; `guard` runs right before
    * each call to the backend (the wave's admission and cancellation). A
@@ -3021,7 +3036,7 @@ export class SqliteVFS {
         return this.spanning(() => this.copyTreeInSlices(job, owner, origin), owner);
       },
       writeBatch: (payload) => this.writeBatch(payload, bound),
-      writeBatchPlaced: (payload) => this.writeBatchPlaced(payload, bound, origin, mutationOwner),
+      writeBatchPlaced: (payload, options) => this.writeBatchPlaced(payload, bound, origin, mutationOwner, options?.signal),
       writeStream: (stream, options) => this.writeStream(stream,
         mutationOwner === undefined ? options : { ...options, mutationOwner }, bound, origin),
       mkdirBatch: (paths) => this.mkdirBatch(paths, bound),
@@ -8746,35 +8761,73 @@ export class SqliteVFS {
     this.waveRouter = router;
   }
 
+  /**
+   * Whether the namespace places every one of `names` (as `cred` names
+   * them) on this filesystem, by lookups made in this turn: false when one
+   * lands on a mount or (unless `aboveMounts`) is a directory above a mount
+   * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
+   * namespace would.
+   */
+  placesHere(names: readonly string[], cred: VfsCred = CRED_KERNEL, options?: { aboveMounts?: boolean }): boolean {
+    return this.placedHere(names, cred, undefined, options?.aboveMounts === true);
+  }
+
+  /**
+   * `aboveMounts`: a directory above a mount point counts as this
+   * filesystem's, as a directory record there is (making, reading or
+   * owning the root's directory); else it is the namespace's to answer.
+   */
+  private placedHere(names: readonly string[], cred: VfsCred, signal?: AbortSignal, aboveMounts = false): boolean {
+    const router = this.waveRouter;
+    if (router === null) return true;
+    const routes = new Map<string, string>();
+    for (const named of names) {
+      const key = this.storageKey(named, cred);
+      const parent = this.parentPath(key);
+      let resolved = routes.get(parent);
+      if (resolved === undefined) {
+        let answer: string | Promise<string>;
+        try {
+          answer = parent === '' ? '' : router.resolveDirectory('/' + parent, cred, signal);
+        } catch {
+          return false;
+        }
+        if (answer instanceof Promise) { answer.catch(() => {}); return false; }
+        resolved = answer;
+        routes.set(parent, resolved);
+      }
+      const path = `${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`;
+      // On a mount, or a directory above a mount point: the namespace's to answer.
+      if (router.placement(path) !== null || (!aboveMounts && router.composes(path))) return false;
+    }
+    return true;
+  }
+
+  /**
+   * writeBatch where the namespace places it. When every record is placed on
+   * this filesystem by lookups made in this turn, the batch commits here,
+   * atomic as before, in that same turn; otherwise (a record on a mount, or
+   * a lookup that left the synchronous backends) it goes as a wave, each
+   * record applied where it lands and rechecked at its commit. `signal`
+   * cancels it before anything commits.
+   */
   private async writeBatchPlaced(
     payload: BatchWritePayload,
     cred: VfsCred,
     origin: Principal | null,
     mutationOwner?: string,
+    signal?: AbortSignal,
   ): Promise<{ inodes: number; chunks: number }> {
-    const router = this.waveRouter;
+    signal?.throwIfAborted();
     // Read now, in the caller's turn: its lookups recall none of what it holds.
     const holds = mutationOwner !== undefined ? new Set([mutationOwner, ...(this.activeHolds ?? [])]) : this.activeHolds;
-    if (router !== null) {
-      const names = [...payload.inodes.map((inode) => inode.path), ...(payload.deletePaths ?? [])];
-      const routes = new Map<string, string>();
-      for (const named of names) {
-        const key = this.storageKey(named, cred);
-        const parent = this.parentPath(key);
-        let resolved = routes.get(parent);
-        if (resolved === undefined) {
-          resolved = parent === '' ? '' : await this.withHolds(holds, () => router.resolveDirectory('/' + parent, cred));
-          routes.set(parent, resolved);
-        }
-        if (router.placement(`${resolved === '/' ? '' : resolved}/${key.slice(key.lastIndexOf('/') + 1)}`) !== null) {
-          const result = await this.writeStream(encodeWriteBatchStream(payload), { mutationOwner }, cred, origin);
-          if (!result.ok) throw Object.assign(new Error(result.error.message), result.error.errno === undefined ? {} : { code: result.error.errno });
-          return { inodes: result.committedPathCount, chunks: result.chunks };
-        }
-      }
-    }
-    return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, cred)));
+    const names = [...payload.inodes.map((inode) => inode.path), ...(payload.deletePaths ?? [])];
+    if (this.withHolds(holds, () => this.placedHere(names, cred, signal))) return this.asOrigin(origin, () => this.withMutationOwner(mutationOwner, () => this.writeBatch(payload, cred)));
+    const result = await this.writeStream(encodeWriteBatchStream(payload), { mutationOwner, signal }, cred, origin);
+    if (!result.ok) throw Object.assign(new Error(result.error.message), result.error.errno === undefined ? {} : { code: result.error.errno });
+    return { inodes: result.committedPathCount, chunks: result.chunks };
   }
+
 
   /**
    * Route `record` through `router` when the namespace places it on a mount,
@@ -8791,7 +8844,11 @@ export class SqliteVFS {
     at: {
       file: RoutedFile | null;
       index: number;
-      routes: Map<string, string>;
+      /** The wave's own name, for the slots its links are staged at. */
+      waveId: string;
+      routes: Map<string, { resolved: string; revision: number }>;
+      /** A name placed on this filesystem: rechecked right before its commit. */
+      placedHere: (kind: 'directory' | 'file' | 'delete', named: string, resolved: string, revision: number) => void;
       /** The delegations the wave's writer holds: its lookups recall none of them. */
       holds: ReadonlySet<string> | null;
       signal?: AbortSignal;
@@ -8803,18 +8860,30 @@ export class SqliteVFS {
     },
   ): Promise<boolean> {
     /**
-     * Where `named` lands: its namespace path (its directory resolved once
-     * per wave, until a link or removal) when that is on a mount, else null.
+     * Where `named` lands, by the namespace's lookup: its directory resolved
+     * (again when anything has committed since), then the name placed by the
+     * mount table. The namespace path when that is on a mount; else null,
+     * the placement noted with the revision its resolution saw, for its
+     * commit to recheck. A removal of a directory above a mount point is
+     * EBUSY and a file at one EISDIR, as the single call is, before anything
+     * commits.
      */
-    const mountOf = async (named: string): Promise<string | null> => {
+    const mountOf = async (kind: 'directory' | 'file' | 'delete', named: string): Promise<string | null> => {
       const parent = this.parentPath(named);
-      let resolved = at.routes.get(parent);
-      if (resolved === undefined) {
-        resolved = parent === '' ? '' : await this.withHolds(at.holds, () => router.resolveDirectory('/' + parent, cred, at.signal));
-        at.routes.set(parent, resolved);
+      let route = at.routes.get(parent);
+      if (route === undefined || route.revision !== this._revision) {
+        const revision = this._revision;
+        const resolved = parent === '' ? '' : await this.withHolds(at.holds, () => router.resolveDirectory('/' + parent, cred, at.signal));
+        route = { resolved, revision };
+        at.routes.set(parent, route);
       }
-      const path = `${resolved === '/' ? '' : resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
-      return router.placement(path) === null ? null : path;
+      const path = `${route.resolved === '/' ? '' : route.resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
+      if (router.placement(path) !== null) return path;
+      if (kind !== 'directory' && router.composes(path)) {
+        throw vfsError(kind === 'delete' ? 'EBUSY' : 'EISDIR', named, 'a directory above a mount point');
+      }
+      at.placedHere(kind, named, path, route.revision);
+      return null;
     };
     /** Refuse a record an earlier attempt may have applied; note this one. */
     const reached = (): void => {
@@ -8824,14 +8893,11 @@ export class SqliteVFS {
       }
       at.reach.note(at.index);
     };
-    const receiptOf = (named: string, stat: RoutedStat | null): WriteStreamReceipt | null => (
-      stat === null ? null : { path: named, ...stat }
-    );
     switch (record.type) {
       case 'delete': {
         // A removal may change where later names resolve.
         at.routes.clear();
-        const placed = await mountOf(record.path);
+        const placed = await mountOf('delete', record.path);
         if (placed === null) return false;
         at.setPhase('publish');
         at.settleBefore();
@@ -8841,7 +8907,7 @@ export class SqliteVFS {
         return true;
       }
       case 'directory': {
-        const placed = await mountOf(record.inode.path);
+        const placed = await mountOf('directory', record.inode.path);
         if (placed === null) return false;
         at.setPhase('publish');
         at.settleBefore();
@@ -8854,7 +8920,7 @@ export class SqliteVFS {
       case 'call': {
         const call = record.call;
         if (call.call !== 'mkdir') at.routes.clear();
-        const placed = await mountOf(call.path);
+        const placed = await mountOf(call.call === 'mkdir' ? 'directory' : call.call === 'symlink' ? 'file' : 'delete', call.path);
         if (placed === null) return false;
         at.setPhase('publish');
         at.settleBefore();
@@ -8864,30 +8930,23 @@ export class SqliteVFS {
         return true;
       }
       case 'file-begin': {
-        const placed = await mountOf(record.inode.path);
+        const placed = await mountOf('file', record.inode.path);
         if (placed === null) return false;
         if (record.inode.kind === 'symlink') at.routes.clear();
         at.setPhase('validation');
         this.validateInodeContentShape(record.inode);
-        at.setPhase('publish');
-        at.settleBefore();
-        reached();
-        const queue = new ChunkQueue();
-        const named = record.inode.path;
-        const path = placed;
-        const call = record.inode.call;
-        const published = call !== undefined
-          ? router.apply({ type: 'data-call', call, path, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard)
-          : record.inode.kind === 'symlink'
-          ? (async () => {
-            const parts: Uint8Array[] = [];
-            for await (const chunk of queue) { parts.push(chunk.data.slice()); chunk.release(); }
-            return router.apply({ type: 'symlink', path, target: new TextDecoder().decode(concatBytes(parts)) }, cred, at.guard);
-          })()
-          : router.apply({ type: 'file', path, mode: record.inode.mode, size: record.inode.size, chunks: queue }, cred, at.guard);
-        // Its failure is the file's, met at its end (or the wave's).
-        published.catch(() => {});
-        at.file = { streamContentId: record.streamContentId, named, size: record.inode.size, received: 0, nextChunk: 0, queue, published };
+        // Refused before anything is touched: past what one whole-file call carries.
+        if (record.inode.kind === 'symlink' && record.inode.size > ROUTED_LINK_TARGET_MAX) {
+          throw vfsError('ENAMETOOLONG', record.inode.path, `a link's target is at most ${ROUTED_LINK_TARGET_MAX} bytes; this one is ${record.inode.size}`);
+        }
+        if (record.inode.kind !== 'symlink' && record.inode.size > ROUTED_FILE_MAX) {
+          throw vfsError('ENOTSUP', record.inode.path, `a wave writes a file to a mount in one call, up to ${ROUTED_FILE_MAX} bytes; this one is ${record.inode.size}`);
+        }
+        at.file = {
+          streamContentId: record.streamContentId, named: record.inode.path, placed, link: record.inode.kind === 'symlink',
+          mode: record.inode.mode, size: record.inode.size, received: 0, nextChunk: 0, held: [], index: at.index,
+          ...(record.inode.call === undefined ? {} : { call: record.inode.call }),
+        };
         return true;
       }
       case 'file-chunk': {
@@ -8902,8 +8961,8 @@ export class SqliteVFS {
         }
         file.nextChunk++;
         file.received += record.data.byteLength;
-        // The router releases its credit once it has written it.
-        file.queue.push({ data: record.data, release: () => record.retention.release() });
+        // Held under the wave's credit until the file's call.
+        file.held.push({ data: record.data, release: () => record.retention.release() });
         return true;
       }
       case 'file-end': {
@@ -8916,10 +8975,21 @@ export class SqliteVFS {
         if (file.received !== file.size) {
           throw vfsError('EINVAL', record.path, `received ${file.received} of ${file.size} bytes`);
         }
-        at.file = null;
         at.setPhase('publish');
-        file.queue.end();
-        at.committed(receiptOf(file.named, await file.published));
+        try {
+          at.settleBefore();
+          reached();
+          const bytes = concatBytes(file.held.map((chunk) => chunk.data));
+          const stat = await router.apply(file.call !== undefined
+            ? { type: 'data-call', call: file.call, path: file.placed, mode: file.mode, bytes }
+            : file.link
+            ? { type: 'symlink', path: file.placed, target: new TextDecoder().decode(bytes), slot: `${at.waveId}-${file.index}` }
+            : { type: 'file', path: file.placed, mode: file.mode, bytes }, cred, at.guard);
+          at.committed(stat === null ? null : { path: file.named, ...stat });
+        } finally {
+          at.file = null;
+          for (const chunk of file.held) chunk.release();
+        }
         return true;
       }
       default:
@@ -9010,9 +9080,55 @@ export class SqliteVFS {
     const router = this.waveRouter;
     /** A file the namespace places on a mount, its chunks handed to the router as they arrive. */
     const routed: { file: RoutedFile | null } = { file: null };
-    /** Each directory's resolved namespace path, while the wave changes no link and removes nothing. */
-    const routes = new Map<string, string>();
-    /** The index of the operation being applied, as committedOps counts them. */
+    /** Each directory's resolved namespace path and the revision it saw, until a link or removal of the wave's. */
+    const routes = new Map<string, { resolved: string; revision: number }>();
+    /** This wave's own name: the slots its routed links are staged at. */
+    const waveId = crypto.randomUUID().slice(0, 8);
+    /**
+     * Names the namespace placed on this filesystem, by the commit that
+     * publishes them, each dated by the revision it was placed at. Right
+     * before that commit, in its turn, each is placed again (resolved anew
+     * when anything has been committed since): a peer that repointed a link
+     * between the placement and the commit, or a mount made there, refuses
+     * the wave (ESTALE) instead of writing rows a mount hides.
+     */
+    const placedHere = {
+      directory: new Map<string, { resolved: string; revision: number }>(),
+      file: new Map<string, { resolved: string; revision: number }>(),
+      delete: new Map<string, { resolved: string; revision: number }>(),
+    };
+    /** Place `names` again, the ones this commit publishes, and forget them. */
+    const recheck = (placements: Map<string, { resolved: string; revision: number }>, names: Iterable<string>): void => {
+      if (router === null || placements.size === 0) return;
+      const resolvedNow = new Map<string, string | null>();
+      for (const named of names) {
+        const placed = placements.get(named);
+        if (placed === undefined) continue;
+        placements.delete(named);
+        let now = placed.resolved;
+        if (placed.revision !== this._revision) {
+          const parent = this.parentPath(named);
+          let dir = resolvedNow.get(parent);
+          if (dir === undefined) {
+            let answer: string | Promise<string> | null;
+            try {
+              answer = parent === '' ? '' : this.withHolds(holds, () => router.resolveDirectory('/' + parent, cred));
+            } catch {
+              answer = null;
+            }
+            // A lookup that leaves this filesystem's synchronous backends left it.
+            if (answer instanceof Promise) { answer.catch(() => {}); answer = null; }
+            dir = answer;
+            resolvedNow.set(parent, dir);
+          }
+          now = dir === null ? '' : `${dir === '/' ? '' : dir}/${named.slice(named.lastIndexOf('/') + 1)}`;
+        }
+        if (now !== placed.resolved || router.placement(now) !== null || (placements !== placedHere.directory && router.composes(now))) {
+          throw vfsError('ESTALE', named, 'the namespace changed under the wave: this name no longer lands where the wave placed it');
+        }
+      }
+    };
+    /** The index of the record being applied, as committedOps counts them. */
     let recordIndex = -1;
 
     // The pending publish group. Everything reset by a flush lives here.
@@ -9064,6 +9180,8 @@ export class SqliteVFS {
           });
         });
       }
+      // The files this commit publishes, placed again in its turn.
+      recheck(placedHere.file, groupNames.values());
       const plan = group.build();
       const leases = groupLeases;
       const inodes = groupInodes;
@@ -9138,6 +9256,7 @@ export class SqliteVFS {
     const flushDirectories = (): void => {
       if (pendingDirectories.length === 0) return;
       options.admit?.();
+      recheck(placedHere.directory, pendingDirectories.map((inode) => inode.path));
       const inodes = pendingDirectories;
       pendingDirectories = [];
       const result = asCaller(() => (
@@ -9154,6 +9273,7 @@ export class SqliteVFS {
       flushGroup();
       flushDirectories();
       options.admit?.();
+      recheck(placedHere.delete, [path]);
       const affected = Math.max(1, this.collectSubtreeInodes([path]).length);
       asCaller(() => {
         this.writeBatch({ inodes: [], chunks: [], deletePaths: [path] }, cred);
@@ -9307,8 +9427,10 @@ export class SqliteVFS {
           get file() { return routed.file; },
           set file(file) { routed.file = file; },
           index: recordIndex,
+          waveId,
           routes,
           holds,
+          placedHere: (kind, named, resolved, revision) => { placedHere[kind].set(named, { resolved, revision }); },
           signal: options.signal,
           reach: options.mountReach,
           // Right before each call to the backend: the wave is still admitted, and not cancelled.
@@ -9624,11 +9746,10 @@ export class SqliteVFS {
       for (const lease of groupLeases) lease.release();
       for (const lease of activeFile?.heldLeases ?? []) lease.release();
       groupLeases = [];
-      // A routed file the wave did not finish: its writer stops, and what it had not taken is released.
+      // A routed file the wave did not finish: what it held goes back.
       if (routed.file !== null) {
-        const file = routed.file;
-        file.queue.fail(vfsError('EIO', '/' + file.named, 'the wave ended before the file did'));
-        await file.published.catch(() => {});
+        for (const chunk of routed.file.held) chunk.release();
+        routed.file = null;
       }
       if (!recordIteratorFinished && recordIterator?.return) {
         try { await recordIterator.return(); } catch { /* preserve the primary stream result */ }
@@ -11852,71 +11973,20 @@ class GcQueue {
   }
 }
 
-/** A routed file being written: its stream identity, what has arrived, and its publication. */
+/** A routed file arriving: its stream identity, where it was placed, and its chunks held until its call. */
 interface RoutedFile {
   streamContentId: string;
   named: string;
+  placed: string;
+  link: boolean;
+  mode: number;
   size: number;
   received: number;
   nextChunk: number;
-  queue: ChunkQueue;
-  published: Promise<RoutedStat | null>;
-}
-
-/**
- * A routed file's chunks, from the wave's record loop to the router: pushed
- * as they are decoded, taken as the router writes them. Each chunk holds the
- * wave's credit until its taker releases it, so a router slower than the
- * wave slows the wave instead of buffering it. A failed wave fails the taker
- * and releases what it had not taken.
- */
-class ChunkQueue implements AsyncIterable<RoutedChunk> {
-  private readonly queued: RoutedChunk[] = [];
-  private ended = false;
-  private failure: unknown = null;
-  private waiting: { resolve: (result: IteratorResult<RoutedChunk>) => void; reject: (error: unknown) => void } | null = null;
-
-  push(chunk: RoutedChunk): void {
-    if (this.waiting !== null) {
-      const waiting = this.waiting;
-      this.waiting = null;
-      waiting.resolve({ value: chunk, done: false });
-    } else {
-      this.queued.push(chunk);
-    }
-  }
-
-  end(): void {
-    this.ended = true;
-    if (this.waiting !== null && this.queued.length === 0) {
-      const waiting = this.waiting;
-      this.waiting = null;
-      waiting.resolve({ value: undefined, done: true });
-    }
-  }
-
-  fail(error: unknown): void {
-    if (this.ended && this.queued.length === 0) return;
-    this.failure = error;
-    for (const chunk of this.queued.splice(0)) chunk.release();
-    if (this.waiting !== null) {
-      const waiting = this.waiting;
-      this.waiting = null;
-      waiting.reject(error);
-    }
-  }
-
-  [Symbol.asyncIterator](): AsyncIterator<RoutedChunk> {
-    return {
-      next: () => {
-        if (this.failure !== null) return Promise.reject(this.failure);
-        const chunk = this.queued.shift();
-        if (chunk !== undefined) return Promise.resolve({ value: chunk, done: false });
-        if (this.ended) return Promise.resolve({ value: undefined, done: true });
-        return new Promise((resolve, reject) => { this.waiting = { resolve, reject }; });
-      },
-    };
-  }
+  held: { data: Uint8Array; release(): void }[];
+  index: number;
+  /** A process's data call (W7Call), made by the namespace's call of that name. */
+  call?: W7DataCall;
 }
 
 function concatBytes(parts: readonly Uint8Array[]): Uint8Array {

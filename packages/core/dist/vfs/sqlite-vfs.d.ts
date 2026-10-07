@@ -27,8 +27,7 @@
  * state-0 content and publish it atomically.
  */
 import { VfsEventEmitter, type VfsEvent } from './events.js';
-import { type BatchWritePayload, type VfsInodeKind, type W7DataCall, type W7PathCall } from '@nimbus-sh/platform/w7-frame.js';
-export { RecallRequired, recallOf, withRecall } from './recall.js';
+import { type BatchWritePayload, type VfsInodeKind } from '@nimbus-sh/platform/w7-frame.js';
 import { type Principal, type VfsDirentType, type VfsWriteEvent } from './vfs.js';
 import { StorageLedger, type StorageLedgerView } from '../runtime/storage-ledger.js';
 import { type VfsAcquireOptions, type VfsAcquireResult, type VfsCred, type VfsListEntry, type VfsListPage, type SqlDatabase, type TransactionHost } from '../runtime/os-contracts.js';
@@ -40,54 +39,9 @@ export type { BatchChunkEntry, BatchInodeEntry, BatchWritePayload, VfsInodeKind,
 export interface ExclusiveMutationLease {
     readonly root: string;
     readonly owner: string;
-    /** A delegation's inode numbers, reserved for what its holder makes: [first, end). */
-    readonly inos?: InodeRange;
-    /** A delegation's storage bytes, reserved for what its holder writes. */
-    readonly bytes?: number;
-}
-/** Inode numbers reserved for a delegation's holder: [first, end). */
-export interface InodeRange {
-    readonly first: number;
-    readonly end: number;
 }
 export interface ExclusiveMutationOptions {
     readonly includeMissingAncestors?: boolean;
-    /**
-     * Make the lease a delegation: its holder decides the subtree's operations
-     * itself and sends them later (as writes under the lease), so another
-     * caller's access recalls them first (RecallRequired) instead of being
-     * refused.
-     */
-    readonly delegation?: DelegationTerms;
-}
-/** What a delegation's holder agreed to (ExclusiveMutationOptions.delegation). */
-export interface DelegationTerms {
-    /** Another caller's reads under the root recall too, not only its writes: the holder's writes may be unsent. */
-    readonly reads: boolean;
-    /**
-     * Bring the holder's decided operations in. Settles once every operation
-     * it decided before the recall is stored here, and the holder has done
-     * what `kind` asks: 'share', send each operation as it decides it from
-     * now on (another caller reads the subtree; the delegation stays), or
-     * 'revoke', give the subtree up (another caller writes it; the lease
-     * ends, and the holder's later writes under it are ESTALE). The engine
-     * joins concurrent recalls of one delegation into one.
-     */
-    recall(kind: 'share' | 'revoke'): Promise<void>;
-    /** Refuses (throws) a root its maker does not delegate; asked with the lease's resolved root, before anything else. */
-    admit?(root: string): void;
-    /**
-     * How many inode numbers to reserve for what the holder makes: it numbers
-     * them itself (a stat shows the number before the session has the file)
-     * and sends each with its file (W7 v4 `ino`).
-     */
-    readonly inos?: number;
-    /**
-     * Storage bytes to reserve for what the holder writes (N18): the holder
-     * decides a write fits locally against them, and its waves draw on them.
-     * Past them, its waves are admitted as anyone's (ENOSPC when full).
-     */
-    readonly bytes?: number;
 }
 export interface VfsOpenDescription {
     /** Inode number the description currently resolves; 0 is never issued. */
@@ -163,8 +117,6 @@ export interface CredentialedVfs {
     readonly cred: VfsCred;
     /** Who the view acts as: its credential and actor, the principal its write events name. */
     readonly principal: Principal;
-    /** The delegations the view's process holds, asked at each call (SqliteVFS.as `holds`). */
-    readonly holds?: () => ReadonlySet<string>;
     exists(path: string): boolean;
     isDirectory(path: string): boolean;
     isFile(path: string): boolean;
@@ -287,7 +239,9 @@ export interface CredentialedVfs {
      * as a wave, each applied where it lands, in order, refused as a whole
      * call is (its error) at the first refusal.
      */
-    writeBatchPlaced(payload: BatchWritePayload): Promise<{
+    writeBatchPlaced(payload: BatchWritePayload, options?: {
+        signal?: AbortSignal;
+    }): Promise<{
         inodes: number;
         chunks: number;
     }>;
@@ -338,12 +292,6 @@ export interface WriteBatchStreamProgress {
     /** 1-based sequence of the last durable publish group; zero means none. */
     committedGroupSequence: number;
     committedPathCount: number;
-    /**
-     * The wave's operations committed, in order: each removal, directory,
-     * file, rename, truncate, attribute change and call counts one. On a
-     * refusal, the refused operation is the one at this index.
-     */
-    committedOps: number;
     inodes: number;
     chunks: number;
     /** Each published file and link, by the path the stream named, as stat will report it. */
@@ -360,19 +308,24 @@ export interface WriteStreamReceipt {
     uid: number;
     gid: number;
     dev: number;
-    /** The session's revision once a call's file landed: what its writeFile answers. */
-    revision?: number;
 }
-/** One chunk of a routed file's bytes, held by the wave's credit until `release`. */
-export interface RoutedChunk {
-    readonly data: Uint8Array;
-    release(): void;
-}
+/** The longest target a routed symbolic link takes, in bytes: PATH_MAX, as symlink(2) bounds it. */
+export declare const ROUTED_LINK_TARGET_MAX = 4096;
 /**
- * A wave's record that the namespace places on a mount (WaveRouter.apply).
- * Paths are the namespace's, '/'-rooted, as the wave named them. A file's
- * bytes arrive as the wave delivers them, each chunk held by the wave's
- * credit until the router releases it.
+ * The largest file a wave writes to a mount. A routed file is one
+ * whole-file writeFile, its bytes held under the wave's credit until that
+ * call (half the shared write credit, so a held file never starves the
+ * wave); a larger one is refused (ENOTSUP, naming this) before anything is
+ * touched. A backend that declares an atomic streaming write could take
+ * more; none does yet.
+ */
+export declare const ROUTED_FILE_MAX: number;
+/**
+ * A wave's record that the namespace places on a mount (WaveRouter.apply),
+ * each the single call a program would make there. Paths are where the
+ * namespace's lookup placed them ('/'-rooted, the directory's links
+ * resolved). A link is made at `slot` beside its name first: a name the
+ * wave owns (its id and the record's index), renamed over the link's.
  */
 export type RoutedWaveRecord = {
     readonly type: 'delete';
@@ -385,24 +338,12 @@ export type RoutedWaveRecord = {
     readonly type: 'file';
     readonly path: string;
     readonly mode: number;
-    readonly size: number;
-    readonly chunks: AsyncIterable<RoutedChunk>;
+    readonly bytes: Uint8Array;
 } | {
     readonly type: 'symlink';
     readonly path: string;
     readonly target: string;
-}
-/** A process's call (W7Call), made by the namespace's operation of that name. */
- | {
-    readonly type: 'call';
-    readonly call: W7PathCall;
-} | {
-    readonly type: 'data-call';
-    readonly call: W7DataCall;
-    readonly path: string;
-    readonly mode: number;
-    readonly size: number;
-    readonly chunks: AsyncIterable<RoutedChunk>;
+    readonly slot: string;
 };
 /** A routed name's stat once published: what its receipt reports. */
 export interface RoutedStat {
@@ -426,12 +367,18 @@ export interface WaveRouter {
      * The namespace path ('/'-rooted) directory `path` resolves to by the
      * mutations' lookup (CompositeVFS.mutationRoute, links followed). A tail
      * that does not exist yet is kept as named, after the nearest ancestor
-     * that resolves. Synchronous while the lookup stays on this filesystem,
-     * so it reads as the wave's holder does (SqliteVFS.withHolds).
+     * that resolves. Synchronous while the lookup stays on synchronous
+     * backends, so a commit can recheck a placement in its own turn.
      */
     resolveDirectory(path: string, cred: VfsCred, signal?: AbortSignal): string | Promise<string>;
     /** The mount a mutation at resolved namespace path `path` lands on, or null when it is this filesystem's alone. */
     placement(path: string): string | null;
+    /**
+     * Whether resolved namespace path `path` is a directory the namespace
+     * composes (one above a mount point): a removal of it is EBUSY and a file
+     * or link at it EISDIR, before anything commits.
+     */
+    composes(path: string): boolean;
     /**
      * Apply `record` on the namespace as `cred`; `guard` runs right before
      * each call to the backend (the wave's admission and cancellation). A
@@ -469,7 +416,7 @@ export type WriteBatchStreamResult = (WriteBatchStreamProgress & {
         code: 'ERR_WRITE_BATCH_STREAM';
         phase: WriteBatchStreamFailurePhase;
         message: string;
-        /** The refusal's errno (EACCES, EEXIST, EROFS, …) when the filesystem refused; absent otherwise. */
+        /** The refusal's errno (EACCES, EROFS, …) when the filesystem refused; absent otherwise. */
         errno?: string;
     };
 });
@@ -671,16 +618,6 @@ export declare class SqliteVFS {
     rotateIncarnation(): string;
     private readonly exclusiveMutationLeases;
     private activeMutationOwner;
-    /**
-     * The delegations the running call is made by (callerView: a view bound
-     * to a lease, or a holder process's view, which answers what it holds):
-     * its own lookups recall none of them.
-     */
-    private activeHolds;
-    /** Whether the running call writes (callerView, a writable description): its lookups revoke a delegation rather than share it. */
-    private activeWrite;
-    /** Whether the running call reads what has landed (a `landed` view): its reads ask no holder to send. */
-    private activeLanded;
     /** Shared by every concurrent stream targeting this session's VFS. */
     private readonly writeStreamCredits;
     private _stagedStreamBytes;
@@ -831,7 +768,7 @@ export declare class SqliteVFS {
         read: boolean;
         write: boolean;
         sync?: boolean;
-    }, principal?: Principal, holds?: () => ReadonlySet<string>): VfsOpenDescription;
+    }, principal?: Principal): VfsOpenDescription;
     /**
      * Hold `bytes`, written through `opened` at `offset`, in its file's
      * AppendRun when they extend the file (an O_APPEND write is at `end()`): a
@@ -983,38 +920,31 @@ export declare class SqliteVFS {
      */
     private logicalPath;
     /**
+     * uid 0's view: its writes may use the storage the ledger keeps back from
+     * everyone else (N18's kernel reserve, as ext4 reserves blocks for root).
+     * Covers each call's synchronous part; the kernel's bookkeeping is that.
+     */
+    private privilegedView;
+    /**
      * Bind credentials and, optionally, the capability of a live mutation
      * lease; `actor` names the principal finer than its uid, in the write
-     * events its mutations make (observeWrites); `holds` answers, at each
-     * call, the delegations the view's process holds (its own lookups recall
-     * none of them). `landed`: the view reads what has landed, never asking a
-     * holder to send first (an observer that is told when a wave lands, the
-     * editor's file tree, reads after it); its writes still recall.
+     * events its mutations make (observeWrites).
      */
     as(cred: VfsCred, options?: {
         mutationOwner?: string;
         actor?: string;
-        holds?: () => ReadonlySet<string>;
-        landed?: boolean;
     }): CredentialedVfs;
     /** `run` as `origin`'s call: the principal its write events name. */
     private asOrigin;
     /**
-     * `view`, each call made as its caller, the one place a view's calls
-     * enter the engine: with the caller's privilege (uid 0 may use the
-     * storage the ledger keeps back from everyone else, N18's kernel reserve,
-     * as ext4 reserves blocks for root), as its principal (the write events
-     * it makes), and, for a synchronous mutation (OWNED_MUTATIONS), within
-     * its mutation lease (spanning work carries the owner per slice). Each
-     * call but a LEAF_READS one first writes every append this VFS holds
-     * (appendThrough): a view is how a caller changes the store or reads more
-     * of it than one file, and none may do either without them. A leaf read
-     * looks at the one file it names, which path resolution writes the
-     * appends of, so a program reading one file while appending to another is
-     * not made to store each append as it comes. Each covers its call's
-     * synchronous part; work it defers re-enters it (asCaller).
+     * `view`, each of its calls but LEAF_READS first writing every append
+     * this VFS holds (appendThrough): a view is how a caller changes the
+     * store or reads more of it than one file, and none may do either
+     * without them. A leaf read looks at the one file it names, which path
+     * resolution writes the appends of, so a program reading one file while
+     * appending to another is not made to store each append as it comes.
      */
-    private callerView;
+    private settlingView;
     private accessInode;
     private accessMode;
     /**
@@ -1208,8 +1138,6 @@ export declare class SqliteVFS {
     private acquireExclusiveMutationAt;
     acquireGlobalExclusiveMutation(): ExclusiveMutationLease;
     releaseExclusiveMutation(owner: string): void;
-    /** `owner`'s lease ends: the storage its holder had reserved and not used goes back to the ledger. */
-    private endLease;
     /**
      * Hand `owner`'s lease, root unchanged, to a new owner in one step: from
      * now on a write that presents `owner` is ESTALE, while the new owner's go
@@ -1218,39 +1146,9 @@ export declare class SqliteVFS {
      */
     rotateExclusiveMutation(owner: string): string;
     hasExclusiveMutation(): boolean;
-    /**
-     * Recall a read-covering delegation `key` lies in, for any caller but its
-     * holder (the lease a mutation scope or a view presents).
-     */
-    private recallReads;
-    /** Whether a create under `root` (it, or anything under it) would take permissions from a default ACL or a shared directory. */
-    private inheritsPermissions;
-    /** `count` inode numbers no one else will be given, in one transaction: a gap if unused, never a reuse. */
-    private reserveInos;
-    /**
-     * The inode number a batch entry asks for (W7 v4 `ino`), or undefined to
-     * be numbered here. Only the holder of a delegation numbers its own
-     * entries, from its lease's reserved range, and a number already used by
-     * another name is refused (there are no hard links).
-     */
-    private askedIno;
-    /** Whether the running call is made by `owner`'s holder (its mutation scope, or the delegations its view holds). */
-    private isHolder;
-    /** Give up every delegation of another holder that a write at `key` overlaps (each recalled, revoked). */
-    private recallDelegationsAt;
-    /**
-     * The refusal for an access to `key` that `lease`'s holder must answer
-     * first, and the recall it waits on: one per delegation at a time, a
-     * revoke superseding a share. A shared delegation stays; a revoked one
-     * ends here, so its holder's later writes under it are ESTALE.
-     */
-    private recallRequired;
     private withMutationOwner;
-    /**
-     * Refuse a mutation at `path` another lease covers; `owner` presents the
-     * caller's own lease, `holds` the delegations the caller's process holds.
-     */
-    assertMutationAllowed(path: string, owner?: string, holds?: () => ReadonlySet<string>): void;
+    /** Refuse a mutation at `path` another lease covers; `owner` presents the caller's own lease. */
+    assertMutationAllowed(path: string, owner?: string): void;
     /**
      * Why a mutation at `path`, as `cred` names it (a confined caller's /tmp/x
      * is its own file), is refused: another owner's exclusive-mutation lease
@@ -1276,16 +1174,7 @@ export declare class SqliteVFS {
     /** Where `path` leads, in the caller's names, or null for a loop. */
     private resolveSymlink;
     private readFile;
-    /**
-     * The regular file a pathname read resolved to (live or a snapshot's):
-     * ENOENT when nothing is there, EISDIR for a directory, EINVAL for
-     * anything else that is not a regular file.
-     */
-    private regularFile;
-    /** All of an inode's bytes (a link's text). */
-    private readWhole;
-    /** `length` bytes of an inode's at `offset`, clamped to its size: a read past the end is short. */
-    private readNodeRange;
+    private readInodeBytes;
     /**
      * Read a whole file straight from SQL, bypassing the LRU content cache
      * entirely (neither consulted nor populated). For one-shot bulk reads
@@ -1328,13 +1217,6 @@ export declare class SqliteVFS {
      */
     private manifestRange;
     /** One chunk's bytes, through the LRU when `cached`. */
-    /**
-     * The bytes of chunks `ids` (at most KEYS_PER_SQL_EXEC), in one
-     * statement, by id; a chunk not stored here (cold, pending) is
-     * unreadable. A missing id is absent from the answer: the caller names
-     * what it expected.
-     */
-    private loadChunks;
     private readChunk;
     /**
      * The one read of a stored chunk: the bytes of a row whose state holds
@@ -1401,11 +1283,7 @@ export declare class SqliteVFS {
      */
     private rewriteFile;
     /** Publish a rewrite in one transaction when it fits; false when it does not. */
-    /**
-     * Publish `node` rewritten to `content` in one transaction. One that would
-     * not fit the transaction bounds is refused (assertTransactionFits), or,
-     * `ifFits`, not made: false, and the caller publishes it another way.
-     */
+    private tryPublishRewrite;
     private publishRewrite;
     /** `node` as the rewrite publishes it; `madeAt`, when given, is its mtime and ctime (else now, and the commit's). */
     private rewrittenEntry;
@@ -1423,13 +1301,6 @@ export declare class SqliteVFS {
     /** The manifest counterpart of chunkUnshared: the CoW guard for large files. */
     private contentUnshared;
     private newPlan;
-    /**
-     * Pieces staged into `staging` (of the file at `path`) in bounded
-     * transactions: each takes pieces until the next would not fit, then
-     * commits through `commit` (the caller's: its authority, its checkpoint
-     * row with `commitRow`). `flush` commits what is held.
-     */
-    private stagingWriter;
     /** Create a state-0 content in its own transaction and hold it live. */
     private beginStaging;
     /**
@@ -1513,15 +1384,13 @@ export declare class SqliteVFS {
      */
     private removeRecursive;
     /**
-     * Every inode strictly under `root`, a bounded page at a time: the live
-     * tree, or the tree as of generation `at` (pageAt, live and history
-     * merged), in path order; or, live, in descending path order (`desc`),
-     * where every entry comes before the directory holding it (a path under a
-     * directory extends the directory's) and each page starts below the last
-     * path read, so removing what was already yielded does not disturb the
-     * walk. `directoriesOnly` takes only directories.
+     * The inodes under `root`, then `root` itself, in descending path order, a
+     * bounded page at a time. A path under a directory extends the directory's
+     * path, so it sorts after it: every entry comes before the directory that
+     * holds it. Each page starts below the last path read, so removing what
+     * was already yielded does not disturb the walk.
      */
-    private subtree;
+    private subtreeDescending;
     private rename;
     /**
      * Unwind the destination inodes a failed move had already published.
@@ -1575,6 +1444,8 @@ export declare class SqliteVFS {
     private copyTreeNow;
     /** Reserve a planned copy's rows in the ledger (N18); its slices draw from it. */
     private reserveCopy;
+    /** Every entry strictly under `root` as of generation `g`, a page at a time. */
+    private subtreeAt;
     /**
      * Run a copyTree job to completion: the root row and the job row in the
      * first transaction, then one page per transaction, the cursor moving in
@@ -1613,12 +1484,11 @@ export declare class SqliteVFS {
         quiesce: true;
     }): Promise<SnapshotInfo>;
     /**
-     * Run `pin` once nothing spans awaits, no plain exclusive lease is held,
-     * and every delegation is shared (its holder's decided operations stored):
-     * the check and `pin` run in one turn, so nothing can start between them.
-     * New spanning work waits behind the gate until then (Kinu N14: await,
-     * never EBUSY). A lease is synchronous and cannot wait, so one taken
-     * meanwhile is waited out too.
+     * Run `pin` once nothing spans awaits and no exclusive lease is held: the
+     * check and `pin` run in one turn, so nothing can start between them. New
+     * spanning work waits behind the gate until then (Kinu N14: await, never
+     * EBUSY). A lease is synchronous and cannot wait, so one taken meanwhile
+     * is waited out too.
      */
     private quiesced;
     /**
@@ -1993,6 +1863,30 @@ export declare class SqliteVFS {
     private waveRouter;
     /** The namespace that places every wave's records (ProcessFiles installs its CompositeVFS). */
     setWaveRouter(router: WaveRouter | null): void;
+    /**
+     * Whether the namespace places every one of `names` (as `cred` names
+     * them) on this filesystem, by lookups made in this turn: false when one
+     * lands on a mount or (unless `aboveMounts`) is a directory above a mount
+     * point, when a lookup leaves the synchronous backends, or when it fails. A caller that writes in this same turn writes where the
+     * namespace would.
+     */
+    placesHere(names: readonly string[], cred?: VfsCred, options?: {
+        aboveMounts?: boolean;
+    }): boolean;
+    /**
+     * `aboveMounts`: a directory above a mount point counts as this
+     * filesystem's, as a directory record there is (making, reading or
+     * owning the root's directory); else it is the namespace's to answer.
+     */
+    private placedHere;
+    /**
+     * writeBatch where the namespace places it. When every record is placed on
+     * this filesystem by lookups made in this turn, the batch commits here,
+     * atomic as before, in that same turn; otherwise (a record on a mount, or
+     * a lookup that left the synchronous backends) it goes as a wave, each
+     * record applied where it lands and rechecked at its commit. `signal`
+     * cancels it before anything commits.
+     */
     private writeBatchPlaced;
     /**
      * Route `record` through `router` when the namespace places it on a mount,
@@ -2004,8 +1898,6 @@ export declare class SqliteVFS {
      */
     private routeRecord;
     private writeStream;
-    /** `run` as a call made by the delegations `holds` (its lookups recall none of them), in this turn only. */
-    private withHolds;
     private consumeStream;
     private _writeBatchWithRetry;
     /**
@@ -2099,23 +1991,6 @@ export declare class SqliteVFS {
     /** The cache and the publication learn what touchDirectoryRows committed. */
     private touchedDirectoriesCommitted;
     private executeTransactionPlan;
-    /** A plan's deletions: rows, tombstones, and the content a dereferencing delete lets go of. */
-    private applyPlanDeletes;
-    /** The plan's new staging contents, numbered and stored (state staging). */
-    private createPlanStagings;
-    /**
-     * Every chunk the plan's pieces name, by hash: found, brought back from
-     * cold, rewritten in place, or inserted. Its id, by hash key.
-     */
-    private storePlanChunks;
-    /**
-     * Each inode's content reference (entry.chunkId, entry.contentId): a
-     * chunk, a manifest found by digest or made, a staging published, or an
-     * edit of a manifest in place.
-     */
-    private publishPlanContents;
-    /** The plan's inode rows: identity, generation and content; what each replaced is queued for collection. */
-    private upsertPlanInodes;
     /** Multi-row INSERT of `values`, `columns` per row, in statements under the bound-parameter limit. */
     /**
      * Chunk rows as (id, hash, data) triples; size is length(data), so a row
@@ -2221,7 +2096,6 @@ export declare class SqliteVFS {
      * joined, cut and hashed here, before the transaction; the hashes resolve
      * to chunk ids inside it.
      */
-    /** `commitRow`: the transaction's commit callback writes a checkpoint row, which the plan counts. */
     private prepareBatchTransaction;
     private validateFileChunks;
     private validateInodeContentShape;
@@ -2238,7 +2112,7 @@ export declare class SqliteVFS {
      * 19,429-file tree, on the object's only thread.
      *
      * The subtree is held whole, so only callers that commit it whole use this:
-     * a batch's deletions and a rename. A removal pages (subtree, descending).
+     * a batch's deletions and a rename. A removal pages (subtreeDescending).
      */
     private collectSubtreeInodes;
     /**

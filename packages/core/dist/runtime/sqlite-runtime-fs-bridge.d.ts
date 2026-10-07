@@ -146,7 +146,9 @@ export declare class SqliteRuntimeFsBridge implements RuntimeFsBridge {
         preserve?: boolean;
     }): Promise<number>;
     /** Where the namespace places it: atomic on SQLite, a routed wave when a record lands on a mount. */
-    writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0]): Promise<{
+    writeBatch(payload: Parameters<CredentialedVfs['writeBatch']>[0], options?: {
+        signal?: AbortSignal;
+    }): Promise<{
         inodes: number;
         chunks: number;
     }>;
