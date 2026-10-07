@@ -187,6 +187,7 @@ const INPUTS = {
   awaitHostedBoot: ['wk'],
   routeHostedHttp: ['wk', { method: 'GET', url: 'https://hosted.test/' }],
   cancelHostProcess: ['wk'],
+  hostLost: ['wk', '00000000-0000-4000-8000-000000000000'],
   hmrRelay: ['client-1', 'hmr-message'],
   hmrNextEvent: [25_000],
   replayBoundary: [],
