@@ -53,25 +53,28 @@ interface NodeStat {
   isSocket: () => boolean;
 }
 
+/**
+ * Node's Stats for a filesystem stat: its identity, links, owner, mode and
+ * times as the filesystem has them (no birth time is kept: ctime stands in).
+ */
 function toNodeStat(stat: VfsStat): NodeStat {
-  const isDir = stat.type === 'directory';
   const holds = DIRENT_TYPES[direntTypeOfStat(stat)].node;
   return {
-    dev: 0,
-    ino: 0,
+    dev: stat.dev,
+    ino: stat.ino,
     mode: stat.mode,
-    nlink: isDir ? 2 : 1,
-    uid: 1000,
-    gid: 1000,
+    nlink: stat.nlink,
+    uid: stat.uid,
+    gid: stat.gid,
     rdev: 0,
     size: stat.size,
     blksize: 4096,
     blocks: Math.ceil(stat.size / 512),
-    atimeMs: stat.mtime,
+    atimeMs: stat.atime,
     mtimeMs: stat.mtime,
     ctimeMs: stat.ctime,
     birthtimeMs: stat.ctime,
-    atime: new Date(stat.mtime),
+    atime: new Date(stat.atime),
     mtime: new Date(stat.mtime),
     ctime: new Date(stat.ctime),
     birthtime: new Date(stat.ctime),
