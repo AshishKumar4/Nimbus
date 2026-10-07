@@ -48,7 +48,8 @@ const boot = async (stage, env = {}) => {
   // One module instance is one process, and its state lives on globalThis.
   for (const key of Object.keys(globalThis)) if (key.startsWith('__nimbus')) delete globalThis[key];
   const { NimbusProcess } = await import(join(dir, `worker.mjs?${stage}`));
-  const proc = new NimbusProcess({}, env);
+  // A Durable Object's state: its store has no SQLite here, so nothing is journaled.
+  const proc = new NimbusProcess({ storage: {} }, env);
   const state = { boot: null };
   const booting = proc.startProcess({ userCode: 'run app', rbArgv: [], userEnv: {}, progName: 'rackup', cwd: '/home/user' })
     .then((value) => { state.boot = value; });

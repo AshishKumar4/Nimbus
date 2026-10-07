@@ -159,7 +159,7 @@ if (hasHost('ruby')) {
       'globalThis.__rubyRun = async (args) => { globalThis.__residentArgs = args; return { exitCode: 0, stdout: "", stderr: "" }; };',
     ].join('\n')));
     const { NimbusProcess } = await import(join(dir, 'worker.mjs'));
-    await new NimbusProcess({}, {}).startProcess(call(missing));
+    await new NimbusProcess({ storage: {} }, {}).startProcess(call(missing));
     const resident = await guest(missing, globalThis.__residentArgs);
     assert.match(resident.stderr, new RegExp(`^ruby: can't enter working directory '${missing}': `), `the resident names its command: ${resident.stderr}`);
   } finally {
