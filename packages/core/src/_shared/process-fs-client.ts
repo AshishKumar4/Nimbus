@@ -160,6 +160,13 @@ export interface ProcessFsClientOptions {
    * still holds unlogged (a file's latest bytes), so the flush sends it.
    */
   readonly drain?: () => void;
+  /**
+   * The process's umask now: stamped on each call that makes a name with a
+   * mode (writeFile, appendFile, mkdir) as it is logged, unless the call
+   * names one, so the session applies the umask the process had when it
+   * made the call (W7Call umask), however its record of it moves meanwhile.
+   */
+  readonly umask?: () => number | undefined;
 }
 
 export interface ProcessFsClient {
@@ -177,13 +184,13 @@ export interface ProcessFsClient {
   flush(): Promise<void>;
   /**
    * The gate an effect leaving the process (its output, its exit, a message
-   * out) is released at, taken when the effect is made. A process whose log
-   * is durable (its facet's store: a resident) loses nothing it logged, so
-   * its effects wait for nothing: null. Any other (a one-shot) releases an
-   * effect only once every op logged ahead of it is answered (flush), so a
-   * crash loses at most what it logged after its last released effect
-   * (DECIDED_BACKLOG_OPS), and no effect is ever seen ahead of a change that
-   * was lost.
+   * out) is released at, taken when the effect is made: once every op
+   * logged ahead of it is answered (flush), or null when none waits. What
+   * sees the effect (the shell's next command, a parent reading its child's
+   * output, a client of its server) then sees every change made before it,
+   * in the session: a durable log (a resident's) keeps those changes, but
+   * only the session makes them visible. And a one-shot's crash loses
+   * nothing an effect it released claimed.
    */
   effect(): Promise<void> | null;
   /** The end of the run: everything answered; throws naming every failure not yet taken. */
@@ -290,6 +297,15 @@ const DATA_PIECE_BYTES = WAVE_BYTES;
 export const MAX_DELEGATIONS_PER_PROCESS = 8;
 /** Mutations in a subtree before the client takes it. */
 export const GRANT_AFTER = 8;
+
+/** `op` with the process's umask now, when it makes a name with a mode and names none (ProcessFsClientOptions.umask). */
+function withUmaskOf(op: ProcessFsOp, umask: (() => number | undefined) | undefined): ProcessFsOp {
+  if (umask === undefined || op.type !== 'call') return op;
+  const call = op.call;
+  if ((call.call !== 'writeFile' && call.call !== 'appendFile' && call.call !== 'mkdir') || call.umask !== undefined) return op;
+  const mask = umask();
+  return mask === undefined ? op : { type: 'call', call: { ...call, umask: mask & 0o777 } };
+}
 
 /** A link's target, at most (PATH_MAX, as symlink(2) bounds it). */
 const SYMLINK_TARGET_MAX = 4096;
@@ -933,8 +949,9 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
     pending() {
       return queue.length > 0 || inFlight !== null;
     },
-    submit(op, submitOptions) {
+    submit(given, submitOptions) {
       const acknowledged = submitOptions?.acknowledged === true;
+      const op = withUmaskOf(given, options.umask);
       const named = pathsOf(op);
       for (const path of named) if (!canonical(path)) throw fsError('EINVAL', `EINVAL: not a filesystem path the session takes: '${path}'`, path);
       // A link's target past PATH_MAX is refused here, as symlink(2) refuses it; no wave could carry it.
@@ -1011,7 +1028,6 @@ export function processFsClient(options: ProcessFsClientOptions): ProcessFsClien
       return flushed;
     },
     effect() {
-      if (journal.durable) return null;
       options.drain?.();
       return answered >= logged ? null : client.flush();
     },

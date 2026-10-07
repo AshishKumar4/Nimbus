@@ -485,4 +485,28 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(s.text('home/user/j2'), '2');
 }
 
+// ── Review 9: a create carries the umask the process had when it made it ──
+// Red before: the session applied its own record of the process's umask
+// (0o022 here, set when the process started; a change reaches it by an RPC
+// not ordered with the waves), so files and directories made after
+// process.umask(0o077) came out 0o644 and 0o755.
+{
+  const s = session();
+  let mask = 0o022;
+  const c = client(s, { umask: () => mask });
+  await c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/before', mode: 0o666, data: enc.encode('b') } });
+  mask = 0o077;
+  await c.submit({ type: 'call', call: { call: 'writeFile', path: 'home/user/private', mode: 0o666, data: enc.encode('p') } });
+  await c.submit({ type: 'call', call: { call: 'appendFile', path: 'home/user/log', mode: 0o666, data: enc.encode('l') } });
+  await c.submit({ type: 'call', call: { call: 'mkdir', path: 'home/user/secret', mode: 0o777 } });
+  // A call that names its umask keeps it (a holder's decided create).
+  await c.submit({ type: 'call', call: { call: 'mkdir', path: 'home/user/open', mode: 0o777, umask: 0o002 } });
+  const perm = (path) => s.kernel.stat(path).mode & 0o777;
+  assert.equal(perm('home/user/before'), 0o644);
+  assert.equal(perm('home/user/private'), 0o600, 'a file made after umask(0o077) was not masked by it');
+  assert.equal(perm('home/user/log'), 0o600);
+  assert.equal(perm('home/user/secret'), 0o700, 'a directory made after umask(0o077) was not masked by it');
+  assert.equal(perm('home/user/open'), 0o775);
+}
+
 console.log('process-fs-client: ok');

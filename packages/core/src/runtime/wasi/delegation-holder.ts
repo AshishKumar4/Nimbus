@@ -80,6 +80,8 @@ interface LocalFile {
   mode: number;
   /** Made here and not yet logged: its number, which its first logged write carries. */
   made?: number;
+  /** The umask its mode was decided under, which its logged writeFile carries. */
+  umask?: number;
   /**
    * Its name is gone (unlinked, or replaced by a rename) while descriptions
    * of it are open: they read and write its bytes, and no name is written
@@ -184,7 +186,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       // file made here makes its name with this write, with its number.
       const ino = file.made;
       delete file.made;
-      client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
+      client.submit({ type: 'call', call: { call: 'writeFile', path: file.key, mode: file.mode, ...(ino === undefined ? {} : { ino }), ...(file.umask === undefined ? {} : { umask: file.umask }), data: file.bytes.slice(0, file.length) } }, { acknowledged: true });
     }
   };
 
@@ -352,7 +354,8 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
         };
         decided.set(key, entry);
         note(parentKey(key), nameOf(key), 'file');
-        file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino };
+        // Its mode was decided under this umask: the session applies the same one.
+        file = { key, bytes: new Uint8Array(0), length: 0, mode: asked, made: ino, umask: grant.umask };
         files.set(ino, file);
         // Made here: the name exists from now on, in the log's order. Logged
         // with its bytes, before the next decision (drain), as one call.
@@ -462,7 +465,7 @@ export function delegationHolder(options: HolderOptions): DelegationHolder {
       });
       note(parentKey(key), nameOf(key), 'directory');
       added.set(key, added.get(key) ?? new Map());
-      log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino } });
+      log({ type: 'call', call: { call: 'mkdir', path: key, mode: mode & 0o777, ino, umask: grant.umask } });
       return true;
     },
 

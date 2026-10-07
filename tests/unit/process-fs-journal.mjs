@@ -172,16 +172,21 @@ function mortalPort(s, live = Infinity) {
   assert.equal(cursors(PID), 0, 'its cursors outlived its drain');
 }
 
-// ── The effect gate: a durable log releases effects at once; a heap log, once answered ──
+// ── The effect gate: an effect waits for every change ahead of it to be answered, durable log or not ──
 // (ProcessFsClient.effect.) Red before: there was no gate, and a one-shot's
-// output left ahead of changes it could still lose.
+// output left ahead of changes it could still lose; then (review 2) a
+// resident's durable log released its effects at once, so what read its
+// output (the next command) could miss changes made before it.
 {
   const s = session();
   const gate = Promise.withResolvers();
   s.fault = async (deliver) => { await gate.promise; return deliver(); };
   const durable = processFsClient({ session: s.port, journal: sqlJournal(facetSql()), retry: RETRY });
   durable.submit(writeFile('home/user/out/g0', 'a'), { acknowledged: true });
-  assert.equal(durable.effect(), null, 'a resident waited at an effect for what its store keeps');
+  const residentEffect = durable.effect();
+  assert.ok(residentEffect instanceof Promise, 'a resident released an effect ahead of a change the session had not made visible');
+  let residentDone = false;
+  residentEffect.then(() => { residentDone = true; });
   const heap = processFsClient({ session: s.port, retry: RETRY });
   assert.equal(heap.effect(), null, 'nothing logged: nothing to wait for');
   heap.submit(writeFile('home/user/out/g1', 'b'), { acknowledged: true });
@@ -192,10 +197,13 @@ function mortalPort(s, live = Infinity) {
   // Logged after the effect: not waited for.
   await new Promise((resolve) => setTimeout(resolve, 20));
   assert.equal(done, false, 'the effect was released before the change ahead of it was answered');
+  assert.equal(residentDone, false, 'a resident\'s effect was released before the change ahead of it was answered');
   gate.resolve();
   s.fault = null;
   await released;
+  await residentEffect;
   assert.equal(s.text('home/user/out/g1'), 'b');
+  assert.equal(s.text('home/user/out/g0'), 'a');
   await durable.settle();
   await heap.settle();
 }

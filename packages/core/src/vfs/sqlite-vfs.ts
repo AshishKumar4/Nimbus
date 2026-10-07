@@ -603,6 +603,11 @@ export const ROUTED_FILE_MAX = 4 * 1024 * 1024;
  */
 export const DATA_CALL_MAX = 4 * 1024 * 1024;
 
+/** `cred` with the umask a process's call was made under, when the call carries one (W7Call umask). */
+function withUmask(cred: VfsCred, umask: number | undefined): VfsCred {
+  return umask === undefined || umask === cred.umask ? cred : { ...cred, umask };
+}
+
 /**
  * A wave's record that the namespace places on a mount (WaveRouter.apply),
  * each the single call a program would make there. Paths are where the
@@ -8604,10 +8609,12 @@ export class SqliteVFS {
    * description whose file no name has any more (the bytes go with it).
    */
   private applyDataCall(
-    file: { path: string; call: W7DataCall; mode: number; ino?: number; offset?: number },
+    file: { path: string; call: W7DataCall; mode: number; ino?: number; offset?: number; umask?: number },
     bytes: Uint8Array,
-    cred: VfsCred,
+    caller: VfsCred,
   ): VfsStat | null {
+    // The umask the process made the call under, when it says (W7Call umask).
+    const cred = withUmask(caller, file.umask);
     switch (file.call) {
       case 'writeFile':
         this.writeFile(file.path, bytes, { mode: file.mode, ino: file.ino }, cred);
@@ -8724,6 +8731,7 @@ export class SqliteVFS {
       size: number;
       ino?: number;
       offset?: number;
+      umask?: number;
       parts: Uint8Array[];
       received: number;
       nextChunk: number;
@@ -9397,6 +9405,7 @@ export class SqliteVFS {
             streamContentId: record.streamContentId, path: record.inode.path, call: record.inode.call, mode: record.inode.mode, size: record.inode.size,
             ...(record.inode.ino === undefined ? {} : { ino: record.inode.ino }),
             ...(record.inode.offset === undefined ? {} : { offset: record.inode.offset }),
+            ...(record.inode.umask === undefined ? {} : { umask: record.inode.umask }),
             parts: [], received: 0, nextChunk: 0,
             credit: { left: record.inode.size, lease },
           };
@@ -9626,7 +9635,7 @@ export class SqliteVFS {
                     const directory = call.existing === 'ok' && (there.kind === 'directory' || (there.kind === 'symlink' && this.isDirectory(call.path, cred)));
                     if (!directory) throw vfsError('EEXIST', call.path);
                   } else {
-                    this.mkdir(call.path, { mode: call.mode, ino: call.ino }, cred);
+                    this.mkdir(call.path, { mode: call.mode, ino: call.ino }, withUmask(cred, call.umask));
                   }
                 }
                 else if (call.call === 'unlink') this.unlink(call.path, cred);

@@ -9530,6 +9530,8 @@ function __nimbusSignalSelf(signal) {
 
 const __processEvents = new __eventsMod();
 let __processUmask = Number(cred.umask) & 0o777;
+// What the process's filesystem client stamps on each create it logs (W7Call umask).
+globalThis.__nimbusProcessUmask = () => __processUmask;
 // Node's command line, as core runtime/node-cli.ts read it: the options
 // before the program are process.execArgv (argv is the program's own), the
 // program's own conditions are its resolvers', and -e's code is

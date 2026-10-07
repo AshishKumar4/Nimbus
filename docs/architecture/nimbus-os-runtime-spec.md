@@ -840,7 +840,10 @@ what a death can cost.
   holds whatever the program acknowledged since it last yielded, up to the
   synchronous cap (`PROCESS_FS_SYNC_CAP_BYTES`, 256 MiB). The platform's
   output gate holds every message the facet sends until its rows commit,
-  so no effect is ever seen ahead of a lost change.
+  so no effect is ever seen ahead of a lost change. A resident's effects
+  also wait at the gate below: what sees one (the shell's next command, a
+  parent reading its output, a client of its server) sees every change made
+  before it in the session, not only in the facet's log.
 - **One-shots lose at most a bounded tail, and say so.** This covers node,
   python, ruby and WASI programs run once in a Dynamic Worker, which has no
   store of its own. Nothing the process emits is released before every change

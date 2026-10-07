@@ -68,6 +68,9 @@ function __nimbusProcessFs() {
     // Home directories themselves are never held: the shell and the editor live there.
     isHomeRoot: (key) => (key.startsWith("home/") && key.length > 5 && !key.includes("/", 5)) || key === "root",
     timers: { setTimeout: __nimbusRawTimer, clearTimeout: __nimbusRawClearTimer },
+    // The process's umask as each create is logged (process.umask moves it;
+    // its setUmask to the session is not ordered with the waves).
+    umask: () => (typeof globalThis.__nimbusProcessUmask === "function" ? globalThis.__nimbusProcessUmask() : undefined),
     // The process's own SQLite, where it has one (a resident's facet:
     // __nimbusFsJournalSql): every change is there before the program is told
     // it succeeded, and what it holds when it dies the session drains from it.
