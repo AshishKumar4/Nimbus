@@ -8814,10 +8814,19 @@ export class SqliteVFS {
     return node;
   }
 
-  /** A W7 `close`: the description goes, and what the session kept of it. */
+  /**
+   * A W7 `close`: what the session kept of the description goes, and the
+   * description. A close that reports what storing its writes failed with
+   * has closed all the same: its refusal forgets the row too
+   * (refuseInSequence), as this transaction is rolled back.
+   */
   private closeDescribed(by: DescribedBy, id: string): void {
+    if (by.pid !== null) this.forgetDescription(by.pid, id);
     by.descriptions?.close(id);
-    if (by.pid !== null) this.sql.exec('DELETE FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', by.pid, id);
+  }
+
+  private forgetDescription(pid: number, id: string): void {
+    this.sql.exec('DELETE FROM vfs_wave_descriptions WHERE pid = ? AND id = ?', pid, id);
   }
 
   /**
@@ -8867,13 +8876,18 @@ export class SqliteVFS {
     this.sql.exec('UPDATE vfs_wave_cursors SET seq = ?, touched_at = ? WHERE writer = ?', seq, Date.now(), writer);
   }
 
-  /** The op numbered `seq` was refused: the cursor passes it, and the refusal is kept until the writer has had it answered. */
-  private refuseInSequence(writer: string, refused: NonNullable<WaveSequenceAnswer['refused']>): void {
+  /**
+   * The op numbered `seq` was refused: the cursor passes it, and the refusal
+   * is kept until the writer has had it answered. `closed`: it was a close,
+   * whose description is gone whatever it answered (closeDescribed).
+   */
+  private refuseInSequence(writer: string, refused: NonNullable<WaveSequenceAnswer['refused']>, closed?: { pid: number; id: string }): void {
     this.transactionSync(() => {
       this.sql.exec(
         'UPDATE vfs_wave_cursors SET seq = ?, refused_seq = ?, refused_errno = ?, refused_message = ?, touched_at = ? WHERE writer = ?',
         refused.seq, refused.seq, refused.errno, refused.message, Date.now(), writer,
       );
+      if (closed !== undefined) this.forgetDescription(closed.pid, closed.id);
     });
   }
 
@@ -9007,6 +9021,8 @@ export class SqliteVFS {
     };
     // The descriptions its calls name: its binding's, and what the session kept of its process's.
     const described: DescribedBy = { descriptions: options.descriptions, pid: options.sequence?.pid ?? null };
+    /** The wave's close calls, by number: a refused one forgets its description as an applied one does. */
+    const closing = new Map<number, string>();
     /**
      * A record that lands on this filesystem, decided without an await: a
      * file (not a link) or directory placed here by placeSync, a chunk or end
@@ -9846,6 +9862,7 @@ export class SqliteVFS {
               // A call observes everything the stream wrote before it.
               phase = 'publish';
               const call = record.call;
+              if (call.call === 'close' && applying !== null) closing.set(applying, call.description);
               // A mkdir commits with the calls beside it; any other may change
               // where later names resolve, and commits now.
               queueCall(call.path, () => {
@@ -9919,7 +9936,8 @@ export class SqliteVFS {
       if (sequence !== null && applying !== null && errno !== undefined && SYSCALL_VERDICTS.has(errno as VfsErrorCode)) {
         const refused = { seq: applying, errno, message: this.errorMessage(error) };
         try {
-          this.refuseInSequence(sequence.spec.writer, refused);
+          const closed = closing.get(refused.seq);
+          this.refuseInSequence(sequence.spec.writer, refused, closed === undefined || described.pid === null ? undefined : { pid: described.pid, id: closed });
           progress.sequence = { cursor: refused.seq, refused };
         } catch {
           // Not kept: the op is unanswered, and a re-send applies it again.

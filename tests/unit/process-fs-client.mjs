@@ -50,6 +50,8 @@ function session({ fenced = true } = {}) {
   const op = createSupervisorOpHandler({ vfs: engine, filesystem: files, deliveries });
   const calls = { waves: 0, epochs: 0, ops: [] };
   const s = {
+    engine,
+    sql: harness.sql,
     kernel,
     files,
     op,
@@ -173,6 +175,30 @@ const mkdir = (path) => ({ type: 'call', call: { call: 'mkdir', path, mode: 0o75
   assert.equal(dec.decode(await s.op({ op: 'fsRead', args: [handle, 0, 6], pid: PID })), 'before');
   await c.submit({ type: 'call', call: { call: 'close', path: 'home/user/o.txt', description: 'r1' } });
   await assert.rejects(async () => s.op({ op: 'fsRead', args: [handle, 0, 6], pid: PID }), (error) => error.code === 'EBADF', 'the close left its descriptor open');
+}
+
+// ── Review D (2351449d9 recheck): a close that reports a refusal has closed its description ──
+// Storing what the description wrote failed (the store is full), and its
+// close reports it (ENOSPC). The description is gone all the same: a later
+// call naming it is EBADF, not adopted again from what the session kept.
+// Red before: the close's refusal rolled back the forgetting of its row, so
+// the next write through the closed id was adopted and landed.
+{
+  const s = session();
+  const c = client(s);
+  s.kernel.writeFile('home/user/full.txt', enc.encode(''));
+  s.kernel.chown('home/user/full.txt', CRED_SESSION_USER.uid, CRED_SESSION_USER.gid);
+  const kept = () => [...s.sql.exec('SELECT id FROM vfs_wave_descriptions WHERE id = ?', 'f1')].length;
+  await c.submit({ type: 'call', call: { call: 'open', path: 'home/user/full.txt', mode: 0o644, description: 'f1' } });
+  assert.equal(kept(), 1);
+  const view = s.engine.ledger.view();
+  s.engine.ledger.fill('room-taker', view.limit - s.engine.ledger.kernelReserve - view.used);
+  await c.submit({ type: 'call', call: { call: 'write', path: 'home/user/full.txt', description: 'f1', offset: 0, data: new Uint8Array(4096).fill(7) } });
+  await assert.rejects(c.submit({ type: 'call', call: { call: 'close', path: 'home/user/full.txt', description: 'f1' } }), (error) => error.code === 'ENOSPC', 'the close did not report what storing its writes failed with');
+  s.engine.ledger.deleteFacet('room-taker');
+  assert.equal(kept(), 0, 'a close that reported a refusal left its description kept');
+  await assert.rejects(c.submit({ type: 'call', call: { call: 'write', path: 'home/user/full.txt', description: 'f1', offset: 0, data: enc.encode('late') } }), (error) => error.code === 'EBADF', 'a write through a closed description was adopted again');
+  assert.notEqual(s.text('home/user/full.txt'), 'late');
 }
 
 // ── A refusal answers its op; the log goes on; an acknowledged one is reported ──
