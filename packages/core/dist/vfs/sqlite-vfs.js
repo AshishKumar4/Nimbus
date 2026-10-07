@@ -7417,10 +7417,12 @@ export class SqliteVFS {
         const mountOf = async (kind, named) => {
             const parent = this.parentPath(named);
             let route = at.routes.get(parent);
-            if (route === undefined || route.revision !== this._revision) {
-                const revision = this._revision;
-                const resolved = parent === '' ? '' : await router.resolveDirectory('/' + parent, cred, at.signal);
-                route = { resolved, revision };
+            const epoch = at.view();
+            if (route === undefined || route.epoch !== epoch) {
+                // Synchronous while the lookup stays on this filesystem's backends.
+                const answer = parent === '' ? '' : router.resolveDirectory('/' + parent, cred, at.signal);
+                const resolved = typeof answer === 'string' ? answer : await answer;
+                route = { resolved, epoch };
                 at.routes.set(parent, route);
             }
             const path = `${route.resolved === '/' ? '' : route.resolved}/${named.slice(named.lastIndexOf('/') + 1)}`;
@@ -7429,7 +7431,7 @@ export class SqliteVFS {
             if (kind !== 'directory' && router.composes(path)) {
                 throw vfsError(kind === 'delete' ? 'EBUSY' : 'EISDIR', named, 'a directory above a mount point');
             }
-            at.placedHere(kind, named, path, route.revision);
+            at.placedHere(kind, named, path, route.epoch);
             return null;
         };
         /** Refuse a record an earlier attempt may have applied; note this one. */
@@ -7573,6 +7575,32 @@ export class SqliteVFS {
         const routed = { file: null };
         /** Each directory's resolved namespace path and the revision it saw, until a link or removal of the wave's. */
         const routes = new Map();
+        /**
+         * The namespace as the wave's placements see it: `epoch` numbers the
+         * views, `revision` is the store's revision the current one holds at.
+         * The wave's own commit of files that are not links changes no directory
+         * a later name resolves through, so the view holds across it. Anything
+         * else that commits (another writer, or the wave's own links, removals
+         * and directories) starts a new view, and every name placed in an older
+         * one is resolved again: without this, each commit of the wave's own
+         * files sent every later record back through the namespace's lookup.
+         */
+        const view = { revision: this._revision, epoch: 0 };
+        const viewEpoch = () => {
+            if (this._revision !== view.revision) {
+                view.revision = this._revision;
+                view.epoch++;
+            }
+            return view.epoch;
+        };
+        /** Around a commit of the wave's own files: when nothing else committed and none is a link, the view holds. */
+        const ownFiles = (links, commit) => {
+            const before = this._revision;
+            const result = commit();
+            if (!links && before === view.revision)
+                view.revision = this._revision;
+            return result;
+        };
         /** This wave's own name: the slots its routed links are staged at. */
         const waveId = crypto.randomUUID().slice(0, 8);
         /**
@@ -7599,7 +7627,7 @@ export class SqliteVFS {
                     continue;
                 placements.delete(named);
                 let now = placed.resolved;
-                if (placed.revision !== this._revision) {
+                if (placed.epoch !== viewEpoch()) {
                     const parent = this.parentPath(named);
                     let dir = resolvedNow.get(parent);
                     if (dir === undefined) {
@@ -7700,7 +7728,7 @@ export class SqliteVFS {
                     // the staged chunks of a file still in flight, and the bytes stay
                     // charged to it until its publication commits.
                     this.assertTransactionFits(plan.metrics);
-                    this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' });
+                    ownFiles(false, () => this.executeTransactionPlan(plan, { source: 'content-stage', limitMode: 'bounded' }));
                     this._stagedStreamBytes += plan.metrics.blobBytes;
                     this._peakStagedStreamBytes = Math.max(this._peakStagedStreamBytes, this._stagedStreamBytes);
                     if (activeFile)
@@ -7711,10 +7739,10 @@ export class SqliteVFS {
                 // Re-check the mutation guard here rather than only where each file
                 // was accepted: a group commits after the records that follow it, so
                 // this is the check that is contemporaneous with the write.
-                const result = asCaller(() => {
+                const result = ownFiles(plan.inodes.some((entry) => entry.kind === 'symlink'), () => asCaller(() => {
                     this.assertMutationsAllowed(inodes);
                     return this._writeBatchOnce({ plan, deletedInodes: [] }, { source: 'content-publish', limitMode: 'bounded' });
-                });
+                }));
                 let activeStaged = 0;
                 for (const staged of plan.staged) {
                     if (staged.content === activeFile?.staging)
@@ -7923,7 +7951,8 @@ export class SqliteVFS {
                     index: recordIndex,
                     waveId,
                     routes,
-                    placedHere: (kind, named, resolved, revision) => { placedHere[kind].set(named, { resolved, revision }); },
+                    view: viewEpoch,
+                    placedHere: (kind, named, resolved, epoch) => { placedHere[kind].set(named, { resolved, epoch }); },
                     signal: options.signal,
                     reach: options.mountReach,
                     // Right before each call to the backend: the wave is still admitted, and not cancelled.
