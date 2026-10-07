@@ -48,6 +48,10 @@ export async function residentGuest({ refuse = () => false, preopen = '' } = {})
   const kernel = raw.as(CRED_KERNEL);
   kernel.mkdir('home/user', { recursive: true, mode: 0o755 });
   kernel.chown('home/user', USER.uid, USER.gid);
+  if (preopen) {
+    kernel.mkdir(preopen, { recursive: true, mode: 0o755 });
+    kernel.chown(preopen, USER.uid, USER.gid);
+  }
   const processes = new SessionProcessSupervisor();
   const { pid } = processes.spawn('guest', ['guest'], '/home/user', { cred: USER });
   const authority = new ProcessFiles(raw);

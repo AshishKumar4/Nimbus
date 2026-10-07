@@ -16,10 +16,12 @@ import { residentGuest } from './lib/wasi-resident-guest.mjs';
 const DIRECTORY = 3;
 const describe = async (fn) => { try { return JSON.stringify(await fn()); } catch (error) { return `${error?.constructor?.name}: ${error?.message} (code ${error?.code})`; } };
 
-for (const preopen of ['', 'home/user']) {
+for (const preopen of ['', 'home/user', 'home/user/proj/app']) {
   const guest = await residentGuest({ preopen });
   try {
-    for (const name of ['.', './.']) {
+    // Go sends its cwd ($PWD, the shell's) joined and cleaned: under a cwd
+    // preopen that is the preopen's own path re-stated.
+    for (const name of ['.', './.', ...(preopen ? [preopen, `${preopen}/.`, `${preopen}/`] : [])]) {
       let answer;
       try {
         answer = await guest.stat(name);
