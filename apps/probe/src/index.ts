@@ -74,7 +74,8 @@ async function readRequestLine(readable: ReadableStream<Uint8Array>): Promise<st
  * A recording egress for tests (NIMBUS_TEST_EGRESS=1): it answers
  * EGRESS_TEST_HOST itself (HTTP, encoded bodies at /encoded-<gzip|br|deflate>,
  * WebSocket upgrades and an echo server at /ws-echo, a refused upgrade at
- * /ws-refused (and held open at /ws-refused-open and /ws-refused-64k), an
+ * /ws-refused (and held open at /ws-refused-open, /ws-refused-64k, and after
+ * 2 s at /ws-refused-slow), an
  * echo answered after 2 s at /ws-slow, plain TCP on port 7, plain
  * HTTP over TCP on port 80) and PyPI's metadata for its canary project
  * (egress-canary.ts), and sends everything else on to the network, so a
@@ -99,9 +100,10 @@ export class TestEgress extends WorkerEntrypoint {
     if (url.pathname === '/ws-refused') {
       return Response.json({ error: 'unauthorized' }, { status: 401, headers: { 'www-authenticate': 'Bearer' } });
     }
-    // A refusal whose body is sent and then held open: a short one, or exactly 64 KiB.
-    if (url.pathname === '/ws-refused-open' || url.pathname === '/ws-refused-64k') {
-      const body = url.pathname === '/ws-refused-open' ? new TextEncoder().encode('partial') : new Uint8Array(65536).fill(97);
+    // A refusal whose body is sent and then held open: a short one, or exactly 64 KiB, or a short one after 2 s.
+    if (url.pathname === '/ws-refused-slow') await new Promise((resolve) => setTimeout(resolve, 2000));
+    if (url.pathname === '/ws-refused-open' || url.pathname === '/ws-refused-64k' || url.pathname === '/ws-refused-slow') {
+      const body = url.pathname === '/ws-refused-64k' ? new Uint8Array(65536).fill(97) : new TextEncoder().encode('partial');
       return new Response(new ReadableStream({ start(controller) { controller.enqueue(body); } }),
         { status: 401, statusText: 'Unauthorized', headers: { 'content-type': 'text/plain' } });
     }

@@ -29,7 +29,9 @@
 //     64 KiB) is reported at once, its body read as it comes; a text frame
 //     or a close reason that is not UTF-8 closes the socket with 1007; an
 //     upgrade request aborted before or while it handshakes (its signal, as
-//     ws's own option too) fails with Node's AbortError.
+//     ws's own option too) fails with Node's AbortError, and a refusal that
+//     arrives after the abort, its body held open, keeps nothing alive: the
+//     process exits by itself, promptly.
 //
 // Runs the worker built in the tree (lib/workerd-probe.mjs): rebuild the
 // generated artifacts before testing a runner change. Needs the npm registry
@@ -174,6 +176,38 @@ const UPGRADE = { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Ke
 })();
 `;
 
+/**
+ * Requests aborted before a slow refusal arrives, its body then held open:
+ * nothing of them holds the process, which exits by itself (no
+ * process.exit), saying what it saw and how long it lived.
+ */
+const WS_ABORT_EXIT = String.raw`
+const http = require('http');
+const https = require('https');
+const WebSocket = require('ws');
+const base = process.argv[2];
+const started = Date.now();
+const transcript = [];
+process.on('exit', () => {
+  console.log('ELAPSED ' + (Date.now() - started));
+  console.log('ABORTEXIT ' + JSON.stringify({ transcript, exitedWithin10s: Date.now() - started < 10000 }));
+});
+const controller = new AbortController();
+const req = (base.startsWith('wss:') ? https : http).request(base.replace(/^ws/, 'http') + '/ws-refused-slow', {
+  headers: { Connection: 'Upgrade', Upgrade: 'websocket', 'Sec-WebSocket-Key': 'dGhlIHNhbXBsZSBub25jZQ==', 'Sec-WebSocket-Version': '13' },
+  signal: controller.signal,
+});
+req.on('error', (e) => transcript.push('request error ' + e.name));
+req.on('response', (res) => transcript.push('request response ' + res.statusCode));
+req.on('close', () => transcript.push('request close'));
+req.end();
+const wsController = new AbortController();
+const ws = new WebSocket(base + '/ws-refused-slow', { signal: wsController.signal });
+ws.on('error', (e) => transcript.push('ws error ' + e.name));
+ws.on('close', (code) => transcript.push('ws close ' + code));
+setTimeout(() => { controller.abort(); wsController.abort(); }, 200);
+`;
+
 /** The ws package against the echo server at `base` (ws: or wss:), as a transcript. */
 const WS = String.raw`
 const WebSocket = require('ws');
@@ -280,10 +314,13 @@ const echo = (req) => (ws) => {
 server.on('upgrade', (req, socket, head) => {
   // A client that gives up on a refusal resets its connection.
   socket.on('error', () => {});
-  // A refusal whose body is sent and then held open, as the egress's.
-  if (req.url === '/ws-refused-open' || req.url === '/ws-refused-64k') {
-    socket.write(['HTTP/1.1 401 Unauthorized', 'content-type: text/plain', '', ''].join(CRLF));
-    socket.write(req.url === '/ws-refused-open' ? 'partial' : Buffer.alloc(65536, 97));
+  // A refusal whose body is sent and then held open, as the egress's (after 2 s at /ws-refused-slow).
+  if (req.url === '/ws-refused-open' || req.url === '/ws-refused-64k' || req.url === '/ws-refused-slow') {
+    setTimeout(() => {
+      if (socket.destroyed) return;
+      socket.write(['HTTP/1.1 401 Unauthorized', 'content-type: text/plain', '', ''].join(CRLF));
+      socket.write(req.url === '/ws-refused-64k' ? Buffer.alloc(65536, 97) : 'partial');
+    }, req.url === '/ws-refused-slow' ? 2000 : 0);
     return;
   }
   if (req.url === '/ws-refused') {
@@ -435,6 +472,16 @@ try {
           labelled((await host.run('ws-edges.js', WS_EDGES, [host.echoBase])).stdout, 'EDGES')];
         console.log('  ws edges: ' + JSON.stringify(edges[0]));
         assert.deepEqual(edges[0], edges[1], "the upgrade's edges give the transcript host Node gives");
+
+        const abortSource = Buffer.from(WS_ABORT_EXIT).toString('base64');
+        const wroteAbort = await terminal.run(`node -e "require('fs').writeFileSync('/home/user/clients/ws-abort-exit.js', Buffer.from('${abortSource}', 'base64'))"`);
+        assert.equal(wroteAbort.status, 0, wroteAbort.stdout);
+        const ranAt = Date.now();
+        const sessionExit = await terminal.run('cd /home/user/clients && node ws-abort-exit.js wss://egress-test.invalid', 120_000);
+        console.log(`  ws abort, then a slow refusal: the session's process lived ${/^ELAPSED (\d+)/m.exec(sessionExit.stdout)?.[1]} ms (its run ${Date.now() - ranAt} ms)`);
+        const exits = [labelled(sessionExit.stdout, 'ABORTEXIT'), labelled((await host.run('ws-abort-exit.js', WS_ABORT_EXIT, [host.echoBase])).stdout, 'ABORTEXIT')];
+        console.log('  ws abort, then a slow refusal: ' + JSON.stringify(exits[0]));
+        assert.deepEqual(exits[0], exits[1], 'an aborted upgrade holds nothing once its refusal arrives: the process exits as host Node\'s does');
       } finally {
         host.close();
       }

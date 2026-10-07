@@ -440,7 +440,8 @@ export const NODE_WS_UPGRADE_SOURCE = `
       queueMicrotask(() => {
         if (aborted) this.emit("abort");
         if (error) this.emit("error", error);
-        this._emitClose();
+        // Node's request closes when its socket has, a turn later than its error.
+        setTimeout(() => this._emitClose(), 0);
       });
     }
 
