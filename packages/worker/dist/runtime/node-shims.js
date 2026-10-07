@@ -1471,8 +1471,13 @@ const __fsMod = (() => {
       if (meta.type === "directory") return;
       if (quota && !quota.bytes(Number(meta.size) || 0)) { _faulted.delete("content:" + k); return; }
       if (quota) charge = _rangeCharge(quota, Number(meta.size) || 0);
+      // A store at its budget refuses a fill, and asks for room only then.
+      // The repair can wait, so it reserves the room first, and the bytes it
+      // fetches land in it; where none is to be had, they are not fetched.
+      if (typeof meta.size === "number" && typeof __residentReserve === "function" && !(await __residentReserve(k, __residentFileCost(meta.size)))) return;
     }
-    await _liveReadFile(absPath, undefined, undefined, charge);
+    try { await _liveReadFile(absPath, undefined, undefined, charge); }
+    finally { if (typeof __residentRelease === "function") __residentRelease(k); }
   }
 
   /**
