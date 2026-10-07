@@ -126,9 +126,12 @@ export class Timers {
                     written = ctx.storage.put(TIMER_REASONS_KEY, map);
                 }
                 // Issued in the turn the epoch was checked in: a reset after this
-                // point wipes and disarms after these, never before.
-                setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
+                // point wipes and disarms after these, never before. Awaited after
+                // that: an alarm write that failed is a timer not armed, and the
+                // caller is told so.
+                const armed = setAlarmFn.call(ctx.storage, Math.min(...Object.values(map)));
                 await written;
+                await armed;
                 return true;
             }
             catch (e) {
