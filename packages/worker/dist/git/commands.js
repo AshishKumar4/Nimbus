@@ -22,6 +22,8 @@ import { DirCache, NewEntries, comparePaths } from './worktree/dircache.js';
 import { isValidRefName } from './worktree/refname.js';
 import { PairList } from './worktree/pairs.js';
 import { WorktreeRepo, configBool } from './worktree/repo.js';
+import { parseGitGlobals } from './routing.js';
+export { parseGitGlobals } from './routing.js';
 import { collectStatus, inSpecs, shortStatusLines, walkTreeAndIndex } from './worktree/status.js';
 import { EMPTY_TREE, treeLeaves, treeOf, writeTreeFromIndex } from './worktree/tree.js';
 import { DirtySet, modeFromStat, newCounters, scanWorktree, worktreeBlob, worktreeBlobId, } from './worktree/walk.js';
@@ -243,42 +245,6 @@ function createGitFs(vfs, worktree = null, promisor) {
 }
 function getDir(ctx) {
     return '/' + (ctx.cwd || '/home/user').replace(/^\/+/, '');
-}
-/**
- * The options git accepts BEFORE the subcommand. `-C <path>` runs the
- * command as if started from <path>; repeated, each is relative to the
- * previous (`git -C a -C b` runs in `a/b`). `--no-pager` and `-P` are
- * accepted and mean nothing here, there is no pager. Any other leading
- * option is refused: swallowing it would run the next word as a subcommand.
- */
-export function parseGitGlobals(args, cwd) {
-    let dir = cwd;
-    let i = 0;
-    for (; i < args.length; i++) {
-        const arg = args[i];
-        if (arg === '-C') {
-            const path = args[++i];
-            if (path === undefined)
-                throw new Error("option '-C' requires a value");
-            dir = path.startsWith('/') ? path : dir + '/' + path;
-            dir = '/' + dir.split('/').filter((seg) => seg && seg !== '.').join('/');
-        }
-        else if (arg.startsWith('-C') && arg.length > 2) {
-            const path = arg.slice(2);
-            dir = path.startsWith('/') ? path : dir + '/' + path;
-            dir = '/' + dir.split('/').filter((seg) => seg && seg !== '.').join('/');
-        }
-        else if (arg === '--no-pager' || arg === '-P') {
-            // no pager to disable
-        }
-        else if (arg.startsWith('-') && arg !== '--version' && arg !== '-v' && arg !== '--help' && arg !== '-h') {
-            throw new Error(`unknown option '${arg}'\nusage: git [-C <path>] [--no-pager] <command> [<args>]`);
-        }
-        else {
-            break;
-        }
-    }
-    return { sub: args[i], subArgs: args.slice(i + 1), dir };
 }
 function getFlag(args, flag) {
     const idx = args.indexOf(flag);

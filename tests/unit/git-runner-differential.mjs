@@ -35,13 +35,14 @@ if (typeof process.versions.bun === 'string') {
 }
 const { NimbusWorkspace } = await import('../../packages/core/dist/workspace/nimbus-workspace.js');
 const { localFacetHost } = await import('../../packages/core/dist/runtime/local-facet-host.js');
+const { ISOLATE_NETWORK } = await import('../../packages/core/dist/_shared/workspace-network.js');
 
 const IDENTITY = {
   GIT_AUTHOR_NAME: 'Ada', GIT_AUTHOR_EMAIL: 'ada@example.com', GIT_AUTHOR_DATE: '2026-01-02T03:04:05Z',
   GIT_COMMITTER_NAME: 'Ada', GIT_COMMITTER_EMAIL: 'ada@example.com', GIT_COMMITTER_DATE: '2026-01-02T03:04:05Z',
 };
 
-const host = localFacetHost();
+const host = localFacetHost(ISOLATE_NETWORK);
 const { sql, transactions } = await hostSqlite();
 const seeding = await NimbusWorkspace.create({ sql, transactions, generation: 1, cwd: '/home/user' });
 for (const runtime of RUNTIMES.filter((r) => r.name === 'git')) seedRuntime(seeding.vfs, runtime);

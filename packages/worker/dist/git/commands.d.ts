@@ -13,6 +13,8 @@ import type { SqliteVFS } from '@nimbus-sh/core/vfs/sqlite-vfs.js';
 import type { VfsCred } from '@nimbus-sh/core/runtime/os-contracts.js';
 import { type ProcessView } from '@nimbus-sh/core/runtime/process-files.js';
 import { DirCache } from './worktree/dircache.js';
+export { parseGitGlobals } from './routing.js';
+export type { ParsedGitGlobals } from './routing.js';
 type OutputStream = {
     write(s: string): void | Promise<void>;
     /** Present on sinks that keep bytes verbatim (files, byte-capable pipes). */
@@ -29,20 +31,6 @@ type Ctx = {
     /** The command's view of the namespace, as its credential. */
     vfs: ProcessView;
 };
-export interface ParsedGitGlobals {
-    sub: string | undefined;
-    subArgs: string[];
-    /** The directory the subcommand runs in, after every `-C`. */
-    dir: string;
-}
-/**
- * The options git accepts BEFORE the subcommand. `-C <path>` runs the
- * command as if started from <path>; repeated, each is relative to the
- * previous (`git -C a -C b` runs in `a/b`). `--no-pager` and `-P` are
- * accepted and mean nothing here, there is no pager. Any other leading
- * option is refused: swallowing it would run the next word as a subcommand.
- */
-export declare function parseGitGlobals(args: string[], cwd: string): ParsedGitGlobals;
 export interface ParsedCloneArgs {
     url: string | undefined;
     dest: string | undefined;
@@ -104,5 +92,4 @@ export declare function replacedIndexEntries(dc: DirCache, restored: ReadonlySet
 export declare function runGitCommand(ctx: Ctx, vfs: SqliteVFS, doCtx?: DurableObjectState, doEnv?: any, 
 /** The workspace's network (`workspace.network`): clone, fetch, pull, push and promisor fetches go out through it. */
 network?: WorkspaceNetwork): Promise<number>;
-export {};
 //# sourceMappingURL=commands.d.ts.map
