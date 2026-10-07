@@ -14,7 +14,11 @@
 //   VM       vm.compileFunction's code, which has no importer in Node;
 //   ABSENT   an import nothing answers, named with its specifier and importer;
 //   HOOKED   a program whose Error.prepareStackTrace cannot be read or set
-//            still builds functions (bin/hooked.cjs).
+//            still builds functions (bin/hooked.cjs);
+//   SOURCE   a function's source text is what it was built from, in every
+//            launch, though its import() calls run through the origin;
+//   HYGIENE  code that names the runtime's own capture still imports;
+//   FNWRITE  code that assigns its free Function reads what it assigned.
 // STAGED says where the code ran: the first launch interprets it, and the
 // next runs it natively from the module the first staged, resolving against
 // the same importer.
@@ -61,7 +65,11 @@ const FILES = {
     '  .then(() => console.log("ABSENT resolved"), (e) => console.log("ABSENT " + e.code + " " + /absent\\.mjs/.test(e.message) + " " + /bin\\/tool\\.cjs/.test(e.message)))',
     '  .then(() => new AsyncFunction("m", "return (await import(m)).where")("../lib/cli.mjs"))',
     '  .then((where) => console.log("ASYNC " + where), (e) => console.log("ASYNC " + e.code))',
-    '  .then(() => staged("../lib/cli.mjs")).then((line) => console.log("STAGED " + line));',
+    '  .then(() => staged("../lib/cli.mjs")).then((line) => console.log("STAGED " + line))',
+    '  .then(() => console.log("SOURCE " + JSON.stringify(Function.prototype.toString.call(dynamicImport))))',
+    '  .then(() => new Function("nimbusImport", "_nimbusImport", "return import(\\"../lib/cli.mjs\\")")(() => 42, () => 43))',
+    '  .then((m) => console.log("HYGIENE " + (m && m.where)))',
+    '  .then(() => console.log("FNWRITE " + new Function("Function = 123; return typeof Function")()));',
   ].join('\n'),
   'pkg/bin/hooked.cjs': [
     'Object.defineProperty(Error, "prepareStackTrace", {',
@@ -97,6 +105,9 @@ assert.equal(expected, [
   'ABSENT ERR_MODULE_NOT_FOUND true true',
   'ASYNC lib/cli.mjs',
   'STAGED lib/cli.mjs interpreted',
+  'SOURCE "function anonymous(module\\n) {\\nreturn import(module)\\n}"',
+  'HYGIENE lib/cli.mjs',
+  'FNWRITE number',
   'HOOKED lib/cli.mjs',
   '',
 ].join('\n'), 'the host node this test compares with');

@@ -19,6 +19,7 @@ import {
   runtimeFunctionSyntaxError,
   wrapCommonJsCell,
 } from '../../packages/core/src/_shared/commonjs-cell.ts';
+import { runtimeFunctionSource } from '../../packages/core/src/_shared/runtime-function-source.ts';
 
 // Evaluate a `{ cjs }` module body as workerd's CommonJS handler does: a
 // sloppy function body with `module` and `exports` in scope.
@@ -165,6 +166,18 @@ function staged(text, origin = ORIGIN) {
   const other = { import: (specifier) => Promise.resolve('elsewhere ' + specifier), Function: MODULE_FUNCTION };
   assert.equal(await staged(importing, other)('./x.mjs')[0], 'elsewhere ./x.mjs', 'another origin, the same module');
   assert.notEqual(staged(importing), staged(importing), 'each build is a function of its own');
+  // The capture the import() calls run through is a name the code does not use.
+  const colliding = runtimeFunctionModule('function', ['nimbusImport'], 'return [import("./x.mjs"), nimbusImport]');
+  const [viaOrigin, own] = staged(colliding)('mine');
+  assert.equal(await viaOrigin, 'imported ./x.mjs', 'import() still reaches the origin');
+  assert.equal(own, 'mine', 'and the code\'s own parameter is its own');
+  // A function whose import() calls were routed carries the source it was built from.
+  assert.equal(load(importing).source, runtimeFunctionSource('function', ['m'], 'return [import(m), Function, "import(m)"]'));
+  assert.equal(load(runtimeFunctionModule('function', ['a'], 'return a')).source, undefined, 'one without import() is its own source');
+  // Code that reads its free Function has a shape for an origin without one: the global's.
+  const unbound = load(runtimeFunctionModule('function', [], 'Function = 1; return typeof Function')).unbound;
+  assert.equal(typeof unbound, 'function');
+  assert.equal(load(runtimeFunctionModule('function', ['a'], 'return a')).unbound, undefined, 'none for code that never names it');
   console.log('  [7] a Function-constructor module builds the constructor\'s function, from its origin');
 }
 
