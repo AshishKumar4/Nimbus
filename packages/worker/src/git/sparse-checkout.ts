@@ -33,6 +33,31 @@ export interface SparseCheckoutContext {
 }
 
 const USAGE = 'usage: git sparse-checkout (init | list | set | add | reapply | disable | check-rules | clean) [<options>]\n';
+
+const CONE_HELP: [string, string] = ['--[no-]cone', 'initialize the sparse-checkout in cone mode'];
+const SPARSE_INDEX_HELP: [string, string] = ['--[no-]sparse-index', 'toggle the use of a sparse index'];
+const SKIP_CHECKS_HELP: [string, string] = ['--skip-checks', 'skip some sanity checks on the given paths that might give false positives'];
+const STDIN_HELP = 'read patterns from standard in';
+
+/** Each subcommand's synopsis and options, as its parse_options usage prints them. */
+const SUBCOMMANDS: Record<string, { usage: string; options: Array<[string, string]> }> = {
+  list: { usage: 'git sparse-checkout list', options: [] },
+  init: { usage: 'git sparse-checkout init [--cone] [--[no-]sparse-index]', options: [CONE_HELP, SPARSE_INDEX_HELP] },
+  set: {
+    usage: 'git sparse-checkout set [--[no-]cone] [--[no-]sparse-index] [--skip-checks] (--stdin | <patterns>)',
+    options: [CONE_HELP, SPARSE_INDEX_HELP, SKIP_CHECKS_HELP, ['--stdin', STDIN_HELP]],
+  },
+  add: { usage: 'git sparse-checkout add [--skip-checks] (--stdin | <patterns>)', options: [SKIP_CHECKS_HELP, ['--[no-]stdin', STDIN_HELP]] },
+  reapply: { usage: 'git sparse-checkout reapply [--[no-]cone] [--[no-]sparse-index]', options: [CONE_HELP, SPARSE_INDEX_HELP] },
+  disable: { usage: 'git sparse-checkout disable', options: [] },
+};
+
+/** usage_with_options: the synopsis, a blank line, then each option in its column (and a blank line after them). */
+function usageText(sub: string): string {
+  const { usage, options } = SUBCOMMANDS[sub];
+  const table = options.map(([flag, help]) => `    ${flag.padEnd(22)}${help}\n`).join('');
+  return `usage: ${usage}\n\n${table}${table ? '\n' : ''}`;
+}
 const NOT_CONE = 'fatal: a sparse checkout without cone mode is not supported\n';
 const encoder = new TextEncoder();
 
@@ -277,8 +302,8 @@ function byBytes(a: string, b: string): number {
 export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly string[]): Promise<number> {
   const [sub, ...rest] = args;
   const { wrepo } = ctx;
-  const unknown = async (option: string, usage: string) => {
-    await ctx.stderr(`error: unknown option \`${option.replace(/^-+/, '')}'\nusage: git sparse-checkout ${usage}\n\n`);
+  const unknown = async (option: string) => {
+    await ctx.stderr(`error: unknown option \`${option.replace(/^-+/, '')}'\n${usageText(sub)}`);
     return 129;
   };
   try {
@@ -287,7 +312,7 @@ export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly 
         const current = await modes(wrepo);
         if (!current.sparse) throw new Fatal('fatal: this worktree is not sparse\n');
         const { unknown: bad } = parseOptions(rest, []);
-        if (bad !== undefined) return await unknown(bad, 'list');
+        if (bad !== undefined) return await unknown(bad);
         const text = await readPatterns(wrepo);
         if (text === null) {
           await ctx.stderr('warning: this worktree is not sparse (sparse-checkout file may not exist)\n');
@@ -302,13 +327,10 @@ export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly 
       case 'add': {
         const known = sub === 'set'
           ? ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index', '--skip-checks', '--stdin']
-          : ['--skip-checks', '--stdin'];
-        const usage = sub === 'set'
-          ? 'set [--[no-]cone] [--[no-]sparse-index] [--skip-checks] (--stdin | <patterns>)'
-          : 'add [--skip-checks] (--stdin | <patterns>)';
+          : ['--skip-checks', '--stdin', '--no-stdin'];
         if (sub === 'add' && !await wrepo.isSparse()) throw new Fatal('fatal: no sparse-checkout to add to\n');
         const { flags, rest: dirs, unknown: bad } = parseOptions(rest, known);
-        if (bad !== undefined) return await unknown(bad, usage);
+        if (bad !== undefined) return await unknown(bad);
         if (flags.has('--stdin')) throw new Fatal(`fatal: git sparse-checkout ${sub} --stdin is not supported here\n`);
         if (sub === 'add') {
           if (!(await modes(wrepo)).cone) throw new Fatal(NOT_CONE);
@@ -321,7 +343,7 @@ export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly 
       case 'reapply': {
         if (!await wrepo.isSparse()) throw new Fatal('fatal: must be in a sparse-checkout to reapply sparsity patterns\n');
         const { unknown: bad } = parseOptions(rest, ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index']);
-        if (bad !== undefined) return await unknown(bad, 'reapply [--[no-]cone] [--[no-]sparse-index]');
+        if (bad !== undefined) return await unknown(bad);
         await updateModes(wrepo, tristate(rest, '--cone', '--no-cone'), tristate(rest, '--sparse-index', '--no-sparse-index'));
         const sparse = await wrepo.sparseMatcher();
         if (sparse === null) throw new Fatal(NOT_CONE);
@@ -330,7 +352,7 @@ export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly 
       }
       case 'disable': {
         const { unknown: bad } = parseOptions(rest, []);
-        if (bad !== undefined) return await unknown(bad, 'disable');
+        if (bad !== undefined) return await unknown(bad);
         // Every entry back in the worktree, whatever the configuration says now; then sparse checkout off.
         await updateWorkingDirectory(ctx, coneMatcher(FULL_CONE), false);
         await setConfig(wrepo, false);
@@ -338,7 +360,7 @@ export async function sparseCheckout(ctx: SparseCheckoutContext, args: readonly 
       }
       case 'init': {
         const { unknown: bad } = parseOptions(rest, ['--cone', '--no-cone', '--sparse-index', '--no-sparse-index']);
-        if (bad !== undefined) return await unknown(bad, 'init [--cone] [--[no-]sparse-index]');
+        if (bad !== undefined) return await unknown(bad);
         await updateModes(wrepo, tristate(rest, '--cone', '--no-cone'), tristate(rest, '--sparse-index', '--no-sparse-index'));
         // A sparse-checkout file there already is the cone.
         if (await readPatterns(wrepo) !== null) {
